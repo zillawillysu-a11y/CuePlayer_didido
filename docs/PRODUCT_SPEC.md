@@ -117,7 +117,7 @@
   - 舊／新波形半透明 Overlay。
   - 改動區段前後多 Anchor。
   - Ripple Move／Range Conform。
-- 自訂標記延遲補償，例如 `-50 ms`、`-100 ms`。
+- 自訂標記／匯出延遲補償，例如 `-0.10s`、`-0.20s`（LTC→MA 常見延遲；匯出層已支援 `ltc_latency_compensation_seconds`）。
 - 專案 Bundle：專案檔、媒體索引、快取與設定可攜式打包。
 - CSV 匯入／匯出，供人工檢查與其他工具交換。
 - 影片輸出解析度與顯示器記憶。

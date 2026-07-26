@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MA xmlns="http://schemas.malighting.de/grandma2/xml/MA" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://schemas.malighting.de/grandma2/xml/MA http://schemas.malighting.de/grandma2/xml/3.9.61/MA.xsd" major_vers="3" minor_vers="9" stream_vers="61">
+    <Info datetime="2026-07-26T15:32:57" showfile="CuePlayer Import Test" />
+    <Macro index="0" name="CuePlayer Export">
+        <Macroline index="0">
+            <text>Import "cueplayer_test_main.xml" At Sequence 1 /nc</text>
+        </Macroline>
+        <Macroline index="1">
+            <text>Label Sequence 1 "CuePlayer_Main"</text>
+        </Macroline>
+        <Macroline index="2">
+            <text>Assign Sequence 1 At Exec 1.101</text>
+        </Macroline>
+        <Macroline index="3">
+            <text>Assign Go At Exec 1.101</text>
+        </Macroline>
+        <Macroline index="4">
+            <text>Import "cueplayer_test_button.xml" At Sequence 2 /nc</text>
+        </Macroline>
+        <Macroline index="5">
+            <text>Label Sequence 2 "CuePlayer_Button"</text>
+        </Macroline>
+        <Macroline index="6">
+            <text>Assign Sequence 2 At Exec 1.201</text>
+        </Macroline>
+        <Macroline index="7">
+            <text>Assign Top At Exec 1.201</text>
+        </Macroline>
+        <Macroline index="8">
+            <text>Import "cueplayer_test_timecode.xml" At Timecode 1 /nc</text>
+        </Macroline>
+        <Macroline index="9">
+            <text>Label Timecode 1 "CuePlayer_TC"</text>
+        </Macroline>
+    </Macro>
+</MA>

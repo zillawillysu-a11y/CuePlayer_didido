@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 ConsoleFamily = Literal["ma2", "ma3"]
+ExportMode = Literal["full", "timecode_only"]
 
 
 _SAFE_RE = re.compile(r"[^A-Za-z0-9 _.-]+")
@@ -24,6 +25,31 @@ def sanitize_ma_name(name: str, *, fallback: str) -> str:
     cleaned = _SPACE_RE.sub(" ", cleaned)
     cleaned = cleaned.strip(" ._-+")
     return cleaned if cleaned else fallback
+
+
+def parse_page_executor(value: str) -> tuple[int, int]:
+    """Parse '1.101' into (page, executor)."""
+    text = value.strip()
+    if "." in text:
+        page_s, exec_s = text.split(".", 1)
+        return int(page_s), int(exec_s)
+    return 1, int(text)
+
+
+def export_event_time_seconds(mark_time_seconds: float, profile: MaExportProfile) -> float:
+    """
+    Convert a CuePlayer mark time into MA Timecode event time.
+
+    Applies song start offset plus LTC/console latency compensation.
+    Compensation is typically negative (e.g. -0.10 / -0.20) so events fire
+    earlier and land on beat when MA is triggered by LTC.
+    """
+    t = (
+        mark_time_seconds
+        + profile.start_offset_seconds
+        + profile.ltc_latency_compensation_seconds
+    )
+    return max(0.0, t)
 
 
 @dataclass
@@ -64,8 +90,19 @@ class MaExportProfile:
     timecode_slot: int = 1
     fps: float = 30.0
     start_offset_seconds: float = 0.0
+    # Negative = fire earlier (CuePoints "Global Latency Negative Offset").
+    # Typical live LTC→MA lag: -0.10 ~ -0.20.
+    ltc_latency_compensation_seconds: float = 0.0
     data_pool: str = "Default"  # MA3
     button_follow_seconds: float = 0.1  # hidden internal default
+    export_mode: ExportMode = "full"
+    main_sequence_name: str = "CuePlayer_Main"
+    button_sequence_name: str = "CuePlayer_Button"
+    timecode_name: str = "CuePlayer_TC"
+    # Filenames used by macros/plugins when importing from library folders.
+    main_sequence_file: str = "cueplayer_test_main.xml"
+    button_sequence_file: str = "cueplayer_test_button.xml"
+    timecode_file: str = "cueplayer_test_timecode.xml"
 
 
 @dataclass

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GMA3 DataVersion="2.4.2.2">
+    <Macro Name="CuePlayer Export" Guid="F5 29 49 46 2E 83 4E DB A3 F1 FE 3A 34 2C FD C1">
+        <MacroLine Name="Line 1" Command="Import Sequence 1 &quot;cueplayer_test_main.xml&quot;" Enabled="Yes" />
+        <MacroLine Name="Line 2" Command="Label Sequence 1 &quot;CuePlayer_Main&quot;" Enabled="Yes" />
+        <MacroLine Name="Line 3" Command="Assign Sequence 1 At Page 1.101" Enabled="Yes" />
+        <MacroLine Name="Line 4" Command="Assign Go+ At Page 1.101" Enabled="Yes" />
+        <MacroLine Name="Line 5" Command="Import Sequence 2 &quot;cueplayer_test_button.xml&quot;" Enabled="Yes" />
+        <MacroLine Name="Line 6" Command="Label Sequence 2 &quot;CuePlayer_Button&quot;" Enabled="Yes" />
+        <MacroLine Name="Line 7" Command="Assign Sequence 2 At Page 1.201" Enabled="Yes" />
+        <MacroLine Name="Line 8" Command="Assign Top At Page 1.201" Enabled="Yes" />
+        <MacroLine Name="Line 9" Command="Import Timecode 1 &quot;cueplayer_test_timecode.xml&quot;" Enabled="Yes" />
+        <MacroLine Name="Line 10" Command="Label Timecode 1 &quot;CuePlayer_TC&quot;" Enabled="Yes" />
+    </Macro>
+</GMA3>
