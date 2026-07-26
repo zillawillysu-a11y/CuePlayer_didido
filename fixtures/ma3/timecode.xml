@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<GMA3 DataVersion="2.4.2.2">
+    <Timecode Name="CuePlayer_TC" Guid="6C 10 52 5D E8 C5 10 0A E6 CE DD 10 10 2A BF F4" Cursor="8.50" Duration="8.50" LoopCount="0" TCSlot="-1" AutoStop="No" SwitchOff="Keep Playbacks" Goto="as Go" AssertPrevEvents="No" TimeDisplayFormat="Default" FrameReadout="Default" RestartOption="Continue">
+        <TrackGroup Play="" Rec="">
+            <MarkerTrack Name="Marker" Guid="6C 10 52 5D 2D E8 10 0A 53 40 B4 15 56 C4 AD F4"/>
+            <Track Name="CuePlayer_Main" Guid="6C 10 52 5D F5 FD 10 0A 0C DB AC 1A 6B C4 AD F4" Target="ShowData.DataPools.Default.Sequences.CuePlayer_Main" Play="" Rec="">
+                <TimeRange Guid="6C 10 52 5D 14 B1 10 0A F9 52 9B 1F 6B C4 AD F4" Duration="To End" Play="" Rec="">
+                    <CmdSubTrack>
+                        <CmdEvent Name="Go+" Time="2.983" CueDestination="Cue 1">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.0" ExecToken="Go+" ValCueDestination="0.5.0.1000"/>
+                        </CmdEvent>
+                        <CmdEvent Name="Go+" Time="4.767" CueDestination="Cue 2">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.0" ExecToken="Go+" ValCueDestination="0.5.0.2000"/>
+                        </CmdEvent>
+                        <CmdEvent Name="Go+" Time="6.733" CueDestination="Cue 3">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.0" ExecToken="Go+" ValCueDestination="0.5.0.3000"/>
+                        </CmdEvent>
+                    </CmdSubTrack>
+                </TimeRange>
+            </Track>
+            <Track Name="CuePlayer_Button" Guid="6C 10 52 5D D0 91 10 0A AE 21 64 28 F6 6B FC EC" Target="ShowData.DataPools.Default.Sequences.CuePlayer_Button" Play="" Rec="">
+                <TimeRange Guid="6C 10 52 5D 4D C1 10 0A 1B BB 5C 2D F4 6B FC EC" Duration="To End" Play="" Rec="">
+                    <CmdSubTrack>
+                        <CmdEvent Name="Top" Time="3.900" CueDestination="Cue 1">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="1" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.1" ExecToken="Top" ValCueDestination="0.5.1.1000"/>
+                        </CmdEvent>
+                        <CmdEvent Name="Top" Time="5.450" CueDestination="Cue 1">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="1" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.1" ExecToken="Top" ValCueDestination="0.5.1.1000"/>
+                        </CmdEvent>
+                        <CmdEvent Name="Top" Time="7.367" CueDestination="Cue 1">
+                            <RealtimeCmd Type="Key" Source="Original" UserProfile="0" Environment="0" User="1" Status="On" IsRealtime="1" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="13.13.0.5.1" ExecToken="Top" ValCueDestination="0.5.1.1000"/>
+                        </CmdEvent>
+                    </CmdSubTrack>
+                </TimeRange>
+            </Track>
+        </TrackGroup>
+    </Timecode>
+</GMA3>

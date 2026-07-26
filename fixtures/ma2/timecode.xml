@@ -1,0 +1,53 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="styles/timecode@sheet.xsl"?>
+<MA xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.malighting.de/grandma2/xml/MA" xsi:schemaLocation="http://schemas.malighting.de/grandma2/xml/MA http://schemas.malighting.de/grandma2/xml/3.9.61/MA.xsd" major_vers="3" minor_vers="9" stream_vers="61">
+	<Info datetime="2026-07-26T15:07:00" showfile="new show 2026-07-26" />
+	<Timecode index="0" name="CuePlayer_TC" lenght="221" stop_status="Rewind" no_switch_off="true" no_status_call="true">
+		<Track index="0" active="true" expanded="true">
+			<Object name="CuePlayer_Main 1.1">
+				<No>30</No>
+				<No>1</No>
+				<No>1</No>
+				<No>1</No>
+			</Object>
+			<SubTrack index="0">
+				<Event index="0" time="46" command="Go" pressed="true" step="1">
+					<Cue name="Cue 1">
+						<No>1</No>
+						<No>1</No>
+						<No>1</No>
+					</Cue>
+				</Event>
+				<Event index="1" time="77" command="Go" pressed="true" step="2">
+					<Cue name="Cue 2">
+						<No>1</No>
+						<No>1</No>
+						<No>2</No>
+					</Cue>
+				</Event>
+				<Event index="2" time="126" command="Go" pressed="true" step="3">
+					<Cue name="Cue 3">
+						<No>1</No>
+						<No>1</No>
+						<No>3</No>
+					</Cue>
+				</Event>
+			</SubTrack>
+			<SubTrack index="1" fader_command="Master" />
+		</Track>
+		<Track index="1" active="true" expanded="true">
+			<Object name="CuePlayer_Button 1.2">
+				<No>30</No>
+				<No>1</No>
+				<No>1</No>
+				<No>2</No>
+			</Object>
+			<SubTrack index="0">
+				<Event index="0" time="32" command="Top" pressed="true" step="4294967295" />
+				<Event index="1" time="86" command="Top" pressed="true" step="4294967295" />
+				<Event index="2" time="139" command="Top" pressed="true" step="4294967295" />
+			</SubTrack>
+			<SubTrack index="1" fader_command="Master" />
+		</Track>
+	</Timecode>
+</MA>

@@ -9,7 +9,7 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 - One audio output device with free multi-channel routing.
 - Do not assume LTC is always Left or Right.
 - Video clips share the audio sample clock; no second independent video player for OBS/NDI output.
-- Main marks export as precise Goto cues; Top Button marks reuse one 2-cue self-release sequence.
+- Main marks export as Go+ with explicit CueDestination (user habit; not bare Go+, not Goto-by-default); Top Button marks reuse one 2-cue self-release sequence.
 - Never write Chinese into MA XML labels; keep Display Name and MA Export Name separate.
 - Do not shrink P0 scope without asking the user.
 

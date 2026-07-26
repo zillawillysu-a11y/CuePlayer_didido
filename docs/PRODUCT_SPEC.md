@@ -83,7 +83,8 @@
   - 產生 Sequence XML 與 Timecode XML。
   - Main Marks：
     - 每個 Mark 產生下一個 Sequence Cue。
-    - Timecode Event 使用精確指定 Cue 的 Goto，而非只使用 Go+，確保從中段播放仍能到正確 Cue。
+    - Timecode Event 使用 **Go+ 並指定目標 Cue**（CueDestination），符合燈光編程實務習慣。
+    - 不是「裸 Go+」；每個 Main Mark 必須對應到明確 Cue，中段進 Timecode 仍能到正確 Cue。
   - Top Button Marks：
     - 每個 Button Track 只產生一條固定的兩 Cue、自我 Release Sequence。
     - Cue 2 內部使用 Follow Cue 1 + 0.1 秒並 Release。
@@ -213,7 +214,7 @@
 - 不把 Video 當正式演出 media server；它是預編程參考。
 - 第一版不做 Crossfade、多層影片合成或 Resolume 類功能。
 - Button Mark 不可每打一個就增加一個 Sequence Cue；它們重複 Top 同一條兩 Cue 自 Release Sequence。
-- Main Timecode Event 不只用 Go+；使用精確 Cue Goto。
+- Main Timecode Event 不使用裸 Go+；必須是 Go+ + 指定 CueDestination（使用者習慣；不以 Goto 為預設）。
 - `Follow 0.1s` 不顯示在主要介面。
 - 程式內不可禁止中文、複製英文檔或要求使用者改英文路徑。
 - MA Export 不可直接輸出中文。
@@ -230,7 +231,7 @@
 - LTC striped／generated 兩種流程已確認。
 - Video Timeline、黑場及 OBS Clean Output 流程已確認。
 - `1–9 Manager` 與 Main／Top Button 語意已確認。
-- Main Goto、Top Button 兩 Cue self-release 匯出行為已確認。
+- Main 使用 Go+ + CueDestination、Top Button 兩 Cue self-release 匯出行為已確認（以使用者 golden XML 為準）。
 - 中文支援與 MA 英文輸出規則已確認。
 - 已研究 CuePoints 官方文件，確認可借鑑的概念：
   - CuePoint Types／Template
@@ -297,7 +298,7 @@
    - 在 MA2 3.9.61.5 與 MA3 2.3.2 各手動建立：
      - 一條有 2–3 個空 Cue 的 Main Sequence。
      - 一條兩 Cue、Follow 0.1、自 Release、Executor Key=Top 的 Button Sequence。
-     - 一個含 Main Goto 與重複 Top Events 的 Timecode Show。
+     - 一個含 Main Go+(指定 Cue) 與重複 Top Events 的 Timecode Show。
    - 分別 Export XML 放入 `fixtures/ma2/`、`fixtures/ma3/`。
    - 先寫 parser／comparison tests，再開始產生 XML。
 

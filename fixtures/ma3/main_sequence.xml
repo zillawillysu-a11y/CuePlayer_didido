@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<GMA3 DataVersion="2.4.2.2">
+    <Sequence Name="CuePlayer_Main" Guid="6C 10 52 5D D6 9B 10 0A AC 4C 1B 94 1E 53 BA FD" AutoStart="Yes" AutoStop="Yes" AutoFix="No" AutoStomp="No" SoftLTP="Yes" XFadeReload="No" SwapProtect="No" KillProtect="No" UseExecutorTime="Yes" OffwhenOverridden="Yes" SequMIB="Enabled" AutoPrePos="Yes" WrapAround="Yes" MasterGoMode="None" SpeedfromRate="No" Tracking="Yes" IncludeLinkLastGo="Yes" RateScale="One" SpeedScale="One" PreferCueAppearance="No" ExecutorDisplayMode="Data and&#xD;Appearance" Action="Pool Default">
+        <Cue Name="OffCue" Release="Yes" Assert="Assert" AllowDuplicates="" TrigType="">
+            <Part Guid="6C 10 52 5D CA C9 10 0A D2 59 EA 9E 1F 53 BA FD" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default"/>
+        </Cue>
+        <Cue Name="CueZero" No="  0">
+            <Part Guid="6C 10 52 5D D9 9C 10 0A 78 6A B9 88 1A 53 BA FD" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default"/>
+        </Cue>
+        <Cue No="  1" AllowDuplicates="">
+            <Part Guid="6C 10 52 5D A6 9D 10 0A 1E 00 6B 11 C8 99 5A FE" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default" Sync="" Morph=""/>
+        </Cue>
+        <Cue No="  2" AllowDuplicates="">
+            <Part Guid="6C 10 52 5D FD C5 10 0A CB 9B 43 16 9A 99 5A FE" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default" Sync="" Morph=""/>
+        </Cue>
+        <Cue No="  3" AllowDuplicates="">
+            <Part Guid="6C 10 52 5D 28 8F 10 0A 84 12 3A 1B A6 99 5A FE" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default" Sync="" Morph=""/>
+        </Cue>
+    </Sequence>
+</GMA3>

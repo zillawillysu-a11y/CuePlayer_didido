@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<GMA3 DataVersion="2.4.2.2">
+    <Sequence Name="CuePlayer_Button" Guid="6C 10 52 5D 0B BE 10 0A 6C 47 7E 22 55 DC C3 F8" AutoStart="Yes" AutoStop="Yes" AutoFix="No" AutoStomp="No" SoftLTP="Yes" XFadeReload="No" SwapProtect="No" KillProtect="No" UseExecutorTime="Yes" OffwhenOverridden="Yes" SequMIB="Enabled" AutoPrePos="No" WrapAround="No" MasterGoMode="None" SpeedfromRate="No" Tracking="Yes" IncludeLinkLastGo="Yes" RateScale="One" SpeedScale="One" PreferCueAppearance="No" ExecutorDisplayMode="Data and&#xD;Appearance" Action="Pool Default">
+        <Cue Name="OffCue" Release="Yes" Assert="Assert" AllowDuplicates="" TrigType="Follow">
+            <Part Guid="6C 10 52 5D 8C B9 10 0A 92 51 4D 2C 57 DC C3 F8" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default"/>
+        </Cue>
+        <Cue Name="CueZero" No="  0">
+            <Part Guid="6C 10 52 5D 9F F9 10 0A 38 62 1C D6 54 DC C3 F8" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default"/>
+        </Cue>
+        <Cue No="  1" AllowDuplicates="">
+            <Part Guid="6C 10 52 5D DF EA 10 0A AE 7C E3 C0 54 DC C3 F8" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default" Sync="" Morph=""/>
+        </Cue>
+        <Cue No="  2" AllowDuplicates="" TrigType="Follow" TrigTime="0.100">
+            <Part Guid="6C 10 52 5D F5 EC 10 0A D4 89 B2 CA 55 DC C3 F8" AlignRangeX="No" AlignRangeY="No" AlignRangeZ="No" PreserveGridPositions="No" MAgic="No" Mode="0" Action="Pool Default" Sync="" Morph="" CueInFade="0.500"/>
+        </Cue>
+    </Sequence>
+</GMA3>

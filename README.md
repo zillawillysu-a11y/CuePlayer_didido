@@ -47,3 +47,8 @@ pytest
 3. Multiple VJ clips / loops with audio-master sync
 4. Better multi-version media replace / relink for rehearsals
 5. Optional native NDI later; cue accuracy and MA export come first
+
+## MA export next step
+
+At the company machine, export golden XML from grandMA2 3.9.61.5 and grandMA3 2.3.2.
+Follow `docs/spikes/MA_GOLDEN_XML.md`, then place files under `fixtures/ma2/` and `fixtures/ma3/`.
