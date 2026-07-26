@@ -1,0 +1,27 @@
+# CuePlayer — Agent Guide
+
+Read `docs/PRODUCT_SPEC.md` before implementing features.
+
+## Non-negotiables
+
+- Full Unicode / Chinese support for project names, folders, and media paths from day one.
+- Multi-audio version comparison (not replace-only).
+- One audio output device with free multi-channel routing.
+- Do not assume LTC is always Left or Right.
+- Video clips share the audio sample clock; no second independent video player for OBS/NDI output.
+- Main marks export as precise Goto cues; Top Button marks reuse one 2-cue self-release sequence.
+- Never write Chinese into MA XML labels; keep Display Name and MA Export Name separate.
+- Do not shrink P0 scope without asking the user.
+
+## Milestone order
+
+1. Skeleton + Unicode persistence tests + blank window
+2. Audio / media routing spike (Focusrite / sounddevice)
+3. MA2 / MA3 golden XML fixtures + exporters
+4. Timeline UI, marks, video clips
+5. Optional NDI (only after cue accuracy is solid)
+
+## Architecture
+
+UI / Domain / Playback Engine / Media / Exporters / Persistence stay separated.
+Playback Engine is the only playback clock source.

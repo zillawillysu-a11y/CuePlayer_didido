@@ -1,0 +1,106 @@
+{
+  "ok": true,
+  "message": "路由 spike 成功（VB-Audio／多聲道裝置（家用驗證））：裝置 [7] CABLE In 16ch (VB-Audio Virtual (MME, 16 ch)。 R→CH1+CH2、L→CH3；seek/stop 已跑過。",
+  "details": {
+    "fixture": "C:\\Users\\willy\\Projects\\CuePlayer\\fixtures\\media\\中文測試\\LTC左_音樂右_測試.wav",
+    "chinese_path_ok": true,
+    "device_count": 61,
+    "multichannel_outputs": [
+      {
+        "index": 6,
+        "name": "CABLE Input (VB-Audio Virtual C",
+        "max_input_channels": 0,
+        "max_output_channels": 16,
+        "default_samplerate": 44100.0,
+        "hostapi": 0,
+        "hostapi_name": "MME"
+      },
+      {
+        "index": 7,
+        "name": "CABLE In 16ch (VB-Audio Virtual",
+        "max_input_channels": 0,
+        "max_output_channels": 16,
+        "default_samplerate": 44100.0,
+        "hostapi": 0,
+        "hostapi_name": "MME"
+      },
+      {
+        "index": 15,
+        "name": "CABLE Input (VB-Audio Virtual Cable)",
+        "max_input_channels": 0,
+        "max_output_channels": 16,
+        "default_samplerate": 44100.0,
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound"
+      },
+      {
+        "index": 16,
+        "name": "CABLE In 16ch (VB-Audio Virtual Cable)",
+        "max_input_channels": 0,
+        "max_output_channels": 16,
+        "default_samplerate": 44100.0,
+        "hostapi": 1,
+        "hostapi_name": "Windows DirectSound"
+      },
+      {
+        "index": 27,
+        "name": "Output (VB-Audio Point)",
+        "max_input_channels": 0,
+        "max_output_channels": 16,
+        "default_samplerate": 44100.0,
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS"
+      },
+      {
+        "index": 51,
+        "name": "Speakers (Steam Streaming Speakers Wave)",
+        "max_input_channels": 0,
+        "max_output_channels": 8,
+        "default_samplerate": 44100.0,
+        "hostapi": 3,
+        "hostapi_name": "Windows WDM-KS"
+      }
+    ],
+    "focusrite_detected": [],
+    "chosen_device": {
+      "index": 7,
+      "name": "CABLE In 16ch (VB-Audio Virtual",
+      "max_input_channels": 0,
+      "max_output_channels": 16,
+      "default_samplerate": 44100.0,
+      "hostapi": 0,
+      "hostapi_name": "MME"
+    },
+    "hostapis": [
+      {
+        "index": 0,
+        "name": "MME"
+      },
+      {
+        "index": 1,
+        "name": "Windows DirectSound"
+      },
+      {
+        "index": 2,
+        "name": "Windows WASAPI"
+      },
+      {
+        "index": 3,
+        "name": "Windows WDM-KS"
+      }
+    ],
+    "route": {
+      "L_LTC_to": [
+        3
+      ],
+      "R_Music_to": [
+        1,
+        2
+      ]
+    },
+    "seek_exercised": true,
+    "stop_exercised": true,
+    "used_focusrite": false,
+    "note": "家用電腦沒有 Focusrite 不算失敗：優先用 Focusrite；否則用 VB-Audio 等多聲道裝置驗證路由矩陣。公司有 Focusrite 時用同一支 spike 複測，並在 Focusrite Control 將 Playback 1-4 直通 Output 1-4。"
+  }
+}
