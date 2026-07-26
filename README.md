@@ -34,6 +34,14 @@ cueplayer
 python -m cueplayer.app
 ```
 
+操作：
+- `Space` Play / Pause（有音訊時會真的出聲）
+- `1`–`9` 在目前 playhead 打點
+- 左／右鍵微移 0.1 秒
+- 點擊／拖曳時間軸 Seek
+- 滾輪縮放時間軸
+- **開啟音訊…** 載入 WAV/FLAC/OGG/MP3 等，主畫面顯示波形
+
 ## Test
 
 ```powershell

@@ -1,8 +1,10 @@
-"""Audio channel routing matrix helpers for the playback spike."""
+"""Audio channel routing matrix helpers."""
 
 from __future__ import annotations
 
 import numpy as np
+
+from cueplayer.domain.models import default_channel_routing
 
 
 def apply_routing(
@@ -54,3 +56,20 @@ def warn_if_outputs_insufficient(needed: list[int], available: int) -> str | Non
         f"Output device only has {available} channel(s); "
         f"requested channel(s) {human} are unavailable."
     )
+
+
+def default_route_dict(output_channels: int) -> dict[int, list[int]]:
+    """
+    Default source→device map for product UI.
+
+    Sources: 0=Music L, 1=Music R, 2=Generated LTC.
+    """
+    left, right, ltc = default_channel_routing(output_channels)
+    route: dict[int, list[int]] = {}
+    if left:
+        route[0] = left
+    if right:
+        route[1] = right
+    if ltc:
+        route[2] = ltc
+    return route

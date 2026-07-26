@@ -47,4 +47,10 @@ def write_xml(
 
 
 def seconds_to_ma2_frames(seconds: float, fps: float) -> int:
+    """Legacy frame count (when Timecode TimeUnit is N FPS). Prefer centiseconds."""
     return max(0, int(round(seconds * fps)))
+
+
+def seconds_to_ma2_centiseconds(seconds: float) -> int:
+    """MA2 Timecode event / length unit when TimeUnit is ``1/100 Seconds``."""
+    return max(0, int(round(float(seconds) * 100.0)))

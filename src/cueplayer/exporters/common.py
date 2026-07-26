@@ -12,44 +12,199 @@ ExportMode = Literal["full", "timecode_only"]
 
 _SAFE_RE = re.compile(r"[^A-Za-z0-9 _.-]+")
 _SPACE_RE = re.compile(r"\s+")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def chinese_to_pinyin_ascii(text: str) -> str:
+    """
+    Replace Chinese runs with tone-less pinyin (ASCII).
+
+    Example: 「主歌 Verse」→「ZhuGe Verse」
+    """
+    if not text or not _CJK_RE.search(text):
+        return text
+    from pypinyin import Style, lazy_pinyin
+
+    def _repl(match: re.Match[str]) -> str:
+        syllables = lazy_pinyin(match.group(0), style=Style.NORMAL)
+        return "".join(s.capitalize() for s in syllables if s)
+
+    return _CJK_RE.sub(_repl, text)
 
 
 def sanitize_ma_name(name: str, *, fallback: str) -> str:
     """
     Produce an MA-safe ASCII label.
 
-    Chinese / punctuation is stripped. Empty results fall back to the provided id.
-    Never invent translated English here — callers choose Cue ID / manual / later providers.
+    Chinese is converted to pinyin first, then punctuation stripped.
+    Spaces become underscores (MA2 Import / Timecode Object break on spaces).
+    Empty results fall back to the provided id.
     """
-    cleaned = _SAFE_RE.sub("", name).strip()
-    cleaned = _SPACE_RE.sub(" ", cleaned)
-    cleaned = cleaned.strip(" ._-+")
+    converted = chinese_to_pinyin_ascii(name)
+    cleaned = _SAFE_RE.sub("", converted).strip()
+    cleaned = _SPACE_RE.sub("_", cleaned)
+    cleaned = cleaned.strip("._-+")
     return cleaned if cleaned else fallback
 
 
+def to_ma_label(text: str, *, fallback: str = "") -> str:
+    """Cue / object label: Chinese→pinyin, then MA-safe ASCII (may be empty)."""
+    return sanitize_ma_name(text, fallback=fallback)
+
+
 def parse_page_executor(value: str) -> tuple[int, int]:
-    """Parse '1.101' into (page, executor)."""
-    text = value.strip()
+    """Parse '1.101' into (page, executor). Incomplete values use safe defaults."""
+    text = (value or "").strip()
+    if not text:
+        return 1, 101
     if "." in text:
         page_s, exec_s = text.split(".", 1)
-        return int(page_s), int(exec_s)
-    return 1, int(text)
+        page_s, exec_s = page_s.strip(), exec_s.strip()
+        page = int(page_s) if page_s.isdigit() else 1
+        # While typing "1." exec is empty — don't crash the UI.
+        executor = int(exec_s) if exec_s.isdigit() else 0
+        return page, executor
+    if text.isdigit():
+        return 1, int(text)
+    return 1, 101
 
 
 def export_event_time_seconds(mark_time_seconds: float, profile: MaExportProfile) -> float:
     """
-    Convert a CuePlayer mark time into MA Timecode event time.
+    Convert a CuePlayer mark time into MA Timecode *timeline* event time.
 
-    Applies song start offset plus LTC/console latency compensation.
-    Compensation is typically negative (e.g. -0.10 / -0.20) so events fire
-    earlier and land on beat when MA is triggered by LTC.
+    Events stay song-relative (like CuePoints). Song start LTC is applied as
+    Timecode Offset on the pool object — not baked into each event.
+
+    Only LTC/console latency compensation is applied here (typically negative).
     """
-    t = (
-        mark_time_seconds
-        + profile.start_offset_seconds
-        + profile.ltc_latency_compensation_seconds
-    )
+    t = mark_time_seconds + profile.ltc_latency_compensation_seconds
     return max(0.0, t)
+
+
+def format_ma3_offset_seconds(seconds: float) -> str:
+    """
+    MA3 Timecode «Offset TC Slot» / OffsetTCSlot value.
+
+    Matches the settings calculator style (e.g. 1h00m00.00), not baked event time.
+    """
+    s = max(0.0, float(seconds))
+    hours = int(s // 3600)
+    rem = s - hours * 3600
+    mins = int(rem // 60)
+    secs = rem - mins * 60
+    if hours > 0 or mins > 0:
+        return f"{hours}h{mins:02d}m{secs:05.2f}"
+    return f"{secs:.2f}"
+
+
+def format_ma2_offset_frames(seconds: float, fps: float) -> str:
+    """Deprecated: old frame-based XML offset. Prefer Assign /Offset=… time."""
+    from cueplayer.exporters.xml_write import seconds_to_ma2_frames
+
+    return str(max(0, seconds_to_ma2_frames(max(0.0, float(seconds)), fps)))
+
+
+def format_ma2_offset_assign(seconds: float) -> str:
+    """
+    MA2 Assign Timecode /Offset=… value (settings Offset field).
+
+    Official help accepts time (0s … 255h…). Prefer compact hour form when whole hours.
+    """
+    s = max(0.0, float(seconds))
+    if abs(s - round(s / 3600.0) * 3600.0) < 1e-6 and s >= 3600.0:
+        return f"{int(round(s / 3600.0))}h"
+    if abs(s - round(s)) < 1e-6:
+        return f"{int(round(s))}s"
+    return f"{s:.2f}s"
+
+
+def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
+    """
+    Post-Import MA2 Timecode options (match common CuePoints / show-setup prefs).
+
+    Screenshot target:
+      Slot=1 (or project Timecode Slot) · Runs=Endless Repeat
+      Switch Off=Keep Playbacks · Status Call=Off
+      When Ending=Stop · When Stopping=Rewind · AutoStart=Off
+      TimeUnit=1/100 Seconds (event times / lenght are centiseconds)
+      Record Mode=Go (Go Cue X, not Goto Cue X).
+
+    Song-start LTC → ``/Offset=…``.
+
+    Note: do **not** put ``/TimeUnit="1/100 Seconds"`` in a slash-option string —
+    MA parses the ``/100`` as another option. Use numeric ``/TimeUnit=0``
+    (0 = 1/100 Seconds per MA help enum order). XML ``frame_format`` only
+    accepts ``24/25/30 FPS`` or empty (empty ≈ hundredths); omit it.
+    """
+    tc = int(plan_profile.timecode_pool)
+    slot = int(plan_profile.timecode_slot)
+    # Help: Intern=-1, Link Selected=0, fixed slots=1..8. Default / UI = 1.
+    if slot < 0:
+        slot_token = "-1"
+    elif slot == 0:
+        slot_token = "0"
+    else:
+        slot_token = str(max(1, min(8, slot)))
+    offset = (
+        format_ma2_offset_assign(plan_profile.start_offset_seconds)
+        if plan_profile.start_offset_seconds > 1e-6
+        else "0s"
+    )
+    return [
+        (
+            f'Assign Timecode {tc} /Slot={slot_token} '
+            f'/Runs="Endless Repeat" '
+            f'/SwitchOff="Keep Playbacks" /StatusCall="Off" '
+            f'/WhenEnding="Stop" /WhenStopping="Rewind" '
+            f'/AutoStart="Off" /Offset={offset}'
+        ),
+        # Separate cmds: slash / enum values that break combined Assign lines.
+        f"Assign Timecode {tc} /TimeUnit=0",
+        f'Assign Timecode {tc} /RecordMode="Go"',
+    ]
+
+
+def ma_import_filename(stem: str, *, suffix: str = ".xml") -> str:
+    """
+    Basename for MA Import \"file.xml\" commands.
+
+    Spaces break some Import paths; keep ASCII via sanitize, then underscore.
+    """
+    safe = sanitize_ma_name(stem, fallback="cueplayer").replace(" ", "_")
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    return f"{safe}{suffix}"
+
+
+def ma3_timecode_set_property_commands(plan_profile: MaExportProfile) -> list[str]:
+    """
+    MA3 Timecode settings from the user's preferred editor layout.
+
+    Offset → property OffsetTCSlot («Offset TC Slot» in UI).
+    Playback: Auto Start/Stop On, Loop Off, Keep Playbacks, Assert No, Restart Continue;
+    Record Manual Events / as Go; Display 10d11h23m45 + Seconds.
+    """
+    tc = plan_profile.timecode_pool
+    slot = int(plan_profile.timecode_slot)
+    # -1 = none/internal in older XML; positive = TCSlot N (user screenshot uses 1).
+    tc_slot_value = str(slot) if slot >= 0 else "-1"
+    offset = format_ma3_offset_seconds(plan_profile.start_offset_seconds)
+    return [
+        f'Set Timecode {tc} Property "TCSlot" "{tc_slot_value}"',
+        # Official property name (forum / Lua): OffsetTCSlot — NOT "Offset".
+        f'Set Timecode {tc} Property "OffsetTCSlot" "{offset}"',
+        f'Set Timecode {tc} Property "AutoStart" "Yes"',
+        f'Set Timecode {tc} Property "AutoStop" "Yes"',
+        f'Set Timecode {tc} Property "LoopMode" "Off"',
+        f'Set Timecode {tc} Property "SwitchOff" "Keep Playbacks"',
+        f'Set Timecode {tc} Property "AssertPrevEvents" "No"',
+        f'Set Timecode {tc} Property "RestartOption" "Continue"',
+        f'Set Timecode {tc} Property "Goto" "as Go"',
+        f'Set Timecode {tc} Property "Playback and Record" "Manual Events"',
+        f'Set Timecode {tc} Property "TimeDisplayFormat" "10d11h23m45"',
+        f'Set Timecode {tc} Property "FrameReadout" "Seconds"',
+    ]
 
 
 @dataclass
@@ -64,6 +219,30 @@ class ExportCue:
             return sanitize_ma_name(self.ma_export_name, fallback=f"Cue{self.cue_number:g}")
         return sanitize_ma_name(self.display_name, fallback=f"Cue{self.cue_number:g}")
 
+    def cue_name_for_export(self) -> str | None:
+        """
+        Sequence Cue label from mark Note / MA name.
+
+        Returns None when there is no real note (leave cue numbered only).
+        Chinese notes become pinyin (MA Label rejects / drops CJK).
+        """
+        if self.ma_export_name and self.ma_export_name.strip():
+            cleaned = sanitize_ma_name(self.ma_export_name, fallback="")
+            return cleaned or None
+        raw = (self.display_name or "").strip()
+        if not raw:
+            return None
+        # plan_from_song defaults empty notes to "Cue N" — treat as unnamed.
+        cue_no = int(self.cue_number)
+        if raw.casefold() in {f"cue {cue_no}", f"cue{cue_no}"}:
+            return None
+        for ch in '\\"$&*?,.;^{|}~':
+            raw = raw.replace(ch, "")
+        raw = " ".join(raw.split())
+        if not raw:
+            return None
+        return sanitize_ma_name(raw, fallback="") or None
+
 
 @dataclass
 class ExportButtonLane:
@@ -72,6 +251,10 @@ class ExportButtonLane:
     ma_export_name: str | None = None
     executor: str = "1.201"
     mark_times_seconds: list[float] = field(default_factory=list)
+    # Pool index / file for this button's own Sequence (flash template).
+    sequence_pool: int = 0
+    sequence_name: str = ""
+    sequence_file: str = ""
 
     def resolved_ma_name(self) -> str:
         fallback = f"Button{self.lane_index}"
@@ -86,6 +269,8 @@ class MaExportProfile:
     sequence_pool_start: int = 1
     timecode_pool: int = 1
     page: int = 1
+    # English name applied via Label Page N "…" (CuePoints-style page-per-song).
+    page_name: str = ""
     main_executor: str = "1.101"
     timecode_slot: int = 1
     fps: float = 30.0

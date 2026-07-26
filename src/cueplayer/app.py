@@ -9,10 +9,18 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     from cueplayer.ui.main_window import MainWindow
+    from cueplayer.ui.theme import apply_dark_palette, build_stylesheet
 
     app = QApplication(sys.argv)
     app.setApplicationName("CuePlayer")
     app.setOrganizationName("CuePlayer")
+    # Single-main-window app: exit when the last visible top-level closes.
+    # MainWindow.closeEvent() also tears down Clean Output and calls quit()
+    # so a hide-on-X tool window cannot keep the process alive.
+    app.setQuitOnLastWindowClosed(True)
+    app.setStyle("Fusion")
+    apply_dark_palette(app)
+    app.setStyleSheet(build_stylesheet())
 
     window = MainWindow()
     window.show()

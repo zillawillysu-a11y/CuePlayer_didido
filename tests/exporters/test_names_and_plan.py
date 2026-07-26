@@ -14,9 +14,13 @@ from cueplayer.exporters.ma3 import Ma3Exporter
 
 
 def test_sanitize_strips_chinese_and_falls_back() -> None:
-    assert sanitize_ma_name("主歌 Verse", fallback="Cue1") == "Verse"
-    assert sanitize_ma_name("第一首歌", fallback="Cue1") == "Cue1"
+    # Chinese → pinyin (kept as ASCII label); spaces → underscores for MA2.
+    assert sanitize_ma_name("主歌 Verse", fallback="Cue1") == "ZhuGe_Verse"
+    assert sanitize_ma_name("第一首歌", fallback="Cue1") == "DiYiShouGe"
     assert sanitize_ma_name("  Hook-1  ", fallback="Cue1") == "Hook-1"
+    assert sanitize_ma_name("Mark 4", fallback="B") == "Mark_4"
+    # No CJK / no ASCII left after strip → fallback
+    assert sanitize_ma_name("!!!", fallback="Cue1") == "Cue1"
 
 
 def test_manual_ma_export_name_wins() -> None:
@@ -27,6 +31,14 @@ def test_manual_ma_export_name_wins() -> None:
         time_seconds=12.0,
     )
     assert cue.resolved_ma_name() == "Chorus"
+    assert cue.cue_name_for_export() == "Chorus"
+
+
+def test_cue_name_for_export_uses_note() -> None:
+    assert ExportCue(1, "Verse", time_seconds=1.0).cue_name_for_export() == "Verse"
+    assert ExportCue(2, "主歌", time_seconds=2.0).cue_name_for_export() == "ZhuGe"
+    assert ExportCue(3, "Cue 3", time_seconds=3.0).cue_name_for_export() is None
+    assert ExportCue(4, "", time_seconds=4.0).cue_name_for_export() is None
 
 
 def test_exporter_summaries_include_target_versions() -> None:

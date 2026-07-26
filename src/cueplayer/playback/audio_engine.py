@@ -1,0 +1,855 @@
+"""Audio playback engine (sample clock) for Timeline UI."""
+
+from __future__ import annotations
+
+import threading
+
+import numpy as np
+import sounddevice as sd
+from PySide6.QtCore import QObject, QTimer, Signal
+
+from cueplayer.domain.models import AudioOutputSettings, Song, default_channel_routing
+from cueplayer.media.audio_loader import AudioBuffer
+from cueplayer.playback.devices import (
+    build_source_route,
+    find_output_device,
+    list_output_devices,
+    required_output_channels,
+    resolve_output_samplerate,
+)
+from cueplayer.playback.mtc_output import MtcOutput
+from cueplayer.playback.resample import resample_linear
+from cueplayer.playback.video_audio_mixer import VideoAudioMixer
+from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
+from cueplayer.timecode.ltc import generate_ltc_pcm
+
+
+class AudioEngine(QObject):
+    """
+    Plays a loaded AudioBuffer and reports playhead from sample position.
+
+    sync_offset_seconds is the single calibration knob:
+      audible / UI / mark time = write-head − sync_offset
+    Run Sync Calibration (hear click → tap) to measure it on this machine.
+
+    Master volume applies to music (and calib clicks) only — never to LTC.
+    """
+
+    position_changed = Signal(float)
+    playing_changed = Signal(bool)
+    timecode_status_changed = Signal()  # LTC/MTC toggles / warnings
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._buffer: AudioBuffer | None = None
+        self._position_frame = 0
+        self._duration_seconds = 60.0
+        self._playing = False
+        self._scrubbing = False
+        self._resume_after_scrub = False
+        self._lock = threading.Lock()
+        self._stream: sd.OutputStream | None = None
+        # Total monitoring offset (seconds). Prefer calibration over guessing.
+        self.sync_offset_seconds = 0.0
+        self.loop_a: float | None = None
+        self.loop_b: float | None = None
+        self.loop_enabled = False
+        # When False, play/seek outside A–B freely; wrap only after entering the region.
+        self._loop_engage = False
+        self._calib_click_frames: list[int] = []
+        self._click_waveform: np.ndarray | None = None
+        self._mute_music = False
+        self._volume = 1.0  # 0.0 … 1.0 master gain (music + video clip audio)
+        # Dedicated music-bed gain for Video/Music alignment balancing —
+        # stacks with master volume but never touches video clip audio or
+        # LTC (see Song.music_volume / _music_chunk / _video_chunk).
+        self._music_volume = 1.0
+        self._song: Song | None = None
+        self._video_mixer = VideoAudioMixer()
+        self._audio_settings = AudioOutputSettings()
+        self._ltc_pcm: np.ndarray | None = None
+        self._ltc_cache_key: tuple | None = None
+        self._song_start_tc = "01:00:00:00"
+        self._song_fps = 30.0
+        self._output_channel_count = 2
+        self._device_index: int | None = None
+        self._route: dict[int, list[int]] = {0: [0], 1: [1]}
+        self._routing_warning: str | None = None
+        # The rate we actually open the stream at (device-compatible; may
+        # differ from the loaded media's native rate). All frame bookkeeping
+        # (position, LTC, calibration clicks) runs in this rate. See
+        # _resolve_device_and_route() / _playback_source().
+        self._playback_rate = 48000
+        self._playback_samples: np.ndarray | None = None
+        self._playback_cache_key: tuple | None = None
+        self._mtc = MtcOutput()
+        self._poll = QTimer(self)
+        self._poll.setInterval(16)
+        self._poll.timeout.connect(self._emit_position)
+        self._silent_timer = QTimer(self)
+        self._silent_timer.setInterval(16)
+        self._silent_timer.timeout.connect(self._silent_tick)
+        self._mtc_timer = QTimer(self)
+        self._mtc_timer.setInterval(4)
+        self._mtc_timer.timeout.connect(self._mtc_tick)
+
+    @property
+    def buffer(self) -> AudioBuffer | None:
+        return self._buffer
+
+    @property
+    def audio_settings(self) -> AudioOutputSettings:
+        return self._audio_settings
+
+    @property
+    def ltc_enabled(self) -> bool:
+        return bool(self._audio_settings.ltc_enabled)
+
+    @property
+    def mtc_enabled(self) -> bool:
+        return bool(self._audio_settings.mtc_enabled)
+
+    @property
+    def routing_warning(self) -> str | None:
+        return self._routing_warning
+
+    @property
+    def monitoring_latency_extra(self) -> float:
+        return self.sync_offset_seconds
+
+    @monitoring_latency_extra.setter
+    def monitoring_latency_extra(self, value: float) -> None:
+        self.sync_offset_seconds = float(value)
+
+    @property
+    def output_latency_seconds(self) -> float:
+        return self.sync_offset_seconds
+
+    @property
+    def raw_position(self) -> float:
+        """Write-head time (no sync offset). Used for calibration math."""
+        return self._frame_to_seconds(self._position_frame)
+
+    @property
+    def position(self) -> float:
+        """Audible / UI playhead (sync-offset compensated while playing)."""
+        raw = self.raw_position
+        if self._playing and self._stream is not None and not self._scrubbing:
+            return max(0.0, raw - self.sync_offset_seconds)
+        return raw
+
+    @property
+    def duration(self) -> float:
+        if self._buffer is not None:
+            return self._buffer.duration_seconds
+        return self._duration_seconds
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    def set_monitoring_latency_ms(self, ms: float) -> None:
+        self.sync_offset_seconds = float(ms) / 1000.0
+
+    def set_sync_offset_ms(self, ms: float) -> None:
+        self.sync_offset_seconds = float(ms) / 1000.0
+
+    def sync_offset_ms(self) -> float:
+        return self.sync_offset_seconds * 1000.0
+
+    def set_music_muted(self, muted: bool) -> None:
+        """Silence the loaded track (clicks / metronome still audible)."""
+        with self._lock:
+            self._mute_music = bool(muted)
+
+    def set_volume(self, volume: float) -> None:
+        """Master music gain (0.0 … 1.0). Does not affect generated LTC."""
+        with self._lock:
+            self._volume = float(min(1.0, max(0.0, volume)))
+
+    def volume(self) -> float:
+        with self._lock:
+            return float(self._volume)
+
+    def set_music_volume(self, volume: float) -> None:
+        """
+        Dedicated music-bed gain for Video/Music alignment balancing (0.0…1.0).
+        Independent of Master Volume and per-clip Video volume; never applied
+        to LTC (AGENTS.md: Master Vol must not affect LTC gain).
+        """
+        with self._lock:
+            self._music_volume = float(min(1.0, max(0.0, volume)))
+
+    def music_volume(self) -> float:
+        with self._lock:
+            return float(self._music_volume)
+
+    def set_song(self, song: Song | None) -> None:
+        """
+        Reference used only to look up video clips for audio mixing (see
+        `VideoAudioMixer`) — a read-only lookup, not a second playback clock.
+        Call whenever the active song changes.
+        """
+        self._song = song
+        self._video_mixer.set_song(song)
+        self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
+        self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
+        self.refresh_video_clips()
+
+    def set_video_track_muted(self, muted: bool) -> None:
+        """Silence every video clip's own embedded audio (picture keeps showing)."""
+        self._video_mixer.set_muted(bool(muted))
+
+    def refresh_video_clips(self) -> None:
+        """Call after video clips are added / removed / trimmed / re-pathed."""
+        clips = list(self._song.video_clips) if self._song is not None else []
+        self._video_mixer.preload(clips)
+
+    def set_song_timebase(self, start_timecode: str, fps: float) -> None:
+        self._song_start_tc = start_timecode or "01:00:00:00"
+        self._song_fps = float(fps) if fps > 0 else 30.0
+        self._mtc.set_timebase(self._song_start_tc, self._song_fps)
+        self._invalidate_ltc_cache()
+        if self._audio_settings.ltc_enabled:
+            self._ensure_ltc_cache()
+
+    def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
+        """
+        Apply device / routing / LTC / MTC settings. Returns a warning or MTC error.
+        Restarts the stream if currently playing.
+        """
+        was_playing = self._playing
+        pos = self.position
+        if was_playing:
+            self.pause()
+
+        self._audio_settings = AudioOutputSettings(
+            output_device_name=settings.output_device_name,
+            music_left_channels=list(settings.music_left_channels),
+            music_right_channels=list(settings.music_right_channels),
+            ltc_enabled=bool(settings.ltc_enabled),
+            ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
+            ltc_channels=list(settings.ltc_channels),
+            mtc_enabled=bool(settings.mtc_enabled),
+            midi_port_name=settings.midi_port_name,
+        )
+        self._resolve_device_and_route()
+        if self._audio_settings.ltc_enabled:
+            self._ensure_ltc_cache()
+        else:
+            with self._lock:
+                self._ltc_pcm = None
+                self._ltc_cache_key = None
+
+        mtc_err = self._mtc.configure(
+            enabled=self._audio_settings.mtc_enabled,
+            port_name=self._audio_settings.midi_port_name,
+            start_timecode=self._song_start_tc,
+            fps=self._song_fps,
+        )
+        self.timecode_status_changed.emit()
+
+        if was_playing:
+            self.seek(pos)
+            self.play()
+        warning = self._routing_warning
+        if mtc_err:
+            return mtc_err if warning is None else f"{warning} {mtc_err}"
+        return warning
+
+    def clear_calibration_clicks(self) -> None:
+        with self._lock:
+            self._calib_click_frames = []
+
+    def schedule_calibration_clicks(self, times_seconds: list[float]) -> None:
+        sr = self._sample_rate()
+        ch = 2
+        frames = sorted({max(0, int(round(t * sr))) for t in times_seconds})
+        with self._lock:
+            self._calib_click_frames = frames
+            self._click_waveform = self._make_click(sr, ch)
+
+    def _make_click(self, sample_rate: int, channels: int) -> np.ndarray:
+        n = max(32, int(sample_rate * 0.012))
+        t = np.arange(n, dtype=np.float32) / float(sample_rate)
+        wave = 0.9 * np.sin(2 * np.pi * 1500.0 * t) * np.exp(-t * 80.0)
+        return np.repeat(wave[:, None], max(1, channels), axis=1).astype(np.float32)
+
+    def set_loop_points(self, a: float | None, b: float | None) -> None:
+        self.loop_a = a
+        self.loop_b = b
+        self._refresh_loop_engage()
+
+    def set_loop_enabled(self, enabled: bool) -> None:
+        self.loop_enabled = bool(enabled)
+        self._refresh_loop_engage()
+
+    def clear_loop(self) -> None:
+        self.loop_a = None
+        self.loop_b = None
+        self.loop_enabled = False
+        self._loop_engage = False
+
+    def _loop_bounds(self) -> tuple[float, float] | None:
+        if self.loop_a is None or self.loop_b is None:
+            return None
+        a, b = float(self.loop_a), float(self.loop_b)
+        if abs(b - a) < 0.01:
+            return None
+        return (min(a, b), max(a, b))
+
+    def _sample_rate(self) -> int:
+        """
+        Rate used for all frame bookkeeping (position/LTC/clicks) and for
+        opening the output stream. Resolved against the selected device in
+        _resolve_device_and_route(); may differ from the media file's
+        native rate if the device doesn't support it (see _playback_rate).
+        """
+        return int(self._playback_rate)
+
+    def _frame_to_seconds(self, frame: int) -> float:
+        return frame / float(self._sample_rate())
+
+    def _raw_seconds(self) -> float:
+        """Write-head time for loop math (ignore sync-offset UI compensation)."""
+        return self._frame_to_seconds(self._position_frame)
+
+    def _refresh_loop_engage(self) -> None:
+        """Engage only while the write-head is inside A–B; seek outside clears it."""
+        bounds = self._loop_bounds()
+        if not self.loop_enabled or bounds is None:
+            self._loop_engage = False
+            return
+        a, b = bounds
+        pos = self._raw_seconds()
+        self._loop_engage = a - 1e-4 <= pos < b - 1e-4
+
+    def _maybe_wrap_loop(self) -> bool:
+        bounds = self._loop_bounds()
+        if not self.loop_enabled or bounds is None or not self._playing:
+            return False
+        a, b = bounds
+        pos = self._raw_seconds()
+        if a - 1e-4 <= pos < b - 1e-4:
+            self._loop_engage = True
+        elif pos < a - 1e-4:
+            self._loop_engage = False
+        if self._loop_engage and pos + 1e-4 >= b:
+            self.seek(a)
+            return True
+        return False
+
+    def set_buffer(self, buffer: AudioBuffer | None) -> None:
+        was_playing = self._playing
+        self.stop()
+        self._buffer = buffer
+        if buffer is not None:
+            self._duration_seconds = buffer.duration_seconds
+        self._position_frame = 0
+        self.clear_calibration_clicks()
+        self._invalidate_ltc_cache()
+        if self._audio_settings.ltc_enabled:
+            self._ensure_ltc_cache()
+        self._resolve_device_and_route()
+        self.position_changed.emit(0.0)
+        if was_playing and buffer is not None:
+            self.play()
+
+    def set_duration(self, seconds: float) -> None:
+        if self._buffer is not None:
+            return
+        self._duration_seconds = max(1.0, seconds)
+        self._invalidate_ltc_cache()
+        if self.position > self._duration_seconds:
+            self.seek(self._duration_seconds)
+
+    def play(self) -> None:
+        # Do not snap into A–B; allow previewing outside while keeping loop marks.
+        self._refresh_loop_engage()
+        if self.position >= self.duration - 1e-4:
+            self.seek(0.0)
+        self._playing = True
+        self._scrubbing = False
+        # A real output stream is required whenever anything could be audible:
+        # loaded music, LTC, or a video clip with its own embedded audio.
+        # Without this, a video-only song (no music track loaded yet) fell
+        # back to the silent bookkeeping timer and its clips' audio was never
+        # actually rendered — this was the root cause of "no video audio".
+        has_video_audio = self._song is not None and bool(self._song.video_clips)
+        needs_stream = (
+            self._buffer is not None or self._audio_settings.ltc_enabled or has_video_audio
+        )
+        if needs_stream:
+            if self._audio_settings.ltc_enabled:
+                self._ensure_ltc_cache()
+            self._start_stream()
+            self._poll.start()
+            self._silent_timer.stop()
+        else:
+            self._silent_timer.start()
+            self._poll.stop()
+        self._mtc.on_play(self.raw_position)
+        if self._audio_settings.mtc_enabled:
+            self._mtc_timer.start()
+        self.playing_changed.emit(True)
+
+    def pause(self, *, for_scrub: bool = False) -> None:
+        has_video_audio = self._song is not None and bool(self._song.video_clips)
+        if (
+            not for_scrub
+            and (self._buffer is not None or self._ltc_pcm is not None or has_video_audio)
+            and self._stream is not None
+        ):
+            lat = self.sync_offset_seconds
+            if lat > 0:
+                lat_frames = int(lat * self._sample_rate())
+                with self._lock:
+                    self._position_frame = max(0, self._position_frame - lat_frames)
+        self._playing = False
+        self._silent_timer.stop()
+        self._poll.stop()
+        self._mtc_timer.stop()
+        self._mtc.on_pause()
+        self._stop_stream()
+        if not for_scrub:
+            self.playing_changed.emit(False)
+        self._emit_position()
+
+    def stop(self) -> None:
+        self._resume_after_scrub = False
+        self._scrubbing = False
+        self.clear_calibration_clicks()
+        self.pause()
+        self.seek(0.0)
+
+    def toggle(self) -> None:
+        if self._playing or (self._scrubbing and self._resume_after_scrub):
+            self._resume_after_scrub = False
+            self._scrubbing = False
+            self.pause()
+        else:
+            self.play()
+
+    def begin_scrub(self) -> None:
+        if self._scrubbing:
+            return
+        self._scrubbing = True
+        self._resume_after_scrub = self._playing
+        if self._playing:
+            self.pause(for_scrub=True)
+
+    def end_scrub(self) -> None:
+        if not self._scrubbing:
+            return
+        self._scrubbing = False
+        if self._resume_after_scrub:
+            self._resume_after_scrub = False
+            self.play()
+        else:
+            self._emit_position()
+
+    def seek(self, seconds: float) -> None:
+        seconds = min(max(0.0, seconds), self.duration)
+        sr = self._sample_rate()
+        with self._lock:
+            self._position_frame = int(seconds * sr)
+            # Update under lock so the audio callback cannot wrap to A
+            # after a seek that intentionally left the A–B region.
+            self._refresh_loop_engage()
+        self._mtc.on_seek(seconds, playing=self._playing)
+        self.position_changed.emit(self.position)
+
+    def nudge(self, delta_seconds: float) -> None:
+        self.seek(self.position + delta_seconds)
+
+    def _mtc_tick(self) -> None:
+        if self._playing:
+            self._mtc.tick(self.raw_position)
+
+    def _emit_position(self) -> None:
+        if self._maybe_wrap_loop():
+            return
+        pos = self.position
+        self.position_changed.emit(pos)
+        if self._playing:
+            with self._lock:
+                # `_position_frame` is bookkept in playback-rate frames (see
+                # `_sample_rate()` docstring), so EOF must compare against the
+                # resampled buffer length (`_playback_samples`, same rate) —
+                # never `self._buffer.frames`, which is native-rate and would
+                # make playback stop early whenever native != playback rate
+                # (e.g. 44.1kHz media on a 48kHz-locked device).
+                if self._playback_samples is not None:
+                    end_frame = self._playback_samples.shape[0]
+                elif self._buffer is not None:
+                    end_frame = int(round(self._buffer.frames * self._sample_rate() / self._buffer.sample_rate))
+                else:
+                    end_frame = int(self._duration_seconds * self._sample_rate())
+                done = self._position_frame >= end_frame
+            if done:
+                self.pause()
+
+    def _silent_tick(self) -> None:
+        with self._lock:
+            self._position_frame += int(0.016 * self._sample_rate())
+            pos = self._frame_to_seconds(self._position_frame)
+        bounds = self._loop_bounds()
+        if self.loop_enabled and bounds is not None:
+            a, b = bounds
+            if a - 1e-4 <= pos < b - 1e-4:
+                self._loop_engage = True
+            elif pos < a - 1e-4:
+                self._loop_engage = False
+            if self._loop_engage and pos >= b:
+                self.seek(a)
+                return
+        if pos >= self._duration_seconds:
+            self.seek(self._duration_seconds)
+            self.pause()
+            return
+        self.position_changed.emit(pos)
+
+    def _mix_clicks(self, music: np.ndarray, start: int) -> None:
+        click = self._click_waveform
+        if click is None or not self._calib_click_frames:
+            return
+        frames = music.shape[0]
+        end = start + frames
+        remaining: list[int] = []
+        for cf in self._calib_click_frames:
+            if cf >= end:
+                remaining.append(cf)
+                continue
+            if cf + click.shape[0] <= start:
+                continue
+            src0 = max(0, start - cf)
+            dst0 = max(0, cf - start)
+            n = min(click.shape[0] - src0, frames - dst0)
+            if n > 0:
+                ch = min(music.shape[1], click.shape[1])
+                music[dst0 : dst0 + n, :ch] += click[src0 : src0 + n, :ch]
+                np.clip(music[dst0 : dst0 + n], -1.0, 1.0, out=music[dst0 : dst0 + n])
+            if cf + click.shape[0] > end:
+                remaining.append(cf)
+        self._calib_click_frames = remaining
+
+    def _invalidate_ltc_cache(self) -> None:
+        with self._lock:
+            self._ltc_pcm = None
+            self._ltc_cache_key = None
+
+    def _ensure_ltc_cache(self) -> None:
+        sr = self._sample_rate()
+        dur = self.duration
+        key = (sr, round(dur, 6), self._song_start_tc, round(self._song_fps, 4))
+        with self._lock:
+            if self._ltc_cache_key == key and self._ltc_pcm is not None:
+                return
+        try:
+            pcm = generate_ltc_pcm(
+                dur,
+                sr,
+                self._song_start_tc,
+                self._song_fps,
+                amplitude=1.0,
+            )
+        except ValueError:
+            pcm = np.zeros(max(1, int(dur * sr)), dtype=np.float32)
+        with self._lock:
+            self._ltc_pcm = pcm
+            self._ltc_cache_key = key
+
+    def _resolve_device_and_route(self) -> None:
+        devices = list_output_devices()
+        chosen = find_output_device(
+            devices, name=self._audio_settings.output_device_name
+        )
+        self._device_index = chosen.index if chosen is not None else None
+        max_ch = chosen.max_output_channels if chosen is not None else 2
+
+        left = list(self._audio_settings.music_left_channels)
+        right = list(self._audio_settings.music_right_channels)
+        ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
+
+        # If settings still look like untouched defaults on a stereo device, drop LTC map.
+        if max_ch < 3 and ltc == [2] and left == [0] and right == [1]:
+            # Keep user intent if they explicitly enabled LTC on stereo (warn instead).
+            if not self._audio_settings.ltc_enabled:
+                ltc = []
+            d_left, d_right, d_ltc = default_channel_routing(max_ch)
+            if left == [0] and right == [1]:
+                left, right = d_left, d_right
+            if not self._audio_settings.ltc_enabled:
+                ltc = d_ltc
+
+        route = build_source_route(music_left=left, music_right=right, ltc=ltc)
+        needed = required_output_channels(route)
+        all_dests = [ch for dests in route.values() for ch in dests]
+        self._routing_warning = warn_if_outputs_insufficient(all_dests, max_ch)
+        self._output_channel_count = min(max(needed, 1), max_ch) if max_ch > 0 else needed
+        # Clamp destinations that exceed the opened stream.
+        clamped: dict[int, list[int]] = {}
+        for src, dests in route.items():
+            keep = [d for d in dests if 0 <= d < self._output_channel_count]
+            if keep:
+                clamped[src] = keep
+        self._route = clamped if clamped else {0: [0], 1: [min(1, self._output_channel_count - 1)]}
+
+        native_rate = self._buffer.sample_rate if self._buffer is not None else 48000
+        self._playback_rate = int(
+            round(
+                resolve_output_samplerate(
+                    device_index=self._device_index,
+                    channels=max(1, self._output_channel_count),
+                    preferred_rate=float(native_rate),
+                    device_default_rate=chosen.default_samplerate if chosen is not None else None,
+                )
+            )
+        )
+        self._video_mixer.set_playback_rate(self._playback_rate)
+        self.refresh_video_clips()
+        self._refresh_playback_samples()
+
+    def _refresh_playback_samples(self) -> None:
+        """
+        Keep a copy of the loaded buffer resampled to _playback_rate, so all
+        frame math (position/LTC/clicks) can run in that single rate even
+        when it differs from the media file's native rate (e.g. a 44.1kHz
+        file on a WASAPI endpoint locked to a 48kHz mixer format).
+        """
+        buf = self._buffer
+        if buf is None:
+            self._playback_samples = None
+            self._playback_cache_key = None
+            return
+        key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
+        if self._playback_cache_key == key and self._playback_samples is not None:
+            return
+        if int(buf.sample_rate) == int(self._playback_rate):
+            self._playback_samples = buf.samples
+        else:
+            self._playback_samples = resample_linear(buf.samples, buf.sample_rate, self._playback_rate)
+        self._playback_cache_key = key
+
+    def _music_chunk(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
+        """Return stereo music (frames, 2), applying mute + master volume."""
+        out = np.zeros((frames, 2), dtype=np.float32)
+        samples = self._playback_samples
+        if samples is None:
+            return out
+        end = min(start + frames, samples.shape[0])
+        if end <= start:
+            return out
+        chunk = samples[start:end]
+        n = chunk.shape[0]
+        if chunk.ndim == 1:
+            out[:n, 0] = chunk
+            out[:n, 1] = chunk
+        elif chunk.shape[1] == 1:
+            out[:n, 0] = chunk[:, 0]
+            out[:n, 1] = chunk[:, 0]
+        else:
+            out[:n, 0] = chunk[:, 0]
+            out[:n, 1] = chunk[:, 1]
+        if self._mute_music:
+            out[:] = 0.0
+        # Master (all-bus) gain, then the dedicated music-bed gain used for
+        # Video/Music alignment balancing — video clip audio only gets the
+        # former (see _video_chunk), so the two faders are independent.
+        vol = self._volume * self._music_volume
+        if vol < 1.0 - 1e-6:
+            out *= vol
+        elif vol <= 1e-6:
+            out[:] = 0.0
+        return out
+
+    def _video_chunk(self, start: int, frames: int) -> np.ndarray:
+        """
+        Video clips' own embedded audio for playback-rate frames starting at
+        `start` — the same write-head frame used for music/LTC (see
+        `VideoAudioMixer`), so it stays sample-locked with the music without
+        any extra offset math.
+        """
+        out = self._video_mixer.chunk_at(start, frames)
+        if self._mute_music:
+            return np.zeros_like(out)
+        vol = self._volume
+        if vol < 1.0 - 1e-6:
+            out = out * vol
+        return out
+
+    def _ltc_chunk(self, start: int, frames: int) -> np.ndarray:
+        out = np.zeros(frames, dtype=np.float32)
+        pcm = self._ltc_pcm
+        if pcm is None or not self._audio_settings.ltc_enabled:
+            return out
+        end = min(start + frames, pcm.size)
+        if end <= start:
+            return out
+        gain = float(self._audio_settings.ltc_gain)
+        out[: end - start] = pcm[start:end] * gain
+        return out
+
+    def _start_stream(self) -> None:
+        self._stop_stream()
+        self._resolve_device_and_route()
+        sample_rate = self._sample_rate()
+        out_ch = self._output_channel_count
+        device = self._device_index
+        total_frames = (
+            self._playback_samples.shape[0]
+            if self._playback_samples is not None
+            else int(self._duration_seconds * sample_rate)
+        )
+
+        def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
+            del status, time_info
+            with self._lock:
+                loop_on = (
+                    self.loop_enabled
+                    and self.loop_a is not None
+                    and self.loop_b is not None
+                    and abs(self.loop_b - self.loop_a) >= 0.01
+                )
+                a_frame = b_frame = 0
+                if loop_on:
+                    a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
+                    b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
+                    if a_frame <= self._position_frame < b_frame:
+                        self._loop_engage = True
+                    elif self._position_frame < a_frame:
+                        self._loop_engage = False
+                    elif self._loop_engage and self._position_frame >= b_frame:
+                        self._position_frame = a_frame
+                    else:
+                        self._loop_engage = False
+                start = self._position_frame
+                end = min(start + frames, total_frames)
+                if loop_on and self._loop_engage and start < b_frame:
+                    end = min(end, b_frame)
+
+                # Advance / wrap position bookkeeping (music may pad).
+                if end - start < frames:
+                    if loop_on and self._loop_engage and end >= b_frame:
+                        need = frames - (end - start)
+                        self._position_frame = a_frame + need
+                        # Rebuild as contiguous logical block starting at `start`.
+                        music = self._assemble_looped_music(start, frames, a_frame, b_frame, sample_rate)
+                        ltc = self._assemble_looped_ltc(start, frames, a_frame, b_frame)
+                        video = self._assemble_looped_video(start, frames, a_frame, b_frame)
+                    else:
+                        music = self._music_chunk(start, frames, sample_rate)
+                        ltc = self._ltc_chunk(start, frames)
+                        video = self._video_chunk(start, frames)
+                        self._position_frame = total_frames
+                        self._playing = False
+                else:
+                    music = self._music_chunk(start, frames, sample_rate)
+                    ltc = self._ltc_chunk(start, frames)
+                    video = self._video_chunk(start, frames)
+                    self._position_frame = end
+
+                # Video clips' own audio shares the music bus/output channels
+                # (so it's audible wherever Music is routed) — mixed in at the
+                # exact write-head frame, i.e. the same sample clock as music.
+                music[:, :2] += video[:, :2]
+                np.clip(music, -1.0, 1.0, out=music)
+
+                self._mix_clicks(music, start)
+                sources = np.zeros((frames, 3), dtype=np.float32)
+                sources[:, 0] = music[:, 0]
+                sources[:, 1] = music[:, 1]
+                sources[:, 2] = ltc
+                routed = apply_routing(sources, self._route, out_ch)
+            outdata[:] = routed
+
+        kwargs: dict = {
+            "samplerate": sample_rate,
+            "channels": out_ch,
+            "dtype": "float32",
+            "callback": callback,
+            "latency": "low",
+            "blocksize": 0,
+        }
+        if device is not None:
+            kwargs["device"] = device
+        try:
+            self._stream = sd.OutputStream(**kwargs)
+            self._stream.start()
+        except sd.PortAudioError:
+            # resolve_output_samplerate() should already avoid an invalid
+            # rate (PaErrorCode -9997), but driver quirks can still reject
+            # it at open time -- retry once at the device's own reported
+            # default rate before giving up. `sample_rate`/`total_frames`
+            # are re-bound here and the not-yet-started `callback` closure
+            # picks up the new values on its first real invocation.
+            fallback_rate = None
+            if device is not None:
+                for d in list_output_devices():
+                    if d.index == device:
+                        fallback_rate = d.default_samplerate
+                        break
+            if fallback_rate and int(fallback_rate) != int(sample_rate):
+                self._playback_rate = int(round(fallback_rate))
+                self._refresh_playback_samples()
+                sample_rate = self._playback_rate
+                total_frames = (
+                    self._playback_samples.shape[0]
+                    if self._playback_samples is not None
+                    else int(self._duration_seconds * sample_rate)
+                )
+                kwargs["samplerate"] = sample_rate
+                self._stream = sd.OutputStream(**kwargs)
+                self._stream.start()
+            else:
+                raise
+
+    def _assemble_looped_music(
+        self,
+        start: int,
+        frames: int,
+        a_frame: int,
+        b_frame: int,
+        sample_rate: int,
+    ) -> np.ndarray:
+        first_n = max(0, min(frames, b_frame - start))
+        music = self._music_chunk(start, frames, sample_rate)
+        if first_n >= frames:
+            return music
+        need = frames - first_n
+        wrap = self._music_chunk(a_frame, need, sample_rate)
+        music[first_n:] = wrap[:need]
+        return music
+
+    def _assemble_looped_ltc(
+        self, start: int, frames: int, a_frame: int, b_frame: int
+    ) -> np.ndarray:
+        first_n = max(0, min(frames, b_frame - start))
+        ltc = self._ltc_chunk(start, frames)
+        if first_n >= frames:
+            return ltc
+        need = frames - first_n
+        wrap = self._ltc_chunk(a_frame, need)
+        ltc[first_n:] = wrap[:need]
+        return ltc
+
+    def _assemble_looped_video(
+        self, start: int, frames: int, a_frame: int, b_frame: int
+    ) -> np.ndarray:
+        first_n = max(0, min(frames, b_frame - start))
+        video = self._video_chunk(start, frames)
+        if first_n >= frames:
+            return video
+        need = frames - first_n
+        wrap = self._video_chunk(a_frame, need)
+        video[first_n:] = wrap[:need]
+        return video
+
+    def _stop_stream(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None

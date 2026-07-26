@@ -6,16 +6,68 @@ from datetime import datetime
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from cueplayer.exporters.common import SongExportPlan, export_event_time_seconds, parse_page_executor
+from cueplayer.exporters.common import (
+    ExportCue,
+    MaExportProfile,
+    SongExportPlan,
+    export_event_time_seconds,
+    ma2_timecode_assign_settings,
+    parse_page_executor,
+    sanitize_ma_name,
+)
+from cueplayer.exporters.ma_default_dirs import resolve_ma2_pool_dirs
 from cueplayer.exporters.xml_write import (
     MA2_NS,
     MA2_XSI,
-    seconds_to_ma2_frames,
+    seconds_to_ma2_centiseconds,
     write_xml,
 )
 
 MA2_TARGET_VERSION = "3.9.61.5"
 MA2_SCHEMA = "http://schemas.malighting.de/grandma2/xml/MA http://schemas.malighting.de/grandma2/xml/3.9.61/MA.xsd"
+
+
+def _install_basename(plan: SongExportPlan) -> str:
+    main = plan.profile.main_sequence_file
+    if main.endswith("_main.xml"):
+        return main[: -len("_main.xml")]
+    return plan.song_name or "cueplayer"
+
+
+def _xml_esc(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _lua_str(text: str) -> str:
+    """Escape for Lua double-quoted string literals."""
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _lua_cmd_line(cmd: str) -> str:
+    """One indented ``gma.cmd('…')`` line (CuePoints style)."""
+    escaped = str(cmd).replace("\\", "\\\\").replace("'", "\\'")
+    return f"  gma.cmd('{escaped}')"
+
+
+def _ma2_store_cue_label(cue: ExportCue) -> str:
+    """ASCII cue name for Store Sequence … Cue N \"…\" (empty = numbered only)."""
+    return cue.cue_name_for_export() or ""
+
+
+def _rel_event_centiseconds(plan: SongExportPlan, mark_time: float) -> int:
+    """
+    Timecode timeline event time in 1/100 seconds (song-relative).
+
+    Song start LTC is applied via ``Assign Timecode /Offset=…`` after Import,
+    not baked into each event (matches MA3 OffsetTCSlot behaviour).
+    """
+    return seconds_to_ma2_centiseconds(export_event_time_seconds(mark_time, plan.profile))
 
 
 class Ma2Exporter:
@@ -36,22 +88,78 @@ class Ma2Exporter:
             "ltc_latency_compensation_seconds": plan.profile.ltc_latency_compensation_seconds,
         }
 
-    def export_to_directory(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
+    def export_to_directory(
+        self,
+        plan: SongExportPlan,
+        directory: Path,
+        *,
+        include_plugin: bool = False,
+        include_macro: bool = False,
+    ) -> dict[str, Path]:
+        import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        import_dir.mkdir(parents=True, exist_ok=True)
         paths: dict[str, Path] = {}
 
         if plan.profile.export_mode == "full":
-            paths["main_sequence"] = directory / "main_sequence.xml"
-            paths["button_sequence"] = directory / "button_sequence.xml"
+            paths["main_sequence"] = import_dir / plan.profile.main_sequence_file
             self.write_main_sequence(plan, paths["main_sequence"])
-            self.write_button_sequence(plan, paths["button_sequence"])
-            plugin_paths = self.write_install_plugin(plan, directory)
-            paths.update(plugin_paths)
+            if plan.button_lanes:
+                for lane in plan.button_lanes:
+                    key = f"button_sequence_{lane.lane_index}"
+                    path = import_dir / (lane.sequence_file or plan.profile.button_sequence_file)
+                    paths[key] = path
+                    self.write_button_sequence(
+                        plan,
+                        path,
+                        sequence_name=lane.sequence_name,
+                        sequence_pool=lane.sequence_pool or None,
+                    )
+                # Back-compat key for tests that look up the first button file.
+                paths["button_sequence"] = paths[f"button_sequence_{plan.button_lanes[0].lane_index}"]
+            if include_macro or include_plugin:
+                install_paths = self.write_install_macro(plan, directory)
+                paths.update(install_paths)
+                if include_plugin:
+                    paths.update(self.write_install_plugin(plan, directory))
 
-        paths["timecode"] = directory / "timecode.xml"
+        paths["timecode"] = import_dir / plan.profile.timecode_file
         self.write_timecode(plan, paths["timecode"])
         return paths
+
+    def export_show_to_directory(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        show_install_name: str = "CuePlayer_Show_Install",
+    ) -> dict[str, Path]:
+        """
+        Export Seq/TC files + CuePoints-style show Plugin.
+
+        Plugin Stores all cues on the console, then writes one Timecode XML
+        per song into importexport at runtime and Imports each (CuePoints flow).
+        """
+        if not plans:
+            return {}
+        directory = Path(directory)
+        import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(directory)
+        import_dir.mkdir(parents=True, exist_ok=True)
+        all_paths: dict[str, Path] = {}
+        for plan in plans:
+            paths = self.export_to_directory(plan, directory, include_macro=False)
+            prefix = plan.song_name or "song"
+            for key, path in paths.items():
+                all_paths[f"{prefix}:{key}"] = path
+
+        if any(p.profile.export_mode == "full" for p in plans):
+            plugin_paths = self.write_show_install_plugin(
+                plans, directory, name=show_install_name
+            )
+            all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
+            all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
+            if "macro_xml" in plugin_paths:
+                all_paths["show:macro_xml"] = plugin_paths["macro_xml"]
+        return all_paths
 
     def _fix_ma2_xsi(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8")
@@ -88,6 +196,7 @@ class Ma2Exporter:
     def write_main_sequence(self, plan: SongExportPlan, path: Path) -> None:
         root = self._root()
         self._info(root, plan.song_name)
+        # CuePoints / MA2 Import At Sequence N: keep @index=0; destination is At N.
         sequ = ET.SubElement(
             root,
             f"{{{MA2_NS}}}Sequ",
@@ -106,10 +215,9 @@ class Ma2Exporter:
                 f"{{{MA2_NS}}}Number",
                 {"number": str(int(cue.cue_number)), "sub_number": "0"},
             )
-            part = ET.SubElement(cue_el, f"{{{MA2_NS}}}CuePart", {"index": "0"})
-            label = cue.resolved_ma_name()
-            if label and not label.startswith("Cue"):
-                part.set("name", label)
+            # Golden MA2 Seq XML has bare CuePart — CuePart/@name can fail Import
+            # and leave an empty Sequence. Cue labels stay out of MA2 XML.
+            ET.SubElement(cue_el, f"{{{MA2_NS}}}CuePart", {"index": "0"})
 
         write_xml(
             root,
@@ -123,15 +231,23 @@ class Ma2Exporter:
         )
         self._fix_ma2_xsi(path)
 
-    def write_button_sequence(self, plan: SongExportPlan, path: Path) -> None:
+    def write_button_sequence(
+        self,
+        plan: SongExportPlan,
+        path: Path,
+        *,
+        sequence_name: str | None = None,
+        sequence_pool: int | None = None,
+    ) -> None:
         root = self._root()
         self._info(root, plan.song_name)
+        # sequence_pool kept for API compat; install uses Store not Import.
         sequ = ET.SubElement(
             root,
             f"{{{MA2_NS}}}Sequ",
             {
-                "index": "1",
-                "name": plan.profile.button_sequence_name,
+                "index": "0",
+                "name": sequence_name or plan.profile.button_sequence_name,
                 "timecode_slot": "255",
                 "forced_position_mode": "0",
             },
@@ -176,74 +292,75 @@ class Ma2Exporter:
     def write_timecode(self, plan: SongExportPlan, path: Path) -> None:
         root = self._root()
         self._info(root, plan.song_name)
-        fps = plan.profile.fps
 
-        event_frames: list[int] = []
+        event_cs: list[int] = []
         for cue in plan.main_cues:
-            event_frames.append(
-                seconds_to_ma2_frames(export_event_time_seconds(cue.time_seconds, plan.profile), fps)
-            )
+            event_cs.append(_rel_event_centiseconds(plan, cue.time_seconds))
         for lane in plan.button_lanes:
             for t in lane.mark_times_seconds:
-                event_frames.append(
-                    seconds_to_ma2_frames(export_event_time_seconds(t, plan.profile), fps)
-                )
-        length = max(event_frames) if event_frames else 0
+                event_cs.append(_rel_event_centiseconds(plan, t))
+        length = max(event_cs) if event_cs else 0
 
-        tc = ET.SubElement(
-            root,
-            f"{{{MA2_NS}}}Timecode",
-            {
-                "index": str(max(0, plan.profile.timecode_pool - 1)),
-                "name": plan.profile.timecode_name,
-                "lenght": str(length),
-                "stop_status": "Rewind",
-                "no_switch_off": "true",
-                "no_status_call": "true",
-            },
-        )
+        # CuePoints Timecode shape (from their live Plugin export):
+        # - Object name = sequence name only
+        # - Object Nos = 30, pagepool(1), page, executor
+        # - Cue Nos = 1, sequence_pool, cue_number
+        # - Top events have no step=; no Master SubTrack
+        # @index always 0 — Import At Timecode N sets the pool (CuePoints style).
+        # Event times + lenght are centiseconds. Omit frame_format: MA2 XML only
+        # accepts "24/25/30 FPS" or empty; empty/missing ≈ 1/100 Seconds display.
+        # record_mode=Go → Timecode Options «Record Mode» = Go (not Goto).
+        tc_attrs = {
+            "index": "0",
+            "name": plan.profile.timecode_name,
+            "lenght": str(length),
+            "stop_status": "Rewind",
+            "no_switch_off": "true",
+            "no_status_call": "true",
+            "record_mode": "Go",
+        }
+        tc = ET.SubElement(root, f"{{{MA2_NS}}}Timecode", tc_attrs)
 
-        # Main track — Object must point at the Executor (page.exec), not Sequence pool #.
+        page_pool = 1  # CuePoints: Assign At Page 1.{page}.{exec}
+        main_page, main_exec = parse_page_executor(plan.profile.main_executor)
+        main_seq = int(plan.profile.sequence_pool_start)
+
         main_track = ET.SubElement(
             tc,
             f"{{{MA2_NS}}}Track",
             {"index": "0", "active": "true", "expanded": "true"},
         )
-        main_page, main_exec = parse_page_executor(plan.profile.main_executor)
         obj = ET.SubElement(
             main_track,
             f"{{{MA2_NS}}}Object",
-            {"name": f"{plan.profile.main_sequence_name} {main_page}.{main_exec}"},
+            {"name": plan.profile.main_sequence_name},
         )
-        # Golden fixture pattern: 30, page, page, executor
-        for value in (30, main_page, main_page, main_exec):
+        for value in (30, page_pool, main_page, main_exec):
             no = ET.SubElement(obj, f"{{{MA2_NS}}}No")
             no.text = str(value)
 
         main_sub = ET.SubElement(main_track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
         for idx, cue in enumerate(plan.main_cues):
-            frames = seconds_to_ma2_frames(
-                export_event_time_seconds(cue.time_seconds, plan.profile), fps
-            )
+            cs = _rel_event_centiseconds(plan, cue.time_seconds)
             cue_no = int(cue.cue_number)
             event = ET.SubElement(
                 main_sub,
                 f"{{{MA2_NS}}}Event",
                 {
                     "index": str(idx),
-                    "time": str(frames),
+                    "time": str(cs),
                     "command": "Go",
                     "pressed": "true",
                     "step": str(cue_no),
                 },
             )
+            # MA2 Main XML has no note labels — TC Cue name must stay "Cue N"
+            # or events fail to resolve (only Cue 1 appeared linked).
             cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": f"Cue {cue_no}"})
-            for value in (main_page, main_page, cue_no):
+            for value in (1, main_seq, cue_no):
                 no = ET.SubElement(cue_el, f"{{{MA2_NS}}}No")
                 no.text = str(value)
-        ET.SubElement(main_track, f"{{{MA2_NS}}}SubTrack", {"index": "1", "fader_command": "Master"})
 
-        # Button tracks: one sequence / many Top events — also bind by Executor.
         for lane_i, lane in enumerate(plan.button_lanes, start=1):
             track = ET.SubElement(
                 tc,
@@ -251,34 +368,24 @@ class Ma2Exporter:
                 {"index": str(lane_i), "active": "true", "expanded": "true"},
             )
             button_page, button_exec = parse_page_executor(lane.executor)
-            button_name = (
-                plan.profile.button_sequence_name if lane_i == 1 else lane.resolved_ma_name()
-            )
-            obj = ET.SubElement(
-                track,
-                f"{{{MA2_NS}}}Object",
-                {"name": f"{button_name} {button_page}.{button_exec}"},
-            )
-            for value in (30, button_page, button_page, button_exec):
+            button_name = lane.sequence_name or lane.resolved_ma_name()
+            obj = ET.SubElement(track, f"{{{MA2_NS}}}Object", {"name": button_name})
+            for value in (30, page_pool, button_page, button_exec):
                 no = ET.SubElement(obj, f"{{{MA2_NS}}}No")
                 no.text = str(value)
             sub = ET.SubElement(track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
             for event_i, t in enumerate(lane.mark_times_seconds):
-                frames = seconds_to_ma2_frames(
-                    export_event_time_seconds(t, plan.profile), fps
-                )
+                cs = _rel_event_centiseconds(plan, t)
                 ET.SubElement(
                     sub,
                     f"{{{MA2_NS}}}Event",
                     {
                         "index": str(event_i),
-                        "time": str(frames),
+                        "time": str(cs),
                         "command": "Top",
                         "pressed": "true",
-                        "step": "4294967295",
                     },
                 )
-            ET.SubElement(track, f"{{{MA2_NS}}}SubTrack", {"index": "1", "fader_command": "Master"})
 
         write_xml(
             root,
@@ -288,79 +395,275 @@ class Ma2Exporter:
         )
         self._fix_ma2_xsi(path)
 
-    def write_install_plugin(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
+    def install_commands_for_plan(self, plan: SongExportPlan) -> list[str]:
         """
-        MA2 install helpers.
+        CuePoints-style setup for one song (no Timecode Import).
 
-        CuePoints ships a Plugin (.xml + .lua). We generate that pair in the
-        real MA2 shape (luafile=...), and also a Macro XML which is usually
-        more reliable for auto-generated installers.
+        Main + Button cues are created with Store (Import XML left Reset_0 Main
+        empty). Timecode is written/imported later by the show Plugin.
         """
-        directory = Path(directory)
-        lua_path = directory / "cueplayer_export.lua"
-        plugin_xml_path = directory / "cueplayer_export.xml"
-        macro_xml_path = directory / "cueplayer_install_macro.xml"
-
         main_seq = plan.profile.sequence_pool_start
-        button_seq = plan.profile.sequence_pool_start + 1
-        tc_pool = plan.profile.timecode_pool
         main_page, main_exec = parse_page_executor(plan.profile.main_executor)
-        button_page, button_exec = parse_page_executor(
-            plan.button_lanes[0].executor if plan.button_lanes else "1.201"
+        page_name = sanitize_ma_name(
+            plan.profile.page_name or plan.song_name or "",
+            fallback="",
         )
+        page_pool = 1
+        follow = f"{plan.profile.button_follow_seconds:g}"
 
-        cmd_lines = [
-            f'Import "{plan.profile.main_sequence_file}" At Sequence {main_seq} /nc',
-            f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
-            f"Assign Sequence {main_seq} At Exec {main_page}.{main_exec}",
-            f"Assign Go At Exec {main_page}.{main_exec}",
-            f'Import "{plan.profile.button_sequence_file}" At Sequence {button_seq} /nc',
-            f'Label Sequence {button_seq} "{plan.profile.button_sequence_name}"',
-            f"Assign Sequence {button_seq} At Exec {button_page}.{button_exec}",
-            f"Assign Top At Exec {button_page}.{button_exec}",
-            f'Import "{plan.profile.timecode_file}" At Timecode {tc_pool} /nc',
-            f'Label Timecode {tc_pool} "{plan.profile.timecode_name}"',
+        cmd_lines: list[str] = [
+            f"Store Page {main_page}",
+            f"Page {main_page}",
+            f"FaderPage {main_page}",
+            f"ButtonPage {main_page}",
         ]
+        if page_name:
+            cmd_lines.append(f'Label Page {main_page} "{page_name}"')
 
-        # Real MA2 plugins expect a Start function, not "return function()".
-        # Use single-quoted Lua strings because CMD lines contain double quotes.
-        lua_cmds = "\n".join(f"  gma.cmd('{line}')" for line in cmd_lines)
-        lua = f"""-- CuePlayer MA2 install plugin (.xml + .lua pair)
-local function Start()
-{lua_cmds}
-  gma.echo("CuePlayer export installed: Seq {main_seq}/{button_seq}, Exec {main_page}.{main_exec}/{button_page}.{button_exec}, TC {tc_pool}")
-end
-
-local function Cleanup()
-end
-
-return Start, Cleanup
-"""
-        lua_path.write_text(lua, encoding="utf-8")
-
-        # Match real MA2 plugin descriptors: Plugin/@luafile (not ComponentLua).
-        plugin_root = self._root()
-        self._info(plugin_root, plan.song_name)
-        ET.SubElement(
-            plugin_root,
-            f"{{{MA2_NS}}}Plugin",
-            {
-                "index": "1",
-                "execute_on_load": "0",
-                "name": "CuePlayer Export",
-                "luafile": "cueplayer_export.lua",
-            },
+        # Main cues — Store like CuePoints (not Import XML).
+        for cue in plan.main_cues:
+            cue_no = int(cue.cue_number)
+            label = _ma2_store_cue_label(cue)
+            cmd_lines.append(
+                f'Store Sequence {main_seq} Cue {cue_no} "{label}" /noconfirm'
+            )
+        cmd_lines.extend(
+            [
+                f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
+                f"Assign Sequence {main_seq} At Page {page_pool}.{main_page}.{main_exec}",
+            ]
         )
-        write_xml(plugin_root, plugin_xml_path, default_namespace=MA2_NS)
-        self._fix_ma2_xsi(plugin_xml_path)
 
-        # Macro is the preferred auto-generated path (same commands, no Lua runtime).
+        for lane in plan.button_lanes:
+            seq_pool = lane.sequence_pool or (main_seq + 1)
+            seq_name = lane.sequence_name or plan.profile.button_sequence_name
+            b_page, b_exec = parse_page_executor(lane.executor)
+            cmd_lines.extend(
+                [
+                    f'Store Sequence {seq_pool} Cue 1 "" /noconfirm',
+                    f'Store Sequence {seq_pool} Cue 2 "follow" /noconfirm',
+                    f"Assign Sequence {seq_pool} Cue 2 /Mode=Release",
+                    f"Assign Sequence {seq_pool} Cue 2 /Trig=Time",
+                    f"Assign Sequence {seq_pool} Cue 2 /TrigTime={follow}",
+                    f"Assign Sequence {seq_pool} Cue 1 Fade 0",
+                    f"Assign Sequence {seq_pool} Cue 2 Fade 0.5",
+                    f'Label Sequence {seq_pool} "{seq_name}"',
+                    f"Assign Sequence {seq_pool} At Page {page_pool}.{b_page}.{b_exec}",
+                    f"Assign Top Executor {b_page}.{b_exec}",
+                ]
+            )
+        return cmd_lines
+
+    def build_show_timecode_xml(
+        self,
+        plans: list[SongExportPlan],
+        *,
+        name: str = "CuePlayer_TC",
+    ) -> str:
+        """
+        CuePoints-style Timecode XML string for one or more plans.
+
+        Show install uses one plan per call (one Timecode pool per song).
+        Event times are song-relative centiseconds (1/100 s); song start LTC
+        is applied later via Assign /Offset. Object Nos = 30,1,page,exec.
+        Cue Nos = 1,seq,cue.
+        """
+        full = [p for p in plans if p.profile.export_mode == "full"]
+        if not full:
+            return ""
+        page_pool = 1
+        track_i = 0
+        max_cs = 0
+        tracks: list[str] = []
+
+        for plan in full:
+            main_page, main_exec = parse_page_executor(plan.profile.main_executor)
+            main_seq = int(plan.profile.sequence_pool_start)
+            seq_name = _xml_esc(plan.profile.main_sequence_name)
+            events: list[str] = []
+            for idx, cue in enumerate(plan.main_cues):
+                cs = _rel_event_centiseconds(plan, cue.time_seconds)
+                max_cs = max(max_cs, cs)
+                cue_no = int(cue.cue_number)
+                label = _xml_esc(_ma2_store_cue_label(cue))
+                events.append(
+                    f'<Event index="{idx}" time="{cs}" command="Go" '
+                    f'pressed="true" step="{cue_no}">'
+                    f'<Cue name="{label}"><No>1</No><No>{main_seq}</No>'
+                    f"<No>{cue_no}</No></Cue></Event>"
+                )
+            tracks.append(
+                f'<Track index="{track_i}" active="true" expanded="true">'
+                f'<Object name="{seq_name}"><No>30</No><No>{page_pool}</No>'
+                f"<No>{main_page}</No><No>{main_exec}</No></Object>"
+                f'<SubTrack index="0">{"".join(events)}</SubTrack></Track>'
+            )
+            track_i += 1
+
+            for lane in plan.button_lanes:
+                b_page, b_exec = parse_page_executor(lane.executor)
+                b_name = _xml_esc(lane.sequence_name or lane.resolved_ma_name())
+                bevents: list[str] = []
+                for event_i, t in enumerate(lane.mark_times_seconds):
+                    cs = _rel_event_centiseconds(plan, t)
+                    max_cs = max(max_cs, cs)
+                    bevents.append(
+                        f'<Event index="{event_i}" time="{cs}" '
+                        f'command="Top" pressed="true"/>'
+                    )
+                tracks.append(
+                    f'<Track index="{track_i}" active="true" expanded="true">'
+                    f'<Object name="{b_name}"><No>30</No><No>{page_pool}</No>'
+                    f"<No>{b_page}</No><No>{b_exec}</No></Object>"
+                    f'<SubTrack index="0">{"".join(bevents)}</SubTrack></Track>'
+                )
+                track_i += 1
+
+        # Match write_timecode: lenght in centiseconds; omit frame_format (1/100).
+        tc_name = _xml_esc(name)
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<MA xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            f'xmlns="{MA2_NS}" '
+            f'xsi:schemaLocation="{MA2_SCHEMA}" '
+            'major_vers="3" minor_vers="9" stream_vers="61">'
+            f'<Info datetime="{datetime.now().replace(microsecond=0).isoformat()}" '
+            f'showfile="{tc_name}"/>'
+            f'<Timecode index="0" name="{tc_name}" '
+            f'lenght="{max_cs}" stop_status="Rewind" no_switch_off="true" '
+            f'no_status_call="true" record_mode="Go">'
+            f'{"".join(tracks)}</Timecode></MA>'
+        )
+
+    def write_install_macro(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
+        """Write one-song setup Macro (Store/Assign + Timecode Offset)."""
+        cmd_lines = self.install_commands_for_plan(plan)
+        cmd_lines.extend(ma2_timecode_assign_settings(plan.profile))
+        path = self._write_macro_xml(
+            directory,
+            basename=_install_basename(plan),
+            display_name=f"CuePlayer {_install_basename(plan)}",
+            cmd_lines=cmd_lines,
+            info_name=plan.song_name,
+        )
+        return {"macro_xml": path}
+
+    def write_show_install_macro(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        name: str = "CuePlayer_Show_Install",
+    ) -> Path:
+        """Setup-only Macro (prefer Plugin for Timecode Import)."""
+        cmd_lines: list[str] = []
+        for plan in plans:
+            if plan.profile.export_mode != "full":
+                continue
+            cmd_lines.extend(self.install_commands_for_plan(plan))
+        return self._write_macro_xml(
+            directory,
+            basename=name,
+            display_name=name,
+            cmd_lines=cmd_lines,
+            info_name=name,
+        )
+
+    def write_install_plugin(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
+        """Single-song CuePoints-style Plugin (Store/Assign + runtime TC Import)."""
+        base = _install_basename(plan)
+        tc_label = plan.profile.timecode_name or base
+        return self._write_plugin_pair(
+            directory,
+            basename=base,
+            display_name=f"CuePlayer {base}",
+            cmd_lines=self.install_commands_for_plan(plan),
+            info_name=plan.song_name,
+            echo_note=f"CuePlayer: Seq {plan.profile.sequence_pool_start}",
+            timecode_jobs=[
+                (
+                    self.build_show_timecode_xml([plan], name=tc_label),
+                    int(plan.profile.timecode_pool),
+                    f"{base}_TC",
+                    tc_label,
+                    float(plan.profile.start_offset_seconds),
+                    float(plan.profile.fps or 30.0),
+                    int(plan.profile.timecode_slot),
+                )
+            ],
+        )
+
+    def write_show_install_plugin(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        name: str = "CuePlayer_Show_Install",
+    ) -> dict[str, Path]:
+        """
+        CuePoints-style show Plugin: Store/Assign everything, then write+Import
+        one Timecode XML per song (separate TC pools) and Assign /Offset.
+        """
+        cmd_lines: list[str] = []
+        tc_jobs: list[tuple[str, int, str, str, float, float, int]] = []
+        for plan in plans:
+            if plan.profile.export_mode != "full":
+                continue
+            cmd_lines.extend(self.install_commands_for_plan(plan))
+            tc_label = plan.profile.timecode_name or plan.song_name or f"TC{plan.profile.timecode_pool}"
+            song_stem = sanitize_ma_name(
+                Path(plan.profile.timecode_file).stem or plan.song_name or "TC",
+                fallback=f"TC{plan.profile.timecode_pool}",
+            ).replace(" ", "_")
+            tc_jobs.append(
+                (
+                    self.build_show_timecode_xml([plan], name=tc_label),
+                    int(plan.profile.timecode_pool),
+                    f"{name}_TC_{song_stem}",
+                    tc_label,
+                    float(plan.profile.start_offset_seconds),
+                    float(plan.profile.fps or 30.0),
+                    int(plan.profile.timecode_slot),
+                )
+            )
+        paths = self._write_plugin_pair(
+            directory,
+            basename=name,
+            display_name=name,
+            cmd_lines=cmd_lines,
+            info_name=name,
+            echo_note=f"CuePlayer show install: {len(tc_jobs)} Timecode(s)",
+            timecode_jobs=tc_jobs,
+        )
+        # Keep a setup-only macro as backup (no TC Import / Offset).
+        paths["macro_xml"] = self._write_macro_xml(
+            directory,
+            basename=name,
+            display_name=f"{name}_SetupOnly",
+            cmd_lines=cmd_lines,
+            info_name=name,
+        )
+        return paths
+
+    def _write_macro_xml(
+        self,
+        directory: Path,
+        *,
+        basename: str,
+        display_name: str,
+        cmd_lines: list[str],
+        info_name: str,
+    ) -> Path:
+        _import_dir, _plugins_dir, macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        macros_dir.mkdir(parents=True, exist_ok=True)
+        macro_xml_path = macros_dir / f"{basename}_install_macro.xml"
+
         macro_root = self._root()
-        self._info(macro_root, plan.song_name)
+        self._info(macro_root, info_name)
         macro = ET.SubElement(
             macro_root,
             f"{{{MA2_NS}}}Macro",
-            {"index": "0", "name": "CuePlayer Export"},
+            {"index": "0", "name": display_name},
         )
         for i, line in enumerate(cmd_lines):
             macroline = ET.SubElement(macro, f"{{{MA2_NS}}}Macroline", {"index": str(i)})
@@ -368,9 +671,106 @@ return Start, Cleanup
             text.text = line
         write_xml(macro_root, macro_xml_path, default_namespace=MA2_NS)
         self._fix_ma2_xsi(macro_xml_path)
+        return macro_xml_path
+
+    def _write_plugin_pair(
+        self,
+        directory: Path,
+        *,
+        basename: str,
+        display_name: str,
+        cmd_lines: list[str],
+        info_name: str,
+        echo_note: str,
+        timecode_jobs: list[tuple[str, int, str, str, float, float, int]] | None = None,
+    ) -> dict[str, Path]:
+        """Write Plugin XML + Lua.
+
+        timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps, slot)
+        — one entry per Timecode. Options + Offset are Assigned after Import.
+        """
+        _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        plugins_dir.mkdir(parents=True, exist_ok=True)
+
+        lua_name = f"{basename}_export.lua"
+        lua_path = plugins_dir / lua_name
+        plugin_xml_path = plugins_dir / f"{basename}_export.xml"
+
+        lua_cmds = "\n".join(_lua_cmd_line(line) for line in cmd_lines)
+        jobs = list(timecode_jobs or [])
+        if jobs:
+            # CuePoints: write each TC after assigns, Import (no .xml), delete temp,
+            # then Assign Timecode options + Offset (events stay relative).
+            parts: list[str] = [
+                "",
+                "  gma.cmd('SelectDrive 1')",
+                "  gma.sleep(0.5)",
+                "  local path = gma.show.getvar('PATH')",
+                "  local slash = package.config:sub(1,1)",
+                "  local ie = path..slash..'importexport'..slash",
+            ]
+            for tc_xml, tc_pool, tc_stem, tc_label, start_offset, fps, tc_slot in jobs:
+                tc_escaped = tc_xml.replace("\\", "\\\\").replace("'", "\\'")
+                label = sanitize_ma_name(tc_label, fallback=f"TC{tc_pool}")
+                assign_cmds = ma2_timecode_assign_settings(
+                    MaExportProfile(
+                        console="ma2",
+                        timecode_pool=int(tc_pool),
+                        timecode_slot=int(tc_slot),
+                        start_offset_seconds=float(start_offset),
+                        fps=float(fps),
+                    )
+                )
+                assign_lines = "\n".join(
+                    "    " + _lua_cmd_line(cmd).lstrip() for cmd in assign_cmds
+                )
+                parts.append(
+                    f"""
+  do
+    local tcname = '{_lua_str(tc_stem)}'
+    local tcfile = ie..tcname..'.xml'
+    local tcxml = io.open(tcfile, 'w')
+    tcxml:write('{tc_escaped}')
+    tcxml:close()
+    gma.cmd('Import "'..tcname..'" At Timecode {int(tc_pool)}')
+    gma.sleep(0.5)
+    os.remove(tcfile)
+    gma.cmd('Label Timecode {int(tc_pool)} "{_lua_str(label)}"')
+{assign_lines}
+  end"""
+                )
+            tc_block = "\n".join(parts)
+        else:
+            tc_block = ""
+
+        lua = f"""-- CuePlayer MA2 install plugin (CuePoints-style)
+-- Store/Assign sequences, then write+Import one Timecode per song + Offset.
+local function Start()
+{lua_cmds}
+{tc_block}
+  gma.echo("{_lua_str(echo_note)}")
+end
+
+return Start
+"""
+        lua_path.write_text(lua, encoding="utf-8")
+
+        plugin_root = self._root()
+        self._info(plugin_root, info_name)
+        ET.SubElement(
+            plugin_root,
+            f"{{{MA2_NS}}}Plugin",
+            {
+                "index": "0",
+                "execute_on_load": "0",
+                "name": display_name,
+                "luafile": lua_name,
+            },
+        )
+        write_xml(plugin_root, plugin_xml_path, default_namespace=MA2_NS)
+        self._fix_ma2_xsi(plugin_xml_path)
 
         return {
             "plugin_xml": plugin_xml_path,
             "plugin_lua": lua_path,
-            "macro_xml": macro_xml_path,
         }

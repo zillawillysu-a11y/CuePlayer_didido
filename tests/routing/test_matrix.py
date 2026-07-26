@@ -23,3 +23,19 @@ def test_warn_when_device_too_small() -> None:
     msg = warn_if_outputs_insufficient([0, 1, 2], available=2)
     assert msg is not None
     assert "3" in msg
+
+
+def test_default_route_dict_three_plus() -> None:
+    from cueplayer.routing.matrix import default_route_dict
+
+    route = default_route_dict(8)
+    assert route == {0: [0], 1: [1], 2: [2]}
+
+
+def test_master_volume_does_not_scale_ltc_in_matrix() -> None:
+    """Routing mixes sources as-given; LTC gain is applied before routing."""
+    # Music quiet, LTC loud — destinations stay independent.
+    src = np.array([[0.1, 0.1, 0.9]], dtype=np.float32)
+    out = apply_routing(src, route={0: [0], 1: [1], 2: [2]}, output_channels=4)
+    assert out[0, 0] == pytest.approx(0.1)
+    assert out[0, 2] == pytest.approx(0.9)

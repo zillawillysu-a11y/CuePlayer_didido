@@ -70,11 +70,10 @@ Macro 內設定 Key 的正確語法：
 
 用 LTC 觸發 MA 時，常會覺得 cue 晚了約 **0.1s～0.2s**（CuePoints 也有類似 Global Latency Negative Offset）。
 
-CuePlayer 匯出可設：
+CuePlayer 匯出：
 
-- `ltc_latency_compensation_seconds = -0.10` / `-0.15` / `-0.20`
-- 負值 = 事件提前觸發，抵消 MA／LTC 延遲
-- 只影響 **Timecode 事件時間**，不改 Marks 本體時間
+- **起始 Timecode**（如 `01:00:00:00`）寫進 Timecode 物件的 **Offset**，事件時間維持歌曲相對時間（與 CuePoints 相同）。
+- `ltc_latency_compensation_seconds = -0.10` / `-0.15` / `-0.20`：負值 = 事件提前，抵消 MA／LTC 延遲；只影響 Timecode 事件時間，不改 Marks。
 
 之後 UI 會做成可選補償值；現在程式層已支援。
 

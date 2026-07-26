@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from cueplayer.exporters.common import SongExportPlan, export_event_time_seconds, parse_page_executor
+from cueplayer.exporters.common import (
+    SongExportPlan,
+    export_event_time_seconds,
+    format_ma3_offset_seconds,
+    ma3_timecode_set_property_commands,
+    parse_page_executor,
+    sanitize_ma_name,
+)
 from cueplayer.exporters.xml_write import ma3_guid, write_xml
 
 MA3_TARGET_VERSION = "2.3.2"
@@ -38,6 +45,31 @@ _SEQUENCE_ATTRS = {
 }
 
 
+def resolve_ma3_datapool_dirs(directory: Path) -> tuple[Path, Path, Path]:
+    """
+    Map a user-chosen folder to MA3 library datapool subfolders.
+
+    Returns (sequences_dir, timecodes_dir, macros_dir).
+
+    Accepts:
+    - gma3_library
+    - gma3_library/datapools
+    - …/datapools/sequences (or timecodes / macros)
+    - any other folder → creates datapools/{sequences,timecodes,macros} under it
+    """
+    root = Path(directory)
+    name = root.name.lower()
+    if name == "datapools":
+        base = root
+    elif name in ("sequences", "timecodes", "macros") and root.parent.name.lower() == "datapools":
+        base = root.parent
+    elif (root / "datapools").exists() or name == "gma3_library":
+        base = root / "datapools"
+    else:
+        base = root / "datapools"
+    return base / "sequences", base / "timecodes", base / "macros"
+
+
 class Ma3Exporter:
     target_version = MA3_TARGET_VERSION
     data_version = MA3_DATA_VERSION
@@ -59,22 +91,77 @@ class Ma3Exporter:
             "ltc_latency_compensation_seconds": plan.profile.ltc_latency_compensation_seconds,
         }
 
-    def export_to_directory(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
+    def export_to_directory(
+        self,
+        plan: SongExportPlan,
+        directory: Path,
+        *,
+        include_macro: bool = True,
+    ) -> dict[str, Path]:
+        """
+        Write into MA3 datapool folders:
+
+        - Sequence XML → datapools/sequences/
+        - Timecode XML → datapools/timecodes/
+        - Install Macro → datapools/macros/ (optional; show export uses one shared macro)
+        """
+        seq_dir, tc_dir, macro_dir = resolve_ma3_datapool_dirs(directory)
+        for folder in (seq_dir, tc_dir, macro_dir):
+            folder.mkdir(parents=True, exist_ok=True)
+
         paths: dict[str, Path] = {}
 
         if plan.profile.export_mode == "full":
-            paths["main_sequence"] = directory / "main_sequence.xml"
-            paths["button_sequence"] = directory / "button_sequence.xml"
+            paths["main_sequence"] = seq_dir / plan.profile.main_sequence_file
             self.write_main_sequence(plan, paths["main_sequence"])
-            self.write_button_sequence(plan, paths["button_sequence"])
-            paths["macro"] = directory / "cueplayer_install_macro.xml"
-            self.write_install_macro(plan, paths["macro"])
+            if plan.button_lanes:
+                for lane in plan.button_lanes:
+                    key = f"button_sequence_{lane.lane_index}"
+                    path = seq_dir / (lane.sequence_file or plan.profile.button_sequence_file)
+                    paths[key] = path
+                    self.write_button_sequence(plan, path, sequence_name=lane.sequence_name)
+                paths["button_sequence"] = paths[
+                    f"button_sequence_{plan.button_lanes[0].lane_index}"
+                ]
+            if include_macro:
+                install_base = plan.profile.main_sequence_file
+                if install_base.endswith("_main.xml"):
+                    install_base = install_base[: -len("_main.xml")]
+                else:
+                    install_base = plan.song_name or "cueplayer"
+                paths["macro"] = macro_dir / f"{install_base}_install_macro.xml"
+                self.write_install_macro(plan, paths["macro"])
 
-        paths["timecode"] = directory / "timecode.xml"
+        paths["timecode"] = tc_dir / plan.profile.timecode_file
         self.write_timecode(plan, paths["timecode"])
         return paths
+
+    def export_show_to_directory(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        show_macro_name: str = "CuePlayer_Show_Install",
+    ) -> dict[str, Path]:
+        """
+        Export every song's Seq/TC files, plus one show-wide install Macro.
+        """
+        if not plans:
+            return {}
+        _seq_dir, _tc_dir, macro_dir = resolve_ma3_datapool_dirs(directory)
+        all_paths: dict[str, Path] = {}
+        for plan in plans:
+            # Per-song macros skipped — one show macro at the end.
+            paths = self.export_to_directory(plan, directory, include_macro=False)
+            prefix = plan.song_name or "song"
+            for key, path in paths.items():
+                all_paths[f"{prefix}:{key}"] = path
+
+        if any(p.profile.export_mode == "full" for p in plans):
+            macro_path = macro_dir / f"{show_macro_name}.xml"
+            self.write_show_install_macro(plans, macro_path, name=show_macro_name)
+            all_paths["show:macro"] = macro_path
+        return all_paths
 
     def _root(self) -> ET.Element:
         return ET.Element("GMA3", {"DataVersion": self.data_version})
@@ -120,22 +207,33 @@ class Ma3Exporter:
 
         for cue in plan.main_cues:
             cue_no = int(cue.cue_number)
-            # Match golden fixture: numbered cues without Name attributes.
-            cue_el = ET.SubElement(
-                sequ,
-                "Cue",
-                {"No": f"{cue_no:3d}", "AllowDuplicates": ""},
-            )
+            # Name before No (matches CueZero pattern) so Import keeps the label.
+            attrs: dict[str, str] = {}
+            label = cue.cue_name_for_export()
+            if label:
+                attrs["Name"] = label
+            attrs["No"] = f"{cue_no:3d}"
+            attrs["AllowDuplicates"] = ""
+            cue_el = ET.SubElement(sequ, "Cue", attrs)
             part = self._cue_part(cue_el)
             part.set("Sync", "")
             part.set("Morph", "")
+            # Some MA3 builds read Part name when Cue Name is dropped on import.
+            if label:
+                part.set("Name", label)
 
         write_xml(root, path)
 
-    def write_button_sequence(self, plan: SongExportPlan, path: Path) -> None:
+    def write_button_sequence(
+        self,
+        plan: SongExportPlan,
+        path: Path,
+        *,
+        sequence_name: str | None = None,
+    ) -> None:
         root = self._root()
         attrs = {
-            "Name": plan.profile.button_sequence_name,
+            "Name": sequence_name or plan.profile.button_sequence_name,
             "Guid": ma3_guid(),
             **_SEQUENCE_ATTRS,
             "AutoPrePos": "No",
@@ -190,25 +288,38 @@ class Ma3Exporter:
                 export_event_time_seconds(t, plan.profile) for t in lane.mark_times_seconds
             )
         duration = max(times) if times else 0.0
+        offset_text = format_ma3_offset_seconds(plan.profile.start_offset_seconds)
+        # TCSlot: 1..8 = external slot (user default), -1 = none/internal.
+        tc_slot = int(plan.profile.timecode_slot)
+        tc_slot_attr = str(tc_slot) if tc_slot >= 0 else "-1"
+
+        tc_attrs = {
+            "Name": plan.profile.timecode_name,
+            "Guid": ma3_guid(),
+            "Cursor": f"{duration:.2f}",
+            "Duration": f"{duration:.2f}",
+            "LoopCount": "0",
+            "TCSlot": tc_slot_attr,
+            # Playback column (user screenshot defaults)
+            "AutoStart": "Yes",
+            "AutoStop": "Yes",
+            "LoopMode": "Off",
+            "SwitchOff": "Keep Playbacks",
+            "AssertPrevEvents": "No",
+            "RestartOption": "Continue",
+            # Record (Playback and Record is set via install macro — UI name has spaces)
+            "Goto": "as Go",
+            # Display
+            "TimeDisplayFormat": "10d11h23m45",
+            "FrameReadout": "Seconds",
+        }
+        # CuePoints-style: song start LTC → OffsetTCSlot (UI: Offset TC Slot).
+        tc_attrs["OffsetTCSlot"] = offset_text
 
         tc = ET.SubElement(
             root,
             "Timecode",
-            {
-                "Name": plan.profile.timecode_name,
-                "Guid": ma3_guid(),
-                "Cursor": f"{duration:.2f}",
-                "Duration": f"{duration:.2f}",
-                "LoopCount": "0",
-                "TCSlot": "-1",
-                "AutoStop": "No",
-                "SwitchOff": "Keep Playbacks",
-                "Goto": "as Go",
-                "AssertPrevEvents": "No",
-                "TimeDisplayFormat": "Default",
-                "FrameReadout": "Default",
-                "RestartOption": "Continue",
-            },
+            tc_attrs,
         )
         group = ET.SubElement(tc, "TrackGroup", {"Play": "", "Rec": ""})
         ET.SubElement(group, "MarkerTrack", {"Name": "Marker", "Guid": ma3_guid()})
@@ -233,6 +344,9 @@ class Ma3Exporter:
             {"Guid": ma3_guid(), "Duration": "To End", "Play": "", "Rec": ""},
         )
         main_cmds = ET.SubElement(main_range, "CmdSubTrack")
+        # Numeric handles match onPC-exported golden XML (named ShowData paths
+        # in Object/ValCueDestination fail to resolve Cue destinations on import).
+        main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
         for cue in plan.main_cues:
             cue_no = int(cue.cue_number)
             t = export_event_time_seconds(cue.time_seconds, plan.profile)
@@ -267,17 +381,20 @@ class Ma3Exporter:
                     "FromLocalHardwareFader": "1",
                     "IgnoreExecXFade": "0",
                     "IsExecXFade": "0",
-                    "Object": "13.13.0.5.0",
+                    "Object": f"13.13.0.5.{main_seq_idx}",
                     "ExecToken": "Go+",
-                    "ValCueDestination": f"0.5.0.{cue_no}000",
+                    "ValCueDestination": f"0.5.{main_seq_idx}.{cue_no * 1000}",
                 },
             )
 
         for lane_i, lane in enumerate(plan.button_lanes):
-            button_name = (
-                plan.profile.button_sequence_name if lane_i == 0 else lane.resolved_ma_name()
-            )
+            button_name = lane.sequence_name or lane.resolved_ma_name()
             target = f"ShowData.DataPools.{pool}.Sequences.{button_name}"
+            btn_pool = int(
+                lane.sequence_pool
+                or (plan.profile.sequence_pool_start + 1 + lane_i)
+            )
+            btn_seq_idx = max(0, btn_pool - 1)
             track = ET.SubElement(
                 group,
                 "Track",
@@ -328,52 +445,96 @@ class Ma3Exporter:
                         "FromLocalHardwareFader": "1",
                         "IgnoreExecXFade": "0",
                         "IsExecXFade": "0",
-                        "Object": "13.13.0.5.1",
+                        "Object": f"13.13.0.5.{btn_seq_idx}",
                         "ExecToken": "Top",
-                        "ValCueDestination": "0.5.1.1000",
+                        "ValCueDestination": f"0.5.{btn_seq_idx}.1000",
                     },
                 )
 
         write_xml(root, path)
 
+    def install_commands_for_plan(self, plan: SongExportPlan) -> list[str]:
+        """Command lines to install one song (Page / Seq / TC / OffsetTCSlot)."""
+        main_seq = plan.profile.sequence_pool_start
+        tc_pool = plan.profile.timecode_pool
+        main_page, main_exec = parse_page_executor(plan.profile.main_executor)
+        page_name = sanitize_ma_name(
+            plan.profile.page_name or plan.song_name or "",
+            fallback="",
+        )
+
+        commands: list[str] = []
+        if page_name:
+            commands.extend(
+                [
+                    f"Store Page {main_page}",
+                    f'Label Page {main_page} "{page_name}"',
+                ]
+            )
+        commands.extend(
+            [
+                f'Import Sequence {main_seq} "{plan.profile.main_sequence_file}"',
+                f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
+                f"Assign Sequence {main_seq} At Page {main_page}.{main_exec}",
+                f"Assign Go+ At Page {main_page}.{main_exec}",
+            ]
+        )
+        for lane in plan.button_lanes:
+            seq_pool = lane.sequence_pool or (main_seq + 1)
+            seq_file = lane.sequence_file or plan.profile.button_sequence_file
+            seq_name = lane.sequence_name or plan.profile.button_sequence_name
+            b_page, b_exec = parse_page_executor(lane.executor)
+            commands.extend(
+                [
+                    f'Import Sequence {seq_pool} "{seq_file}"',
+                    f'Label Sequence {seq_pool} "{seq_name}"',
+                    f"Assign Sequence {seq_pool} At Page {b_page}.{b_exec}",
+                    f"Assign Top At Page {b_page}.{b_exec}",
+                ]
+            )
+        commands.extend(
+            [
+                f'Import Timecode {tc_pool} "{plan.profile.timecode_file}"',
+                f'Label Timecode {tc_pool} "{plan.profile.timecode_name}"',
+            ]
+        )
+        commands.extend(ma3_timecode_set_property_commands(plan.profile))
+        return commands
+
     def write_install_macro(self, plan: SongExportPlan, path: Path) -> None:
-        """
-        CuePoints-style install Macro:
-        import sequences, assign to executors, set keys, import timecode.
-        """
+        """Per-song install Macro (still available for single-song export)."""
+        self._write_macro_xml(
+            path,
+            name=f"CuePlayer {plan.song_name}",
+            commands=self.install_commands_for_plan(plan),
+        )
+
+    def write_show_install_macro(
+        self,
+        plans: list[SongExportPlan],
+        path: Path,
+        *,
+        name: str = "CuePlayer_Show_Install",
+    ) -> None:
+        """One Macro that installs every exported song in show order."""
+        commands: list[str] = []
+        for plan in plans:
+            if plan.profile.export_mode != "full":
+                continue
+            commands.extend(self.install_commands_for_plan(plan))
+        self._write_macro_xml(path, name=name, commands=commands)
+
+    def _write_macro_xml(self, path: Path, *, name: str, commands: list[str]) -> None:
         root = self._root()
         macro = ET.SubElement(
             root,
             "Macro",
-            {"Name": "CuePlayer Export", "Guid": ma3_guid()},
+            {"Name": name, "Guid": ma3_guid()},
         )
-
-        main_seq = plan.profile.sequence_pool_start
-        button_seq = plan.profile.sequence_pool_start + 1
-        tc_pool = plan.profile.timecode_pool
-        main_page, main_exec = parse_page_executor(plan.profile.main_executor)
-        button_page, button_exec = parse_page_executor(
-            plan.button_lanes[0].executor if plan.button_lanes else "1.201"
-        )
-
-        commands = [
-            f'Import Sequence {main_seq} "{plan.profile.main_sequence_file}"',
-            f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
-            f"Assign Sequence {main_seq} At Page {main_page}.{main_exec}",
-            # Official MA3 syntax: Assign [Function] At Page x.y
-            f"Assign Go+ At Page {main_page}.{main_exec}",
-            f'Import Sequence {button_seq} "{plan.profile.button_sequence_file}"',
-            f'Label Sequence {button_seq} "{plan.profile.button_sequence_name}"',
-            f"Assign Sequence {button_seq} At Page {button_page}.{button_exec}",
-            f"Assign Top At Page {button_page}.{button_exec}",
-            f'Import Timecode {tc_pool} "{plan.profile.timecode_file}"',
-            f'Label Timecode {tc_pool} "{plan.profile.timecode_name}"',
-        ]
         for i, command in enumerate(commands, start=1):
             ET.SubElement(
                 macro,
                 "MacroLine",
                 {"Name": f"Line {i}", "Command": command, "Enabled": "Yes"},
             )
-
         write_xml(root, path)
