@@ -21,6 +21,7 @@ from cueplayer.playback.devices import (
     probe_supported_output_channels,
     required_output_channels,
     resolve_output_endpoint_for_channels,
+    resolve_output_hostapi,
     resolve_output_samplerate,
     upgrade_device_for_channels,
 )
@@ -734,7 +735,7 @@ class AudioEngine(QObject):
         return left[0], left[1], right[0], right[1]
 
     def _resolve_device_and_route(self) -> None:
-        hostapi = str(self._audio_settings.output_hostapi or "")
+        hostapi = resolve_output_hostapi(self._audio_settings.output_hostapi)
         devices = list_output_devices()
         try:
             raw_devices = list_output_devices(dedupe=False)

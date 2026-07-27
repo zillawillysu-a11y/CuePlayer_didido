@@ -246,6 +246,27 @@ def list_output_devices_for_picker(hostapi: str = "") -> list[OutputDeviceInfo]:
     )
 
 
+def default_picker_hostapi() -> str:
+    """Preferred driver when none is saved — ASIO first (Reaper-style)."""
+    names = hostapi_names()
+    for preferred in (
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ):
+        if preferred in names:
+            return preferred
+    return names[0] if names else ""
+
+
+def resolve_output_hostapi(hostapi: str) -> str:
+    """Map legacy empty hostapi to an explicit driver choice."""
+    wanted = (hostapi or "").strip()
+    return wanted if wanted else default_picker_hostapi()
+
+
 def picker_hostapi_options() -> list[tuple[str, str]]:
     """(label, hostapi name) rows for the Audio / Timecode driver combo."""
     names = hostapi_names()
@@ -256,7 +277,7 @@ def picker_hostapi_options() -> list[tuple[str, str]]:
         "MME",
         "Windows WDM-KS",
     ]
-    out: list[tuple[str, str]] = [("Default (ASIO / WASAPI first)", "")]
+    out: list[tuple[str, str]] = []
     for name in preferred:
         if name in names:
             short = name.replace("Windows ", "")

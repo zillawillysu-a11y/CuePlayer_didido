@@ -201,6 +201,23 @@ def test_probe_failure_switches_to_asio_multichannel(monkeypatch) -> None:
     assert engine._route.get(2) == [2]
 
 
+def test_picker_hostapi_options_lists_asio_first_without_default_bucket(monkeypatch) -> None:
+    monkeypatch.setattr(
+        devices_mod,
+        "hostapi_names",
+        lambda: ["ASIO", "Windows WASAPI", "Windows DirectSound", "MME"],
+    )
+    options = devices_mod.picker_hostapi_options()
+    labels = [label for label, _api in options]
+    apis = [api for _label, api in options]
+    assert "Default" not in " ".join(labels)
+    assert apis[0] == "ASIO"
+    assert labels[0] == "ASIO"
+    assert devices_mod.default_picker_hostapi() == "ASIO"
+    assert devices_mod.resolve_output_hostapi("") == "ASIO"
+    assert devices_mod.resolve_output_hostapi("Windows WASAPI") == "Windows WASAPI"
+
+
 def test_list_output_devices_for_picker_keeps_asio_and_multichannel_ds(monkeypatch) -> None:
     """Routing dialog must list ASIO separately and keep 4ch DirectSound siblings."""
     stereo = _dev(0, "Speakers (Focusrite USB)", api="Windows WASAPI", ch=2)

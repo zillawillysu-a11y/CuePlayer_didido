@@ -29,6 +29,7 @@ from cueplayer.playback.devices import (
     list_output_devices,
     list_output_devices_for_picker,
     picker_hostapi_options,
+    resolve_output_hostapi,
     resolve_output_endpoint_for_channels,
     upgrade_device_for_channels,
 )
@@ -103,19 +104,23 @@ class AudioTimecodeDialog(QDialog):
         self.hostapi_combo = NoWheelComboBox()
         for label, api in picker_hostapi_options():
             self.hostapi_combo.addItem(label, api)
-        saved_api = str(settings.output_hostapi or "")
+        saved_api = resolve_output_hostapi(settings.output_hostapi)
+        selected = False
         for i in range(self.hostapi_combo.count()):
             if self.hostapi_combo.itemData(i) == saved_api:
                 self.hostapi_combo.setCurrentIndex(i)
+                selected = True
                 break
+        if not selected and self.hostapi_combo.count():
+            self.hostapi_combo.setCurrentIndex(0)
 
         self.device_combo = NoWheelComboBox()
         self.device_hint = QLabel("")
         self.device_hint.setStyleSheet("color: #a1a1aa;")
         self.device_hint.setWordWrap(True)
         self.driver_hint = QLabel(
-            "Driver: pick ASIO for multi-channel routing (same as Reaper). "
-            "Then choose your interface in Device."
+            "Driver: choose ASIO, then pick your interface (e.g. Focusrite) under Device. "
+            "Use WASAPI or DirectSound only when ASIO is unavailable."
         )
         self.driver_hint.setWordWrap(True)
         self.driver_hint.setStyleSheet("color: #8b949e;")
@@ -377,7 +382,7 @@ class AudioTimecodeDialog(QDialog):
         self._result = AudioOutputSettings(
             output_device_name=chosen.name if chosen is not None else "",
             output_device_index=chosen.index if chosen is not None else None,
-            output_hostapi=str(self.hostapi_combo.currentData() or ""),
+            output_hostapi=resolve_output_hostapi(str(self.hostapi_combo.currentData() or "")),
             music_l_route=self.music_l.currentText().strip() or "1",
             music_r_route=self.music_r.currentText().strip() or "2",
             music_left_channels=left_ch if left_kind == "channels" else [],
