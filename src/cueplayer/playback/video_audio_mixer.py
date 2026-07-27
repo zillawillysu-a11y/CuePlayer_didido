@@ -132,19 +132,23 @@ class VideoAudioMixer:
             buf_frames = int(samples.shape[0])
             span_frames = max(1, min(buf_frames, int(round(clip.source_span_seconds * sr))))
             vol = max(0.0, min(1.0, float(clip.volume)))
-            for dst_idx in range(lo, hi):
-                timeline_offset = dst_idx - clip_start_frame
-                if clip.media_kind == "still":
-                    src_idx = 0
-                else:
-                    src_idx = timeline_offset % span_frames
-                if src_idx < 0 or src_idx >= buf_frames:
-                    continue
-                t_seconds = dst_idx / sr
-                weight = video_clip_crossfade_weight(clip, t_seconds, song.video_clips)
-                if weight <= 1e-6:
-                    continue
-                out_row = dst_idx - start_frame
-                out[out_row] += samples[src_idx] * vol * weight
+            active = np.arange(lo, hi, dtype=np.int64)
+            offsets = active - clip_start_frame
+            if clip.media_kind == "still":
+                src_idx = np.zeros(active.size, dtype=np.int64)
+            else:
+                src_idx = np.mod(offsets, span_frames)
+            src_idx = np.clip(src_idx, 0, buf_frames - 1)
+            t_seconds = active.astype(np.float64) / sr
+            weights = np.array(
+                [video_clip_crossfade_weight(clip, float(t), song.video_clips) for t in t_seconds],
+                dtype=np.float32,
+            )
+            mask = weights > 1e-6
+            if not np.any(mask):
+                continue
+            out_rows = (active[mask] - start_frame).astype(np.int64)
+            scaled = samples[src_idx[mask]] * (vol * weights[mask])[:, np.newaxis]
+            out[out_rows] += scaled
         np.clip(out, -1.0, 1.0, out=out)
         return out

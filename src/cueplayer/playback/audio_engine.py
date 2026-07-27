@@ -9,6 +9,7 @@ if sys.platform == "win32":
     os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import sounddevice as sd
@@ -43,10 +44,10 @@ from cueplayer.playback.routing_parse import (
     parse_stereo_route,
 )
 from cueplayer.playback.mtc_output import MtcOutput
-from cueplayer.playback.resample import resample_linear
+from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
-from cueplayer.timecode.ltc import generate_ltc_pcm
+from cueplayer.timecode.ltc import generate_ltc_pcm, generate_ltc_pcm_segment
 
 
 class AudioEngine(QObject):
@@ -94,6 +95,8 @@ class AudioEngine(QObject):
         self._audio_settings = AudioOutputSettings()
         self._ltc_pcm: np.ndarray | None = None
         self._ltc_cache_key: tuple | None = None
+        self._ltc_cache_future = None
+        self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
         self._detected_ltc_channel: int | None = None
         self._song_start_tc = "01:00:00:00"
         self._song_fps = 30.0
@@ -155,13 +158,20 @@ class AudioEngine(QObject):
     def _autodetect_ltc_channel(self) -> int | None:
         if self._detected_ltc_channel is not None:
             return self._detected_ltc_channel
-        samples = self._playback_samples
-        if samples is not None and samples.ndim == 2 and samples.shape[1] >= 2:
-            detected = detect_ltc_channel(samples, self._sample_rate())
+        buf = self._buffer
+        if buf is not None and buf.samples.ndim == 2 and buf.samples.shape[1] >= 2:
+            detected = detect_ltc_channel(buf.samples, int(buf.sample_rate))
             if detected is not None:
                 self._detected_ltc_channel = detected
                 return detected
         return None
+
+    def _is_ltc_file_channel(self, channel: int) -> bool:
+        ch = self._file_ltc_channel()
+        if ch is not None and ch == channel:
+            return True
+        eff = self._effective_ltc_source_channel()
+        return eff is not None and eff == channel
 
     def _file_ltc_channel(self) -> int | None:
         """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
@@ -215,11 +225,7 @@ class AudioEngine(QObject):
             or is_ltc_route(self._audio_settings.music_l_route)
             or is_ltc_route(self._audio_settings.music_r_route)
             or self._resolved_file_ltc_channel() is not None
-            or (
-                self._audio_settings.ltc_enabled
-                and self._audio_settings.ltc_source != "generator"
-                and ch_count >= 2
-            )
+            or (self._audio_settings.ltc_enabled and ch_count >= 2)
         )
         if not strip_ltc:
             return 0, 1
@@ -703,6 +709,7 @@ class AudioEngine(QObject):
         self._calib_click_frames = remaining
 
     def _invalidate_ltc_cache(self) -> None:
+        self._ltc_cache_future = None
         with self._lock:
             self._ltc_pcm = None
             self._ltc_cache_key = None
@@ -716,19 +723,44 @@ class AudioEngine(QObject):
         with self._lock:
             if self._ltc_cache_key == key and self._ltc_pcm is not None:
                 return
-        try:
-            pcm = generate_ltc_pcm(
-                dur,
-                sr,
-                self._song_start_tc,
-                self._song_fps,
-                amplitude=1.0,
-            )
-        except ValueError:
-            pcm = np.zeros(max(1, int(dur * sr)), dtype=np.float32)
-        with self._lock:
-            self._ltc_pcm = pcm
-            self._ltc_cache_key = key
+        if self._ltc_cache_future is not None and not self._ltc_cache_future.done():
+            return
+
+        def _build() -> tuple[tuple, np.ndarray]:
+            try:
+                pcm = generate_ltc_pcm(
+                    dur,
+                    sr,
+                    self._song_start_tc,
+                    self._song_fps,
+                    amplitude=1.0,
+                )
+            except ValueError:
+                pcm = np.zeros(max(1, int(dur * sr)), dtype=np.float32)
+            return key, pcm
+
+        future = self._ltc_executor.submit(_build)
+        self._ltc_cache_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, pcm = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if not self._uses_generated_ltc():
+                    return
+                cur_key = (
+                    self._sample_rate(),
+                    round(self.duration, 6),
+                    self._song_start_tc,
+                    round(self._song_fps, 4),
+                )
+                if cur_key == built_key:
+                    self._ltc_pcm = pcm
+                    self._ltc_cache_key = built_key
+
+        future.add_done_callback(_done)
 
     def _ltc_bus_active(self) -> bool:
         s = self._audio_settings
@@ -925,14 +957,12 @@ class AudioEngine(QObject):
         self._refresh_ltc_detection()
 
     def _refresh_ltc_detection(self) -> None:
-        """Re-run LTC auto-detect on the playback-rate buffer (post-resample)."""
+        """Re-run LTC auto-detect on the native file buffer (not resampled music)."""
         buf = self._buffer
         if buf is None or buf.channels < 2:
             self._detected_ltc_channel = None
             return
-        samples = self._playback_samples if self._playback_samples is not None else buf.samples
-        sr = int(self._playback_rate) if self._playback_samples is not None else int(buf.sample_rate)
-        self._detected_ltc_channel = detect_ltc_channel(samples, sr)
+        self._detected_ltc_channel = detect_ltc_channel(buf.samples, int(buf.sample_rate))
 
     def _refresh_playback_samples(self) -> None:
         """
@@ -1005,6 +1035,26 @@ class AudioEngine(QObject):
 
     def _source_channel_chunk(self, channel: int, start: int, frames: int) -> np.ndarray:
         out = np.zeros(frames, dtype=np.float32)
+        buf = self._buffer
+        if self._is_ltc_file_channel(channel) and buf is not None:
+            native = buf.samples
+            if native.ndim == 1:
+                mono = native
+            else:
+                idx = min(max(0, int(channel)), int(native.shape[1]) - 1)
+                mono = native[:, idx]
+            if int(buf.sample_rate) != int(self._playback_rate):
+                return resample_hold_segment(
+                    mono,
+                    float(buf.sample_rate),
+                    float(self._playback_rate),
+                    start,
+                    frames,
+                )
+            end = min(start + frames, mono.shape[0])
+            if end > start:
+                out[: end - start] = mono[start:end]
+            return out
         samples = self._playback_samples
         if samples is None:
             return out
@@ -1037,6 +1087,20 @@ class AudioEngine(QObject):
             return out
         pcm = self._ltc_pcm
         if pcm is None:
+            seg = generate_ltc_pcm_segment(
+                start,
+                frames,
+                self._sample_rate(),
+                self._song_start_tc,
+                self._song_fps,
+                amplitude=1.0,
+            )
+            gain = float(self._audio_settings.ltc_gain)
+            if gain < 1.0 - 1e-6:
+                seg = seg * gain
+            elif gain <= 1e-6:
+                seg = np.zeros_like(seg)
+            out[: seg.size] = seg
             return out
         end = min(start + frames, pcm.size)
         if end <= start:
@@ -1064,7 +1128,6 @@ class AudioEngine(QObject):
 
     def _start_stream(self) -> None:
         self._stop_stream()
-        self._resolve_device_and_route()
         sample_rate = self._sample_rate()
         out_ch = self._output_channel_count
         device = self._device_index
@@ -1150,7 +1213,7 @@ class AudioEngine(QObject):
             "dtype": "float32",
             "callback": callback,
             "latency": "low",
-            "blocksize": 0,
+            "blocksize": 1024,
         }
         if device is not None:
             kwargs["device"] = device

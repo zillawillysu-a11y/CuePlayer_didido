@@ -78,31 +78,46 @@ def encode_ltc_frame_bits(
     return bits
 
 
+def _ltc_frame_start(frame_idx: int, sample_rate: int, fps: float) -> int:
+    rate = float(fps) if fps > 0 else 30.0
+    return int(round(frame_idx * sample_rate / rate))
+
+
+def _ltc_frame_len(frame_idx: int, sample_rate: int, fps: float) -> int:
+    return max(
+        160,
+        _ltc_frame_start(frame_idx + 1, sample_rate, fps)
+        - _ltc_frame_start(frame_idx, sample_rate, fps),
+    )
+
+
 def _biphase_encode(
     bits: list[int],
-    samples_per_bit: float,
+    frame_len: int,
     amplitude: float,
     *,
     initial_level: float | None = None,
 ) -> tuple[np.ndarray, float]:
-    """Bi-phase mark: edge at every bit boundary; mid-bit edge iff bit == 1.
+    """Bi-phase mark with exactly ``frame_len`` samples (80 bit cells).
 
-    ``initial_level`` carries polarity from the previous LTC frame so decoders
-    stay locked across frame boundaries.
+    Bit boundaries use cumulative rounding so non-integer samples/bit at
+    rates like 44.1 kHz do not need pad/truncate (which breaks decoders).
+    ``initial_level`` carries polarity from the previous LTC frame.
     """
-    spb = max(2, int(round(samples_per_bit)))
-    half = spb // 2
-    out = np.empty(len(bits) * spb, dtype=np.float32)
+    frame_len = max(160, int(frame_len))
+    boundaries = [int(round(i * frame_len / 80)) for i in range(81)]
+    out = np.zeros(frame_len, dtype=np.float32)
     level = float(amplitude) if initial_level is None else float(initial_level)
-    pos = 0
-    for bit in bits:
-        # Transition at start of bit.
+    for i, bit in enumerate(bits):
+        start, end = boundaries[i], boundaries[i + 1]
+        if end <= start:
+            continue
+        mid = start + (end - start) // 2
         level = -level
-        out[pos : pos + half] = level
+        out[start:mid] = level
         if bit:
             level = -level
-        out[pos + half : pos + spb] = level
-        pos += spb
+        out[mid:end] = level
     return out, level
 
 
@@ -141,8 +156,10 @@ def generate_ltc_pcm(
     min_frame_samples = 80 * 2
 
     while pos < total_samples:
-        target_end = int(round((frame_idx + 1) * sr / rate))
-        frame_len = min(max(0, target_end - pos), total_samples - pos)
+        frame_len = min(
+            _ltc_frame_len(frame_idx, sr, rate),
+            total_samples - pos,
+        )
         if frame_len < min_frame_samples:
             if total_samples - pos < min_frame_samples:
                 break
@@ -155,13 +172,76 @@ def generate_ltc_pcm(
             tc.frames,
             drop_frame=drop_frame,
         )
-        wave, level = _biphase_encode(bits, frame_len / 80.0, amplitude, initial_level=level)
-        if wave.size > frame_len:
-            wave = wave[:frame_len]
-        elif wave.size < frame_len:
-            pad = np.full(frame_len - wave.size, level, dtype=np.float32)
-            wave = np.concatenate([wave, pad])
+        wave, level = _biphase_encode(bits, frame_len, amplitude, initial_level=level)
         out[pos : pos + frame_len] = wave
+        pos += frame_len
+        frame_idx += 1
+        tc = add_frames(tc, 1, rate)
+
+    return out
+
+
+def generate_ltc_pcm_segment(
+    start_frame: int,
+    num_frames: int,
+    sample_rate: int,
+    start_timecode: str,
+    fps: float,
+    *,
+    amplitude: float = 0.9,
+    drop_frame: bool = False,
+) -> np.ndarray:
+    """Generate ``num_frames`` of LTC PCM starting at playback frame ``start_frame``."""
+    if num_frames <= 0:
+        return np.zeros(0, dtype=np.float32)
+    sr = max(1, int(sample_rate))
+    rate = float(fps) if fps > 0 else 30.0
+    out = np.zeros(num_frames, dtype=np.float32)
+    end_frame = start_frame + num_frames
+    tc = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
+    level = float(amplitude)
+
+    frame_idx = 0
+    while _ltc_frame_start(frame_idx + 1, sr, rate) <= start_frame:
+        frame_idx += 1
+        tc = add_frames(tc, 1, rate)
+
+    # Replay prior frames only to recover bi-phase polarity at the cut point.
+    tc0 = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
+    for i in range(frame_idx):
+        flen = _ltc_frame_len(i, sr, rate)
+        bits = encode_ltc_frame_bits(
+            tc0.hours,
+            tc0.minutes,
+            tc0.seconds,
+            tc0.frames,
+            drop_frame=drop_frame,
+        )
+        _, level = _biphase_encode(bits, flen, amplitude, initial_level=level)
+        tc0 = add_frames(tc0, 1, rate)
+
+    pos = _ltc_frame_start(frame_idx, sr, rate)
+    out_pos = 0
+    while out_pos < num_frames:
+        if pos >= end_frame:
+            break
+        frame_len = _ltc_frame_len(frame_idx, sr, rate)
+        bits = encode_ltc_frame_bits(
+            tc.hours,
+            tc.minutes,
+            tc.seconds,
+            tc.frames,
+            drop_frame=drop_frame,
+        )
+        wave, level = _biphase_encode(bits, frame_len, amplitude, initial_level=level)
+        seg_start = max(pos, start_frame)
+        seg_end = min(pos + frame_len, end_frame)
+        if seg_end > seg_start:
+            src0 = seg_start - pos
+            dst0 = seg_start - start_frame
+            n = seg_end - seg_start
+            out[dst0 : dst0 + n] = wave[src0 : src0 + n]
+            out_pos = dst0 + n
         pos += frame_len
         frame_idx += 1
         tc = add_frames(tc, 1, rate)
