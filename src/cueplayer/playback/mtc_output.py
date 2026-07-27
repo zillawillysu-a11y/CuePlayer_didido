@@ -36,10 +36,44 @@ def _ensure_mido_backend() -> None:
     except ImportError:
         pass
     try:
+        import pygame  # noqa: F401
+
         mido.set_backend("mido.backends.pygame")
         _BACKEND_READY = True
+        return
     except Exception as exc:  # noqa: BLE001
-        log.warning("Could not configure mido MIDI backend: %s", exc)
+        log.warning(
+            "MIDI backend unavailable (%s). "
+            "Install pygame for MTC on Windows: pip install pygame",
+            exc,
+        )
+
+
+def midi_backend_status() -> str:
+    """Human-readable MIDI backend readiness for UI status / dialogs."""
+    try:
+        import mido  # noqa: F401
+    except ImportError:
+        return "mido is not installed"
+    _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return (
+            "No MIDI backend. Install pygame (recommended on Windows):\n"
+            "  .\\.venv\\Scripts\\python.exe -m pip install pygame\n"
+            "Or: pip install -e \".[midi]\""
+        )
+    try:
+        import rtmidi  # noqa: F401
+
+        return "MIDI backend: python-rtmidi"
+    except ImportError:
+        pass
+    try:
+        import pygame  # noqa: F401
+
+        return "MIDI backend: pygame"
+    except ImportError:
+        return "MIDI backend: ready"
 
 
 def list_midi_output_names() -> list[str]:
@@ -49,6 +83,8 @@ def list_midi_output_names() -> list[str]:
     except ImportError:
         return []
     _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return []
     try:
         return list(mido.get_output_names())
     except Exception as exc:  # noqa: BLE001

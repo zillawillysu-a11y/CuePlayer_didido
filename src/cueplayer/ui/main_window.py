@@ -959,8 +959,49 @@ class MainWindow(QMainWindow):
             return self._file_save()
         return True
 
+    def _project_is_pristine(self) -> bool:
+        """Blank Untitled session with no media/marks — New can be silent."""
+        if self._dirty or self._project_path is not None:
+            return False
+        if (self.project.name or "").strip() not in ("Untitled Project", "Untitled", ""):
+            return False
+        if len(self.project.songs) != 1:
+            return False
+        song = self.project.songs[0]
+        if (song.name or "").strip() not in ("Untitled Song", ""):
+            return False
+        if song.audio_tracks or song.video_clips or song.marks:
+            return False
+        return True
+
+    def _confirm_new_project(self) -> bool:
+        """
+        New Project gate:
+
+        - Dirty → Save / Discard / Cancel
+        - Loaded from disk and no edits → allow without ask
+        - Untitled but already has songs/media/marks → Yes/No confirm
+        - Pristine blank → silent
+        """
+        if self._dirty:
+            return self._confirm_discard_if_dirty()
+        if self._project_path is not None:
+            # Just opened a file and made no changes.
+            return True
+        if self._project_is_pristine():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "New Project",
+            "Create a new project?\n\n"
+            "The current setlist and media in this window will be closed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _file_new(self) -> None:
-        if not self._confirm_discard_if_dirty():
+        if not self._confirm_new_project():
             return
         self.engine.stop()
         self.project = Project.create("Untitled Project")
@@ -1287,6 +1328,23 @@ class MainWindow(QMainWindow):
         song.bpm = draft.bpm
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
+        if draft.audio_path is not None and Path(draft.audio_path).is_file():
+            song.audio_tracks = [
+                AudioTrack(
+                    id="main_audio",
+                    name=Path(draft.audio_path).stem,
+                    path=Path(draft.audio_path),
+                    role="main",
+                )
+            ]
+        elif draft.audio_path is None:
+            # Explicit clear from Browse cell × — drop tracks only when the
+            # dialog started with a path that the user cleared, or Add Song
+            # with no file. Keep existing tracks when draft.audio_path was
+            # never set on Edit of a song that already has audio and user
+            # didn't touch Browse... Actually Browse cell always has the
+            # path or None from dialog. Clearing means None → clear tracks.
+            song.audio_tracks = []
         if song is self.current_song:
             self.engine.set_song_timebase(song.start_timecode, song.fps)
 
@@ -1775,15 +1833,6 @@ class MainWindow(QMainWindow):
         for draft in dialog.result_drafts():
             song = self.project.new_song(draft.name)
             self._apply_draft_to_song(song, draft)
-            if draft.audio_path is not None:
-                song.audio_tracks = [
-                    AudioTrack(
-                        id="main_audio",
-                        name=draft.audio_path.stem,
-                        path=draft.audio_path,
-                        role="main",
-                    )
-                ]
             self.project.songs.append(song)
             last_index = len(self.project.songs) - 1
             added_indexes.append(last_index)
@@ -1818,6 +1867,13 @@ class MainWindow(QMainWindow):
             if draft.song_id and draft.song_id in by_id:
                 self._apply_draft_to_song(by_id[draft.song_id], draft)
         self._rebuild_song_list(select_indexes=indexes)
+        # Reload current song audio if it was one of the edited rows.
+        if self.current_song.id in {d.song_id for d in dialog.result_drafts() if d.song_id}:
+            try:
+                cur = self.project.songs.index(self.current_song)
+            except ValueError:
+                cur = indexes[0]
+            self._activate_song(cur, stop_playback=False)
         self._mark_dirty()
         self._refresh_status()
         if len(indexes) == 1:

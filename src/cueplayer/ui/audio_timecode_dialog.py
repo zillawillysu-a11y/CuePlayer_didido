@@ -24,7 +24,7 @@ from cueplayer.domain.models import (
     default_ltc_channels_for_device,
 )
 from cueplayer.playback.devices import find_output_device, list_output_devices
-from cueplayer.playback.mtc_output import list_midi_output_names
+from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
 from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.theme import SLIDER_QSS
 
@@ -177,6 +177,10 @@ class AudioTimecodeDialog(QDialog):
         self.midi_port.setCurrentIndex(midi_sel)
         mtc_form.addRow(self.mtc_enable)
         mtc_form.addRow("MIDI Out", self.midi_port)
+        midi_hint = QLabel(midi_backend_status())
+        midi_hint.setWordWrap(True)
+        midi_hint.setStyleSheet("color: #a1a1aa;")
+        mtc_form.addRow(midi_hint)
         root.addWidget(mtc_box)
 
         buttons = QDialogButtonBox(
