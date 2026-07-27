@@ -428,6 +428,7 @@ def resolve_output_endpoint_for_channels(
     min_channels: int,
     samplerate: float,
     raw_devices: list[OutputDeviceInfo],
+    hostapi: str = "",
 ) -> OutputDeviceInfo | None:
     """
     Pick a PortAudio output endpoint that can actually open ``min_channels`` at
@@ -438,9 +439,12 @@ def resolve_output_endpoint_for_channels(
     "Speakers (Focusrite USB)" must not trap LTC→CH3 on the stereo pair.
     """
     need = max(1, int(min_channels))
+    wanted_api = (hostapi or "").strip()
     best: OutputDeviceInfo | None = None
     best_score = -1
     for candidate in raw_devices:
+        if wanted_api and candidate.hostapi_name != wanted_api:
+            continue
         if candidate.max_output_channels < need:
             continue
         try:

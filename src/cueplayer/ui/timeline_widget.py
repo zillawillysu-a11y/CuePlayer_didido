@@ -983,15 +983,11 @@ class TimelineWidget(QWidget):
         if center_now:
             self._center_on_playhead()
 
-    def _abs_min_pixels_per_second(self) -> float:
-        """Hard floor for wheel zoom-out (can go far beyond fit-to-view)."""
-        return 0.05
-
     def _min_pixels_per_second(self) -> float:
         view = max(1.0, self.width() - self._header_width)
         duration = max(0.1, self._duration())
-        # Whole song visible; fit-to-view uses this, wheel can go lower.
-        return max(self._abs_min_pixels_per_second(), view / duration)
+        # Zoom-out stops when the whole song fits in the visible waveform width.
+        return max(0.25, view / duration)
 
     def set_wave_height(self, height: int) -> None:
         """Grow / shrink waveform; mark lanes get narrower as wave grows."""
