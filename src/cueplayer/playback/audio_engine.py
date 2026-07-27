@@ -233,10 +233,14 @@ class AudioEngine(QObject):
         ltc_ch = self._resolved_file_ltc_channel()
         if ltc_ch is None:
             ltc_ch = self._autodetect_ltc_channel()
-        if ltc_ch == 0:
-            return 1, 1
-        if ltc_ch == 1:
-            return 0, 0
+        if ltc_ch is None:
+            ltc_ch = self._autodetect_ltc_channel()
+        if ltc_ch is not None:
+            music_chs = [i for i in range(ch_count) if i != ltc_ch]
+            if len(music_chs) >= 2:
+                return music_chs[0], music_chs[1]
+            if len(music_chs) == 1:
+                return music_chs[0], music_chs[0]
         return 0, 1
 
     @property

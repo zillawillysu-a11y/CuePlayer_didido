@@ -15,7 +15,7 @@ import threading
 
 import numpy as np
 
-from cueplayer.domain.models import Song, VideoClip, video_clip_crossfade_weight
+from cueplayer.domain.models import Song, VideoClip, video_clip_crossfade_weights
 from cueplayer.media.video_audio_cache import get_video_audio_for_clip
 from cueplayer.playback.resample import resample_linear
 
@@ -140,10 +140,7 @@ class VideoAudioMixer:
                 src_idx = np.mod(offsets, span_frames)
             src_idx = np.clip(src_idx, 0, buf_frames - 1)
             t_seconds = active.astype(np.float64) / sr
-            weights = np.array(
-                [video_clip_crossfade_weight(clip, float(t), song.video_clips) for t in t_seconds],
-                dtype=np.float32,
-            )
+            weights = video_clip_crossfade_weights(clip, t_seconds, song.video_clips)
             mask = weights > 1e-6
             if not np.any(mask):
                 continue

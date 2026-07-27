@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import numpy as np
+
 SCHEMA_VERSION = 1
 
 LaneType = Literal["main", "top_button"]
@@ -500,6 +502,41 @@ class Song:
         )
 
 
+def video_clip_crossfade_weights(
+    clip: VideoClip,
+    times_seconds: np.ndarray,
+    all_clips: list[VideoClip],
+) -> np.ndarray:
+    """
+    Vectorized 0..1 visibility weights for auto crossfade when clips overlap.
+
+    ``times_seconds`` may be any shape; returns float32 weights of the same shape.
+    """
+    times = np.asarray(times_seconds, dtype=np.float64)
+    if clip.hidden:
+        return np.zeros(times.shape, dtype=np.float32)
+    weights = np.ones(times.shape, dtype=np.float64)
+    in_clip = (times + 1e-9 >= clip.start_seconds) & (times < clip.end_seconds - 1e-9)
+    weights[~in_clip] = 0.0
+    for other in all_clips:
+        if other.hidden or other.id == clip.id:
+            continue
+        overlap_start = max(clip.start_seconds, other.start_seconds)
+        overlap_end = min(clip.end_seconds, other.end_seconds)
+        if overlap_end <= overlap_start + 1e-9:
+            continue
+        mask = (times + 1e-9 >= overlap_start) & (times < overlap_end - 1e-9)
+        if not np.any(mask):
+            continue
+        span = overlap_end - overlap_start
+        progress = np.clip((times - overlap_start) / span, 0.0, 1.0)
+        if other.start_seconds > clip.start_seconds + 1e-9:
+            weights[mask] = np.minimum(weights[mask], 1.0 - progress[mask])
+        elif other.start_seconds + 1e-9 < clip.start_seconds:
+            weights[mask] = np.minimum(weights[mask], progress[mask])
+    return weights.astype(np.float32)
+
+
 def video_clip_crossfade_weight(
     clip: VideoClip,
     time_seconds: float,
@@ -511,38 +548,13 @@ def video_clip_crossfade_weight(
     The earlier-starting clip fades out across the overlap; the later one
     fades in. Outside overlap each active clip is at full weight.
     """
-    if clip.hidden or not clip.contains(time_seconds):
-        return 0.0
-    weight = 1.0
-    for other in all_clips:
-        if other.hidden or other.id == clip.id:
-            continue
-        if other.start_seconds <= clip.start_seconds + 1e-9:
-            continue
-        overlap_start = other.start_seconds
-        overlap_end = min(clip.end_seconds, other.end_seconds)
-        if overlap_end <= overlap_start + 1e-9:
-            continue
-        if time_seconds + 1e-9 < overlap_start:
-            continue
-        progress = (time_seconds - overlap_start) / (overlap_end - overlap_start)
-        progress = max(0.0, min(1.0, progress))
-        weight = min(weight, 1.0 - progress)
-    for other in all_clips:
-        if other.hidden or other.id == clip.id:
-            continue
-        if other.start_seconds + 1e-9 >= clip.start_seconds:
-            continue
-        overlap_start = clip.start_seconds
-        overlap_end = min(clip.end_seconds, other.end_seconds)
-        if overlap_end <= overlap_start + 1e-9:
-            continue
-        if time_seconds + 1e-9 < overlap_start:
-            continue
-        progress = (time_seconds - overlap_start) / (overlap_end - overlap_start)
-        progress = max(0.0, min(1.0, progress))
-        weight = min(weight, progress)
-    return max(0.0, weight)
+    return float(
+        video_clip_crossfade_weights(
+            clip,
+            np.asarray(time_seconds, dtype=np.float64),
+            all_clips,
+        ).item()
+    )
 
 
 @dataclass

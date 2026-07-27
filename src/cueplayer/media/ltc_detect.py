@@ -55,20 +55,29 @@ def detect_ltc_channel(
         end = min(total, start + win)
         if end - start < sample_rate // 8:
             continue
-        s0 = _score_channel(samples[start:end, 0])
-        s1 = _score_channel(samples[start:end, 1])
-        lo, hi = (s0, s1) if s0 <= s1 else (s1, s0)
-        if hi < 1e-6 or hi / (lo + 1e-9) < 1.2:
+        scores = [
+            _score_channel(samples[start:end, ch])
+            for ch in range(channels)
+        ]
+        ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
+        best_ch, hi = ranked[0]
+        lo = ranked[1][1] if len(ranked) > 1 else 0.0
+        if hi < 1e-6 or hi / (lo + 1e-9) < 1.35:
             continue
         margin = hi / (lo + 1e-9)
-        votes.append((0 if s0 > s1 else 1, margin))
+        votes.append((best_ch, margin))
 
     if not votes:
         return None
 
     # Prefer the channel that wins most windows; break ties by confidence.
-    left_score = sum(m for ch, m in votes if ch == 0)
-    right_score = sum(m for ch, m in votes if ch == 1)
-    if abs(left_score - right_score) < 1e-6:
+    by_ch: dict[int, float] = {}
+    for ch, margin in votes:
+        by_ch[ch] = by_ch.get(ch, 0.0) + margin
+    if not by_ch:
         return None
-    return 0 if left_score > right_score else 1
+    ranked = sorted(by_ch.items(), key=lambda item: item[1], reverse=True)
+    best_ch, best_score = ranked[0]
+    if len(ranked) > 1 and abs(best_score - ranked[1][1]) < 1e-6:
+        return None
+    return int(best_ch)
