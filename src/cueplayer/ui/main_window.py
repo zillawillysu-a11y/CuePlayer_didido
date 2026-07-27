@@ -94,6 +94,8 @@ from cueplayer.ui.song_edit_dialog import (
 )
 from cueplayer.ui.drag_drop import (
     AUDIO_SUFFIXES,
+    accept_file_drag,
+    accept_file_drop,
     audio_paths_from_mime,
     mime_looks_like_file_drop,
     rejected_audio_drop_reason,
@@ -192,6 +194,7 @@ class SetlistWidget(QTableWidget):
         self.itemChanged.connect(self._on_item_changed)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.viewport().setAcceptDrops(True)
 
     def set_name_mode(self, mode: str) -> None:
         """zh = Chinese · both = Chinese + English · en = English."""
@@ -295,8 +298,28 @@ class SetlistWidget(QTableWidget):
         self._set_insert_indicator(None)
 
     def viewportEvent(self, event: QEvent) -> bool:  # noqa: N802
+        et = event.type()
+        if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            if event.source() is self:
+                return super().viewportEvent(event)
+            mime = event.mimeData()
+            if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if mime_looks_like_file_drop(mime):
+                    accept_file_drag(event)
+                    return True
+            elif et == QEvent.Type.Drop:
+                paths = audio_paths_from_mime(mime)
+                if paths:
+                    self._clear_insert_indicator()
+                    accept_file_drop(event)
+                    self.audio_files_dropped.emit(paths)
+                    return True
+                self._clear_insert_indicator()
+                self.audio_drop_rejected.emit(rejected_audio_drop_reason(mime))
+                event.ignore()
+                return True
         ok = super().viewportEvent(event)
-        if event.type() == QEvent.Type.Paint and self._insert_indicator_row is not None:
+        if et == QEvent.Type.Paint and self._insert_indicator_row is not None:
             self._paint_insert_indicator()
         return ok
 
@@ -356,20 +379,23 @@ class SetlistWidget(QTableWidget):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         # Accept Explorer file drags optimistically (Windows may omit URLs
         # until drop); still accept internal row reorders.
-        if event.source() is self or mime_looks_like_file_drop(event.mimeData()):
-            event.acceptProposedAction()
-            if event.source() is self:
-                self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
+        if event.source() is self:
+            accept_file_drag(event)
+            self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
+            return
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if event.source() is self or mime_looks_like_file_drop(event.mimeData()):
-            event.acceptProposedAction()
-            if event.source() is self:
-                self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
-            else:
-                self._clear_insert_indicator()
+        if event.source() is self:
+            accept_file_drag(event)
+            self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
+            return
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
+            self._clear_insert_indicator()
         else:
             self._clear_insert_indicator()
             event.ignore()
@@ -383,7 +409,7 @@ class SetlistWidget(QTableWidget):
         if event.source() is not self:
             paths = audio_paths_from_mime(event.mimeData())
             if paths:
-                event.acceptProposedAction()
+                accept_file_drop(event)
                 self.audio_files_dropped.emit(paths)
                 return
             self.audio_drop_rejected.emit(rejected_audio_drop_reason(event.mimeData()))
@@ -521,6 +547,9 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(order_btns)
 
         center = QWidget()
+        center.setAcceptDrops(True)
+        center.installEventFilter(self)
+        self._timeline_center = center
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.addWidget(self.timeline, stretch=1)
@@ -580,6 +609,8 @@ class MainWindow(QMainWindow):
         self._setup_autosave()
         self._refresh_window_title()
         self._refresh_status()
+
+        self.setAcceptDrops(True)
 
         self.add_song_button.clicked.connect(self._add_song)
         self.edit_song_button.clicked.connect(self._edit_song)
@@ -1871,24 +1902,34 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""
         panel = getattr(self, "_setlist_panel", None)
-        drop_targets = {panel, getattr(self, "view_stack", None)}
+        view_stack = getattr(self, "view_stack", None)
+        timeline_center = getattr(self, "_timeline_center", None)
+        drop_targets = {panel, view_stack, timeline_center}
         if watched in drop_targets and event is not None:
             etype = event.type()
             if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 if mime_looks_like_file_drop(event.mimeData()):
-                    event.acceptProposedAction()
+                    accept_file_drag(event)
                     return True
             elif etype == QEvent.Type.Drop:
                 mime = event.mimeData()
                 audio_paths = audio_paths_from_mime(mime)
-                if audio_paths:
-                    event.acceptProposedAction()
+                video_paths = video_paths_from_mime(mime)
+                if audio_paths and watched is panel:
+                    accept_file_drop(event)
                     self._add_songs_from_audio_paths(audio_paths)
                     return True
-                video_paths = video_paths_from_mime(mime)
-                if video_paths and watched is getattr(self, "view_stack", None):
-                    event.acceptProposedAction()
-                    self._add_video_clips_from_paths(video_paths, self.engine.position)
+                if video_paths and watched in {view_stack, timeline_center}:
+                    accept_file_drop(event)
+                    drop_at = self.engine.position
+                    if watched is timeline_center:
+                        local = self.timeline.mapFromGlobal(event.globalPosition().toPoint())
+                        drop_at = self.timeline._time_for_x(local.x())  # noqa: SLF001
+                    self._add_video_clips_from_paths(video_paths, drop_at)
+                    return True
+                if audio_paths and watched is view_stack:
+                    accept_file_drop(event)
+                    self._add_songs_from_audio_paths(audio_paths)
                     return True
                 if watched is panel:
                     self.status.showMessage(rejected_audio_drop_reason(mime), 5000)

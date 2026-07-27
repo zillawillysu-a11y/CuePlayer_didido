@@ -6,7 +6,7 @@ from pathlib import Path
 from time import monotonic_ns
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -30,7 +30,12 @@ from cueplayer.media.video_clip_waveform import (
     waveform_buckets_for_clip,
 )
 from cueplayer.media.video_audio_cache import get_video_audio_mono
-from cueplayer.ui.drag_drop import mime_looks_like_file_drop, video_paths_from_mime
+from cueplayer.ui.drag_drop import (
+    accept_file_drag,
+    accept_file_drop,
+    mime_looks_like_file_drop,
+    video_paths_from_mime,
+)
 from cueplayer.ui.icon_button import IconButton
 from cueplayer.ui.marker_draw import draw_marker_shape
 from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, with_alpha
@@ -172,6 +177,29 @@ class TimelineWidget(QWidget):
         self._video_waveform_cache = VideoClipWaveformCache()
         self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready)
         self.video_clips_changed.connect(self.refresh_video_clip_waveforms)
+        self._register_drop_forwarding_children()
+
+    def _register_drop_forwarding_children(self) -> None:
+        """Overlay buttons/sliders sit on top of the lane — forward Explorer drops."""
+        for child in self.findChildren(QWidget):
+            if child is self:
+                continue
+            child.setAcceptDrops(True)
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        if watched is not self and self.isAncestorOf(watched):
+            et = event.type()
+            if et == QEvent.Type.DragEnter:
+                self.dragEnterEvent(event)
+                return True
+            if et == QEvent.Type.DragMove:
+                self.dragMoveEvent(event)
+                return True
+            if et == QEvent.Type.Drop:
+                self.dropEvent(event)
+                return True
+        return super().eventFilter(watched, event)
 
     def _build_zoom_overlay(self) -> None:
         """Floating controls: edit modes top-left, zoom tools top-right."""
@@ -1450,13 +1478,13 @@ class TimelineWidget(QWidget):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         if mime_looks_like_file_drop(event.mimeData()):
-            event.acceptProposedAction()
+            accept_file_drag(event)
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
         if mime_looks_like_file_drop(event.mimeData()):
-            event.acceptProposedAction()
+            accept_file_drag(event)
         else:
             event.ignore()
 
@@ -1465,7 +1493,7 @@ class TimelineWidget(QWidget):
         if not paths:
             event.ignore()
             return
-        event.acceptProposedAction()
+        accept_file_drop(event)
         drop_time = self._time_for_x(event.position().x())
         self.video_files_dropped.emit(paths, drop_time)
 
