@@ -24,12 +24,10 @@ from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     VideoClipWaveformCache,
-    clip_local_to_source_time,
     sample_clip_peaks_for_times,
     timeline_to_clip_local,
     waveform_buckets_for_clip,
 )
-from cueplayer.media.video_audio_cache import get_video_audio_mono
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
     accept_file_drop,
@@ -2047,17 +2045,8 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        mono, sample_rate = get_video_audio_mono(clip.path)
-        samples_per_pixel = (
-            sample_rate / self._pixels_per_second if mono is not None and sample_rate > 0 else float("inf")
-        )
-        use_raw = (
-            not self._video_gesture_active
-            and mono is not None
-            and sample_rate > 0
-            and samples_per_pixel <= 1.5
-        )
-
+        # Always use the async peak envelope — never decode PCM on the paint
+        # thread (a 2-hour source would freeze the UI).
         for x in range(x_left, x_right):
             t0 = self._time_for_x(x)
             t1 = self._time_for_x(x + 1)
@@ -2071,26 +2060,9 @@ class TimelineWidget(QWidget):
                 clip_t1 = duration
             clip_t0 = max(0.0, min(duration, clip_t0))
             clip_t1 = max(clip_t0, min(duration, clip_t1))
-
-            if use_raw:
-                assert mono is not None
-                center_local = (clip_t0 + clip_t1) * 0.5
-                src_t = clip_local_to_source_time(clip, center_local)
-                half = max(1, int(round(samples_per_pixel * 0.5)))
-                center = int(round(src_t * sample_rate))
-                s0 = max(0, center - half)
-                s1 = min(mono.size, center + half)
-                if s0 >= s1:
-                    continue
-                segment = mono[s0:s1]
-                peak = max(float(np.max(np.abs(segment))), 1e-9)
-                lo = float(segment.min()) / peak
-                hi = float(segment.max()) / peak
-            else:
-                lo, hi = sample_clip_peaks_for_times(
-                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
-                )
-
+            lo, hi = sample_clip_peaks_for_times(
+                peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
+            )
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:

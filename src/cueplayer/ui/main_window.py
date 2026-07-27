@@ -77,6 +77,7 @@ from cueplayer.domain.undo import (
 )
 from cueplayer.media.audio_loader import load_audio
 from cueplayer.media.video_loader import probe_media
+from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
 from cueplayer.playback.video_sync import VideoSyncController
@@ -2516,7 +2517,15 @@ class MainWindow(QMainWindow):
         self.timeline.update()
         self._mark_dirty()
         kind_label = "still image" if is_still else "video clip"
-        self.status.showMessage(f"Added {kind_label}: {clip.name} ({duration:.2f}s)", 3000)
+        msg = f"Added {kind_label}: {clip.name} ({duration:.2f}s)"
+        if not is_still and source_duration > max(600.0, self.current_song.duration_seconds * 2):
+            mins = source_duration / 60.0
+            msg = (
+                f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
+                f"picture OK; embedded audio loads trim only "
+                f"(max {MAX_VIDEO_AUDIO_DECODE_SECONDS / 60:.0f} min)"
+            )
+        self.status.showMessage(msg, 5000)
         return clip
 
     def _add_video_clips_from_paths(self, paths: list, drop_seconds: object) -> None:

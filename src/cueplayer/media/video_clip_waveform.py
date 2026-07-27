@@ -11,7 +11,7 @@ from typing import Callable
 import numpy as np
 
 from cueplayer.domain.models import VideoClip
-from cueplayer.media.video_audio_cache import get_video_audio_mono
+from cueplayer.media.video_audio_cache import get_video_audio_mono_for_clip
 
 DEFAULT_WAVEFORM_BUCKETS = 4096
 MAX_WAVEFORM_BUCKETS = 8192
@@ -40,12 +40,15 @@ def build_clip_waveform_peaks(
     mono: np.ndarray,
     sample_rate: int,
     buckets: int,
+    mono_origin_seconds: float = 0.0,
 ) -> ClipWaveformPeaks | None:
     """
     Peak envelope over the clip's timeline length.
 
     Respects source trim and loops embedded audio when the clip is longer than
     its trimmed source span (same rule as `VideoAudioMixer.chunk_at`).
+
+    ``mono_origin_seconds`` is the source time of ``mono[0]`` (windowed decode).
     """
     if mono.size == 0 or sample_rate <= 0:
         return None
@@ -56,6 +59,7 @@ def build_clip_waveform_peaks(
 
     span = max(0.0, clip.source_span_seconds)
     src_in = max(0.0, float(clip.source_in_seconds))
+    origin = float(mono_origin_seconds)
     spb_timeline = duration / buckets
     half_window = max(1, int(round(sample_rate * max(spb_timeline / 2.0, 1.0 / buckets))))
 
@@ -69,7 +73,7 @@ def build_clip_waveform_peaks(
             src_t = src_in
         else:
             src_t = src_in + (t_off % span)
-        center = int(round(src_t * sample_rate))
+        center = int(round((src_t - origin) * sample_rate))
         s0 = max(0, center - half_window)
         s1 = min(mono.size, center + half_window)
         if s0 >= s1:
@@ -129,10 +133,16 @@ def sample_clip_peaks_for_times(
 
 
 def build_clip_waveform_peaks_from_path(clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
-    mono, sample_rate = get_video_audio_mono(clip.path)
+    mono, sample_rate, origin = get_video_audio_mono_for_clip(clip)
     if mono is None:
         return None
-    return build_clip_waveform_peaks(clip, mono=mono, sample_rate=sample_rate, buckets=buckets)
+    return build_clip_waveform_peaks(
+        clip,
+        mono=mono,
+        sample_rate=sample_rate,
+        buckets=buckets,
+        mono_origin_seconds=origin,
+    )
 
 
 class VideoClipWaveformCache:
