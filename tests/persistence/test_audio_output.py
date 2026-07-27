@@ -25,6 +25,12 @@ def test_default_route_stereo_no_ltc() -> None:
     assert 2 not in route
 
 
+def test_default_ltc_channels_stereo_is_ch2() -> None:
+    from cueplayer.domain.models import default_ltc_channels_for_device
+
+    assert default_ltc_channels_for_device(2) == [1]
+
+
 def test_audio_output_roundtrip(tmp_path: Path) -> None:
     project = Project.create("路由測試")
     project.audio_output = AudioOutputSettings(

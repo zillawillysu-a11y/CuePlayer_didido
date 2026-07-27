@@ -8,7 +8,12 @@ import numpy as np
 import sounddevice as sd
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from cueplayer.domain.models import AudioOutputSettings, Song, default_channel_routing
+from cueplayer.domain.models import (
+    AudioOutputSettings,
+    Song,
+    clamp_output_channels,
+    default_ltc_channels_for_device,
+)
 from cueplayer.media.audio_loader import AudioBuffer
 from cueplayer.playback.devices import (
     build_source_route,
@@ -571,16 +576,21 @@ class AudioEngine(QObject):
         right = list(self._audio_settings.music_right_channels)
         ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
 
-        # If settings still look like untouched defaults on a stereo device, drop LTC map.
-        if max_ch < 3 and ltc == [2] and left == [0] and right == [1]:
-            # Keep user intent if they explicitly enabled LTC on stereo (warn instead).
-            if not self._audio_settings.ltc_enabled:
-                ltc = []
-            d_left, d_right, d_ltc = default_channel_routing(max_ch)
-            if left == [0] and right == [1]:
-                left, right = d_left, d_right
-            if not self._audio_settings.ltc_enabled:
-                ltc = d_ltc
+        # Clamp music + LTC into the live device's channel count. A saved
+        # Focusrite-style LTC→CH3 on a 2-ch laptop speaker jumps to CH2 so
+        # the generator still has a destination (AGENTS: don't assume LTC
+        # is always L/R, but it must stay within available outs).
+        left = clamp_output_channels(left, max_ch) or [0]
+        right = clamp_output_channels(right, max_ch) or (
+            [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        )
+        if self._audio_settings.ltc_enabled:
+            ltc = clamp_output_channels(ltc, max_ch)
+            if not ltc:
+                ltc = default_ltc_channels_for_device(max_ch)
+        elif max_ch < 3:
+            # LTC off on stereo: leave generator unmapped (music only).
+            ltc = []
 
         route = build_source_route(music_left=left, music_right=right, ltc=ltc)
         needed = required_output_channels(route)
