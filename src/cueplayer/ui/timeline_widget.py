@@ -2074,7 +2074,7 @@ class TimelineWidget(QWidget):
         fm = painter.fontMetrics()
         if self._song is not None:
             num = format_setlist_number(self._song.setlist_number)
-            label = f"#{num}  {self._song.name}"
+            label = f"{num}.{self._song.name}"
             base_font = painter.font()
             bold = QFont(base_font)
             bold.setWeight(QFont.Weight.Bold)
