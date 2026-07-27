@@ -2,10 +2,44 @@
 
 from __future__ import annotations
 
+# Generous pre-roll window for alignment (clip can start before song 0).
+_MIN_CLIP_START_SECONDS = -600.0
+# Soft snap at song 0 — park here unless the user deliberately drags past.
+_SNAP_AT_ZERO_SECONDS = 0.12
 
-def clip_start_after_body_drag(start0: float, dt_seconds: float) -> float:
-    """Move a clip on the timeline; only the song start (0s) is a hard edge."""
-    return max(0.0, start0 + dt_seconds)
+
+def clip_start_after_body_drag(
+    start0: float,
+    dt_seconds: float,
+    *,
+    snap_seconds: float = _SNAP_AT_ZERO_SECONDS,
+    min_start_seconds: float = _MIN_CLIP_START_SECONDS,
+) -> float:
+    """
+    Move a clip on the timeline.
+
+    Clips may start *before* song 0 for pre-roll alignment. Song 0 has a soft
+    magnetic snap: when near zero the clip parks at 0 until the user drags
+    deliberately past the snap zone (left → negative, right → positive).
+    """
+    raw = start0 + dt_seconds
+    raw = max(min_start_seconds, raw)
+    snap = max(0.02, float(snap_seconds))
+    if abs(raw) >= snap:
+        return raw
+    # Inside the snap well around 0.
+    if start0 < -snap:
+        # Coming back from negative pre-roll — latch at 0.
+        return 0.0
+    if start0 > snap:
+        # Approaching 0 from the right — latch at 0.
+        return 0.0
+    # Already in the snap well (typically parked at 0).
+    if dt_seconds < 0 and raw <= -snap:
+        return raw
+    if dt_seconds > 0 and raw >= snap:
+        return raw
+    return 0.0
 
 
 def clip_duration_after_right_trim(

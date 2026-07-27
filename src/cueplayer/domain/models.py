@@ -137,7 +137,7 @@ class VideoClip:
             id=_new_id(),
             name=name,
             path=Path(path),
-            start_seconds=max(0.0, float(start_seconds)),
+            start_seconds=float(start_seconds),
             source_in_seconds=source_in,
             source_out_seconds=source_in + duration,
             duration_seconds=duration,

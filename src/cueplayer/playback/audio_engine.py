@@ -19,8 +19,10 @@ from cueplayer.playback.devices import (
     build_source_route,
     find_output_device,
     list_output_devices,
+    probe_supported_output_channels,
     required_output_channels,
     resolve_output_samplerate,
+    upgrade_device_for_channels,
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.resample import resample_linear
@@ -87,6 +89,7 @@ class AudioEngine(QObject):
         self._playback_rate = 48000
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
+        self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
         self._poll.setInterval(16)
@@ -387,10 +390,11 @@ class AudioEngine(QObject):
         if needs_stream:
             if self._audio_settings.ltc_enabled:
                 self._ensure_ltc_cache()
-            self._start_stream()
+            self._ensure_stream()
             self._poll.start()
             self._silent_timer.stop()
         else:
+            self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
         self._mtc.on_play(self.raw_position)
@@ -415,7 +419,6 @@ class AudioEngine(QObject):
         self._poll.stop()
         self._mtc_timer.stop()
         self._mtc.on_pause()
-        self._stop_stream()
         if not for_scrub:
             self.playing_changed.emit(False)
         self._emit_position()
@@ -566,15 +569,31 @@ class AudioEngine(QObject):
 
     def _resolve_device_and_route(self) -> None:
         devices = list_output_devices()
+        try:
+            raw_devices = list_output_devices(dedupe=False)
+        except TypeError:
+            raw_devices = devices
         chosen = find_output_device(
             devices, name=self._audio_settings.output_device_name
         )
         self._device_index = chosen.index if chosen is not None else None
-        max_ch = chosen.max_output_channels if chosen is not None else 2
 
         left = list(self._audio_settings.music_left_channels)
         right = list(self._audio_settings.music_right_channels)
         ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
+
+        # Build a preliminary route from saved settings to learn how many outs
+        # we must open (e.g. LTC→CH3 needs ≥3 channels even if the first name
+        # match was a 2ch WASAPI stereo endpoint).
+        prelim = build_source_route(music_left=left, music_right=right, ltc=ltc)
+        needed = required_output_channels(prelim)
+        if chosen is not None and needed > chosen.max_output_channels:
+            chosen = upgrade_device_for_channels(
+                chosen, min_channels=needed, raw_devices=raw_devices
+            )
+            self._device_index = chosen.index
+
+        max_ch = chosen.max_output_channels if chosen is not None else 2
 
         # Clamp music + LTC into the live device's channel count. A saved
         # Focusrite-style LTC→CH3 on a 2-ch laptop speaker jumps to CH2 so
@@ -616,6 +635,21 @@ class AudioEngine(QObject):
                 )
             )
         )
+        if self._device_index is not None:
+            probed = probe_supported_output_channels(
+                self._device_index,
+                min_channels=self._output_channel_count,
+                samplerate=float(self._playback_rate),
+            )
+            if probed < self._output_channel_count:
+                self._routing_warning = warn_if_outputs_insufficient(all_dests, probed)
+                self._output_channel_count = max(1, probed)
+                reclamped: dict[int, list[int]] = {}
+                for src, dests in route.items():
+                    keep = [d for d in dests if 0 <= d < self._output_channel_count]
+                    if keep:
+                        reclamped[src] = keep
+                self._route = reclamped if reclamped else self._route
         self._video_mixer.set_playback_rate(self._playback_rate)
         self.refresh_video_clips()
         self._refresh_playback_samples()
@@ -700,6 +734,23 @@ class AudioEngine(QObject):
         out[: end - start] = pcm[start:end] * gain
         return out
 
+    def _stream_token(self) -> tuple:
+        return (
+            self._device_index,
+            self._output_channel_count,
+            self._playback_rate,
+            tuple(sorted((k, tuple(v)) for k, v in self._route.items())),
+            id(self._playback_samples),
+            bool(self._audio_settings.ltc_enabled),
+        )
+
+    def _ensure_stream(self) -> None:
+        """Open or keep the output stream; recreate only when routing/rate changes."""
+        token = self._stream_token()
+        if self._stream is not None and self._active_stream_token == token:
+            return
+        self._start_stream()
+
     def _start_stream(self) -> None:
         self._stop_stream()
         self._resolve_device_and_route()
@@ -715,6 +766,9 @@ class AudioEngine(QObject):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
             del status, time_info
             with self._lock:
+                if not self._playing:
+                    outdata.fill(0)
+                    return
                 loop_on = (
                     self.loop_enabled
                     and self.loop_a is not None
@@ -813,6 +867,7 @@ class AudioEngine(QObject):
                 self._stream.start()
             else:
                 raise
+        self._active_stream_token = self._stream_token()
 
     def _assemble_looped_music(
         self,
@@ -863,3 +918,4 @@ class AudioEngine(QObject):
             except Exception:
                 pass
             self._stream = None
+        self._active_stream_token = None

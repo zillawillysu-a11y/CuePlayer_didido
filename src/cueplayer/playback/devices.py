@@ -264,6 +264,73 @@ def query_default_output_index() -> int | None:
     return None
 
 
+def upgrade_device_for_channels(
+    chosen: OutputDeviceInfo,
+    *,
+    min_channels: int,
+    raw_devices: list[OutputDeviceInfo] | None = None,
+) -> OutputDeviceInfo:
+    """
+    Pick a PortAudio endpoint for the same logical device that exposes at
+    least ``min_channels`` outputs.
+
+    Windows often lists the same interface twice (e.g. Focusrite WASAPI 2ch
+    stereo vs 8ch). ``filter_output_devices`` usually keeps the higher-count
+    sibling, but a stored device index or name match can still resolve to the
+    2ch endpoint — which breaks LTC→CH3 routing.
+    """
+    need = max(1, int(min_channels))
+    if chosen.max_output_channels >= need:
+        return chosen
+    key = _normalize_device_key(chosen.name)
+    best = chosen
+    pool = raw_devices if raw_devices is not None else list_output_devices(dedupe=False)
+    for candidate in pool:
+        if candidate.max_output_channels < need:
+            continue
+        cand_key = _normalize_device_key(candidate.name)
+        if not (
+            key == cand_key
+            or _names_likely_same(key, cand_key)
+            or _names_likely_same(cand_key, key)
+        ):
+            continue
+        if _better_device(candidate, best):
+            best = candidate
+    return best
+
+
+def probe_supported_output_channels(
+    device_index: int,
+    *,
+    min_channels: int,
+    samplerate: float,
+) -> int:
+    """
+    Highest channel count the device accepts at ``samplerate`` (downward probe).
+    Falls back to ``min( device max, min_channels )`` when probing fails.
+    """
+    need = max(1, int(min_channels))
+    try:
+        dev_max = int(sd.query_devices(device_index)["max_output_channels"])
+    except Exception:
+        return need
+    for ch in range(dev_max, 0, -1):
+        if ch < need:
+            break
+        try:
+            sd.check_output_settings(
+                device=device_index,
+                channels=ch,
+                samplerate=float(samplerate),
+                dtype="float32",
+            )
+            return ch
+        except Exception:
+            continue
+    return max(1, min(dev_max, need))
+
+
 def find_output_device(
     devices: list[OutputDeviceInfo],
     *,

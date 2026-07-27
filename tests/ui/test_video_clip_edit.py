@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from cueplayer.ui.video_clip_edit import (
     clip_duration_after_right_trim,
     clip_start_after_body_drag,
@@ -15,8 +17,20 @@ def test_long_clip_can_move_past_song_end() -> None:
     assert clip_start_after_body_drag(5.0, 20.0) == 25.0
 
 
-def test_clip_start_never_goes_negative() -> None:
-    assert clip_start_after_body_drag(2.0, -10.0) == 0.0
+def test_clip_start_can_go_negative_with_deliberate_drag() -> None:
+    # Parked at 0 — small nudge stays snapped.
+    assert clip_start_after_body_drag(0.0, -0.05) == 0.0
+    # Deliberate left drag escapes the snap well into pre-roll.
+    assert clip_start_after_body_drag(0.0, -0.5) == pytest.approx(-0.5)
+    assert clip_start_after_body_drag(-1.0, -0.5) == pytest.approx(-1.5)
+
+
+def test_clip_start_snaps_to_zero_from_positive() -> None:
+    assert clip_start_after_body_drag(2.0, -2.05) == 0.0
+
+
+def test_clip_start_snaps_back_from_negative_pre_roll() -> None:
+    assert clip_start_after_body_drag(-2.0, 1.95) == 0.0
 
 
 def test_right_trim_not_capped_by_song_duration() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 
 from cueplayer.playback import devices as devices_mod
@@ -10,6 +11,7 @@ from cueplayer.playback.devices import (
     filter_output_devices,
     find_output_device,
     resolve_output_samplerate,
+    upgrade_device_for_channels,
 )
 
 
@@ -92,6 +94,105 @@ def test_filter_prefers_more_channels_when_same_api_rank() -> None:
     filtered = filter_output_devices(devices)
     assert len(filtered) == 1
     assert filtered[0].max_output_channels == 8
+
+
+def test_upgrade_device_for_channels_picks_multichannel_sibling() -> None:
+    """Stored 2ch index must upgrade to 8ch sibling for LTC→CH3."""
+    raw = [
+        _dev(0, "Focusrite USB", api="Windows WASAPI", ch=2),
+        _dev(1, "Focusrite USB", api="Windows WASAPI", ch=8),
+    ]
+    base = _dev(0, "Focusrite USB", api="Windows WASAPI", ch=2)
+    upgraded = upgrade_device_for_channels(base, min_channels=3, raw_devices=raw)
+    assert upgraded.index == 1
+    assert upgraded.max_output_channels == 8
+
+
+def test_engine_ltc_route_opens_three_channels_on_focusrite(monkeypatch) -> None:
+    """Regression: LTC→CH3 must not collapse to stereo Ch1+2 on multi-out interfaces."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.playback import audio_engine as eng_mod
+
+    stereo = _dev(0, "Focusrite USB", ch=2)
+    multi = _dev(1, "Focusrite USB", ch=8)
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [multi] if dedupe else [stereo, multi])
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    settings = AudioOutputSettings(
+        output_device_name="Focusrite USB",
+        ltc_enabled=True,
+        ltc_channels=[2],
+    )
+    engine.apply_audio_settings(settings)
+    n = int(48000 * 0.5)
+    tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
+    mono, levels = build_peak_pyramid(tone, 48000)
+    engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+
+    assert engine._device_index == 1
+    assert engine._output_channel_count >= 3
+    assert engine._route.get(2) == [2]
+
+
+def test_play_pause_reuses_stream_without_reopen(monkeypatch) -> None:
+    """Toggling transport must not tear down/recreate the PortAudio stream each time."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.playback import audio_engine as eng_mod
+
+    device = _dev(0, "Test Out", ch=2)
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [device])
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    opens = 0
+    closes = 0
+
+    class FakeStream:
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            nonlocal closes
+            closes += 1
+
+    def fake_output_stream(**kwargs):
+        nonlocal opens
+        opens += 1
+        return FakeStream()
+
+    monkeypatch.setattr(eng_mod.sd, "OutputStream", fake_output_stream)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    engine.apply_audio_settings(AudioOutputSettings(output_device_name="Test Out"))
+    n = int(48000 * 0.25)
+    tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
+    mono, levels = build_peak_pyramid(tone, 48000)
+    engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+
+    engine.play()
+    assert opens == 1
+    engine.pause()
+    assert closes == 0
+    engine.play()
+    assert opens == 1
+    engine.pause()
+    assert closes == 0
+    # Stream stays warm until audio is no longer needed or routing changes.
+    engine._stop_stream()
+    assert closes == 1
 
 
 def test_filter_drops_wdm_ks_clutter_without_wasapi_sibling() -> None:
