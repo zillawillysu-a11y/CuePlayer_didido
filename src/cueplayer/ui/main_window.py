@@ -573,6 +573,9 @@ class MainWindow(QMainWindow):
         timeline_preview_split.setStretchFactor(0, 3)
         timeline_preview_split.setStretchFactor(1, 2)
         timeline_preview_split.setSizes([560, 280])
+        timeline_preview_split.setCollapsible(0, False)
+        timeline_preview_split.setCollapsible(1, True)
+        self._timeline_preview_split = timeline_preview_split
 
         # Right column is Cue list only (clock + scrolling marks).
         timeline_split = QSplitter(Qt.Orientation.Horizontal)
@@ -681,6 +684,7 @@ class MainWindow(QMainWindow):
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
+        self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
         self.monitor.selection_changed.connect(self._on_monitor_selection)
         self.monitor.delete_requested.connect(self._delete_marks)
@@ -776,8 +780,9 @@ class MainWindow(QMainWindow):
         act_video_preview = QAction("Video &Preview Panel", self)
         act_video_preview.setCheckable(True)
         act_video_preview.setChecked(True)
-        act_video_preview.triggered.connect(self.video_preview_panel.setVisible)
+        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
         tools_menu.addAction(act_video_preview)
+        self._act_video_preview = act_video_preview
         self._show_video_track_action = QAction("Show &Video Track", self)
         self._show_video_track_action.setCheckable(True)
         self._show_video_track_action.setChecked(True)
@@ -871,6 +876,18 @@ class MainWindow(QMainWindow):
             self._video_decode_quality_actions[quality] = action
         self._sync_video_decode_quality_ui()
 
+    def _toggle_video_preview_panel(self, visible: bool) -> None:
+        split = getattr(self, "_timeline_preview_split", None)
+        if split is None:
+            self.video_preview_panel.setVisible(visible)
+            return
+        if visible:
+            total = split.height()
+            split.setSizes([max(100, total * 3 // 5), max(120, total * 2 // 5)])
+        else:
+            total = split.height()
+            split.setSizes([total, 0])
+
     def _set_video_decode_quality(self, quality: str) -> None:
         self.video_sync.set_decode_quality(quality)  # type: ignore[arg-type]
         self.project.video_decode_quality = self.video_sync.decode_quality()
@@ -885,6 +902,8 @@ class MainWindow(QMainWindow):
         action = actions.get(current)
         if action is not None:
             action.setChecked(True)
+        if hasattr(self, "clean_output_window"):
+            self.clean_output_window.set_decode_quality(current)
 
     def _project_filter(self) -> str:
         return "CuePlayer Project (*.cueplayer.json);;JSON (*.json);;All Files (*.*)"
