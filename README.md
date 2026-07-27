@@ -9,7 +9,7 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 Core P0 timeline / marks / video / MA2·MA3 export are on `master`.
 
 Laptop all-in-one branch: `cursor/laptop-ux-pack-028d`
-(Auto Save, LTC 2ch clamp, setlist audio drop, hide Video track, Add Song Browse, New Project confirm, MIDI via optional pygame).
+(Auto Save, LTC 2ch clamp, setlist audio drop, hide Video track, Add Song Browse, New Project confirm, MIDI via Windows winmm / optional pygame-ce).
 
 Product requirements: `docs/PRODUCT_SPEC.md`  
 Agent handoff: `AGENTS.md`
@@ -17,7 +17,7 @@ Agent handoff: `AGENTS.md`
 ## Requirements
 
 - Windows 11
-- Python 3.13+ (3.14 OK; if pygame has no wheel, prefer 3.13 for MIDI)
+- Python 3.13+ (3.14 OK)
 - Git
 
 ## Update + run (this laptop)
@@ -30,7 +30,9 @@ git pull
 
 .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pip install pygame
+# Do NOT install pygame on 3.14 (no wheel / build fails).
+# Windows MTC uses winmm.dll with no extra package.
+# Optional mido pygame backend: pip install pygame-ce
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
 
@@ -47,7 +49,7 @@ cd C:\Users\User\Projects\CuePlayer_didido
 py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pip install pygame
+# MIDI: winmm works out of the box on Windows. Optional: pip install pygame-ce
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
 

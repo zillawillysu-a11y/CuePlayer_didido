@@ -24,9 +24,11 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
-# MIDI Timecode on Windows: install one of these (pygame is easiest without a compiler).
+# Optional MIDI via mido pygame backend. Prefer pygame-ce on Python 3.14+
+# (official pygame often has no wheel). On Windows, CuePlayer also uses
+# built-in winmm.dll and does not require this extra for MTC.
 midi = [
-  "pygame>=2.5",
+  "pygame-ce>=2.5",
 ]
 
 [project.scripts]
