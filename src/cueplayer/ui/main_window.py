@@ -525,9 +525,8 @@ class MainWindow(QMainWindow):
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.addWidget(self.timeline, stretch=1)
 
-        # Video Preview lives under the Marks (cue list) in this same
-        # right-hand column — not squeezed into a separate dock pinned to
-        # the far right edge of the whole window.
+        # Center column: Timeline (waveform + video lane + mark lanes) on top,
+        # Video Preview directly underneath — not stacked under the Cue list.
         self.video_preview_panel = QWidget()
         self.video_preview_panel.setObjectName("videoPreviewPanel")
         video_panel_layout = QVBoxLayout(self.video_preview_panel)
@@ -538,17 +537,19 @@ class MainWindow(QMainWindow):
         video_panel_layout.addWidget(video_title)
         video_panel_layout.addWidget(self.video_preview, stretch=1)
 
-        marks_video_split = QSplitter(Qt.Orientation.Vertical)
-        marks_video_split.setObjectName("marksVideoSplitter")
-        marks_video_split.addWidget(self.monitor)
-        marks_video_split.addWidget(self.video_preview_panel)
-        marks_video_split.setStretchFactor(0, 3)
-        marks_video_split.setStretchFactor(1, 2)
-        marks_video_split.setSizes([520, 300])
+        timeline_preview_split = QSplitter(Qt.Orientation.Vertical)
+        timeline_preview_split.setObjectName("timelinePreviewSplitter")
+        timeline_preview_split.addWidget(center)
+        timeline_preview_split.addWidget(self.video_preview_panel)
+        timeline_preview_split.setStretchFactor(0, 3)
+        timeline_preview_split.setStretchFactor(1, 2)
+        timeline_preview_split.setSizes([560, 280])
 
+        # Right column is Cue list only (clock + scrolling marks).
         timeline_split = QSplitter(Qt.Orientation.Horizontal)
-        timeline_split.addWidget(center)
-        timeline_split.addWidget(marks_video_split)
+        timeline_split.setObjectName("timelineSplit")
+        timeline_split.addWidget(timeline_preview_split)
+        timeline_split.addWidget(self.monitor)
         timeline_split.setStretchFactor(0, 1)
         timeline_split.setStretchFactor(1, 0)
         timeline_split.setSizes([1020, 320])
