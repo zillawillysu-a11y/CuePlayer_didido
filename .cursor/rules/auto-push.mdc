@@ -1,0 +1,14 @@
+---
+description: Always push commits to GitHub so laptop and desktop stay in sync
+alwaysApply: true
+---
+
+# Auto-push to GitHub
+
+The user works on multiple machines and does not want to copy project folders by hand.
+
+- After any `git commit` that the user requested (or that was explicitly allowed), **immediately `git push -u origin HEAD`** (or `git push` if upstream is set).
+- Remote: `origin` → `https://github.com/zillawillysu-a11y/CuePlayer_didido.git`
+- Do not force-push to `main`/`master` unless the user explicitly asks.
+- If push fails (auth/network), tell the user clearly and leave the commit local.
+- Prefer committing + pushing meaningful slices when the user asks to save/sync work across machines.
