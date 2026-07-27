@@ -2401,7 +2401,12 @@ class MainWindow(QMainWindow):
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
-        self.status.showMessage(f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)", 4000)
+        msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
+        det = self.engine.detected_ltc_channel
+        if det is not None:
+            side = "Left" if det == 0 else "Right"
+            msg += f" — striped LTC detected on {side}"
+        self.status.showMessage(msg, 6000)
 
     def _toggle_clean_output(self, checked: bool) -> None:
         if checked:
@@ -2716,7 +2721,20 @@ class MainWindow(QMainWindow):
         audio_name = self.current_song.audio_tracks[0].name if self.current_song.audio_tracks else "No audio"
         tc_flags = []
         if self.engine.ltc_enabled:
-            tc_flags.append("LTC gen")
+            mode = self.engine.ltc_source_mode
+            if mode == "generator":
+                tc_flags.append("LTC gen")
+            elif mode == "auto":
+                det = self.engine.detected_ltc_channel
+                if det is not None:
+                    side = "L" if det == 0 else "R"
+                    tc_flags.append(f"LTC file {side}")
+                else:
+                    tc_flags.append("LTC auto?")
+            elif mode == "source_left":
+                tc_flags.append("LTC file L")
+            elif mode == "source_right":
+                tc_flags.append("LTC file R")
         if self.engine.mtc_enabled:
             tc_flags.append("MTC")
         tc_extra = (" · " + "+".join(tc_flags)) if tc_flags else ""

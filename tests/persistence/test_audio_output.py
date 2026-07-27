@@ -38,6 +38,7 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
         music_left_channels=[0],
         music_right_channels=[1],
         ltc_enabled=True,
+        ltc_source="source_left",
         ltc_gain=0.55,
         ltc_channels=[2],
         mtc_enabled=True,
@@ -49,6 +50,7 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
     ao = loaded.audio_output
     assert ao.output_device_name == "Focusrite USB"
     assert ao.ltc_enabled is True
+    assert ao.ltc_source == "source_left"
     assert ao.ltc_gain == pytest.approx(0.55)
     assert ao.ltc_channels == [2]
     assert ao.mtc_enabled is True

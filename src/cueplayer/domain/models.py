@@ -565,6 +565,13 @@ class MaExportSettings:
     output_dir_ma3: str = ""
 
 
+# How LTC reaches the output bus.
+# - generator: internal SMPTE generator (default)
+# - auto: detect striped LTC in the loaded stereo file
+# - source_left / source_right: pass that file channel through to ltc_channels
+LtcSourceMode = Literal["generator", "auto", "source_left", "source_right"]
+
+
 @dataclass
 class AudioOutputSettings:
     """
@@ -581,6 +588,7 @@ class AudioOutputSettings:
     music_right_channels: list[int] = field(default_factory=lambda: [1])
     # Generated LTC (independent of MTC).
     ltc_enabled: bool = False
+    ltc_source: LtcSourceMode = "generator"
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
     # MIDI Timecode quarter-frame output (independent of LTC).

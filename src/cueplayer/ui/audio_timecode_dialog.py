@@ -96,6 +96,7 @@ class AudioTimecodeDialog(QDialog):
             music_left_channels=list(settings.music_left_channels),
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
+            ltc_source=str(settings.ltc_source),
             ltc_gain=float(settings.ltc_gain),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
@@ -140,10 +141,19 @@ class AudioTimecodeDialog(QDialog):
         root.addWidget(music_box)
 
         # --- LTC ---
-        ltc_box = QGroupBox("Generated LTC")
+        ltc_box = QGroupBox("LTC Output")
         ltc_form = QFormLayout(ltc_box)
-        self.ltc_enable = QCheckBox("Enable LTC generator")
+        self.ltc_enable = QCheckBox("Enable LTC on output")
         self.ltc_enable.setChecked(settings.ltc_enabled)
+        self.ltc_source = NoWheelComboBox()
+        self.ltc_source.addItem("Internal generator", "generator")
+        self.ltc_source.addItem("From file — auto-detect L/R", "auto")
+        self.ltc_source.addItem("From file — Left channel", "source_left")
+        self.ltc_source.addItem("From file — Right channel", "source_right")
+        for i in range(self.ltc_source.count()):
+            if self.ltc_source.itemData(i) == settings.ltc_source:
+                self.ltc_source.setCurrentIndex(i)
+                break
         self.ltc_channels = NoWheelComboBox()
         self.ltc_channels.setEditable(True)
         self.ltc_gain = QSlider(Qt.Orientation.Horizontal)
@@ -154,9 +164,15 @@ class AudioTimecodeDialog(QDialog):
         gain_row = QHBoxLayout()
         gain_row.addWidget(self.ltc_gain, stretch=1)
         gain_row.addWidget(self.ltc_gain_label)
-        ltc_note = QLabel("LTC gain is independent of master Vol.")
+        ltc_note = QLabel(
+            "Striped LTC in the loaded stereo file can pass through to your "
+            "chosen output (e.g. CH3) — no generator needed. LTC gain is "
+            "independent of master Vol."
+        )
         ltc_note.setStyleSheet("color: #a1a1aa;")
+        ltc_note.setWordWrap(True)
         ltc_form.addRow(self.ltc_enable)
+        ltc_form.addRow("LTC source", self.ltc_source)
         ltc_form.addRow("LTC →", self.ltc_channels)
         ltc_form.addRow("LTC Gain", gain_row)
         ltc_form.addRow(ltc_note)
@@ -322,6 +338,7 @@ class AudioTimecodeDialog(QDialog):
             music_left_channels=left,
             music_right_channels=right,
             ltc_enabled=self.ltc_enable.isChecked(),
+            ltc_source=str(self.ltc_source.currentData() or "generator"),
             ltc_gain=self.ltc_gain.value() / 100.0,
             ltc_channels=ltc if self.ltc_enable.isChecked() else (
                 ltc or default_ltc_channels_for_device(max_ch)

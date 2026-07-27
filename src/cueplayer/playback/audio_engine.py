@@ -14,7 +14,7 @@ from cueplayer.domain.models import (
     clamp_output_channels,
     default_ltc_channels_for_device,
 )
-from cueplayer.media.audio_loader import AudioBuffer
+from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.playback.devices import (
     build_source_route,
     find_output_device,
@@ -77,6 +77,7 @@ class AudioEngine(QObject):
         self._audio_settings = AudioOutputSettings()
         self._ltc_pcm: np.ndarray | None = None
         self._ltc_cache_key: tuple | None = None
+        self._detected_ltc_channel: int | None = None
         self._song_start_tc = "01:00:00:00"
         self._song_fps = 30.0
         self._output_channel_count = 2
@@ -117,6 +118,51 @@ class AudioEngine(QObject):
     @property
     def mtc_enabled(self) -> bool:
         return bool(self._audio_settings.mtc_enabled)
+
+    @property
+    def detected_ltc_channel(self) -> int | None:
+        """0=left, 1=right when auto-detect finds striped LTC in the loaded file."""
+        return self._detected_ltc_channel
+
+    @property
+    def ltc_source_mode(self) -> str:
+        return str(self._audio_settings.ltc_source)
+
+    def _uses_generated_ltc(self) -> bool:
+        return bool(
+            self._audio_settings.ltc_enabled
+            and self._audio_settings.ltc_source == "generator"
+        )
+
+    def _effective_ltc_source_channel(self) -> int | None:
+        """Source file channel carrying LTC, or None when using the generator."""
+        if not self._audio_settings.ltc_enabled:
+            return None
+        mode = self._audio_settings.ltc_source
+        if mode == "generator":
+            return None
+        if mode == "source_left":
+            return 0
+        if mode == "source_right":
+            return 1
+        if mode == "auto":
+            return self._detected_ltc_channel
+        return None
+
+    def _music_source_indices(self) -> tuple[int, int]:
+        """Which loaded-file channels feed the music L/R bus (mono duplicates when needed)."""
+        samples = self._playback_samples
+        if samples is None:
+            return 0, 1
+        ch_count = int(samples.shape[1]) if samples.ndim == 2 else 1
+        if ch_count <= 1:
+            return 0, 0
+        ltc_ch = self._effective_ltc_source_channel()
+        if ltc_ch == 0:
+            return 1, 1
+        if ltc_ch == 1:
+            return 0, 0
+        return 0, 1
 
     @property
     def routing_warning(self) -> str | None:
@@ -219,7 +265,7 @@ class AudioEngine(QObject):
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
 
     def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
@@ -237,15 +283,20 @@ class AudioEngine(QObject):
             music_left_channels=list(settings.music_left_channels),
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
+            ltc_source=str(settings.ltc_source),
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
         )
         self._resolve_device_and_route()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
         else:
+            with self._lock:
+                self._ltc_pcm = None
+                self._ltc_cache_key = None
+        if not self._audio_settings.ltc_enabled:
             with self._lock:
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
@@ -354,10 +405,18 @@ class AudioEngine(QObject):
         self._buffer = buffer
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
+            if buffer.channels >= 2:
+                self._detected_ltc_channel = detect_ltc_channel(
+                    buffer.samples, buffer.sample_rate
+                )
+            else:
+                self._detected_ltc_channel = None
+        else:
+            self._detected_ltc_channel = None
         self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
         self._resolve_device_and_route()
         self.position_changed.emit(0.0)
@@ -389,7 +448,7 @@ class AudioEngine(QObject):
             self._buffer is not None or self._audio_settings.ltc_enabled or has_video_audio
         )
         if needs_stream:
-            if self._audio_settings.ltc_enabled:
+            if self._uses_generated_ltc():
                 self._ensure_ltc_cache()
             self._ensure_stream()
             self._poll.start()
@@ -405,9 +464,15 @@ class AudioEngine(QObject):
 
     def pause(self, *, for_scrub: bool = False) -> None:
         has_video_audio = self._song is not None and bool(self._song.video_clips)
+        has_source_ltc = self._effective_ltc_source_channel() is not None
         if (
             not for_scrub
-            and (self._buffer is not None or self._ltc_pcm is not None or has_video_audio)
+            and (
+                self._buffer is not None
+                or self._ltc_pcm is not None
+                or has_source_ltc
+                or has_video_audio
+            )
             and self._stream is not None
         ):
             lat = self.sync_offset_seconds
@@ -548,6 +613,8 @@ class AudioEngine(QObject):
             self._ltc_cache_key = None
 
     def _ensure_ltc_cache(self) -> None:
+        if not self._uses_generated_ltc():
+            return
         sr = self._sample_rate()
         dur = self.duration
         key = (sr, round(dur, 6), self._song_start_tc, round(self._song_fps, 4))
@@ -710,8 +777,9 @@ class AudioEngine(QObject):
             out[:n, 0] = chunk[:, 0]
             out[:n, 1] = chunk[:, 0]
         else:
-            out[:n, 0] = chunk[:, 0]
-            out[:n, 1] = chunk[:, 1]
+            left_idx, right_idx = self._music_source_indices()
+            out[:n, 0] = chunk[:, left_idx]
+            out[:n, 1] = chunk[:, right_idx]
         if self._mute_music:
             out[:] = 0.0
         # Master (all-bus) gain, then the dedicated music-bed gain used for
@@ -739,10 +807,38 @@ class AudioEngine(QObject):
             out = out * vol
         return out
 
+    def _source_channel_chunk(self, channel: int, start: int, frames: int) -> np.ndarray:
+        out = np.zeros(frames, dtype=np.float32)
+        samples = self._playback_samples
+        if samples is None:
+            return out
+        end = min(start + frames, samples.shape[0])
+        if end <= start:
+            return out
+        chunk = samples[start:end]
+        n = chunk.shape[0]
+        if chunk.ndim == 1:
+            out[:n] = chunk
+        else:
+            idx = min(max(0, int(channel)), int(chunk.shape[1]) - 1)
+            out[:n] = chunk[:, idx]
+        return out
+
     def _ltc_chunk(self, start: int, frames: int) -> np.ndarray:
         out = np.zeros(frames, dtype=np.float32)
+        if not self._audio_settings.ltc_enabled:
+            return out
+        gain = float(self._audio_settings.ltc_gain)
+        src_ch = self._effective_ltc_source_channel()
+        if src_ch is not None:
+            out = self._source_channel_chunk(src_ch, start, frames)
+            if gain < 1.0 - 1e-6:
+                out *= gain
+            elif gain <= 1e-6:
+                out[:] = 0.0
+            return out
         pcm = self._ltc_pcm
-        if pcm is None or not self._audio_settings.ltc_enabled:
+        if pcm is None:
             return out
         end = min(start + frames, pcm.size)
         if end <= start:

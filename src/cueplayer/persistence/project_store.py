@@ -120,6 +120,7 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "music_left_channels": list(settings.music_left_channels),
         "music_right_channels": list(settings.music_right_channels),
         "ltc_enabled": bool(settings.ltc_enabled),
+        "ltc_source": str(settings.ltc_source),
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
         "mtc_enabled": bool(settings.mtc_enabled),
@@ -132,11 +133,15 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         return AudioOutputSettings()
     gain = float(raw.get("ltc_gain", 0.8) or 0.8)
     gain = min(1.5, max(0.0, gain))
+    ltc_source = str(raw.get("ltc_source") or "generator")
+    if ltc_source not in ("generator", "auto", "source_left", "source_right"):
+        ltc_source = "generator"
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
         music_left_channels=_coerce_channel_list(raw.get("music_left_channels"), [0]),
         music_right_channels=_coerce_channel_list(raw.get("music_right_channels"), [1]),
         ltc_enabled=bool(raw.get("ltc_enabled", False)),
+        ltc_source=ltc_source,  # type: ignore[arg-type]
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
         mtc_enabled=bool(raw.get("mtc_enabled", False)),

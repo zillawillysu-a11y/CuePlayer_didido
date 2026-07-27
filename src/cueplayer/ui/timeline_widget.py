@@ -25,8 +25,9 @@ from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     VideoClipWaveformCache,
     sample_clip_peaks_for_times,
+    sample_source_peaks_for_clip_times,
+    sample_source_raw_for_clip_times,
     timeline_to_clip_local,
-    waveform_buckets_for_paint,
 )
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
@@ -2030,10 +2031,8 @@ class TimelineWidget(QWidget):
         if duration <= 1e-9:
             return
 
-        peaks = self._video_waveform_cache.peaks_for_paint(
-            clip, buckets=waveform_buckets_for_paint(pixel_width=x_right - x_left)
-        )
-        if peaks is None or peaks.mins.size == 0:
+        peaks = self._video_waveform_cache.peaks_for_paint(clip)
+        if peaks is None or peaks.mono.size == 0:
             return
 
         mid = rect.center().y()
@@ -2042,8 +2041,9 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        # Always use the async peak envelope — never decode PCM on the paint
-        # thread (a 2-hour source would freeze the UI).
+        samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
+        use_raw = samples_per_pixel <= 1.5
+
         for x in range(x_left, x_right):
             t0 = self._time_for_x(x)
             t1 = self._time_for_x(x + 1)
@@ -2057,9 +2057,22 @@ class TimelineWidget(QWidget):
                 clip_t1 = duration
             clip_t0 = max(0.0, min(duration, clip_t0))
             clip_t1 = max(clip_t0, min(duration, clip_t1))
-            lo, hi = sample_clip_peaks_for_times(
-                peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
-            )
+            if use_raw:
+                lo, hi = sample_source_raw_for_clip_times(
+                    peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
+                )
+            elif samples_per_pixel > 8.0:
+                lo, hi = sample_clip_peaks_for_times(
+                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
+                )
+            else:
+                lo, hi = sample_source_peaks_for_clip_times(
+                    peaks,
+                    clip,
+                    clip_t0=clip_t0,
+                    clip_t1=clip_t1,
+                    samples_per_pixel=samples_per_pixel,
+                )
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
