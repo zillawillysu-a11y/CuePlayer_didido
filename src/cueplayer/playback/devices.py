@@ -189,6 +189,60 @@ def list_output_devices(*, dedupe: bool = True) -> list[OutputDeviceInfo]:
     return filter_output_devices(out) if dedupe else out
 
 
+def hostapi_names() -> list[str]:
+    """Installed PortAudio host APIs (e.g. ASIO, Windows WASAPI)."""
+    try:
+        return [str(api.get("name", "")) for api in sd.query_hostapis()]
+    except Exception:
+        return []
+
+
+def asio_available() -> bool:
+    return any(name == "ASIO" for name in hostapi_names())
+
+
+def list_output_devices_for_picker() -> list[OutputDeviceInfo]:
+    """
+    Full routing picker: always list every ASIO endpoint separately (Reaper-style),
+    plus deduped WASAPI defaults and any extra multi-channel siblings.
+
+    ``filter_output_devices`` hides DirectSound/MME clutter for the tray-style
+    list, but that also hid ASIO when only a 4ch DirectSound Focusrite entry
+    matched the same name family — users could not pick ASIO for LTC→CH3.
+    """
+    raw = list_output_devices(dedupe=False)
+    usable = [d for d in raw if not _is_junk_device_name(d.name)]
+    picked: list[OutputDeviceInfo] = []
+    seen: set[int] = set()
+
+    def add(d: OutputDeviceInfo) -> None:
+        if d.index in seen:
+            return
+        seen.add(d.index)
+        picked.append(d)
+
+    for d in usable:
+        if d.hostapi_name == "ASIO":
+            add(d)
+    for d in filter_output_devices(usable):
+        add(d)
+    # Multi-channel endpoints that dedupe skipped (e.g. 4ch DirectSound Focusrite).
+    for d in usable:
+        if d.max_output_channels >= 3 and d.index not in seen:
+            add(d)
+
+    return sorted(
+        picked,
+        key=lambda d: (
+            0 if d.hostapi_name == "ASIO" else 1 if d.hostapi_name == "Windows WASAPI" else 2,
+            -d.max_output_channels,
+            _hostapi_rank(d.hostapi_name),
+            d.name.casefold(),
+            d.index,
+        ),
+    )
+
+
 def _match_by_name(devices: list[OutputDeviceInfo], wanted: str) -> OutputDeviceInfo | None:
     """Exact, then substring (either direction) name match against `devices`."""
     wanted = (wanted or "").strip()

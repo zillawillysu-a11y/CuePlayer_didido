@@ -201,6 +201,24 @@ def test_probe_failure_switches_to_asio_multichannel(monkeypatch) -> None:
     assert engine._route.get(2) == [2]
 
 
+def test_list_output_devices_for_picker_keeps_asio_and_multichannel_ds(monkeypatch) -> None:
+    """Routing dialog must list ASIO separately and keep 4ch DirectSound siblings."""
+    stereo = _dev(0, "Speakers (Focusrite USB)", api="Windows WASAPI", ch=2)
+    ds4 = _dev(1, "喇叭 (2- Focusrite USB Audio)", api="Windows DirectSound", ch=4)
+    asio = _dev(2, "Focusrite USB ASIO", api="ASIO", ch=8)
+    raw = [stereo, ds4, asio]
+
+    def fake_list(*, dedupe=True):
+        return devices_mod.filter_output_devices(raw) if dedupe else raw
+
+    monkeypatch.setattr(devices_mod, "list_output_devices", fake_list)
+    out = devices_mod.list_output_devices_for_picker()
+    apis = {d.hostapi_name for d in out}
+    assert "ASIO" in apis
+    assert any(d.hostapi_name == "ASIO" and d.max_output_channels == 8 for d in out)
+    assert any(d.hostapi_name == "Windows DirectSound" and d.max_output_channels == 4 for d in out)
+
+
 def test_play_pause_reuses_stream_without_reopen(monkeypatch) -> None:
     """Toggling transport must not tear down/recreate the PortAudio stream each time."""
     pytest.importorskip("PySide6")

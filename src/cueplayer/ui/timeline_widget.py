@@ -82,6 +82,8 @@ class TimelineWidget(QWidget):
         self._position = 0.0
         self._pixels_per_second = 120.0
         self._scroll_x = 0.0
+        self._scroll_y = 0.0
+        self._content_height = 0
         self._auto_scroll = True
         self._header_width = 140
         self._ruler_height = 28
@@ -653,9 +655,14 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _max_video_lane_height(self) -> float:
-        # Let the video lane grow with the widget — only keep a thin strip for marks.
-        min_mark_strip = self._ruler_height + self._wave_height + self._lane_height
-        return max(self._video_lane_min_height, float(self.height()) - min_mark_strip)
+        # Reserve space for every visible mark lane so growing the video row
+        # does not push the bottom transport bar off-screen.
+        mark_h = 0
+        if self._show_mark_tracks:
+            mark_h = self._visible_lane_count() * self._lane_height
+        extra = self._video_expand_extra if self._video_track_expanded else 0.0
+        reserve = self._ruler_height + self._wave_height + mark_h + extra + 8
+        return max(self._video_lane_min_height, float(self.height()) - reserve)
 
     def _clamp_video_lane_height(self, height: float) -> float:
         return max(self._video_lane_min_height, min(self._max_video_lane_height(), float(height)))
@@ -1056,7 +1063,16 @@ class TimelineWidget(QWidget):
         visible = self._visible_lane_count()
         video_h = self._video_band_height()
         needed = self._ruler_height + self._wave_height + video_h + visible * self._lane_height + 8
-        self.setMinimumHeight(max(needed, self._ruler_height + 80))
+        self._content_height = needed
+        alloc = max(self._ruler_height + 80, int(self.height()))
+        if needed > alloc:
+            self._scroll_y = min(self._scroll_y, float(needed - alloc))
+        else:
+            self._scroll_y = 0.0
+        # Stay within the window allocation — do not grow the widget and shove
+        # the transport bar downward when the video lane is tall.
+        self.setMinimumHeight(min(needed, alloc))
+        self.setMaximumHeight(16777215)
         self._layout_video_track_overlay()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -2060,10 +2076,6 @@ class TimelineWidget(QWidget):
             if use_raw:
                 lo, hi = sample_source_raw_for_clip_times(
                     peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
-                )
-            elif samples_per_pixel > 8.0:
-                lo, hi = sample_clip_peaks_for_times(
-                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
                 )
             else:
                 lo, hi = sample_source_peaks_for_clip_times(

@@ -24,8 +24,10 @@ from cueplayer.domain.models import (
     default_ltc_channels_for_device,
 )
 from cueplayer.playback.devices import (
+    asio_available,
     find_output_device,
     list_output_devices,
+    list_output_devices_for_picker,
     resolve_output_endpoint_for_channels,
     upgrade_device_for_channels,
 )
@@ -90,7 +92,7 @@ class AudioTimecodeDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Audio / Timecode")
         self.resize(520, 480)
-        self._devices = list_output_devices()
+        self._devices = list_output_devices_for_picker()
         self._result = AudioOutputSettings(
             output_device_name=settings.output_device_name,
             music_left_channels=list(settings.music_left_channels),
@@ -123,8 +125,22 @@ class AudioTimecodeDialog(QDialog):
         self.device_hint = QLabel("")
         self.device_hint.setStyleSheet("color: #a1a1aa;")
         self.device_hint.setWordWrap(True)
+        asio_tip = QLabel(
+            "Multi-channel routing (LTC→CH3+) works best with an ASIO endpoint — "
+            "same as Reaper. Pick a row tagged [ASIO] when available."
+        )
+        asio_tip.setWordWrap(True)
+        asio_tip.setStyleSheet("color: #8b949e;")
+        if not asio_available():
+            asio_tip.setText(
+                "No ASIO host API detected in PortAudio. Install your interface's "
+                "ASIO driver (e.g. Focusrite) and restart CuePlayer — like Reaper, "
+                "ASIO is required for reliable CH3+ output on many cards. "
+                "A 4ch DirectSound entry may still work for LTC→CH3."
+            )
         device_form.addRow("Device", self.device_combo)
         device_form.addRow(self.device_hint)
+        device_form.addRow(asio_tip)
         root.addWidget(device_box)
 
         # --- Music routing ---
