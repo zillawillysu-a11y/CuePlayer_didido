@@ -949,7 +949,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
-        lo = self._abs_min_pixels_per_second()
+        lo = self._min_pixels_per_second()
         new_pps = max(lo, min(4000.0, pixels_per_second))
         if self._view_pinned:
             # Keep the time under the given (or view-center) x stable — don't snap playhead.
