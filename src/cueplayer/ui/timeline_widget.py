@@ -72,6 +72,7 @@ class TimelineWidget(QWidget):
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
     video_track_visibility_changed = Signal(bool)  # show_video_track
+    content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
 
@@ -92,9 +93,8 @@ class TimelineWidget(QWidget):
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
         self._video_lane_split_hit = 6
-        # When the full Video lane is hidden, keep a thin stub so the user
-        # still has an eye button to show it again.
-        self._video_collapsed_stub_height = 24.0
+        # Header-only row height for the Show-eye when the Video lane is hidden.
+        self._video_header_eye_row_height = 24.0
         # Expanded chrome shows two faders stacked (Video Clip volume, then
         # Music volume for alignment balancing) — see _build_video_track_overlay.
         self._video_expand_extra = 78.0
@@ -308,7 +308,7 @@ class TimelineWidget(QWidget):
         self.video_hide_button = IconButton(
             "eye_off",
             "Hide Video Track (after alignment — Preview/Clean Output keep playing). "
-            "Use the eye button on the collapsed Video stub to show it again.",
+            "Use the eye button in the header to show it again.",
             self,
             size=btn_size,
             overlay=True,
@@ -377,21 +377,21 @@ class TimelineWidget(QWidget):
         if not hasattr(self, "video_mute_button"):
             return
         visible = self._video_lane_visible()
-        stub = self._video_stub_visible()
+        eye_header = self._video_eye_header_visible()
         self.video_mute_button.setVisible(visible)
         self.video_expand_button.setVisible(visible)
         self.video_hide_button.setVisible(visible)
-        self.video_show_button.setVisible(stub)
+        self.video_show_button.setVisible(eye_header)
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
             self.music_volume_caption.hide()
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
-            if stub:
-                stub_h = int(self._video_collapsed_stub_height)
+            if eye_header:
+                row_h = int(self._video_header_eye_row_height)
                 top = self._wave_bottom_y()
-                btn_y = top + (stub_h - self.video_show_button.height()) // 2
+                btn_y = top + (row_h - self.video_show_button.height()) // 2
                 x = self._header_width - 6 - self.video_show_button.width()
                 self.video_show_button.move(x, btn_y)
                 self.video_show_button.raise_()
@@ -593,8 +593,8 @@ class TimelineWidget(QWidget):
     def _video_lane_visible(self) -> bool:
         return self._song is not None and self._show_video_track
 
-    def _video_stub_visible(self) -> bool:
-        """Collapsed strip with the Show-eye button after the lane is hidden."""
+    def _video_eye_header_visible(self) -> bool:
+        """Show-eye in the left header when the Video lane is hidden."""
         return self._song is not None and not self._show_video_track
 
     def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
@@ -627,11 +627,9 @@ class TimelineWidget(QWidget):
         return self._wave_bottom_y()
 
     def _tracks_top_y(self) -> int:
-        """Y where mark lanes begin (below waveform + video lane / stub)."""
+        """Y where mark lanes begin (below waveform + optional video lane)."""
         if self._video_lane_visible():
             return self._wave_bottom_y() + int(self._video_lane_height)
-        if self._video_stub_visible():
-            return self._wave_bottom_y() + int(self._video_collapsed_stub_height)
         return self._wave_bottom_y()
 
     def _video_lane_clip_bottom_y(self) -> int:
@@ -1000,11 +998,9 @@ class TimelineWidget(QWidget):
         return self._ruler_height + self._wave_height
 
     def _video_band_height(self) -> int:
-        """Full Video lane height, or the collapsed stub, or 0."""
+        """Canvas height for the Video lane (0 when hidden — eye stays in header only)."""
         if self._video_lane_visible():
             return int(self._video_lane_height)
-        if self._video_stub_visible():
-            return int(self._video_collapsed_stub_height)
         return 0
 
     def _max_wave_height(self) -> int:
@@ -1056,6 +1052,7 @@ class TimelineWidget(QWidget):
         self._content_height = needed
         self.setMinimumHeight(needed)
         self._layout_video_track_overlay()
+        self.content_geometry_changed.emit()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -2094,11 +2091,11 @@ class TimelineWidget(QWidget):
                     else "No clip selected"
                 )
                 painter.drawText(8, sub_top + 13, name_text)
-        elif self._video_stub_visible():
-            stub_h = int(self._video_collapsed_stub_height)
-            painter.fillRect(0, wave_bottom, self._header_width, stub_h, QColor("#111113"))
+        elif self._video_eye_header_visible():
+            row_h = int(self._video_header_eye_row_height)
+            painter.fillRect(0, wave_bottom, self._header_width, row_h, QColor("#111113"))
             painter.setPen(QColor("#71717a"))
-            painter.drawText(8, wave_bottom + stub_h // 2 + 4, "Video")
+            painter.drawText(8, wave_bottom + row_h // 2 + 4, "Video")
         if self._song is not None and self._show_mark_tracks:
             y = tracks_top
             for lane in self._song.mark_lanes:

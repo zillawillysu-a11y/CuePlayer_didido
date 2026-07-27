@@ -30,12 +30,13 @@ class RowColorDelegate(QStyledItemDelegate):
             base = None
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
-        if base is None and not selected:
-            super().paint(painter, option, index)
-            return
-
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
+        opt.textElideMode = Qt.TextElideMode.ElideNone
+
+        if base is None and not selected:
+            super().paint(painter, opt, index)
+            return
         opt.features = opt.features & ~QStyleOptionViewItem.ViewItemFeature.Alternate
         opt.state = opt.state & ~QStyle.StateFlag.State_Selected
 

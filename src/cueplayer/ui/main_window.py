@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QFont,
     QKeySequence,
     QPainter,
     QPen,
@@ -188,6 +189,8 @@ class SetlistWidget(QTableWidget):
             "Double-click #/Name/BPM to edit; right-click to toggle columns or open full editor; "
             "drag to reorder; drop audio files to add; Ctrl/Shift to multi-select"
         )
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._block_number_signal = False
         self._drag_song_ids: list[str] = []
         self._insert_indicator_row: int | None = None
@@ -561,6 +564,8 @@ class MainWindow(QMainWindow):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self._timeline_scroll.setWidget(self.timeline)
+        self.timeline.content_geometry_changed.connect(self._sync_timeline_geometry)
+        self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
 
         # Center column: Timeline (waveform + video lane + mark lanes) on top,
@@ -730,6 +735,7 @@ class MainWindow(QMainWindow):
         if demo.is_file():
             self._load_audio_path(demo, mark_dirty=False)
             self._set_clean()
+        QTimer.singleShot(0, self._sync_timeline_geometry)
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -1211,7 +1217,10 @@ class MainWindow(QMainWindow):
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
         for i, song in enumerate(self.project.songs):
             num_text = format_setlist_number(song.setlist_number)
+            bold = QFont(self.font())
+            bold.setWeight(QFont.Weight.Bold)
             num_item = QTableWidgetItem(num_text)
+            num_item.setFont(bold)
             num_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             num_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
@@ -1230,7 +1239,9 @@ class MainWindow(QMainWindow):
                 primary = en_name or zh_name
             else:
                 primary = zh_name
-            name_item = QTableWidgetItem(primary)
+            display_title = f"#{num_text}  {primary}" if mode != "en" else primary
+            name_item = QTableWidgetItem(display_title)
+            name_item.setFont(bold)
             name_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -1366,6 +1377,11 @@ class MainWindow(QMainWindow):
             self._apply_inline_ma_name(song, text, row=row)
             return
         name = text.strip() or "Untitled Song"
+        num_prefix = f"#{format_setlist_number(song.setlist_number)}"
+        if name.startswith(num_prefix):
+            name = name[len(num_prefix) :].lstrip()
+        if not name:
+            name = "Untitled Song"
         if song.name == name:
             return
         song.name = name
@@ -1964,8 +1980,25 @@ class MainWindow(QMainWindow):
                 continue
             widget.close()
 
+    def _sync_timeline_geometry(self) -> None:
+        """QScrollArea(widgetResizable=False) needs an explicit timeline size."""
+        scroll = getattr(self, "_timeline_scroll", None)
+        if scroll is None:
+            return
+        vp = scroll.viewport()
+        tl = self.timeline
+        content_w = int(tl._content_width()) + tl._header_width  # noqa: SLF001
+        w = max(vp.width(), content_w)
+        h = max(tl.minimumHeight(), tl._content_height)  # noqa: SLF001
+        if tl.width() != w or tl.height() != h:
+            tl.resize(w, h)
+
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""
+        scroll = getattr(self, "_timeline_scroll", None)
+        if scroll is not None and watched is scroll.viewport():
+            if event is not None and event.type() == QEvent.Type.Resize:
+                self._sync_timeline_geometry()
         panel = getattr(self, "_setlist_panel", None)
         view_stack = getattr(self, "view_stack", None)
         timeline_center = getattr(self, "_timeline_center", None)
@@ -2229,6 +2262,7 @@ class MainWindow(QMainWindow):
             and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
         ):
             self.engine.loop_enabled = True
+            self.engine.engage_ab_loop()
         self.transport.set_loop_status(
             self.engine.loop_a,
             self.engine.loop_b,
@@ -2240,6 +2274,7 @@ class MainWindow(QMainWindow):
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
+                self.engine.engage_ab_loop()
         self._sync_loop_ui()
         self.status.showMessage(f"A = {self.engine.loop_a:.3f}s", 2000)
 
@@ -2248,6 +2283,7 @@ class MainWindow(QMainWindow):
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
+                self.engine.engage_ab_loop()
         self._sync_loop_ui()
         self.status.showMessage(f"B = {self.engine.loop_b:.3f}s", 2000)
 

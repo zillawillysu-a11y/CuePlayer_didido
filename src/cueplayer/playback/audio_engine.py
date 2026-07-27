@@ -196,6 +196,11 @@ class AudioEngine(QObject):
             or is_ltc_route(self._audio_settings.music_l_route)
             or is_ltc_route(self._audio_settings.music_r_route)
             or self._file_ltc_channel() is not None
+            or (
+                self._audio_settings.ltc_enabled
+                and self._audio_settings.ltc_source != "generator"
+                and ch_count >= 2
+            )
         )
         if not strip_ltc:
             return 0, 1
@@ -399,11 +404,30 @@ class AudioEngine(QObject):
     def set_loop_points(self, a: float | None, b: float | None) -> None:
         self.loop_a = a
         self.loop_b = b
-        self._refresh_loop_engage()
+        if self.loop_enabled:
+            self.engage_ab_loop()
+        else:
+            self._refresh_loop_engage()
 
     def set_loop_enabled(self, enabled: bool) -> None:
         self.loop_enabled = bool(enabled)
-        self._refresh_loop_engage()
+        if self.loop_enabled:
+            self.engage_ab_loop()
+        else:
+            with self._lock:
+                self._loop_engage = False
+
+    def engage_ab_loop(self) -> None:
+        """Arm A–B loop and jump to A when the playhead is outside the region."""
+        bounds = self._loop_bounds()
+        if not self.loop_enabled or bounds is None:
+            return
+        a, b = bounds
+        pos = self._raw_seconds()
+        if pos >= b - 1e-4 or pos < a - 1e-4:
+            self.seek(a)
+        with self._lock:
+            self._loop_engage = True
 
     def clear_loop(self) -> None:
         self.loop_a = None
@@ -451,10 +475,8 @@ class AudioEngine(QObject):
             return False
         a, b = bounds
         pos = self._raw_seconds()
-        if a - 1e-4 <= pos < b - 1e-4:
+        if not self._loop_engage and a - 1e-4 <= pos < b - 1e-4:
             self._loop_engage = True
-        elif pos < a - 1e-4:
-            self._loop_engage = False
         if self._loop_engage and pos + 1e-4 >= b:
             self.seek(a)
             return True
@@ -631,10 +653,8 @@ class AudioEngine(QObject):
         bounds = self._loop_bounds()
         if self.loop_enabled and bounds is not None:
             a, b = bounds
-            if a - 1e-4 <= pos < b - 1e-4:
+            if not self._loop_engage and a - 1e-4 <= pos < b - 1e-4:
                 self._loop_engage = True
-            elif pos < a - 1e-4:
-                self._loop_engage = False
             if self._loop_engage and pos >= b:
                 self.seek(a)
                 return
@@ -1041,14 +1061,11 @@ class AudioEngine(QObject):
                 if loop_on:
                     a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
                     b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
-                    if a_frame <= self._position_frame < b_frame:
+                    if self._loop_engage:
+                        if self._position_frame >= b_frame:
+                            self._position_frame = a_frame
+                    elif a_frame <= self._position_frame < b_frame:
                         self._loop_engage = True
-                    elif self._position_frame < a_frame:
-                        self._loop_engage = False
-                    elif self._loop_engage and self._position_frame >= b_frame:
-                        self._position_frame = a_frame
-                    else:
-                        self._loop_engage = False
                 start = self._position_frame
                 end = min(start + frames, total_frames)
                 if loop_on and self._loop_engage and start < b_frame:

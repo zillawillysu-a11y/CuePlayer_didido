@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from PySide6.QtWidgets import QCheckBox
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
-_CHECKMARK = (_ASSETS / "checkmark.png").as_posix()
+_CHECKMARK_B64 = base64.b64encode((_ASSETS / "checkmark.png").read_bytes()).decode("ascii")
 
 _CHECKBOX_QSS = f"""
 QCheckBox::indicator {{
@@ -20,7 +21,7 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background: #4a9eff;
     border-color: #4a9eff;
-    image: url({_CHECKMARK});
+    image: url(data:image/png;base64,{_CHECKMARK_B64});
 }}
 QCheckBox::indicator:hover {{
     border-color: #79b8ff;

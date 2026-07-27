@@ -54,6 +54,7 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
     widget.resize(900, 600)
     assert widget._video_lane_visible() is True
     before_tracks = widget._tracks_top_y()
+    wave_bottom = widget._wave_bottom_y()
 
     events: list[bool] = []
     widget.video_track_visibility_changed.connect(events.append)
@@ -61,7 +62,8 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
 
     assert song.show_video_track is False
     assert widget._video_lane_visible() is False
-    assert widget._video_stub_visible() is True
+    assert widget._video_eye_header_visible() is True
+    assert widget._tracks_top_y() == wave_bottom
     assert widget._tracks_top_y() < before_tracks
     assert events == [False]
     assert widget.video_mute_button.isHidden() is True
@@ -101,4 +103,4 @@ def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
     widget.set_song(song)
     assert widget._show_video_track is False
     assert widget._video_lane_visible() is False
-    assert widget._video_stub_visible() is True
+    assert widget._video_eye_header_visible() is True
