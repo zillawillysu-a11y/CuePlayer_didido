@@ -76,7 +76,7 @@ from cueplayer.domain.undo import (
     VideoClipSnapshot,
 )
 from cueplayer.media.audio_loader import load_audio
-from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES, probe_media
+from cueplayer.media.video_loader import probe_media
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
 from cueplayer.playback.video_sync import VideoSyncController
@@ -92,29 +92,22 @@ from cueplayer.ui.song_edit_dialog import (
     parse_setlist_number,
     suggest_ma_export_name,
 )
+from cueplayer.ui.drag_drop import (
+    AUDIO_SUFFIXES,
+    audio_paths_from_mime,
+    mime_looks_like_file_drop,
+    rejected_audio_drop_reason,
+    rejected_file_drop_reason,
+    video_paths_from_mime,
+)
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
+from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget
 
-_AUDIO_SUFFIXES = {
-    ".wav",
-    ".flac",
-    ".ogg",
-    ".oga",
-    ".mp3",
-    ".aiff",
-    ".aif",
-    ".aifc",
-    ".m4a",
-    ".aac",
-    ".wma",
-    ".opus",
-    ".caf",
-    ".wv",
-}
-_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
+_AUDIO_SUFFIXES = AUDIO_SUFFIXES  # re-export for tests / callers
 _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"
@@ -131,68 +124,6 @@ def _text_input_has_focus() -> bool:
     """True when a widget that owns typing shortcuts is focused."""
     widget = QApplication.focusWidget()
     return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox))
-
-
-def _mime_looks_like_file_drop(mime) -> bool:  # noqa: ANN001
-    """
-    Optimistic check for Explorer → app file drags on Windows.
-
-    During dragEnter, some hosts omit usable URLs until the actual drop;
-    rejecting too early means the drop never arrives. Accept when the MIME
-    claims file URLs / uri-list; filter real audio paths in dropEvent.
-    """
-    if mime is None:
-        return False
-    if mime.hasUrls():
-        return True
-    for fmt in mime.formats():
-        key = str(fmt).lower()
-        if "uri-list" in key or "filename" in key or "cf_hdrop" in key:
-            return True
-    return False
-
-
-def _audio_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
-    if mime is None or not mime.hasUrls():
-        return []
-    out: list[Path] = []
-    seen: set[str] = set()
-    for url in mime.urls():
-        if not url.isLocalFile():
-            continue
-        path = Path(url.toLocalFile())
-        if path.suffix.lower() not in _AUDIO_SUFFIXES:
-            continue
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(path)
-    return out
-
-
-def _rejected_drop_reason(mime) -> str:  # noqa: ANN001
-    """Human-readable why a file drop onto the setlist was ignored."""
-    if mime is None or not mime.hasUrls():
-        return "Drop ignored (not a local file drag)"
-    names: list[str] = []
-    for url in mime.urls():
-        if not url.isLocalFile():
-            names.append("(non-local URL)")
-            continue
-        path = Path(url.toLocalFile())
-        suf = path.suffix.lower() or "(no extension)"
-        if suf not in _AUDIO_SUFFIXES:
-            names.append(f"{path.name} [{suf}]")
-        elif not path.exists():
-            names.append(f"{path.name} (not found)")
-    if names:
-        return (
-            "Unsupported / missing audio: "
-            + ", ".join(names[:3])
-            + " — use wav/mp3/flac/ogg/aiff/m4a…"
-        )
-    return "Drop ignored"
 
 
 class SetlistWidget(QTableWidget):
@@ -425,7 +356,7 @@ class SetlistWidget(QTableWidget):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         # Accept Explorer file drags optimistically (Windows may omit URLs
         # until drop); still accept internal row reorders.
-        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
+        if event.source() is self or mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -433,7 +364,7 @@ class SetlistWidget(QTableWidget):
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
+        if event.source() is self or mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -450,12 +381,12 @@ class SetlistWidget(QTableWidget):
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._clear_insert_indicator()
         if event.source() is not self:
-            paths = _audio_paths_from_mime(event.mimeData())
+            paths = audio_paths_from_mime(event.mimeData())
             if paths:
                 event.acceptProposedAction()
                 self.audio_files_dropped.emit(paths)
                 return
-            self.audio_drop_rejected.emit(_rejected_drop_reason(event.mimeData()))
+            self.audio_drop_rejected.emit(rejected_audio_drop_reason(event.mimeData()))
             event.ignore()
             return
         pos = event.position().toPoint()
@@ -627,6 +558,8 @@ class MainWindow(QMainWindow):
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(timeline_split)  # 0 = timeline
         self.view_stack.addWidget(self.show_patch_page)  # 1 = MA patch
+        self.view_stack.setAcceptDrops(True)
+        self.view_stack.installEventFilter(self)
 
         splitter.addWidget(left)
         splitter.addWidget(self.view_stack)
@@ -1935,21 +1868,31 @@ class MainWindow(QMainWindow):
             widget.close()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
-        """Forward Explorer audio drops from the left setlist panel chrome."""
+        """Forward Explorer file drops from setlist chrome and the main view."""
         panel = getattr(self, "_setlist_panel", None)
-        if panel is not None and watched is panel and event is not None:
+        drop_targets = {panel, getattr(self, "view_stack", None)}
+        if watched in drop_targets and event is not None:
             etype = event.type()
             if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
-                if _mime_looks_like_file_drop(event.mimeData()):
+                if mime_looks_like_file_drop(event.mimeData()):
                     event.acceptProposedAction()
                     return True
             elif etype == QEvent.Type.Drop:
-                paths = _audio_paths_from_mime(event.mimeData())
-                if paths:
+                mime = event.mimeData()
+                audio_paths = audio_paths_from_mime(mime)
+                if audio_paths:
                     event.acceptProposedAction()
-                    self._add_songs_from_audio_paths(paths)
+                    self._add_songs_from_audio_paths(audio_paths)
                     return True
-                self.status.showMessage(_rejected_drop_reason(event.mimeData()), 5000)
+                video_paths = video_paths_from_mime(mime)
+                if video_paths and watched is getattr(self, "view_stack", None):
+                    event.acceptProposedAction()
+                    self._add_video_clips_from_paths(video_paths, self.engine.position)
+                    return True
+                if watched is panel:
+                    self.status.showMessage(rejected_audio_drop_reason(mime), 5000)
+                else:
+                    self.status.showMessage(rejected_file_drop_reason(mime), 5000)
                 event.ignore()
                 return True
         return super().eventFilter(watched, event)
@@ -2454,13 +2397,17 @@ class MainWindow(QMainWindow):
             duration = DEFAULT_STILL_CLIP_DURATION_SECONDS
             source_duration = 0.0
         else:
-            duration = max(0.2, info.duration_seconds)
             source_duration = info.duration_seconds
-        max_start = max(0.0, self.current_song.duration_seconds - duration)
+            duration = default_video_clip_duration(
+                source_duration,
+                self.current_song.duration_seconds,
+                start_seconds,
+            )
+        start = clip_start_after_body_drag(start_seconds, 0.0)
         clip = VideoClip.create(
             name=path.stem,
             path=path,
-            start_seconds=min(max(0.0, start_seconds), max_start),
+            start_seconds=start,
             duration_seconds=duration,
             media_kind="still" if is_still else "video",
             source_duration_seconds=source_duration,
@@ -2546,8 +2493,7 @@ class MainWindow(QMainWindow):
         clip = self.current_song.video_clip_by_id(clip_id)
         if clip is None:
             return
-        max_start = max(0.0, self.current_song.duration_seconds - clip.duration_seconds)
-        new_start = min(clip.end_seconds, max_start)
+        new_start = clip_start_after_body_drag(clip.end_seconds, 0.0)
         dup = VideoClip.create(
             name=f"{clip.name} copy",
             path=clip.path,
@@ -2598,12 +2544,10 @@ class MainWindow(QMainWindow):
             return
         anchor = min(snap.start_seconds for snap in self._video_clip_clipboard)
         paste_at = self.engine.position
-        duration = self.current_song.duration_seconds
         new_clips: list[VideoClip] = []
         for snap in self._video_clip_clipboard:
             offset = snap.start_seconds - anchor
-            max_start = max(0.0, duration - snap.duration_seconds)
-            start = min(max(0.0, paste_at + offset), max_start)
+            start = clip_start_after_body_drag(paste_at + offset, 0.0)
             clip = VideoClip.create(
                 name=f"{snap.name} copy",
                 path=Path(snap.path),

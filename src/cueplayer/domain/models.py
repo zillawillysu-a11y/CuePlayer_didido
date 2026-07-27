@@ -681,7 +681,7 @@ class Project:
         default_factory=CleanVideoOutputSettings
     )
     # Preview/Clean Output decode resolution cap — see VideoDecodeQuality.
-    video_decode_quality: VideoDecodeQuality = "full"
+    video_decode_quality: VideoDecodeQuality = "1080p"
 
     @classmethod
     def create(cls, name: str) -> Project:

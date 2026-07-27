@@ -178,7 +178,7 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
 def _coerce_video_decode_quality(raw: Any) -> VideoDecodeQuality:
     if raw in VIDEO_DECODE_QUALITY_MAX_HEIGHT:
         return raw  # type: ignore[return-value]
-    return "full"
+    return "1080p"
 
 
 class SchemaError(ValueError):

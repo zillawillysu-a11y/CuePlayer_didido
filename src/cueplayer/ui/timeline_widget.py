@@ -6,7 +6,7 @@ from pathlib import Path
 from time import monotonic_ns
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -30,26 +30,18 @@ from cueplayer.media.video_clip_waveform import (
     waveform_buckets_for_clip,
 )
 from cueplayer.media.video_audio_cache import get_video_audio_mono
+from cueplayer.ui.drag_drop import mime_looks_like_file_drop, video_paths_from_mime
 from cueplayer.ui.icon_button import IconButton
 from cueplayer.ui.marker_draw import draw_marker_shape
 from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, with_alpha
+from cueplayer.ui.video_clip_edit import (
+    clip_duration_after_right_trim,
+    clip_start_after_body_drag,
+)
 
 from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES
 
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
-
-
-def _video_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
-    if mime is None or not mime.hasUrls():
-        return []
-    out: list[Path] = []
-    for url in mime.urls():
-        if not url.isLocalFile():
-            continue
-        path = Path(url.toLocalFile())
-        if path.is_file() and path.suffix.lower() in _VIDEO_SUFFIXES:
-            out.append(path)
-    return out
 
 
 class TimelineWidget(QWidget):
@@ -111,6 +103,7 @@ class TimelineWidget(QWidget):
         self._clip_drag_snapshot: dict[str, tuple[float, float, float]] = {}
         self._clip_drag_origin_x = 0.0
         self._clip_drag_moved = False
+        self._video_gesture_active = False
         self._clip_edge_hit = 8.0
         self._show_mark_tracks = True
         self._show_mark_stem = False
@@ -1267,6 +1260,7 @@ class TimelineWidget(QWidget):
         }
         self._clip_drag_origin_x = x
         self._clip_drag_moved = False
+        self._video_gesture_active = True
         self._view_pinned = True
         self.grabMouse()
         if zone in ("left", "right"):
@@ -1290,9 +1284,8 @@ class TimelineWidget(QWidget):
             return
         start0, _src_in0, dur0 = snapshot
         dt = dx / max(1e-6, self._pixels_per_second)
-        max_start = max(0.0, self._duration() - dur0)
-        clip.start_seconds = min(max(0.0, start0 + dt), max_start)
-        self.update()
+        clip.start_seconds = clip_start_after_body_drag(start0, dt)
+        self._update_video_lane()
 
     def _update_video_clip_trim(self, x: float) -> None:
         if self._song is None or self._trimming_clip is None:
@@ -1317,10 +1310,14 @@ class TimelineWidget(QWidget):
             clip.source_in_seconds = src_in0 + delta
             clip.duration_seconds = dur0 - delta
         else:
-            max_dur = max(min_dur, self._duration() - start0)
-            clip.duration_seconds = min(max(min_dur, dur0 + dt), max_dur)
+            clip.duration_seconds = clip_duration_after_right_trim(
+                dur0,
+                dt,
+                source_in_seconds=src_in0,
+                source_duration_seconds=clip.source_duration_seconds,
+            )
         clip.source_out_seconds = clip.source_in_seconds + clip.duration_seconds
-        self.update()
+        self._update_video_lane()
 
     def _end_video_clip_gesture(self) -> None:
         """Shared release-time bookkeeping for both drag-move and trim gestures."""
@@ -1329,6 +1326,7 @@ class TimelineWidget(QWidget):
         self._dragging_clip = None
         self._trimming_clip = None
         self._clip_drag_moved = False
+        self._video_gesture_active = False
         if clip_id and moved and self._song is not None:
             clip = self._song.video_clip_by_id(clip_id)
             old = self._clip_drag_snapshot.get(clip_id)
@@ -1343,15 +1341,13 @@ class TimelineWidget(QWidget):
     def _nudge_video_clips(self, clip_ids: list[str], delta_seconds: float) -> None:
         if self._song is None:
             return
-        duration = self._duration()
         changes: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {}
         for clip_id in clip_ids:
             clip = self._song.video_clip_by_id(clip_id)
             if clip is None or clip.locked:
                 continue
             old = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
-            max_start = max(0.0, duration - clip.duration_seconds)
-            new_start = min(max(0.0, clip.start_seconds + delta_seconds), max_start)
+            new_start = clip_start_after_body_drag(clip.start_seconds, delta_seconds)
             if abs(new_start - clip.start_seconds) < 1e-9:
                 continue
             clip.start_seconds = new_start
@@ -1453,25 +1449,33 @@ class TimelineWidget(QWidget):
                 return
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if _video_paths_from_mime(event.mimeData()):
+        if mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if _video_paths_from_mime(event.mimeData()):
+        if mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
-        paths = _video_paths_from_mime(event.mimeData())
+        paths = video_paths_from_mime(event.mimeData())
         if not paths:
             event.ignore()
             return
         event.acceptProposedAction()
         drop_time = self._time_for_x(event.position().x())
         self.video_files_dropped.emit(paths, drop_time)
+
+    def _video_lane_dirty_rect(self) -> QRect:
+        top = self._video_lane_top_y()
+        bottom = self._tracks_top_y()
+        return QRect(0, top, self.width(), max(1, bottom - top))
+
+    def _update_video_lane(self) -> None:
+        self.update(self._video_lane_dirty_rect())
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         x = event.position().x()
@@ -2019,7 +2023,12 @@ class TimelineWidget(QWidget):
         samples_per_pixel = (
             sample_rate / self._pixels_per_second if mono is not None and sample_rate > 0 else float("inf")
         )
-        use_raw = mono is not None and sample_rate > 0 and samples_per_pixel <= 1.5
+        use_raw = (
+            not self._video_gesture_active
+            and mono is not None
+            and sample_rate > 0
+            and samples_per_pixel <= 1.5
+        )
 
         for x in range(x_left, x_right):
             t0 = self._time_for_x(x)
