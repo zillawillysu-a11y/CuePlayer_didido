@@ -11,6 +11,8 @@ Core P0 timeline / marks / video / MA2·MA3 export are on `master`.
 Laptop all-in-one branch: `cursor/laptop-ux-pack-028d`
 (Auto Save, LTC 2ch clamp, setlist audio drop, hide Video track, Add Song Browse, New Project confirm, MIDI via Windows winmm / optional pygame-ce).
 
+Latest UX fixes (video drag, Explorer drop, decode perf): `cursor/video-drag-drop-perf-028d`
+
 Product requirements: `docs/PRODUCT_SPEC.md`  
 Agent handoff: `AGENTS.md`
 
