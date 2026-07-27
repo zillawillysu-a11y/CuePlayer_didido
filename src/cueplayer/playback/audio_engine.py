@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
+
 import threading
 
 import numpy as np

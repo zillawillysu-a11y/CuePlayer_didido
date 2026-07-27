@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
-    QFont,
     QKeySequence,
     QPainter,
     QPen,
@@ -1217,10 +1216,7 @@ class MainWindow(QMainWindow):
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
         for i, song in enumerate(self.project.songs):
             num_text = format_setlist_number(song.setlist_number)
-            bold = QFont(self.font())
-            bold.setWeight(QFont.Weight.Bold)
             num_item = QTableWidgetItem(num_text)
-            num_item.setFont(bold)
             num_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             num_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
@@ -1239,9 +1235,7 @@ class MainWindow(QMainWindow):
                 primary = en_name or zh_name
             else:
                 primary = zh_name
-            display_title = f"#{num_text}  {primary}" if mode != "en" else primary
-            name_item = QTableWidgetItem(display_title)
-            name_item.setFont(bold)
+            name_item = QTableWidgetItem(primary)
             name_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -1377,11 +1371,6 @@ class MainWindow(QMainWindow):
             self._apply_inline_ma_name(song, text, row=row)
             return
         name = text.strip() or "Untitled Song"
-        num_prefix = f"#{format_setlist_number(song.setlist_number)}"
-        if name.startswith(num_prefix):
-            name = name[len(num_prefix) :].lstrip()
-        if not name:
-            name = "Untitled Song"
         if song.name == name:
             return
         song.name = name
@@ -1391,6 +1380,7 @@ class MainWindow(QMainWindow):
         if patch is not None:
             patch.sync_songs()
         self.status.showMessage(f'Song name changed to "{name}"', 2000)
+        self.timeline.update()
 
     def _on_song_ma_name_edited(self, row: int, text: str) -> None:
         if row < 0 or row >= len(self.project.songs):
@@ -1981,17 +1971,22 @@ class MainWindow(QMainWindow):
             widget.close()
 
     def _sync_timeline_geometry(self) -> None:
-        """QScrollArea(widgetResizable=False) needs an explicit timeline size."""
+        """QScrollArea(widgetResizable=False): match viewport width, content height.
+
+        Timeline horizontal pan/zoom uses ``_scroll_x`` against the *visible*
+        width — never stretch the widget to the full song pixel width.
+        """
         scroll = getattr(self, "_timeline_scroll", None)
         if scroll is None:
             return
         vp = scroll.viewport()
         tl = self.timeline
-        content_w = int(tl._content_width()) + tl._header_width  # noqa: SLF001
-        w = max(vp.width(), content_w)
+        w = max(1, vp.width())
         h = max(tl.minimumHeight(), tl._content_height)  # noqa: SLF001
         if tl.width() != w or tl.height() != h:
             tl.resize(w, h)
+            tl._clamp_scroll()  # noqa: SLF001
+            tl.update()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""

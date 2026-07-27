@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QFont,
     QInputDevice,
     QKeyEvent,
     QPainter,
@@ -42,6 +43,7 @@ from cueplayer.ui.video_clip_edit import (
     clip_duration_after_right_trim,
     clip_start_after_body_drag,
 )
+from cueplayer.ui.song_edit_dialog import format_setlist_number
 
 from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES
 
@@ -93,8 +95,8 @@ class TimelineWidget(QWidget):
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
         self._video_lane_split_hit = 6
-        # Header-only row height for the Show-eye when the Video lane is hidden.
-        self._video_header_eye_row_height = 24.0
+        # Show-eye sits on the waveform bottom edge in the header (no extra lane height).
+        self._video_header_eye_row_height = 0.0
         # Expanded chrome shows two faders stacked (Video Clip volume, then
         # Music volume for alignment balancing) — see _build_video_track_overlay.
         self._video_expand_extra = 78.0
@@ -389,9 +391,8 @@ class TimelineWidget(QWidget):
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
             if eye_header:
-                row_h = int(self._video_header_eye_row_height)
                 top = self._wave_bottom_y()
-                btn_y = top + (row_h - self.video_show_button.height()) // 2
+                btn_y = top - self.video_show_button.height() - 2
                 x = self._header_width - 6 - self.video_show_button.width()
                 self.video_show_button.move(x, btn_y)
                 self.video_show_button.raise_()
@@ -948,7 +949,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
-        lo = self._min_pixels_per_second()
+        lo = self._abs_min_pixels_per_second()
         new_pps = max(lo, min(4000.0, pixels_per_second))
         if self._view_pinned:
             # Keep the time under the given (or view-center) x stable — don't snap playhead.
@@ -982,11 +983,15 @@ class TimelineWidget(QWidget):
         if center_now:
             self._center_on_playhead()
 
+    def _abs_min_pixels_per_second(self) -> float:
+        """Hard floor for wheel zoom-out (can go far beyond fit-to-view)."""
+        return 0.05
+
     def _min_pixels_per_second(self) -> float:
         view = max(1.0, self.width() - self._header_width)
         duration = max(0.1, self._duration())
-        # Whole song visible; floor 0.25 pps still covers ~1h on a wide monitor.
-        return max(0.25, view / duration)
+        # Whole song visible; fit-to-view uses this, wheel can go lower.
+        return max(self._abs_min_pixels_per_second(), view / duration)
 
     def set_wave_height(self, height: int) -> None:
         """Grow / shrink waveform; mark lanes get narrower as wave grows."""
@@ -2071,11 +2076,24 @@ class TimelineWidget(QWidget):
         painter.setClipRect(0, 0, self._header_width, self.height())
         text_w = max(24, self._header_width - 16)
         fm = painter.fontMetrics()
-        if self._audio is not None:
-            name = self._audio.path.name
-            elided = fm.elidedText(name, Qt.TextElideMode.ElideMiddle, text_w)
+        if self._song is not None:
+            num = format_setlist_number(self._song.setlist_number)
+            label = f"#{num}  {self._song.name}"
+            base_font = painter.font()
+            bold = QFont(base_font)
+            bold.setWeight(QFont.Weight.Bold)
+            painter.setFont(bold)
+            painter.setPen(QColor("#e4e4e7"))
+            header_h = max(20, wave_bottom - self._ruler_height - 8)
+            painter.drawText(
+                QRect(8, self._ruler_height + 4, text_w, header_h),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                label,
+            )
+            painter.setFont(base_font)
+        elif self._audio is not None:
             painter.setPen(QColor("#a1a1aa"))
-            painter.drawText(8, self._ruler_height + 22, elided)
+            painter.drawText(8, self._ruler_height + 22, self._audio.path.name)
         if self._video_lane_visible():
             painter.fillRect(0, wave_bottom, self._header_width, tracks_top - wave_bottom, QColor("#111113"))
             row_h = int(self._video_lane_base_height)
@@ -2091,11 +2109,6 @@ class TimelineWidget(QWidget):
                     else "No clip selected"
                 )
                 painter.drawText(8, sub_top + 13, name_text)
-        elif self._video_eye_header_visible():
-            row_h = int(self._video_header_eye_row_height)
-            painter.fillRect(0, wave_bottom, self._header_width, row_h, QColor("#111113"))
-            painter.setPen(QColor("#71717a"))
-            painter.drawText(8, wave_bottom + row_h // 2 + 4, "Video")
         if self._song is not None and self._show_mark_tracks:
             y = tracks_top
             for lane in self._song.mark_lanes:
