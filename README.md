@@ -6,9 +6,12 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-Milestone 1 in progress: project skeleton, Unicode persistence, blank main window.
+Core P0 timeline / marks / video / MA2·MA3 export are on `master`.
 
-Product requirements: `docs/PRODUCT_SPEC.md`
+Recent: Auto Save + `.cueplayer_backups/`, setlist/export row colors.
+
+Product requirements: `docs/PRODUCT_SPEC.md`  
+Agent handoff: `AGENTS.md`
 
 ## Requirements
 
