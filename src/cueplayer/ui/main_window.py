@@ -1906,6 +1906,42 @@ class MainWindow(QMainWindow):
         else:
             self.status.showMessage(f"Deleted {len(removed_names)} songs", 2500)
 
+    # ── MainWindow-level drag/drop fallback ──────────────────────────────────
+    # When the cursor is over chrome that isn't a registered drop_target child
+    # (e.g. the status bar, toolbar, outer window border) there is no other
+    # handler and the cursor shows 🚫. Accept everything here so the cursor
+    # stays "copy" across the whole window; the actual routing happens in
+    # dropEvent below.
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        """Fallback drop handler for the whole main window."""
+        mime = event.mimeData()
+        audio = audio_paths_from_mime(mime)
+        video = video_paths_from_mime(mime)
+        if audio:
+            accept_file_drop(event)
+            self._add_songs_from_audio_paths(audio)
+        elif video:
+            accept_file_drop(event)
+            self._add_video_clips_from_paths(video, self.engine.position)
+        else:
+            self.status.showMessage(rejected_file_drop_reason(mime), 5000)
+            event.ignore()
+
+    # ── window management ─────────────────────────────────────────────────────
+
     def _shutdown_secondary_windows(self) -> None:
         """Close persistent tool windows so the app can exit with the main UI."""
         self.engine.stop()
