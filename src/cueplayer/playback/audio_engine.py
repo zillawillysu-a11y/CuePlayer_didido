@@ -44,7 +44,7 @@ from cueplayer.playback.routing_parse import (
     parse_stereo_route,
 )
 from cueplayer.playback.mtc_output import MtcOutput
-from cueplayer.playback.resample import resample_hold_segment, resample_linear
+from cueplayer.playback.resample import resample_hold_segment, resample_linear, resample_linear_segment
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
@@ -112,6 +112,8 @@ class AudioEngine(QObject):
         self._playback_rate = 48000
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
+        self._playback_resample_future = None
+        self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
@@ -226,13 +228,10 @@ class AudioEngine(QObject):
             or is_ltc_route(self._audio_settings.music_l_route)
             or is_ltc_route(self._audio_settings.music_r_route)
             or self._resolved_file_ltc_channel() is not None
-            or (self._audio_settings.ltc_enabled and ch_count >= 2)
         )
         if not strip_ltc:
             return 0, 1
         ltc_ch = self._resolved_file_ltc_channel()
-        if ltc_ch is None:
-            ltc_ch = self._autodetect_ltc_channel()
         if ltc_ch is None:
             ltc_ch = self._autodetect_ltc_channel()
         if ltc_ch is not None:
@@ -544,7 +543,6 @@ class AudioEngine(QObject):
         self._refresh_loop_engage()
         if self.position >= self.duration - 1e-4:
             self.seek(0.0)
-        self._playing = True
         self._scrubbing = False
         # A real output stream is required whenever anything could be audible:
         # loaded music, LTC, or a video clip with its own embedded audio.
@@ -558,10 +556,21 @@ class AudioEngine(QObject):
         if needs_stream:
             if self._uses_generated_ltc():
                 self._ensure_ltc_cache()
-            self._ensure_stream()
+            if not self._ensure_stream():
+                self._playing = False
+                self._silent_timer.stop()
+                self._poll.stop()
+                self._mtc_timer.stop()
+                self._mtc.on_pause()
+                self.playing_changed.emit(False)
+                self.timecode_status_changed.emit()
+                self._emit_position()
+                return
+            self._playing = True
             self._poll.start()
             self._silent_timer.stop()
         else:
+            self._playing = True
             self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
@@ -794,12 +803,21 @@ class AudioEngine(QObject):
         return left[0], left[1], right[0], right[1]
 
     def _resolve_device_and_route(self) -> None:
-        hostapi = resolve_output_hostapi(self._audio_settings.output_hostapi)
-        devices = list_output_devices()
         try:
             raw_devices = list_output_devices(dedupe=False)
         except TypeError:
-            raw_devices = devices
+            raw_devices = list_output_devices()
+        requested_api = str(self._audio_settings.output_hostapi or "")
+        hostapi = resolve_output_hostapi(requested_api)
+        if hostapi != requested_api and requested_api:
+            note = (
+                f"Driver '{requested_api.replace('Windows ', '')}' unavailable; "
+                f"using {hostapi.replace('Windows ', '')}."
+            )
+            self._routing_warning = (
+                f"{self._routing_warning} {note}" if self._routing_warning else note
+            )
+        devices = list_output_devices()
         if hostapi:
             api_devices = [d for d in raw_devices if d.hostapi_name == hostapi]
             if api_devices:
@@ -980,46 +998,127 @@ class AudioEngine(QObject):
 
     def _refresh_playback_samples(self) -> None:
         """
-        Keep a copy of the loaded buffer resampled to _playback_rate, so all
-        frame math (position/LTC/clicks) can run in that single rate even
-        when it differs from the media file's native rate (e.g. a 44.1kHz
-        file on a WASAPI endpoint locked to a 48kHz mixer format).
+        Keep a copy of the loaded buffer resampled to _playback_rate.
+
+        Long files resample in a background thread so Play/Load stay responsive;
+        until the cache is ready, ``_music_chunk`` reads native audio per chunk.
         """
         buf = self._buffer
         if buf is None:
             self._playback_samples = None
             self._playback_cache_key = None
+            self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
         if self._playback_cache_key == key and self._playback_samples is not None:
             return
         if int(buf.sample_rate) == int(self._playback_rate):
             self._playback_samples = buf.samples
-        else:
-            self._playback_samples = resample_linear(buf.samples, buf.sample_rate, self._playback_rate)
+            self._playback_cache_key = key
+            self._playback_resample_future = None
+            return
         self._playback_cache_key = key
+        self._playback_samples = None
+        if self._playback_resample_future is not None and not self._playback_resample_future.done():
+            return
+        native = buf.samples
+        src_rate = float(buf.sample_rate)
+        dst_rate = float(self._playback_rate)
+
+        def _build() -> tuple[tuple, np.ndarray]:
+            return key, resample_linear(native, src_rate, dst_rate)
+
+        future = self._resample_executor.submit(_build)
+        self._playback_resample_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, pcm = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if self._playback_cache_key == built_key:
+                    self._playback_samples = pcm
+
+        future.add_done_callback(_done)
+
+    def _music_chunk_from_native(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
+        buf = self._buffer
+        if buf is None:
+            return np.zeros((frames, 2), dtype=np.float32)
+        native = buf.samples
+        src_rate = float(buf.sample_rate)
+        dst_rate = float(sample_rate)
+        if int(src_rate) == int(dst_rate):
+            src_start = start
+        else:
+            src_start = int(round(start * src_rate / dst_rate))
+        src_frames = max(1, int(round(frames * src_rate / dst_rate)) + 2)
+        src_end = min(native.shape[0], src_start + src_frames)
+        if src_end <= src_start:
+            return np.zeros((frames, 2), dtype=np.float32)
+        native_chunk = native[src_start:src_end]
+        if int(src_rate) != int(dst_rate):
+            native_chunk = resample_linear(native_chunk, src_rate, dst_rate)
+        out = np.zeros((frames, 2), dtype=np.float32)
+        n = min(frames, native_chunk.shape[0])
+        if native_chunk.ndim == 1:
+            out[:n, 0] = native_chunk[:n]
+            out[:n, 1] = native_chunk[:n]
+        elif native_chunk.shape[1] == 1:
+            out[:n, 0] = native_chunk[:n, 0]
+            out[:n, 1] = native_chunk[:n, 0]
+        else:
+            left_idx, right_idx = self._music_source_indices_for_channels(int(native.shape[1]))
+            out[:n, 0] = native_chunk[:n, left_idx]
+            out[:n, 1] = native_chunk[:n, right_idx]
+        return out
+
+    def _music_source_indices_for_channels(self, ch_count: int) -> tuple[int, int]:
+        if ch_count <= 1:
+            return 0, 0
+        strip_ltc = (
+            is_music_source_route(self._audio_settings.music_l_route)
+            or is_music_source_route(self._audio_settings.music_r_route)
+            or is_ltc_route(self._audio_settings.music_l_route)
+            or is_ltc_route(self._audio_settings.music_r_route)
+            or self._resolved_file_ltc_channel() is not None
+        )
+        if not strip_ltc:
+            return 0, min(1, ch_count - 1)
+        ltc_ch = self._resolved_file_ltc_channel()
+        if ltc_ch is None:
+            ltc_ch = self._autodetect_ltc_channel()
+        if ltc_ch is not None:
+            music_chs = [i for i in range(ch_count) if i != ltc_ch]
+            if len(music_chs) >= 2:
+                return music_chs[0], music_chs[1]
+            if len(music_chs) == 1:
+                return music_chs[0], music_chs[0]
+        return 0, min(1, ch_count - 1)
 
     def _music_chunk(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
         """Return stereo music (frames, 2), applying mute + master volume."""
         out = np.zeros((frames, 2), dtype=np.float32)
         samples = self._playback_samples
-        if samples is None:
-            return out
-        end = min(start + frames, samples.shape[0])
-        if end <= start:
-            return out
-        chunk = samples[start:end]
-        n = chunk.shape[0]
-        if chunk.ndim == 1:
-            out[:n, 0] = chunk
-            out[:n, 1] = chunk
-        elif chunk.shape[1] == 1:
-            out[:n, 0] = chunk[:, 0]
-            out[:n, 1] = chunk[:, 0]
-        else:
-            left_idx, right_idx = self._music_source_indices()
-            out[:n, 0] = chunk[:, left_idx]
-            out[:n, 1] = chunk[:, right_idx]
+        if samples is None and self._buffer is not None:
+            out = self._music_chunk_from_native(start, frames, sample_rate)
+        elif samples is not None:
+            end = min(start + frames, samples.shape[0])
+            if end <= start:
+                return out
+            chunk = samples[start:end]
+            n = chunk.shape[0]
+            if chunk.ndim == 1:
+                out[:n, 0] = chunk
+                out[:n, 1] = chunk
+            elif chunk.shape[1] == 1:
+                out[:n, 0] = chunk[:, 0]
+                out[:n, 1] = chunk[:, 0]
+            else:
+                left_idx, right_idx = self._music_source_indices()
+                out[:n, 0] = chunk[:, left_idx]
+                out[:n, 1] = chunk[:, right_idx]
         if self._mute_music:
             out[:] = 0.0
         # Master (all-bus) gain, then the dedicated music-bed gain used for
@@ -1126,24 +1225,31 @@ class AudioEngine(QObject):
             bool(self._audio_settings.ltc_enabled),
         )
 
-    def _ensure_stream(self) -> None:
+    def _append_routing_warning(self, note: str) -> None:
+        self._routing_warning = f"{self._routing_warning} {note}" if self._routing_warning else note
+
+    def _clamp_route_to_channels(self, ch: int) -> None:
+        reclamped: dict[int, list[int]] = {}
+        for src, dests in self._route.items():
+            keep = [d for d in dests if 0 <= d < ch]
+            if keep:
+                reclamped[src] = keep
+        if reclamped:
+            self._route = reclamped
+        else:
+            self._route = {
+                SRC_MUSIC_L: [0],
+                SRC_MUSIC_R: [min(1, max(0, ch - 1))],
+            }
+
+    def _ensure_stream(self) -> bool:
         """Open or keep the output stream; recreate only when routing/rate changes."""
         token = self._stream_token()
         if self._stream is not None and self._active_stream_token == token:
-            return
-        self._start_stream()
+            return True
+        return self._start_stream()
 
-    def _start_stream(self) -> None:
-        self._stop_stream()
-        sample_rate = self._sample_rate()
-        out_ch = self._output_channel_count
-        device = self._device_index
-        total_frames = (
-            self._playback_samples.shape[0]
-            if self._playback_samples is not None
-            else int(self._duration_seconds * sample_rate)
-        )
-
+    def _make_stream_callback(self, sample_rate: int, total_frames: int):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
             del status, time_info
             with self._lock:
@@ -1211,14 +1317,22 @@ class AudioEngine(QObject):
                 sources[:, SRC_FILE_MUSIC] = self._source_channel_chunk(
                     music_idx, start, frames
                 )
-                routed = apply_routing(sources, self._route, out_ch)
+                routed = apply_routing(sources, self._route, self._output_channel_count)
             outdata[:] = routed
 
+        return callback
+
+    def _open_output_stream(self, *, device: int | None, channels: int, sample_rate: int) -> bool:
+        total_frames = (
+            self._playback_samples.shape[0]
+            if self._playback_samples is not None
+            else int(self._duration_seconds * sample_rate)
+        )
         kwargs: dict = {
             "samplerate": sample_rate,
-            "channels": out_ch,
+            "channels": channels,
             "dtype": "float32",
-            "callback": callback,
+            "callback": self._make_stream_callback(sample_rate, total_frames),
             "latency": "low",
             "blocksize": 1024,
         }
@@ -1227,34 +1341,84 @@ class AudioEngine(QObject):
         try:
             self._stream = sd.OutputStream(**kwargs)
             self._stream.start()
+            self._active_stream_token = self._stream_token()
+            return True
         except sd.PortAudioError:
-            # resolve_output_samplerate() should already avoid an invalid
-            # rate (PaErrorCode -9997), but driver quirks can still reject
-            # it at open time -- retry once at the device's own reported
-            # default rate before giving up. `sample_rate`/`total_frames`
-            # are re-bound here and the not-yet-started `callback` closure
-            # picks up the new values on its first real invocation.
-            fallback_rate = None
-            if device is not None:
-                for d in list_output_devices():
-                    if d.index == device:
-                        fallback_rate = d.default_samplerate
-                        break
-            if fallback_rate and int(fallback_rate) != int(sample_rate):
-                self._playback_rate = int(round(fallback_rate))
-                self._refresh_playback_samples()
-                sample_rate = self._playback_rate
-                total_frames = (
-                    self._playback_samples.shape[0]
-                    if self._playback_samples is not None
-                    else int(self._duration_seconds * sample_rate)
+            self._stream = None
+            self._active_stream_token = None
+            return False
+
+    def _start_stream(self) -> bool:
+        self._stop_stream()
+        base_device = self._device_index
+        base_channels = self._output_channel_count
+        base_rate = self._playback_rate
+        saved_route = {k: list(v) for k, v in self._route.items()}
+        sample_rate = base_rate
+        device = base_device
+        channels = base_channels
+
+        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+            return True
+
+        fallback_rate = None
+        if device is not None:
+            for d in list_output_devices(dedupe=False):
+                if d.index == device:
+                    fallback_rate = d.default_samplerate
+                    break
+        if fallback_rate and int(fallback_rate) != int(sample_rate):
+            self._playback_rate = int(round(fallback_rate))
+            self._refresh_playback_samples()
+            sample_rate = self._playback_rate
+            self._append_routing_warning(
+                f"Opened output at {sample_rate} Hz (device default)."
+            )
+            if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+                return True
+
+        if device is not None:
+            probed = probe_supported_output_channels(
+                device,
+                min_channels=1,
+                samplerate=float(sample_rate),
+            )
+            if probed < channels:
+                channels = max(1, probed)
+                self._output_channel_count = channels
+                self._clamp_route_to_channels(channels)
+                self._append_routing_warning(
+                    f"Reduced output to {channels} channel(s) for this device."
                 )
-                kwargs["samplerate"] = sample_rate
-                self._stream = sd.OutputStream(**kwargs)
-                self._stream.start()
-            else:
-                raise
-        self._active_stream_token = self._stream_token()
+                if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+                    return True
+
+        self._route = saved_route
+        self._output_channel_count = min(2, max(1, base_channels))
+        self._clamp_route_to_channels(self._output_channel_count)
+        channels = self._output_channel_count
+        self._append_routing_warning("Fell back to stereo Music L/R routing.")
+        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+            return True
+
+        if device is not None:
+            self._device_index = None
+            channels = 2
+            self._output_channel_count = 2
+            self._route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [1]}
+            self._append_routing_warning("Using system default output device.")
+            if self._open_output_stream(device=None, channels=channels, sample_rate=sample_rate):
+                return True
+
+        self._device_index = base_device
+        self._output_channel_count = base_channels
+        self._route = saved_route
+        self._playback_rate = base_rate
+        self._refresh_playback_samples()
+        self._stream = None
+        self._active_stream_token = None
+        self._append_routing_warning("Could not open audio output stream.")
+        return False
 
     def _assemble_looped_music(
         self,

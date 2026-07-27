@@ -268,9 +268,23 @@ def default_picker_hostapi() -> str:
 
 
 def resolve_output_hostapi(hostapi: str) -> str:
-    """Map legacy empty hostapi to an explicit driver choice."""
+    """Map legacy empty hostapi to an explicit driver, with fallback if unavailable."""
     wanted = (hostapi or "").strip()
-    return wanted if wanted else default_picker_hostapi()
+    if not wanted:
+        wanted = default_picker_hostapi()
+    names = hostapi_names()
+    if wanted in names:
+        return wanted
+    for fallback in (
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ):
+        if fallback in names:
+            return fallback
+    return wanted if wanted in names else (names[0] if names else "")
 
 
 def picker_hostapi_options() -> list[tuple[str, str]]:
