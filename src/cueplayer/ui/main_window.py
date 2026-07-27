@@ -2462,6 +2462,7 @@ class MainWindow(QMainWindow):
         self._undo.push(EditVideoClipsCommand(changes={clip_id: (old, new)}))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
+        self.timeline.refresh_video_clip_waveforms()
         self._mark_dirty()
 
     def _on_video_clips_batch_edited(self, changes: object) -> None:
@@ -2514,6 +2515,7 @@ class MainWindow(QMainWindow):
         self._undo.push(AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(clip)]))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
+        self.timeline.refresh_video_clip_waveforms()
         self.timeline.update()
         self._mark_dirty()
         kind_label = "still image" if is_still else "video clip"

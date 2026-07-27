@@ -102,6 +102,36 @@ def get_video_audio_mono_for_clip(clip: VideoClip) -> tuple[np.ndarray | None, i
     return mono, int(buf.sample_rate), float(buf.origin_seconds)
 
 
+def get_video_audio_mono_for_waveform(clip: VideoClip) -> tuple[np.ndarray | None, int, float]:
+    """
+    Mono for timeline waveform drawing.
+
+    Decodes from source 0 through the clip's current trim/out point (capped) so
+    small left-trim edits reuse the same PCM window instead of re-decoding.
+    """
+    start, dur = audio_window_for_waveform(clip)
+    buf = get_video_audio(clip.path, start_seconds=start, max_duration_seconds=dur)
+    if buf is None or buf.frames == 0:
+        return None, 48000, 0.0
+    data = buf.samples
+    if data.ndim == 2:
+        mono = data.mean(axis=1).astype(np.float32)
+    else:
+        mono = np.asarray(data, dtype=np.float32)
+    return mono, int(buf.sample_rate), float(buf.origin_seconds)
+
+
+def audio_window_for_waveform(clip: VideoClip) -> tuple[float, float]:
+    """Wide source window for waveform peaks (trim-friendly, still capped)."""
+    end = max(
+        0.05,
+        float(clip.source_in_seconds)
+        + float(clip.source_span_seconds or clip.duration_seconds),
+    )
+    span = min(end, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+    return 0.0, span
+
+
 def peek_video_audio_mono(path: Path) -> tuple[np.ndarray | None, int]:
     """Return mono only if already cached — never triggers a decode (UI paint-safe)."""
     path = Path(path)

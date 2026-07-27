@@ -26,7 +26,7 @@ from cueplayer.media.video_clip_waveform import (
     VideoClipWaveformCache,
     sample_clip_peaks_for_times,
     timeline_to_clip_local,
-    waveform_buckets_for_clip,
+    waveform_buckets_for_paint,
 )
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
@@ -88,7 +88,6 @@ class TimelineWidget(QWidget):
         self._lane_height = 28
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
-        self._video_lane_max_height = 160.0
         self._video_lane_split_hit = 6
         # When the full Video lane is hidden, keep a thin stub so the user
         # still has an eye button to show it again.
@@ -653,13 +652,9 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _max_video_lane_height(self) -> float:
-        visible = max(1, self._visible_lane_count())
-        extra = self._video_expand_extra if self._video_track_expanded else 0.0
-        reserved = self._ruler_height + self._wave_height + visible * 18 + 12 + extra
-        return max(
-            self._video_lane_min_height,
-            min(self._video_lane_max_height, float(self.height()) - reserved),
-        )
+        # Let the video lane grow with the widget — only keep a thin strip for marks.
+        min_mark_strip = self._ruler_height + self._wave_height + self._lane_height
+        return max(self._video_lane_min_height, float(self.height()) - min_mark_strip)
 
     def _clamp_video_lane_height(self, height: float) -> float:
         return max(self._video_lane_min_height, min(self._max_video_lane_height(), float(height)))
@@ -2035,7 +2030,9 @@ class TimelineWidget(QWidget):
         if duration <= 1e-9:
             return
 
-        peaks = self._video_waveform_cache.get_peaks(clip, buckets=waveform_buckets_for_clip(clip))
+        peaks = self._video_waveform_cache.peaks_for_paint(
+            clip, buckets=waveform_buckets_for_paint(pixel_width=x_right - x_left)
+        )
         if peaks is None or peaks.mins.size == 0:
             return
 

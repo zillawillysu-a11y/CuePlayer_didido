@@ -23,7 +23,12 @@ from cueplayer.domain.models import (
     default_channel_routing,
     default_ltc_channels_for_device,
 )
-from cueplayer.playback.devices import find_output_device, list_output_devices
+from cueplayer.playback.devices import (
+    find_output_device,
+    list_output_devices,
+    resolve_output_endpoint_for_channels,
+    upgrade_device_for_channels,
+)
 from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
 from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.theme import SLIDER_QSS
@@ -210,13 +215,24 @@ class AudioTimecodeDialog(QDialog):
 
     def _current_max_channels(self) -> int:
         name = self.device_combo.currentData() or ""
-        if not name:
-            chosen = find_output_device(self._devices, name="")
-            return chosen.max_output_channels if chosen else 2
-        for d in self._devices:
-            if d.name == name:
-                return d.max_output_channels
-        return 2
+        chosen = find_output_device(self._devices, name=str(name))
+        if chosen is None:
+            return 2
+        try:
+            raw = list_output_devices(dedupe=False)
+        except TypeError:
+            raw = self._devices
+        need = 3 if self.ltc_enable.isChecked() else 1
+        endpoint = resolve_output_endpoint_for_channels(
+            preferred_name=str(name),
+            min_channels=need,
+            samplerate=48000.0,
+            raw_devices=raw,
+        )
+        if endpoint is not None:
+            return endpoint.max_output_channels
+        upgraded = upgrade_device_for_channels(chosen, min_channels=need, raw_devices=raw)
+        return upgraded.max_output_channels
 
     def _on_device_changed(self) -> None:
         max_ch = self._current_max_channels()
@@ -237,7 +253,6 @@ class AudioTimecodeDialog(QDialog):
         for combo, fallback in (
             (self.music_l, left or [0]),
             (self.music_r, right or ([min(1, max_ch - 1)] if max_ch > 0 else [0])),
-            (self.ltc_channels, ltc_default),
         ):
             current = combo.currentText()
             combo.blockSignals(True)
@@ -247,6 +262,17 @@ class AudioTimecodeDialog(QDialog):
                 _clamp_channel_ui_text(current, max_ch=max_ch, fallback=fallback)
             )
             combo.blockSignals(False)
+        # LTC is mono — only single-channel destinations (no "1+2" fan-out).
+        ltc_suggestions = [str(i) for i in range(1, max_ch + 1)]
+        combo = self.ltc_channels
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(ltc_suggestions)
+        combo.setEditText(
+            _clamp_channel_ui_text(current, max_ch=max_ch, fallback=ltc_default)
+        )
+        combo.blockSignals(False)
 
     def result_settings(self) -> AudioOutputSettings:
         return self._result
@@ -269,6 +295,13 @@ class AudioTimecodeDialog(QDialog):
         self.music_r.setEditText(_channels_to_ui(right))
         if self.ltc_enable.isChecked() and not ltc:
             ltc = default_ltc_channels_for_device(max_ch)
+        if self.ltc_enable.isChecked() and ltc and len(ltc) > 1:
+            QMessageBox.warning(
+                self,
+                "LTC routing",
+                "Generated LTC is mono — route it to one output channel (e.g. 3 for Focusrite CH3).",
+            )
+            return
         self.ltc_channels.setEditText(_channels_to_ui(ltc))
         if self.ltc_enable.isChecked() and not ltc:
             QMessageBox.warning(

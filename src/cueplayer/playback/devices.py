@@ -300,6 +300,69 @@ def upgrade_device_for_channels(
     return best
 
 
+def _device_name_score(preferred_name: str, device_name: str) -> int:
+    """Higher = better match between saved device label and a raw endpoint name."""
+    pref = (preferred_name or "").strip().casefold()
+    name = (device_name or "").strip().casefold()
+    if not pref:
+        return 0
+    if pref == name:
+        return 300
+    if pref in name or name in pref:
+        return 200
+    tokens = [t for t in pref.replace("(", " ").replace(")", " ").split() if len(t) >= 3]
+    if any(t in name for t in tokens):
+        return 120
+    if _names_likely_same(_normalize_device_key(pref), _normalize_device_key(name)):
+        return 100
+    return 0
+
+
+def resolve_output_endpoint_for_channels(
+    *,
+    preferred_name: str,
+    min_channels: int,
+    samplerate: float,
+    raw_devices: list[OutputDeviceInfo],
+) -> OutputDeviceInfo | None:
+    """
+    Pick a PortAudio output endpoint that can actually open ``min_channels`` at
+    ``samplerate``.
+
+    Windows often exposes the same interface as a 2ch WASAPI "Speakers" entry
+    and a separate 8ch ASIO / multi-line endpoint. Saved names like
+    "Speakers (Focusrite USB)" must not trap LTC→CH3 on the stereo pair.
+    """
+    need = max(1, int(min_channels))
+    best: OutputDeviceInfo | None = None
+    best_score = -1
+    for candidate in raw_devices:
+        if candidate.max_output_channels < need:
+            continue
+        try:
+            sd.check_output_settings(
+                device=candidate.index,
+                channels=need,
+                samplerate=float(samplerate),
+                dtype="float32",
+            )
+        except Exception:
+            continue
+        score = _device_name_score(preferred_name, candidate.name)
+        api = candidate.hostapi_name.casefold()
+        if "asio" in api:
+            score += 45
+        elif api == "windows wasapi":
+            score += 35
+        elif "wdm" in api:
+            score += 15
+        score += min(candidate.max_output_channels, 32)
+        if score > best_score:
+            best_score = score
+            best = candidate
+    return best
+
+
 def probe_supported_output_channels(
     device_index: int,
     *,

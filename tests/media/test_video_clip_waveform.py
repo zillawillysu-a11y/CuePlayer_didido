@@ -109,5 +109,12 @@ def test_sample_clip_peaks_tracks_time_offset() -> None:
 def test_waveform_buckets_scales_with_duration() -> None:
     short = _clip(duration_seconds=2.0)
     long = _clip(duration_seconds=60.0)
-    assert waveform_buckets_for_clip(short) >= 512
-    assert waveform_buckets_for_clip(long) == 8192
+    assert waveform_buckets_for_clip(short) >= 256
+    assert waveform_buckets_for_clip(long) == 2048
+
+
+def test_waveform_buckets_for_paint_matches_viewport() -> None:
+    from cueplayer.media.video_clip_waveform import waveform_buckets_for_paint
+
+    assert waveform_buckets_for_paint(pixel_width=400) == 400
+    assert waveform_buckets_for_paint(pixel_width=5000) == 1024

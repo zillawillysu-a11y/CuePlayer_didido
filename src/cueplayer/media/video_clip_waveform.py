@@ -11,10 +11,11 @@ from typing import Callable
 import numpy as np
 
 from cueplayer.domain.models import VideoClip
-from cueplayer.media.video_audio_cache import get_video_audio_mono_for_clip
+from cueplayer.media.video_audio_cache import get_video_audio_mono_for_waveform
 
-DEFAULT_WAVEFORM_BUCKETS = 4096
-MAX_WAVEFORM_BUCKETS = 8192
+PREVIEW_WAVEFORM_BUCKETS = 256
+DEFAULT_WAVEFORM_BUCKETS = 1024
+MAX_WAVEFORM_BUCKETS = 2048
 
 
 @dataclass(frozen=True)
@@ -60,20 +61,21 @@ def build_clip_waveform_peaks(
     span = max(0.0, clip.source_span_seconds)
     src_in = max(0.0, float(clip.source_in_seconds))
     origin = float(mono_origin_seconds)
-    spb_timeline = duration / buckets
-    half_window = max(1, int(round(sample_rate * max(spb_timeline / 2.0, 1.0 / buckets))))
+    spb = duration / buckets
+    half_window = max(1, int(round(sample_rate * max(spb / 2.0, 1.0 / buckets))))
 
     mins = np.zeros(buckets, dtype=np.float32)
     maxs = np.zeros(buckets, dtype=np.float32)
+    t_mids = (np.arange(buckets, dtype=np.float64) + 0.5) * spb
+    if clip.media_kind == "still":
+        src_times = np.full(buckets, src_in, dtype=np.float64)
+    elif span <= 1e-9:
+        src_times = np.full(buckets, src_in, dtype=np.float64)
+    else:
+        src_times = src_in + np.mod(t_mids, span)
+    centers = np.round((src_times - origin) * sample_rate).astype(np.int64)
     for b in range(buckets):
-        t_off = (b + 0.5) / buckets * duration
-        if clip.media_kind == "still":
-            src_t = src_in
-        elif span <= 1e-9:
-            src_t = src_in
-        else:
-            src_t = src_in + (t_off % span)
-        center = int(round((src_t - origin) * sample_rate))
+        center = int(centers[b])
         s0 = max(0, center - half_window)
         s1 = min(mono.size, center + half_window)
         if s0 >= s1:
@@ -89,9 +91,18 @@ def build_clip_waveform_peaks(
 
 
 def waveform_buckets_for_clip(clip: VideoClip) -> int:
-    """High-res envelope length for one cache entry (sampled at paint time)."""
+    """Background hi-res envelope length for one cache entry."""
     duration = max(0.0, float(clip.duration_seconds))
-    return max(512, min(MAX_WAVEFORM_BUCKETS, int(duration * 200)))
+    return max(
+        PREVIEW_WAVEFORM_BUCKETS,
+        min(MAX_WAVEFORM_BUCKETS, int(duration * 80)),
+    )
+
+
+def waveform_buckets_for_paint(*, pixel_width: int) -> int:
+    """Paint-time resolution — one bucket per ~pixel, capped for speed."""
+    px = max(1, int(pixel_width))
+    return max(64, min(DEFAULT_WAVEFORM_BUCKETS, px))
 
 
 def timeline_to_clip_local(timeline_t: float, clip: VideoClip) -> float | None:
@@ -133,7 +144,7 @@ def sample_clip_peaks_for_times(
 
 
 def build_clip_waveform_peaks_from_path(clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
-    mono, sample_rate, origin = get_video_audio_mono_for_clip(clip)
+    mono, sample_rate, origin = get_video_audio_mono_for_waveform(clip)
     if mono is None:
         return None
     return build_clip_waveform_peaks(
@@ -192,10 +203,56 @@ class VideoClipWaveformCache:
             self._executor.submit(self._build_async, key, clip)
         return None
 
+    def peaks_for_paint(self, clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
+        """Return cached peaks for paint, falling back to any available resolution."""
+        exact = self.get_peaks(clip, buckets=buckets)
+        if exact is not None:
+            return exact
+        return self._best_available_peaks(clip, buckets=buckets)
+
+    def _best_available_peaks(self, clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
+        """Return exact peaks or the closest cached envelope for this clip."""
+        prefix = (
+            str(clip.path),
+            self._mtime_ns(clip.path),
+            round(float(clip.source_in_seconds), 6),
+            (
+                round(float(clip.source_out_seconds), 6)
+                if clip.source_out_seconds is not None
+                else None
+            ),
+            round(float(clip.duration_seconds), 6),
+            str(clip.media_kind),
+        )
+        matches: list[tuple[int, ClipWaveformPeaks]] = []
+        for key, peaks in self._peaks.items():
+            if peaks is None:
+                continue
+            if (
+                key.path,
+                key.mtime_ns,
+                key.source_in,
+                key.source_out,
+                key.duration,
+                key.media_kind,
+            ) != prefix:
+                continue
+            matches.append((key.buckets, peaks))
+        if not matches:
+            return None
+        adequate = [m for m in matches if m[0] >= buckets]
+        if adequate:
+            return min(adequate, key=lambda m: m[0])[1]
+        return max(matches, key=lambda m: m[0])[1]
+
     def preload(self, clips: list[VideoClip], *, buckets: int | None = None) -> None:
         for clip in clips:
-            b = buckets if buckets is not None else waveform_buckets_for_clip(clip)
-            self.get_peaks(clip, buckets=b)
+            if clip.media_kind == "still":
+                continue
+            self.get_peaks(clip, buckets=PREVIEW_WAVEFORM_BUCKETS)
+            hi = buckets if buckets is not None else waveform_buckets_for_clip(clip)
+            if hi > PREVIEW_WAVEFORM_BUCKETS:
+                self.get_peaks(clip, buckets=hi)
 
     def _build_async(self, key: ClipWaveformKey, clip: VideoClip) -> None:
         try:

@@ -108,6 +108,21 @@ def test_upgrade_device_for_channels_picks_multichannel_sibling() -> None:
     assert upgraded.max_output_channels == 8
 
 
+def test_resolve_output_endpoint_prefers_asio_multichannel(monkeypatch) -> None:
+    stereo = _dev(0, "Speakers (Focusrite USB)", ch=2)
+    asio = _dev(3, "Focusrite USB ASIO", api="ASIO", ch=8)
+    monkeypatch.setattr(devices_mod.sd, "check_output_settings", lambda **kwargs: None)
+    picked = devices_mod.resolve_output_endpoint_for_channels(
+        preferred_name="Focusrite USB",
+        min_channels=3,
+        samplerate=48000.0,
+        raw_devices=[stereo, asio],
+    )
+    assert picked is not None
+    assert picked.index == 3
+    assert picked.max_output_channels == 8
+
+
 def test_engine_ltc_route_opens_three_channels_on_focusrite(monkeypatch) -> None:
     """Regression: LTC→CH3 must not collapse to stereo Ch1+2 on multi-out interfaces."""
     pytest.importorskip("PySide6")

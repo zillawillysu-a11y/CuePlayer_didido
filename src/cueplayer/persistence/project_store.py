@@ -519,7 +519,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 show_video_track=bool(song_data.get("show_video_track", True)),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
                 video_lane_height=float(
-                    min(160.0, max(28.0, song_data.get("video_lane_height", 40.0)))
+                    min(4096.0, max(28.0, song_data.get("video_lane_height", 40.0)))
                 ),
                 mark_lanes=mark_lanes,
                 marks=marks,

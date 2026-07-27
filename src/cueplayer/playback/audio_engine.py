@@ -21,6 +21,7 @@ from cueplayer.playback.devices import (
     list_output_devices,
     probe_supported_output_channels,
     required_output_channels,
+    resolve_output_endpoint_for_channels,
     resolve_output_samplerate,
     upgrade_device_for_channels,
 )
@@ -581,12 +582,28 @@ class AudioEngine(QObject):
         left = list(self._audio_settings.music_left_channels)
         right = list(self._audio_settings.music_right_channels)
         ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
+        if self._audio_settings.ltc_enabled and len(ltc) > 1:
+            # Generated LTC is mono; legacy "1+2" saves fan out to stereo.
+            ltc = [max(ltc)]
 
         # Build a preliminary route from saved settings to learn how many outs
         # we must open (e.g. LTC→CH3 needs ≥3 channels even if the first name
         # match was a 2ch WASAPI stereo endpoint).
         prelim = build_source_route(music_left=left, music_right=right, ltc=ltc)
         needed = required_output_channels(prelim)
+        native_rate_guess = float(
+            self._buffer.sample_rate if self._buffer is not None else 48000
+        )
+        if needed > 1:
+            endpoint = resolve_output_endpoint_for_channels(
+                preferred_name=self._audio_settings.output_device_name,
+                min_channels=needed,
+                samplerate=native_rate_guess,
+                raw_devices=raw_devices,
+            )
+            if endpoint is not None:
+                chosen = endpoint
+                self._device_index = endpoint.index
         if chosen is not None and needed > chosen.max_output_channels:
             chosen = upgrade_device_for_channels(
                 chosen, min_channels=needed, raw_devices=raw_devices
