@@ -61,10 +61,12 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
 
     assert song.show_video_track is False
     assert widget._video_lane_visible() is False
+    assert widget._video_stub_visible() is True
     assert widget._tracks_top_y() < before_tracks
     assert events == [False]
-    assert widget.video_mute_button.isVisible() is False
-    assert widget.video_hide_button.isVisible() is False
+    assert widget.video_mute_button.isHidden() is True
+    assert widget.video_hide_button.isHidden() is True
+    assert widget.video_show_button.isHidden() is False
 
 
 def test_hide_button_hides_track(app: QApplication) -> None:
@@ -75,6 +77,21 @@ def test_hide_button_hides_track(app: QApplication) -> None:
     widget.video_hide_button.click()
     assert song.show_video_track is False
     assert widget._video_lane_visible() is False
+    assert widget.video_show_button.isHidden() is False
+
+
+def test_show_eye_button_restores_track(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song = _song_with_clip()
+    song.show_video_track = False
+    widget.set_song(song)
+    widget.resize(900, 600)
+    assert widget.video_show_button.isHidden() is False
+    widget.video_show_button.click()
+    assert song.show_video_track is True
+    assert widget._video_lane_visible() is True
+    assert widget.video_show_button.isHidden() is True
+    assert widget.video_hide_button.isHidden() is False
 
 
 def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
@@ -84,3 +101,4 @@ def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
     widget.set_song(song)
     assert widget._show_video_track is False
     assert widget._video_lane_visible() is False
+    assert widget._video_stub_visible() is True
