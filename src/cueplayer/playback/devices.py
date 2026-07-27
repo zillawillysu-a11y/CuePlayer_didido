@@ -284,12 +284,18 @@ def picker_hostapi_options() -> list[tuple[str, str]]:
         "Windows WDM-KS",
     ]
     out: list[tuple[str, str]] = []
+    # Always show the common Windows drivers so the combo is never empty —
+    # even if PortAudio briefly reports no host APIs (or ASIO isn't loaded yet).
     for name in preferred:
+        short = name.replace("Windows ", "")
         if name in names:
-            short = name.replace("Windows ", "")
             out.append((short, name))
+        elif name in {"ASIO", "Windows WASAPI", "Windows DirectSound"}:
+            out.append((f"{short} (not detected)", name))
     for name in sorted(set(names) - set(preferred)):
         out.append((name, name))
+    if not out:
+        out.append(("System default", ""))
     return out
 
 

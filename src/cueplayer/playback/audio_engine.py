@@ -47,7 +47,7 @@ from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
-from cueplayer.timecode.ltc import generate_ltc_pcm, generate_ltc_pcm_segment
+from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 
 
 class AudioEngine(QObject):
@@ -97,6 +97,7 @@ class AudioEngine(QObject):
         self._ltc_cache_key: tuple | None = None
         self._ltc_cache_future = None
         self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
+        self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
         self._detected_ltc_channel: int | None = None
         self._song_start_tc = "01:00:00:00"
         self._song_fps = 30.0
@@ -713,6 +714,15 @@ class AudioEngine(QObject):
         with self._lock:
             self._ltc_pcm = None
             self._ltc_cache_key = None
+            self._ltc_cursor.reset()
+
+    def _sync_ltc_cursor(self) -> None:
+        self._ltc_cursor.configure(
+            sample_rate=self._sample_rate(),
+            fps=self._song_fps,
+            start_timecode=self._song_start_tc,
+            amplitude=1.0,
+        )
 
     def _ensure_ltc_cache(self) -> None:
         if not self._uses_generated_ltc():
@@ -1086,27 +1096,20 @@ class AudioEngine(QObject):
         if not self._uses_generated_ltc():
             return out
         pcm = self._ltc_pcm
-        if pcm is None:
-            seg = generate_ltc_pcm_segment(
-                start,
-                frames,
-                self._sample_rate(),
-                self._song_start_tc,
-                self._song_fps,
-                amplitude=1.0,
-            )
-            gain = float(self._audio_settings.ltc_gain)
-            if gain < 1.0 - 1e-6:
-                seg = seg * gain
-            elif gain <= 1e-6:
-                seg = np.zeros_like(seg)
-            out[: seg.size] = seg
+        if pcm is not None:
+            end = min(start + frames, pcm.size)
+            if end <= start:
+                return out
+            out[: end - start] = pcm[start:end] * gain
             return out
-        end = min(start + frames, pcm.size)
-        if end <= start:
-            return out
-        gain = float(self._audio_settings.ltc_gain)
-        out[: end - start] = pcm[start:end] * gain
+        # Cache not ready yet — stream LTC incrementally (must stay O(chunk)).
+        self._sync_ltc_cursor()
+        seg = self._ltc_cursor.render(start, frames)
+        if gain < 1.0 - 1e-6:
+            seg = seg * gain
+        elif gain <= 1e-6:
+            seg = np.zeros_like(seg)
+        out[: seg.size] = seg
         return out
 
     def _stream_token(self) -> tuple:

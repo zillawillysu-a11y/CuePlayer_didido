@@ -90,6 +90,30 @@ def test_generate_ltc_pcm_segment_matches_full_cache() -> None:
     assert np.allclose(seg, full[start : start + frames])
 
 
+def test_ltc_cursor_sequential_matches_cache() -> None:
+    from cueplayer.timecode.ltc import LtcPlaybackCursor
+
+    sr = 48000
+    full = generate_ltc_pcm(1.5, sr, "05:00:00:00", 30.0)
+    cursor = LtcPlaybackCursor(sr, 30.0, "05:00:00:00")
+    parts = [cursor.render(i, 1024) for i in range(0, sr, 1024)]
+    joined = np.concatenate(parts)[:sr]
+    assert np.allclose(joined, full[:sr])
+
+
+def test_ltc_cursor_seek_is_fast() -> None:
+    from cueplayer.timecode.ltc import LtcPlaybackCursor
+    import time
+
+    cursor = LtcPlaybackCursor(48000, 30.0, "03:00:00:00")
+    t0 = time.perf_counter()
+    seg = cursor.render(48000 * 200, 2048)
+    elapsed = time.perf_counter() - t0
+    assert seg.size == 2048
+    assert float(np.max(np.abs(seg))) > 0.1
+    assert elapsed < 0.05
+
+
 def test_ltc_advances_from_start_tc() -> None:
     # Two short buffers starting at different TCs should not be identical.
     a = generate_ltc_pcm(0.1, 48000, "01:00:00:00", 30.0)

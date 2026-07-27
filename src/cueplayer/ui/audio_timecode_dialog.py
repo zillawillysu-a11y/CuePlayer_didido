@@ -126,8 +126,9 @@ class AudioTimecodeDialog(QDialog):
         self.driver_hint.setStyleSheet("color: #8b949e;")
         if not asio_available():
             self.driver_hint.setText(
-                "No ASIO in PortAudio — install your interface ASIO driver and restart. "
-                "Until then, a 4ch DirectSound / WASAPI row can still route LTC→CH3."
+                "ASIO not detected by PortAudio — pick ASIO anyway after installing your "
+                "interface driver and restarting CuePlayer. "
+                "Until then use WASAPI / DirectSound (4ch+ can still route LTC→CH3)."
             )
         device_form.addRow("Driver", self.hostapi_combo)
         device_form.addRow("Device", self.device_combo)
