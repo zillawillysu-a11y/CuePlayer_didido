@@ -92,7 +92,22 @@ from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget
 
-_AUDIO_SUFFIXES = {".wav", ".flac", ".ogg", ".mp3", ".aiff", ".aif"}
+_AUDIO_SUFFIXES = {
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".oga",
+    ".mp3",
+    ".aiff",
+    ".aif",
+    ".aifc",
+    ".m4a",
+    ".aac",
+    ".wma",
+    ".opus",
+    ".caf",
+    ".wv",
+}
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
 _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
@@ -106,17 +121,66 @@ def _text_input_has_focus() -> bool:
     return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox))
 
 
+def _mime_looks_like_file_drop(mime) -> bool:  # noqa: ANN001
+    """
+    Optimistic check for Explorer → app file drags on Windows.
+
+    During dragEnter, some hosts omit usable URLs until the actual drop;
+    rejecting too early means the drop never arrives. Accept when the MIME
+    claims file URLs / uri-list; filter real audio paths in dropEvent.
+    """
+    if mime is None:
+        return False
+    if mime.hasUrls():
+        return True
+    for fmt in mime.formats():
+        key = str(fmt).lower()
+        if "uri-list" in key or "filename" in key or "cf_hdrop" in key:
+            return True
+    return False
+
+
 def _audio_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
     if mime is None or not mime.hasUrls():
         return []
     out: list[Path] = []
+    seen: set[str] = set()
     for url in mime.urls():
         if not url.isLocalFile():
             continue
         path = Path(url.toLocalFile())
-        if path.is_file() and path.suffix.lower() in _AUDIO_SUFFIXES:
-            out.append(path)
+        if path.suffix.lower() not in _AUDIO_SUFFIXES:
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
     return out
+
+
+def _rejected_drop_reason(mime) -> str:  # noqa: ANN001
+    """Human-readable why a file drop onto the setlist was ignored."""
+    if mime is None or not mime.hasUrls():
+        return "Drop ignored (not a local file drag)"
+    names: list[str] = []
+    for url in mime.urls():
+        if not url.isLocalFile():
+            names.append("(non-local URL)")
+            continue
+        path = Path(url.toLocalFile())
+        suf = path.suffix.lower() or "(no extension)"
+        if suf not in _AUDIO_SUFFIXES:
+            names.append(f"{path.name} [{suf}]")
+        elif not path.exists():
+            names.append(f"{path.name} (not found)")
+    if names:
+        return (
+            "Unsupported / missing audio: "
+            + ", ".join(names[:3])
+            + " — use wav/mp3/flac/ogg/aiff/m4a…"
+        )
+    return "Drop ignored"
 
 
 class SetlistWidget(QTableWidget):
@@ -132,6 +196,7 @@ class SetlistWidget(QTableWidget):
     ROLE_ROW_COLOR = int(Qt.ItemDataRole.UserRole) + 50
 
     audio_files_dropped = Signal(list)
+    audio_drop_rejected = Signal(str)
     rows_reordered = Signal(list, int)  # song ids in drag order, insert-before row
     setlist_number_edited = Signal(int, float)  # row, new number
     setlist_number_edit_failed = Signal(int)  # row
@@ -347,7 +412,9 @@ class SetlistWidget(QTableWidget):
         painter.end()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if _audio_paths_from_mime(event.mimeData()) or event.source() is self:
+        # Accept Explorer file drags optimistically (Windows may omit URLs
+        # until drop); still accept internal row reorders.
+        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -355,7 +422,7 @@ class SetlistWidget(QTableWidget):
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if _audio_paths_from_mime(event.mimeData()) or event.source() is self:
+        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -371,12 +438,13 @@ class SetlistWidget(QTableWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._clear_insert_indicator()
-        paths = _audio_paths_from_mime(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
-            self.audio_files_dropped.emit(paths)
-            return
         if event.source() is not self:
+            paths = _audio_paths_from_mime(event.mimeData())
+            if paths:
+                event.acceptProposedAction()
+                self.audio_files_dropped.emit(paths)
+                return
+            self.audio_drop_rejected.emit(_rejected_drop_reason(event.mimeData()))
             event.ignore()
             return
         pos = event.position().toPoint()
@@ -506,6 +574,11 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left.setObjectName("setlistPanel")
+        # Whole left chrome accepts Explorer audio drops (not only the table
+        # cells) — title / empty margins / button row used to swallow them.
+        left.setAcceptDrops(True)
+        left.installEventFilter(self)
+        self._setlist_panel = left
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_title = QLabel("Setlist")
@@ -622,6 +695,9 @@ class MainWindow(QMainWindow):
         self.renumber_button.clicked.connect(self._renumber_songs_by_list_order)
         self.song_list.currentCellChanged.connect(self._on_song_cell_changed)
         self.song_list.audio_files_dropped.connect(self._add_songs_from_audio_paths)
+        self.song_list.audio_drop_rejected.connect(
+            lambda msg: self.status.showMessage(msg, 5000)
+        )
         self.song_list.rows_reordered.connect(self._on_setlist_rows_reordered)
         self.song_list.setlist_number_edited.connect(self._on_setlist_number_edited)
         self.song_list.setlist_number_edit_failed.connect(self._on_setlist_number_edit_failed)
@@ -1685,6 +1761,26 @@ class MainWindow(QMainWindow):
             if widget is self or not widget.isVisible():
                 continue
             widget.close()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        """Forward Explorer audio drops from the left setlist panel chrome."""
+        panel = getattr(self, "_setlist_panel", None)
+        if panel is not None and watched is panel and event is not None:
+            etype = event.type()
+            if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if _mime_looks_like_file_drop(event.mimeData()):
+                    event.acceptProposedAction()
+                    return True
+            elif etype == QEvent.Type.Drop:
+                paths = _audio_paths_from_mime(event.mimeData())
+                if paths:
+                    event.acceptProposedAction()
+                    self._add_songs_from_audio_paths(paths)
+                    return True
+                self.status.showMessage(_rejected_drop_reason(event.mimeData()), 5000)
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if not self._confirm_discard_if_dirty():
