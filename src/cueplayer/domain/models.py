@@ -244,6 +244,9 @@ class Song:
     now_secondary_lanes: list[int] = field(default_factory=list)
     # When False, secondary lanes fold into primary and the secondary display card is hidden.
     now_secondary_enabled: bool = True
+    # Show/hide the PRIMARY / SECONDARY NOW cards in the right monitor (lane logic unchanged).
+    now_primary_visible: bool = True
+    now_secondary_visible: bool = True
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -589,6 +592,8 @@ class AudioOutputSettings:
     # Generated LTC (independent of MTC).
     ltc_enabled: bool = False
     ltc_source: LtcSourceMode = "generator"
+    # When ltc_source is "generator", actually run the internal SMPTE generator.
+    ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
     # MIDI Timecode quarter-frame output (independent of LTC).

@@ -97,6 +97,7 @@ class AudioTimecodeDialog(QDialog):
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
             ltc_source=str(settings.ltc_source),
+            ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(settings.ltc_gain),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
@@ -154,6 +155,12 @@ class AudioTimecodeDialog(QDialog):
             if self.ltc_source.itemData(i) == settings.ltc_source:
                 self.ltc_source.setCurrentIndex(i)
                 break
+        self.ltc_generator_enable = QCheckBox("Enable internal LTC generator")
+        self.ltc_generator_enable.setChecked(settings.ltc_generator_enabled)
+        self.ltc_generator_enable.setToolTip(
+            "When LTC source is Internal generator, turn this on to output SMPTE "
+            "from the app. File pass-through modes ignore this."
+        )
         self.ltc_channels = NoWheelComboBox()
         self.ltc_channels.setEditable(True)
         self.ltc_gain = QSlider(Qt.Orientation.Horizontal)
@@ -173,6 +180,7 @@ class AudioTimecodeDialog(QDialog):
         ltc_note.setWordWrap(True)
         ltc_form.addRow(self.ltc_enable)
         ltc_form.addRow("LTC source", self.ltc_source)
+        ltc_form.addRow(self.ltc_generator_enable)
         ltc_form.addRow("LTC →", self.ltc_channels)
         ltc_form.addRow("LTC Gain", gain_row)
         ltc_form.addRow(ltc_note)
@@ -212,10 +220,13 @@ class AudioTimecodeDialog(QDialog):
         root.addWidget(buttons)
 
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        self.ltc_source.currentIndexChanged.connect(self._on_ltc_source_changed)
+        self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
         self.ltc_gain.valueChanged.connect(
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
         self._on_device_changed()
+        self._on_ltc_source_changed()
         # Restore channel text after populating combos — clamp into this
         # device's range so a saved LTC→3 becomes LTC→2 on a stereo card.
         max_ch = self._current_max_channels()
@@ -249,6 +260,12 @@ class AudioTimecodeDialog(QDialog):
             return endpoint.max_output_channels
         upgraded = upgrade_device_for_channels(chosen, min_channels=need, raw_devices=raw)
         return upgraded.max_output_channels
+
+    def _on_ltc_source_changed(self) -> None:
+        is_generator = self.ltc_source.currentData() == "generator"
+        self.ltc_generator_enable.setVisible(is_generator)
+        if is_generator:
+            self.ltc_generator_enable.setEnabled(self.ltc_enable.isChecked())
 
     def _on_device_changed(self) -> None:
         max_ch = self._current_max_channels()
@@ -339,6 +356,7 @@ class AudioTimecodeDialog(QDialog):
             music_right_channels=right,
             ltc_enabled=self.ltc_enable.isChecked(),
             ltc_source=str(self.ltc_source.currentData() or "generator"),
+            ltc_generator_enabled=self.ltc_generator_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
             ltc_channels=ltc if self.ltc_enable.isChecked() else (
                 ltc or default_ltc_channels_for_device(max_ch)

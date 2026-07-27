@@ -19,6 +19,35 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures" / "media" / "中文測試" / "LTC左_音樂右_測試.wav"
 
 
+def test_generator_disabled_skips_ltc_pcm(monkeypatch) -> None:
+    from cueplayer.playback.devices import OutputDeviceInfo
+
+    device = OutputDeviceInfo(
+        index=0,
+        name="Test",
+        max_output_channels=8,
+        default_samplerate=48000.0,
+        hostapi_name="Test",
+    )
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [device])
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    engine.apply_audio_settings(
+        AudioOutputSettings(
+            output_device_name="Test",
+            ltc_enabled=True,
+            ltc_source="generator",
+            ltc_generator_enabled=False,
+            ltc_channels=[2],
+        )
+    )
+    assert not engine._uses_generated_ltc()
+    engine._ensure_ltc_cache()
+    assert engine._ltc_pcm is None
+
+
 def test_source_ltc_routes_left_channel_to_ltc_bus(monkeypatch) -> None:
     from cueplayer.playback.devices import OutputDeviceInfo
 

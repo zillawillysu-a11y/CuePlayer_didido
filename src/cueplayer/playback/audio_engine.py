@@ -132,6 +132,7 @@ class AudioEngine(QObject):
         return bool(
             self._audio_settings.ltc_enabled
             and self._audio_settings.ltc_source == "generator"
+            and self._audio_settings.ltc_generator_enabled
         )
 
     def _effective_ltc_source_channel(self) -> int | None:
@@ -146,7 +147,16 @@ class AudioEngine(QObject):
         if mode == "source_right":
             return 1
         if mode == "auto":
-            return self._detected_ltc_channel
+            if self._detected_ltc_channel is not None:
+                return self._detected_ltc_channel
+            samples = self._playback_samples
+            if samples is not None and samples.ndim == 2 and samples.shape[1] >= 2:
+                rate = self._sample_rate()
+                detected = detect_ltc_channel(samples, rate)
+                if detected is not None:
+                    self._detected_ltc_channel = detected
+                    return detected
+            return None
         return None
 
     def _music_source_indices(self) -> tuple[int, int]:
@@ -284,6 +294,7 @@ class AudioEngine(QObject):
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
             ltc_source=str(settings.ltc_source),
+            ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
@@ -313,6 +324,18 @@ class AudioEngine(QObject):
             self.seek(pos)
             self.play()
         warning = self._routing_warning
+        if (
+            self._audio_settings.ltc_enabled
+            and self._audio_settings.ltc_source == "auto"
+            and self._effective_ltc_source_channel() is None
+            and self._buffer is not None
+            and self._buffer.channels >= 2
+        ):
+            auto_warn = (
+                "Could not auto-detect LTC in the loaded file — "
+                "choose Left or Right manually to avoid LTC on Music CH1–2."
+            )
+            warning = f"{warning} {auto_warn}" if warning else auto_warn
         if mtc_err:
             return mtc_err if warning is None else f"{warning} {mtc_err}"
         return warning
@@ -726,14 +749,51 @@ class AudioEngine(QObject):
                 samplerate=float(self._playback_rate),
             )
             if probed < self._output_channel_count:
-                self._routing_warning = warn_if_outputs_insufficient(all_dests, probed)
-                self._output_channel_count = max(1, probed)
-                reclamped: dict[int, list[int]] = {}
-                for src, dests in route.items():
-                    keep = [d for d in dests if 0 <= d < self._output_channel_count]
-                    if keep:
-                        reclamped[src] = keep
-                self._route = reclamped if reclamped else self._route
+                if needed > probed:
+                    alt = resolve_output_endpoint_for_channels(
+                        preferred_name=self._audio_settings.output_device_name,
+                        min_channels=needed,
+                        samplerate=float(self._playback_rate),
+                        raw_devices=raw_devices,
+                    )
+                    if alt is not None and alt.index != self._device_index:
+                        alt_probed = probe_supported_output_channels(
+                            alt.index,
+                            min_channels=needed,
+                            samplerate=float(self._playback_rate),
+                        )
+                        if alt_probed >= needed:
+                            chosen = alt
+                            self._device_index = alt.index
+                            max_ch = alt.max_output_channels
+                            probed = alt_probed
+                            self._output_channel_count = min(max(needed, 1), max_ch)
+                            clamped = {}
+                            for src, dests in route.items():
+                                keep = [
+                                    d
+                                    for d in dests
+                                    if 0 <= d < self._output_channel_count
+                                ]
+                                if keep:
+                                    clamped[src] = keep
+                            self._route = (
+                                clamped
+                                if clamped
+                                else {
+                                    0: [0],
+                                    1: [min(1, self._output_channel_count - 1)],
+                                }
+                            )
+                if probed < self._output_channel_count:
+                    self._routing_warning = warn_if_outputs_insufficient(all_dests, probed)
+                    self._output_channel_count = max(1, probed)
+                    reclamped: dict[int, list[int]] = {}
+                    for src, dests in route.items():
+                        keep = [d for d in dests if 0 <= d < self._output_channel_count]
+                        if keep:
+                            reclamped[src] = keep
+                    self._route = reclamped if reclamped else self._route
         self._video_mixer.set_playback_rate(self._playback_rate)
         self.refresh_video_clips()
         self._refresh_playback_samples()

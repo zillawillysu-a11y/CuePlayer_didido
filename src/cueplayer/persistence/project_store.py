@@ -121,6 +121,7 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "music_right_channels": list(settings.music_right_channels),
         "ltc_enabled": bool(settings.ltc_enabled),
         "ltc_source": str(settings.ltc_source),
+        "ltc_generator_enabled": bool(settings.ltc_generator_enabled),
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
         "mtc_enabled": bool(settings.mtc_enabled),
@@ -142,6 +143,7 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         music_right_channels=_coerce_channel_list(raw.get("music_right_channels"), [1]),
         ltc_enabled=bool(raw.get("ltc_enabled", False)),
         ltc_source=ltc_source,  # type: ignore[arg-type]
+        ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
         mtc_enabled=bool(raw.get("mtc_enabled", False)),
@@ -427,6 +429,8 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_primary_lanes": list(song.now_primary_lanes),
                 "now_secondary_lanes": list(song.now_secondary_lanes),
                 "now_secondary_enabled": song.now_secondary_enabled,
+                "now_primary_visible": song.now_primary_visible,
+                "now_secondary_visible": song.now_secondary_visible,
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -541,6 +545,8 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 now_primary_lanes=now_cfg[1],
                 now_secondary_lanes=now_cfg[2],
                 now_secondary_enabled=bool(song_data.get("now_secondary_enabled", True)),
+                now_primary_visible=bool(song_data.get("now_primary_visible", True)),
+                now_secondary_visible=bool(song_data.get("now_secondary_visible", True)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),

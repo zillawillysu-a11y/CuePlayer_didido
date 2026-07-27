@@ -690,6 +690,7 @@ class MainWindow(QMainWindow):
         self.monitor.selection_changed.connect(self._on_monitor_selection)
         self.monitor.delete_requested.connect(self._delete_marks)
         self.monitor.note_changed.connect(self._on_note_changed)
+        self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
@@ -2723,7 +2724,10 @@ class MainWindow(QMainWindow):
         if self.engine.ltc_enabled:
             mode = self.engine.ltc_source_mode
             if mode == "generator":
-                tc_flags.append("LTC gen")
+                if self.engine.audio_settings.ltc_generator_enabled:
+                    tc_flags.append("LTC gen")
+                else:
+                    tc_flags.append("LTC gen off")
             elif mode == "auto":
                 det = self.engine.detected_ltc_channel
                 if det is not None:

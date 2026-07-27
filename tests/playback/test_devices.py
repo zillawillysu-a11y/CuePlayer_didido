@@ -155,6 +155,52 @@ def test_engine_ltc_route_opens_three_channels_on_focusrite(monkeypatch) -> None
     assert engine._route.get(2) == [2]
 
 
+def test_probe_failure_switches_to_asio_multichannel(monkeypatch) -> None:
+    """When WASAPI only opens 2ch but ASIO supports LTC→CH3, switch endpoints."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.playback import audio_engine as eng_mod
+
+    stereo = _dev(0, "Focusrite USB", ch=2)
+    asio = _dev(3, "Focusrite USB ASIO", api="ASIO", ch=8)
+
+    def fake_list(dedupe=True):
+        return [asio] if dedupe else [stereo, asio]
+
+    monkeypatch.setattr(eng_mod, "list_output_devices", fake_list)
+
+    def fake_probe(device_index, *, min_channels, samplerate):
+        if device_index == 0:
+            return 2
+        if device_index == 3:
+            return 8
+        return min_channels
+
+    monkeypatch.setattr(eng_mod, "probe_supported_output_channels", fake_probe)
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    settings = AudioOutputSettings(
+        output_device_name="Focusrite USB",
+        ltc_enabled=True,
+        ltc_source="source_left",
+        ltc_channels=[2],
+    )
+    engine.apply_audio_settings(settings)
+    n = int(48000 * 0.5)
+    tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
+    mono, levels = build_peak_pyramid(tone, 48000)
+    engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+
+    assert engine._device_index == 3
+    assert engine._output_channel_count >= 3
+    assert engine._route.get(2) == [2]
+
+
 def test_play_pause_reuses_stream_without_reopen(monkeypatch) -> None:
     """Toggling transport must not tear down/recreate the PortAudio stream each time."""
     pytest.importorskip("PySide6")
