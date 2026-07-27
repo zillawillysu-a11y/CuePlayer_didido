@@ -389,6 +389,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     for clip in song.video_clips
                 ],
                 "video_track_muted": song.video_track_muted,
+                "show_video_track": bool(song.show_video_track),
                 "music_volume": song.music_volume,
                 "video_lane_height": song.video_lane_height,
                 "mark_lanes": [
@@ -515,6 +516,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 audio_tracks=audio_tracks,
                 video_clips=video_clips,
                 video_track_muted=bool(song_data.get("video_track_muted", False)),
+                show_video_track=bool(song_data.get("show_video_track", True)),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
                 video_lane_height=float(
                     min(160.0, max(28.0, song_data.get("video_lane_height", 40.0)))
