@@ -215,6 +215,10 @@ class Song:
     # see docs/PRODUCT_SPEC.md's "影片原始音軌預設 Mute" note for the
     # deferred/OBS-reference assumption this overrides per explicit user request.
     video_track_muted: bool = False
+    # When False, the Video lane is collapsed out of the timeline after
+    # alignment work is done — Preview / Clean Output keep playing; only the
+    # editable track chrome is hidden until the user shows it again.
+    show_video_track: bool = True
     # Dedicated music-bed gain for alignment (Video vs Music balancing) —
     # independent of Master Volume (which scales music + video clip audio
     # together) and of LTC (never touched by any volume control, per

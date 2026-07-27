@@ -75,6 +75,7 @@ class TimelineWidget(QWidget):
     duplicate_video_clip_requested = Signal(str)  # clip id
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
+    video_track_visibility_changed = Signal(bool)  # show_video_track
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
 
@@ -99,6 +100,7 @@ class TimelineWidget(QWidget):
         self._video_expand_extra = 78.0
         self._video_track_expanded = False
         self._video_track_muted = False
+        self._show_video_track = True
         self._selected_clip_ids: set[str] = set()
         self._hover_clip_id: str | None = None
         self._dragging_clip: str | None = None
@@ -279,8 +281,17 @@ class TimelineWidget(QWidget):
             size=btn_size,
             overlay=True,
         )
+        self.video_hide_button = IconButton(
+            "eye_off",
+            "Hide Video Track (after alignment — Preview/Clean Output keep playing; "
+            "Tools → Show Video Track or Display Settings to bring it back)",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
         self.video_mute_button.clicked.connect(self._toggle_video_track_muted)
         self.video_expand_button.clicked.connect(self._toggle_video_track_expanded)
+        self.video_hide_button.clicked.connect(self._hide_video_track_clicked)
 
         self.video_clip_volume_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.video_clip_volume_slider.setRange(0, 100)
@@ -315,9 +326,12 @@ class TimelineWidget(QWidget):
         self.music_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.music_volume_label.hide()
 
-        for w in (self.video_mute_button, self.video_expand_button):
+        for w in (self.video_mute_button, self.video_expand_button, self.video_hide_button):
             w.raise_()
         self._layout_video_track_overlay()
+
+    def _hide_video_track_clicked(self) -> None:
+        self.set_show_video_track(False)
 
     def _layout_video_track_overlay(self) -> None:
         if not hasattr(self, "video_mute_button"):
@@ -325,6 +339,7 @@ class TimelineWidget(QWidget):
         visible = self._video_lane_visible()
         self.video_mute_button.setVisible(visible)
         self.video_expand_button.setVisible(visible)
+        self.video_hide_button.setVisible(visible)
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
@@ -339,8 +354,11 @@ class TimelineWidget(QWidget):
         self.video_mute_button.move(x, btn_y)
         x -= self.video_expand_button.width() + 3
         self.video_expand_button.move(x, btn_y)
+        x -= self.video_hide_button.width() + 3
+        self.video_hide_button.move(x, btn_y)
         self.video_mute_button.raise_()
         self.video_expand_button.raise_()
+        self.video_hide_button.raise_()
         if self._video_track_expanded:
             sub_y = top + row_h
             label_w = 32
@@ -447,6 +465,7 @@ class TimelineWidget(QWidget):
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
+        self._show_video_track = bool(song.show_video_track) if song is not None else True
         self._sync_video_clip_volume_ui()
         self._sync_music_volume_ui()
         if song is not None:
@@ -523,7 +542,27 @@ class TimelineWidget(QWidget):
             self.video_clip_selection_changed.emit(list(self._selected_clip_ids))
 
     def _video_lane_visible(self) -> bool:
-        return self._song is not None
+        return self._song is not None and self._show_video_track
+
+    def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
+        """Show / hide the Video lane (Preview / Clean Output keep playing)."""
+        visible = bool(visible)
+        changed = visible != self._show_video_track or (
+            self._song is not None and self._song.show_video_track != visible
+        )
+        self._show_video_track = visible
+        if self._song is not None:
+            self._song.show_video_track = visible
+        if not visible:
+            self._video_track_expanded = False
+            if hasattr(self, "video_expand_button"):
+                self.video_expand_button.set_active(False)
+            self.set_selected_video_clip_ids([], emit=False)
+        self._apply_layout_heights()
+        self._layout_video_track_overlay()
+        self.update()
+        if emit and changed:
+            self.video_track_visibility_changed.emit(visible)
 
     @property
     def _video_lane_height(self) -> float:
@@ -724,7 +763,9 @@ class TimelineWidget(QWidget):
             return
         self._show_mark_tracks = self._song.show_mark_tracks
         self._show_mark_stem = self._song.show_mark_stem
+        self.set_show_video_track(self._song.show_video_track, emit=False)
         self._apply_layout_heights()
+        self._layout_video_track_overlay()
         self.update()
 
     def _visible_lane_count(self) -> int:
@@ -1286,9 +1327,15 @@ class TimelineWidget(QWidget):
         time_here = self._time_for_x(x)
         if hit is None:
             add_action = menu.addAction("Add Video Clip Here…")
+            hide_track_action = menu.addAction("Hide Video Track")
+            hide_track_action.setToolTip(
+                "Collapse the Video lane after alignment — Preview/Clean Output keep playing"
+            )
             chosen = menu.exec(self.mapToGlobal(pos))
             if chosen is add_action:
                 self.add_video_clip_requested.emit(time_here)
+            elif chosen is hide_track_action:
+                self.set_show_video_track(False)
             return
 
         clip_id, _zone = hit
@@ -1301,6 +1348,8 @@ class TimelineWidget(QWidget):
 
         lock_action = menu.addAction("Unlock" if clip.locked else "Lock")
         hide_action = menu.addAction("Show" if clip.hidden else "Hide")
+        menu.addSeparator()
+        hide_track_action = menu.addAction("Hide Video Track")
         menu.addSeparator()
         can_split = clip.start_seconds + 0.02 < self._position < clip.end_seconds - 0.02
         split_action = menu.addAction("Split at Playhead")
@@ -1325,6 +1374,9 @@ class TimelineWidget(QWidget):
 
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen is hide_track_action:
+            self.set_show_video_track(False)
             return
         if chosen is lock_action:
             new_locked = not clip.locked

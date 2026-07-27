@@ -666,6 +666,7 @@ class MainWindow(QMainWindow):
         self.timeline.duplicate_video_clip_requested.connect(self._duplicate_video_clip)
         self.timeline.video_files_dropped.connect(self._add_video_clips_from_paths)
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
+        self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
         self.engine.position_changed.connect(self.video_sync.update_position)
@@ -759,6 +760,15 @@ class MainWindow(QMainWindow):
         act_video_preview.setChecked(True)
         act_video_preview.triggered.connect(self.video_preview_panel.setVisible)
         tools_menu.addAction(act_video_preview)
+        self._show_video_track_action = QAction("Show &Video Track", self)
+        self._show_video_track_action.setCheckable(True)
+        self._show_video_track_action.setChecked(True)
+        self._show_video_track_action.setToolTip(
+            "Hide after alignment to free timeline space. "
+            "Preview / Clean Output keep playing either way."
+        )
+        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
+        tools_menu.addAction(self._show_video_track_action)
         self._clean_output_action = QAction("&Clean Video Output", self)
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
@@ -1490,6 +1500,11 @@ class MainWindow(QMainWindow):
         self.monitor.set_song(self.current_song)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
+        action = getattr(self, "_show_video_track_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(self.current_song.show_video_track))
+            action.blockSignals(False)
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -2115,6 +2130,26 @@ class MainWindow(QMainWindow):
             "Video Track muted (embedded clip audio silenced)" if muted else "Video Track unmuted",
             2000,
         )
+
+    def _on_video_track_visibility_changed(self, visible: bool) -> None:
+        self.current_song.show_video_track = bool(visible)
+        action = getattr(self, "_show_video_track_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(visible))
+            action.blockSignals(False)
+        self._mark_dirty()
+        self.status.showMessage(
+            "Video Track shown"
+            if visible
+            else "Video Track hidden (Preview/Clean Output still play)",
+            2500,
+        )
+
+    def _on_show_video_track_toggled(self, checked: bool) -> None:
+        self.timeline.set_show_video_track(bool(checked))
+        self.current_song.show_video_track = bool(checked)
+        self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:
         # Volume is already applied to the clip by the timeline widget; this
