@@ -6,7 +6,8 @@ from cueplayer.domain.models import (
     clamp_output_channels,
     default_ltc_channels_for_device,
 )
-from cueplayer.ui.audio_timecode_dialog import _clamp_channel_ui_text, _parse_channel_ui
+from cueplayer.playback.routing_parse import parse_channel_ui as _parse_channel_ui
+from cueplayer.ui.audio_timecode_dialog import _clamp_channel_ui_text
 
 
 def test_default_ltc_jumps_into_stereo_range() -> None:

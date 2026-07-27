@@ -655,14 +655,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _max_video_lane_height(self) -> float:
-        # Reserve space for every visible mark lane so growing the video row
-        # does not push the bottom transport bar off-screen.
-        mark_h = 0
-        if self._show_mark_tracks:
-            mark_h = self._visible_lane_count() * self._lane_height
-        extra = self._video_expand_extra if self._video_track_expanded else 0.0
-        reserve = self._ruler_height + self._wave_height + mark_h + extra + 8
-        return max(self._video_lane_min_height, float(self.height()) - reserve)
+        return max(self._video_lane_min_height, 2400.0)
 
     def _clamp_video_lane_height(self, height: float) -> float:
         return max(self._video_lane_min_height, min(self._max_video_lane_height(), float(height)))
@@ -1015,11 +1008,8 @@ class TimelineWidget(QWidget):
         return 0
 
     def _max_wave_height(self) -> int:
-        visible = max(1, self._visible_lane_count())
-        video_h = self._video_band_height()
-        # Leave room for the video lane and at least thin mark lanes.
-        reserved = self._ruler_height + video_h + visible * 18 + 12
-        return max(80, self.height() - reserved)
+        # Independent from video lane — tall content scrolls in the parent scroll area.
+        return 2400
 
     def _clamp_wave_height(self, height: int | float) -> int:
         return max(80, min(self._max_wave_height(), int(height)))
@@ -1064,15 +1054,7 @@ class TimelineWidget(QWidget):
         video_h = self._video_band_height()
         needed = self._ruler_height + self._wave_height + video_h + visible * self._lane_height + 8
         self._content_height = needed
-        alloc = max(self._ruler_height + 80, int(self.height()))
-        if needed > alloc:
-            self._scroll_y = min(self._scroll_y, float(needed - alloc))
-        else:
-            self._scroll_y = 0.0
-        # Stay within the window allocation — do not grow the widget and shove
-        # the transport bar downward when the video lane is tall.
-        self.setMinimumHeight(min(needed, alloc))
-        self.setMaximumHeight(16777215)
+        self.setMinimumHeight(needed)
         self._layout_video_track_overlay()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001

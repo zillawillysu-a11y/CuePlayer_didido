@@ -201,17 +201,22 @@ def asio_available() -> bool:
     return any(name == "ASIO" for name in hostapi_names())
 
 
-def list_output_devices_for_picker() -> list[OutputDeviceInfo]:
+def list_output_devices_for_picker(hostapi: str = "") -> list[OutputDeviceInfo]:
     """
-    Full routing picker: always list every ASIO endpoint separately (Reaper-style),
-    plus deduped WASAPI defaults and any extra multi-channel siblings.
+    Routing picker list filtered by host API (Reaper-style).
 
-    ``filter_output_devices`` hides DirectSound/MME clutter for the tray-style
-    list, but that also hid ASIO when only a 4ch DirectSound Focusrite entry
-    matched the same name family — users could not pick ASIO for LTC→CH3.
+    When ``hostapi`` is empty, prefer ASIO + WASAPI + multi-channel endpoints.
+    When set (e.g. "ASIO", "Windows DirectSound"), only that API is listed.
     """
     raw = list_output_devices(dedupe=False)
     usable = [d for d in raw if not _is_junk_device_name(d.name)]
+    wanted = (hostapi or "").strip()
+    if wanted:
+        return sorted(
+            [d for d in usable if d.hostapi_name == wanted],
+            key=lambda d: (-d.max_output_channels, d.name.casefold(), d.index),
+        )
+
     picked: list[OutputDeviceInfo] = []
     seen: set[int] = set()
 
@@ -226,11 +231,9 @@ def list_output_devices_for_picker() -> list[OutputDeviceInfo]:
             add(d)
     for d in filter_output_devices(usable):
         add(d)
-    # Multi-channel endpoints that dedupe skipped (e.g. 4ch DirectSound Focusrite).
     for d in usable:
         if d.max_output_channels >= 3 and d.index not in seen:
             add(d)
-
     return sorted(
         picked,
         key=lambda d: (
@@ -241,6 +244,26 @@ def list_output_devices_for_picker() -> list[OutputDeviceInfo]:
             d.index,
         ),
     )
+
+
+def picker_hostapi_options() -> list[tuple[str, str]]:
+    """(label, hostapi name) rows for the Audio / Timecode driver combo."""
+    names = hostapi_names()
+    preferred = [
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ]
+    out: list[tuple[str, str]] = [("Default (ASIO / WASAPI first)", "")]
+    for name in preferred:
+        if name in names:
+            short = name.replace("Windows ", "")
+            out.append((short, name))
+    for name in sorted(set(names) - set(preferred)):
+        out.append((name, name))
+    return out
 
 
 def _match_by_name(devices: list[OutputDeviceInfo], wanted: str) -> OutputDeviceInfo | None:

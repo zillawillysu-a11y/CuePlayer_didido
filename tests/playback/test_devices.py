@@ -212,11 +212,13 @@ def test_list_output_devices_for_picker_keeps_asio_and_multichannel_ds(monkeypat
         return devices_mod.filter_output_devices(raw) if dedupe else raw
 
     monkeypatch.setattr(devices_mod, "list_output_devices", fake_list)
-    out = devices_mod.list_output_devices_for_picker()
-    apis = {d.hostapi_name for d in out}
+    out_default = devices_mod.list_output_devices_for_picker()
+    out_ds = devices_mod.list_output_devices_for_picker("Windows DirectSound")
+    apis = {d.hostapi_name for d in out_default}
     assert "ASIO" in apis
-    assert any(d.hostapi_name == "ASIO" and d.max_output_channels == 8 for d in out)
-    assert any(d.hostapi_name == "Windows DirectSound" and d.max_output_channels == 4 for d in out)
+    assert any(d.hostapi_name == "ASIO" and d.max_output_channels == 8 for d in out_default)
+    assert all(d.hostapi_name == "Windows DirectSound" for d in out_ds)
+    assert any(d.max_output_channels == 4 for d in out_ds)
 
 
 def test_play_pause_reuses_stream_without_reopen(monkeypatch) -> None:

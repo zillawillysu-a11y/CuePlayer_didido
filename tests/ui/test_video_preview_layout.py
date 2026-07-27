@@ -26,7 +26,8 @@ def test_video_preview_is_under_timeline_not_cuelist(app: QApplication) -> None:
     preview_split = preview.parentWidget()
     assert isinstance(preview_split, QSplitter)
     assert preview_split.objectName() == "timelinePreviewSplitter"
-    assert timeline.isAncestorOf(preview) or preview_split.indexOf(timeline.parentWidget()) == 0
+    assert window._timeline_scroll.widget() is timeline
+    assert preview_split.indexOf(window._timeline_center) == 0
     assert preview_split.indexOf(preview) == 1
 
     # Cue list must not contain the preview.

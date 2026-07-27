@@ -573,6 +573,7 @@ class MaExportSettings:
 # - auto: detect striped LTC in the loaded stereo file
 # - source_left / source_right: pass that file channel through to ltc_channels
 LtcSourceMode = Literal["generator", "auto", "source_left", "source_right"]
+MusicRouteKind = Literal["mute", "music_source", "ltc", "channels"]
 
 
 @dataclass
@@ -586,7 +587,14 @@ class AudioOutputSettings:
 
     # Empty name = system default output device.
     output_device_name: str = ""
-    # Music L / R → device channels (may map one source to multiple outs).
+    # PortAudio device index when known (stable across host APIs).
+    output_device_index: int | None = None
+    # Host API filter / label saved with the device (ASIO, Windows WASAPI, …).
+    output_hostapi: str = ""
+    # L / R stereo legs: channel numbers, "Music Source", or "LTC".
+    music_l_route: str = "1"
+    music_r_route: str = "2"
+    # Legacy channel lists (derived from routes when loading old projects).
     music_left_channels: list[int] = field(default_factory=lambda: [0])
     music_right_channels: list[int] = field(default_factory=lambda: [1])
     # Generated LTC (independent of MTC).

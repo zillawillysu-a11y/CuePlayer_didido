@@ -16,7 +16,6 @@ from cueplayer.domain.models import (
 )
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.playback.devices import (
-    build_source_route,
     find_output_device,
     list_output_devices,
     probe_supported_output_channels,
@@ -24,6 +23,17 @@ from cueplayer.playback.devices import (
     resolve_output_endpoint_for_channels,
     resolve_output_samplerate,
     upgrade_device_for_channels,
+)
+from cueplayer.playback.routing_parse import (
+    SRC_FILE_LTC,
+    SRC_FILE_MUSIC,
+    SRC_LTC_BUS,
+    SRC_MUSIC_L,
+    SRC_MUSIC_R,
+    build_stereo_route_map,
+    is_ltc_route,
+    is_music_source_route,
+    parse_stereo_route,
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.resample import resample_linear
@@ -135,29 +145,42 @@ class AudioEngine(QObject):
             and self._audio_settings.ltc_generator_enabled
         )
 
-    def _effective_ltc_source_channel(self) -> int | None:
-        """Source file channel carrying LTC, or None when using the generator."""
-        if not self._audio_settings.ltc_enabled:
+    def _autodetect_ltc_channel(self) -> int | None:
+        if self._detected_ltc_channel is not None:
+            return self._detected_ltc_channel
+        samples = self._playback_samples
+        if samples is not None and samples.ndim == 2 and samples.shape[1] >= 2:
+            detected = detect_ltc_channel(samples, self._sample_rate())
+            if detected is not None:
+                self._detected_ltc_channel = detected
+                return detected
+        return None
+
+    def _file_ltc_channel(self) -> int | None:
+        """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
+        s = self._audio_settings
+        uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
+        uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
+        if not uses_ltc_leg and not uses_file_bus:
             return None
-        mode = self._audio_settings.ltc_source
+        mode = s.ltc_source
         if mode == "generator":
-            return None
+            return self._autodetect_ltc_channel() if uses_ltc_leg else None
         if mode == "source_left":
             return 0
         if mode == "source_right":
             return 1
         if mode == "auto":
-            if self._detected_ltc_channel is not None:
-                return self._detected_ltc_channel
-            samples = self._playback_samples
-            if samples is not None and samples.ndim == 2 and samples.shape[1] >= 2:
-                rate = self._sample_rate()
-                detected = detect_ltc_channel(samples, rate)
-                if detected is not None:
-                    self._detected_ltc_channel = detected
-                    return detected
-            return None
+            return self._autodetect_ltc_channel()
         return None
+
+    def _effective_ltc_source_channel(self) -> int | None:
+        """Source file channel for the dedicated LTC output bus."""
+        if not self._audio_settings.ltc_enabled:
+            return None
+        if self._audio_settings.ltc_source == "generator":
+            return None
+        return self._file_ltc_channel()
 
     def _music_source_indices(self) -> tuple[int, int]:
         """Which loaded-file channels feed the music L/R bus (mono duplicates when needed)."""
@@ -167,7 +190,18 @@ class AudioEngine(QObject):
         ch_count = int(samples.shape[1]) if samples.ndim == 2 else 1
         if ch_count <= 1:
             return 0, 0
-        ltc_ch = self._effective_ltc_source_channel()
+        strip_ltc = (
+            is_music_source_route(self._audio_settings.music_l_route)
+            or is_music_source_route(self._audio_settings.music_r_route)
+            or is_ltc_route(self._audio_settings.music_l_route)
+            or is_ltc_route(self._audio_settings.music_r_route)
+            or self._file_ltc_channel() is not None
+        )
+        if not strip_ltc:
+            return 0, 1
+        ltc_ch = self._file_ltc_channel()
+        if ltc_ch is None:
+            ltc_ch = self._autodetect_ltc_channel()
         if ltc_ch == 0:
             return 1, 1
         if ltc_ch == 1:
@@ -290,6 +324,10 @@ class AudioEngine(QObject):
 
         self._audio_settings = AudioOutputSettings(
             output_device_name=settings.output_device_name,
+            output_device_index=settings.output_device_index,
+            output_hostapi=str(settings.output_hostapi or ""),
+            music_l_route=str(settings.music_l_route or "1"),
+            music_r_route=str(settings.music_r_route or "2"),
             music_left_channels=list(settings.music_left_channels),
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
@@ -658,28 +696,72 @@ class AudioEngine(QObject):
             self._ltc_pcm = pcm
             self._ltc_cache_key = key
 
+    def _ltc_bus_active(self) -> bool:
+        s = self._audio_settings
+        if not s.ltc_enabled:
+            return False
+        if s.ltc_source == "generator":
+            return bool(s.ltc_generator_enabled)
+        return self._file_ltc_channel() is not None or s.ltc_source != "generator"
+
+    def _parsed_stereo_routes(
+        self, max_ch: int
+    ) -> tuple[str, list[int], str, list[int]] | None:
+        left = parse_stereo_route(self._audio_settings.music_l_route, side="l", max_ch=max_ch)
+        right = parse_stereo_route(self._audio_settings.music_r_route, side="r", max_ch=max_ch)
+        if left is None or right is None:
+            return None
+        return left[0], left[1], right[0], right[1]
+
     def _resolve_device_and_route(self) -> None:
+        hostapi = str(self._audio_settings.output_hostapi or "")
         devices = list_output_devices()
         try:
             raw_devices = list_output_devices(dedupe=False)
         except TypeError:
             raw_devices = devices
-        chosen = find_output_device(
-            devices, name=self._audio_settings.output_device_name
-        )
+        if hostapi:
+            api_devices = [d for d in raw_devices if d.hostapi_name == hostapi]
+            if api_devices:
+                devices = api_devices
+
+        chosen = None
+        prefer_idx = self._audio_settings.output_device_index
+        if prefer_idx is not None:
+            for d in raw_devices:
+                if d.index == prefer_idx:
+                    chosen = d
+                    break
+        if chosen is None:
+            chosen = find_output_device(
+                devices, name=self._audio_settings.output_device_name
+            )
         self._device_index = chosen.index if chosen is not None else None
 
-        left = list(self._audio_settings.music_left_channels)
-        right = list(self._audio_settings.music_right_channels)
-        ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
-        if self._audio_settings.ltc_enabled and len(ltc) > 1:
-            # Generated LTC is mono; legacy "1+2" saves fan out to stereo.
+        max_ch = chosen.max_output_channels if chosen is not None else 2
+        parsed = self._parsed_stereo_routes(max_ch)
+        if parsed is None:
+            left_kind, left_ch = "channels", [0]
+            right_kind, right_ch = "channels", [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        else:
+            left_kind, left_ch, right_kind, right_ch = parsed
+
+        ltc = (
+            list(self._audio_settings.ltc_channels)
+            if self._ltc_bus_active()
+            else []
+        )
+        if ltc and len(ltc) > 1:
             ltc = [max(ltc)]
 
-        # Build a preliminary route from saved settings to learn how many outs
-        # we must open (e.g. LTC→CH3 needs ≥3 channels even if the first name
-        # match was a 2ch WASAPI stereo endpoint).
-        prelim = build_source_route(music_left=left, music_right=right, ltc=ltc)
+        prelim = build_stereo_route_map(
+            left_kind=left_kind,
+            left_channels=left_ch,
+            right_kind=right_kind,
+            right_channels=right_ch,
+            ltc_channels=ltc,
+            ltc_bus_active=bool(ltc),
+        )
         needed = required_output_channels(prelim)
         native_rate_guess = float(
             self._buffer.sample_rate if self._buffer is not None else 48000
@@ -701,35 +783,42 @@ class AudioEngine(QObject):
             self._device_index = chosen.index
 
         max_ch = chosen.max_output_channels if chosen is not None else 2
+        parsed = self._parsed_stereo_routes(max_ch)
+        if parsed is None:
+            left_kind, left_ch = "channels", [0]
+            right_kind, right_ch = "channels", [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        else:
+            left_kind, left_ch, right_kind, right_ch = parsed
 
-        # Clamp music + LTC into the live device's channel count. A saved
-        # Focusrite-style LTC→CH3 on a 2-ch laptop speaker jumps to CH2 so
-        # the generator still has a destination (AGENTS: don't assume LTC
-        # is always L/R, but it must stay within available outs).
-        left = clamp_output_channels(left, max_ch) or [0]
-        right = clamp_output_channels(right, max_ch) or (
-            [min(1, max_ch - 1)] if max_ch > 0 else [0]
-        )
-        if self._audio_settings.ltc_enabled:
+        if self._ltc_bus_active():
+            ltc = list(self._audio_settings.ltc_channels)
             ltc = clamp_output_channels(ltc, max_ch)
             if not ltc:
                 ltc = default_ltc_channels_for_device(max_ch)
-        elif max_ch < 3:
-            # LTC off on stereo: leave generator unmapped (music only).
+        else:
             ltc = []
 
-        route = build_source_route(music_left=left, music_right=right, ltc=ltc)
+        route = build_stereo_route_map(
+            left_kind=left_kind,
+            left_channels=left_ch,
+            right_kind=right_kind,
+            right_channels=right_ch,
+            ltc_channels=ltc,
+            ltc_bus_active=bool(ltc),
+        )
         needed = required_output_channels(route)
         all_dests = [ch for dests in route.values() for ch in dests]
         self._routing_warning = warn_if_outputs_insufficient(all_dests, max_ch)
         self._output_channel_count = min(max(needed, 1), max_ch) if max_ch > 0 else needed
-        # Clamp destinations that exceed the opened stream.
         clamped: dict[int, list[int]] = {}
         for src, dests in route.items():
             keep = [d for d in dests if 0 <= d < self._output_channel_count]
             if keep:
                 clamped[src] = keep
-        self._route = clamped if clamped else {0: [0], 1: [min(1, self._output_channel_count - 1)]}
+        if clamped:
+            self._route = clamped
+        else:
+            self._route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [min(1, self._output_channel_count - 1)]}
 
         native_rate = self._buffer.sample_rate if self._buffer is not None else 48000
         self._playback_rate = int(
@@ -993,10 +1082,19 @@ class AudioEngine(QObject):
                 np.clip(music, -1.0, 1.0, out=music)
 
                 self._mix_clicks(music, start)
-                sources = np.zeros((frames, 3), dtype=np.float32)
-                sources[:, 0] = music[:, 0]
-                sources[:, 1] = music[:, 1]
-                sources[:, 2] = ltc
+                sources = np.zeros((frames, 5), dtype=np.float32)
+                sources[:, SRC_MUSIC_L] = music[:, 0]
+                sources[:, SRC_MUSIC_R] = music[:, 1]
+                sources[:, SRC_LTC_BUS] = ltc
+                music_idx, _ = self._music_source_indices()
+                ltc_idx = self._file_ltc_channel()
+                if ltc_idx is not None:
+                    sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
+                        ltc_idx, start, frames
+                    )
+                sources[:, SRC_FILE_MUSIC] = self._source_channel_chunk(
+                    music_idx, start, frames
+                )
                 routed = apply_routing(sources, self._route, out_ch)
             outdata[:] = routed
 

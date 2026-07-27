@@ -117,6 +117,10 @@ def _coerce_channel_list(raw: Any, default: list[int]) -> list[int]:
 def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
     return {
         "output_device_name": settings.output_device_name,
+        "output_device_index": settings.output_device_index,
+        "output_hostapi": str(settings.output_hostapi or ""),
+        "music_l_route": str(settings.music_l_route or "1"),
+        "music_r_route": str(settings.music_r_route or "2"),
         "music_left_channels": list(settings.music_left_channels),
         "music_right_channels": list(settings.music_right_channels),
         "ltc_enabled": bool(settings.ltc_enabled),
@@ -137,10 +141,27 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
     ltc_source = str(raw.get("ltc_source") or "generator")
     if ltc_source not in ("generator", "auto", "source_left", "source_right"):
         ltc_source = "generator"
+    left = _coerce_channel_list(raw.get("music_left_channels"), [0])
+    right = _coerce_channel_list(raw.get("music_right_channels"), [1])
+    music_l_route = str(raw.get("music_l_route") or "").strip()
+    music_r_route = str(raw.get("music_r_route") or "").strip()
+    if not music_l_route:
+        music_l_route = "+".join(str(int(c) + 1) for c in left) or "1"
+    if not music_r_route:
+        music_r_route = "+".join(str(int(c) + 1) for c in right) or "2"
+    dev_index = raw.get("output_device_index")
+    try:
+        dev_index = int(dev_index) if dev_index is not None else None
+    except (TypeError, ValueError):
+        dev_index = None
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
-        music_left_channels=_coerce_channel_list(raw.get("music_left_channels"), [0]),
-        music_right_channels=_coerce_channel_list(raw.get("music_right_channels"), [1]),
+        output_device_index=dev_index,
+        output_hostapi=str(raw.get("output_hostapi") or ""),
+        music_l_route=music_l_route,
+        music_r_route=music_r_route,
+        music_left_channels=left,
+        music_right_channels=right,
         ltc_enabled=bool(raw.get("ltc_enabled", False)),
         ltc_source=ltc_source,  # type: ignore[arg-type]
         ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),

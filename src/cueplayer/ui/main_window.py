@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -553,7 +554,14 @@ class MainWindow(QMainWindow):
         self._timeline_center = center
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.addWidget(self.timeline, stretch=1)
+        self._timeline_scroll = QScrollArea()
+        self._timeline_scroll.setWidgetResizable(False)
+        self._timeline_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._timeline_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._timeline_scroll.setWidget(self.timeline)
+        center_layout.addWidget(self._timeline_scroll, stretch=1)
 
         # Center column: Timeline (waveform + video lane + mark lanes) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
