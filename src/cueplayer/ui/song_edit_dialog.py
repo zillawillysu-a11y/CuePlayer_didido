@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueplayer.exporters.common import sanitize_ma_name
+from cueplayer.ui.drag_drop import AUDIO_SUFFIXES, VIDEO_SUFFIXES
 
 _FPS_CHOICES: list[tuple[str, float]] = [
     ("24", 24.0),
@@ -53,6 +53,7 @@ class SongDraft:
     start_timecode: str = "01:00:00:00"
     fps: float = 30.0
     audio_path: Path | None = None
+    video_path: Path | None = None
     song_id: str | None = None
 
 
@@ -123,8 +124,9 @@ def _fps_label(fps: float) -> str:
     return f"{fps:g}"
 
 
-_AUDIO_BROWSE_FILTER = (
-    "Audio (*.wav *.mp3 *.flac *.ogg *.aiff *.aif *.m4a *.aac *.wma *.opus);;"
+_MEDIA_BROWSE_FILTER = (
+    "Media (*.wav *.mp3 *.flac *.ogg *.aiff *.aif *.m4a *.aac *.wma *.opus "
+    "*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"
 )
 
@@ -148,15 +150,15 @@ class _AudioFileCell(QWidget):
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
         self._label = QLabel(self._path.name if self._path is not None else "—")
-        self._label.setToolTip(str(self._path) if self._path is not None else "No audio file")
+        self._label.setToolTip(str(self._path) if self._path is not None else "No media file")
         self._label.setMinimumWidth(40)
         browse = QPushButton("Browse…")
         browse.setFixedWidth(72)
-        browse.setToolTip("Choose an audio file for this song")
+        browse.setToolTip("Choose an audio or video file for this song")
         browse.clicked.connect(self._browse)
         clear = QPushButton("×")
         clear.setFixedWidth(28)
-        clear.setToolTip("Clear audio file")
+        clear.setToolTip("Clear media file")
         clear.clicked.connect(self._clear)
         layout.addWidget(self._label, stretch=1)
         layout.addWidget(browse)
@@ -170,9 +172,9 @@ class _AudioFileCell(QWidget):
         start = str(self._path.parent) if self._path is not None else ""
         path_str, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose Audio File",
+            "Choose Media File",
             start,
-            _AUDIO_BROWSE_FILTER,
+            _MEDIA_BROWSE_FILTER,
         )
         if not path_str:
             return
@@ -183,7 +185,7 @@ class _AudioFileCell(QWidget):
     def _clear(self) -> None:
         self._path = None
         self._label.setText("—")
-        self._label.setToolTip("No audio file")
+        self._label.setToolTip("No media file")
 
 
 class SongEditDialog(QDialog):
@@ -211,6 +213,7 @@ class SongEditDialog(QDialog):
                 start_timecode=d.start_timecode,
                 fps=d.fps,
                 audio_path=d.audio_path,
+                video_path=d.video_path,
                 song_id=d.song_id,
             )
             for d in drafts
@@ -228,7 +231,7 @@ class SongEditDialog(QDialog):
 
         self.table = QTableWidget(len(self._drafts), 7)
         self.table.setHorizontalHeaderLabels(
-            ["Number", "Song Name", "English / MA", "BPM", "Start Timecode", "FPS", "Audio File"]
+            ["Number", "Song Name", "English / MA", "BPM", "Start Timecode", "FPS", "Media File"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
@@ -283,7 +286,7 @@ class SongEditDialog(QDialog):
             fps_combo.setCurrentIndex(idx if idx >= 0 else fps_combo.findText("30"))
             self.table.setCellWidget(row, _COL_FPS, fps_combo)
 
-            file_cell = _AudioFileCell(draft.audio_path)
+            file_cell = _AudioFileCell(draft.audio_path or draft.video_path)
             self.table.setCellWidget(row, _COL_FILE, file_cell)
 
         root.addWidget(self.table, stretch=1)
@@ -381,11 +384,19 @@ class SongEditDialog(QDialog):
                     widget.setFocus()
                 return
             file_widget = self.table.cellWidget(row, _COL_FILE)
-            audio_path = (
+            media_path = (
                 file_widget.path
                 if isinstance(file_widget, _AudioFileCell)
-                else self._drafts[row].audio_path
+                else (self._drafts[row].audio_path or self._drafts[row].video_path)
             )
+            audio_path = None
+            video_path = None
+            if media_path is not None:
+                suf = media_path.suffix.lower()
+                if suf in VIDEO_SUFFIXES:
+                    video_path = media_path
+                elif suf in AUDIO_SUFFIXES:
+                    audio_path = media_path
             updated.append(
                 SongDraft(
                     name=name,
@@ -395,6 +406,7 @@ class SongEditDialog(QDialog):
                     start_timecode=tc,
                     fps=fps,
                     audio_path=audio_path,
+                    video_path=video_path,
                     song_id=self._drafts[row].song_id,
                 )
             )

@@ -121,6 +121,47 @@ def video_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
     return _paths_from_mime(mime, suffixes=frozenset(VIDEO_SUFFIXES))
 
 
+def setlist_import_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
+    """Audio + video paths for Setlist import, preserving Explorer drop order."""
+    allowed = AUDIO_SUFFIXES | frozenset(VIDEO_SUFFIXES)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in local_paths_from_mime(mime):
+        if path.suffix.lower() not in allowed:
+            continue
+        key = _path_dedupe_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def rejected_setlist_drop_reason(mime) -> str:  # noqa: ANN001
+    """Human-readable why a file drop onto the Setlist was ignored."""
+    paths = local_paths_from_mime(mime)
+    if not paths:
+        return (
+            "Drop ignored — try running CuePlayer as a normal user (not Administrator) "
+            "and drop onto the Setlist table or left panel"
+        )
+    allowed = AUDIO_SUFFIXES | frozenset(VIDEO_SUFFIXES)
+    names: list[str] = []
+    for path in paths:
+        suf = path.suffix.lower() or "(no extension)"
+        if suf not in allowed:
+            names.append(f"{path.name} [{suf}]")
+        elif not path.is_file():
+            names.append(f"{path.name} (not found)")
+    if names:
+        return (
+            "Unsupported / missing media: "
+            + ", ".join(names[:3])
+            + " — use audio (wav/mp3/…) or video (mp4/mov/mkv/…)"
+        )
+    return "Drop ignored"
+
+
 def accept_file_drag(event: QDragEnterEvent | QDragMoveEvent) -> None:
     """Accept an Explorer file drag on Windows (explicit Copy + accept)."""
     event.setDropAction(Qt.DropAction.CopyAction)

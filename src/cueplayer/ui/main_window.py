@@ -98,12 +98,14 @@ from cueplayer.ui.song_edit_dialog import (
 )
 from cueplayer.ui.drag_drop import (
     AUDIO_SUFFIXES,
+    VIDEO_SUFFIXES,
     accept_file_drag,
     accept_file_drop,
     audio_paths_from_mime,
     mime_looks_like_file_drop,
-    rejected_audio_drop_reason,
     rejected_file_drop_reason,
+    rejected_setlist_drop_reason,
+    setlist_import_paths_from_mime,
     video_paths_from_mime,
 )
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, with_alpha
@@ -132,8 +134,20 @@ def _text_input_has_focus() -> bool:
     return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox))
 
 
+def _song_list_has_keyboard_focus(song_list: QTableWidget) -> bool:
+    """True when keyboard focus is on the Setlist table (not Add/Edit buttons)."""
+    widget = QApplication.focusWidget()
+    if widget is None:
+        return False
+    return (
+        widget is song_list
+        or widget is song_list.viewport()
+        or song_list.isAncestorOf(widget)
+    )
+
+
 class SetlistWidget(QTableWidget):
-    """Setlist: click # to edit, drag rows to reorder, drop audio to add songs."""
+    """Setlist: click # to edit, drag rows to reorder, drop audio/video to add songs."""
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -188,7 +202,7 @@ class SetlistWidget(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(28)
         self.setToolTip(
             "Double-click #/Name/BPM to edit; right-click to toggle columns or open full editor; "
-            "drag to reorder; drop audio files to add; Ctrl/Shift to multi-select"
+            "drag to reorder; drop audio or video files to add songs; Ctrl/Shift to multi-select"
         )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -314,14 +328,14 @@ class SetlistWidget(QTableWidget):
                     accept_file_drag(event)
                     return True
             elif et == QEvent.Type.Drop:
-                paths = audio_paths_from_mime(mime)
+                paths = setlist_import_paths_from_mime(mime)
                 if paths:
                     self._clear_insert_indicator()
                     accept_file_drop(event)
                     self.audio_files_dropped.emit(paths)
                     return True
                 self._clear_insert_indicator()
-                self.audio_drop_rejected.emit(rejected_audio_drop_reason(mime))
+                self.audio_drop_rejected.emit(rejected_setlist_drop_reason(mime))
                 event.ignore()
                 return True
         ok = super().viewportEvent(event)
@@ -413,12 +427,12 @@ class SetlistWidget(QTableWidget):
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._clear_insert_indicator()
         if event.source() is not self:
-            paths = audio_paths_from_mime(event.mimeData())
+            paths = setlist_import_paths_from_mime(event.mimeData())
             if paths:
                 accept_file_drop(event)
                 self.audio_files_dropped.emit(paths)
                 return
-            self.audio_drop_rejected.emit(rejected_audio_drop_reason(event.mimeData()))
+            self.audio_drop_rejected.emit(rejected_setlist_drop_reason(event.mimeData()))
             event.ignore()
             return
         pos = event.position().toPoint()
@@ -647,7 +661,7 @@ class MainWindow(QMainWindow):
         self.sort_by_number_button.clicked.connect(self._sort_songs_by_number)
         self.renumber_button.clicked.connect(self._renumber_songs_by_list_order)
         self.song_list.currentCellChanged.connect(self._on_song_cell_changed)
-        self.song_list.audio_files_dropped.connect(self._add_songs_from_audio_paths)
+        self.song_list.audio_files_dropped.connect(self._add_songs_from_media_paths)
         self.song_list.audio_drop_rejected.connect(
             lambda msg: self.status.showMessage(msg, 5000)
         )
@@ -1337,6 +1351,7 @@ class MainWindow(QMainWindow):
 
     def _song_to_draft(self, song: Song) -> SongDraft:
         audio_path = Path(song.audio_tracks[0].path) if song.audio_tracks else None
+        video_path = Path(song.video_clips[0].path) if song.video_clips else None
         return SongDraft(
             name=song.name,
             setlist_number=float(song.setlist_number),
@@ -1345,6 +1360,7 @@ class MainWindow(QMainWindow):
             start_timecode=song.start_timecode or "01:00:00:00",
             fps=float(song.fps or 30.0),
             audio_path=audio_path if audio_path is not None else None,
+            video_path=video_path if video_path is not None else None,
             song_id=song.id,
         )
 
@@ -1364,16 +1380,53 @@ class MainWindow(QMainWindow):
                     role="main",
                 )
             ]
-        elif draft.audio_path is None:
-            # Explicit clear from Browse cell × — drop tracks only when the
-            # dialog started with a path that the user cleared, or Add Song
-            # with no file. Keep existing tracks when draft.audio_path was
-            # never set on Edit of a song that already has audio and user
-            # didn't touch Browse... Actually Browse cell always has the
-            # path or None from dialog. Clearing means None → clear tracks.
+        else:
             song.audio_tracks = []
+        if draft.video_path is not None and Path(draft.video_path).is_file():
+            self._attach_video_source_to_song(song, Path(draft.video_path), replace_clips=True)
+        else:
+            song.video_clips = []
         if song is self.current_song:
             self.engine.set_song_timebase(song.start_timecode, song.fps)
+
+    def _attach_video_source_to_song(
+        self,
+        song: Song,
+        path: Path,
+        *,
+        replace_clips: bool = False,
+    ) -> VideoClip | None:
+        """Attach a video/still file as the song's primary timeline media."""
+        try:
+            info = probe_media(path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Unable to Load Media", str(exc))
+            return None
+        is_still = info.media_kind == "still"
+        if is_still:
+            duration = DEFAULT_STILL_CLIP_DURATION_SECONDS
+            source_duration = 0.0
+        else:
+            source_duration = info.duration_seconds
+            duration = default_video_clip_duration(
+                source_duration,
+                max(song.duration_seconds, source_duration),
+                0.0,
+            )
+        clip = VideoClip.create(
+            name=path.stem,
+            path=path,
+            start_seconds=0.0,
+            duration_seconds=duration,
+            media_kind="still" if is_still else "video",
+            source_duration_seconds=source_duration,
+        )
+        if replace_clips:
+            song.video_clips = [clip]
+        else:
+            song.add_video_clip(clip)
+        song.duration_seconds = max(float(song.duration_seconds), clip.end_seconds)
+        return clip
 
     def _next_setlist_number(self) -> float:
         if not self.project.songs:
@@ -1849,7 +1902,7 @@ class MainWindow(QMainWindow):
             3000,
         )
 
-    def _add_songs_from_audio_paths(self, paths: list) -> None:
+    def _add_songs_from_media_paths(self, paths: list) -> None:
         """Drop onto Setlist → confirm number/name/MA/TC/FPS, then add."""
         drafts: list[SongDraft] = []
         next_num = self._next_setlist_number()
@@ -1857,19 +1910,33 @@ class MainWindow(QMainWindow):
             path = Path(raw)
             if not path.is_file():
                 continue
-            drafts.append(
-                SongDraft(
-                    name=path.stem,
-                    setlist_number=next_num,
-                    ma_export_name=suggest_ma_export_name(path.stem),
-                    start_timecode=self._default_start_timecode(),
-                    fps=self._default_fps(),
-                    audio_path=path,
+            suf = path.suffix.lower()
+            if suf in AUDIO_SUFFIXES:
+                drafts.append(
+                    SongDraft(
+                        name=path.stem,
+                        setlist_number=next_num,
+                        ma_export_name=suggest_ma_export_name(path.stem),
+                        start_timecode=self._default_start_timecode(),
+                        fps=self._default_fps(),
+                        audio_path=path,
+                    )
                 )
-            )
-            next_num += 1.0
+                next_num += 1.0
+            elif suf in VIDEO_SUFFIXES:
+                drafts.append(
+                    SongDraft(
+                        name=path.stem,
+                        setlist_number=next_num,
+                        ma_export_name=suggest_ma_export_name(path.stem),
+                        start_timecode=self._default_start_timecode(),
+                        fps=self._default_fps(),
+                        video_path=path,
+                    )
+                )
+                next_num += 1.0
         if not drafts:
-            self.status.showMessage("No audio files to add", 2500)
+            self.status.showMessage("No audio or video files to add", 2500)
             return
         title = "Import Song" if len(drafts) == 1 else f"Batch Import Songs ({len(drafts)})"
         dialog = SongEditDialog(drafts, title=title, parent=self)
@@ -1995,7 +2062,7 @@ class MainWindow(QMainWindow):
         video = video_paths_from_mime(mime)
         if audio:
             accept_file_drop(event)
-            self._add_songs_from_audio_paths(audio)
+            self._add_songs_from_media_paths(audio)
         elif video:
             accept_file_drop(event)
             self._add_video_clips_from_paths(video, self.engine.position)
@@ -2055,9 +2122,10 @@ class MainWindow(QMainWindow):
                 mime = event.mimeData()
                 audio_paths = audio_paths_from_mime(mime)
                 video_paths = video_paths_from_mime(mime)
-                if audio_paths and watched is panel:
+                setlist_paths = setlist_import_paths_from_mime(mime)
+                if setlist_paths and watched is panel:
                     accept_file_drop(event)
-                    self._add_songs_from_audio_paths(audio_paths)
+                    self._add_songs_from_media_paths(setlist_paths)
                     return True
                 if video_paths and watched in {view_stack, timeline_center}:
                     accept_file_drop(event)
@@ -2069,10 +2137,10 @@ class MainWindow(QMainWindow):
                     return True
                 if audio_paths and watched is view_stack:
                     accept_file_drop(event)
-                    self._add_songs_from_audio_paths(audio_paths)
+                    self._add_songs_from_media_paths(audio_paths)
                     return True
                 if watched is panel:
-                    self.status.showMessage(rejected_audio_drop_reason(mime), 5000)
+                    self.status.showMessage(rejected_setlist_drop_reason(mime), 5000)
                 else:
                     self.status.showMessage(rejected_file_drop_reason(mime), 5000)
                 event.ignore()
@@ -2184,6 +2252,9 @@ class MainWindow(QMainWindow):
 
     def _delete_current_selection(self) -> None:
         if _text_input_has_focus():
+            return
+        if _song_list_has_keyboard_focus(self.song_list):
+            self._delete_song()
             return
         clip_ids = self.timeline.selected_video_clip_ids()
         if clip_ids:

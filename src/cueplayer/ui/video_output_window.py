@@ -13,7 +13,7 @@ so no extra chrome is ever drawn inside the capture surface.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QCloseEvent, QHideEvent, QResizeEvent, QShowEvent
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
@@ -130,22 +130,60 @@ class CleanVideoOutputWindow(QWidget):
         self._aspect_locked = bool(settings.aspect_locked)
         self.apply_preset(settings.width, settings.height)
 
-    def _enforce_aspect_ratio(self) -> None:
+    def _enforce_aspect_ratio(self, event: QResizeEvent | None = None) -> None:
         if self._adjusting:
             return
+        old_size = event.oldSize() if event is not None else QSize()
+        if not old_size.isValid():
+            width = max(1, self.width())
+            target_height = max(1, round(width * _ASPECT_H / _ASPECT_W))
+            if target_height != self.height():
+                self._adjusting = True
+                try:
+                    self.resize(width, target_height)
+                finally:
+                    self._adjusting = False
+            return
+
+        new_size = self.size()
+        dw = new_size.width() - old_size.width()
+        dh = new_size.height() - old_size.height()
+        if dw == 0 and dh == 0:
+            return
+
+        old_geo = self.frameGeometry()
+        if abs(dw) >= abs(dh):
+            target_w = max(1, new_size.width())
+            target_h = max(1, round(target_w * _ASPECT_H / _ASPECT_W))
+        else:
+            target_h = max(1, new_size.height())
+            target_w = max(1, round(target_h * _ASPECT_W / _ASPECT_H))
+
+        if target_w == new_size.width() and target_h == new_size.height():
+            return
+
         self._adjusting = True
         try:
-            width = max(1, self.width())
-            target_height = round(width * _ASPECT_H / _ASPECT_W)
-            if target_height != self.height():
-                self.resize(width, target_height)
+            geo = self.frameGeometry()
+            # When the user drags a top/left edge, Qt moves the window origin;
+            # keep the opposite corner fixed so the resize feels natural.
+            anchor_bottom_right = geo.topLeft() != old_geo.topLeft()
+            if anchor_bottom_right:
+                self.setGeometry(
+                    geo.right() - target_w + 1,
+                    geo.bottom() - target_h + 1,
+                    target_w,
+                    target_h,
+                )
+            else:
+                self.resize(target_w, target_h)
         finally:
             self._adjusting = False
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
         if self._aspect_locked:
-            self._enforce_aspect_ratio()
+            self._enforce_aspect_ratio(event)
         self.settings_changed.emit()
 
     def current_decode_quality(self) -> str:

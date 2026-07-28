@@ -164,6 +164,8 @@ class TimelineWidget(QWidget):
         self._box_select_mode = False
         self._setup_mode = False
         self._playing = False
+        self._last_play_repaint_ns = 0
+        self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
         self._box_click_seek: float | None = None
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setInterval(33)
@@ -956,7 +958,9 @@ class TimelineWidget(QWidget):
 
     def set_position(self, seconds: float) -> None:
         self._position = seconds
+        scroll_moved = False
         if self._auto_scroll and not self._scrubbing:
+            prev_scroll = self._scroll_x
             if self._view_pinned:
                 # Keep a click-seek / scrub pin until the playhead leaves the
                 # visible waveform; then auto-follow again (no wheel needed).
@@ -965,7 +969,14 @@ class TimelineWidget(QWidget):
                     self._follow_playhead()
             else:
                 self._follow_playhead()
-        self.update()
+            scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
+        if self._playing and not self._scrubbing:
+            now = monotonic_ns()
+            if scroll_moved or now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
+                self._last_play_repaint_ns = now
+                self.update()
+        else:
+            self.update()
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
         lo = self._min_pixels_per_second()
@@ -2036,6 +2047,10 @@ class TimelineWidget(QWidget):
 
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
+            return
+        # Per-pixel envelope loops are expensive; skip while playing so video
+        # decode + preview paint stay responsive on the UI thread.
+        if self._playing and not self._scrubbing:
             return
         x_left = int(rect.left())
         x_right = int(rect.right())

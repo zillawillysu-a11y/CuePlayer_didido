@@ -25,6 +25,7 @@ from cueplayer.domain.models import (
 from cueplayer.playback.devices import (
     OutputDeviceInfo,
     asio_available,
+    device_name_score,
     find_output_device,
     list_output_devices,
     list_output_devices_for_picker,
@@ -244,25 +245,31 @@ class AudioTimecodeDialog(QDialog):
         if not ltc:
             ltc = default_ltc_channels_for_device(max_ch)
         self.ltc_channels.setEditText(_channels_to_ui(ltc) or ("3" if max_ch >= 3 else "1"))
+        self._combo_hostapi = resolve_output_hostapi(str(settings.output_hostapi or ""))
+
+    def _current_hostapi(self) -> str:
+        return resolve_output_hostapi(str(self.hostapi_combo.currentData() or ""))
 
     def _reload_devices(self) -> None:
-        api = str(self.hostapi_combo.currentData() or "")
-        prev_idx = self.device_combo.currentData()
+        api = self._current_hostapi()
+        api_changed = api != getattr(self, "_combo_hostapi", None)
+        prev_idx = None if api_changed else self.device_combo.currentData()
+        prev_chosen = None if api_changed else self._chosen_device()
+        target_name = (prev_chosen.name if prev_chosen else "") or self._result.output_device_name or ""
+        self._combo_hostapi = api
         self._devices = list_output_devices_for_picker(api)
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         self.device_combo.addItem("System default", None)
         select = 0
+        best_score = -1
         for i, dev in enumerate(self._devices):
             self.device_combo.addItem(dev.label, dev.index)
-            if prev_idx is not None and dev.index == prev_idx:
+            score = device_name_score(target_name, dev.name) if target_name else 0
+            if score > best_score:
+                best_score = score
                 select = i + 1
-            elif self._result.output_device_index is not None and dev.index == self._result.output_device_index:
-                select = i + 1
-            elif self._result.output_device_name and (
-                self._result.output_device_name == dev.name
-                or self._result.output_device_name.lower() in dev.name.lower()
-            ):
+            elif not api_changed and prev_idx is not None and dev.index == prev_idx and best_score <= 0:
                 select = i + 1
         self.device_combo.setCurrentIndex(select)
         self.device_combo.blockSignals(False)
@@ -281,17 +288,22 @@ class AudioTimecodeDialog(QDialog):
         chosen = self._chosen_device()
         if chosen is None:
             return 2
+        api = self._current_hostapi()
         need = 3 if self.ltc_enable.isChecked() else 1
         endpoint = resolve_output_endpoint_for_channels(
             preferred_name=chosen.name,
             min_channels=need,
             samplerate=48000.0,
             raw_devices=self._all_devices,
+            hostapi=api,
         )
         if endpoint is not None:
             return endpoint.max_output_channels
         return upgrade_device_for_channels(
-            chosen, min_channels=need, raw_devices=self._all_devices
+            chosen,
+            min_channels=need,
+            raw_devices=self._all_devices,
+            hostapi=api,
         ).max_output_channels
 
     def _on_ltc_source_changed(self) -> None:

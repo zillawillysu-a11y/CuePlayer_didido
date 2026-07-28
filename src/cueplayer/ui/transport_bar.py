@@ -207,7 +207,9 @@ class BottomTransportBar(QWidget):
         self.pause_button.set_active(playing)
 
     def set_times(self, position: float, duration: float) -> None:
-        self.time_label.setText(f"{format_time(position)} / {format_time(duration)}")
+        text = f"{format_time(position)} / {format_time(duration)}"
+        if text != self.time_label.text():
+            self.time_label.setText(text)
 
     def set_loop_status(
         self,
