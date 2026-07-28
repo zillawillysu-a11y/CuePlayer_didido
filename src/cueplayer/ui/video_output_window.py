@@ -16,7 +16,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QCloseEvent, QHideEvent, QResizeEvent, QShowEvent
 from PySide6.QtGui import QActionGroup
-from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QInputDialog, QMenu, QVBoxLayout, QWidget
 
 from cueplayer.domain.models import CleanVideoOutputSettings, VIDEO_DECODE_QUALITY_MAX_HEIGHT
 from cueplayer.ui.video_preview import VideoPreviewWidget
@@ -66,6 +66,8 @@ class CleanVideoOutputWindow(QWidget):
     # current_settings()).
     settings_changed = Signal()
     decode_quality_changed = Signal(str)  # emitted when user picks a quality in this menu
+    ndi_toggled = Signal(bool)
+    ndi_name_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -163,6 +165,12 @@ class CleanVideoOutputWindow(QWidget):
 
     def ndi_enabled(self) -> bool:
         return bool(self._ndi_enabled)
+
+    def set_ndi_name(self, name: str) -> None:
+        self._ndi_name = (name or "").strip() or "CuePlayer"
+
+    def ndi_name(self) -> str:
+        return str(self._ndi_name or "CuePlayer")
 
     def _schedule_settings_changed(self) -> None:
         self._settings_debounce.start()
@@ -279,6 +287,14 @@ class CleanVideoOutputWindow(QWidget):
             quality_actions[qa] = q_key
 
         menu.addSeparator()
+        ndi_action = menu.addAction("NDI Output")
+        ndi_action.setCheckable(True)
+        ndi_action.setChecked(bool(self._ndi_enabled))
+        ndi_action.setToolTip("Send this Clean Output picture over NDI (Depence / etc.)")
+        ndi_name_action = menu.addAction(f"NDI Name: {self._ndi_name}…")
+        ndi_name_action.setToolTip("Custom NDI source name so Depence does not pick the wrong feed")
+
+        menu.addSeparator()
         fullscreen_action = menu.addAction("Exit Fullscreen" if self.isFullScreen() else "Fullscreen")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is fit_action:
@@ -294,11 +310,33 @@ class CleanVideoOutputWindow(QWidget):
             quality = quality_actions[chosen]
             self._decode_quality = quality
             self.decode_quality_changed.emit(quality)
+        elif chosen is ndi_action:
+            enabled = bool(ndi_action.isChecked())
+            self._ndi_enabled = enabled
+            self.ndi_toggled.emit(enabled)
+        elif chosen is ndi_name_action:
+            self._prompt_ndi_name()
         elif chosen is fullscreen_action:
             if self.isFullScreen():
                 self.showNormal()
             else:
                 self.showFullScreen()
+
+    def _prompt_ndi_name(self) -> None:
+        text, ok = QInputDialog.getText(
+            self,
+            "NDI Source Name",
+            "Name shown in Depence / NDI receivers:",
+            text=self._ndi_name,
+        )
+        if not ok:
+            return
+        name = (text or "").strip() or "CuePlayer"
+        if name == self._ndi_name:
+            return
+        self._ndi_name = name
+        self.ndi_name_changed.emit(name)
+        self._schedule_settings_changed()
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)

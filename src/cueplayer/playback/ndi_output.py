@@ -15,6 +15,11 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Stable NDI canvas (letterboxed). Changing resolution mid-stream confuses
+# receivers like Depence; Clean Output may be smaller — we scale into this.
+_DEFAULT_W = 1920
+_DEFAULT_H = 1080
+
 
 def ndi_available() -> bool:
     try:
@@ -35,13 +40,33 @@ def ndi_status() -> str:
     )
 
 
-def _rgb_to_rgbx_bytes(rgb: np.ndarray) -> np.ndarray:
-    """Pack HxWx3 RGB24 into contiguous RGBX (A=255) uint8 flat buffer for NDI."""
+def _letterbox_rgb(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    """Nearest-neighbor fit of HxWx3 into out_h x out_w with black bars."""
+    out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    h, w = int(rgb.shape[0]), int(rgb.shape[1])
+    if h <= 0 or w <= 0:
+        return out
+    scale = min(out_w / w, out_h / h)
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    # Nearest-neighbor resize without extra deps.
+    y_idx = (np.arange(nh) * h / nh).astype(np.int32)
+    x_idx = (np.arange(nw) * w / nw).astype(np.int32)
+    y_idx = np.clip(y_idx, 0, h - 1)
+    x_idx = np.clip(x_idx, 0, w - 1)
+    scaled = rgb[y_idx][:, x_idx]
+    x0 = (out_w - nw) // 2
+    y0 = (out_h - nh) // 2
+    out[y0 : y0 + nh, x0 : x0 + nw] = scaled
+    return out
+
+
+def _pack_rgbx_into(dst: np.ndarray, rgb: np.ndarray) -> None:
+    """Fill flat RGBX uint8 buffer (len = H*W*4) from HxWx3 RGB."""
     h, w, _ = rgb.shape
-    out = np.empty((h, w, 4), dtype=np.uint8)
-    out[:, :, :3] = rgb[:, :, :3]
-    out[:, :, 3] = 255
-    return np.ascontiguousarray(out).reshape(-1)
+    view = dst.reshape(h, w, 4)
+    view[:, :, :3] = rgb[:, :, :3]
+    view[:, :, 3] = 255
 
 
 class NdiVideoOutput:
@@ -53,9 +78,14 @@ class NdiVideoOutput:
         self._name = "CuePlayer"
         self._sender: Any = None
         self._frame: Any = None
-        self._width = 0
-        self._height = 0
+        self._width = _DEFAULT_W
+        self._height = _DEFAULT_H
         self._last_error = ""
+        # Persistent buffers for async-safe sending (NDI may read until next call).
+        self._buf_a: np.ndarray | None = None
+        self._buf_b: np.ndarray | None = None
+        self._use_a = True
+        self._send_failures = 0
 
     @property
     def enabled(self) -> bool:
@@ -63,14 +93,31 @@ class NdiVideoOutput:
             return self._enabled and self._sender is not None
 
     @property
+    def name(self) -> str:
+        with self._lock:
+            return self._name
+
+    @property
     def last_error(self) -> str:
         with self._lock:
             return self._last_error
 
-    def configure(self, *, enabled: bool, name: str = "CuePlayer") -> str | None:
+    def configure(
+        self,
+        *,
+        enabled: bool,
+        name: str = "CuePlayer",
+        width: int = _DEFAULT_W,
+        height: int = _DEFAULT_H,
+    ) -> str | None:
         with self._lock:
             self._enabled = bool(enabled)
             self._name = (name or "CuePlayer").strip() or "CuePlayer"
+            self._width = max(16, int(width) or _DEFAULT_W)
+            self._height = max(16, int(height) or _DEFAULT_H)
+            # Keep 16:9-ish even sizes for NDI.
+            self._width -= self._width % 2
+            self._height -= self._height % 2
             self._close_locked()
             if not self._enabled:
                 self._last_error = ""
@@ -84,64 +131,75 @@ class NdiVideoOutput:
                 from cyndilib.video_frame import VideoSendFrame
                 from cyndilib.wrapper.ndi_structs import FourCC
 
-                # clock_video=False: CuePlayer already paces frames from the
-                # audio sample clock; do not let NDI add a second rate limiter.
+                # clock_video=False: CuePlayer already paces from the audio clock.
                 sender = Sender(self._name, clock_video=False)
                 frame = VideoSendFrame()
-                frame.set_resolution(1920, 1080)
-                # cyndilib expects a single Fraction, not (num, den) args.
+                frame.set_resolution(self._width, self._height)
                 frame.set_frame_rate(Fraction(30, 1))
                 frame.set_fourcc(FourCC.RGBX)
                 sender.set_video_frame(frame)
                 sender.open()
+                nbytes = self._width * self._height * 4
+                self._buf_a = np.zeros(nbytes, dtype=np.uint8)
+                self._buf_b = np.zeros(nbytes, dtype=np.uint8)
+                self._use_a = True
                 self._sender = sender
                 self._frame = frame
-                self._width = 1920
-                self._height = 1080
                 self._last_error = ""
+                self._send_failures = 0
                 return None
             except Exception as exc:  # noqa: BLE001
                 self._enabled = False
                 self._sender = None
                 self._frame = None
+                self._buf_a = None
+                self._buf_b = None
                 self._last_error = f"NDI open failed: {exc}"
                 log.warning("NDI configure failed: %s", exc)
                 return self._last_error
 
     def send_frame(self, frame: np.ndarray | None) -> None:
-        if frame is None:
-            return
         with self._lock:
-            if not self._enabled or self._sender is None or self._frame is None:
+            if not self._enabled or self._sender is None:
                 return
             try:
-                rgb = np.asarray(frame)
-                if rgb.ndim != 3 or rgb.shape[2] < 3:
+                if frame is None:
+                    canvas = np.zeros((self._height, self._width, 3), dtype=np.uint8)
+                else:
+                    rgb = np.asarray(frame)
+                    if rgb.ndim != 3 or rgb.shape[2] < 3:
+                        return
+                    if rgb.dtype != np.uint8:
+                        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+                    if rgb.shape[0] == self._height and rgb.shape[1] == self._width:
+                        canvas = rgb[:, :, :3]
+                    else:
+                        canvas = _letterbox_rgb(rgb[:, :, :3], self._width, self._height)
+
+                # Double-buffer so async NDI can still read the previous frame.
+                dst = self._buf_a if self._use_a else self._buf_b
+                if dst is None or dst.size != self._width * self._height * 4:
                     return
-                h, w = int(rgb.shape[0]), int(rgb.shape[1])
-                if h <= 0 or w <= 0:
-                    return
-                if rgb.dtype != np.uint8:
-                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-                if (w, h) != (self._width, self._height):
-                    # Resolution must be set before the next write.
-                    self._frame.set_resolution(w, h)
-                    self._width = w
-                    self._height = h
-                payload = _rgb_to_rgbx_bytes(rgb)
-                write_async = getattr(self._sender, "write_video_async", None)
-                if callable(write_async):
-                    write_async(payload)
-                    return
+                _pack_rgbx_into(dst, canvas)
+                self._use_a = not self._use_a
+
+                # Prefer sync write — copies into NDI before return.
                 write = getattr(self._sender, "write_video", None)
                 if callable(write):
-                    write(payload)
+                    write(dst)
                     return
-                # Older fallback path.
-                self._frame.write_data(payload)
-                self._sender.send_video_async()
+                write_async = getattr(self._sender, "write_video_async", None)
+                if callable(write_async):
+                    write_async(dst)
+                    return
+                if self._frame is not None:
+                    self._frame.write_data(dst)
+                    self._sender.send_video()
             except Exception as exc:  # noqa: BLE001
-                log.debug("NDI send_frame failed: %s", exc)
+                self._send_failures += 1
+                if self._send_failures <= 3 or self._send_failures % 120 == 0:
+                    log.warning("NDI send_frame failed: %s", exc)
+                    self._last_error = f"NDI send failed: {exc}"
 
     def close(self) -> None:
         with self._lock:
@@ -152,8 +210,8 @@ class NdiVideoOutput:
         sender = self._sender
         self._sender = None
         self._frame = None
-        self._width = 0
-        self._height = 0
+        self._buf_a = None
+        self._buf_b = None
         if sender is None:
             return
         try:

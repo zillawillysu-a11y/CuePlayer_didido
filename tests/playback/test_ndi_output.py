@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_available, ndi_status
+from cueplayer.playback.ndi_output import (
+    NdiVideoOutput,
+    _letterbox_rgb,
+    _pack_rgbx_into,
+    ndi_available,
+    ndi_status,
+)
 
 
 def test_ndi_status_string() -> None:
@@ -21,14 +27,14 @@ def test_ndi_configure_disabled_is_noop() -> None:
     out.close()
 
 
-def test_rgb_to_rgbx_bytes() -> None:
-    from cueplayer.playback.ndi_output import _rgb_to_rgbx_bytes
-
-    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+def test_letterbox_and_pack_rgbx() -> None:
+    rgb = np.zeros((10, 20, 3), dtype=np.uint8)
     rgb[0, 0] = (10, 20, 30)
-    flat = _rgb_to_rgbx_bytes(rgb)
-    assert flat.shape == (2 * 2 * 4,)
-    assert list(flat[0:4]) == [10, 20, 30, 255]
+    canvas = _letterbox_rgb(rgb, 40, 20)
+    assert canvas.shape == (20, 40, 3)
+    flat = np.zeros(20 * 40 * 4, dtype=np.uint8)
+    _pack_rgbx_into(flat, canvas)
+    assert flat.reshape(20, 40, 4)[0, 10, 3] == 255  # alpha pad
 
 
 def test_ndi_configure_without_library_returns_error() -> None:

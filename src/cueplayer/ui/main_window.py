@@ -924,6 +924,8 @@ class MainWindow(QMainWindow):
         self.clean_output_window.visibility_changed.connect(self._persist_clean_output_was_open)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
+        self.clean_output_window.ndi_toggled.connect(self._toggle_ndi_output)
+        self.clean_output_window.ndi_name_changed.connect(self._on_ndi_name_changed)
         self._apply_ndi_from_project(show_errors=False)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
         self.monitor.selection_changed.connect(self._on_monitor_selection)
@@ -1231,10 +1233,14 @@ class MainWindow(QMainWindow):
         )
         self._ndi_output_action.setToolTip(
             "Send the same Clean Output frames over NDI (Depence / other receivers). "
-            "Requires cyndilib + NDI Runtime."
+            "Requires cyndilib + NDI Runtime. Right-click Clean Output to rename."
         )
         self._ndi_output_action.triggered.connect(self._toggle_ndi_output)
         tools_menu.addAction(self._ndi_output_action)
+        act_ndi_name = QAction("NDI Source &Name…", self)
+        act_ndi_name.setToolTip("Custom NDI name so Depence does not pick the wrong feed")
+        act_ndi_name.triggered.connect(self._prompt_ndi_name)
+        tools_menu.addAction(act_ndi_name)
         self._build_video_decode_quality_menu(tools_menu)
 
     def _autosave_enabled(self) -> bool:
@@ -4198,11 +4204,23 @@ class MainWindow(QMainWindow):
 
     def _apply_ndi_from_project(self, *, show_errors: bool = True) -> str | None:
         settings = self.project.clean_video_output
+        # Prefer live Clean Output pixel size when the window exists.
+        width, height = int(settings.width), int(settings.height)
+        if hasattr(self, "clean_output_window"):
+            try:
+                width, height = self.clean_output_window.content_size()
+            except Exception:  # noqa: BLE001
+                pass
         err = self._ndi_output.configure(
             enabled=bool(settings.ndi_enabled),
             name=str(settings.ndi_name or "CuePlayer"),
+            width=width,
+            height=height,
         )
         self.clean_output_window.set_ndi_enabled(bool(settings.ndi_enabled))
+        self.clean_output_window.set_ndi_name(str(settings.ndi_name or "CuePlayer"))
+        if hasattr(self, "_ndi_output_action"):
+            self._ndi_output_action.setChecked(bool(settings.ndi_enabled) and err is None)
         self._sync_video_output_active()
         if err and show_errors:
             QMessageBox.warning(self, "NDI Video Output", err)
@@ -4215,15 +4233,43 @@ class MainWindow(QMainWindow):
         if err:
             self.project.clean_video_output.ndi_enabled = False
             self.clean_output_window.set_ndi_enabled(False)
-            self._ndi_output_action.setChecked(False)
+            if hasattr(self, "_ndi_output_action"):
+                self._ndi_output_action.setChecked(False)
             self._apply_ndi_from_project(show_errors=False)
             return
         if checked:
             self.status.showMessage(
-                f"NDI sending as “{self.project.clean_video_output.ndi_name or 'CuePlayer'}”",
-                4000,
+                f"NDI sending as “{self.project.clean_video_output.ndi_name or 'CuePlayer'}” "
+                f"— play a video clip to see picture",
+                5000,
             )
         self._mark_dirty()
+
+    def _on_ndi_name_changed(self, name: str) -> None:
+        name = (name or "").strip() or "CuePlayer"
+        self.project.clean_video_output.ndi_name = name
+        self.clean_output_window.set_ndi_name(name)
+        # Re-open sender under the new name when NDI is already on.
+        if self.project.clean_video_output.ndi_enabled:
+            err = self._apply_ndi_from_project(show_errors=True)
+            if err:
+                return
+            self.status.showMessage(f"NDI renamed to “{name}”", 3500)
+        self._mark_dirty()
+
+    def _prompt_ndi_name(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        current = str(self.project.clean_video_output.ndi_name or "CuePlayer")
+        text, ok = QInputDialog.getText(
+            self,
+            "NDI Source Name",
+            "Name shown in Depence / NDI receivers:",
+            text=current,
+        )
+        if not ok:
+            return
+        self._on_ndi_name_changed((text or "").strip() or "CuePlayer")
 
     def _on_video_clips_changed(self) -> None:
         self.video_sync.refresh()
