@@ -234,14 +234,18 @@ class SetlistWidget(QTableWidget):
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setVisible(True)
         self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(0, 52)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(3, 56)
-        self.horizontalHeader().setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
+        header = self.horizontalHeader()
+        # Drag column edges to resize (Excel-like); Song column stretches by default.
+        header.setSectionsMovable(False)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(36)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.setColumnWidth(self.COL_NUM, 52)
+        self.setColumnWidth(self.COL_TITLE, 140)
+        self.setColumnWidth(self.COL_EN, 110)
+        self.setColumnWidth(self.COL_BPM, 56)
         self.setColumnWidth(self.COL_LTC, 68)
+        header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
             ltc_header.setToolTip(
@@ -251,7 +255,8 @@ class SetlistWidget(QTableWidget):
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
         self.setToolTip(
-            "Double-click #/Name/BPM to edit; right-click for categories and full editor; "
+            "Double-click #/Name/BPM to edit; drag column edges to resize; "
+            "right-click for categories and full editor; "
             "drag to reorder or drop songs onto a folder; drop audio/video to add songs; "
             "Ctrl/Shift to multi-select"
         )
@@ -1121,10 +1126,10 @@ class MainWindow(QMainWindow):
         act_export.setShortcut(QKeySequence("Ctrl+E"))
         act_export.triggered.connect(self._open_ma_patch_page)
         menu.addAction(act_export)
-        act_setlist_sheet = QAction("Setlist &Sheet…", self)
+        act_setlist_sheet = QAction("Set List &Sheet…", self)
         act_setlist_sheet.setShortcut(QKeySequence("Ctrl+Shift+S"))
         act_setlist_sheet.setToolTip(
-            "Spreadsheet of song order, names, and Timecode Generator starts"
+            "Spreadsheet of song order, names, Timecode Generator starts, and notes"
         )
         act_setlist_sheet.triggered.connect(self._open_setlist_sheet_page)
         menu.addAction(act_setlist_sheet)
@@ -3466,7 +3471,7 @@ class MainWindow(QMainWindow):
             self.setlist_sheet_page.set_project(self.project)
             self.view_stack.setCurrentIndex(2)
             self.status.showMessage(
-                "Setlist sheet: Copy order / names / Timecode for MA3",
+                "Set List Sheet: Copy order / names / Timecode / notes for MA3",
                 2500,
             )
         else:

@@ -1,4 +1,4 @@
-"""Excel-like Setlist sheet — order / names / Timecode Generator starts for MA paste."""
+"""Excel-like Set List Sheet — order / names / Timecode / Note for MA paste."""
 
 from __future__ import annotations
 
@@ -21,14 +21,19 @@ from PySide6.QtWidgets import (
 
 from cueplayer.domain.models import Project, Song
 from cueplayer.exporters.common import sanitize_ma_name
-from cueplayer.ui.song_edit_dialog import format_setlist_number, normalize_timecode
+from cueplayer.ui.song_edit_dialog import (
+    format_setlist_number,
+    normalize_timecode,
+    parse_setlist_number,
+)
 
 _COL_ORDER = 0
 _COL_NAME = 1
 _COL_EN = 2
 _COL_TC = 3
 _COL_BPM = 4
-_COL_COUNT = 5
+_COL_NOTE = 5
+_COL_COUNT = 6
 
 _HEADERS = (
     "曲序",
@@ -36,6 +41,7 @@ _HEADERS = (
     "英文名",
     "Timecode Generator",
     "BPM",
+    "Note",
 )
 
 _ROLE_KIND = int(Qt.ItemDataRole.UserRole) + 1
@@ -55,6 +61,7 @@ class SetlistSheetRow:
     english_name: str = ""
     start_timecode: str = ""
     bpm: str = ""
+    note: str = ""
 
     @property
     def is_folder(self) -> bool:
@@ -107,6 +114,7 @@ def _song_row(song: Song) -> SetlistSheetRow:
         english_name=(song.ma_export_name or "").strip(),
         start_timecode=song.start_timecode,
         bpm=format_sheet_bpm(song.bpm),
+        note=(song.note or "").strip(),
     )
 
 
@@ -116,8 +124,7 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
         lines.append("\t".join(_HEADERS))
     for row in rows:
         if row.is_folder:
-            # Folder separator — first column empty, name in 曲名 for Excel readability.
-            lines.append("\t".join(("", f"▸ {row.name}", "", "", "")))
+            lines.append("\t".join(("", f"▸ {row.name}", "", "", "", "")))
             continue
         lines.append(
             "\t".join(
@@ -127,6 +134,7 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
                     row.english_name,
                     row.start_timecode,
                     row.bpm,
+                    row.note,
                 )
             )
         )
@@ -134,9 +142,9 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
 
 
 class SetlistSheetPage(QWidget):
-    """Tabular setlist for copying song order / names / TC starts into MA3."""
+    """Tabular Set List Sheet for copying song order / names / TC / notes into MA3."""
 
-    song_field_changed = Signal()  # name / EN / TC / BPM edited
+    song_field_changed = Signal()  # order / name / EN / TC / BPM / Note edited
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -148,12 +156,12 @@ class SetlistSheetPage(QWidget):
         root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(10)
 
-        title = QLabel("Setlist · Sheet")
+        title = QLabel("Set List Sheet")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
         hint = QLabel(
-            "Current setlist as a spreadsheet: order, Chinese name, English/MA name, "
-            "Timecode Generator start, BPM. Folders appear as section rows. "
-            "Drag column edges to resize. Copy All / Ctrl+C for Excel / grandMA3."
+            "Spreadsheet of the current show: 曲序, 曲名, 英文名, Timecode Generator, "
+            "BPM, Note. Folders appear as section rows. Drag column edges to resize. "
+            "Double-click cells to edit. Copy All / Ctrl+C for Excel / grandMA3."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -188,15 +196,16 @@ class SetlistSheetPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
-        # User-draggable column widths (Excel-like).
         header.setSectionsMovable(False)
         header.setStretchLastSection(True)
+        header.setMinimumSectionSize(40)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.resizeSection(_COL_ORDER, 64)
-        header.resizeSection(_COL_NAME, 220)
-        header.resizeSection(_COL_EN, 220)
+        header.resizeSection(_COL_NAME, 200)
+        header.resizeSection(_COL_EN, 180)
         header.resizeSection(_COL_TC, 150)
-        header.resizeSection(_COL_BPM, 72)
+        header.resizeSection(_COL_BPM, 64)
+        header.resizeSection(_COL_NOTE, 220)
         self.table.setStyleSheet(
             "QTableWidget {"
             "  gridline-color: #3f3f46;"
@@ -262,9 +271,14 @@ class SetlistSheetPage(QWidget):
     def _fill_song_row(self, r: int, row: SetlistSheetRow) -> None:
         order_item = QTableWidgetItem(row.order)
         order_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        order_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        order_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
         order_item.setData(Qt.ItemDataRole.UserRole, row.song_id)
         order_item.setData(_ROLE_KIND, "song")
+        order_item.setToolTip("Setlist number (0.5 supported) — double-click to edit")
 
         name_item = QTableWidgetItem(row.name)
         name_item.setFlags(
@@ -298,11 +312,20 @@ class SetlistSheetPage(QWidget):
             | Qt.ItemFlag.ItemIsEditable
         )
 
+        note_item = QTableWidgetItem(row.note)
+        note_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        note_item.setToolTip("Free-text production note (not written into MA XML)")
+
         self.table.setItem(r, _COL_ORDER, order_item)
         self.table.setItem(r, _COL_NAME, name_item)
         self.table.setItem(r, _COL_EN, en_item)
         self.table.setItem(r, _COL_TC, tc_item)
         self.table.setItem(r, _COL_BPM, bpm_item)
+        self.table.setItem(r, _COL_NOTE, note_item)
 
     def _song_at_row(self, row: int) -> Song | None:
         if self._project is None or row < 0 or row >= len(self._song_ids):
@@ -321,7 +344,27 @@ class SetlistSheetPage(QWidget):
         col = item.column()
         text = item.text()
         changed = False
-        if col == _COL_NAME:
+        if col == _COL_ORDER:
+            parsed = parse_setlist_number(text)
+            if parsed is None:
+                QMessageBox.warning(
+                    self,
+                    "Invalid 曲序",
+                    "Enter a number such as 1, 01, or 0.5.",
+                )
+                self._suppress = True
+                item.setText(format_sheet_order(song.setlist_number))
+                self._suppress = False
+                return
+            if song.setlist_number != parsed:
+                song.setlist_number = parsed
+                changed = True
+            display = format_sheet_order(song.setlist_number)
+            if item.text() != display:
+                self._suppress = True
+                item.setText(display)
+                self._suppress = False
+        elif col == _COL_NAME:
             name = text.strip() or "Untitled Song"
             if song.name != name:
                 song.name = name
@@ -401,6 +444,15 @@ class SetlistSheetPage(QWidget):
                     self._suppress = True
                     item.setText(display)
                     self._suppress = False
+        elif col == _COL_NOTE:
+            note = text.strip()
+            if (song.note or "") != note:
+                song.note = note
+                changed = True
+            if item.text() != note:
+                self._suppress = True
+                item.setText(note)
+                self._suppress = False
         if changed:
             self.song_field_changed.emit()
 
@@ -428,7 +480,6 @@ class SetlistSheetPage(QWidget):
         lines.append("\t".join(header_slice))
         for row in range(top, bottom + 1):
             cells: list[str] = []
-            # Folder rows use a column span — expose the label in the first selected col.
             kind_item = self.table.item(row, _COL_ORDER)
             is_folder = (
                 kind_item is not None
@@ -449,7 +500,7 @@ class SetlistSheetPage(QWidget):
                 if (row, col) not in selected:
                     cells.append("")
                     continue
-                item = self.table.item(row, col)
-                cells.append(item.text() if item is not None else "")
+                cell = self.table.item(row, col)
+                cells.append(cell.text() if cell is not None else "")
             lines.append("\t".join(cells))
         QGuiApplication.clipboard().setText("\n".join(lines) + "\n")
