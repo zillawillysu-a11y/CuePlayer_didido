@@ -243,16 +243,25 @@ class CueMonitorPanel(QWidget):
         self._now_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._now_splitter.setObjectName("nowSplitter")
         self._now_splitter.setChildrenCollapsible(False)
-        self._now_splitter.setHandleWidth(8)
+        # Wide invisible hit zone; thin accent line only on hover.
+        self._now_splitter.setHandleWidth(14)
         self._now_splitter.setStyleSheet(
             "#nowSplitter::handle {"
             "  background: transparent;"
             "  border: none;"
             "  margin: 0;"
             "  padding: 0;"
+            "  image: none;"
             "}"
             "#nowSplitter::handle:hover {"
-            "  background: rgba(74, 158, 255, 0.35);"
+            "  background: qlineargradient("
+            "    x1:0, y1:0, x2:1, y2:0,"
+            "    stop:0 transparent,"
+            "    stop:0.42 transparent,"
+            "    stop:0.42 rgba(161, 161, 170, 0.95),"
+            "    stop:0.58 rgba(161, 161, 170, 0.95),"
+            "    stop:0.58 transparent,"
+            "    stop:1 transparent);"
             "}"
         )
         self._now_splitter.addWidget(self._primary_now_column)
@@ -261,6 +270,7 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setStretchFactor(1, 1)
         self._now_splitter.setSizes([260, 100])
         self._now_splitter.splitterMoved.connect(lambda *_: self._schedule_now_card_fit())
+        self._style_now_splitter_handle()
         now_layout.addWidget(self._now_splitter)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
@@ -411,17 +421,26 @@ class CueMonitorPanel(QWidget):
             self._secondary_clear_timer.stop()
         self._sync_now_splitter_visibility()
 
+    def _style_now_splitter_handle(self) -> None:
+        handle = self._now_splitter.handle(1)
+        handle.setCursor(Qt.CursorShape.SizeHorCursor)
+        handle.setToolTip("Drag to resize Secondary")
+        handle.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
         handle = self._now_splitter.handle(1)
         if show_secondary:
             handle.setEnabled(True)
+            handle.show()
+            self._style_now_splitter_handle()
             sizes = self._now_splitter.sizes()
             if len(sizes) == 2 and sizes[1] <= 0:
                 total = max(sum(sizes), self._now_splitter.width(), 320)
                 self._now_splitter.setSizes([int(total * 0.72), int(total * 0.28)])
         else:
             handle.setEnabled(False)
+            handle.hide()
             total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
             self._now_splitter.setSizes([total, 0])
 
