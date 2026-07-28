@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
@@ -88,7 +89,7 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
     size = "18px" if secondary else "22px"
-    min_h = "64px" if secondary else "84px"
+    min_h = "84px"
     return (
         f"color: #e4e4e7; font-size: {size}; font-weight: 600;"
         f"padding: 14px 12px; line-height: 1.35;"
@@ -215,10 +216,28 @@ class CueMonitorPanel(QWidget):
         now_layout.setContentsMargins(0, 0, 0, 0)
         now_layout.setSpacing(6)
         now_layout.addWidget(now_title)
-        now_layout.addWidget(self.primary_track)
-        now_layout.addWidget(self.primary_cue)
-        now_layout.addWidget(self.secondary_track)
-        now_layout.addWidget(self.secondary_cue)
+
+        self._primary_now_column = QWidget()
+        primary_col_layout = QVBoxLayout(self._primary_now_column)
+        primary_col_layout.setContentsMargins(0, 0, 0, 0)
+        primary_col_layout.setSpacing(6)
+        primary_col_layout.addWidget(self.primary_track)
+        primary_col_layout.addWidget(self.primary_cue, stretch=1)
+
+        self._secondary_now_column = QWidget()
+        secondary_col_layout = QVBoxLayout(self._secondary_now_column)
+        secondary_col_layout.setContentsMargins(0, 0, 0, 0)
+        secondary_col_layout.setSpacing(6)
+        secondary_col_layout.addWidget(self.secondary_track)
+        secondary_col_layout.addWidget(self.secondary_cue, stretch=1)
+
+        now_row = QWidget()
+        now_row_layout = QHBoxLayout(now_row)
+        now_row_layout.setContentsMargins(0, 0, 0, 0)
+        now_row_layout.setSpacing(8)
+        now_row_layout.addWidget(self._primary_now_column, stretch=1)
+        now_row_layout.addWidget(self._secondary_now_column, stretch=1)
+        now_layout.addWidget(now_row)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -360,7 +379,9 @@ class CueMonitorPanel(QWidget):
             show_secondary = bool(self._song.now_secondary_visible)
         self.primary_track.setVisible(show_primary)
         self.primary_cue.setVisible(show_primary)
+        self._primary_now_column.setVisible(show_primary)
         self.secondary_track.setVisible(show_secondary)
+        self._secondary_now_column.setVisible(show_secondary)
         if not show_secondary:
             self.secondary_cue.setVisible(False)
             self._secondary_clear_timer.stop()
@@ -763,8 +784,10 @@ class CueMonitorPanel(QWidget):
             self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             self.primary_cue.setText("—")
             self.primary_cue.setStyleSheet(_now_card_style("#ff5a5f"))
+            self._primary_now_column.show()
             self.secondary_track.hide()
             self.secondary_cue.hide()
+            self._secondary_now_column.hide()
             self._apply_now_highlight()
             return
 
