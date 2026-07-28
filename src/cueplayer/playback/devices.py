@@ -388,11 +388,17 @@ def query_default_output_index() -> int | None:
     return None
 
 
+def device_name_score(preferred_name: str, device_name: str) -> int:
+    """Higher = better match between saved device label and a raw endpoint name."""
+    return _device_name_score(preferred_name, device_name)
+
+
 def upgrade_device_for_channels(
     chosen: OutputDeviceInfo,
     *,
     min_channels: int,
     raw_devices: list[OutputDeviceInfo] | None = None,
+    hostapi: str = "",
 ) -> OutputDeviceInfo:
     """
     Pick a PortAudio endpoint for the same logical device that exposes at
@@ -408,8 +414,11 @@ def upgrade_device_for_channels(
         return chosen
     key = _normalize_device_key(chosen.name)
     best = chosen
+    wanted_api = (hostapi or "").strip()
     pool = raw_devices if raw_devices is not None else list_output_devices(dedupe=False)
     for candidate in pool:
+        if wanted_api and candidate.hostapi_name != wanted_api:
+            continue
         if candidate.max_output_channels < need:
             continue
         cand_key = _normalize_device_key(candidate.name)
@@ -593,6 +602,22 @@ def build_source_route(
 # Probed in order after the caller's preferred rate; covers the common
 # WASAPI shared-mode "locked mixer format" rates seen in the wild.
 _FALLBACK_SAMPLE_RATES: tuple[float, ...] = (48000.0, 44100.0, 96000.0, 32000.0, 22050.0)
+
+
+def iter_output_samplerate_candidates(
+    *,
+    device_index: int | None,
+    preferred_rate: float,
+    device_default_rate: float | None = None,
+) -> list[float]:
+    """Ordered sample rates to try when opening an output stream."""
+    candidates: list[float] = [preferred_rate]
+    if device_default_rate and device_default_rate not in candidates:
+        candidates.append(device_default_rate)
+    for rate in _FALLBACK_SAMPLE_RATES:
+        if rate not in candidates:
+            candidates.append(rate)
+    return candidates
 
 
 def resolve_output_samplerate(

@@ -24,6 +24,7 @@ from cueplayer.domain.models import (
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.playback.devices import (
     find_output_device,
+    iter_output_samplerate_candidates,
     list_output_devices,
     probe_supported_output_channels,
     required_output_channels,
@@ -362,6 +363,7 @@ class AudioEngine(QObject):
         if was_playing:
             self.pause()
 
+        self._routing_warning = None
         self._audio_settings = AudioOutputSettings(
             output_device_name=settings.output_device_name,
             output_device_index=settings.output_device_index,
@@ -890,16 +892,17 @@ class AudioEngine(QObject):
                 devices = api_devices
 
         chosen = None
+        prefer_name = self._audio_settings.output_device_name
+        if prefer_name:
+            chosen = find_output_device(devices, name=prefer_name)
         prefer_idx = self._audio_settings.output_device_index
-        if prefer_idx is not None:
+        if chosen is None and prefer_idx is not None:
             for d in raw_devices:
                 if d.index == prefer_idx and (not hostapi or d.hostapi_name == hostapi):
                     chosen = d
                     break
         if chosen is None:
-            chosen = find_output_device(
-                devices, name=self._audio_settings.output_device_name
-            )
+            chosen = find_output_device(devices, name=prefer_name)
         self._device_index = chosen.index if chosen is not None else None
 
         max_ch = chosen.max_output_channels if chosen is not None else 2
@@ -943,7 +946,10 @@ class AudioEngine(QObject):
                 self._device_index = endpoint.index
         if chosen is not None and needed > chosen.max_output_channels:
             chosen = upgrade_device_for_channels(
-                chosen, min_channels=needed, raw_devices=raw_devices
+                chosen,
+                min_channels=needed,
+                raw_devices=raw_devices,
+                hostapi=hostapi,
             )
             self._device_index = chosen.index
 
@@ -1377,15 +1383,23 @@ class AudioEngine(QObject):
 
         return callback
 
-    def _open_output_stream(self, *, device: int | None, channels: int, sample_rate: int) -> bool:
+    def _open_output_stream(
+        self,
+        *,
+        device: int | None,
+        channels: int,
+        sample_rate: int,
+        latency: str | float | None = "low",
+    ) -> bool:
         kwargs: dict = {
             "samplerate": sample_rate,
             "channels": channels,
             "dtype": "float32",
             "callback": self._make_stream_callback(sample_rate),
-            "latency": "low",
             "blocksize": 0,
         }
+        if latency is not None:
+            kwargs["latency"] = latency
         if device is not None:
             kwargs["device"] = device
         try:
@@ -1398,67 +1412,129 @@ class AudioEngine(QObject):
             self._active_stream_token = None
             return False
 
+    def _device_default_rate(self, device: int | None) -> float | None:
+        if device is None:
+            return None
+        try:
+            return float(sd.query_devices(device)["default_samplerate"])
+        except Exception:
+            return None
+
+    def _try_open_stream_variant(
+        self,
+        *,
+        device: int | None,
+        channels: int,
+        sample_rate: int,
+    ) -> bool:
+        for latency in ("low", None):
+            if self._open_output_stream(
+                device=device,
+                channels=channels,
+                sample_rate=sample_rate,
+                latency=latency,
+            ):
+                return True
+        return False
+
     def _start_stream(self) -> bool:
         self._stop_stream()
         base_device = self._device_index
         base_channels = self._output_channel_count
         base_rate = self._playback_rate
         saved_route = {k: list(v) for k, v in self._route.items()}
-        sample_rate = base_rate
         device = base_device
-        channels = base_channels
+        rate_candidates = iter_output_samplerate_candidates(
+            device_index=device,
+            preferred_rate=float(base_rate),
+            device_default_rate=self._device_default_rate(device),
+        )
 
-        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
-            return True
+        def try_open(
+            dev: int | None,
+            ch: int,
+            rate: float,
+            *,
+            route: dict[int, list[int]] | None = None,
+        ) -> bool:
+            sr = int(round(rate))
+            prev_rate = self._playback_rate
+            prev_ch = self._output_channel_count
+            prev_route = {k: list(v) for k, v in self._route.items()}
+            self._output_channel_count = ch
+            if route is not None:
+                self._route = {k: list(v) for k, v in route.items()}
+                self._clamp_route_to_channels(ch)
+            if self._try_open_stream_variant(device=dev, channels=ch, sample_rate=sr):
+                if sr != prev_rate:
+                    self._playback_rate = sr
+                    self._refresh_playback_samples()
+                return True
+            self._playback_rate = prev_rate
+            self._output_channel_count = prev_ch
+            self._route = prev_route
+            return False
 
-        fallback_rate = None
-        if device is not None:
-            for d in list_output_devices(dedupe=False):
-                if d.index == device:
-                    fallback_rate = d.default_samplerate
-                    break
-        if fallback_rate and int(fallback_rate) != int(sample_rate):
-            self._playback_rate = int(round(fallback_rate))
-            self._refresh_playback_samples()
-            sample_rate = self._playback_rate
-            self._append_routing_warning(
-                f"Opened output at {sample_rate} Hz (device default)."
-            )
-            if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+        for rate in rate_candidates:
+            if try_open(device, base_channels, rate):
+                if int(round(rate)) != base_rate:
+                    self._append_routing_warning(
+                        f"Opened output at {int(round(rate))} Hz."
+                    )
                 return True
 
         if device is not None:
-            probed = probe_supported_output_channels(
-                device,
-                min_channels=1,
-                samplerate=float(sample_rate),
-            )
-            if probed < channels:
-                channels = max(1, probed)
-                self._output_channel_count = channels
-                self._clamp_route_to_channels(channels)
-                self._append_routing_warning(
-                    f"Reduced output to {channels} channel(s) for this device."
+            for rate in rate_candidates:
+                probed = probe_supported_output_channels(
+                    device,
+                    min_channels=1,
+                    samplerate=float(rate),
                 )
-                if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
-                    return True
+                for ch in range(min(base_channels, probed), 0, -1):
+                    if ch == base_channels:
+                        continue
+                    route = {k: list(v) for k, v in saved_route.items()}
+                    clamped: dict[int, list[int]] = {}
+                    for src, dests in route.items():
+                        keep = [d for d in dests if 0 <= d < ch]
+                        if keep:
+                            clamped[src] = keep
+                    if try_open(device, ch, rate, route=clamped or saved_route):
+                        if int(round(rate)) != base_rate:
+                            self._append_routing_warning(
+                                f"Opened output at {int(round(rate))} Hz."
+                            )
+                        self._append_routing_warning(
+                            f"Reduced output to {ch} channel(s) for this device."
+                        )
+                        return True
 
-        self._route = saved_route
-        self._output_channel_count = min(2, max(1, base_channels))
-        self._clamp_route_to_channels(self._output_channel_count)
-        channels = self._output_channel_count
-        self._append_routing_warning("Fell back to stereo Music L/R routing.")
-        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
-            return True
+        stereo_ch = min(2, max(1, base_channels))
+        stereo_route = {k: list(v) for k, v in saved_route.items()}
+        for rate in rate_candidates:
+            if try_open(device, stereo_ch, rate, route=stereo_route):
+                if int(round(rate)) != base_rate:
+                    self._append_routing_warning(
+                        f"Opened output at {int(round(rate))} Hz."
+                    )
+                self._append_routing_warning("Fell back to stereo Music L/R routing.")
+                return True
 
         if device is not None:
             self._device_index = None
-            channels = 2
-            self._output_channel_count = 2
-            self._route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [1]}
-            self._append_routing_warning("Using system default output device.")
-            if self._open_output_stream(device=None, channels=channels, sample_rate=sample_rate):
-                return True
+            default_route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [1]}
+            for rate in iter_output_samplerate_candidates(
+                device_index=None,
+                preferred_rate=float(base_rate),
+                device_default_rate=None,
+            ):
+                if try_open(None, 2, rate, route=default_route):
+                    if int(round(rate)) != base_rate:
+                        self._append_routing_warning(
+                            f"Opened output at {int(round(rate))} Hz."
+                        )
+                    self._append_routing_warning("Using system default output device.")
+                    return True
 
         self._device_index = base_device
         self._output_channel_count = base_channels
