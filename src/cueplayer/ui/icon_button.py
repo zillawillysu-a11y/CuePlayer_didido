@@ -34,6 +34,12 @@ class IconButton(QPushButton):
         self._active = active
         self.update()
 
+    def set_kind(self, kind: str) -> None:
+        if kind == self._kind:
+            return
+        self._kind = kind
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: ANN001
         del event
         painter = QPainter(self)

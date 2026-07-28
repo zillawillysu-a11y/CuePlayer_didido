@@ -125,8 +125,13 @@ def test_video_eye_shows_ltc_together(app: QApplication) -> None:
     widget.resize(900, 600)
     assert widget._ltc_lane_visible() is False
     assert widget.video_show_button.isHidden() is False
+    assert widget.video_show_button._kind == "eye"
+    eye_pos = widget.video_show_button.pos()
     widget.video_show_button.click()
     assert song.show_video_track is True
     assert song.show_ltc_track is True
     assert widget._ltc_lane_visible() is True
-    assert widget.video_hide_button.isHidden() is False
+    assert widget.video_show_button.isHidden() is False
+    assert widget.video_show_button.pos() == eye_pos
+    assert widget.video_show_button._kind == "eye_off"
+    assert widget.video_hide_button.isHidden() is True

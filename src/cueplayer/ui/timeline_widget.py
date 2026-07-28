@@ -317,10 +317,11 @@ class TimelineWidget(QWidget):
             size=btn_size,
             overlay=True,
         )
+        # Kept for older tests / API; the real toggle is video_show_button,
+        # fixed on the Music header so show/hide stay in one place.
         self.video_hide_button = IconButton(
             "eye_off",
-            "Hide Video + LTC Tracks (after alignment — Preview/Clean Output keep playing). "
-            "Use the eye button in the header to show them again.",
+            "Hide Video + LTC Tracks (after alignment — Preview/Clean Output keep playing).",
             self,
             size=btn_size,
             overlay=True,
@@ -335,7 +336,7 @@ class TimelineWidget(QWidget):
         self.video_mute_button.clicked.connect(self._toggle_video_track_muted)
         self.video_expand_button.clicked.connect(self._toggle_video_track_expanded)
         self.video_hide_button.clicked.connect(self._hide_video_track_clicked)
-        self.video_show_button.clicked.connect(self._show_video_track_clicked)
+        self.video_show_button.clicked.connect(self._toggle_video_track_from_eye)
 
         self.video_clip_volume_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.video_clip_volume_slider.setRange(0, 100)
@@ -385,6 +386,26 @@ class TimelineWidget(QWidget):
     def _show_video_track_clicked(self) -> None:
         self.set_show_video_track(True)
 
+    def _toggle_video_track_from_eye(self) -> None:
+        self.set_show_video_track(not self._show_video_track)
+
+    def _sync_video_eye_button(self) -> None:
+        """Eye stays on the Music header; icon flips between show / hide."""
+        if not hasattr(self, "video_show_button"):
+            return
+        visible = self._video_lane_visible()
+        if visible:
+            self.video_show_button.set_kind("eye_off")
+            self.video_show_button.setToolTip(
+                "Hide Video + LTC Tracks (after alignment — Preview/Clean Output keep playing)"
+            )
+        else:
+            self.video_show_button.set_kind("eye")
+            self.video_show_button.setToolTip(
+                "Show Video + LTC Tracks (LTC lane appears when a file stripe is known)"
+            )
+        self.video_show_button.set_active(visible)
+
     def _layout_video_track_overlay(self) -> None:
         if not hasattr(self, "video_mute_button"):
             return
@@ -392,20 +413,22 @@ class TimelineWidget(QWidget):
         eye_header = self._video_eye_header_visible()
         self.video_mute_button.setVisible(visible)
         self.video_expand_button.setVisible(visible)
-        self.video_hide_button.setVisible(visible)
+        # Hide/show lives on the fixed Music-header eye — not on Video Track.
+        self.video_hide_button.setVisible(False)
         self.video_show_button.setVisible(eye_header)
+        self._sync_video_eye_button()
+        if eye_header:
+            top = self._wave_bottom_y()
+            btn_y = top - self.video_show_button.height() - 2
+            x = self._header_width - 6 - self.video_show_button.width()
+            self.video_show_button.move(x, btn_y)
+            self.video_show_button.raise_()
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
             self.music_volume_caption.hide()
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
-            if eye_header:
-                top = self._wave_bottom_y()
-                btn_y = top - self.video_show_button.height() - 2
-                x = self._header_width - 6 - self.video_show_button.width()
-                self.video_show_button.move(x, btn_y)
-                self.video_show_button.raise_()
             return
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
@@ -414,11 +437,8 @@ class TimelineWidget(QWidget):
         self.video_mute_button.move(x, btn_y)
         x -= self.video_expand_button.width() + 3
         self.video_expand_button.move(x, btn_y)
-        x -= self.video_hide_button.width() + 3
-        self.video_hide_button.move(x, btn_y)
         self.video_mute_button.raise_()
         self.video_expand_button.raise_()
-        self.video_hide_button.raise_()
         if self._video_track_expanded:
             sub_y = top + row_h
             label_w = 32
@@ -622,8 +642,8 @@ class TimelineWidget(QWidget):
         return self._song is not None and self._show_video_track
 
     def _video_eye_header_visible(self) -> bool:
-        """Show-eye in the left header when Video (+ LTC) lanes are hidden."""
-        return self._song is not None and not self._show_video_track
+        """Eye toggle stays on the Music header (same spot whether lanes are open)."""
+        return self._song is not None
 
     def _ltc_available(self) -> bool:
         return self._ltc_channel is not None and self._ltc_audio is not None
