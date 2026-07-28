@@ -44,7 +44,7 @@ from cueplayer.playback.routing_parse import (
     parse_stereo_route,
 )
 from cueplayer.playback.mtc_output import MtcOutput
-from cueplayer.playback.resample import resample_hold_segment, resample_linear, resample_linear_segment
+from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
@@ -112,8 +112,6 @@ class AudioEngine(QObject):
         self._playback_rate = 48000
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
-        self._playback_resample_future = None
-        self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
@@ -673,7 +671,7 @@ class AudioEngine(QObject):
                 if self._playback_samples is not None:
                     end_frame = self._playback_samples.shape[0]
                 elif self._buffer is not None:
-                    end_frame = int(round(self._buffer.frames * self._sample_rate() / self._buffer.sample_rate))
+                    end_frame = self._playback_end_frame()
                 else:
                     end_frame = int(self._duration_seconds * self._sample_rate())
                 done = self._position_frame >= end_frame
@@ -996,129 +994,66 @@ class AudioEngine(QObject):
             return
         self._detected_ltc_channel = detect_ltc_channel(buf.samples, int(buf.sample_rate))
 
+    def _playback_end_frame(self) -> int:
+        """Timeline length in playback-rate frames (resampled buffer when present)."""
+        if self._playback_samples is not None:
+            return int(self._playback_samples.shape[0])
+        if self._buffer is not None:
+            return int(
+                round(
+                    self._buffer.frames
+                    * float(self._playback_rate)
+                    / float(self._buffer.sample_rate)
+                )
+            )
+        return max(1, int(self._duration_seconds * self._playback_rate))
+
     def _refresh_playback_samples(self) -> None:
         """
         Keep a copy of the loaded buffer resampled to _playback_rate.
 
-        Long files resample in a background thread so Play/Load stay responsive;
-        until the cache is ready, ``_music_chunk`` reads native audio per chunk.
+        Resampling runs synchronously here so the realtime audio callback never
+        competes with a background resample job (that double-work caused severe
+        stutter / "slow motion" playback on Windows ASIO).
         """
         buf = self._buffer
         if buf is None:
             self._playback_samples = None
             self._playback_cache_key = None
-            self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
         if self._playback_cache_key == key and self._playback_samples is not None:
             return
         if int(buf.sample_rate) == int(self._playback_rate):
             self._playback_samples = buf.samples
-            self._playback_cache_key = key
-            self._playback_resample_future = None
-            return
+        else:
+            self._playback_samples = resample_linear(
+                buf.samples, float(buf.sample_rate), float(self._playback_rate)
+            )
         self._playback_cache_key = key
-        self._playback_samples = None
-        if self._playback_resample_future is not None and not self._playback_resample_future.done():
-            return
-        native = buf.samples
-        src_rate = float(buf.sample_rate)
-        dst_rate = float(self._playback_rate)
-
-        def _build() -> tuple[tuple, np.ndarray]:
-            return key, resample_linear(native, src_rate, dst_rate)
-
-        future = self._resample_executor.submit(_build)
-        self._playback_resample_future = future
-
-        def _done(fut) -> None:
-            try:
-                built_key, pcm = fut.result()
-            except Exception:
-                return
-            with self._lock:
-                if self._playback_cache_key == built_key:
-                    self._playback_samples = pcm
-
-        future.add_done_callback(_done)
-
-    def _music_chunk_from_native(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
-        buf = self._buffer
-        if buf is None:
-            return np.zeros((frames, 2), dtype=np.float32)
-        native = buf.samples
-        src_rate = float(buf.sample_rate)
-        dst_rate = float(sample_rate)
-        if int(src_rate) == int(dst_rate):
-            src_start = start
-        else:
-            src_start = int(round(start * src_rate / dst_rate))
-        src_frames = max(1, int(round(frames * src_rate / dst_rate)) + 2)
-        src_end = min(native.shape[0], src_start + src_frames)
-        if src_end <= src_start:
-            return np.zeros((frames, 2), dtype=np.float32)
-        native_chunk = native[src_start:src_end]
-        if int(src_rate) != int(dst_rate):
-            native_chunk = resample_linear(native_chunk, src_rate, dst_rate)
-        out = np.zeros((frames, 2), dtype=np.float32)
-        n = min(frames, native_chunk.shape[0])
-        if native_chunk.ndim == 1:
-            out[:n, 0] = native_chunk[:n]
-            out[:n, 1] = native_chunk[:n]
-        elif native_chunk.shape[1] == 1:
-            out[:n, 0] = native_chunk[:n, 0]
-            out[:n, 1] = native_chunk[:n, 0]
-        else:
-            left_idx, right_idx = self._music_source_indices_for_channels(int(native.shape[1]))
-            out[:n, 0] = native_chunk[:n, left_idx]
-            out[:n, 1] = native_chunk[:n, right_idx]
-        return out
-
-    def _music_source_indices_for_channels(self, ch_count: int) -> tuple[int, int]:
-        if ch_count <= 1:
-            return 0, 0
-        strip_ltc = (
-            is_music_source_route(self._audio_settings.music_l_route)
-            or is_music_source_route(self._audio_settings.music_r_route)
-            or is_ltc_route(self._audio_settings.music_l_route)
-            or is_ltc_route(self._audio_settings.music_r_route)
-            or self._resolved_file_ltc_channel() is not None
-        )
-        if not strip_ltc:
-            return 0, min(1, ch_count - 1)
-        ltc_ch = self._resolved_file_ltc_channel()
-        if ltc_ch is None:
-            ltc_ch = self._autodetect_ltc_channel()
-        if ltc_ch is not None:
-            music_chs = [i for i in range(ch_count) if i != ltc_ch]
-            if len(music_chs) >= 2:
-                return music_chs[0], music_chs[1]
-            if len(music_chs) == 1:
-                return music_chs[0], music_chs[0]
-        return 0, min(1, ch_count - 1)
 
     def _music_chunk(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
         """Return stereo music (frames, 2), applying mute + master volume."""
+        del sample_rate  # all bookkeeping is in _playback_rate frames
         out = np.zeros((frames, 2), dtype=np.float32)
         samples = self._playback_samples
-        if samples is None and self._buffer is not None:
-            out = self._music_chunk_from_native(start, frames, sample_rate)
-        elif samples is not None:
-            end = min(start + frames, samples.shape[0])
-            if end <= start:
-                return out
-            chunk = samples[start:end]
-            n = chunk.shape[0]
-            if chunk.ndim == 1:
-                out[:n, 0] = chunk
-                out[:n, 1] = chunk
-            elif chunk.shape[1] == 1:
-                out[:n, 0] = chunk[:, 0]
-                out[:n, 1] = chunk[:, 0]
-            else:
-                left_idx, right_idx = self._music_source_indices()
-                out[:n, 0] = chunk[:, left_idx]
-                out[:n, 1] = chunk[:, right_idx]
+        if samples is None:
+            return out
+        end = min(start + frames, samples.shape[0])
+        if end <= start:
+            return out
+        chunk = samples[start:end]
+        n = chunk.shape[0]
+        if chunk.ndim == 1:
+            out[:n, 0] = chunk
+            out[:n, 1] = chunk
+        elif chunk.shape[1] == 1:
+            out[:n, 0] = chunk[:, 0]
+            out[:n, 1] = chunk[:, 0]
+        else:
+            left_idx, right_idx = self._music_source_indices()
+            out[:n, 0] = chunk[:, left_idx]
+            out[:n, 1] = chunk[:, right_idx]
         if self._mute_music:
             out[:] = 0.0
         # Master (all-bus) gain, then the dedicated music-bed gain used for
@@ -1249,7 +1184,7 @@ class AudioEngine(QObject):
             return True
         return self._start_stream()
 
-    def _make_stream_callback(self, sample_rate: int, total_frames: int):
+    def _make_stream_callback(self, sample_rate: int):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
             del status, time_info
             with self._lock:
@@ -1272,6 +1207,7 @@ class AudioEngine(QObject):
                     elif a_frame <= self._position_frame < b_frame:
                         self._loop_engage = True
                 start = self._position_frame
+                total_frames = self._playback_end_frame()
                 end = min(start + frames, total_frames)
                 if loop_on and self._loop_engage and start < b_frame:
                     end = min(end, b_frame)
@@ -1323,16 +1259,11 @@ class AudioEngine(QObject):
         return callback
 
     def _open_output_stream(self, *, device: int | None, channels: int, sample_rate: int) -> bool:
-        total_frames = (
-            self._playback_samples.shape[0]
-            if self._playback_samples is not None
-            else int(self._duration_seconds * sample_rate)
-        )
         kwargs: dict = {
             "samplerate": sample_rate,
             "channels": channels,
             "dtype": "float32",
-            "callback": self._make_stream_callback(sample_rate, total_frames),
+            "callback": self._make_stream_callback(sample_rate),
             "latency": "low",
             "blocksize": 1024,
         }
