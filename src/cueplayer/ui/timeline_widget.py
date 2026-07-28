@@ -77,6 +77,7 @@ class TimelineWidget(QWidget):
     content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
+    lane_name_changed = Signal(int, str)  # lane_index, new name
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -803,6 +804,47 @@ class TimelineWidget(QWidget):
             y += self._lane_height
         return out
 
+    def _hit_mark_lane_header(self, x: float, y: float) -> int | None:
+        """Return lane index when clicking the left name header of a Mark track."""
+        if x >= self._header_width or self._song is None or not self._show_mark_tracks:
+            return None
+        for lane_index, y0, y1 in self._lane_rects():
+            if y0 <= y < y1:
+                return lane_index
+        return None
+
+    def _rename_mark_lane_at(self, lane_index: int) -> None:
+        if self._song is None:
+            return
+        lane = self._song.lane_by_index(lane_index)
+        if lane is None:
+            return
+        text, ok = QInputDialog.getText(
+            self,
+            "Rename Mark",
+            f"Name for Mark track {lane.shortcut or lane.index}:",
+            text=lane.name,
+        )
+        if not ok:
+            return
+        new_name = text.strip()
+        if not new_name or new_name == lane.name:
+            return
+        lane.name = new_name
+        self.lane_name_changed.emit(lane_index, new_name)
+        self.update()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            x = event.position().x()
+            y = event.position().y()
+            lane_index = self._hit_mark_lane_header(x, y)
+            if lane_index is not None:
+                self._rename_mark_lane_at(lane_index)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def _marks_in_box(self, rect: QRectF) -> set[str]:
         if self._song is None:
             return set()
@@ -1024,6 +1066,8 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif self._near_video_lane_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif self._hit_mark_lane_header(x, y) is not None:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
         elif self._hit_loop_handle(x, y) is not None:
             self.setCursor(self._cursor_for_loop_hover(x, y))
         elif self._hit_mark_at(x, y) is not None:
@@ -1803,6 +1847,8 @@ class TimelineWidget(QWidget):
                 self.update()
             if hover:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif self._hit_mark_lane_header(x, y) is not None:
+                self.setCursor(Qt.CursorShape.IBeamCursor)
             elif loop_h is not None:
                 self.setCursor(self._cursor_for_loop_hover(x, y))
             elif hit is not None:

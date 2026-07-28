@@ -904,6 +904,7 @@ class MainWindow(QMainWindow):
         self.timeline.ltc_track_visibility_changed.connect(self._on_ltc_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
+        self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         self.engine.position_changed.connect(self.video_sync.update_position)
         # Throttles video decode to a display cadence while playing, so the
         # audio clock's ~60Hz position ticks can't starve the UI thread the
@@ -965,6 +966,9 @@ class MainWindow(QMainWindow):
             if not self._try_restore_last_project():
                 self._maybe_load_demo_fixture()
             self._sync_timeline_geometry()
+            self.monitor.ensure_now_splitter_ready()
+            QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
+            QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
         finally:
             self._restoring_session = False
 
@@ -4094,6 +4098,13 @@ class MainWindow(QMainWindow):
         # matching Master Volume / lock-hide toggles).
         self.engine.set_music_volume(volume)
         self._mark_dirty()
+
+    def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:
+        del lane_index, new_name
+        self._mark_dirty()
+        self.monitor.set_song(self.current_song)
+        self.timeline.update()
+        self.status.showMessage("Mark track renamed", 2000)
 
     def _on_video_clip_edited(self, clip_id: str, old: tuple, new: tuple) -> None:
         self._push_song_undo(EditVideoClipsCommand(changes={clip_id: (old, new)}))

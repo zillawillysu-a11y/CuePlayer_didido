@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal, QEvent
-from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QByteArray, Qt, QTimer, Signal, QEvent
+from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFrame,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
     QSizePolicy,
+    QSplitter,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
@@ -116,99 +116,6 @@ def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
     if note:
         return f"{lane_bit}\n{note}"
     return lane_bit
-
-
-class _NowResizeGrip(QWidget):
-    """Visible drag strip between Primary and Secondary NOW cards."""
-
-    resized = Signal(int)  # new secondary width
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("nowResizeGrip")
-        self.setFixedWidth(10)
-        self.setMinimumHeight(40)
-        self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self.setToolTip("Drag to resize Secondary")
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self._hover = False
-        self._dragging = False
-        self._origin_x = 0
-        self._origin_secondary_w = 0
-        self._secondary: QWidget | None = None
-
-    def set_secondary(self, secondary: QWidget) -> None:
-        self._secondary = secondary
-
-    def enterEvent(self, event) -> None:  # noqa: ANN001
-        self._hover = True
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # noqa: ANN001
-        if not self._dragging:
-            self._hover = False
-            self.update()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or self._secondary is None:
-            super().mousePressEvent(event)
-            return
-        self._dragging = True
-        self._hover = True
-        self._origin_x = int(event.globalPosition().x())
-        self._origin_secondary_w = max(72, self._secondary.width())
-        self.grabMouse()
-        self.update()
-        event.accept()
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if not self._dragging or self._secondary is None:
-            super().mouseMoveEvent(event)
-            return
-        dx = int(event.globalPosition().x()) - self._origin_x
-        # Dragging the grip right shrinks Secondary; left grows it.
-        new_w = self._origin_secondary_w - dx
-        parent = self.parentWidget()
-        max_w = 280
-        if parent is not None:
-            max_w = max(120, parent.width() - 140)
-        new_w = max(72, min(max_w, new_w))
-        self.resized.emit(new_w)
-        event.accept()
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
-            self._dragging = False
-            self.releaseMouse()
-            pos = self.mapFromGlobal(event.globalPosition().toPoint())
-            self._hover = self.rect().contains(pos)
-            self.update()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        mid = self.width() // 2
-        if self._hover or self._dragging:
-            color = QColor("#a1a1aa")
-            painter.fillRect(0, 0, self.width(), self.height(), QColor(36, 36, 40, 180))
-            painter.setPen(QPen(color, 2))
-            painter.drawLine(mid, 8, mid, self.height() - 8)
-            # Three grip dots for discoverability.
-            painter.setBrush(color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            cy = self.height() // 2
-            for dy in (-8, 0, 8):
-                painter.drawEllipse(mid - 1, cy + dy - 1, 3, 3)
-        else:
-            painter.setPen(QPen(QColor("#3f3f46"), 1))
-            painter.drawLine(mid, 10, mid, self.height() - 10)
-        painter.end()
 
 
 class CueMonitorPanel(QWidget):
@@ -326,26 +233,34 @@ class CueMonitorPanel(QWidget):
 
         self._secondary_now_column = QWidget()
         self._secondary_now_column.setMinimumWidth(72)
-        self._secondary_width = 120
-        self._secondary_now_column.setFixedWidth(self._secondary_width)
         secondary_col_layout = QVBoxLayout(self._secondary_now_column)
         secondary_col_layout.setContentsMargins(0, 0, 0, 0)
         secondary_col_layout.setSpacing(6)
         secondary_col_layout.addWidget(self.secondary_track)
         secondary_col_layout.addWidget(self.secondary_cue, stretch=1)
 
-        self._now_resize_grip = _NowResizeGrip()
-        self._now_resize_grip.set_secondary(self._secondary_now_column)
-        self._now_resize_grip.resized.connect(self._set_secondary_width)
-
-        now_row = QWidget()
-        now_row_layout = QHBoxLayout(now_row)
-        now_row_layout.setContentsMargins(0, 0, 0, 0)
-        now_row_layout.setSpacing(0)
-        now_row_layout.addWidget(self._primary_now_column, stretch=1)
-        now_row_layout.addWidget(self._now_resize_grip, stretch=0)
-        now_row_layout.addWidget(self._secondary_now_column, stretch=0)
-        now_layout.addWidget(now_row)
+        self._now_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._now_splitter.setObjectName("nowSplitter")
+        self._now_splitter.setChildrenCollapsible(False)
+        self._now_splitter.setHandleWidth(8)
+        self._now_splitter.setStyleSheet(
+            "#nowSplitter::handle {"
+            "  background: transparent;"
+            "  border: none;"
+            "  margin: 0;"
+            "  padding: 0;"
+            "}"
+            "#nowSplitter::handle:hover {"
+            "  background: rgba(74, 158, 255, 0.35);"
+            "}"
+        )
+        self._now_splitter.addWidget(self._primary_now_column)
+        self._now_splitter.addWidget(self._secondary_now_column)
+        self._now_splitter.setStretchFactor(0, 3)
+        self._now_splitter.setStretchFactor(1, 1)
+        self._now_splitter.setSizes([260, 100])
+        self._now_splitter.splitterMoved.connect(lambda *_: self._schedule_now_card_fit())
+        now_layout.addWidget(self._now_splitter)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -411,6 +326,7 @@ class CueMonitorPanel(QWidget):
         self._apply_now_panel_visibility()
         self._apply_cue_list_visibility()
         self.set_position(self._position, getattr(song, "duration_seconds", 0.0) if song else 0.0)
+        QTimer.singleShot(0, self.ensure_now_splitter_ready)
 
     def _col_for_field(self, field: str) -> int:
         return self._column_order.index(field)
@@ -495,32 +411,43 @@ class CueMonitorPanel(QWidget):
             self._secondary_clear_timer.stop()
         self._sync_now_splitter_visibility()
 
-    def _set_secondary_width(self, width: int) -> None:
-        self._secondary_width = max(72, int(width))
-        self._secondary_now_column.setFixedWidth(self._secondary_width)
-        self._schedule_now_card_fit()
-
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
-        self._now_resize_grip.setVisible(show_secondary)
+        handle = self._now_splitter.handle(1)
+        handle.setCursor(Qt.CursorShape.SizeHorCursor)
+        handle.setToolTip("Drag to resize Secondary")
         if show_secondary:
-            self._secondary_now_column.setFixedWidth(self._secondary_width)
+            handle.setEnabled(True)
+            sizes = self._now_splitter.sizes()
+            total = max(sum(sizes), self._now_splitter.width(), 320)
+            if len(sizes) != 2 or sizes[1] < 40:
+                self._now_splitter.setSizes([int(total * 0.72), int(total * 0.28)])
+        else:
+            handle.setEnabled(False)
+            total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
+            self._now_splitter.setSizes([total, 0])
 
-    def save_now_splitter_state(self):
-        return int(self._secondary_width)
-
-    def restore_now_splitter_state(self, raw) -> None:
-        width = 120
-        if isinstance(raw, int):
-            width = raw
-        elif raw is not None:
-            try:
-                width = int(raw)
-            except (TypeError, ValueError):
-                width = 120
-        self._set_secondary_width(width)
+    def ensure_now_splitter_ready(self) -> None:
+        """Fix handle after startup layout restore (before first song switch)."""
+        if not hasattr(self, "_now_splitter"):
+            return
         self._sync_now_splitter_visibility()
         self._schedule_now_card_fit()
+
+    def save_now_splitter_state(self):
+        return self._now_splitter.saveState()
+
+    def restore_now_splitter_state(self, raw) -> None:
+        restored = False
+        if isinstance(raw, (bytes, bytearray, QByteArray)) and len(raw) > 0:
+            restored = bool(self._now_splitter.restoreState(raw))
+        if not restored:
+            self._now_splitter.setSizes([260, 100])
+        self._sync_now_splitter_visibility()
+        self._schedule_now_card_fit()
+        # Layout may still be 0-width during session restore; re-apply after show.
+        QTimer.singleShot(0, self.ensure_now_splitter_ready)
+        QTimer.singleShot(50, self.ensure_now_splitter_ready)
 
     def _schedule_now_card_fit(self) -> None:
         QTimer.singleShot(0, self._fit_now_cards)
