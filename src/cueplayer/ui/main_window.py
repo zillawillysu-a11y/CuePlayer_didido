@@ -77,6 +77,7 @@ from cueplayer.domain.undo import (
     AddVideoClipsCommand,
     DeleteMarksCommand,
     DeleteVideoClipsCommand,
+    EditMainCueIdCommand,
     EditVideoClipsCommand,
     MarkSnapshot,
     MoveMarksCommand,
@@ -918,8 +919,13 @@ class MainWindow(QMainWindow):
         self.monitor.selection_changed.connect(self._on_monitor_selection)
         self.monitor.delete_requested.connect(self._delete_marks)
         self.monitor.note_changed.connect(self._on_note_changed)
+        self.monitor.cue_id_changed.connect(self._on_cue_id_changed)
+        self.monitor.cue_id_edit_failed.connect(
+            lambda msg: self.status.showMessage(msg, 3000)
+        )
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
+        self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
@@ -3347,6 +3353,13 @@ class MainWindow(QMainWindow):
     def _on_note_changed(self, mark_id: str, old_name: str, new_name: str) -> None:
         self._undo.push(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
         self._mark_dirty()
+
+    def _on_cue_id_changed(self, mark_id: str, old_id: str, new_id: str) -> None:
+        self._undo.push(
+            EditMainCueIdCommand(mark_id=mark_id, old_id=old_id, new_id=new_id)
+        )
+        self._mark_dirty()
+        self._refresh_marks_ui()
 
     def _undo_action(self) -> None:
         result = self._undo.undo(self._undo_ctx)

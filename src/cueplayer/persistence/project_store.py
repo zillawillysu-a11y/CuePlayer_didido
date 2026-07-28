@@ -26,6 +26,7 @@ from cueplayer.domain.models import (
     coerce_file_ltc_side,
 )
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
+from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order
 
 
 def _coerce_setlist_name_mode(data: dict[str, Any]) -> SetlistNameMode:
@@ -488,6 +489,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_primary_visible": song.now_primary_visible,
                 "now_secondary_visible": song.now_secondary_visible,
                 "cue_list_visible": song.cue_list_visible,
+                "cue_list_column_order": list(song.cue_list_column_order),
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -616,6 +618,9 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 now_primary_visible=bool(song_data.get("now_primary_visible", True)),
                 now_secondary_visible=bool(song_data.get("now_secondary_visible", True)),
                 cue_list_visible=bool(song_data.get("cue_list_visible", True)),
+                cue_list_column_order=normalize_cue_list_column_order(
+                    song_data.get("cue_list_column_order")
+                ),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),

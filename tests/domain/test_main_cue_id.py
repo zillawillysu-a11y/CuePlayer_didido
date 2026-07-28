@@ -7,7 +7,10 @@ import pytest
 from cueplayer.domain.main_cue_id import (
     assign_main_cue_id_for_mark,
     between_main_cue_ids,
+    is_valid_main_cue_id_text,
+    main_cue_id_taken,
     next_main_cue_id_at_end,
+    normalize_main_cue_id_text,
 )
 from cueplayer.domain.models import Mark, Song
 
@@ -135,3 +138,20 @@ def test_drag_to_end_keeps_high_integer_id() -> None:
 def test_between_invalid_bounds_raises() -> None:
     with pytest.raises(ValueError):
         between_main_cue_ids("2", "1")
+
+
+def test_manual_cue_id_validation() -> None:
+    assert is_valid_main_cue_id_text("1.1")
+    assert is_valid_main_cue_id_text("2")
+    assert not is_valid_main_cue_id_text("")
+    assert not is_valid_main_cue_id_text("abc")
+    assert normalize_main_cue_id_text(" 1.10 ") == "1.1"
+
+
+def test_main_cue_id_taken() -> None:
+    song = Song.create("Test")
+    first = song.add_mark(1, 1.0)
+    song.add_mark(1, 2.0)
+    assert main_cue_id_taken(song, "1", exclude_mark_id=first.id) is False
+    assert main_cue_id_taken(song, "2", exclude_mark_id=first.id) is True
+

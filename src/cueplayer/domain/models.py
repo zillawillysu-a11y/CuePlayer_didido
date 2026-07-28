@@ -305,6 +305,10 @@ class Song:
     now_secondary_visible: bool = True
     # Show the scrolling Cue List table under the NOW cards.
     cue_list_visible: bool = True
+    # Cue List column order (drag headers): time, type, cue_id, note.
+    cue_list_column_order: list[str] = field(
+        default_factory=lambda: ["time", "type", "cue_id", "note"]
+    )
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -481,6 +485,7 @@ class Song:
             now_primary_visible=self.now_primary_visible,
             now_secondary_visible=self.now_secondary_visible,
             cue_list_visible=self.cue_list_visible,
+            cue_list_column_order=list(self.cue_list_column_order),
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
         dup.audio_tracks = [
