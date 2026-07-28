@@ -860,6 +860,7 @@ class CueMonitorPanel(QWidget):
             self.secondary_cue.hide()
             self._secondary_now_column.hide()
             self._apply_now_highlight()
+            self._schedule_now_card_fit()
             return
 
         primary, secondary = self._song.resolve_now_groups()
