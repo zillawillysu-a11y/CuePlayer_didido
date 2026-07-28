@@ -11,6 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QHeaderView
+
 from cueplayer.domain.models import Project, SetlistCategory, Song
 from cueplayer.ui.setlist_sheet_page import (
     build_setlist_sheet_rows,
@@ -33,7 +35,7 @@ def test_format_sheet_bpm() -> None:
     assert format_sheet_bpm(87.5) == "87.5"
 
 
-def test_build_setlist_sheet_rows_order_and_fields() -> None:
+def test_build_setlist_sheet_rows_includes_folder_separators() -> None:
     project = Project.create("Jam")
     project.songs.clear()
     folder = SetlistCategory.create("Encore")
@@ -56,53 +58,68 @@ def test_build_setlist_sheet_rows_order_and_fields() -> None:
     project.songs.extend([a, b, c])
 
     rows = build_setlist_sheet_rows(project)
-    assert [r.name for r in rows] == ["在這裡停一下", "海浪", "乏善可陳"]
+    assert [r.kind for r in rows] == ["song", "song", "folder", "song"]
+    assert [r.name for r in rows] == ["在這裡停一下", "海浪", "Encore", "乏善可陳"]
     assert rows[0].order == "01"
     assert rows[0].english_name == "Stay a While"
-    assert rows[0].start_timecode == "01:00:00:00"
-    assert rows[0].bpm == "87"
-    assert rows[2].order == "08"
+    assert rows[2].is_folder is True
+    assert rows[3].order == "08"
 
 
-def test_sheet_rows_to_tsv_includes_headers() -> None:
+def test_sheet_rows_to_tsv_includes_folder_lines() -> None:
     project = Project.create("Copy")
+    folder = SetlistCategory.create("VIP")
+    project.setlist_categories.append(folder)
     song = project.songs[0]
     song.name = "浴室"
     song.setlist_number = 5
     song.ma_export_name = "Bathroom"
     song.start_timecode = "01:20:00:00"
     song.bpm = 62
+    song.category_id = folder.id
     text = sheet_rows_to_tsv(build_setlist_sheet_rows(project))
     lines = text.strip().split("\n")
     assert lines[0].startswith("曲序\t曲名\t英文名\tTimecode Generator\tBPM")
-    assert "05\t浴室\tBathroom\t01:20:00:00\t62" in lines[1]
+    assert lines[1] == "\t▸ VIP\t\t\t"
+    assert "05\t浴室\tBathroom\t01:20:00:00\t62" in lines[2]
 
 
-def test_setlist_sheet_page_switches_and_copies() -> None:
+def test_setlist_sheet_page_folders_and_resizable_columns() -> None:
     from PySide6.QtWidgets import QApplication
 
     from cueplayer.ui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow(Project.create("Sheet View"))
+    folder = SetlistCategory.create("安可")
+    window.project.setlist_categories.append(folder)
     song = window.project.songs[0]
     song.name = "假設"
     song.ma_export_name = "If Only"
     song.start_timecode = "01:15:00:00"
     song.setlist_number = 4
     song.bpm = 76
+    song.category_id = folder.id
     window._rebuild_song_list(select_indexes=[0])
 
     window.toolbar.set_view_mode("setlist")
     window._set_view_mode("setlist")
+    page = window.setlist_sheet_page
     assert window.view_stack.currentIndex() == 2
-    assert window.setlist_sheet_page.table.rowCount() == 1
-    assert window.setlist_sheet_page.table.item(0, 0).text() == "04"
-    assert window.setlist_sheet_page.table.item(0, 1).text() == "假設"
-    assert window.setlist_sheet_page.table.item(0, 2).text() == "If Only"
-    assert window.setlist_sheet_page.table.item(0, 3).text() == "01:15:00:00"
+    assert page.table.rowCount() == 2
+    assert page.table.item(0, 0).text() == "▸ 安可"
+    assert page.table.columnSpan(0, 0) == 5
+    assert page.table.item(1, 0).text() == "04"
+    assert page.table.item(1, 1).text() == "假設"
 
-    window.setlist_sheet_page.copy_all()
+    header = page.table.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    header.resizeSection(1, 300)
+    assert header.sectionSize(1) == 300
+
+    page.copy_all()
     clip = app.clipboard().text()
+    assert "▸ 安可" in clip
     assert "If Only" in clip
     assert "01:15:00:00" in clip

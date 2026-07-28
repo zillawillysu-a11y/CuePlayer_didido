@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -38,15 +38,27 @@ _HEADERS = (
     "BPM",
 )
 
+_ROLE_KIND = int(Qt.ItemDataRole.UserRole) + 1
+_ROLE_CATEGORY_ID = int(Qt.ItemDataRole.UserRole) + 2
+
+_FOLDER_BG = QColor("#1a1a28")
+_FOLDER_FG = QColor("#a5b4fc")
+
 
 @dataclass(frozen=True)
 class SetlistSheetRow:
-    song_id: str
-    order: str
-    name: str
-    english_name: str
-    start_timecode: str
-    bpm: str
+    kind: str  # "song" | "folder"
+    song_id: str | None = None
+    category_id: str | None = None
+    order: str = ""
+    name: str = ""
+    english_name: str = ""
+    start_timecode: str = ""
+    bpm: str = ""
+
+    @property
+    def is_folder(self) -> bool:
+        return self.kind == "folder"
 
 
 def format_sheet_order(value: float) -> str:
@@ -65,33 +77,37 @@ def format_sheet_bpm(bpm: float | None) -> str:
     return f"{bpm:.3f}".rstrip("0").rstrip(".")
 
 
-def iter_setlist_sheet_songs(project: Project) -> list[Song]:
-    """Songs in sidebar display order (main list, then each folder), ignore collapse."""
-    songs: list[Song] = []
-    for song in project.songs:
-        if not song.category_id:
-            songs.append(song)
-    for category in project.setlist_categories:
-        for song in project.songs:
-            if song.category_id == category.id:
-                songs.append(song)
-    return songs
-
-
 def build_setlist_sheet_rows(project: Project) -> list[SetlistSheetRow]:
+    """Sidebar order: main-list songs, then each Folder header + its songs."""
     rows: list[SetlistSheetRow] = []
-    for song in iter_setlist_sheet_songs(project):
+    for song in project.songs:
+        if song.category_id:
+            continue
+        rows.append(_song_row(song))
+    for category in project.setlist_categories:
         rows.append(
             SetlistSheetRow(
-                song_id=song.id,
-                order=format_sheet_order(song.setlist_number),
-                name=song.name,
-                english_name=(song.ma_export_name or "").strip(),
-                start_timecode=song.start_timecode,
-                bpm=format_sheet_bpm(song.bpm),
+                kind="folder",
+                category_id=category.id,
+                name=category.name.strip() or "Folder",
             )
         )
+        for song in project.songs:
+            if song.category_id == category.id:
+                rows.append(_song_row(song))
     return rows
+
+
+def _song_row(song: Song) -> SetlistSheetRow:
+    return SetlistSheetRow(
+        kind="song",
+        song_id=song.id,
+        order=format_sheet_order(song.setlist_number),
+        name=song.name,
+        english_name=(song.ma_export_name or "").strip(),
+        start_timecode=song.start_timecode,
+        bpm=format_sheet_bpm(song.bpm),
+    )
 
 
 def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = True) -> str:
@@ -99,6 +115,10 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
     if include_header:
         lines.append("\t".join(_HEADERS))
     for row in rows:
+        if row.is_folder:
+            # Folder separator — first column empty, name in 曲名 for Excel readability.
+            lines.append("\t".join(("", f"▸ {row.name}", "", "", "")))
+            continue
         lines.append(
             "\t".join(
                 (
@@ -122,7 +142,7 @@ class SetlistSheetPage(QWidget):
         super().__init__(parent)
         self._project: Project | None = None
         self._suppress = False
-        self._song_ids: list[str] = []
+        self._song_ids: list[str | None] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 8, 12, 8)
@@ -132,8 +152,8 @@ class SetlistSheetPage(QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
         hint = QLabel(
             "Current setlist as a spreadsheet: order, Chinese name, English/MA name, "
-            "Timecode Generator start, BPM. Select cells and Copy (Ctrl+C), or Copy All "
-            "for paste into Excel / grandMA3."
+            "Timecode Generator start, BPM. Folders appear as section rows. "
+            "Drag column edges to resize. Copy All / Ctrl+C for Excel / grandMA3."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -168,12 +188,15 @@ class SetlistSheetPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(_COL_ORDER, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(_COL_EN, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(_COL_TC, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(_COL_BPM, QHeaderView.ResizeMode.ResizeToContents)
+        # User-draggable column widths (Excel-like).
+        header.setSectionsMovable(False)
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(_COL_ORDER, 64)
+        header.resizeSection(_COL_NAME, 220)
+        header.resizeSection(_COL_EN, 220)
+        header.resizeSection(_COL_TC, 150)
+        header.resizeSection(_COL_BPM, 72)
         self.table.setStyleSheet(
             "QTableWidget {"
             "  gridline-color: #3f3f46;"
@@ -204,65 +227,89 @@ class SetlistSheetPage(QWidget):
     def sync_songs(self) -> None:
         if self._project is None:
             self._suppress = True
+            self.table.clearSpans()
             self.table.setRowCount(0)
             self._song_ids = []
             self._suppress = False
             return
         rows = build_setlist_sheet_rows(self._project)
         self._suppress = True
+        self.table.clearSpans()
         self.table.setRowCount(len(rows))
         self._song_ids = [r.song_id for r in rows]
         for r, row in enumerate(rows):
-            order_item = QTableWidgetItem(row.order)
-            order_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            order_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-            )
-            order_item.setData(Qt.ItemDataRole.UserRole, row.song_id)
-
-            name_item = QTableWidgetItem(row.name)
-            name_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
-            )
-
-            en_item = QTableWidgetItem(row.english_name)
-            en_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
-            )
-            en_item.setToolTip("English / MA export name (ASCII; no Chinese in MA XML)")
-
-            tc_item = QTableWidgetItem(row.start_timecode)
-            tc_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            tc_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
-            )
-            tc_item.setToolTip("Timecode Generator start for this song (HH:MM:SS:FF)")
-
-            bpm_item = QTableWidgetItem(row.bpm)
-            bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            bpm_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
-            )
-
-            self.table.setItem(r, _COL_ORDER, order_item)
-            self.table.setItem(r, _COL_NAME, name_item)
-            self.table.setItem(r, _COL_EN, en_item)
-            self.table.setItem(r, _COL_TC, tc_item)
-            self.table.setItem(r, _COL_BPM, bpm_item)
+            if row.is_folder:
+                self._fill_folder_row(r, row)
+                continue
+            self._fill_song_row(r, row)
         self._suppress = False
+
+    def _fill_folder_row(self, r: int, row: SetlistSheetRow) -> None:
+        label = f"▸ {row.name}"
+        item = QTableWidgetItem(label)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        item.setData(_ROLE_KIND, "folder")
+        item.setData(_ROLE_CATEGORY_ID, row.category_id or "")
+        item.setBackground(QBrush(_FOLDER_BG))
+        item.setForeground(QBrush(_FOLDER_FG))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setToolTip("Setlist Folder — separates this section in the sheet")
+        self.table.setItem(r, _COL_ORDER, item)
+        self.table.setSpan(r, _COL_ORDER, 1, _COL_COUNT)
+
+    def _fill_song_row(self, r: int, row: SetlistSheetRow) -> None:
+        order_item = QTableWidgetItem(row.order)
+        order_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        order_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        order_item.setData(Qt.ItemDataRole.UserRole, row.song_id)
+        order_item.setData(_ROLE_KIND, "song")
+
+        name_item = QTableWidgetItem(row.name)
+        name_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+
+        en_item = QTableWidgetItem(row.english_name)
+        en_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        en_item.setToolTip("English / MA export name (ASCII; no Chinese in MA XML)")
+
+        tc_item = QTableWidgetItem(row.start_timecode)
+        tc_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        tc_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        tc_item.setToolTip("Timecode Generator start for this song (HH:MM:SS:FF)")
+
+        bpm_item = QTableWidgetItem(row.bpm)
+        bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        bpm_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEditable
+        )
+
+        self.table.setItem(r, _COL_ORDER, order_item)
+        self.table.setItem(r, _COL_NAME, name_item)
+        self.table.setItem(r, _COL_EN, en_item)
+        self.table.setItem(r, _COL_TC, tc_item)
+        self.table.setItem(r, _COL_BPM, bpm_item)
 
     def _song_at_row(self, row: int) -> Song | None:
         if self._project is None or row < 0 or row >= len(self._song_ids):
             return None
         song_id = self._song_ids[row]
+        if not song_id:
+            return None
         return next((s for s in self._project.songs if s.id == song_id), None)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -369,7 +416,6 @@ class SetlistSheetPage(QWidget):
         if not ranges:
             self.copy_all()
             return
-        # Build a rectangular TSV covering the union of selected ranges.
         top = min(r.topRow() for r in ranges)
         bottom = max(r.bottomRow() for r in ranges)
         left = min(r.leftColumn() for r in ranges)
@@ -382,6 +428,23 @@ class SetlistSheetPage(QWidget):
         lines.append("\t".join(header_slice))
         for row in range(top, bottom + 1):
             cells: list[str] = []
+            # Folder rows use a column span — expose the label in the first selected col.
+            kind_item = self.table.item(row, _COL_ORDER)
+            is_folder = (
+                kind_item is not None
+                and kind_item.data(_ROLE_KIND) == "folder"
+            )
+            if is_folder:
+                label = kind_item.text() if kind_item is not None else ""
+                for col in range(left, right + 1):
+                    if (row, col) not in selected and col != left:
+                        cells.append("")
+                    elif col == left:
+                        cells.append(label)
+                    else:
+                        cells.append("")
+                lines.append("\t".join(cells))
+                continue
             for col in range(left, right + 1):
                 if (row, col) not in selected:
                     cells.append("")
