@@ -235,8 +235,20 @@ class CueMonitorPanel(QWidget):
         secondary_col_layout.addWidget(self.secondary_cue, stretch=1)
 
         self._now_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._now_splitter.setObjectName("nowSplitter")
         self._now_splitter.setChildrenCollapsible(False)
-        self._now_splitter.setHandleWidth(6)
+        self._now_splitter.setHandleWidth(8)
+        self._now_splitter.setStyleSheet(
+            "#nowSplitter::handle {"
+            "  background: transparent;"
+            "  border: none;"
+            "  margin: 0;"
+            "  padding: 0;"
+            "}"
+            "#nowSplitter::handle:hover {"
+            "  background: rgba(74, 158, 255, 0.35);"
+            "}"
+        )
         self._now_splitter.addWidget(self._primary_now_column)
         self._now_splitter.addWidget(self._secondary_now_column)
         self._now_splitter.setStretchFactor(0, 1)
@@ -394,7 +406,7 @@ class CueMonitorPanel(QWidget):
 
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
-        handle = self._now_splitter.handle(0)
+        handle = self._now_splitter.handle(1)
         if show_secondary:
             handle.setEnabled(True)
             sizes = self._now_splitter.sizes()
