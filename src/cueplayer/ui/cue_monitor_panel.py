@@ -90,12 +90,10 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
     size = "18px" if secondary else "22px"
-    min_h = "84px"
     return (
         f"color: #e4e4e7; font-size: {size}; font-weight: 600;"
         f"padding: 14px 12px; line-height: 1.35;"
         f"background: #141416; border-radius: 6px; border-left: 5px solid {accent};"
-        f"min-height: {min_h};"
     )
 
 
@@ -202,14 +200,22 @@ class CueMonitorPanel(QWidget):
         self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
         self.primary_cue = QLabel("—")
         self.primary_cue.setWordWrap(True)
-        self.primary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.primary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.primary_cue.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self.primary_cue.setMinimumHeight(84)
         self.primary_cue.setStyleSheet(_now_card_style("#ff5a5f"))
 
         self.secondary_track = QLabel("SECONDARY")
         self.secondary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
         self.secondary_cue = QLabel("—")
         self.secondary_cue.setWordWrap(True)
-        self.secondary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.secondary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.secondary_cue.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self.secondary_cue.setMinimumHeight(84)
         self.secondary_cue.setStyleSheet(_now_card_style("#52525b", secondary=True))
 
         self._now_section = QWidget()
@@ -227,7 +233,7 @@ class CueMonitorPanel(QWidget):
         primary_col_layout.addWidget(self.primary_cue, stretch=1)
 
         self._secondary_now_column = QWidget()
-        self._secondary_now_column.setMinimumWidth(80)
+        self._secondary_now_column.setMinimumWidth(72)
         secondary_col_layout = QVBoxLayout(self._secondary_now_column)
         secondary_col_layout.setContentsMargins(0, 0, 0, 0)
         secondary_col_layout.setSpacing(6)
@@ -251,9 +257,10 @@ class CueMonitorPanel(QWidget):
         )
         self._now_splitter.addWidget(self._primary_now_column)
         self._now_splitter.addWidget(self._secondary_now_column)
-        self._now_splitter.setStretchFactor(0, 1)
+        self._now_splitter.setStretchFactor(0, 3)
         self._now_splitter.setStretchFactor(1, 1)
-        self._now_splitter.setSizes([200, 140])
+        self._now_splitter.setSizes([260, 100])
+        self._now_splitter.splitterMoved.connect(lambda *_: self._schedule_now_card_fit())
         now_layout.addWidget(self._now_splitter)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
@@ -412,7 +419,7 @@ class CueMonitorPanel(QWidget):
             sizes = self._now_splitter.sizes()
             if len(sizes) == 2 and sizes[1] <= 0:
                 total = max(sum(sizes), self._now_splitter.width(), 320)
-                self._now_splitter.setSizes([int(total * 0.58), int(total * 0.42)])
+                self._now_splitter.setSizes([int(total * 0.72), int(total * 0.28)])
         else:
             handle.setEnabled(False)
             total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
@@ -425,8 +432,30 @@ class CueMonitorPanel(QWidget):
         if raw:
             self._now_splitter.restoreState(raw)
         else:
-            self._now_splitter.setSizes([200, 140])
+            self._now_splitter.setSizes([260, 100])
         self._sync_now_splitter_visibility()
+        self._schedule_now_card_fit()
+
+    def _schedule_now_card_fit(self) -> None:
+        QTimer.singleShot(0, self._fit_now_cards)
+
+    def _fit_now_cards(self) -> None:
+        """Grow card height so wrapped Note text is not clipped."""
+        cards = [self.primary_cue, self.secondary_cue]
+        needed = 84
+        for card in cards:
+            if not card.isVisible():
+                continue
+            width = max(40, card.width())
+            height = card.heightForWidth(width)
+            if height <= 0:
+                height = card.sizeHint().height()
+            needed = max(needed, height)
+        for card in cards:
+            if card.isVisible():
+                card.setMinimumHeight(needed)
+            else:
+                card.setMinimumHeight(84)
 
     def _apply_cue_list_visibility(self) -> None:
         visible = self._song is None or bool(self._song.cue_list_visible)
@@ -858,6 +887,7 @@ class CueMonitorPanel(QWidget):
         self._current_mark_ids = active_ids
         self._apply_now_highlight()
         del changed, scroll_id
+        self._schedule_now_card_fit()
         self._follow_cue_list_to_playhead()
 
     def _follow_cue_list_to_playhead(self) -> None:
