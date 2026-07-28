@@ -12,7 +12,7 @@ if sys.platform == "win32":
 
 def main() -> int:
     from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
 
     from cueplayer.ui.main_window import MainWindow
     from cueplayer.ui.theme import apply_dark_palette, build_stylesheet
