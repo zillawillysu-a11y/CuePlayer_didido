@@ -1001,6 +1001,18 @@ class TimelineWidget(QWidget):
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
         self.setFocus(Qt.FocusReason.MouseFocusReason)
 
+    def _cursor_for_mark_hover(self, x: float, y: float) -> Qt.CursorShape:
+        if not self._setup_mode:
+            return Qt.CursorShape.PointingHandCursor
+        if self._in_mark_tracks(x, y):
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.ArrowCursor
+
+    def _cursor_for_loop_hover(self, x: float, y: float) -> Qt.CursorShape:
+        if self._in_waveform(x, y):
+            return Qt.CursorShape.ArrowCursor
+        return Qt.CursorShape.SizeHorCursor
+
     def _restore_hover_cursor(self, x: float, y: float) -> None:
         from PySide6.QtWidgets import QApplication
 
@@ -1013,13 +1025,9 @@ class TimelineWidget(QWidget):
         elif self._near_video_lane_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif self._hit_loop_handle(x, y) is not None:
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            self.setCursor(self._cursor_for_loop_hover(x, y))
         elif self._hit_mark_at(x, y) is not None:
-            self.setCursor(
-                Qt.CursorShape.SizeHorCursor
-                if self._setup_mode
-                else Qt.CursorShape.PointingHandCursor
-            )
+            self.setCursor(self._cursor_for_mark_hover(x, y))
         elif clip_hit is not None:
             self.setCursor(
                 Qt.CursorShape.SizeHorCursor
@@ -1029,7 +1037,7 @@ class TimelineWidget(QWidget):
         elif self._box_select_mode and self._in_mark_tracks(x, y):
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif self._in_scrub_zone(x, y):
-            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
@@ -1327,6 +1335,7 @@ class TimelineWidget(QWidget):
         self,
         hit_id: str,
         x: float,
+        y: float,
         *,
         shift: bool,
         ctrl: bool,
@@ -1379,11 +1388,7 @@ class TimelineWidget(QWidget):
         self._drag_origin_x = x
         self._view_pinned = True
         self.grabMouse()
-        self.setCursor(
-            Qt.CursorShape.SizeHorCursor
-            if self._setup_mode
-            else Qt.CursorShape.PointingHandCursor
-        )
+        self.setCursor(self._cursor_for_mark_hover(x, y))
         self.update()
 
     def _begin_video_clip_interaction(
@@ -1670,11 +1675,11 @@ class TimelineWidget(QWidget):
                 self._loop_drag_origin_x = x
                 self._view_pinned = True
                 self.grabMouse()
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.setCursor(self._cursor_for_loop_hover(x, y))
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 self.update()
             elif (hit_id := self._hit_mark_at(x, y)) is not None:
-                self._begin_mark_interaction(hit_id, x, shift=shift, ctrl=ctrl)
+                self._begin_mark_interaction(hit_id, x, y, shift=shift, ctrl=ctrl)
             elif (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 self._begin_video_clip_interaction(
@@ -1701,7 +1706,7 @@ class TimelineWidget(QWidget):
                 self.grabMouse()
                 self._scrub_at(x, force=True)
                 self._scrub_timer.start()
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             elif self._in_mark_tracks(x, y):
                 self.clear_selection()
             elif x >= self._header_width:
@@ -1799,13 +1804,9 @@ class TimelineWidget(QWidget):
             if hover:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif loop_h is not None:
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.setCursor(self._cursor_for_loop_hover(x, y))
             elif hit is not None:
-                self.setCursor(
-                    Qt.CursorShape.SizeHorCursor
-                    if self._setup_mode
-                    else Qt.CursorShape.PointingHandCursor
-                )
+                self.setCursor(self._cursor_for_mark_hover(x, y))
             elif clip_hit is not None:
                 self.setCursor(
                     Qt.CursorShape.SizeHorCursor
@@ -1819,7 +1820,7 @@ class TimelineWidget(QWidget):
                     else Qt.CursorShape.ArrowCursor
                 )
             elif self._in_scrub_zone(x, y):
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             elif not self._scrubbing and not self._resizing_wave and not self._resizing_video_lane and not self._box_selecting and not self._panning:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
