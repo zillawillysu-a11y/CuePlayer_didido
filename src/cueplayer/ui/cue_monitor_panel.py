@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -114,6 +114,7 @@ class CueMonitorPanel(QWidget):
     cue_id_changed = Signal(str, str, str)  # mark_id, old_id, new_id
     cue_id_edit_failed = Signal(str)  # user-facing reason
     cue_list_layout_changed = Signal()
+    renumber_cue_ids_requested = Signal()
     now_visibility_changed = Signal()
     cue_list_visibility_changed = Signal()
 
@@ -252,6 +253,7 @@ class CueMonitorPanel(QWidget):
         self.cue_table.cellClicked.connect(self._on_cell_clicked)
         self.cue_table.itemChanged.connect(self._on_item_changed)
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.cue_table.installEventFilter(self)
 
         layout.addWidget(clock_frame)
         layout.addWidget(self._now_section)
@@ -372,6 +374,23 @@ class CueMonitorPanel(QWidget):
         show_list.setChecked(bool(self._song.cue_list_visible))
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
+        from cueplayer.domain.main_cue_id import capture_main_cue_ids
+
+        renumber = QAction("Renumber Cue IDs (1, 2, 3…)", self)
+        renumber.setEnabled(bool(capture_main_cue_ids(self._song)))
+        renumber.triggered.connect(self.renumber_cue_ids_requested.emit)
+        menu.addSeparator()
+        menu.addAction(renumber)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
+        if obj is self.cue_table and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if self.cue_table.state() != QAbstractItemView.State.EditingState:
+                    ids = self.selected_mark_ids()
+                    if ids:
+                        self.delete_requested.emit(ids)
+                        return True
+        return super().eventFilter(obj, event)
 
     def _show_now_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:

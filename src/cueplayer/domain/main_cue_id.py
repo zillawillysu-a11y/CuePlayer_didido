@@ -208,6 +208,36 @@ def main_cue_id_taken(song: Song, cue_id: str, *, exclude_mark_id: str) -> bool:
     return False
 
 
+def capture_main_cue_ids(song: Song) -> dict[str, str]:
+    """Snapshot main-lane mark_id -> main_cue_id."""
+    main_index = song.main_lane_index()
+    if main_index is None:
+        return {}
+    return {
+        mark.id: mark.main_cue_id
+        for mark in song.marks
+        if mark.lane_index == main_index
+    }
+
+
+def apply_main_cue_ids(song: Song, ids: dict[str, str]) -> None:
+    for mark_id, cue_id in ids.items():
+        mark = song.mark_by_id(mark_id)
+        if mark is not None:
+            mark.main_cue_id = cue_id
+
+
+def renumber_main_cue_ids_sequential(song: Song) -> dict[str, str]:
+    """Assign 1, 2, 3… to main marks in time order; return resulting map."""
+    main_marks = song.main_marks_sorted()
+    result: dict[str, str] = {}
+    for index, mark in enumerate(main_marks, start=1):
+        new_id = str(index)
+        mark.main_cue_id = new_id
+        result[mark.id] = new_id
+    return result
+
+
 def main_cue_id_map(song: Song) -> dict[str, str]:
     """Display map mark_id -> cue id string (main lane only)."""
     main_index = song.main_lane_index()

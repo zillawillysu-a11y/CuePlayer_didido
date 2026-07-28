@@ -141,6 +141,23 @@ class EditMainCueIdCommand:
             mark.main_cue_id = self.new_id
 
 
+@dataclass
+class RenumberMainCueIdsCommand:
+    before: dict[str, str]
+    after: dict[str, str]
+    label: str = "Renumber Cue IDs"
+
+    def undo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.before)
+
+    def redo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.after)
+
+
 @dataclass(frozen=True)
 class VideoClipSnapshot:
     id: str
@@ -355,22 +372,36 @@ class SetlistEditCommand:
 
 @dataclass
 class SongScopedCommand:
-    """Adapter: legacy mark/clip commands that operate on a single Song."""
+    """Adapter: mark/clip commands that operate on one song by id."""
 
     command: Any
+    song_id: str = ""
 
     @property
     def label(self) -> str:
         return str(self.command.label)
 
+    def _song(self, ctx: UndoContext) -> Song | None:
+        if self.song_id:
+            for song in ctx.project.songs:
+                if song.id == self.song_id:
+                    return song
+            return None
+        return ctx.song
+
     def undo(self, ctx: UndoContext) -> None:
-        self.command.undo(ctx.song)
+        song = self._song(ctx)
+        if song is not None:
+            self.command.undo(song)
 
     def redo(self, ctx: UndoContext) -> None:
-        self.command.redo(ctx.song)
+        song = self._song(ctx)
+        if song is not None:
+            self.command.redo(song)
 
 
 _ContextCommand = SetlistEditCommand | SongScopedCommand
+UndoStepResult = tuple[str, SetlistEditCommand | None, str | None]
 
 
 class UndoStack:
@@ -387,11 +418,11 @@ class UndoStack:
         self._undo = [c for c in self._undo if isinstance(c, SetlistEditCommand)]
         self._redo.clear()
 
-    def push(self, command: Any) -> None:
+    def push(self, command: Any, *, song_id: str | None = None) -> None:
         if isinstance(command, SetlistEditCommand):
             wrapped: _ContextCommand = command
         else:
-            wrapped = SongScopedCommand(command)
+            wrapped = SongScopedCommand(command=command, song_id=str(song_id or ""))
         self._undo.append(wrapped)
         if len(self._undo) > self._limit:
             self._undo.pop(0)
@@ -403,7 +434,7 @@ class UndoStack:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def undo(self, ctx: UndoContext | Song) -> tuple[str, SetlistEditCommand | None] | str | None:
+    def undo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
         """Undo one step. Pass UndoContext for UI; pass Song for legacy domain tests."""
         if isinstance(ctx, Song):
             song = ctx
@@ -414,7 +445,7 @@ class UndoStack:
             return result[0] if result is not None else None
         return self._undo_one(ctx)
 
-    def redo(self, ctx: UndoContext | Song) -> tuple[str, SetlistEditCommand | None] | str | None:
+    def redo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
         if isinstance(ctx, Song):
             song = ctx
             project = Project.create("_undo")
@@ -424,24 +455,22 @@ class UndoStack:
             return result[0] if result is not None else None
         return self._redo_one(ctx)
 
-    def _undo_one(
-        self, ctx: UndoContext
-    ) -> tuple[str, SetlistEditCommand | None] | None:
+    def _undo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._undo:
             return None
         command = self._undo.pop()
         command.undo(ctx)
         self._redo.append(command)
         setlist = command if isinstance(command, SetlistEditCommand) else None
-        return command.label, setlist
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id
 
-    def _redo_one(
-        self, ctx: UndoContext
-    ) -> tuple[str, SetlistEditCommand | None] | None:
+    def _redo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._redo:
             return None
         command = self._redo.pop()
         command.redo(ctx)
         self._undo.append(command)
         setlist = command if isinstance(command, SetlistEditCommand) else None
-        return command.label, setlist
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id
