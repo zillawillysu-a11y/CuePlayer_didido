@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from cueplayer.domain.models import Mark, Song
+from cueplayer.domain.models import Mark, MarkLane, Song
 
 
 def _to_decimal(cue_id: str) -> Decimal:
@@ -261,15 +261,44 @@ def main_cue_id_order_hint(song: Song, mark_id: str) -> str:
     return "Cue ID must be a positive number"
 
 
-def capture_main_cue_ids(song: Song) -> dict[str, str]:
-    """Snapshot main-lane mark_id -> main_cue_id."""
-    main_index = song.main_lane_index()
-    if main_index is None:
+def renumberable_cue_list_lanes(song: Song) -> list[MarkLane]:
+    """Main lanes in the Cue List that have marks (Button lanes are excluded)."""
+    lanes: list[MarkLane] = []
+    for lane in song.mark_lanes:
+        if lane.lane_type != "main" or not lane.cue_list_enabled:
+            continue
+        if any(mark.lane_index == lane.index for mark in song.marks):
+            lanes.append(lane)
+    return sorted(lanes, key=lambda item: item.index)
+
+
+def main_marks_sorted_for_lane(song: Song, lane_index: int) -> list[Mark]:
+    return sorted(
+        (m for m in song.marks if m.lane_index == lane_index),
+        key=lambda m: (m.time_seconds, m.lane_index, m.id),
+    )
+
+
+def _renumber_lane_indices(song: Song, lane_indices: set[int] | None) -> set[int]:
+    if lane_indices is not None:
+        allowed = {lane.index for lane in renumberable_cue_list_lanes(song)}
+        return {index for index in lane_indices if index in allowed}
+    return {lane.index for lane in renumberable_cue_list_lanes(song)}
+
+
+def capture_main_cue_ids(
+    song: Song,
+    *,
+    lane_indices: set[int] | None = None,
+) -> dict[str, str]:
+    """Snapshot mark_id -> main_cue_id for renumberable Cue List main lanes."""
+    indices = _renumber_lane_indices(song, lane_indices)
+    if not indices:
         return {}
     return {
         mark.id: mark.main_cue_id
         for mark in song.marks
-        if mark.lane_index == main_index
+        if mark.lane_index in indices
     }
 
 
@@ -280,14 +309,23 @@ def apply_main_cue_ids(song: Song, ids: dict[str, str]) -> None:
             mark.main_cue_id = cue_id
 
 
-def renumber_main_cue_ids_sequential(song: Song) -> dict[str, str]:
-    """Assign 1, 2, 3… to main marks in time order; return resulting map."""
-    main_marks = song.main_marks_sorted()
+def renumber_main_cue_ids_sequential(
+    song: Song,
+    *,
+    lane_indices: set[int] | None = None,
+) -> dict[str, str]:
+    """Assign 1, 2, 3… per lane in time order; return resulting map.
+
+    When ``lane_indices`` is None, all Cue List main lanes are renumbered.
+    Button lanes and main lanes excluded from the Cue List are skipped.
+    """
+    indices = sorted(_renumber_lane_indices(song, lane_indices))
     result: dict[str, str] = {}
-    for index, mark in enumerate(main_marks, start=1):
-        new_id = str(index)
-        mark.main_cue_id = new_id
-        result[mark.id] = new_id
+    for lane_index in indices:
+        for index, mark in enumerate(main_marks_sorted_for_lane(song, lane_index), start=1):
+            new_id = str(index)
+            mark.main_cue_id = new_id
+            result[mark.id] = new_id
     return result
 
 
