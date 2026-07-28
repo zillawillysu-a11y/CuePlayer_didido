@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from cueplayer.domain.models import Project, Song
 from cueplayer.exporters.common import sanitize_ma_name
+from cueplayer.exporters.show_patch import SongPatchSlot, build_show_patch
 from cueplayer.ui.song_edit_dialog import (
     format_setlist_number,
     normalize_timecode,
@@ -30,15 +31,19 @@ from cueplayer.ui.song_edit_dialog import (
 _COL_ORDER = 0
 _COL_NAME = 1
 _COL_EN = 2
-_COL_TC = 3
-_COL_BPM = 4
-_COL_NOTE = 5
-_COL_COUNT = 6
+_COL_SEQ = 3
+_COL_CUE_ID = 4
+_COL_TC = 5
+_COL_BPM = 6
+_COL_NOTE = 7
+_COL_COUNT = 8
 
 _HEADERS = (
     "曲序",
     "曲名",
     "英文名",
+    "Seq",
+    "Cue ID",
     "Timecode Generator",
     "BPM",
     "Note",
@@ -61,6 +66,8 @@ class SetlistSheetRow:
     english_name: str = ""
     start_timecode: str = ""
     bpm: str = ""
+    seq: str = ""
+    cue_id: str = ""
     note: str = ""
 
     @property
@@ -84,13 +91,36 @@ def format_sheet_bpm(bpm: float | None) -> str:
     return f"{bpm:.3f}".rstrip("0").rstrip(".")
 
 
+def iter_setlist_sheet_songs(project: Project) -> list[Song]:
+    """Songs in sidebar display order (main list, then each folder)."""
+    songs: list[Song] = []
+    for song in project.songs:
+        if not song.category_id:
+            songs.append(song)
+    for category in project.setlist_categories:
+        for song in project.songs:
+            if song.category_id == category.id:
+                songs.append(song)
+    return songs
+
+
+def build_sheet_patch_lookup(project: Project) -> dict[str, SongPatchSlot]:
+    """MA Sequence pool + Cue ID per song (same order as the sheet / Export chain)."""
+    ordered = iter_setlist_sheet_songs(project)
+    if not ordered:
+        return {}
+    slots = build_show_patch(ordered, project.ma_export)
+    return {slot.song.id: slot for slot in slots}
+
+
 def build_setlist_sheet_rows(project: Project) -> list[SetlistSheetRow]:
     """Sidebar order: main-list songs, then each Folder header + its songs."""
+    patch = build_sheet_patch_lookup(project)
     rows: list[SetlistSheetRow] = []
     for song in project.songs:
         if song.category_id:
             continue
-        rows.append(_song_row(song))
+        rows.append(_song_row(song, patch.get(song.id)))
     for category in project.setlist_categories:
         rows.append(
             SetlistSheetRow(
@@ -101,11 +131,13 @@ def build_setlist_sheet_rows(project: Project) -> list[SetlistSheetRow]:
         )
         for song in project.songs:
             if song.category_id == category.id:
-                rows.append(_song_row(song))
+                rows.append(_song_row(song, patch.get(song.id)))
     return rows
 
 
-def _song_row(song: Song) -> SetlistSheetRow:
+def _song_row(song: Song, slot: SongPatchSlot | None = None) -> SetlistSheetRow:
+    seq = str(slot.main_sequence) if slot is not None else ""
+    cue_id = slot.main_sequence_name if slot is not None else ""
     return SetlistSheetRow(
         kind="song",
         song_id=song.id,
@@ -114,6 +146,8 @@ def _song_row(song: Song) -> SetlistSheetRow:
         english_name=(song.ma_export_name or "").strip(),
         start_timecode=song.start_timecode,
         bpm=format_sheet_bpm(song.bpm),
+        seq=seq,
+        cue_id=cue_id,
         note=(song.note or "").strip(),
     )
 
@@ -124,7 +158,7 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
         lines.append("\t".join(_HEADERS))
     for row in rows:
         if row.is_folder:
-            lines.append("\t".join(("", f"▸ {row.name}", "", "", "", "")))
+            lines.append("\t".join(("", f"▸ {row.name}", "", "", "", "", "", "")))
             continue
         lines.append(
             "\t".join(
@@ -132,6 +166,8 @@ def sheet_rows_to_tsv(rows: list[SetlistSheetRow], *, include_header: bool = Tru
                     row.order,
                     row.name,
                     row.english_name,
+                    row.seq,
+                    row.cue_id,
                     row.start_timecode,
                     row.bpm,
                     row.note,
@@ -159,9 +195,10 @@ class SetlistSheetPage(QWidget):
         title = QLabel("Set List Sheet")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
         hint = QLabel(
-            "Spreadsheet of the current show: 曲序, 曲名, 英文名, Timecode Generator, "
-            "BPM, Note. Folders appear as section rows. Drag column edges to resize. "
-            "Double-click cells to edit. Copy All / Ctrl+C for Excel / grandMA3."
+            "Spreadsheet of the current show: 曲序, 曲名, 英文名, Seq, Cue ID "
+            "(MA Main Sequence), Timecode Generator, BPM, Note. Folders appear as "
+            "section rows. Drag column edges to resize. Double-click cells to edit. "
+            "Copy All / Ctrl+C for Excel / grandMA3."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -201,11 +238,13 @@ class SetlistSheetPage(QWidget):
         header.setMinimumSectionSize(40)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.resizeSection(_COL_ORDER, 64)
-        header.resizeSection(_COL_NAME, 200)
-        header.resizeSection(_COL_EN, 180)
-        header.resizeSection(_COL_TC, 150)
-        header.resizeSection(_COL_BPM, 64)
-        header.resizeSection(_COL_NOTE, 220)
+        header.resizeSection(_COL_NAME, 180)
+        header.resizeSection(_COL_EN, 160)
+        header.resizeSection(_COL_SEQ, 56)
+        header.resizeSection(_COL_CUE_ID, 160)
+        header.resizeSection(_COL_TC, 140)
+        header.resizeSection(_COL_BPM, 56)
+        header.resizeSection(_COL_NOTE, 180)
         self.table.setStyleSheet(
             "QTableWidget {"
             "  gridline-color: #3f3f46;"
@@ -295,6 +334,15 @@ class SetlistSheetPage(QWidget):
         )
         en_item.setToolTip("English / MA export name (ASCII; no Chinese in MA XML)")
 
+        seq_item = QTableWidgetItem(row.seq)
+        seq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        seq_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        seq_item.setToolTip("MA Sequence pool number (Main track — matches Export page)")
+
+        cue_item = QTableWidgetItem(row.cue_id)
+        cue_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        cue_item.setToolTip("MA Main Sequence name (e.g. SongName_Main)")
+
         tc_item = QTableWidgetItem(row.start_timecode)
         tc_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         tc_item.setFlags(
@@ -323,6 +371,8 @@ class SetlistSheetPage(QWidget):
         self.table.setItem(r, _COL_ORDER, order_item)
         self.table.setItem(r, _COL_NAME, name_item)
         self.table.setItem(r, _COL_EN, en_item)
+        self.table.setItem(r, _COL_SEQ, seq_item)
+        self.table.setItem(r, _COL_CUE_ID, cue_item)
         self.table.setItem(r, _COL_TC, tc_item)
         self.table.setItem(r, _COL_BPM, bpm_item)
         self.table.setItem(r, _COL_NOTE, note_item)

@@ -37,25 +37,26 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-07-28)
 
-**Laptop tip branch (all of today stacked):** `cursor/setlist-columns-note-028d`
+**Laptop tip branch (latest):** `cursor/setlist-sheet-cue-id-028d`
 
 ```powershell
 git fetch origin
-git checkout cursor/setlist-columns-note-028d
+git checkout cursor/setlist-sheet-cue-id-028d
 git pull
 pip install -e ".[dev,midi]"
 python -m cueplayer.app
 ```
 
 **Shipped today (PR stack, not all merged to master yet):**
-- Set List Sheet (Timeline 旁): 曲序/曲名/英文名/TC/BPM/Note、Folder 分隔、欄寬可拖、曲序可改
+- Set List Sheet: 曲序/曲名/英文名/**Seq/Cue ID**/TC/BPM/Note、Folder 分隔、欄寬可拖、曲序可改
 - 左邊 Setlist 欄寬可拖
 - Video+LTC 眼睛固定在 Music、整場全域開/關
 - 深色啟動 Splash（避免大白）
 
 **Asked today but NOT done yet:**
 1. LTC 畫波形：有些歌 Reaper 乾淨、CuePlayer 仍毛（檔案本身髒的除外）— 尚未對齊 Reaper 顯示
-2. 上述 PR 尚未全部 merge 進 `master`（筆電請先 checkout tip 分支）
+2. MA Export Preview／命名策略 UI（規格裡的 Cue ID 自動翻譯／拼音選項）— 尚未做
+3. 上述 PR 尚未全部 merge 進 `master`（筆電請先 checkout tip 分支）
 
 Older still-open: multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview/Validation; NDI only after cue accuracy is solid.
 
