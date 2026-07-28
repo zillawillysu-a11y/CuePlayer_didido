@@ -44,6 +44,7 @@ class MarkDisplayDialog(QDialog):
         self._song = song
         self._project = project
         self._now_groups: dict[int, QButtonGroup] = {}
+        self._cue_list_boxes: dict[int, QCheckBox] = {}
 
         layout = QVBoxLayout(self)
         hint = QLabel(
@@ -234,7 +235,7 @@ class MarkDisplayDialog(QDialog):
         primary, secondary = self._song.configured_now_groups()
         primary_set = set(primary)
         secondary_set = set(secondary)
-        header = QLabel("Track                Off Screen    Primary    Secondary")
+        header = QLabel("Track                Off Screen    Primary    Secondary    Cue List")
         header.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.now_list.addWidget(header)
 
@@ -263,10 +264,17 @@ class MarkDisplayDialog(QDialog):
             group.idClicked.connect(lambda _id: self._apply())
             self._now_groups[lane.index] = group
 
+            cue_list_box = QCheckBox()
+            cue_list_box.setChecked(lane.cue_list_enabled)
+            cue_list_box.setToolTip("Include this lane in the scrolling Cue List table")
+            cue_list_box.toggled.connect(self._apply)
+            self._cue_list_boxes[lane.index] = cue_list_box
+
             row_layout.addWidget(name, stretch=1)
             row_layout.addWidget(none_btn)
             row_layout.addWidget(primary_btn)
             row_layout.addWidget(secondary_btn)
+            row_layout.addWidget(cue_list_box)
             self.now_list.addWidget(row)
 
     def _collect_now_lanes(self) -> tuple[list[int], list[int]]:
@@ -340,4 +348,8 @@ class MarkDisplayDialog(QDialog):
         self._song.now_secondary_lanes = secondary
         self._song.now_secondary_enabled = self.secondary_enabled_box.isChecked()
         self._song.now_secondary_clear_seconds = float(self.secondary_clear_spin.value())
+        for lane in self._song.mark_lanes:
+            cue_list_box = self._cue_list_boxes.get(lane.index)
+            if cue_list_box is not None:
+                lane.cue_list_enabled = cue_list_box.isChecked()
         self.settings_changed.emit()
