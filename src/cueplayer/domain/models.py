@@ -747,6 +747,10 @@ class CleanVideoOutputSettings:
     width: int = 1920
     height: int = 1080
     aspect_locked: bool = True
+    # When True, reopen this window on next launch / project open so OBS Window
+    # Capture keeps targeting "CuePlayer Clean Video Output" instead of the
+    # main UI.
+    was_open: bool = False
 
 
 def default_channel_routing(output_channels: int) -> tuple[list[int], list[int], list[int]]:

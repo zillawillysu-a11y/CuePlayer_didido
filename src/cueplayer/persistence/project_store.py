@@ -178,6 +178,7 @@ def clean_video_output_to_dict(settings: CleanVideoOutputSettings) -> dict[str, 
         "width": int(settings.width),
         "height": int(settings.height),
         "aspect_locked": bool(settings.aspect_locked),
+        "was_open": bool(settings.was_open),
     }
 
 
@@ -201,6 +202,7 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
         width=width,
         height=height,
         aspect_locked=bool(raw.get("aspect_locked", default.aspect_locked)),
+        was_open=bool(raw.get("was_open", default.was_open)),
     )
 
 

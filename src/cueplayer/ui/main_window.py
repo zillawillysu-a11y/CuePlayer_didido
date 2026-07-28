@@ -129,6 +129,7 @@ _SETTINGS_APP = "CuePlayer"
 _KEY_AUTOSAVE_ENABLED = "autosave/enabled"
 _KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
 _KEY_BACKUP_KEEP = "autosave/backup_keep"
+_KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
 _DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
 
 
@@ -551,6 +552,7 @@ class MainWindow(QMainWindow):
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
+        self._block_clean_output_visibility_persist = False
 
         self.engine = AudioEngine(self)
         self.engine.set_duration(self.current_song.duration_seconds)
@@ -798,6 +800,7 @@ class MainWindow(QMainWindow):
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
+        self.clean_output_window.visibility_changed.connect(self._persist_clean_output_was_open)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
@@ -837,6 +840,7 @@ class MainWindow(QMainWindow):
             self._load_audio_path(demo, mark_dirty=False)
             self._set_clean()
         QTimer.singleShot(0, self._sync_timeline_geometry)
+        self._restore_clean_output_visibility()
         self._sync_video_output_active()
 
     def _video_preview_visible(self) -> bool:
@@ -1296,6 +1300,8 @@ class MainWindow(QMainWindow):
         self.clean_output_window.apply_settings(self.project.clean_video_output)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self._sync_video_decode_quality_ui()
+        self._restore_clean_output_visibility()
+        self._sync_video_output_active()
         self._refresh_timecode_status()
         self._rebuild_song_list(select_indexes=[0])
         self._activate_song(0, stop_playback=True)
@@ -2593,6 +2599,10 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_if_dirty():
             event.ignore()
             return
+        # Remember visibility before force_close() hides this window.
+        was_open = self.clean_output_window.isVisible()
+        self.project.clean_video_output.was_open = was_open
+        self._settings.setValue(_KEY_CLEAN_OUTPUT_WAS_OPEN, was_open)
         # Clean Output normally only hides on its own X button (so re-opening
         # keeps the OBS capture target valid) — but that must not let it
         # survive the main window closing, or keep the app process alive.
@@ -3165,6 +3175,39 @@ class MainWindow(QMainWindow):
             side = "Left" if det == 0 else "Right"
             msg += f" — striped LTC detected on {side}"
         self.status.showMessage(msg, 6000)
+
+    def _persist_clean_output_was_open(self, visible: bool) -> None:
+        if self._block_clean_output_visibility_persist:
+            return
+        self._settings.setValue(_KEY_CLEAN_OUTPUT_WAS_OPEN, bool(visible))
+        if self.project.clean_video_output.was_open != visible:
+            self.project.clean_video_output.was_open = visible
+            self._mark_dirty()
+
+    def _clean_output_want_open(self) -> bool:
+        if self.project.clean_video_output.was_open:
+            return True
+        if self._project_path is None:
+            return bool(
+                self._settings.value(_KEY_CLEAN_OUTPUT_WAS_OPEN, False, type=bool)
+            )
+        return False
+
+    def _restore_clean_output_visibility(self) -> None:
+        want_open = self._clean_output_want_open()
+        self._block_clean_output_visibility_persist = True
+        try:
+            if want_open:
+                if not self.clean_output_window.isVisible():
+                    self.clean_output_window.show()
+                    self.clean_output_window.raise_()
+                self._clean_output_action.setChecked(True)
+            else:
+                if self.clean_output_window.isVisible():
+                    self.clean_output_window.hide()
+                self._clean_output_action.setChecked(False)
+        finally:
+            self._block_clean_output_visibility_persist = False
 
     def _toggle_clean_output(self, checked: bool) -> None:
         if checked:
