@@ -565,14 +565,46 @@ class AudioEngine(QObject):
         self._prewarm_output_stream()
         if self._resume_play_after_buffer:
             self._resume_play_after_buffer = False
+            self._wait_for_playback_samples()
             self.play()
 
     def flush_deferred_buffer_setup(self) -> None:
         """Block until the latest deferred buffer routing finishes (tests)."""
         self._complete_buffer_setup(self._buffer_setup_token)
+        self._wait_for_playback_samples()
         future = getattr(self, "_playback_resample_future", None)
         if future is not None:
             future.result()
+
+    def ensure_playback_ready(self) -> None:
+        """Finish routing/resample so the first Play on a new song is not silent."""
+        self._complete_buffer_setup(self._buffer_setup_token)
+        self._wait_for_playback_samples()
+
+    def _apply_resampled_pcm(self, built_key: tuple, pcm: np.ndarray) -> None:
+        with self._lock:
+            if self._playback_cache_key != built_key:
+                return
+            self._playback_samples = pcm
+        self._refresh_source_routing_cache()
+
+    def _wait_for_playback_samples(self) -> None:
+        """Block until async rate conversion finishes (music is silent until then)."""
+        future = getattr(self, "_playback_resample_future", None)
+        if future is None:
+            return
+        if future.done():
+            try:
+                built_key, pcm = future.result()
+            except Exception:
+                return
+            self._apply_resampled_pcm(built_key, pcm)
+            return
+        try:
+            built_key, pcm = future.result(timeout=120.0)
+        except Exception:
+            return
+        self._apply_resampled_pcm(built_key, pcm)
 
     def _needs_output_stream(self) -> bool:
         has_video_audio = self._song is not None and bool(self._song.video_clips)
@@ -614,6 +646,7 @@ class AudioEngine(QObject):
         if self.position >= self.duration - 1e-4:
             self.seek(0.0)
         self._scrubbing = False
+        self._wait_for_playback_samples()
         # A real output stream is required whenever anything could be audible:
         # loaded music, LTC, or a video clip with its own embedded audio.
         # Without this, a video-only song (no music track loaded yet) fell
@@ -1151,9 +1184,7 @@ class AudioEngine(QObject):
                 built_key, pcm = fut.result()
             except Exception:
                 return
-            with self._lock:
-                if self._playback_cache_key == built_key:
-                    self._playback_samples = pcm
+            self._apply_resampled_pcm(built_key, pcm)
 
         future.add_done_callback(_done)
 

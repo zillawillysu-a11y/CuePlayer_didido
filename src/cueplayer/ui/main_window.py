@@ -3615,6 +3615,7 @@ class MainWindow(QMainWindow):
                 )
             ]
         self.engine.set_buffer(buffer)
+        self.engine.ensure_playback_ready()
         self.timeline.set_audio(buffer)
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)
