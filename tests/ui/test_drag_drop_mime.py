@@ -12,6 +12,8 @@ from cueplayer.ui.drag_drop import (
     local_paths_from_mime,
     mime_looks_like_file_drop,
     rejected_audio_drop_reason,
+    rejected_setlist_drop_reason,
+    setlist_import_paths_from_mime,
     video_paths_from_mime,
 )
 
@@ -95,3 +97,23 @@ def test_rejected_drop_reason_mentions_extension(tmp_path: Path) -> None:
     mime.setUrls([QUrl.fromLocalFile(str(bad))])
     msg = rejected_audio_drop_reason(mime)
     assert ".mp4" in msg or "mp4" in msg
+
+
+def test_setlist_import_paths_accepts_audio_and_video(tmp_path: Path) -> None:
+    wav = tmp_path / "a.wav"
+    mp4 = tmp_path / "b.mp4"
+    wav.write_bytes(b"RIFF")
+    mp4.write_bytes(b"x")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(wav)), QUrl.fromLocalFile(str(mp4))])
+    paths = setlist_import_paths_from_mime(mime)
+    assert [p.name for p in paths] == ["a.wav", "b.mp4"]
+
+
+def test_rejected_setlist_drop_reason_mentions_video(tmp_path: Path) -> None:
+    bad = tmp_path / "notes.txt"
+    bad.write_text("x", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(bad))])
+    msg = rejected_setlist_drop_reason(mime)
+    assert "video" in msg.lower() or ".txt" in msg
