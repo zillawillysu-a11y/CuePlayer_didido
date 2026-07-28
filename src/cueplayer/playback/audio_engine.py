@@ -40,9 +40,11 @@ from cueplayer.playback.routing_parse import (
     SRC_MUSIC_L,
     SRC_MUSIC_R,
     build_stereo_route_map,
+    exclusive_ltc_route,
     is_ltc_route,
     is_music_source_route,
     parse_stereo_route,
+    speaker_channels_without_ltc,
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.resample import resample_hold_segment, resample_linear
@@ -1042,6 +1044,21 @@ class AudioEngine(QObject):
         else:
             ltc = []
 
+        # Left-LTC songs: both speaker legs are Music Source (LTC-stripped music)
+        # on channels that do not share the dedicated LTC wire.
+        if self._song_uses_left_ltc() and ltc:
+            preferred = list(dict.fromkeys([*left_ch, *right_ch]))
+            speakers = speaker_channels_without_ltc(
+                preferred=preferred or [0, min(1, max_ch - 1)],
+                ltc_channels=ltc,
+                max_ch=max_ch,
+            )
+            if speakers:
+                left_kind = "music_source"
+                right_kind = "music_source"
+                left_ch = [speakers[0]]
+                right_ch = [speakers[1]] if len(speakers) > 1 else [speakers[0]]
+
         route = build_stereo_route_map(
             left_kind=left_kind,
             left_channels=left_ch,
@@ -1050,9 +1067,24 @@ class AudioEngine(QObject):
             ltc_channels=ltc,
             ltc_bus_active=bool(ltc),
         )
+        # LTC outs must stay timecode-only — never sum music onto the same wire.
+        route, cleared_for_ltc = exclusive_ltc_route(route)
+        if cleared_for_ltc:
+            human = "+".join(str(c + 1) for c in cleared_for_ltc)
+            note = (
+                f"LTC CH{human} is exclusive (music moved off that output so "
+                f"timecode stays clean)."
+            )
+            self._routing_warning = (
+                f"{self._routing_warning} {note}" if self._routing_warning else note
+            )
         needed = required_output_channels(route)
         all_dests = [ch for dests in route.values() for ch in dests]
-        self._routing_warning = warn_if_outputs_insufficient(all_dests, max_ch)
+        warn = warn_if_outputs_insufficient(all_dests, max_ch)
+        if warn:
+            self._routing_warning = (
+                f"{self._routing_warning} {warn}" if self._routing_warning else warn
+            )
         self._output_channel_count = min(max(needed, 1), max_ch) if max_ch > 0 else needed
         clamped: dict[int, list[int]] = {}
         for src, dests in route.items():

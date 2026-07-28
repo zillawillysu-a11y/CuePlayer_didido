@@ -148,7 +148,8 @@ class AudioTimecodeDialog(QDialog):
         stereo_tip = QLabel(
             "Music Source = music-only (striped LTC removed). "
             "LTC = pass file timecode to that leg (e.g. 3.5mm split: L=Music Source, R=LTC). "
-            "Or use channel numbers 1 · 2 · 3 · 1+2."
+            "Or use channel numbers 1 · 2 · 3 · 1+2. "
+            "Dedicated LTC → channel stays exclusive (music never shares that wire)."
         )
         stereo_tip.setStyleSheet("color: #a1a1aa;")
         stereo_tip.setWordWrap(True)

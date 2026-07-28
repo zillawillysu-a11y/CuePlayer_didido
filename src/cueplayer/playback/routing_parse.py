@@ -136,3 +136,47 @@ def build_stereo_route_map(
     if ltc_bus_active and ltc_channels:
         add(SRC_LTC_BUS, ltc_channels)
     return route
+
+
+_MUSIC_ROUTE_SOURCES = (SRC_MUSIC_L, SRC_MUSIC_R, SRC_FILE_MUSIC)
+
+
+def exclusive_ltc_route(
+    route: dict[int, list[int]],
+) -> tuple[dict[int, list[int]], list[int]]:
+    """
+    Keep dedicated LTC output channel(s) free of music.
+
+    Any Music L/R / Music Source destinations that overlap ``SRC_LTC_BUS``
+    outs are removed so the LTC wire stays timecode-only.
+    """
+    ltc_dests = {int(d) for d in route.get(SRC_LTC_BUS, [])}
+    if not ltc_dests:
+        return {k: list(v) for k, v in route.items()}, []
+
+    out: dict[int, list[int]] = {}
+    cleared: list[int] = []
+    for src, dests in route.items():
+        if src in _MUSIC_ROUTE_SOURCES:
+            kept = [d for d in dests if int(d) not in ltc_dests]
+            removed = [d for d in dests if int(d) in ltc_dests]
+            cleared.extend(int(d) for d in removed)
+            if kept:
+                out[src] = kept
+            continue
+        out[src] = list(dests)
+    return out, sorted(set(cleared))
+
+
+def speaker_channels_without_ltc(
+    *,
+    preferred: list[int],
+    ltc_channels: list[int],
+    max_ch: int,
+) -> list[int]:
+    """Pick Music Source destinations that do not share the LTC wire(s)."""
+    blocked = {int(c) for c in ltc_channels}
+    speakers = [int(c) for c in preferred if 0 <= int(c) < max_ch and int(c) not in blocked]
+    if speakers:
+        return speakers
+    return [c for c in range(max(0, max_ch)) if c not in blocked]

@@ -90,6 +90,10 @@ def test_song_use_left_ltc_routes_left_to_ltc_bus(monkeypatch, app: QApplication
     assert engine._effective_ltc_source_channel() == 0
     assert not engine._uses_generated_ltc()
     assert engine._route.get(2) == [2]  # SRC_LTC_BUS → CH3
+    # Speakers are Music Source (file music), never sharing the LTC wire.
+    assert engine._route.get(3) == [0, 1]  # SRC_FILE_MUSIC → CH1+CH2
+    assert 0 not in (engine._route.get(0) or [])  # no raw Music L on LTC path
+    assert 2 not in (engine._route.get(3) or [])
 
     ltc = engine._ltc_chunk(0, 2048)
     music = engine._music_chunk(0, 2048, engine._sample_rate())
@@ -97,3 +101,45 @@ def test_song_use_left_ltc_routes_left_to_ltc_bus(monkeypatch, app: QApplication
     # Music bus is Right only (Left stripped as LTC).
     assert np.allclose(music[:, 0], music[:, 1])
     assert engine._cached_music_indices == (1, 1)
+
+
+def test_two_channel_device_keeps_ltc_exclusive(monkeypatch, app: QApplication) -> None:
+    stereo = OutputDeviceInfo(
+        index=0,
+        name="Headphones",
+        max_output_channels=2,
+        default_samplerate=48000.0,
+        hostapi_name="Test",
+    )
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [stereo])
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    assert FIXTURE.is_file()
+    buf = load_audio(FIXTURE)
+    song = Song.create("Opening")
+    song.use_left_ltc = True
+
+    engine = eng_mod.AudioEngine()
+    engine.apply_audio_settings(
+        AudioOutputSettings(
+            output_device_name="Headphones",
+            music_l_route="1",
+            music_r_route="2",
+            ltc_enabled=True,
+            ltc_source="generator",
+            ltc_generator_enabled=True,
+            ltc_channels=[2],  # clamps to CH2 on 2-out device
+        )
+    )
+    engine.set_song(song)
+    engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
+    engine.refresh_song_ltc_routing()
+
+    assert engine._route.get(2) == [1]  # LTC → CH2 only
+    music_dests = set(engine._route.get(3) or []) | set(engine._route.get(0) or []) | set(
+        engine._route.get(1) or []
+    )
+    assert 1 not in music_dests  # music must not share LTC CH2
+    assert 0 in music_dests
+
