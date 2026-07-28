@@ -33,6 +33,13 @@ def test_clip_start_snaps_back_from_negative_pre_roll() -> None:
     assert clip_start_after_body_drag(-2.0, 1.95) == 0.0
 
 
+def test_shift_disables_zero_snap() -> None:
+    # Same small nudge that would stay parked at 0 — free with snap=False.
+    assert clip_start_after_body_drag(0.0, -0.05, snap=False) == pytest.approx(-0.05)
+    assert clip_start_after_body_drag(2.0, -2.05, snap=False) == pytest.approx(-0.05)
+    assert clip_start_after_body_drag(-2.0, 1.95, snap=False) == pytest.approx(-0.05)
+
+
 def test_right_trim_not_capped_by_song_duration() -> None:
     # 60s song, clip at 50s with 20s duration — extend 30s more (past song end).
     new_dur = clip_duration_after_right_trim(

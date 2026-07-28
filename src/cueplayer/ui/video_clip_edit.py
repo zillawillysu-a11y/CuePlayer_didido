@@ -14,6 +14,7 @@ def clip_start_after_body_drag(
     *,
     snap_seconds: float = _SNAP_AT_ZERO_SECONDS,
     min_start_seconds: float = _MIN_CLIP_START_SECONDS,
+    snap: bool = True,
 ) -> float:
     """
     Move a clip on the timeline.
@@ -21,23 +22,27 @@ def clip_start_after_body_drag(
     Clips may start *before* song 0 for pre-roll alignment. Song 0 has a soft
     magnetic snap: when near zero the clip parks at 0 until the user drags
     deliberately past the snap zone (left → negative, right → positive).
+
+    Pass ``snap=False`` (hold Shift while dragging) to bypass the zero latch.
     """
     raw = start0 + dt_seconds
     raw = max(min_start_seconds, raw)
-    snap = max(0.02, float(snap_seconds))
-    if abs(raw) >= snap:
+    if not snap:
+        return raw
+    snap_zone = max(0.02, float(snap_seconds))
+    if abs(raw) >= snap_zone:
         return raw
     # Inside the snap well around 0.
-    if start0 < -snap:
+    if start0 < -snap_zone:
         # Coming back from negative pre-roll — latch at 0.
         return 0.0
-    if start0 > snap:
+    if start0 > snap_zone:
         # Approaching 0 from the right — latch at 0.
         return 0.0
     # Already in the snap well (typically parked at 0).
-    if dt_seconds < 0 and raw <= -snap:
+    if dt_seconds < 0 and raw <= -snap_zone:
         return raw
-    if dt_seconds > 0 and raw >= snap:
+    if dt_seconds > 0 and raw >= snap_zone:
         return raw
     return 0.0
 

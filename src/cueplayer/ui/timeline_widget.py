@@ -806,8 +806,18 @@ class TimelineWidget(QWidget):
             return None
         return self._song.video_clip_by_id(next(iter(self._selected_clip_ids)))
 
-    def _hit_video_clip(self, x: float, y: float) -> tuple[str, str] | None:
-        """Return (clip_id, zone) with zone in {'left', 'right', 'body'}; topmost-drawn wins."""
+    def _hit_video_clip(
+        self,
+        x: float,
+        y: float,
+        *,
+        allow_locked_edit: bool = False,
+    ) -> tuple[str, str] | None:
+        """Return (clip_id, zone) with zone in {'left', 'right', 'body'}; topmost-drawn wins.
+
+        Locked clips normally only hit as ``body`` (selection). Hold Shift
+        (``allow_locked_edit``) to also hit trim edges and allow move/trim.
+        """
         if self._song is None or not self._in_video_lane(x, y):
             return None
         for clip in reversed(self._song.video_clips):
@@ -816,9 +826,10 @@ class TimelineWidget(QWidget):
             if x1 < x0:
                 x0, x1 = x1, x0
             if x0 - self._clip_edge_hit <= x <= x1 + self._clip_edge_hit:
-                if not clip.locked and abs(x - x0) <= self._clip_edge_hit:
+                can_edit = (not clip.locked) or allow_locked_edit
+                if can_edit and abs(x - x0) <= self._clip_edge_hit:
                     return (clip.id, "left")
-                if not clip.locked and abs(x - x1) <= self._clip_edge_hit:
+                if can_edit and abs(x - x1) <= self._clip_edge_hit:
                     return (clip.id, "right")
                 if x0 <= x <= x1:
                     return (clip.id, "body")
@@ -1038,7 +1049,12 @@ class TimelineWidget(QWidget):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def _restore_hover_cursor(self, x: float, y: float) -> None:
-        clip_hit = self._hit_video_clip(x, y)
+        from PySide6.QtWidgets import QApplication
+
+        shift = bool(
+            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
+        )
+        clip_hit = self._hit_video_clip(x, y, allow_locked_edit=shift)
         if self._near_wave_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif self._near_video_lane_split(y):
@@ -1435,12 +1451,13 @@ class TimelineWidget(QWidget):
             ids = set(self._selected_clip_ids)
             ids.symmetric_difference_update({clip_id})
             self.set_selected_video_clip_ids(ids)
-        elif shift:
+        elif shift and not clip.locked:
             self.set_selected_video_clip_ids(set(self._selected_clip_ids) | {clip_id})
         else:
             self.set_selected_video_clip_ids([clip_id])
 
-        if clip.locked:
+        # Locked clips: Shift temporarily frees move/trim (stays locked after).
+        if clip.locked and not shift:
             self.update()
             return
 
@@ -1459,7 +1476,7 @@ class TimelineWidget(QWidget):
         self.setCursor(Qt.CursorShape.SizeHorCursor if zone in ("left", "right") else Qt.CursorShape.ClosedHandCursor)
         self.update()
 
-    def _update_video_clip_drag(self, x: float) -> None:
+    def _update_video_clip_drag(self, x: float, *, snap: bool = True) -> None:
         if self._song is None or self._dragging_clip is None:
             return
         clip = self._song.video_clip_by_id(self._dragging_clip)
@@ -1473,7 +1490,7 @@ class TimelineWidget(QWidget):
             return
         start0, _src_in0, dur0 = snapshot
         dt = dx / max(1e-6, self._pixels_per_second)
-        clip.start_seconds = clip_start_after_body_drag(start0, dt)
+        clip.start_seconds = clip_start_after_body_drag(start0, dt, snap=snap)
         self._update_video_lane()
 
     def _update_video_clip_trim(self, x: float) -> None:
@@ -1574,6 +1591,11 @@ class TimelineWidget(QWidget):
         ids = list(self._selected_clip_ids)
 
         lock_action = menu.addAction("Unlock" if clip.locked else "Lock")
+        lock_action.setToolTip(
+            "Unlock this clip"
+            if clip.locked
+            else "Lock this clip (Shift+drag temporarily frees move/trim)"
+        )
         hide_action = menu.addAction("Show" if clip.hidden else "Hide")
         menu.addSeparator()
         hide_track_action = menu.addAction("Hide Video Track")
@@ -1700,7 +1722,7 @@ class TimelineWidget(QWidget):
                 self.update()
             elif (hit_id := self._hit_mark_at(x, y)) is not None:
                 self._begin_mark_interaction(hit_id, x, shift=shift, ctrl=ctrl)
-            elif (clip_hit := self._hit_video_clip(x, y)) is not None:
+            elif (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 self._begin_video_clip_interaction(
                     clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
@@ -1780,7 +1802,8 @@ class TimelineWidget(QWidget):
                     m.time_seconds = min(max(0.0, start_t + dt), duration)
                 self.update()
         elif self._dragging_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self._update_video_clip_drag(x)
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self._update_video_clip_drag(x, snap=not shift)
         elif self._trimming_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self._update_video_clip_trim(x)
         elif self._box_selecting and event.buttons() & Qt.MouseButton.LeftButton:
@@ -1809,7 +1832,13 @@ class TimelineWidget(QWidget):
             if loop_h != self._hover_loop:
                 self._hover_loop = loop_h
                 self.update()
-            clip_hit = None if (hover or hit is not None) else self._hit_video_clip(x, y)
+            clip_hit = None if (hover or hit is not None) else self._hit_video_clip(
+                x,
+                y,
+                allow_locked_edit=bool(
+                    event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                ),
+            )
             clip_hover_id = clip_hit[0] if clip_hit is not None else None
             if clip_hover_id != self._hover_clip_id:
                 self._hover_clip_id = clip_hover_id
