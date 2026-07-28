@@ -4109,9 +4109,7 @@ class MainWindow(QMainWindow):
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
-        if replace_track and (
-            self.current_song.bpm is None or bool(getattr(self.current_song, "bpm_auto", False))
-        ):
+        if self.current_song.bpm is None:
             self._schedule_bpm_detect_for_song(self.current_song, path)
         msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
         det = self.engine.detected_ltc_channel
