@@ -8,6 +8,7 @@ from cueplayer.domain.main_cue_id import (
     assign_main_cue_id_for_mark,
     between_main_cue_ids,
     is_valid_main_cue_id_text,
+    main_cue_id_fits_order,
     main_cue_id_taken,
     next_main_cue_id_at_end,
     normalize_main_cue_id_text,
@@ -154,4 +155,18 @@ def test_main_cue_id_taken() -> None:
     song.add_mark(1, 2.0)
     assert main_cue_id_taken(song, "1", exclude_mark_id=first.id) is False
     assert main_cue_id_taken(song, "2", exclude_mark_id=first.id) is True
+
+
+def test_manual_cue_id_must_increase_in_time_order() -> None:
+    song = Song.create("Test")
+    first = song.add_mark(1, 1.0)
+    second = song.add_mark(1, 2.0)
+    song.add_mark(1, 4.0)
+    between = song.add_mark(1, 3.0)
+    assert second.main_cue_id == "2"
+    assert between.main_cue_id == "2.1"
+    assert main_cue_id_fits_order(song, second.id, "2.05") is True
+    assert main_cue_id_fits_order(song, second.id, "3") is False
+    assert main_cue_id_fits_order(song, between.id, "3") is False
+    assert main_cue_id_fits_order(song, first.id, "0.5") is True
 

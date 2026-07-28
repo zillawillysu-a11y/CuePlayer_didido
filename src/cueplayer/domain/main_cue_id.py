@@ -208,6 +208,39 @@ def main_cue_id_taken(song: Song, cue_id: str, *, exclude_mark_id: str) -> bool:
     return False
 
 
+def main_cue_id_neighbors(song: Song, mark_id: str) -> tuple[str | None, str | None]:
+    """Return (left_id, right_id) main-cue neighbors in time order for one mark."""
+    ordered = song.main_marks_sorted()
+    idx = next((i for i, mark in enumerate(ordered) if mark.id == mark_id), None)
+    if idx is None:
+        return None, None
+    left_id = ordered[idx - 1].main_cue_id if idx > 0 else None
+    right_id = ordered[idx + 1].main_cue_id if idx < len(ordered) - 1 else None
+    return left_id, right_id
+
+
+def main_cue_id_fits_order(song: Song, mark_id: str, cue_id: str) -> bool:
+    """True when cue_id is strictly between its main-lane neighbors in time order."""
+    if not is_valid_main_cue_id_text(cue_id):
+        return False
+    if main_cue_id_taken(song, cue_id, exclude_mark_id=mark_id):
+        return False
+    left_id, right_id = main_cue_id_neighbors(song, mark_id)
+    return _id_fits_between(cue_id, left_id, right_id)
+
+
+def main_cue_id_order_hint(song: Song, mark_id: str) -> str:
+    """User-facing hint for valid manual Cue ID range at this mark."""
+    left_id, right_id = main_cue_id_neighbors(song, mark_id)
+    if left_id and right_id:
+        return f"Cue ID must be greater than {left_id} and less than {right_id}"
+    if left_id:
+        return f"Cue ID must be greater than {left_id}"
+    if right_id:
+        return f"Cue ID must be less than {right_id}"
+    return "Cue ID must be a positive number"
+
+
 def capture_main_cue_ids(song: Song) -> dict[str, str]:
     """Snapshot main-lane mark_id -> main_cue_id."""
     main_index = song.main_lane_index()
