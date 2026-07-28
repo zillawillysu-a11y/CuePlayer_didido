@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from PySide6.QtCore import QEvent, QModelIndex, QPoint, QRect, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -704,9 +704,11 @@ class MainWindow(QMainWindow):
         self.move_down_button.setFixedWidth(32)
         self.move_up_button.setToolTip("Move selected song(s) up")
         self.move_down_button.setToolTip("Move selected song(s) down")
-        self.sort_by_number_button.setToolTip("Re-sort the list by custom number (supports 0.5)")
+        self.sort_by_number_button.setToolTip(
+            "Sort songs by # within Main list, a folder, or All"
+        )
         self.renumber_button.setToolTip(
-            "Renumber songs in the main list or a folder (1, 2, 3… in list order)"
+            "Renumber to 1, 2, 3… within Main list, a folder, or All"
         )
         order_btns.addWidget(self.move_up_button)
         order_btns.addWidget(self.move_down_button)
@@ -802,7 +804,7 @@ class MainWindow(QMainWindow):
         self.delete_song_button.clicked.connect(self._delete_song)
         self.move_up_button.clicked.connect(lambda: self._move_selected_songs(-1))
         self.move_down_button.clicked.connect(lambda: self._move_selected_songs(1))
-        self.sort_by_number_button.clicked.connect(self._sort_songs_by_number)
+        self.sort_by_number_button.clicked.connect(self._show_sort_section_menu)
         self.renumber_button.clicked.connect(self._show_renumber_section_menu)
         self.song_list.currentCellChanged.connect(self._on_song_cell_changed)
         self.song_list.audio_files_dropped.connect(self._add_songs_from_media_paths)
@@ -2338,20 +2340,22 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         self.status.showMessage("Song order updated", 2000)
 
-    def _sort_songs_by_number(self) -> None:
-        if len(self.project.songs) <= 1:
+    def _sort_key(self, song: Song) -> tuple[float, str]:
+        return (float(song.setlist_number), song.name)
+
+    def _apply_sort_sections(self, sorted_sections: set[str | None]) -> None:
+        if not self.project.songs:
             return
         current_id = self.current_song.id
-        uncategorized = sorted(
-            self.project.songs_in_category(None),
-            key=lambda s: (float(s.setlist_number), s.name),
-        )
-        ordered: list[Song] = list(uncategorized)
+        ordered: list[Song] = []
+        main = self._songs_in_category_display_order(None)
+        if None in sorted_sections and len(main) > 1:
+            main = sorted(main, key=self._sort_key)
+        ordered.extend(main)
         for category in self.project.setlist_categories:
-            members = sorted(
-                self.project.songs_in_category(category.id),
-                key=lambda s: (float(s.setlist_number), s.name),
-            )
+            members = self._songs_in_category_display_order(category.id)
+            if category.id in sorted_sections and len(members) > 1:
+                members = sorted(members, key=self._sort_key)
             ordered.extend(members)
         self.project.songs = ordered
         try:
@@ -2363,7 +2367,22 @@ class MainWindow(QMainWindow):
         self._rebuild_song_list(select_indexes=[new_row])
         self._activate_song(new_row, stop_playback=False)
         self._mark_dirty()
-        self.status.showMessage("Sorted by number", 2500)
+
+    def _sort_songs_in_category(self, category_id: str | None) -> None:
+        members = self._songs_in_category_display_order(category_id)
+        if len(members) <= 1:
+            return
+        self._apply_sort_sections({category_id})
+        section = self._setlist_section_label(category_id)
+        self.status.showMessage(f'Sorted "{section}" by number', 2500)
+
+    def _sort_all_sections(self) -> None:
+        if len(self.project.songs) <= 1:
+            return
+        sections: set[str | None] = {None}
+        sections.update(category.id for category in self.project.setlist_categories)
+        self._apply_sort_sections(sections)
+        self.status.showMessage("Sorted all sections by number", 2500)
 
     def _setlist_section_label(self, category_id: str | None) -> str:
         if category_id is None:
@@ -2371,7 +2390,13 @@ class MainWindow(QMainWindow):
         category = self.project.setlist_category_by_id(category_id)
         return category.name if category is not None else "Folder"
 
-    def _show_renumber_section_menu(self) -> None:
+    def _show_setlist_section_menu(
+        self,
+        anchor: QWidget,
+        *,
+        on_section: Callable[[str | None], None],
+        on_all: Callable[[], None],
+    ) -> None:
         menu = QMenu(self)
         section_actions: dict[QAction, str | None] = {}
         main_action = menu.addAction("Main list (no folder)")
@@ -2384,14 +2409,27 @@ class MainWindow(QMainWindow):
             action.setEnabled(bool(self.project.songs_in_category(category.id)))
             section_actions[action] = category.id
         menu.addSeparator()
-        all_action = menu.addAction("All sections…")
-        chosen = menu.exec(
-            self.renumber_button.mapToGlobal(QPoint(0, self.renumber_button.height()))
-        )
+        all_action = menu.addAction("All")
+        all_action.setEnabled(len(self.project.songs) > 1)
+        chosen = menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
         if chosen is all_action:
-            self._renumber_all_sections()
+            on_all()
         elif chosen in section_actions:
-            self._renumber_songs_in_category(section_actions[chosen])
+            on_section(section_actions[chosen])
+
+    def _show_sort_section_menu(self) -> None:
+        self._show_setlist_section_menu(
+            self.sort_by_number_button,
+            on_section=self._sort_songs_in_category,
+            on_all=self._sort_all_sections,
+        )
+
+    def _show_renumber_section_menu(self) -> None:
+        self._show_setlist_section_menu(
+            self.renumber_button,
+            on_section=self._renumber_songs_in_category,
+            on_all=self._renumber_all_sections,
+        )
 
     def _songs_in_category_display_order(self, category_id: str | None) -> list[Song]:
         songs: list[Song] = []
