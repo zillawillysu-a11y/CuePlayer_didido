@@ -44,18 +44,18 @@ def main() -> int:
     window = MainWindow()
     # Ensure the first expose is dark even if children paint a frame late.
     window.setStyleSheet(f"QMainWindow {{ background-color: {BG_APP}; }}")
-    window.show()
 
-    # MainWindow queues session restore on singleShot(0). Finish the splash
-    # one tick after that so project reopen stays covered by the dark screen.
-    def _after_main_show() -> None:
+    # MainWindow queues session restore on singleShot(0). Keep it hidden until
+    # restore finishes so the small splash card does not sit on a white window.
+    def _after_main_ready() -> None:
         def _finish_splash() -> None:
             window.present_clean_output_for_obs()
+            window.show()
             splash.finish(window)
 
         QTimer.singleShot(0, _finish_splash)
 
-    QTimer.singleShot(0, _after_main_show)
+    QTimer.singleShot(0, _after_main_ready)
     return app.exec()
 
 

@@ -14,6 +14,7 @@ def create_splash_pixmap(
     width: int = 520,
     height: int = 300,
     message: str = "Loading…",
+    fullscreen: bool = False,
 ) -> QPixmap:
     """Paint a CuePlayer-branded dark splash (no external image assets)."""
     pixmap = QPixmap(max(320, width), max(200, height))
@@ -22,12 +23,13 @@ def create_splash_pixmap(
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-    # Soft outer frame
-    painter.setPen(QColor(BORDER))
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawRoundedRect(pixmap.rect().adjusted(1, 1, -2, -2), 12, 12)
+    if not fullscreen:
+        # Compact card (tests / fallback).
+        painter.setPen(QColor(BORDER))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(pixmap.rect().adjusted(1, 1, -2, -2), 12, 12)
 
-    # Accent bar under the brand
+    # Branding centered in the pixmap (card or full-screen).
     bar_y = height // 2 + 8
     painter.fillRect(width // 2 - 36, bar_y, 72, 2, QColor(ACCENT))
 
@@ -61,8 +63,24 @@ def create_splash_pixmap(
 
 
 def show_startup_splash(app: QApplication, *, message: str = "Loading…") -> QSplashScreen:
-    """Show a dark splash immediately and force a paint before heavy init."""
-    splash = QSplashScreen(create_splash_pixmap(message=message))
+    """Show a full-screen dark splash immediately and force a paint before heavy init."""
+    screen = app.primaryScreen()
+    geo = screen.availableGeometry() if screen is not None else None
+    if geo is not None:
+        width = max(320, geo.width())
+        height = max(200, geo.height())
+        pixmap = create_splash_pixmap(
+            width=width,
+            height=height,
+            message=message,
+            fullscreen=True,
+        )
+        splash = QSplashScreen(pixmap)
+        splash.setGeometry(geo)
+    else:
+        pixmap = create_splash_pixmap(message=message, fullscreen=False)
+        splash = QSplashScreen(pixmap)
+
     splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
     splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     splash.show()
