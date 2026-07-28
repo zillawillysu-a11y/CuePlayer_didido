@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cueplayer.exporters.common import sanitize_ma_name
 from cueplayer.ui.drag_drop import AUDIO_SUFFIXES, VIDEO_SUFFIXES
 
 _FPS_CHOICES: list[tuple[str, float]] = [
@@ -114,6 +116,8 @@ def normalize_timecode(text: str, *, fps: float = 30.0) -> str | None:
 
 def suggest_ma_export_name(display_name: str) -> str:
     """Keep ASCII-ish names; leave blank when the display name is Chinese-only."""
+    if not re.search(r"[A-Za-z0-9]", display_name):
+        return ""
     return sanitize_ma_name(display_name, fallback="")
 
 

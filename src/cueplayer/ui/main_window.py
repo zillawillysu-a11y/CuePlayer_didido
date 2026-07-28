@@ -721,6 +721,7 @@ class MainWindow(QMainWindow):
         self.video_sync.frame_changed.connect(self.clean_output_window.set_frame)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
+        self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
@@ -760,6 +761,26 @@ class MainWindow(QMainWindow):
             self._load_audio_path(demo, mark_dirty=False)
             self._set_clean()
         QTimer.singleShot(0, self._sync_timeline_geometry)
+        self._sync_video_output_active()
+
+    def _video_preview_visible(self) -> bool:
+        panel = self.video_preview_panel
+        if not panel.isVisible():
+            return False
+        split = getattr(self, "_timeline_preview_split", None)
+        if split is not None:
+            sizes = split.sizes()
+            if len(sizes) >= 2 and sizes[1] <= 0:
+                return False
+        return True
+
+    def _clean_output_visible(self) -> bool:
+        return self.clean_output_window.isVisible()
+
+    def _sync_video_output_active(self) -> None:
+        """Skip video decode when neither Preview nor Clean Output is shown."""
+        active = self._video_preview_visible() or self._clean_output_visible()
+        self.video_sync.set_video_output_active(active)
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -920,6 +941,7 @@ class MainWindow(QMainWindow):
         split = getattr(self, "_timeline_preview_split", None)
         if split is None:
             self.video_preview_panel.setVisible(visible)
+            self._sync_video_output_active()
             return
         if visible:
             total = split.height()
@@ -927,6 +949,7 @@ class MainWindow(QMainWindow):
         else:
             total = split.height()
             split.setSizes([total, 0])
+        self._sync_video_output_active()
 
     def _set_video_decode_quality(self, quality: str) -> None:
         self.video_sync.set_decode_quality(quality)  # type: ignore[arg-type]

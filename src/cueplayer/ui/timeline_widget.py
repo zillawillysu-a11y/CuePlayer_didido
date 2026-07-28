@@ -871,7 +871,8 @@ class TimelineWidget(QWidget):
         if self._playing and not was and self._auto_scroll and not self._scrubbing:
             self._view_pinned = False
             self._follow_playhead()
-            self.update()
+        if was != self._playing:
+            self._update_video_lane()
 
     def _begin_box_select(
         self,
@@ -2048,10 +2049,6 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Per-pixel envelope loops are expensive; skip while playing so video
-        # decode + preview paint stay responsive on the UI thread.
-        if self._playing and not self._scrubbing:
-            return
         x_left = int(rect.left())
         x_right = int(rect.right())
         if x_right - x_left < 4:
@@ -2071,12 +2068,24 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
+        interacting = (
+            self._dragging_clip is not None
+            or self._trimming_clip is not None
+            or self._scrubbing
+        )
+        fast_playback = self._playing and not interacting
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
-        use_raw = samples_per_pixel <= 1.5
+        use_raw = (not fast_playback) and samples_per_pixel <= 1.5
+        width_px = x_right - x_left
+        x_step = 1
+        if fast_playback:
+            # Coarse envelope + wider columns keeps playback responsive while
+            # still showing enough shape to align clips on the video lane.
+            x_step = max(1, width_px // 400)
 
-        for x in range(x_left, x_right):
+        for x in range(x_left, x_right, x_step):
             t0 = self._time_for_x(x)
-            t1 = self._time_for_x(x + 1)
+            t1 = self._time_for_x(x + x_step)
             clip_t0 = timeline_to_clip_local(t0, clip)
             clip_t1 = timeline_to_clip_local(t1, clip)
             if clip_t0 is None and clip_t1 is None:
@@ -2087,7 +2096,11 @@ class TimelineWidget(QWidget):
                 clip_t1 = duration
             clip_t0 = max(0.0, min(duration, clip_t0))
             clip_t1 = max(clip_t0, min(duration, clip_t1))
-            if use_raw:
+            if fast_playback:
+                lo, hi = sample_clip_peaks_for_times(
+                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
+                )
+            elif use_raw:
                 lo, hi = sample_source_raw_for_clip_times(
                     peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
                 )

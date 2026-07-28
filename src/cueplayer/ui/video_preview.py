@@ -29,6 +29,8 @@ class VideoPreviewWidget(QWidget):
         self.update()
 
     def set_frame(self, frame: np.ndarray | None) -> None:
+        if not self.isVisible():
+            return
         if frame is None:
             if self._image is not None:
                 self._image = None
@@ -40,8 +42,7 @@ class VideoPreviewWidget(QWidget):
         height, width = frame.shape[0], frame.shape[1]
         image = QImage(frame.data, width, height, frame.strides[0], QImage.Format.Format_RGB888)
         self._image = image.copy()  # detach from the short-lived numpy buffer
-        if self.isVisible():
-            self.update()
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: ANN001
         del event
