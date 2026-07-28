@@ -217,11 +217,12 @@ class CleanVideoOutputWindow(QWidget):
         self._schedule_settings_changed()
 
     def present_for_obs_capture(self) -> None:
-        """Raise this window with a stable title so OBS Window Capture can find it."""
+        """Show Clean Output with a stable title for OBS Window Capture."""
         self.setWindowTitle(CLEAN_OUTPUT_WINDOW_TITLE)
         if not self.isVisible():
             self.show()
-        self.raise_()
+        # Do not raise_() here — staying above the main editor made OBS pick
+        # this window when the user intended to capture "CuePlayer Main".
 
     def current_decode_quality(self) -> str:
         return self._decode_quality

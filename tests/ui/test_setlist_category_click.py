@@ -34,13 +34,14 @@ def test_category_triangle_hit_detects_arrow_zone(app: QApplication) -> None:
     widget.setSpan(0, SetlistWidget.COL_NUM, 1, 4)
     app.processEvents()
 
-    rect = widget.visualRect(widget.model().index(0, SetlistWidget.COL_NUM))
+    rect = widget._row_visual_rect(0)
     fm = QFontMetrics(item.font())
     triangle_edge = rect.left() + max(
         SetlistWidget._TRIANGLE_HIT_MIN_PX, fm.horizontalAdvance("▸ ") + 4
     )
-    assert widget._category_triangle_hit(0, triangle_edge - 1) is True
-    assert widget._category_triangle_hit(0, triangle_edge + 2) is False
+    mid_y = rect.center().y()
+    assert widget._category_triangle_hit(0, triangle_edge - 1, mid_y) is True
+    assert widget._category_triangle_hit(0, triangle_edge + 2, mid_y) is False
 
 
 def test_folder_name_click_does_not_change_collapse_or_song(app: QApplication) -> None:
@@ -71,18 +72,18 @@ def test_folder_name_click_does_not_change_collapse_or_song(app: QApplication) -
             for r in range(window.song_list.rowCount())
             if window.song_list.row_category_id(r) == folder.id
         )
-        rect = window.song_list.visualRect(
-            window.song_list.model().index(row, SetlistWidget.COL_NUM)
-        )
+        rect = window.song_list._row_visual_rect(row)
         name_x = rect.left() + SetlistWidget._TRIANGLE_HIT_MIN_PX + 20
         from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QMouseEvent
 
-        viewport_pt = QPoint(name_x, int(rect.center().y()))
-        widget_pt = window.song_list.viewport().mapTo(window.song_list, viewport_pt)
+        global_pt = window.song_list.viewport().mapToGlobal(
+            QPoint(name_x, int(rect.center().y()))
+        )
         event = QMouseEvent(
             QMouseEvent.Type.MouseButtonPress,
-            QPointF(widget_pt),
+            QPointF(window.song_list.mapFromGlobal(global_pt)),
+            QPointF(global_pt),
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
@@ -118,18 +119,18 @@ def test_folder_name_double_click_requests_rename(app: QApplication) -> None:
             for r in range(window.song_list.rowCount())
             if window.song_list.row_category_id(r) == folder.id
         )
-        rect = window.song_list.visualRect(
-            window.song_list.model().index(row, SetlistWidget.COL_NUM)
-        )
+        rect = window.song_list._row_visual_rect(row)
         name_x = rect.left() + SetlistWidget._TRIANGLE_HIT_MIN_PX + 20
         from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QMouseEvent
 
-        viewport_pt = QPoint(name_x, int(rect.center().y()))
-        widget_pt = window.song_list.viewport().mapTo(window.song_list, viewport_pt)
+        global_pt = window.song_list.viewport().mapToGlobal(
+            QPoint(name_x, int(rect.center().y()))
+        )
         event = QMouseEvent(
             QMouseEvent.Type.MouseButtonDblClick,
-            QPointF(widget_pt),
+            QPointF(window.song_list.mapFromGlobal(global_pt)),
+            QPointF(global_pt),
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
