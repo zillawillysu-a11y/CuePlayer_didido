@@ -176,7 +176,7 @@ def _song_list_has_keyboard_focus(song_list: QTableWidget) -> bool:
 
 
 class SetlistWidget(QTableWidget):
-    """Setlist: click # to edit, drag rows to reorder, drop audio/video to add songs."""
+    """Setlist: click No. to edit, drag rows to reorder, drop audio/video to add songs."""
 
     _TRIANGLE_HIT_MIN_PX = 28
 
@@ -233,19 +233,18 @@ class SetlistWidget(QTableWidget):
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setVisible(True)
-        self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
+        self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
         header = self.horizontalHeader()
-        # Drag column edges to resize (Excel-like); Song column stretches by default.
+        # All columns draggable — Song is Interactive (not Stretch) so edges can be pulled.
         header.setSectionsMovable(False)
-        header.setStretchLastSection(False)
+        header.setStretchLastSection(True)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.setColumnWidth(self.COL_NUM, 52)
-        self.setColumnWidth(self.COL_TITLE, 140)
+        self.setColumnWidth(self.COL_NUM, 48)
+        self.setColumnWidth(self.COL_TITLE, 160)
         self.setColumnWidth(self.COL_EN, 110)
         self.setColumnWidth(self.COL_BPM, 56)
         self.setColumnWidth(self.COL_LTC, 68)
-        header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
             ltc_header.setToolTip(
@@ -255,7 +254,7 @@ class SetlistWidget(QTableWidget):
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
         self.setToolTip(
-            "Double-click #/Name/BPM to edit; drag column edges to resize; "
+            "Double-click No./Name/BPM to edit; drag column edges to resize; "
             "right-click for categories and full editor; "
             "drag to reorder or drop songs onto a folder; drop audio/video to add songs; "
             "Ctrl/Shift to multi-select"
@@ -278,13 +277,13 @@ class SetlistWidget(QTableWidget):
             mode = "zh"
         self._name_mode = mode
         if mode == "both":
-            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
+            self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, False)
         elif mode == "en":
-            self.setHorizontalHeaderLabels(["#", "English", "English", "BPM", ""])
+            self.setHorizontalHeaderLabels(["No.", "English", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
         else:
-            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
+            self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
 
