@@ -11,11 +11,17 @@ if sys.platform == "win32":
 
 
 def main() -> int:
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import Qt, QTimer
     from PySide6.QtWidgets import QApplication
 
     from cueplayer.ui.main_window import MainWindow
-    from cueplayer.ui.theme import apply_dark_palette, build_stylesheet
+    from cueplayer.ui.splash import show_startup_splash
+    from cueplayer.ui.theme import BG_APP, apply_dark_palette, build_stylesheet
+
+    # Dark chrome before any window is created (reduces Windows white flash).
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
     app = QApplication(sys.argv)
     app.setApplicationName("CuePlayer")
@@ -28,17 +34,26 @@ def main() -> int:
     apply_dark_palette(app)
     app.setStyleSheet(build_stylesheet())
 
+    splash = show_startup_splash(app, message="Loading…")
+
     # Restore QColorDialog custom-color slots (bottom-left presets) from last run.
     from cueplayer.ui.color_presets import restore_color_dialog_customs
 
     restore_color_dialog_customs()
 
     window = MainWindow()
+    # Ensure the first expose is dark even if children paint a frame late.
+    window.setStyleSheet(f"QMainWindow {{ background-color: {BG_APP}; }}")
     window.show()
-    # Restore Clean Output for OBS if it was open, but keep the main editor on top
-    # so Window Capture does not grab the clean feed by mistake.
+
+    # MainWindow queues session restore on singleShot(0). Finish the splash
+    # one tick after that so project reopen stays covered by the dark screen.
     def _after_main_show() -> None:
-        window.present_clean_output_for_obs()
+        def _finish_splash() -> None:
+            window.present_clean_output_for_obs()
+            splash.finish(window)
+
+        QTimer.singleShot(0, _finish_splash)
 
     QTimer.singleShot(0, _after_main_show)
     return app.exec()
