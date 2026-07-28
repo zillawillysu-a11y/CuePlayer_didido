@@ -106,13 +106,10 @@ def format_sheet_order(value: float) -> str:
     return format_setlist_number(value)
 
 
-def format_sheet_bpm(bpm: float | None) -> str:
-    if bpm is None:
-        return ""
-    if abs(bpm - round(bpm)) < 1e-9:
-        return str(int(round(bpm)))
-    return f"{bpm:.3f}".rstrip("0").rstrip(".")
+def format_sheet_bpm(bpm: float | None, *, auto: bool = False) -> str:
+    from cueplayer.media.bpm_analyzer import format_bpm_cell
 
+    return format_bpm_cell(bpm, auto=auto)
 
 def iter_setlist_sheet_songs(project: Project) -> list[Song]:
     """Songs in sidebar display order (main list, then each folder)."""
@@ -177,7 +174,7 @@ def _song_row(song: Song, slot: SongPatchSlot | None = None) -> SetlistSheetRow:
         name=song.name,
         english_name=english,
         start_timecode=song.start_timecode,
-        bpm=format_sheet_bpm(song.bpm),
+        bpm=format_sheet_bpm(song.bpm, auto=bool(getattr(song, "bpm_auto", False))),
         seq=seq,
         cue_id=cue_id,
         note=(song.note or "").strip(),
@@ -444,6 +441,13 @@ class SetlistSheetPage(QWidget):
             | Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsEditable
         )
+        if row.bpm.startswith("<") and row.bpm.endswith(">"):
+            from cueplayer.ui.theme import TEXT_MUTED
+
+            bpm_item.setForeground(QColor(TEXT_MUTED))
+            bpm_item.setToolTip("Auto-detected BPM (gray <n>). Type your value to override.")
+        else:
+            bpm_item.setToolTip("BPM (blank = not set)")
 
         note_item = QTableWidgetItem(row.note)
         note_item.setFlags(
@@ -564,34 +568,42 @@ class SetlistSheetPage(QWidget):
                 item.setText(normalized)
                 self._suppress = False
         elif col == _COL_BPM:
-            raw = text.strip()
-            if not raw:
-                if song.bpm is not None:
+            from cueplayer.media.bpm_analyzer import parse_bpm_cell
+
+            parsed = parse_bpm_cell(text)
+            if parsed is False:
+                QMessageBox.warning(self, "Invalid BPM", "Enter a number or leave blank.")
+                self._suppress = True
+                item.setText(
+                    format_sheet_bpm(song.bpm, auto=bool(getattr(song, "bpm_auto", False)))
+                )
+                self._suppress = False
+                return
+            if parsed is None:
+                if song.bpm is not None or song.bpm_auto:
                     song.bpm = None
+                    song.bpm_auto = False
                     changed = True
             else:
-                try:
-                    value = float(raw.replace(",", "."))
-                except ValueError:
-                    QMessageBox.warning(self, "Invalid BPM", "Enter a number or leave blank.")
-                    self._suppress = True
-                    item.setText(format_sheet_bpm(song.bpm))
-                    self._suppress = False
-                    return
-                if value <= 0:
-                    QMessageBox.warning(self, "Invalid BPM", "BPM must be greater than 0.")
-                    self._suppress = True
-                    item.setText(format_sheet_bpm(song.bpm))
-                    self._suppress = False
-                    return
-                if song.bpm != value:
+                value = float(parsed)
+                if (
+                    song.bpm != value
+                    or bool(getattr(song, "bpm_auto", False))
+                ):
                     song.bpm = value
+                    song.bpm_auto = False
                     changed = True
-                display = format_sheet_bpm(song.bpm)
-                if item.text() != display:
-                    self._suppress = True
-                    item.setText(display)
-                    self._suppress = False
+            display = format_sheet_bpm(song.bpm, auto=bool(getattr(song, "bpm_auto", False)))
+            if item.text() != display:
+                self._suppress = True
+                item.setText(display)
+                self._suppress = False
+            if song.bpm_auto:
+                from cueplayer.ui.theme import TEXT_MUTED
+
+                item.setForeground(QColor(TEXT_MUTED))
+            else:
+                item.setForeground(QBrush())
         elif col == _COL_NOTE:
             note = text.strip()
             if (song.note or "") != note:

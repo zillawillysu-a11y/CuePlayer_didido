@@ -252,6 +252,9 @@ class Song:
     ma_export_name: str | None = None
     # Optional tempo for setlist display / future beat grid (None = unset).
     bpm: float | None = None
+    # True when `bpm` was filled by auto-detect (shown as gray <120>); False once
+    # the user types a value. Cleared with bpm when the field is emptied.
+    bpm_auto: bool = False
     # Free-text production note (Setlist Sheet / show notes); not written into MA XML.
     note: str = ""
     # Optional per-song setlist row background ("" = none); "#RRGGBB".
@@ -484,6 +487,7 @@ class Song:
             ),
             ma_export_name=self.ma_export_name,
             bpm=self.bpm,
+            bpm_auto=self.bpm_auto,
             note=self.note,
             row_color=self.row_color,
             category_id=None,

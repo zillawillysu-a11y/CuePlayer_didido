@@ -292,6 +292,7 @@ def _merge_setlist_state(live: Song, snap: Song) -> None:
     live.name = snap.name
     live.ma_export_name = snap.ma_export_name
     live.bpm = snap.bpm
+    live.bpm_auto = bool(getattr(snap, "bpm_auto", False))
     live.row_color = snap.row_color
     live.start_timecode = snap.start_timecode
     live.fps = snap.fps
@@ -321,6 +322,7 @@ class SetlistStateSnapshot:
                 s.name,
                 s.ma_export_name,
                 s.bpm,
+                bool(getattr(s, "bpm_auto", False)),
                 s.row_color or "",
                 s.start_timecode,
                 float(s.fps),

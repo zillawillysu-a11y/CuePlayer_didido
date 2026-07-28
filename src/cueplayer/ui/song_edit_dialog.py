@@ -326,7 +326,10 @@ class SongEditDialog(QDialog):
             self.table.setCellWidget(row, _COL_MA, ma_edit)
 
             bpm_edit = _line_edit(format_bpm(draft.bpm))
-            bpm_edit.setToolTip("Can be left blank; e.g. 120, 128.5")
+            bpm_edit.setToolTip(
+                "Can be left blank. If blank with audio attached, CuePlayer auto-fills "
+                "a gray <BPM> estimate you can override."
+            )
             bpm_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
             bpm_edit.setClearButtonEnabled(False)
             self.table.setCellWidget(row, _COL_BPM, bpm_edit)
