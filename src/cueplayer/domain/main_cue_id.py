@@ -32,6 +32,22 @@ def _format_decimal(value: Decimal) -> str:
     return text or "0"
 
 
+def _first_free_integer_between(
+    left_value: Decimal,
+    right_value: Decimal,
+    blocked: set[str],
+) -> str | None:
+    """Smallest unused integer strictly between left and right, if any."""
+    n = int(left_value) + 1
+    while Decimal(n) < right_value:
+        if Decimal(n) > left_value:
+            formatted = str(n)
+            if formatted not in blocked:
+                return formatted
+        n += 1
+    return None
+
+
 def between_main_cue_ids(
     left: str | None,
     right: str | None,
@@ -72,6 +88,10 @@ def between_main_cue_ids(
     right_value = _to_decimal(right)
     if left_value >= right_value:
         raise ValueError("left must be less than right")
+
+    integer_slot = _first_free_integer_between(left_value, right_value, blocked)
+    if integer_slot is not None:
+        return integer_slot
 
     step = Decimal("0.1")
     while step > Decimal("0.000001"):
