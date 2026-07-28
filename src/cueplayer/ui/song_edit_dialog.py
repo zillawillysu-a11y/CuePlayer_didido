@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -156,25 +158,53 @@ class _AudioFileCell(QWidget):
         self._path = Path(path) if path is not None else None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(4)
-        self._label = QLabel(self._path.name if self._path is not None else "—")
-        self._label.setToolTip(str(self._path) if self._path is not None else "No media file")
-        self._label.setMinimumWidth(40)
+        layout.setSpacing(6)
+        # Ignored horizontal policy lets the label shrink so Browse/Clear stay visible
+        # (default Preferred sizeHint fights Stretch siblings and overlaps buttons).
+        self._label = QLabel()
+        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._label.setMinimumWidth(0)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
         browse = QPushButton("Browse…")
-        browse.setFixedWidth(72)
+        browse.setFixedWidth(78)
+        browse.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         browse.setToolTip("Choose an audio or video file for this song")
         browse.clicked.connect(self._browse)
-        clear = QPushButton("×")
+        clear = QPushButton("X")
         clear.setFixedWidth(28)
+        clear.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         clear.setToolTip("Clear media file")
         clear.clicked.connect(self._clear)
         layout.addWidget(self._label, stretch=1)
-        layout.addWidget(browse)
-        layout.addWidget(clear)
+        layout.addWidget(browse, stretch=0)
+        layout.addWidget(clear, stretch=0)
+        self._refresh_label()
 
     @property
     def path(self) -> Path | None:
         return self._path
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_label()
+
+    def _full_label_text(self) -> str:
+        return self._path.name if self._path is not None else "—"
+
+    def _refresh_label(self) -> None:
+        full = self._full_label_text()
+        tip = str(self._path) if self._path is not None else "No media file"
+        self._label.setToolTip(tip)
+        width = max(0, self._label.width())
+        if width <= 0:
+            self._label.setText(full)
+            return
+        elided = self._label.fontMetrics().elidedText(
+            full, Qt.TextElideMode.ElideMiddle, width
+        )
+        self._label.setText(elided)
 
     def _browse(self) -> None:
         start = str(self._path.parent) if self._path is not None else ""
@@ -187,13 +217,11 @@ class _AudioFileCell(QWidget):
         if not path_str:
             return
         self._path = Path(path_str)
-        self._label.setText(self._path.name)
-        self._label.setToolTip(str(self._path))
+        self._refresh_label()
 
     def _clear(self) -> None:
         self._path = None
-        self._label.setText("—")
-        self._label.setToolTip("No media file")
+        self._refresh_label()
 
 
 class SongEditDialog(QDialog):
@@ -210,8 +238,9 @@ class SongEditDialog(QDialog):
         if not drafts:
             raise ValueError("SongEditDialog requires at least one draft")
         self.setWindowTitle(title)
-        width = 1140 if len(drafts) > 1 else 940
+        width = 1200 if len(drafts) > 1 else 1040
         self.resize(width, min(480, 180 + 44 * len(drafts)))
+        self.setMinimumWidth(900)
         self._drafts = [
             SongDraft(
                 name=d.name,
@@ -271,10 +300,12 @@ class SongEditDialog(QDialog):
         header.setSectionResizeMode(_COL_TC, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(_COL_TC, 130)
         header.setSectionResizeMode(_COL_FPS, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(_COL_FPS, 90)
+        header.resizeSection(_COL_FPS, 72)
         header.setSectionResizeMode(_COL_LEFT_LTC, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(_COL_LEFT_LTC, 120)
-        header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(_COL_LEFT_LTC, 78)
+        header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(_COL_FILE, 260)
+        header.setMinimumSectionSize(40)
 
         for row, draft in enumerate(self._drafts):
             num_edit = _line_edit(format_setlist_number(draft.setlist_number))
@@ -311,9 +342,9 @@ class SongEditDialog(QDialog):
             ltc_combo = QComboBox()
             for label, value in (
                 ("Off", "off"),
-                ("Left → LTC Ch", "left"),
-                ("Right → LTC Ch", "right"),
-                ("Auto → LTC Ch", "auto"),
+                ("Left", "left"),
+                ("Right", "right"),
+                ("Auto", "auto"),
             ):
                 ltc_combo.addItem(label, value)
             side = str(draft.file_ltc_side or "off")

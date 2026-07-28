@@ -22,6 +22,26 @@ def test_setlist_category_round_trip() -> None:
     assert loaded.songs[0].category_id is None
 
 
+def test_setlist_category_row_color_round_trip() -> None:
+    project = Project.create("Show")
+    folder = SetlistCategory.create("VIP")
+    folder.row_color = "#FF5A5F"
+    project.setlist_categories = [folder]
+
+    loaded = project_from_dict(project_to_dict(project))
+    assert loaded.setlist_categories[0].row_color == "#FF5A5F"
+
+
+def test_setlist_category_missing_row_color_migrates_empty() -> None:
+    project = Project.create("Show")
+    folder = SetlistCategory.create("Archive")
+    project.setlist_categories = [folder]
+    data = project_to_dict(project)
+    del data["setlist_categories"][0]["row_color"]
+    loaded = project_from_dict(data)
+    assert loaded.setlist_categories[0].row_color == ""
+
+
 def test_song_duplicate_clears_category() -> None:
     song = Song.create("Original")
     song.category_id = "cat-1"
