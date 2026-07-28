@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent
+from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -30,6 +30,25 @@ _COL_TYPE = 2
 _COL_NOTE = 3
 _COL_COUNT = 4
 _ROW_HEIGHT = 34
+
+
+class _RevealLabel(QLabel):
+    """Small affordance when the Cue List is collapsed."""
+
+    clicked = Signal()
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("color: #71717a; font-size: 11px; padding: 4px 0;")
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class _PaddedItemDelegate(QStyledItemDelegate):
@@ -190,6 +209,10 @@ class CueMonitorPanel(QWidget):
         self._list_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list_title.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
+        self._list_collapsed = _RevealLabel("▸ Cue List hidden — click to show")
+        self._list_collapsed.clicked.connect(self._show_cue_list)
+        self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
+
         self.cue_table = QTableWidget(0, _COL_COUNT)
         self.cue_table.setHorizontalHeaderLabels(["Time", "Cue ID", "Type", "Note"])
         self.cue_table.setItemDelegate(_PaddedItemDelegate(self.cue_table))
@@ -225,6 +248,7 @@ class CueMonitorPanel(QWidget):
         layout.addWidget(clock_frame)
         layout.addWidget(self._now_section)
         layout.addWidget(self._list_title)
+        layout.addWidget(self._list_collapsed)
         layout.addWidget(self.cue_table, stretch=1)
 
     def set_song(self, song: Song | None) -> None:
@@ -261,6 +285,26 @@ class CueMonitorPanel(QWidget):
         visible = self._song is None or bool(self._song.cue_list_visible)
         self._list_title.setVisible(visible)
         self.cue_table.setVisible(visible)
+        self._list_collapsed.setVisible(not visible)
+
+    def _set_cue_list_visible(self, visible: bool) -> None:
+        if self._song is None:
+            return
+        self._song.cue_list_visible = bool(visible)
+        self._apply_cue_list_visibility()
+        self.cue_list_visibility_changed.emit()
+
+    def _show_cue_list(self) -> None:
+        self._set_cue_list_visible(True)
+
+    def _append_cue_list_menu_action(self, menu: QMenu) -> None:
+        if self._song is None:
+            return
+        show_list = QAction("Show Cue List", self)
+        show_list.setCheckable(True)
+        show_list.setChecked(bool(self._song.cue_list_visible))
+        show_list.toggled.connect(self._set_cue_list_visible)
+        menu.addAction(show_list)
 
     def _show_now_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
@@ -289,6 +333,8 @@ class CueMonitorPanel(QWidget):
         show_secondary.toggled.connect(_toggle_secondary)
         menu.addAction(show_primary)
         menu.addAction(show_secondary)
+        menu.addSeparator()
+        self._append_cue_list_menu_action(menu)
         sender = self.sender()
         if isinstance(sender, QWidget):
             menu.exec(sender.mapToGlobal(pos))
@@ -299,17 +345,7 @@ class CueMonitorPanel(QWidget):
         if self._song is None:
             return
         menu = QMenu(self)
-        show_list = QAction("Show Cue List", self)
-        show_list.setCheckable(True)
-        show_list.setChecked(bool(self._song.cue_list_visible))
-
-        def _toggle_list(checked: bool) -> None:
-            self._song.cue_list_visible = bool(checked)
-            self._apply_cue_list_visibility()
-            self.cue_list_visibility_changed.emit()
-
-        show_list.toggled.connect(_toggle_list)
-        menu.addAction(show_list)
+        self._append_cue_list_menu_action(menu)
         sender = self.sender()
         if isinstance(sender, QWidget):
             menu.exec(sender.mapToGlobal(pos))
