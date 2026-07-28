@@ -205,6 +205,8 @@ class Mark:
     time_seconds: float
     display_name: str = ""
     ma_export_name: str | None = None
+    # Fractional Main Cue ID (1, 1.1, 1.01, …) for main-lane marks only.
+    main_cue_id: str = ""
 
     @classmethod
     def create(cls, lane_index: int, time_seconds: float, display_name: str = "") -> Mark:
@@ -301,6 +303,8 @@ class Song:
     # Show/hide the PRIMARY / SECONDARY NOW cards in the right monitor (lane logic unchanged).
     now_primary_visible: bool = True
     now_secondary_visible: bool = True
+    # Show the scrolling Cue List table under the NOW cards.
+    cue_list_visible: bool = True
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -395,10 +399,28 @@ class Song:
         self.mark_lanes = [lane for lane in self.mark_lanes if lane.index != index]
         self.marks = [mark for mark in self.marks if mark.lane_index != index]
 
+    def main_lane_index(self) -> int | None:
+        for lane in self.mark_lanes:
+            if lane.lane_type == "main":
+                return lane.index
+        return None
+
+    def main_marks_sorted(self) -> list[Mark]:
+        main_index = self.main_lane_index()
+        if main_index is None:
+            return []
+        return sorted(
+            (m for m in self.marks if m.lane_index == main_index),
+            key=lambda m: (m.time_seconds, m.lane_index, m.id),
+        )
+
     def add_mark(self, lane_index: int, time_seconds: float, display_name: str = "") -> Mark:
         mark = Mark.create(lane_index=lane_index, time_seconds=time_seconds, display_name=display_name)
         self.marks.append(mark)
         self.marks.sort(key=lambda m: (m.time_seconds, m.lane_index))
+        from cueplayer.domain.main_cue_id import assign_main_cue_id_for_mark
+
+        assign_main_cue_id_for_mark(self, mark)
         return mark
 
     def mark_by_id(self, mark_id: str) -> Mark | None:
@@ -458,6 +480,7 @@ class Song:
             now_secondary_enabled=self.now_secondary_enabled,
             now_primary_visible=self.now_primary_visible,
             now_secondary_visible=self.now_secondary_visible,
+            cue_list_visible=self.cue_list_visible,
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
         dup.audio_tracks = [
@@ -499,6 +522,7 @@ class Song:
                 time_seconds=mark.time_seconds,
                 display_name=mark.display_name,
                 ma_export_name=mark.ma_export_name,
+                main_cue_id=mark.main_cue_id,
             )
             for mark in self.marks
         ]
