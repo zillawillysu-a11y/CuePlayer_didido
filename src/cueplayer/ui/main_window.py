@@ -232,7 +232,7 @@ class SetlistWidget(QTableWidget):
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setVisible(True)
-        self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM"])
+        self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(0, 52)
         self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -241,6 +241,9 @@ class SetlistWidget(QTableWidget):
         self.setColumnWidth(3, 56)
         self.horizontalHeader().setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_LTC, 68)
+        self.horizontalHeaderItem(self.COL_LTC).setToolTip(
+            "Striped LTC badge (L/R) when file timecode is detected or enabled in Edit"
+        )
         self.setColumnHidden(2, True)
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
@@ -267,13 +270,13 @@ class SetlistWidget(QTableWidget):
             mode = "zh"
         self._name_mode = mode
         if mode == "both":
-            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM"])
+            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, False)
         elif mode == "en":
-            self.setHorizontalHeaderLabels(["#", "English", "English", "BPM"])
+            self.setHorizontalHeaderLabels(["#", "English", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
         else:
-            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM"])
+            self.setHorizontalHeaderLabels(["#", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
 
@@ -1799,7 +1802,7 @@ class MainWindow(QMainWindow):
             audio_path=audio_path if audio_path is not None else None,
             video_path=video_path if video_path is not None else None,
             song_id=song.id,
-            use_left_ltc=bool(song.use_left_ltc),
+            file_ltc_side=str(getattr(song, "file_ltc_side", "off") or "off"),
         )
 
     def _apply_draft_to_song(self, song: Song, draft: SongDraft) -> None:
@@ -1809,7 +1812,9 @@ class MainWindow(QMainWindow):
         song.bpm = draft.bpm
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
-        song.use_left_ltc = bool(draft.use_left_ltc)
+        from cueplayer.domain.models import coerce_file_ltc_side
+
+        song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
         if draft.audio_path is not None and Path(draft.audio_path).is_file():
             song.audio_tracks = [
                 AudioTrack(
@@ -3546,8 +3551,21 @@ class MainWindow(QMainWindow):
         self._schedule_ltc_detect_for_buffer(path, buffer)
 
     def _ltc_channel_for_song(self, song: Song) -> int | None:
-        if bool(getattr(song, "use_left_ltc", False)):
+        from cueplayer.domain.models import coerce_file_ltc_side
+
+        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "off"))
+        if side == "left":
             return 0
+        if side == "right":
+            return 1
+        if side == "auto":
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                return None
+            key = self._audio_cache_key(path)
+            if key is None:
+                return None
+            return self._audio_ltc_cache.get(key)
         path = self._main_audio_path_for_song(song)
         if path is None:
             return None

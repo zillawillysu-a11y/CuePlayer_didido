@@ -23,6 +23,7 @@ from cueplayer.domain.models import (
     Song,
     VideoClip,
     VideoDecodeQuality,
+    coerce_file_ltc_side,
 )
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
 
@@ -401,7 +402,8 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "start_timecode": song.start_timecode,
                 "fps": song.fps,
                 "duration_seconds": song.duration_seconds,
-                "use_left_ltc": bool(song.use_left_ltc),
+                "use_left_ltc": bool(song.file_ltc_side == "left"),  # legacy mirror
+                "file_ltc_side": coerce_file_ltc_side(song.file_ltc_side),
                 "audio_tracks": [
                     {
                         "id": track.id,
@@ -562,7 +564,10 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 start_timecode=song_data.get("start_timecode", "01:00:00:00"),
                 fps=float(song_data.get("fps", 30.0)),
                 duration_seconds=float(song_data.get("duration_seconds", 60.0)),
-                use_left_ltc=bool(song_data.get("use_left_ltc", False)),
+                file_ltc_side=coerce_file_ltc_side(
+                    song_data.get("file_ltc_side"),
+                    use_left_ltc=bool(song_data.get("use_left_ltc", False)),
+                ),
                 audio_tracks=audio_tracks,
                 video_clips=video_clips,
                 video_track_muted=bool(song_data.get("video_track_muted", False)),

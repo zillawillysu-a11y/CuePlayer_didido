@@ -19,6 +19,7 @@ from cueplayer.domain.models import (
     AudioOutputSettings,
     Song,
     clamp_output_channels,
+    coerce_file_ltc_side,
     default_ltc_channels_for_device,
 )
 from cueplayer.media.ltc_detect import detect_ltc_channel
@@ -160,12 +161,28 @@ class AudioEngine(QObject):
     def ltc_source_mode(self) -> str:
         return str(self._audio_settings.ltc_source)
 
-    def _song_uses_left_ltc(self) -> bool:
-        """Per-song override: file Left → project LTC output channel(s)."""
-        return bool(self._song is not None and getattr(self._song, "use_left_ltc", False))
+    def _song_file_ltc_channel(self) -> int | None:
+        """Per-song override: which file channel feeds the project LTC bus."""
+        song = self._song
+        if song is None:
+            return None
+        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "off"))
+        if side == "off":
+            return None
+        if side == "left":
+            return 0
+        if side == "right":
+            return 1
+        # auto — prefer live detection, else run detect once
+        if self._detected_ltc_channel is not None:
+            return int(self._detected_ltc_channel)
+        return self._autodetect_ltc_channel()
+
+    def _song_uses_file_ltc(self) -> bool:
+        return self._song_file_ltc_channel() is not None
 
     def _uses_generated_ltc(self) -> bool:
-        if self._song_uses_left_ltc():
+        if self._song_uses_file_ltc():
             return False
         return bool(
             self._audio_settings.ltc_enabled
@@ -195,8 +212,9 @@ class AudioEngine(QObject):
 
     def _file_ltc_channel(self) -> int | None:
         """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
-        if self._song_uses_left_ltc():
-            return 0 if self._audio_settings.ltc_enabled else None
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None:
+            return song_ch if self._audio_settings.ltc_enabled else None
         s = self._audio_settings
         uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
         uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
@@ -206,10 +224,11 @@ class AudioEngine(QObject):
 
     def _resolved_file_ltc_channel(self, *, require_settings: bool = False) -> int | None:
         """Which loaded-file channel carries striped LTC (0=L, 1=R)."""
-        if self._song_uses_left_ltc():
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None:
             if require_settings and not self._audio_settings.ltc_enabled:
                 return None
-            return 0
+            return song_ch
         s = self._audio_settings
         if require_settings:
             uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
@@ -234,8 +253,9 @@ class AudioEngine(QObject):
         """Source file channel for the dedicated LTC output bus."""
         if not self._audio_settings.ltc_enabled:
             return None
-        if self._song_uses_left_ltc():
-            return 0
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None:
+            return song_ch
         if self._audio_settings.ltc_source == "generator":
             return None
         return self._file_ltc_channel()
@@ -249,7 +269,7 @@ class AudioEngine(QObject):
         if ch_count <= 1:
             return 0, 0
         strip_ltc = (
-            self._song_uses_left_ltc()
+            self._song_uses_file_ltc()
             or is_music_source_route(self._audio_settings.music_l_route)
             or is_music_source_route(self._audio_settings.music_r_route)
             or is_ltc_route(self._audio_settings.music_l_route)
@@ -912,7 +932,7 @@ class AudioEngine(QObject):
         s = self._audio_settings
         if not s.ltc_enabled:
             return False
-        if self._song_uses_left_ltc():
+        if self._song_uses_file_ltc():
             return True
         if s.ltc_source == "generator":
             return bool(s.ltc_generator_enabled)
@@ -1044,9 +1064,9 @@ class AudioEngine(QObject):
         else:
             ltc = []
 
-        # Left-LTC songs: both speaker legs are Music Source (LTC-stripped music)
+        # File-LTC songs: both speaker legs are Music Source (LTC-stripped music)
         # on channels that do not share the dedicated LTC wire.
-        if self._song_uses_left_ltc() and ltc:
+        if self._song_uses_file_ltc() and ltc:
             preferred = list(dict.fromkeys([*left_ch, *right_ch]))
             speakers = speaker_channels_without_ltc(
                 preferred=preferred or [0, min(1, max_ch - 1)],
