@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from cueplayer.ui.theme import ACCENT, BG_APP, BORDER, TEXT, TEXT_MUTED
@@ -30,31 +30,55 @@ def create_splash_pixmap(
         painter.drawRoundedRect(pixmap.rect().adjusted(1, 1, -2, -2), 12, 12)
 
     # Branding centered in the pixmap (card or full-screen).
-    bar_y = height // 2 + 8
-    painter.fillRect(width // 2 - 36, bar_y, 72, 2, QColor(ACCENT))
-
+    title = "CuePlayer"
     title_font = QFont()
     title_font.setFamilies(["Segoe UI", "Microsoft JhengHei UI", "Arial"])
     title_font.setPixelSize(34)
     title_font.setWeight(QFont.Weight.DemiBold)
-    painter.setFont(title_font)
-    painter.setPen(QColor(TEXT))
-    painter.drawText(
-        pixmap.rect().adjusted(0, -28, 0, 0),
-        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
-        "CuePlayer",
-    )
 
     msg_font = QFont()
     msg_font.setFamilies(["Segoe UI", "Microsoft JhengHei UI", "Arial"])
     msg_font.setPixelSize(13)
+
+    title_metrics = QFontMetrics(title_font)
+    msg_metrics = QFontMetrics(msg_font)
+    title_block = title_metrics.boundingRect(title)
+    msg_block = msg_metrics.boundingRect(message)
+
+    gap_title_bar = 28
+    bar_height = 3
+    bar_width = 72
+    gap_bar_msg = 22
+    block_h = (
+        title_block.height()
+        + gap_title_bar
+        + bar_height
+        + gap_bar_msg
+        + msg_block.height()
+    )
+    top_y = max(24, (height - block_h) // 2)
+
+    painter.setFont(title_font)
+    painter.setPen(QColor(TEXT))
+    painter.drawText(
+        0,
+        top_y,
+        width,
+        title_block.height(),
+        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+        title,
+    )
+
+    bar_y = top_y + title_block.height() + gap_title_bar
+    painter.fillRect(width // 2 - bar_width // 2, bar_y, bar_width, bar_height, QColor(ACCENT))
+
     painter.setFont(msg_font)
     painter.setPen(QColor(TEXT_MUTED))
     painter.drawText(
         0,
-        bar_y + 28,
+        bar_y + bar_height + gap_bar_msg,
         width,
-        24,
+        msg_block.height(),
         int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
         message,
     )
