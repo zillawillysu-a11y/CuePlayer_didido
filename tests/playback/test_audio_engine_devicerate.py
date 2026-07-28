@@ -163,3 +163,30 @@ def test_emit_position_stops_at_correct_frame_when_native_matches_device(monkeyp
     engine._emit_position()
     assert engine.playing is False
     assert engine.position == pytest.approx(buf.duration_seconds, abs=1e-6)
+
+
+def test_emit_position_syncs_ui_when_callback_stops_first(monkeypatch) -> None:
+    """Natural EOF in the audio callback clears `_playing` before the poll tick."""
+    device = _wasapi_speakers_locked_to_48k()
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [device])
+    monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    QApplication.instance() or QApplication([])
+    engine = audio_engine_mod.AudioEngine()
+    engine.apply_audio_settings(AudioOutputSettings(output_device_name="Realtek"))
+    buf = _make_buffer(48000, seconds=1.0)
+    engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
+
+    playing_states: list[bool] = []
+    engine.playing_changed.connect(playing_states.append)
+
+    engine._poll.start()
+    engine._position_frame = buf.frames
+    engine._playing = False
+
+    engine._emit_position()
+
+    assert engine.playing is False
+    assert not engine._poll.isActive()
+    assert playing_states == [False]

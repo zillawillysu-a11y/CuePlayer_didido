@@ -730,23 +730,24 @@ class AudioEngine(QObject):
             return
         pos = self.position
         self.position_changed.emit(pos)
-        if self._playing:
-            with self._lock:
-                # `_position_frame` is bookkept in playback-rate frames (see
-                # `_sample_rate()` docstring), so EOF must compare against the
-                # resampled buffer length (`_playback_samples`, same rate) —
-                # never `self._buffer.frames`, which is native-rate and would
-                # make playback stop early whenever native != playback rate
-                # (e.g. 44.1kHz media on a 48kHz-locked device).
-                if self._playback_samples is not None:
-                    end_frame = self._playback_samples.shape[0]
-                elif self._buffer is not None:
-                    end_frame = self._playback_end_frame()
-                else:
-                    end_frame = int(self._duration_seconds * self._sample_rate())
-                done = self._position_frame >= end_frame
-            if done:
-                self.pause()
+        with self._lock:
+            # `_position_frame` is bookkept in playback-rate frames (see
+            # `_sample_rate()` docstring), so EOF must compare against the
+            # resampled buffer length (`_playback_samples`, same rate) —
+            # never `self._buffer.frames`, which is native-rate and would
+            # make playback stop early whenever native != playback rate
+            # (e.g. 44.1kHz media on a 48kHz-locked device).
+            if self._playback_samples is not None:
+                end_frame = self._playback_samples.shape[0]
+            elif self._buffer is not None:
+                end_frame = self._playback_end_frame()
+            else:
+                end_frame = int(self._duration_seconds * self._sample_rate())
+            at_end = self._position_frame >= end_frame
+        # The stream callback may clear `_playing` before this poll tick runs;
+        # still call `pause()` so transport UI and MTC stop cleanly.
+        if at_end and (self._playing or self._poll.isActive()):
+            self.pause()
 
     def _silent_tick(self) -> None:
         with self._lock:
