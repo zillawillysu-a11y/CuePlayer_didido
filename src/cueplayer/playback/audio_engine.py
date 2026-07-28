@@ -99,6 +99,9 @@ class AudioEngine(QObject):
         self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
         self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
         self._detected_ltc_channel: int | None = None
+        self._ltc_detect_ran = False
+        self._cached_music_indices: tuple[int, int] = (0, 1)
+        self._cached_file_ltc_idx: int | None = None
         self._song_start_tc = "01:00:00:00"
         self._song_fps = 30.0
         self._output_channel_count = 2
@@ -157,15 +160,17 @@ class AudioEngine(QObject):
         )
 
     def _autodetect_ltc_channel(self) -> int | None:
-        if self._detected_ltc_channel is not None:
+        if self._ltc_detect_ran:
             return self._detected_ltc_channel
+        self._ltc_detect_ran = True
         buf = self._buffer
         if buf is not None and buf.samples.ndim == 2 and buf.samples.shape[1] >= 2:
-            detected = detect_ltc_channel(buf.samples, int(buf.sample_rate))
-            if detected is not None:
-                self._detected_ltc_channel = detected
-                return detected
-        return None
+            self._detected_ltc_channel = detect_ltc_channel(
+                buf.samples, int(buf.sample_rate)
+            )
+        else:
+            self._detected_ltc_channel = None
+        return self._detected_ltc_channel
 
     def _is_ltc_file_channel(self, channel: int) -> bool:
         ch = self._file_ltc_channel()
@@ -382,6 +387,8 @@ class AudioEngine(QObject):
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
 
+        self._refresh_source_routing_cache()
+
         mtc_err = self._mtc.configure(
             enabled=self._audio_settings.mtc_enabled,
             port_name=self._audio_settings.midi_port_name,
@@ -517,6 +524,7 @@ class AudioEngine(QObject):
             self._duration_seconds = buffer.duration_seconds
         else:
             self._detected_ltc_channel = None
+            self._ltc_detect_ran = False
         self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
@@ -991,8 +999,17 @@ class AudioEngine(QObject):
         buf = self._buffer
         if buf is None or buf.channels < 2:
             self._detected_ltc_channel = None
+            self._ltc_detect_ran = False
+            self._refresh_source_routing_cache()
             return
         self._detected_ltc_channel = detect_ltc_channel(buf.samples, int(buf.sample_rate))
+        self._ltc_detect_ran = True
+        self._refresh_source_routing_cache()
+
+    def _refresh_source_routing_cache(self) -> None:
+        """Precompute routing indices so the realtime callback stays O(chunk)."""
+        self._cached_music_indices = self._music_source_indices()
+        self._cached_file_ltc_idx = self._file_ltc_channel()
 
     def _playback_end_frame(self) -> int:
         """Timeline length in playback-rate frames (resampled buffer when present)."""
@@ -1244,8 +1261,8 @@ class AudioEngine(QObject):
                 sources[:, SRC_MUSIC_L] = music[:, 0]
                 sources[:, SRC_MUSIC_R] = music[:, 1]
                 sources[:, SRC_LTC_BUS] = ltc
-                music_idx, _ = self._music_source_indices()
-                ltc_idx = self._file_ltc_channel()
+                music_idx, _ = self._cached_music_indices
+                ltc_idx = self._cached_file_ltc_idx
                 if ltc_idx is not None:
                     sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
                         ltc_idx, start, frames
@@ -1265,7 +1282,7 @@ class AudioEngine(QObject):
             "dtype": "float32",
             "callback": self._make_stream_callback(sample_rate),
             "latency": "low",
-            "blocksize": 1024,
+            "blocksize": 0,
         }
         if device is not None:
             kwargs["device"] = device
