@@ -123,6 +123,24 @@ class RenameMarkCommand:
             mark.display_name = self.new_name
 
 
+@dataclass
+class EditMainCueIdCommand:
+    mark_id: str
+    old_id: str
+    new_id: str
+    label: str = "Edit Cue ID"
+
+    def undo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.old_id
+
+    def redo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.new_id
+
+
 @dataclass(frozen=True)
 class VideoClipSnapshot:
     id: str

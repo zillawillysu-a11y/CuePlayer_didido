@@ -179,6 +179,35 @@ def migrate_main_cue_ids(song: Song) -> None:
             mark.main_cue_id = str(index)
 
 
+def normalize_main_cue_id_text(text: str) -> str:
+    """Normalize a manually typed Main Cue ID for storage."""
+    return _format_decimal(_to_decimal(text.strip()))
+
+
+def is_valid_main_cue_id_text(text: str) -> bool:
+    """True when text is a positive decimal cue id."""
+    text = text.strip()
+    if not text:
+        return False
+    try:
+        return _to_decimal(text) > 0
+    except Exception:
+        return False
+
+
+def main_cue_id_taken(song: Song, cue_id: str, *, exclude_mark_id: str) -> bool:
+    """True when another main-lane mark already uses this cue id."""
+    main_index = song.main_lane_index()
+    if main_index is None:
+        return False
+    for mark in song.marks:
+        if mark.lane_index != main_index or mark.id == exclude_mark_id:
+            continue
+        if mark.main_cue_id == cue_id:
+            return True
+    return False
+
+
 def main_cue_id_map(song: Song) -> dict[str, str]:
     """Display map mark_id -> cue id string (main lane only)."""
     main_index = song.main_lane_index()

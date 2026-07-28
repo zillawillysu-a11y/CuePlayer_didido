@@ -20,15 +20,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueplayer.domain.main_cue_id import main_cue_id_map
+from cueplayer.domain.main_cue_id import (
+    is_valid_main_cue_id_text,
+    main_cue_id_map,
+    main_cue_id_taken,
+    normalize_main_cue_id_text,
+)
 from cueplayer.domain.models import Mark, Song
+from cueplayer.ui.cue_list_columns import (
+    CUE_LIST_FIELD_LABELS,
+    CUE_LIST_FIELDS,
+    DEFAULT_CUE_LIST_COLUMN_ORDER,
+    LOGICAL_INDEX_BY_FIELD,
+    normalize_cue_list_column_order,
+)
 from cueplayer.ui.transport_bar import format_time
 
-_COL_TIME = 0
-_COL_CUE_ID = 1
-_COL_TYPE = 2
-_COL_NOTE = 3
-_COL_COUNT = 4
+_COL_COUNT = len(CUE_LIST_FIELDS)
 _ROW_HEIGHT = 34
 
 
@@ -103,6 +111,9 @@ class CueMonitorPanel(QWidget):
     delete_requested = Signal(list)  # list[str] mark ids
     selection_changed = Signal(list)  # list[str] mark ids
     note_changed = Signal(str, str, str)  # mark_id, old_name, new_name
+    cue_id_changed = Signal(str, str, str)  # mark_id, old_id, new_id
+    cue_id_edit_failed = Signal(str)  # user-facing reason
+    cue_list_layout_changed = Signal()
     now_visibility_changed = Signal()
     cue_list_visibility_changed = Signal()
 
@@ -119,6 +130,8 @@ class CueMonitorPanel(QWidget):
         self._secondary_clear_timer = QTimer(self)
         self._secondary_clear_timer.setSingleShot(True)
         self._secondary_clear_timer.timeout.connect(self._on_secondary_auto_clear)
+        self._column_order: list[str] = list(DEFAULT_CUE_LIST_COLUMN_ORDER)
+        self._reordering_header = False
 
         self.setMinimumWidth(280)
         self.setMaximumWidth(440)
@@ -214,7 +227,9 @@ class CueMonitorPanel(QWidget):
         self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
         self.cue_table = QTableWidget(0, _COL_COUNT)
-        self.cue_table.setHorizontalHeaderLabels(["Time", "Cue ID", "Type", "Note"])
+        self.cue_table.setHorizontalHeaderLabels(
+            [CUE_LIST_FIELD_LABELS[field] for field in CUE_LIST_FIELDS]
+        )
         self.cue_table.setItemDelegate(_PaddedItemDelegate(self.cue_table))
         self.cue_table.verticalHeader().setVisible(False)
         self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
@@ -222,18 +237,11 @@ class CueMonitorPanel(QWidget):
         self.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.cue_table.horizontalHeader().setSectionResizeMode(
-            _COL_TIME, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.cue_table.horizontalHeader().setSectionResizeMode(
-            _COL_CUE_ID, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.cue_table.horizontalHeader().setSectionResizeMode(
-            _COL_TYPE, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.cue_table.horizontalHeader().setSectionResizeMode(
-            _COL_NOTE, QHeaderView.ResizeMode.Stretch
-        )
+        header = self.cue_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setFirstSectionMovable(True)
+        header.sectionMoved.connect(self._on_header_section_moved)
+        self._apply_column_resize_modes()
         self.cue_table.setStyleSheet(
             "QTableWidget::item { padding: 8px 8px; }"
             "QTableWidget QLineEdit { padding: 4px 6px; min-height: 1.4em; }"
@@ -254,10 +262,69 @@ class CueMonitorPanel(QWidget):
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._playhead_list_mark_id = None
+        self._apply_column_order()
         self.refresh_list()
         self._apply_now_panel_visibility()
         self._apply_cue_list_visibility()
         self.set_position(self._position, getattr(song, "duration_seconds", 0.0) if song else 0.0)
+
+    def _col_for_field(self, field: str) -> int:
+        return self._column_order.index(field)
+
+    def _field_at_col(self, col: int) -> str:
+        return self._column_order[col]
+
+    def _time_col(self) -> int:
+        return self._col_for_field("time")
+
+    def _apply_column_resize_modes(self) -> None:
+        header = self.cue_table.horizontalHeader()
+        for field in self._column_order:
+            col = self._col_for_field(field)
+            if field == "note":
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            else:
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+    def _apply_column_order(self, order: list[str] | None = None) -> None:
+        if order is None:
+            if self._song is not None:
+                order = normalize_cue_list_column_order(self._song.cue_list_column_order)
+            else:
+                order = list(DEFAULT_CUE_LIST_COLUMN_ORDER)
+        else:
+            order = normalize_cue_list_column_order(order)
+        self._column_order = order
+        header = self.cue_table.horizontalHeader()
+        self._reordering_header = True
+        for visual_pos, field in enumerate(order):
+            logical = LOGICAL_INDEX_BY_FIELD[field]
+            current_visual = header.visualIndex(logical)
+            if current_visual != visual_pos:
+                header.moveSection(current_visual, visual_pos)
+        self._apply_column_resize_modes()
+        self._reordering_header = False
+
+    def _on_header_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
+        del logical_index, old_visual, new_visual
+        if self._reordering_header or self._song is None:
+            return
+        header = self.cue_table.horizontalHeader()
+        order: list[str] = []
+        for visual in range(_COL_COUNT):
+            logical = header.logicalIndex(visual)
+            order.append(CUE_LIST_FIELDS[logical])
+        self._column_order = order
+        self._song.cue_list_column_order = list(order)
+        self._apply_column_resize_modes()
+        self.cue_list_layout_changed.emit()
+
+    def _mark_id_at_row(self, row: int) -> str | None:
+        time_item = self.cue_table.item(row, self._time_col())
+        if time_item is None:
+            return None
+        mark_id = time_item.data(Qt.ItemDataRole.UserRole)
+        return str(mark_id) if mark_id else None
 
     def apply_now_display_settings(self) -> None:
         """Reload NOW lane slots after Display dialog changes."""
@@ -370,6 +437,11 @@ class CueMonitorPanel(QWidget):
         self._updating_table = True
         self.cue_table.setRowCount(0)
         cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
+        main_index = self._song.main_lane_index() if self._song is not None else None
+        time_col = self._time_col()
+        type_col = self._col_for_field("type")
+        cue_id_col = self._col_for_field("cue_id")
+        note_col = self._col_for_field("note")
         if self._song is not None:
             for mark in self._song.marks:
                 lane = self._song.lane_by_index(mark.lane_index)
@@ -382,20 +454,29 @@ class CueMonitorPanel(QWidget):
                 time_item = QTableWidgetItem(format_time(mark.time_seconds))
                 time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
-                self.cue_table.setItem(row, _COL_TIME, time_item)
+                self.cue_table.setItem(row, time_col, time_item)
 
                 cue_id_text = cue_ids.get(mark.id, "")
                 cue_id_item = QTableWidgetItem(cue_id_text)
-                cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if main_index is not None and mark.lane_index == main_index:
+                    cue_id_item.setFlags(
+                        cue_id_item.flags()
+                        | Qt.ItemFlag.ItemIsEditable
+                        | Qt.ItemFlag.ItemIsSelectable
+                        | Qt.ItemFlag.ItemIsEnabled
+                    )
+                    cue_id_item.setToolTip("Click to edit Cue ID (Main lane)")
+                else:
+                    cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.cue_table.setItem(row, _COL_CUE_ID, cue_id_item)
+                self.cue_table.setItem(row, cue_id_col, cue_id_item)
 
                 lane_name = lane.name if lane is not None else f"Type {mark.lane_index}"
                 lane_item = QTableWidgetItem(lane_name)
                 lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if lane is not None:
                     lane_item.setForeground(QColor(lane.color))
-                self.cue_table.setItem(row, _COL_TYPE, lane_item)
+                self.cue_table.setItem(row, type_col, lane_item)
 
                 note_item = QTableWidgetItem(mark.display_name)
                 note_item.setFlags(
@@ -405,7 +486,7 @@ class CueMonitorPanel(QWidget):
                     | Qt.ItemFlag.ItemIsEnabled
                 )
                 note_item.setToolTip("Click to type a Note directly (e.g. Verse / Chorus)")
-                self.cue_table.setItem(row, _COL_NOTE, note_item)
+                self.cue_table.setItem(row, note_col, note_item)
         self._updating_table = False
         self._apply_now_highlight()
         if selected:
@@ -415,12 +496,9 @@ class CueMonitorPanel(QWidget):
     def selected_mark_ids(self) -> list[str]:
         ids: list[str] = []
         for index in self.cue_table.selectionModel().selectedRows():
-            item = self.cue_table.item(index.row(), _COL_TIME)
-            if item is None:
-                continue
-            mark_id = item.data(Qt.ItemDataRole.UserRole)
+            mark_id = self._mark_id_at_row(index.row())
             if mark_id:
-                ids.append(str(mark_id))
+                ids.append(mark_id)
         return ids
 
     def set_selected_mark_ids(self, mark_ids: set[str] | list[str]) -> None:
@@ -429,10 +507,8 @@ class CueMonitorPanel(QWidget):
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
         for row in range(self.cue_table.rowCount()):
-            item = self.cue_table.item(row, _COL_TIME)
-            if item is None:
-                continue
-            if item.data(Qt.ItemDataRole.UserRole) in wanted:
+            mark_id = self._mark_id_at_row(row)
+            if mark_id in wanted:
                 model.select(
                     self.cue_table.model().index(row, 0),
                     model.SelectionFlag.Select | model.SelectionFlag.Rows,
@@ -472,18 +548,16 @@ class CueMonitorPanel(QWidget):
                 | Qt.KeyboardModifier.MetaModifier
             )
         )
-        time_item = self.cue_table.item(row, _COL_TIME)
-        if time_item is None:
-            return
-        mark_id = time_item.data(Qt.ItemDataRole.UserRole)
-        mark = self._song.mark_by_id(str(mark_id)) if mark_id else None
+        mark_id = self._mark_id_at_row(row)
+        mark = self._song.mark_by_id(mark_id) if mark_id else None
         if mark is None:
             return
-        if column == _COL_NOTE:
+        field = self._field_at_col(column)
+        if field in ("note", "cue_id"):
             if not multi:
-                note_item = self.cue_table.item(row, _COL_NOTE)
-                if note_item is not None:
-                    self.cue_table.editItem(note_item)
+                cell_item = self.cue_table.item(row, column)
+                if cell_item is not None and cell_item.flags() & Qt.ItemFlag.ItemIsEditable:
+                    self.cue_table.editItem(cell_item)
             return
         if not multi:
             self.seek_requested.emit(mark.time_seconds)
@@ -491,15 +565,19 @@ class CueMonitorPanel(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_table or self._song is None:
             return
-        if item.column() != _COL_NOTE:
+        field = self._field_at_col(item.column())
+        if field not in ("note", "cue_id"):
             return
-        time_item = self.cue_table.item(item.row(), _COL_TIME)
-        if time_item is None:
-            return
-        mark_id = time_item.data(Qt.ItemDataRole.UserRole)
-        mark = self._song.mark_by_id(str(mark_id)) if mark_id else None
+        mark_id = self._mark_id_at_row(item.row())
+        mark = self._song.mark_by_id(mark_id) if mark_id else None
         if mark is None:
             return
+        if field == "note":
+            self._apply_note_edit(item, mark)
+        else:
+            self._apply_cue_id_edit(item, mark)
+
+    def _apply_note_edit(self, item: QTableWidgetItem, mark: Mark) -> None:
         old_name = mark.display_name
         new_name = item.text().strip()
         if item.text() != new_name:
@@ -512,16 +590,40 @@ class CueMonitorPanel(QWidget):
         self.note_changed.emit(str(mark.id), old_name, new_name)
         self._sync_current(force_now=True)
 
+    def _apply_cue_id_edit(self, item: QTableWidgetItem, mark: Mark) -> None:
+        old_id = mark.main_cue_id
+        raw = item.text().strip()
+        if not is_valid_main_cue_id_text(raw):
+            self._updating_table = True
+            item.setText(old_id)
+            self._updating_table = False
+            self.cue_id_edit_failed.emit("Cue ID must be a positive number")
+            return
+        new_id = normalize_main_cue_id_text(raw)
+        if main_cue_id_taken(self._song, new_id, exclude_mark_id=mark.id):
+            self._updating_table = True
+            item.setText(old_id)
+            self._updating_table = False
+            self.cue_id_edit_failed.emit(f"Cue ID {new_id!r} is already used")
+            return
+        if item.text() != new_id:
+            self._updating_table = True
+            item.setText(new_id)
+            self._updating_table = False
+        if new_id == old_id:
+            return
+        mark.main_cue_id = new_id
+        self.cue_id_changed.emit(str(mark.id), old_id, new_id)
+
     def _apply_now_highlight(self) -> None:
         """Tint rows that are currently active in NOW slots."""
         clear = QColor(0, 0, 0, 0)
         for row in range(self.cue_table.rowCount()):
-            time_item = self.cue_table.item(row, _COL_TIME)
-            mark_id = time_item.data(Qt.ItemDataRole.UserRole) if time_item else None
+            mark_id = self._mark_id_at_row(row)
             is_now = mark_id in self._current_mark_ids
             bg = QColor("#243044") if is_now else clear
             if is_now and self._song is not None and mark_id:
-                mark = self._song.mark_by_id(str(mark_id))
+                mark = self._song.mark_by_id(mark_id)
                 lane = self._song.lane_by_index(mark.lane_index) if mark else None
                 if lane is not None:
                     c = QColor(lane.color)
@@ -654,21 +756,21 @@ class CueMonitorPanel(QWidget):
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
+        time_col = self._time_col()
         for row in range(self.cue_table.rowCount()):
-            time_item = self.cue_table.item(row, _COL_TIME)
-            if time_item is None:
-                continue
-            if time_item.data(Qt.ItemDataRole.UserRole) != mark_id:
+            if self._mark_id_at_row(row) != mark_id:
                 continue
             model.select(
                 self.cue_table.model().index(row, 0),
                 model.SelectionFlag.Select | model.SelectionFlag.Rows,
             )
             if scroll:
-                self.cue_table.scrollToItem(
-                    time_item,
-                    QAbstractItemView.ScrollHint.PositionAtCenter,
-                )
+                time_item = self.cue_table.item(row, time_col)
+                if time_item is not None:
+                    self.cue_table.scrollToItem(
+                        time_item,
+                        QAbstractItemView.ScrollHint.PositionAtCenter,
+                    )
             break
         self._syncing_selection = False
         if emit_selection:
