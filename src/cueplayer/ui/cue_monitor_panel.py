@@ -97,13 +97,25 @@ def _now_card_style(accent: str, *, secondary: bool = False) -> str:
     )
 
 
-def mark_now_body(song: Song, mark: Mark) -> str:
+def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
+    lines: list[str] = []
+    if show_cue_id:
+        main_index = song.main_lane_index()
+        if main_index is not None and mark.lane_index == main_index:
+            cue_id = mark.main_cue_id.strip()
+            if cue_id:
+                lines.append(f"Cue {cue_id}")
     lane = song.lane_by_index(mark.lane_index)
     lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
     if note:
-        return f"{lane_bit}\n{note}"
-    return lane_bit
+        lines.append(lane_bit)
+        lines.append(note)
+    elif not lines:
+        lines.append(lane_bit)
+    else:
+        lines.append(lane_bit)
+    return "\n".join(lines)
 
 
 class CueMonitorPanel(QWidget):
@@ -468,6 +480,8 @@ class CueMonitorPanel(QWidget):
                 lane = self._song.lane_by_index(mark.lane_index)
                 if lane is not None and not lane.visible:
                     continue
+                if lane is not None and not lane.cue_list_enabled:
+                    continue
                 row = self.cue_table.rowCount()
                 self.cue_table.insertRow(row)
                 self.cue_table.setRowHeight(row, _ROW_HEIGHT)
@@ -719,7 +733,7 @@ class CueMonitorPanel(QWidget):
         lane_name = lane.name if lane is not None else title
         track.setText(f"{title} · {lane_name}")
         track.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 600;")
-        cue.setText(mark_now_body(self._song, active))
+        cue.setText(mark_now_body(self._song, active, show_cue_id=not secondary))
         cue.setStyleSheet(_now_card_style(accent, secondary=secondary))
         active_ids.add(active.id)
         return active.id

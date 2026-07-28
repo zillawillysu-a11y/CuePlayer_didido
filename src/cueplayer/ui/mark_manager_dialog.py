@@ -52,6 +52,7 @@ _COL_SHAPE = 3
 _COL_COLOR = 4
 _COL_VISIBLE = 5
 _COL_TYPE = 6
+_COL_CUE_LIST = 7
 
 
 class ShapePreview(QWidget):
@@ -285,9 +286,9 @@ class MarkManagerDialog(QDialog):
         self.preview = ShapePreview()
         layout.addWidget(self.preview)
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Type"]
+            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Type", "Cue List"]
         )
         self.table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(_COL_INDEX, 44)
@@ -296,6 +297,7 @@ class MarkManagerDialog(QDialog):
         self.table.setColumnWidth(_COL_COLOR, 70)
         self.table.setColumnWidth(_COL_VISIBLE, 56)
         self.table.setColumnWidth(_COL_TYPE, 110)
+        self.table.setColumnWidth(_COL_CUE_LIST, 72)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -366,7 +368,10 @@ class MarkManagerDialog(QDialog):
             shape_widget = self.table.cellWidget(row, _COL_SHAPE)
             visible_wrap = self.table.cellWidget(row, _COL_VISIBLE)
             type_widget = self.table.cellWidget(row, _COL_TYPE)
-            if not all([index_item, name_edit, key_widget, shape_widget, visible_wrap, type_widget]):
+            cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
+            if not all(
+                [index_item, name_edit, key_widget, shape_widget, visible_wrap, type_widget, cue_list_wrap]
+            ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
                 return None
             assert isinstance(name_edit, QLineEdit)
@@ -378,6 +383,12 @@ class MarkManagerDialog(QDialog):
                 checkbox = visible_wrap.findChild(QCheckBox)
             if checkbox is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its visibility toggle.")
+                return None
+            cue_list_box = cue_list_wrap.property("checkbox")
+            if not isinstance(cue_list_box, QCheckBox):
+                cue_list_box = cue_list_wrap.findChild(QCheckBox)
+            if cue_list_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Cue List toggle.")
                 return None
             shortcut = str(key_widget.currentData() or "")
             if shortcut:
@@ -403,6 +414,7 @@ class MarkManagerDialog(QDialog):
                     visible=checkbox.isChecked(),
                     locked=previous.locked if previous else False,
                     export_enabled=previous.export_enabled if previous else True,
+                    cue_list_enabled=cue_list_box.isChecked(),
                     marker_shape=shape,  # type: ignore[arg-type]
                 )
             )
@@ -610,6 +622,17 @@ class MarkManagerDialog(QDialog):
         mark_type.setCurrentIndex(type_idx if type_idx >= 0 else 1)
         self.table.setCellWidget(row, _COL_TYPE, mark_type)
 
+        cue_list = QCheckBox()
+        cue_list.setChecked(lane.cue_list_enabled)
+        cue_list.setToolTip("Show marks on this lane in the scrolling Cue List")
+        cue_list_wrap = QWidget()
+        cue_list_layout = QHBoxLayout(cue_list_wrap)
+        cue_list_layout.setContentsMargins(0, 0, 0, 0)
+        cue_list_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cue_list_layout.addWidget(cue_list)
+        cue_list_wrap.setProperty("checkbox", cue_list)
+        self.table.setCellWidget(row, _COL_CUE_LIST, cue_list_wrap)
+
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.
         if isinstance(obj, QLineEdit) and event.type() == event.Type.MouseButtonPress:
@@ -749,6 +772,7 @@ class MarkManagerDialog(QDialog):
                 color=color,
                 shortcut=shortcut,
                 visible=True,
+                cue_list_enabled=(index == 1),
                 marker_shape="circle",
             )
         )

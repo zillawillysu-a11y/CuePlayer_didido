@@ -95,6 +95,8 @@ class MarkLane:
     visible: bool = True
     locked: bool = False
     export_enabled: bool = True
+    # When True, marks on this lane appear in the scrolling Cue List table.
+    cue_list_enabled: bool = True
     marker_shape: MarkerShape = "circle"
 
 
@@ -330,7 +332,14 @@ class Song:
                 now_secondary_lanes=secondary,
             )
         lanes = [
-            MarkLane(index=1, name="Main", lane_type="main", shortcut="1", color="#E74C3C"),
+            MarkLane(
+                index=1,
+                name="Main",
+                lane_type="main",
+                shortcut="1",
+                color="#E74C3C",
+                cue_list_enabled=True,
+            ),
         ]
         colors = [
             "#E67E22",
@@ -350,6 +359,7 @@ class Song:
                     lane_type="top_button",
                     shortcut=str(i),
                     color=colors[i - 2],
+                    cue_list_enabled=False,
                 )
             )
         return cls(
