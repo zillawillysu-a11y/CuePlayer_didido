@@ -109,6 +109,29 @@ def test_assign_main_cue_id_for_mark_after_move() -> None:
     assert b.main_cue_id == "2"
 
 
+def test_drag_integer_keeps_id_when_still_between_neighbors() -> None:
+    song = Song.create("Test")
+    a = song.add_mark(1, 1.0)
+    b = song.add_mark(1, 2.0)
+    c = song.add_mark(1, 3.0)
+    # Drag cue 2 later in time but still between 1 and 3.
+    b.time_seconds = 2.5
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, b, force=True)
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["1", "2", "3"]
+
+
+def test_drag_to_end_keeps_high_integer_id() -> None:
+    song = Song.create("Test")
+    song.add_mark(1, 1.0)
+    song.add_mark(1, 2.0)
+    c = song.add_mark(1, 3.0)
+    c.time_seconds = 4.0
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, c, force=True)
+    assert c.main_cue_id == "3"
+
+
 def test_between_invalid_bounds_raises() -> None:
     with pytest.raises(ValueError):
         between_main_cue_ids("2", "1")
