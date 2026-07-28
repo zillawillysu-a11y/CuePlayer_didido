@@ -587,3 +587,109 @@ def test_resolve_output_samplerate_returns_preferred_as_last_resort(monkeypatch)
         device_index=5, channels=2, preferred_rate=44100.0, device_default_rate=48000.0
     )
     assert rate == 44100.0
+
+
+def test_upgrade_device_for_channels_stays_on_selected_hostapi() -> None:
+    """DirectSound 4ch must not upgrade to a WASAPI sibling with more channels."""
+    wasapi8 = _dev(0, "Focusrite USB", api="Windows WASAPI", ch=8)
+    ds4 = _dev(1, "喇叭 (2- Focusrite USB Audio)", api="Windows DirectSound", ch=4)
+    raw = [wasapi8, ds4]
+    upgraded = devices_mod.upgrade_device_for_channels(
+        ds4,
+        min_channels=3,
+        raw_devices=raw,
+        hostapi="Windows DirectSound",
+    )
+    assert upgraded.index == 1
+    assert upgraded.hostapi_name == "Windows DirectSound"
+
+
+def test_start_stream_opens_directsound_without_low_latency(monkeypatch) -> None:
+    """DirectSound often rejects latency='low' even when the device is otherwise fine."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.playback import audio_engine as eng_mod
+
+    ds = _dev(3, "喇叭 (2- Focusrite USB Audio)", api="Windows DirectSound", ch=4)
+
+    def fake_list(dedupe=True):
+        return [ds] if dedupe else [ds]
+
+    monkeypatch.setattr(eng_mod, "list_output_devices", fake_list)
+    monkeypatch.setattr(eng_mod, "probe_supported_output_channels", lambda *_a, **_k: 4)
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    class FakeStream:
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def fake_output_stream(**kwargs):
+        if kwargs.get("latency") == "low":
+            raise eng_mod.sd.PortAudioError("latency")
+        return FakeStream()
+
+    monkeypatch.setattr(eng_mod.sd, "OutputStream", fake_output_stream)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    settings = AudioOutputSettings(
+        output_device_name=ds.name,
+        output_device_index=ds.index,
+        output_hostapi="Windows DirectSound",
+        music_l_route="1",
+        music_r_route="2",
+    )
+    engine.apply_audio_settings(settings)
+    n = int(48000 * 0.25)
+    tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
+    mono, levels = build_peak_pyramid(tone, 48000)
+    engine.set_buffer(
+        AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels)
+    )
+    engine.flush_deferred_buffer_setup()
+    assert engine._device_index == 3
+    assert engine._ensure_stream() is True
+    assert engine.routing_warning is None
+
+
+def test_start_stream_does_not_warn_when_stereo_fallback_fails(monkeypatch) -> None:
+    """Failed intermediate fallbacks must not show misleading routing warnings."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.playback import audio_engine as eng_mod
+
+    ds = _dev(3, "Focusrite DS", api="Windows DirectSound", ch=2)
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [ds])
+    monkeypatch.setattr(eng_mod, "probe_supported_output_channels", lambda *_a, **_k: 2)
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    def always_fail(**kwargs):
+        raise eng_mod.sd.PortAudioError("fail")
+
+    monkeypatch.setattr(eng_mod.sd, "OutputStream", always_fail)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    engine.apply_audio_settings(
+        AudioOutputSettings(
+            output_device_name=ds.name,
+            output_device_index=ds.index,
+            output_hostapi="Windows DirectSound",
+        )
+    )
+    assert engine._ensure_stream() is False
+    warning = engine.routing_warning or ""
+    assert "Fell back to stereo" not in warning
+    assert "Using system default" not in warning
+    assert "Could not open audio output stream" in warning
