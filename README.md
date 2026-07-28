@@ -26,6 +26,8 @@ python -m pip install -U pip
 pip install -e ".[dev]"
 ```
 
+If `pip install` fails with `Failed to build 'pygame'`, you are on an old checkout — `master` depends on **`pygame-ce`** (prebuilt wheels for Python 3.13+), not classic `pygame`.
+
 ## Run
 
 ```powershell
