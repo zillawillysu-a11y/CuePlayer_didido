@@ -12,7 +12,7 @@ from cueplayer.timecode.mtc import (
     full_frame_sysex,
     quarter_frame_payload,
 )
-from cueplayer.timecode.smpte import Timecode, parse_timecode
+from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +168,17 @@ class MtcOutput:
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
+
+    def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
+        """
+        Align MTC so ``absolute`` is the timecode at ``position_seconds``.
+
+        Used when mirroring decoded file LTC: MTC numbers match the LTC stripe
+        even if Song Start TC differs.
+        """
+        with self._lock:
+            delta = -int(round(max(0.0, float(position_seconds)) * self._fps))
+            self._start_tc = add_frames(absolute, delta, self._fps)
 
     def on_play(self, position_seconds: float) -> None:
         with self._lock:

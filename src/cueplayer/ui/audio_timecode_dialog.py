@@ -223,8 +223,10 @@ class AudioTimecodeDialog(QDialog):
         mtc_form.addRow(self.mtc_enable)
         mtc_form.addRow("MIDI Out", self.midi_port)
         mtc_sync_hint = QLabel(
-            "MTC uses the same song start timecode and FPS as LTC "
-            "(Song Edit → Start TC / FPS). Numbers match LTC when both are enabled."
+            "File LTC → MTC: when LTC source is From file, MTC reads the LTC "
+            "audio stripe and sends the same HH:MM:SS:FF over MIDI (for MA). "
+            "Generator LTC / no file stripe: MTC uses Song Start TC + playhead "
+            "(same numbers as generated LTC)."
         )
         mtc_sync_hint.setWordWrap(True)
         mtc_sync_hint.setStyleSheet("color: #a1a1aa;")

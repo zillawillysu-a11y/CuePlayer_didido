@@ -53,6 +53,8 @@ from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
+from cueplayer.timecode.ltc_decode import decode_ltc_timecode
+from cueplayer.timecode.smpte import Timecode
 
 
 class AudioEngine(QObject):
@@ -97,6 +99,8 @@ class AudioEngine(QObject):
         self._music_volume = 1.0
         self._song: Song | None = None
         self._video_mixer = VideoAudioMixer()
+        self._ltc_mirror_last_pos = -1e9
+        self._ltc_mirror_last_ok = False
         self._audio_settings = AudioOutputSettings()
         self._ltc_pcm: np.ndarray | None = None
         self._ltc_cache_key: tuple | None = None
@@ -261,6 +265,50 @@ class AudioEngine(QObject):
         if self._audio_settings.ltc_source == "generator":
             return None
         return self._file_ltc_channel()
+
+    def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
+        """
+        Read HH:MM:SS:FF from striped file LTC at the playhead.
+
+        Used so MTC can mirror the same numbers as the incoming LTC audio.
+        Returns None for generator-only LTC or when decode fails.
+        """
+        ch = self._effective_ltc_source_channel()
+        if ch is None or self._buffer is None:
+            return None
+        sr = int(self._sample_rate())
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        frame_len = max(160, int(round(sr / fps)))
+        window = frame_len * 4
+        center = max(0, int(round(max(0.0, float(position_seconds)) * sr)))
+        start = max(0, center - frame_len // 2)
+        # Decode from the raw file channel (no LTC output gain).
+        pcm = self._source_channel_chunk(ch, start, window)
+        return decode_ltc_timecode(pcm, sr, fps)
+
+    def _sync_mtc_to_file_ltc(
+        self, position_seconds: float, *, force: bool = False
+    ) -> None:
+        """When file LTC is active, lock MTC origin to the decoded stripe TC."""
+        if not self._audio_settings.mtc_enabled:
+            return
+        if self._effective_ltc_source_channel() is None:
+            return
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        # Re-decode about twice per second (or on play/seek). QF pacing still
+        # runs every timer tick from the mirrored origin.
+        if (
+            not force
+            and abs(float(position_seconds) - self._ltc_mirror_last_pos) < 0.45
+        ):
+            return
+        decoded = self._decode_file_ltc_timecode(position_seconds)
+        self._ltc_mirror_last_pos = float(position_seconds)
+        if decoded is not None:
+            self._mtc.set_mirror_origin(decoded, position_seconds)
+            self._ltc_mirror_last_ok = True
+        else:
+            self._ltc_mirror_last_ok = False
 
     def _music_source_indices(self) -> tuple[int, int]:
         """Which loaded-file channels feed the music L/R bus (mono duplicates when needed)."""
@@ -743,6 +791,7 @@ class AudioEngine(QObject):
             self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
+        self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
         self._midi_cues.on_play(self.position)
         if self._audio_settings.mtc_enabled:
@@ -818,6 +867,7 @@ class AudioEngine(QObject):
             # Update under lock so the audio callback cannot wrap to A
             # after a seek that intentionally left the A–B region.
             self._refresh_loop_engage()
+        self._sync_mtc_to_file_ltc(seconds, force=True)
         self._mtc.on_seek(seconds, playing=self._playing)
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
@@ -833,7 +883,9 @@ class AudioEngine(QObject):
 
     def _mtc_tick(self) -> None:
         if self._playing:
-            self._mtc.tick(self.raw_position)
+            pos = self.raw_position
+            self._sync_mtc_to_file_ltc(pos)
+            self._mtc.tick(pos)
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
