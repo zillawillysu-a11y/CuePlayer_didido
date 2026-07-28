@@ -71,8 +71,29 @@ def test_body_splitter_sits_above_cue_list(app: QApplication) -> None:
     assert panel._now_splitter.handle(1).isEnabled()
 
 
+def test_body_splitter_does_not_change_now_split(app: QApplication) -> None:
+    panel = CueMonitorPanel()
+    panel.set_song(Song.create("Test"))
+    panel.resize(360, 800)
+    panel.show()
+    app.processEvents()
+    panel.set_now_secondary_placement("below")
+    panel._now_splitter.setSizes([160, 90])
+    panel._pin_now_inner_height()
+    app.processEvents()
+    before = list(panel._now_splitter.sizes())
+
+    panel._body_splitter.setSizes([400, 300])
+    panel._on_body_splitter_moved()
+    app.processEvents()
+
+    after = list(panel._now_splitter.sizes())
+    assert after == before
+
+
 def test_secondary_text_is_vertically_centered(app: QApplication) -> None:
     panel = CueMonitorPanel()
     align = panel.secondary_cue.alignment()
     assert align & Qt.AlignmentFlag.AlignVCenter
     assert panel.secondary_cue.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+
