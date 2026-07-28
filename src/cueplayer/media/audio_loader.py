@@ -166,3 +166,30 @@ def waveform_display_buffer(
         mono=mono,
         peak_levels=levels,
     )
+
+
+def ltc_waveform_display_buffer(
+    buffer: AudioBuffer,
+    channel: int,
+) -> AudioBuffer | None:
+    """
+    Display-only buffer for the optional LTC timeline lane (one file channel).
+
+    Returns ``None`` when the channel index is out of range. Playback samples
+    stay on the original buffer; this only rebuilds mono/peaks for painting.
+    """
+    samples = buffer.samples
+    if samples.ndim != 2:
+        return None
+    ch = int(channel)
+    if ch < 0 or ch >= samples.shape[1]:
+        return None
+    mono_src = samples[:, ch]
+    mono, levels = build_peak_pyramid(mono_src, int(buffer.sample_rate))
+    return AudioBuffer(
+        path=buffer.path,
+        sample_rate=buffer.sample_rate,
+        samples=buffer.samples,
+        mono=mono,
+        peak_levels=levels,
+    )
