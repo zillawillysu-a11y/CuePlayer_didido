@@ -30,9 +30,12 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
-    # If Clean Output was restored during init, show it again after the main
-    # window so OBS Window Capture keeps matching "CuePlayer Clean Video Output".
-    QTimer.singleShot(0, window.present_clean_output_for_obs)
+    # Restore Clean Output for OBS if it was open, but keep the main editor on top
+    # so Window Capture does not grab the clean feed by mistake.
+    def _after_main_show() -> None:
+        window.present_clean_output_for_obs()
+
+    QTimer.singleShot(0, _after_main_show)
     return app.exec()
 
 

@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from cueplayer.domain.models import Project, SetlistCategory
 from cueplayer.ui.main_window import MainWindow
@@ -107,5 +107,60 @@ def test_renumber_selected_songs_in_display_order(app: QApplication) -> None:
         assert arch[0].setlist_number == 1.0
         assert arch[1].name == "Arch B"
         assert arch[1].setlist_number == 2.0
+        window.close()
+        app.processEvents()
+
+
+def test_renumber_folder_follows_display_order_not_project_order(
+    app: QApplication,
+) -> None:
+    project = _sample_project()
+    folder_id = project.setlist_categories[0].id
+    project.songs = [
+        project.songs[0],
+        project.songs[1],
+        project.songs[3],
+        project.songs[2],
+    ]
+    with patch.object(MainWindow, "_confirm_discard_if_dirty", return_value=True):
+        window = MainWindow(project=project)
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            window._renumber_songs_in_category(folder_id)
+        arch = window._songs_in_category_display_order(folder_id)
+        assert [s.name for s in arch] == ["Arch B", "Arch A"]
+        assert [s.setlist_number for s in arch] == [1.0, 2.0]
+        window.close()
+        app.processEvents()
+
+
+def test_set_numbers_starting_at_assigns_sequential_values(app: QApplication) -> None:
+    project = _sample_project()
+    with patch.object(MainWindow, "_confirm_discard_if_dirty", return_value=True):
+        window = MainWindow(project=project)
+        window.show()
+        app.processEvents()
+        window.song_list.clearSelection()
+        sm = window.song_list.selectionModel()
+        assert sm is not None
+        from PySide6.QtCore import QItemSelectionModel
+
+        for row in range(window.song_list.rowCount()):
+            idx = window.song_list.row_song_index(row)
+            if idx in (0, 1):
+                index = window.song_list.model().index(row, 0)
+                sm.select(
+                    index,
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows,
+                )
+        with patch.object(QInputDialog, "getText", return_value=("21", True)):
+            window._set_selected_songs_numbers_from()
+        main = project.songs_in_category(None)
+        assert main[0].setlist_number == 21.0
+        assert main[1].setlist_number == 22.0
         window.close()
         app.processEvents()

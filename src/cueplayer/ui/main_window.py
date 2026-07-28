@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QRect, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -127,6 +127,7 @@ _MEDIA_DIALOG_FILTER = (
 )
 _SETTINGS_ORG = "CuePlayer"
 _SETTINGS_APP = "CuePlayer"
+MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
 _KEY_AUTOSAVE_ENABLED = "autosave/enabled"
 _KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
 _KEY_BACKUP_KEEP = "autosave/backup_keep"
@@ -299,15 +300,31 @@ class SetlistWidget(QTableWidget):
         raw = item.data(Qt.ItemDataRole.UserRole)
         return str(raw) if raw else None
 
-    def _category_triangle_hit(self, row: int, viewport_x: int) -> bool:
+    def _row_visual_rect(self, row: int) -> QRect:
+        """Full-row viewport rect — ``visualRect`` is wrong for spanned folder rows."""
+        if row < 0 or row >= self.rowCount():
+            return QRect()
+        return QRect(
+            self.columnViewportPosition(0),
+            self.rowViewportPosition(row),
+            self.viewport().width(),
+            self.rowHeight(row),
+        )
+
+    def _viewport_pos_from_event(self, event) -> QPoint:  # noqa: ANN001
+        return self.viewport().mapFromGlobal(event.globalPosition().toPoint())
+
+    def _category_triangle_hit(self, row: int, viewport_x: int, viewport_y: int) -> bool:
         """True when the click is on the ▸/▾ affordance (not the folder name)."""
+        if self.row_category_id(row) is None:
+            return False
+        rect = self._row_visual_rect(row)
+        if not rect.contains(viewport_x, viewport_y):
+            return False
         item = self.item(row, self.COL_NUM)
         if item is None:
             return False
-        rect = self.visualRect(self.model().index(row, self.COL_NUM))
         local_x = viewport_x - rect.left()
-        if local_x < 0 or local_x > rect.width():
-            return False
         text = item.text()
         if not text or text[0] not in ("▸", "▾"):
             return False
@@ -379,26 +396,28 @@ class SetlistWidget(QTableWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         if event.button() == Qt.MouseButton.LeftButton:
-            viewport_pos = self.viewport().mapFrom(self, event.position().toPoint())
-            index = self.indexAt(viewport_pos)
-            if index.isValid():
-                row = index.row()
+            viewport_pos = self._viewport_pos_from_event(event)
+            row = self.rowAt(viewport_pos.y())
+            if row >= 0:
                 cat_id = self.row_category_id(row)
                 if cat_id is not None:
-                    if self._category_triangle_hit(row, viewport_pos.x()):
+                    if self._category_triangle_hit(
+                        row, viewport_pos.x(), viewport_pos.y()
+                    ):
                         self.category_clicked.emit(cat_id)
                     return
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
         if event.button() == Qt.MouseButton.LeftButton:
-            viewport_pos = self.viewport().mapFrom(self, event.position().toPoint())
-            index = self.indexAt(viewport_pos)
-            if index.isValid():
-                row = index.row()
+            viewport_pos = self._viewport_pos_from_event(event)
+            row = self.rowAt(viewport_pos.y())
+            if row >= 0:
                 cat_id = self.row_category_id(row)
                 if cat_id is not None:
-                    if not self._category_triangle_hit(row, viewport_pos.x()):
+                    if not self._category_triangle_hit(
+                        row, viewport_pos.x(), viewport_pos.y()
+                    ):
                         self.category_rename_requested.emit(cat_id)
                     return
         super().mouseDoubleClickEvent(event)
@@ -620,7 +639,7 @@ class MainWindow(QMainWindow):
         self.clean_output_window = CleanVideoOutputWindow(self)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
 
-        self.setWindowTitle(f"CuePlayer — {self.project.name}")
+        self.setWindowTitle(f"{MAIN_WINDOW_TITLE_PREFIX} — {self.project.name}")
         self.resize(1600, 900)
 
         root = QWidget(self)
@@ -1210,7 +1229,7 @@ class MainWindow(QMainWindow):
         if self._project_path is not None:
             name = self._project_path.stem.replace(".cueplayer", "") or self.project.name
         dirty = " *" if self._dirty else ""
-        self.setWindowTitle(f"CuePlayer — {name}{dirty}")
+        self.setWindowTitle(f"{MAIN_WINDOW_TITLE_PREFIX} — {name}{dirty}")
 
     def _mark_dirty(self) -> None:
         if self._dirty:
@@ -1552,9 +1571,7 @@ class MainWindow(QMainWindow):
                 folder_item = QTableWidgetItem(label)
                 folder_item.setData(Qt.ItemDataRole.UserRole, category.id)
                 folder_item.setData(SetlistWidget.ROLE_KIND, "category")
-                folder_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                )
+                folder_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 folder_item.setToolTip(
                     "Click ▸/▾ to expand or collapse · double-click folder name to rename · "
                     "right-click for more · drag songs here to file them in this folder"
@@ -1970,6 +1987,7 @@ class MainWindow(QMainWindow):
         en_action, bpm_action = self._add_setlist_column_actions(menu)
         menu.addSeparator()
         renumber_action = menu.addAction("Renumber")
+        set_numbers_action = menu.addAction("Set Numbers Starting at…")
         menu.addSeparator()
         up_action = menu.addAction("Move Up")
         down_action = menu.addAction("Move Down")
@@ -1992,6 +2010,10 @@ class MainWindow(QMainWindow):
         renumber_action.setEnabled(has_selection)
         renumber_action.setToolTip(
             "Reset selected songs to 1, 2, 3… within each folder (list order)"
+        )
+        set_numbers_action.setEnabled(has_selection)
+        set_numbers_action.setToolTip(
+            "Type a starting number (e.g. 21) — selected songs become 21, 22, 23…"
         )
         up_action.setEnabled(has_selection)
         down_action.setEnabled(has_selection)
@@ -2018,6 +2040,8 @@ class MainWindow(QMainWindow):
             self._clear_row_color()
         elif chosen is renumber_action:
             self._renumber_selected_songs()
+        elif chosen is set_numbers_action:
+            self._set_selected_songs_numbers_from()
         elif chosen is up_action:
             self._move_selected_songs(-1)
         elif chosen is down_action:
@@ -2369,8 +2393,55 @@ class MainWindow(QMainWindow):
         elif chosen in section_actions:
             self._renumber_songs_in_category(section_actions[chosen])
 
+    def _songs_in_category_display_order(self, category_id: str | None) -> list[Song]:
+        songs: list[Song] = []
+        for entry in self._setlist_display_rows():
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            if song.category_id == category_id:
+                songs.append(song)
+        return songs
+
+    def _selected_songs_in_display_order(self) -> list[Song]:
+        selected_ids = {self.project.songs[i].id for i in self._selected_song_indexes()}
+        if not selected_ids:
+            return []
+        songs: list[Song] = []
+        for entry in self._setlist_display_rows():
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            if song.id in selected_ids:
+                songs.append(song)
+        return songs
+
+    def _set_selected_songs_numbers_from(self) -> None:
+        songs = self._selected_songs_in_display_order()
+        if not songs:
+            return
+        default = format_setlist_number(songs[0].setlist_number)
+        start_text, ok = QInputDialog.getText(
+            self,
+            "Set Numbers",
+            f"Starting number for {len(songs)} selected song(s)\n"
+            "(list order — e.g. 21 becomes 21, 22, 23…):",
+            text=default,
+        )
+        if not ok:
+            return
+        start = parse_setlist_number(start_text)
+        if start is None:
+            QMessageBox.warning(self, "Set Numbers", "Invalid number.")
+            return
+        for offset, song in enumerate(songs):
+            song.setlist_number = start + float(offset)
+        first = format_setlist_number(start)
+        last = format_setlist_number(start + len(songs) - 1)
+        self._finish_renumber(message=f"Set numbers {first}–{last}")
+
     def _renumber_songs_in_category(self, category_id: str | None) -> None:
-        members = self.project.songs_in_category(category_id)
+        members = self._songs_in_category_display_order(category_id)
         if not members:
             return
         section = self._setlist_section_label(category_id)
@@ -3480,6 +3551,8 @@ class MainWindow(QMainWindow):
         """Re-raise Clean Output after the main window shows (OBS window picker)."""
         if self.clean_output_window.isVisible():
             self.clean_output_window.present_for_obs_capture()
+        self.raise_()
+        self.activateWindow()
 
     def _toggle_clean_output(self, checked: bool) -> None:
         if checked:
