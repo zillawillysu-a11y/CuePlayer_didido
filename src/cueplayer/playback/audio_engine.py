@@ -166,7 +166,7 @@ class AudioEngine(QObject):
         song = self._song
         if song is None:
             return None
-        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "off"))
+        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "auto"))
         if side == "off":
             return None
         if side == "left":
@@ -1492,15 +1492,17 @@ class AudioEngine(QObject):
                 sources[:, SRC_MUSIC_L] = music[:, 0]
                 sources[:, SRC_MUSIC_R] = music[:, 1]
                 sources[:, SRC_LTC_BUS] = ltc
-                music_idx, _ = self._cached_music_indices
                 ltc_idx = self._cached_file_ltc_idx
                 if ltc_idx is not None:
                     sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
                         ltc_idx, start, frames
                     )
-                sources[:, SRC_FILE_MUSIC] = self._source_channel_chunk(
-                    music_idx, start, frames
-                )
+                # Music Source destinations must hear the *processed* bed
+                # (LTC-stripped + music_volume + video clip audio), not a raw
+                # file channel — otherwise Video Track audio vanishes and the
+                # Music fader appears dead whenever L/R routes are Music Source
+                # or File-LTC remaps speakers onto that bus.
+                sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
                 routed = apply_routing(sources, self._route, self._output_channel_count)
             outdata[:] = routed
 

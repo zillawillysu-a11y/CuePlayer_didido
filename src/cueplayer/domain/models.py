@@ -24,7 +24,11 @@ def coerce_file_ltc_side(
     *,
     use_left_ltc: bool = False,
 ) -> FileLtcSide:
-    """Normalize song file-LTC routing; migrates legacy ``use_left_ltc``."""
+    """Normalize song file-LTC routing; migrates legacy ``use_left_ltc``.
+
+    Blank / unknown values default to ``auto`` (detect stripe and send it to
+    the Settings LTC channel). Explicit ``off`` / ``left`` / ``right`` stay.
+    """
     raw = str(value or "").strip().lower()
     if raw in ("off", "left", "right", "auto"):
         return raw  # type: ignore[return-value]
@@ -32,7 +36,7 @@ def coerce_file_ltc_side(
         return "left"
     if raw in ("r",):
         return "right"
-    return "off"
+    return "auto"
 
 
 # Decode-time cap applied inside VideoDecoder before frames reach either the
@@ -249,8 +253,8 @@ class Song:
     video_clips: list[VideoClip] = field(default_factory=list)
     # When set, route that file channel to the project LTC output channel(s)
     # and strip it from the music/speaker bus. "auto" uses stripe detection.
-    # Values: "off" | "left" | "right" | "auto".
-    file_ltc_side: str = "off"
+    # Values: "off" | "left" | "right" | "auto". Default auto — detect & route.
+    file_ltc_side: str = "auto"
     # Track-level mute for every video clip's embedded audio (picture keeps
     # showing — this only silences the clip's own audio bus). Defaults to
     # audible: alignment work needs to hear video against the music track;
