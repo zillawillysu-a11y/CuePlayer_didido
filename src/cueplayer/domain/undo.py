@@ -330,7 +330,14 @@ class SetlistStateSnapshot:
             for s in self.songs
         )
         cat_fp = tuple(
-            (c.id, c.name, bool(c.collapsed), c.row_color or "") for c in self.categories
+            (
+                c.id,
+                c.name,
+                bool(c.collapsed),
+                bool(c.sheet_collapsed),
+                c.row_color or "",
+            )
+            for c in self.categories
         )
         return (song_fp, cat_fp)
 

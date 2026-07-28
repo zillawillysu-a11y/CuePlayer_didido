@@ -225,6 +225,8 @@ class SetlistCategory:
     id: str
     name: str
     collapsed: bool = False
+    # Sheet view folder collapse (independent of left Setlist `collapsed`).
+    sheet_collapsed: bool = False
     # Optional setlist folder-row background ("" = none); "#RRGGBB".
     row_color: str = ""
 
