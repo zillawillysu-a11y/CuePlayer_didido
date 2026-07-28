@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QSizePolicy,
+    QSplitter,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
@@ -218,6 +219,7 @@ class CueMonitorPanel(QWidget):
         now_layout.addWidget(now_title)
 
         self._primary_now_column = QWidget()
+        self._primary_now_column.setMinimumWidth(120)
         primary_col_layout = QVBoxLayout(self._primary_now_column)
         primary_col_layout.setContentsMargins(0, 0, 0, 0)
         primary_col_layout.setSpacing(6)
@@ -225,19 +227,22 @@ class CueMonitorPanel(QWidget):
         primary_col_layout.addWidget(self.primary_cue, stretch=1)
 
         self._secondary_now_column = QWidget()
+        self._secondary_now_column.setMinimumWidth(80)
         secondary_col_layout = QVBoxLayout(self._secondary_now_column)
         secondary_col_layout.setContentsMargins(0, 0, 0, 0)
         secondary_col_layout.setSpacing(6)
         secondary_col_layout.addWidget(self.secondary_track)
         secondary_col_layout.addWidget(self.secondary_cue, stretch=1)
 
-        now_row = QWidget()
-        now_row_layout = QHBoxLayout(now_row)
-        now_row_layout.setContentsMargins(0, 0, 0, 0)
-        now_row_layout.setSpacing(8)
-        now_row_layout.addWidget(self._primary_now_column, stretch=1)
-        now_row_layout.addWidget(self._secondary_now_column, stretch=1)
-        now_layout.addWidget(now_row)
+        self._now_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._now_splitter.setChildrenCollapsible(False)
+        self._now_splitter.setHandleWidth(6)
+        self._now_splitter.addWidget(self._primary_now_column)
+        self._now_splitter.addWidget(self._secondary_now_column)
+        self._now_splitter.setStretchFactor(0, 1)
+        self._now_splitter.setStretchFactor(1, 1)
+        self._now_splitter.setSizes([200, 140])
+        now_layout.addWidget(self._now_splitter)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -385,6 +390,31 @@ class CueMonitorPanel(QWidget):
         if not show_secondary:
             self.secondary_cue.setVisible(False)
             self._secondary_clear_timer.stop()
+        self._sync_now_splitter_visibility()
+
+    def _sync_now_splitter_visibility(self) -> None:
+        show_secondary = self._secondary_now_column.isVisible()
+        handle = self._now_splitter.handle(0)
+        if show_secondary:
+            handle.setEnabled(True)
+            sizes = self._now_splitter.sizes()
+            if len(sizes) == 2 and sizes[1] <= 0:
+                total = max(sum(sizes), self._now_splitter.width(), 320)
+                self._now_splitter.setSizes([int(total * 0.58), int(total * 0.42)])
+        else:
+            handle.setEnabled(False)
+            total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
+            self._now_splitter.setSizes([total, 0])
+
+    def save_now_splitter_state(self):
+        return self._now_splitter.saveState()
+
+    def restore_now_splitter_state(self, raw) -> None:
+        if raw:
+            self._now_splitter.restoreState(raw)
+        else:
+            self._now_splitter.setSizes([200, 140])
+        self._sync_now_splitter_visibility()
 
     def _apply_cue_list_visibility(self) -> None:
         visible = self._song is None or bool(self._song.cue_list_visible)

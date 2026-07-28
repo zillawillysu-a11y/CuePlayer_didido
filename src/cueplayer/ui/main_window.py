@@ -146,6 +146,7 @@ _KEY_MAIN_STATE = "mainwindow/state"
 _KEY_MAIN_SPLITTER = "ui/main_splitter"
 _KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
 _KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
+_KEY_NOW_SPLITTER = "ui/now_splitter"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
@@ -991,6 +992,9 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
+        raw = self._settings.value(_KEY_NOW_SPLITTER)
+        if raw:
+            self.monitor.restore_now_splitter_state(raw)
         mode = str(self._settings.value(_KEY_VIEW_MODE, "timeline") or "timeline")
         if mode == "ma_patch":
             self.toolbar.set_view_mode("ma_patch")
@@ -1015,6 +1019,7 @@ class MainWindow(QMainWindow):
             self._settings.setValue(
                 _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
             )
+        self._settings.setValue(_KEY_NOW_SPLITTER, self.monitor.save_now_splitter_state())
         mode = "timeline"
         stack_index = self.view_stack.currentIndex()
         if stack_index == 1:
