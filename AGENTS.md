@@ -41,14 +41,22 @@ Playback Engine is the only playback clock source.
 
 ## Run
 
-After checkout / `git pull` and install:
+**Use a feature branch, not `master`.** `master` is behind; recent work (setlist folders, video perf, waveform cache, etc.) lives on open PR branches until merged.
+
+**Current tip (most features):** `cursor/setlist-organize-028d`
 
 ```powershell
-pip install -e ".[dev]"
+git fetch origin
+git checkout cursor/setlist-organize-028d
+pip install -e ".[dev,midi]"
 python -m cueplayer.app
 ```
 
+Install fix only (old UI — do **not** use for daily work): `cursor/pygame-ce-install-fix-028d` is `master` + pygame-ce; it does not include July feature branches.
+
 (`cueplayer` also works if the venv Scripts folder is on PATH.)
+
+If the UI still looks wrong after checkout: confirm `git branch` shows the branch above, re-run `pip install -e ".[dev,midi]"`, and launch with `python -m cueplayer.app` from the same venv.
 
 ## Recent handoff (2026-07)
 

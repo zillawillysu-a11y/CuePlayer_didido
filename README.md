@@ -30,14 +30,18 @@ If `pip install` fails with `Failed to build 'pygame'`, you are on an old checko
 
 ### Sync from GitHub (laptop / desktop)
 
+**Latest features** (setlist folders, video perf, waveform cache, …):
+
 ```powershell
 git fetch origin
-git checkout master
-pip install -e ".[dev]"
+git checkout cursor/setlist-organize-028d
+pip install -e ".[dev,midi]"
 python -m cueplayer.app
 ```
 
-Replace `master` with a feature branch name when testing a PR (e.g. `cursor/pygame-ce-install-fix-028d`).
+`master` and `cursor/pygame-ce-install-fix-028d` are older — only use the latter if you only need the pygame install fix.
+
+Replace the branch name when testing a specific PR.
 
 ## Run
 
