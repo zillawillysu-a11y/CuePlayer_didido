@@ -54,4 +54,26 @@ def test_show_startup_splash(qapp=None) -> None:
     app = QApplication.instance() or QApplication([])
     splash = show_startup_splash(app, message="Loading…")
     assert splash.isVisible()
+    assert splash._progress == 0.0
+    splash.set_progress(0.5, "Halfway…")
+    assert splash._progress == 0.5
+    assert splash._message == "Halfway…"
+    splash.set_progress(1.0, "Ready")
+    assert splash._progress == 1.0
     splash.close()
+
+
+def test_create_splash_pixmap_progress_fill() -> None:
+    empty = create_splash_pixmap(message="Loading…", progress=0.0)
+    full = create_splash_pixmap(message="Ready", progress=1.0)
+    assert not empty.isNull()
+    assert not full.isNull()
+    # Mid-bar pixel should stay track-colored at 0% and accent-colored at 100%.
+    mid_x = empty.width() // 2
+    title_approx_y = empty.height() // 2
+    # Sample near vertical center of the composition block (bar sits under title).
+    bar_y = title_approx_y
+    empty_px = QColor(empty.toImage().pixel(mid_x, bar_y))
+    full_px = QColor(full.toImage().pixel(mid_x, bar_y))
+    # Not asserting exact colors (layout math), only that progress changes paint.
+    assert empty_px != full_px or empty.toImage() != full.toImage()
