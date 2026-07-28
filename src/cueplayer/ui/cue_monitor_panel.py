@@ -93,12 +93,17 @@ _NOW_CARD_MIN_H_BELOW = 52
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
+    """Card chrome. Full border + radius so top *and* bottom corners round cleanly."""
     size = "16px" if secondary else "20px"
     pad = "10px 10px" if secondary else "12px 12px"
     return (
         f"color: #e4e4e7; font-size: {size}; font-weight: 600;"
         f"padding: {pad}; line-height: 1.3;"
-        f"background: #141416; border-radius: 6px; border-left: 5px solid {accent};"
+        f"background-color: #141416;"
+        # Qt only rounds reliably when all sides are set (not border-left alone).
+        f"border: 1px solid #1f1f22;"
+        f"border-left: 5px solid {accent};"
+        f"border-radius: 8px;"
     )
 
 
@@ -157,6 +162,7 @@ class CueMonitorPanel(QWidget):
         self._now_placement = "right"  # "right" | "below"
         self._splitter_state_right: QByteArray | None = None
         self._splitter_state_below: QByteArray | None = None
+        self._body_splitter_state: QByteArray | None = None
         self._secondary_drag_origin: QPoint | None = None
 
         self.setMinimumWidth(280)
@@ -211,8 +217,9 @@ class CueMonitorPanel(QWidget):
         self.primary_cue = QLabel("—")
         self.primary_cue.setWordWrap(True)
         self.primary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.primary_cue.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.primary_cue.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
         self.primary_cue.setStyleSheet(_now_card_style("#ff5a5f"))
@@ -223,17 +230,25 @@ class CueMonitorPanel(QWidget):
         self.secondary_track.setCursor(Qt.CursorShape.OpenHandCursor)
         self.secondary_cue = QLabel("—")
         self.secondary_cue.setWordWrap(True)
-        self.secondary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # Secondary copy sits vertically centered in the card.
+        self.secondary_cue.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.secondary_cue.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.secondary_cue.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.secondary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
         self.secondary_cue.setStyleSheet(_now_card_style("#52525b", secondary=True))
 
         self._now_section = QWidget()
         self._now_section.setAcceptDrops(True)
+        self._now_section.setMinimumHeight(120)
+        self._now_section.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         now_layout = QVBoxLayout(self._now_section)
-        now_layout.setContentsMargins(0, 0, 0, 0)
+        now_layout.setContentsMargins(0, 0, 0, 4)
         now_layout.setSpacing(6)
         now_layout.addWidget(now_title)
 
@@ -259,6 +274,7 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setObjectName("nowSplitter")
         self._now_splitter.setChildrenCollapsible(False)
         self._now_splitter.setHandleWidth(8)
+        self._now_splitter.setOpaqueResize(True)
         self._now_splitter.setAcceptDrops(True)
         self._now_splitter.setStyleSheet(
             "#nowSplitter::handle {"
@@ -277,7 +293,7 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setStretchFactor(1, 1)
         self._now_splitter.setSizes([260, 100])
         self._now_splitter.splitterMoved.connect(self._on_now_splitter_moved)
-        now_layout.addWidget(self._now_splitter)
+        now_layout.addWidget(self._now_splitter, stretch=1)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -338,11 +354,49 @@ class CueMonitorPanel(QWidget):
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
         self.cue_table.installEventFilter(self)
 
+        # Cue List block — lives in a body splitter under NOW so raising NOW
+        # height compresses Cue List instead of painting over it.
+        self._cue_list_block = QWidget()
+        self._cue_list_block.setMinimumHeight(80)
+        self._cue_list_block.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        cue_list_layout = QVBoxLayout(self._cue_list_block)
+        cue_list_layout.setContentsMargins(0, 0, 0, 0)
+        cue_list_layout.setSpacing(6)
+        cue_list_layout.addWidget(self._list_title)
+        cue_list_layout.addWidget(self._list_collapsed)
+        cue_list_layout.addWidget(self.cue_table, stretch=1)
+
+        self._body_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._body_splitter.setObjectName("nowBodySplitter")
+        self._body_splitter.setChildrenCollapsible(False)
+        self._body_splitter.setHandleWidth(8)
+        self._body_splitter.setOpaqueResize(True)
+        self._body_splitter.setStyleSheet(
+            "#nowBodySplitter::handle {"
+            "  background: transparent;"
+            "  border: none;"
+            "  margin: 0;"
+            "  padding: 0;"
+            "}"
+            "#nowBodySplitter::handle:hover {"
+            "  background: rgba(74, 158, 255, 0.35);"
+            "}"
+        )
+        self._body_splitter.addWidget(self._now_section)
+        self._body_splitter.addWidget(self._cue_list_block)
+        self._body_splitter.setStretchFactor(0, 0)
+        self._body_splitter.setStretchFactor(1, 1)
+        self._body_splitter.setSizes([240, 420])
+        self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
+        body_handle = self._body_splitter.handle(1)
+        body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
+        body_handle.setToolTip("Drag to resize NOW vs Cue List")
+
         layout.addWidget(clock_frame)
-        layout.addWidget(self._now_section)
-        layout.addWidget(self._list_title)
-        layout.addWidget(self._list_collapsed)
-        layout.addWidget(self.cue_table, stretch=1)
+        layout.addWidget(self._body_splitter, stretch=1)
+        QTimer.singleShot(0, self.ensure_now_splitter_ready)
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
@@ -439,6 +493,11 @@ class CueMonitorPanel(QWidget):
 
     def _on_now_splitter_moved(self, *_args) -> None:
         self._schedule_now_card_fit()
+        self._ensure_now_body_fits_content()
+        self.now_layout_changed.emit()
+
+    def _on_body_splitter_moved(self, *_args) -> None:
+        self._schedule_now_card_fit()
         self.now_layout_changed.emit()
 
     def now_secondary_placement(self) -> str:
@@ -463,6 +522,8 @@ class CueMonitorPanel(QWidget):
             self._splitter_state_below = state
         else:
             self._splitter_state_right = state
+        if hasattr(self, "_body_splitter"):
+            self._body_splitter_state = QByteArray(self._body_splitter.saveState())
 
     def _apply_now_placement(self) -> None:
         if self._now_placement == "below":
@@ -483,7 +544,9 @@ class CueMonitorPanel(QWidget):
         if not restored:
             self._now_splitter.setSizes(default_sizes)
         self._sync_now_splitter_visibility()
+        self._refresh_splitter_handles()
         self._schedule_now_card_fit()
+        self._ensure_now_body_fits_content()
 
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
@@ -516,11 +579,41 @@ class CueMonitorPanel(QWidget):
                 total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
             self._now_splitter.setSizes([total, 0])
 
+    def _refresh_splitter_handles(self) -> None:
+        """Re-enable drag handles after first layout / session restore."""
+        for splitter in (self._now_splitter, getattr(self, "_body_splitter", None)):
+            if splitter is None:
+                continue
+            splitter.setEnabled(True)
+            splitter.setOpaqueResize(True)
+            handle = splitter.handle(1)
+            handle.setEnabled(True)
+            handle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            handle.raise_()
+        # Secondary-hidden: only the Primary↔Secondary handle should stay disabled.
+        if not self._secondary_now_column.isVisible():
+            self._now_splitter.handle(1).setEnabled(False)
+
     def ensure_now_splitter_ready(self) -> None:
-        """Fix handle after startup layout restore (before first song switch)."""
+        """Fix handles after startup layout restore (before first song switch)."""
         if not hasattr(self, "_now_splitter"):
             return
         self._apply_now_placement()
+        if (
+            hasattr(self, "_body_splitter")
+            and self._body_splitter_state is not None
+            and len(self._body_splitter_state) > 0
+        ):
+            self._body_splitter.restoreState(self._body_splitter_state)
+        self._refresh_splitter_handles()
+        self._ensure_now_body_fits_content()
+        # Second pass after sizes settle (common cold-start failure mode).
+        QTimer.singleShot(50, self._refresh_splitter_handles)
+        QTimer.singleShot(150, self._refresh_splitter_handles)
+
+    def showEvent(self, event) -> None:  # noqa: ANN001, N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self.ensure_now_splitter_ready)
 
     def save_now_splitter_state(self):
         self._stash_current_splitter_state()
@@ -529,6 +622,7 @@ class CueMonitorPanel(QWidget):
             "right": bytes(self._splitter_state_right or b""),
             "below": bytes(self._splitter_state_below or b""),
             "current": bytes(self._now_splitter.saveState()),
+            "body": bytes(self._body_splitter_state or self._body_splitter.saveState()),
         }
 
     def restore_now_splitter_state(self, raw) -> None:
@@ -537,10 +631,13 @@ class CueMonitorPanel(QWidget):
             placement = str(raw.get("placement") or "right")
             right = raw.get("right")
             below = raw.get("below")
+            body = raw.get("body")
             if isinstance(right, (bytes, bytearray, QByteArray)) and len(right) > 0:
                 self._splitter_state_right = QByteArray(right)
             if isinstance(below, (bytes, bytearray, QByteArray)) and len(below) > 0:
                 self._splitter_state_below = QByteArray(below)
+            if isinstance(body, (bytes, bytearray, QByteArray)) and len(body) > 0:
+                self._body_splitter_state = QByteArray(body)
             current = raw.get("current")
             if isinstance(current, (bytes, bytearray, QByteArray)) and len(current) > 0:
                 if placement == "below":
@@ -553,6 +650,11 @@ class CueMonitorPanel(QWidget):
             placement = "right"
         self._now_placement = placement if placement in ("right", "below") else "right"
         self._apply_now_placement()
+        if (
+            self._body_splitter_state is not None
+            and len(self._body_splitter_state) > 0
+        ):
+            self._body_splitter.restoreState(self._body_splitter_state)
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
         QTimer.singleShot(50, self.ensure_now_splitter_ready)
 
@@ -563,7 +665,6 @@ class CueMonitorPanel(QWidget):
         """Grow card height so wrapped Note text is not clipped."""
         below = self._now_placement == "below"
         floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
-        cards = [self.primary_cue, self.secondary_cue]
         needed_primary = floor
         needed_secondary = floor
         for card, needed_attr in (
@@ -588,6 +689,42 @@ class CueMonitorPanel(QWidget):
             self.secondary_cue.setMinimumHeight(needed_secondary)
         else:
             self.secondary_cue.setMinimumHeight(floor)
+        self._ensure_now_body_fits_content()
+
+    def _now_content_min_height(self) -> int:
+        """Minimum height the NOW pane needs so cards are not clipped."""
+        title_h = 20
+        track_h = 16
+        gaps = 14
+        primary_h = self.primary_cue.minimumHeight() if self.primary_cue.isVisible() else 0
+        secondary_h = (
+            self.secondary_cue.minimumHeight() if self.secondary_cue.isVisible() else 0
+        )
+        if self._now_placement == "below" and self.secondary_cue.isVisible():
+            handle = max(8, self._now_splitter.handleWidth())
+            return title_h + gaps + track_h + primary_h + handle + track_h + secondary_h
+        card_h = max(primary_h, secondary_h, _NOW_CARD_MIN_H)
+        return title_h + gaps + track_h + card_h
+
+    def _ensure_now_body_fits_content(self) -> None:
+        """Grow the NOW pane (and shrink Cue List) when cards need more height."""
+        if not hasattr(self, "_body_splitter"):
+            return
+        sizes = self._body_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        total = sum(sizes)
+        if total <= 0:
+            total = max(self._body_splitter.height(), 320)
+        needed = self._now_content_min_height()
+        cue_floor = 80
+        now_h = sizes[0]
+        if now_h >= needed:
+            return
+        now_h = min(needed, max(120, total - cue_floor))
+        cue_h = max(cue_floor, total - now_h)
+        self._body_splitter.setSizes([now_h, cue_h])
+        self._now_section.setMinimumHeight(min(needed, now_h))
 
     def _apply_cue_list_visibility(self) -> None:
         visible = self._song is None or bool(self._song.cue_list_visible)

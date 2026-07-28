@@ -131,6 +131,12 @@ def main() -> int:
         splash.finish(window)
         app.setQuitOnLastWindowClosed(True)
         _boot_log(f"main window visible={window.isVisible()} size={window.size()}")
+        try:
+            window.monitor.ensure_now_splitter_ready()
+        except Exception:  # noqa: BLE001
+            _boot_log("ensure_now_splitter_ready failed:\n" + traceback.format_exc())
+        QTimer.singleShot(100, window.monitor.ensure_now_splitter_ready)
+        QTimer.singleShot(300, window.monitor.ensure_now_splitter_ready)
 
     # Always open the main window — do not depend on session-restore signals.
     window.startup_ready.connect(_show_main)
