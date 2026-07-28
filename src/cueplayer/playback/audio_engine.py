@@ -204,7 +204,8 @@ class AudioEngine(QObject):
                 return None
         mode = s.ltc_source
         if mode == "generator":
-            return self._autodetect_ltc_channel()
+            # Generated LTC uses the dedicated bus — both file channels are music.
+            return None
         if mode == "source_left":
             return 0
         if mode == "source_right":
@@ -241,7 +242,7 @@ class AudioEngine(QObject):
         if not strip_ltc:
             return 0, 1
         ltc_ch = self._resolved_file_ltc_channel()
-        if ltc_ch is None:
+        if ltc_ch is None and strip_ltc and self._audio_settings.ltc_source != "generator":
             ltc_ch = self._autodetect_ltc_channel()
         if ltc_ch is not None:
             music_chs = [i for i in range(ch_count) if i != ltc_ch]
@@ -667,6 +668,7 @@ class AudioEngine(QObject):
                 self.timecode_status_changed.emit()
                 self._emit_position()
                 return
+            self._wait_for_playback_samples()
             self._playing = True
             self._poll.start()
             self._silent_timer.stop()
