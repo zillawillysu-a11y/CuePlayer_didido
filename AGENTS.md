@@ -35,6 +35,10 @@ Playback Engine is the only playback clock source.
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
+## Python dependencies
+
+- **`pygame-ce`**, not classic **`pygame`**, in `pyproject.toml`. Classic pygame has no prebuilt wheels for Python 3.13+ and pip fails building from source (`Failed to build 'pygame'`). `pygame-ce` is API-compatible and still satisfies `mido.backends.pygame`.
+
 ## Recent handoff (2026-07)
 
 Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
