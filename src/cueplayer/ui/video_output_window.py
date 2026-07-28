@@ -112,7 +112,10 @@ class CleanVideoOutputWindow(QWidget):
     def current_settings(self) -> CleanVideoOutputSettings:
         width, height = self.content_size()
         return CleanVideoOutputSettings(
-            width=width, height=height, aspect_locked=self._aspect_locked
+            width=width,
+            height=height,
+            aspect_locked=self._aspect_locked,
+            was_open=self.isVisible(),
         )
 
     def apply_settings(self, settings: CleanVideoOutputSettings) -> None:
