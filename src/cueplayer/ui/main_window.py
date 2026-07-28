@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -79,6 +80,9 @@ from cueplayer.domain.undo import (
     MarkSnapshot,
     MoveMarksCommand,
     RenameMarkCommand,
+    SetlistEditCommand,
+    SetlistStateSnapshot,
+    UndoContext,
     UndoStack,
     VideoClipSnapshot,
 )
@@ -600,6 +604,7 @@ class MainWindow(QMainWindow):
         self._syncing_selection = False
         self._switching_song = False
         self._undo = UndoStack()
+        self._undo_ctx = UndoContext(self.project, self.current_song.id)
         # Internal clipboard for Ctrl+C/Ctrl+V on timeline video clips
         # (Delete/Backspace reuse the existing _delete_video_clips path).
         self._video_clip_clipboard: list[VideoClipSnapshot] = []
@@ -1239,6 +1244,48 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._refresh_window_title()
 
+    @contextmanager
+    def _setlist_edit(self, label: str):
+        """Capture setlist state before/after a mutation for Ctrl+Z."""
+        before = SetlistStateSnapshot.capture(self.project)
+        song_id = self.current_song.id
+        selected_ids = tuple(
+            self.project.songs[i].id for i in self._selected_song_indexes()
+        )
+        yield
+        after = SetlistStateSnapshot.capture(self.project)
+        if before != after:
+            self._undo.push(
+                SetlistEditCommand(
+                    before=before,
+                    after=after,
+                    label=label,
+                    current_song_id=song_id,
+                    selected_song_ids=selected_ids,
+                )
+            )
+
+    def _sync_after_setlist_undo_redo(self, cmd: SetlistEditCommand) -> None:
+        try:
+            idx = next(
+                i for i, s in enumerate(self.project.songs) if s.id == cmd.current_song_id
+            )
+        except StopIteration:
+            idx = 0
+        self._undo_ctx.current_song_id = self.project.songs[idx].id
+        select_indexes = [
+            i for i, s in enumerate(self.project.songs) if s.id in cmd.selected_song_ids
+        ]
+        if not select_indexes:
+            select_indexes = [idx]
+        self._rebuild_song_list(select_indexes=select_indexes)
+        self._activate_song(idx, stop_playback=False)
+        patch = getattr(self, "show_patch_page", None)
+        if patch is not None:
+            patch.sync_songs()
+        self._refresh_window_title()
+        self._refresh_status()
+
     def _set_clean(self) -> None:
         self._dirty = False
         self._refresh_window_title()
@@ -1819,14 +1866,15 @@ class MainWindow(QMainWindow):
         name = text.strip() or "Untitled Song"
         if song.name == name:
             return
-        song.name = name
-        self._mark_dirty()
-        self._refresh_status()
-        patch = getattr(self, "show_patch_page", None)
-        if patch is not None:
-            patch.sync_songs()
+        with self._setlist_edit("Rename Song"):
+            song.name = name
+            self._mark_dirty()
+            self._refresh_status()
+            patch = getattr(self, "show_patch_page", None)
+            if patch is not None:
+                patch.sync_songs()
+            self.timeline.update()
         self.status.showMessage(f'Song name changed to "{name}"', 2000)
-        self.timeline.update()
 
     def _on_song_ma_name_edited(self, row: int, text: str) -> None:
         song_index = self.song_list.row_song_index(row)
@@ -1853,16 +1901,16 @@ class MainWindow(QMainWindow):
             if raw != (ma or ""):
                 self._rebuild_song_list(select_indexes=[row])
             return
-        song.ma_export_name = new_val
-        self._mark_dirty()
-        self._refresh_status()
-        patch = getattr(self, "show_patch_page", None)
-        if patch is not None:
-            patch.sync_songs()
+        with self._setlist_edit("Edit English/MA Name"):
+            song.ma_export_name = new_val
+            self._mark_dirty()
+            self._refresh_status()
+            patch = getattr(self, "show_patch_page", None)
+            if patch is not None:
+                patch.sync_songs()
+            self._rebuild_song_list(select_indexes=[row])
         label = ma or "(blank)"
         self.status.showMessage(f'English/MA name changed to "{label}"', 2000)
-        # Refresh so EN-mode primary column / sanitization stay consistent.
-        self._rebuild_song_list(select_indexes=[row])
 
     def _on_song_bpm_edited(self, row: int, value: object) -> None:
         song_index = self.song_list.row_song_index(row)
@@ -1895,8 +1943,9 @@ class MainWindow(QMainWindow):
                 item.setText(text)
                 self.song_list._block_number_signal = False  # noqa: SLF001
             return
-        song.bpm = bpm
-        self._mark_dirty()
+        with self._setlist_edit("Edit BPM"):
+            song.bpm = bpm
+            self._mark_dirty()
         if bpm is None:
             self.status.showMessage("BPM cleared", 2000)
         else:
@@ -2063,10 +2112,11 @@ class MainWindow(QMainWindow):
         if not chosen.isValid():
             return
         hex_color = chosen.name().upper()
-        for song in songs:
-            song.row_color = hex_color
-        self._mark_dirty()
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes())
+        with self._setlist_edit("Row Color"):
+            for song in songs:
+                song.row_color = hex_color
+            self._mark_dirty()
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes())
         label = songs[0].name if len(songs) == 1 else f"{len(songs)} songs"
         self.status.showMessage(f'Row color set for "{label}"', 2000)
 
@@ -2074,10 +2124,11 @@ class MainWindow(QMainWindow):
         songs = self._selected_songs()
         if not songs:
             return
-        for song in songs:
-            song.row_color = ""
-        self._mark_dirty()
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes())
+        with self._setlist_edit("Clear Row Color"):
+            for song in songs:
+                song.row_color = ""
+            self._mark_dirty()
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes())
         self.status.showMessage("Row color cleared", 2000)
 
     def _on_setlist_number_edit_failed(self, row: int) -> None:
@@ -2104,15 +2155,16 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole + 1, text)
                 self.song_list._block_number_signal = False  # noqa: SLF001
             return
-        song.setlist_number = value
-        item = self.song_list.item(row, 0)
-        if item is not None:
-            text = format_setlist_number(value)
-            self.song_list._block_number_signal = True  # noqa: SLF001
-            item.setText(text)
-            item.setData(Qt.ItemDataRole.UserRole + 1, text)
-            self.song_list._block_number_signal = False  # noqa: SLF001
-        self._mark_dirty()
+        with self._setlist_edit("Edit Number"):
+            song.setlist_number = value
+            item = self.song_list.item(row, 0)
+            if item is not None:
+                text = format_setlist_number(value)
+                self.song_list._block_number_signal = True  # noqa: SLF001
+                item.setText(text)
+                item.setData(Qt.ItemDataRole.UserRole + 1, text)
+                self.song_list._block_number_signal = False  # noqa: SLF001
+            self._mark_dirty()
         self.status.showMessage(
             f'Number changed to {format_setlist_number(value)} (within this folder)',
             2500,
@@ -2128,64 +2180,66 @@ class MainWindow(QMainWindow):
         if not moving:
             return
 
-        entries = self._setlist_display_rows()
-        moving_entries = [
-            e
-            for e in entries
-            if e.kind == "song"
-            and e.song_index is not None
-            and self.project.songs[e.song_index].id in id_set
-        ]
-        rest = [
-            e
-            for e in entries
-            if not (
-                e.kind == "song"
+        with self._setlist_edit("Reorder Songs"):
+            entries = self._setlist_display_rows()
+            moving_entries = [
+                e
+                for e in entries
+                if e.kind == "song"
                 and e.song_index is not None
                 and self.project.songs[e.song_index].id in id_set
-            )
-        ]
-        insert_at = max(0, min(int(drop_row), len(rest)))
-        new_entries = rest[:insert_at] + moving_entries + rest[insert_at:]
+            ]
+            rest = [
+                e
+                for e in entries
+                if not (
+                    e.kind == "song"
+                    and e.song_index is not None
+                    and self.project.songs[e.song_index].id in id_set
+                )
+            ]
+            insert_at = max(0, min(int(drop_row), len(rest)))
+            new_entries = rest[:insert_at] + moving_entries + rest[insert_at:]
 
-        moving_id_set = id_set
-        for i, entry in enumerate(new_entries):
-            if entry.kind != "song" or entry.song_index is None:
-                continue
-            song = self.project.songs[entry.song_index]
-            if song.id not in moving_id_set:
-                continue
-            song.category_id = self._category_id_before_display_index(new_entries, i)
+            moving_id_set = id_set
+            for i, entry in enumerate(new_entries):
+                if entry.kind != "song" or entry.song_index is None:
+                    continue
+                song = self.project.songs[entry.song_index]
+                if song.id not in moving_id_set:
+                    continue
+                song.category_id = self._category_id_before_display_index(new_entries, i)
 
-        ordered_songs: list[Song] = []
-        seen: set[str] = set()
-        for entry in new_entries:
-            if entry.kind != "song" or entry.song_index is None:
-                continue
-            song = self.project.songs[entry.song_index]
-            if song.id in seen:
-                continue
-            seen.add(song.id)
-            ordered_songs.append(song)
-        for song in self.project.songs:
-            if song.id not in seen:
+            ordered_songs: list[Song] = []
+            seen: set[str] = set()
+            for entry in new_entries:
+                if entry.kind != "song" or entry.song_index is None:
+                    continue
+                song = self.project.songs[entry.song_index]
+                if song.id in seen:
+                    continue
+                seen.add(song.id)
                 ordered_songs.append(song)
+            for song in self.project.songs:
+                if song.id not in seen:
+                    ordered_songs.append(song)
 
-        keep_id = self.current_song.id
-        self.project.songs = ordered_songs
-        new_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
-        if not new_indexes:
-            new_indexes = [min(insert_at, len(self.project.songs) - 1)]
-        self._rebuild_song_list(select_indexes=new_indexes)
-        try:
-            current_row = next(
-                i for i, song in enumerate(self.project.songs) if song.id == keep_id
-            )
-        except StopIteration:
-            current_row = new_indexes[-1]
-        self.current_song = self.project.songs[current_row]
-        self._mark_dirty()
-        self._refresh_status()
+            keep_id = self.current_song.id
+            self.project.songs = ordered_songs
+            new_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
+            if not new_indexes:
+                new_indexes = [min(insert_at, len(self.project.songs) - 1)]
+            self._rebuild_song_list(select_indexes=new_indexes)
+            try:
+                current_row = next(
+                    i for i, song in enumerate(self.project.songs) if song.id == keep_id
+                )
+            except StopIteration:
+                current_row = new_indexes[-1]
+            self.current_song = self.project.songs[current_row]
+            self._undo_ctx.current_song_id = self.current_song.id
+            self._mark_dirty()
+            self._refresh_status()
         self.status.showMessage("Song order updated by drag", 2000)
 
     def _on_songs_moved_to_category(self, song_ids: list, category_id: str) -> None:
@@ -2196,10 +2250,11 @@ class MainWindow(QMainWindow):
         moving = [song for song in self.project.songs if song.id in id_set]
         if not moving:
             return
-        self._assign_songs_to_category(moving, category.id)
-        indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
-        self._rebuild_song_list(select_indexes=indexes)
-        self._mark_dirty()
+        with self._setlist_edit("Move to Folder"):
+            self._assign_songs_to_category(moving, category.id)
+            indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
+            self._rebuild_song_list(select_indexes=indexes)
+            self._mark_dirty()
         self.status.showMessage(
             f'Moved {len(moving)} song(s) into "{category.name}"',
             2500,
@@ -2209,9 +2264,10 @@ class MainWindow(QMainWindow):
         category = self.project.setlist_category_by_id(category_id)
         if category is None:
             return
-        category.collapsed = not category.collapsed
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
-        self._mark_dirty()
+        with self._setlist_edit("Toggle Folder"):
+            category.collapsed = not category.collapsed
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            self._mark_dirty()
         state = "collapsed" if category.collapsed else "expanded"
         self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
 
@@ -2220,9 +2276,10 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         category = SetlistCategory.create(name)
-        self.project.setlist_categories.append(category)
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
-        self._mark_dirty()
+        with self._setlist_edit("New Folder"):
+            self.project.setlist_categories.append(category)
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            self._mark_dirty()
         self.status.showMessage(f'Created folder "{category.name}"', 2500)
 
     def _rename_setlist_category(self, category_id: str) -> None:
@@ -2237,9 +2294,10 @@ class MainWindow(QMainWindow):
         new_name = name.strip() or category.name
         if new_name == category.name:
             return
-        category.name = new_name
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
-        self._mark_dirty()
+        with self._setlist_edit("Rename Folder"):
+            category.name = new_name
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            self._mark_dirty()
         self.status.showMessage(f'Renamed folder to "{category.name}"', 2500)
 
     def _delete_setlist_category(self, category_id: str) -> None:
@@ -2264,14 +2322,15 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for song in self.project.songs:
-            if song.category_id == category.id:
-                song.category_id = None
-        self.project.setlist_categories = [
-            c for c in self.project.setlist_categories if c.id != category.id
-        ]
-        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
-        self._mark_dirty()
+        with self._setlist_edit("Delete Folder"):
+            for song in self.project.songs:
+                if song.category_id == category.id:
+                    song.category_id = None
+            self.project.setlist_categories = [
+                c for c in self.project.setlist_categories if c.id != category.id
+            ]
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            self._mark_dirty()
         self.status.showMessage(f'Deleted folder "{category.name}"', 2500)
 
     def _move_selected_songs_to_category(self, category_id: str | None) -> None:
@@ -2279,9 +2338,10 @@ class MainWindow(QMainWindow):
         if not songs:
             return
         indexes = self._selected_song_indexes()
-        self._assign_songs_to_category(songs, category_id)
-        self._rebuild_song_list(select_indexes=indexes)
-        self._mark_dirty()
+        with self._setlist_edit("Move to Folder"):
+            self._assign_songs_to_category(songs, category_id)
+            self._rebuild_song_list(select_indexes=indexes)
+            self._mark_dirty()
         if category_id is None:
             self.status.showMessage("Moved song(s) out of folder", 2000)
             return
@@ -2324,20 +2384,22 @@ class MainWindow(QMainWindow):
         if new_start < 0 or new_end >= len(self.project.songs):
             return
         keep_id = self.current_song.id
-        block = self.project.songs[start : end + 1]
-        del self.project.songs[start : end + 1]
-        self.project.songs[new_start:new_start] = block
-        new_indexes = list(range(new_start, new_end + 1))
-        self._rebuild_song_list(select_indexes=new_indexes)
-        try:
-            current_row = next(
-                i for i, song in enumerate(self.project.songs) if song.id == keep_id
-            )
-        except StopIteration:
-            current_row = new_indexes[-1]
-        self.current_song = self.project.songs[current_row]
-        self._mark_dirty()
-        self._refresh_status()
+        with self._setlist_edit("Move Songs"):
+            block = self.project.songs[start : end + 1]
+            del self.project.songs[start : end + 1]
+            self.project.songs[new_start:new_start] = block
+            new_indexes = list(range(new_start, new_end + 1))
+            self._rebuild_song_list(select_indexes=new_indexes)
+            try:
+                current_row = next(
+                    i for i, song in enumerate(self.project.songs) if song.id == keep_id
+                )
+            except StopIteration:
+                current_row = new_indexes[-1]
+            self.current_song = self.project.songs[current_row]
+            self._undo_ctx.current_song_id = self.current_song.id
+            self._mark_dirty()
+            self._refresh_status()
         self.status.showMessage("Song order updated", 2000)
 
     def _sort_key(self, song: Song) -> tuple[float, str]:
@@ -2347,26 +2409,27 @@ class MainWindow(QMainWindow):
         if not self.project.songs:
             return
         current_id = self.current_song.id
-        ordered: list[Song] = []
-        main = self._songs_in_category_display_order(None)
-        if None in sorted_sections and len(main) > 1:
-            main = sorted(main, key=self._sort_key)
-        ordered.extend(main)
-        for category in self.project.setlist_categories:
-            members = self._songs_in_category_display_order(category.id)
-            if category.id in sorted_sections and len(members) > 1:
-                members = sorted(members, key=self._sort_key)
-            ordered.extend(members)
-        self.project.songs = ordered
-        try:
-            new_row = next(
-                i for i, s in enumerate(self.project.songs) if s.id == current_id
-            )
-        except StopIteration:
-            new_row = 0
-        self._rebuild_song_list(select_indexes=[new_row])
-        self._activate_song(new_row, stop_playback=False)
-        self._mark_dirty()
+        with self._setlist_edit("Sort by Number"):
+            ordered: list[Song] = []
+            main = self._songs_in_category_display_order(None)
+            if None in sorted_sections and len(main) > 1:
+                main = sorted(main, key=self._sort_key)
+            ordered.extend(main)
+            for category in self.project.setlist_categories:
+                members = self._songs_in_category_display_order(category.id)
+                if category.id in sorted_sections and len(members) > 1:
+                    members = sorted(members, key=self._sort_key)
+                ordered.extend(members)
+            self.project.songs = ordered
+            try:
+                new_row = next(
+                    i for i, s in enumerate(self.project.songs) if s.id == current_id
+                )
+            except StopIteration:
+                new_row = 0
+            self._rebuild_song_list(select_indexes=[new_row])
+            self._activate_song(new_row, stop_playback=False)
+            self._mark_dirty()
 
     def _sort_songs_in_category(self, category_id: str | None) -> None:
         members = self._songs_in_category_display_order(category_id)
@@ -2472,11 +2535,12 @@ class MainWindow(QMainWindow):
         if start is None:
             QMessageBox.warning(self, "Set Numbers", "Invalid number.")
             return
-        for offset, song in enumerate(songs):
-            song.setlist_number = start + float(offset)
-        first = format_setlist_number(start)
-        last = format_setlist_number(start + len(songs) - 1)
-        self._finish_renumber(message=f"Set numbers {first}–{last}")
+        with self._setlist_edit("Set Numbers"):
+            for offset, song in enumerate(songs):
+                song.setlist_number = start + float(offset)
+            first = format_setlist_number(start)
+            last = format_setlist_number(start + len(songs) - 1)
+            self._finish_renumber(message=f"Set numbers {first}–{last}")
 
     def _renumber_songs_in_category(self, category_id: str | None) -> None:
         members = self._songs_in_category_display_order(category_id)
@@ -2493,9 +2557,10 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for index, song in enumerate(members, start=1):
-            song.setlist_number = float(index)
-        self._finish_renumber()
+        with self._setlist_edit("Renumber"):
+            for index, song in enumerate(members, start=1):
+                song.setlist_number = float(index)
+            self._finish_renumber()
 
     def _renumber_selected_songs(self) -> None:
         indexes = self._selected_song_indexes()
@@ -2538,10 +2603,11 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for songs in grouped.values():
-            for index, song in enumerate(songs, start=1):
-                song.setlist_number = float(index)
-        self._finish_renumber()
+        with self._setlist_edit("Renumber"):
+            for songs in grouped.values():
+                for index, song in enumerate(songs, start=1):
+                    song.setlist_number = float(index)
+            self._finish_renumber()
 
     def _renumber_all_sections(self) -> None:
         if not self.project.songs:
@@ -2557,16 +2623,17 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        next_by_category: dict[str | None, float] = {}
-        for entry in self._setlist_display_rows():
-            if entry.kind != "song" or entry.song_index is None:
-                continue
-            song = self.project.songs[entry.song_index]
-            cat = song.category_id
-            num = next_by_category.get(cat, 1.0)
-            song.setlist_number = num
-            next_by_category[cat] = num + 1.0
-        self._finish_renumber(message="Renumbered all sections to 1, 2, 3…")
+        with self._setlist_edit("Renumber All"):
+            next_by_category: dict[str | None, float] = {}
+            for entry in self._setlist_display_rows():
+                if entry.kind != "song" or entry.song_index is None:
+                    continue
+                song = self.project.songs[entry.song_index]
+                cat = song.category_id
+                num = next_by_category.get(cat, 1.0)
+                song.setlist_number = num
+                next_by_category[cat] = num + 1.0
+            self._finish_renumber(message="Renumbered all sections to 1, 2, 3…")
 
     def _finish_renumber(self, *, message: str = "Renumbered to 1, 2, 3…") -> None:
         indexes = self._selected_song_indexes()
@@ -2586,7 +2653,8 @@ class MainWindow(QMainWindow):
         if stop_playback:
             self.engine.stop()
         self.current_song = self.project.songs[index]
-        self._undo.clear()
+        self._undo.clear_song_scoped()
+        self._undo_ctx.current_song_id = self.current_song.id
         self.engine.clear_loop()
         self._sync_loop_ui()
         self.timeline.clear_selection(emit=False)
@@ -2669,12 +2737,13 @@ class MainWindow(QMainWindow):
             return
         result = dialog.result_drafts()[0]
         song = self.project.new_song(result.name)
-        self._apply_draft_to_song(song, result)
-        self.project.songs.append(song)
-        index = len(self.project.songs) - 1
-        self._rebuild_song_list(select_indexes=[index])
-        self._activate_song(index, stop_playback=True)
-        self._mark_dirty()
+        with self._setlist_edit("Add Song"):
+            self._apply_draft_to_song(song, result)
+            self.project.songs.append(song)
+            index = len(self.project.songs) - 1
+            self._rebuild_song_list(select_indexes=[index])
+            self._activate_song(index, stop_playback=True)
+            self._mark_dirty()
         ma = f" · MA {song.ma_export_name}" if song.ma_export_name else ""
         self.status.showMessage(
             f"Added song: #{format_setlist_number(song.setlist_number)} {song.name}{ma}",
@@ -2723,17 +2792,20 @@ class MainWindow(QMainWindow):
             return
         last_index: int | None = None
         added_indexes: list[int] = []
-        for draft in dialog.result_drafts():
-            song = self.project.new_song(draft.name)
-            self._apply_draft_to_song(song, draft)
-            self.project.songs.append(song)
-            last_index = len(self.project.songs) - 1
-            added_indexes.append(last_index)
+        with self._setlist_edit("Import Songs"):
+            for draft in dialog.result_drafts():
+                song = self.project.new_song(draft.name)
+                self._apply_draft_to_song(song, draft)
+                self.project.songs.append(song)
+                last_index = len(self.project.songs) - 1
+                added_indexes.append(last_index)
+            if last_index is None:
+                return
+            self._rebuild_song_list(select_indexes=added_indexes)
+            self._activate_song(last_index, stop_playback=True)
+            self._mark_dirty()
         if last_index is None:
             return
-        self._rebuild_song_list(select_indexes=added_indexes)
-        self._activate_song(last_index, stop_playback=True)
-        self._mark_dirty()
         if len(added_indexes) == 1:
             song = self.project.songs[last_index]
             self.status.showMessage(
@@ -2756,19 +2828,19 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         by_id = {song.id: song for song in self.project.songs}
-        for draft in dialog.result_drafts():
-            if draft.song_id and draft.song_id in by_id:
-                self._apply_draft_to_song(by_id[draft.song_id], draft)
-        self._rebuild_song_list(select_indexes=indexes)
-        # Reload current song audio if it was one of the edited rows.
-        if self.current_song.id in {d.song_id for d in dialog.result_drafts() if d.song_id}:
-            try:
-                cur = self.project.songs.index(self.current_song)
-            except ValueError:
-                cur = indexes[0]
-            self._activate_song(cur, stop_playback=False)
-        self._mark_dirty()
-        self._refresh_status()
+        with self._setlist_edit("Edit Song"):
+            for draft in dialog.result_drafts():
+                if draft.song_id and draft.song_id in by_id:
+                    self._apply_draft_to_song(by_id[draft.song_id], draft)
+            self._rebuild_song_list(select_indexes=indexes)
+            if self.current_song.id in {d.song_id for d in dialog.result_drafts() if d.song_id}:
+                try:
+                    cur = self.project.songs.index(self.current_song)
+                except ValueError:
+                    cur = indexes[0]
+                self._activate_song(cur, stop_playback=False)
+            self._mark_dirty()
+            self._refresh_status()
         if len(indexes) == 1:
             song = self.project.songs[indexes[0]]
             self.status.showMessage(
@@ -2788,23 +2860,24 @@ class MainWindow(QMainWindow):
             return
 
         new_indexes: list[int] = []
-        for row in sorted(indexes, reverse=True):
-            source = self.project.songs[row]
-            dup = source.duplicate(
-                name=f"{source.name} (copy)",
-                setlist_number=self._next_setlist_number(source.category_id),
-            )
-            insert_at = row + 1
-            self.project.songs.insert(insert_at, dup)
-            new_indexes.append(insert_at)
-        new_indexes.sort()
+        with self._setlist_edit("Duplicate Song"):
+            for row in sorted(indexes, reverse=True):
+                source = self.project.songs[row]
+                dup = source.duplicate(
+                    name=f"{source.name} (copy)",
+                    setlist_number=self._next_setlist_number(source.category_id),
+                )
+                insert_at = row + 1
+                self.project.songs.insert(insert_at, dup)
+                new_indexes.append(insert_at)
+            new_indexes.sort()
 
-        self._rebuild_song_list(select_indexes=new_indexes)
-        self._activate_song(new_indexes[0], stop_playback=True)
-        self._mark_dirty()
-        patch = getattr(self, "show_patch_page", None)
-        if patch is not None:
-            patch.sync_songs()
+            self._rebuild_song_list(select_indexes=new_indexes)
+            self._activate_song(new_indexes[0], stop_playback=True)
+            self._mark_dirty()
+            patch = getattr(self, "show_patch_page", None)
+            if patch is not None:
+                patch.sync_songs()
 
         if len(new_indexes) == 1:
             src_row = indexes[0]
@@ -2845,12 +2918,13 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         removed_names = [self.project.songs[i].name for i in indexes]
-        for i in sorted(indexes, reverse=True):
-            del self.project.songs[i]
-        new_row = min(indexes[0], len(self.project.songs) - 1)
-        self._rebuild_song_list(select_indexes=[new_row])
-        self._activate_song(new_row, stop_playback=True)
-        self._mark_dirty()
+        with self._setlist_edit("Delete Song"):
+            for i in sorted(indexes, reverse=True):
+                del self.project.songs[i]
+            new_row = min(indexes[0], len(self.project.songs) - 1)
+            self._rebuild_song_list(select_indexes=[new_row])
+            self._activate_song(new_row, stop_playback=True)
+            self._mark_dirty()
         if len(removed_names) == 1:
             self.status.showMessage(f"Deleted song: {removed_names[0]}", 2500)
         else:
@@ -3137,29 +3211,37 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _undo_action(self) -> None:
-        label = self._undo.undo(self.current_song)
-        if label is None:
+        result = self._undo.undo(self._undo_ctx)
+        if result is None:
             self.status.showMessage("Nothing to undo", 1500)
             return
-        self.timeline.clear_selection(emit=False)
-        self.monitor.set_selected_mark_ids([])
-        self.video_sync.refresh()
-        self.engine.refresh_video_clips()
+        label, setlist_cmd = result
+        if setlist_cmd is not None:
+            self._sync_after_setlist_undo_redo(setlist_cmd)
+        else:
+            self.timeline.clear_selection(emit=False)
+            self.monitor.set_selected_mark_ids([])
+            self.video_sync.refresh()
+            self.engine.refresh_video_clips()
+            self._refresh_marks_ui()
         self._mark_dirty()
-        self._refresh_marks_ui()
         self.status.showMessage(f"Undone: {label}", 2000)
 
     def _redo_action(self) -> None:
-        label = self._undo.redo(self.current_song)
-        if label is None:
+        result = self._undo.redo(self._undo_ctx)
+        if result is None:
             self.status.showMessage("Nothing to redo", 1500)
             return
-        self.timeline.clear_selection(emit=False)
-        self.monitor.set_selected_mark_ids([])
-        self.video_sync.refresh()
-        self.engine.refresh_video_clips()
+        label, setlist_cmd = result
+        if setlist_cmd is not None:
+            self._sync_after_setlist_undo_redo(setlist_cmd)
+        else:
+            self.timeline.clear_selection(emit=False)
+            self.monitor.set_selected_mark_ids([])
+            self.video_sync.refresh()
+            self.engine.refresh_video_clips()
+            self._refresh_marks_ui()
         self._mark_dirty()
-        self._refresh_marks_ui()
         self.status.showMessage(f"Redone: {label}", 2000)
 
     def _delete_marks(self, mark_ids: list) -> None:
