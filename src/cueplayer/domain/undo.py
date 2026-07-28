@@ -291,7 +291,9 @@ class SetlistStateSnapshot:
             )
             for s in self.songs
         )
-        cat_fp = tuple((c.id, c.name, bool(c.collapsed)) for c in self.categories)
+        cat_fp = tuple(
+            (c.id, c.name, bool(c.collapsed), c.row_color or "") for c in self.categories
+        )
         return (song_fp, cat_fp)
 
     def __eq__(self, other: object) -> bool:

@@ -118,7 +118,7 @@ from cueplayer.ui.drag_drop import (
     setlist_import_paths_from_mime,
     video_paths_from_mime,
 )
-from cueplayer.ui.theme import ACCENT, BG_SELECTED, with_alpha
+from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
@@ -241,9 +241,11 @@ class SetlistWidget(QTableWidget):
         self.setColumnWidth(3, 56)
         self.horizontalHeader().setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_LTC, 68)
-        self.horizontalHeaderItem(self.COL_LTC).setToolTip(
-            "Striped LTC badge (L/R) when file timecode is detected or enabled in Edit"
-        )
+        ltc_header = self.horizontalHeaderItem(self.COL_LTC)
+        if ltc_header is not None:
+            ltc_header.setToolTip(
+                "Striped LTC badge (L/R) when file timecode is detected or set in Edit → File LTC"
+            )
         self.setColumnHidden(2, True)
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
@@ -1643,12 +1645,16 @@ class MainWindow(QMainWindow):
                 folder_item = QTableWidgetItem(label)
                 folder_item.setData(Qt.ItemDataRole.UserRole, category.id)
                 folder_item.setData(SetlistWidget.ROLE_KIND, "category")
+                folder_item.setData(SetlistWidget.ROLE_ROW_COLOR, category.row_color or "")
                 folder_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 folder_item.setToolTip(
                     "Click ▸/▾ to expand or collapse · double-click folder name to rename · "
                     "right-click for more · drag songs here to file them in this folder"
                 )
-                folder_item.setForeground(QColor("#a5b4fc"))
+                if category.row_color:
+                    folder_item.setForeground(QColor(contrast_text_color(category.row_color)))
+                else:
+                    folder_item.setForeground(QColor("#a5b4fc"))
                 font = folder_item.font()
                 font.setBold(True)
                 folder_item.setFont(font)
@@ -2409,6 +2415,12 @@ class MainWindow(QMainWindow):
         )
         renumber_action = menu.addAction("Renumber Folder")
         renumber_action.setEnabled(bool(self.project.songs_in_category(category.id)))
+        menu.addSeparator()
+        folder_color_action = menu.addAction("Folder Color…")
+        folder_color_action.setToolTip("Pick a background color for this folder row")
+        clear_folder_color_action = menu.addAction("Clear Folder Color")
+        clear_folder_color_action.setEnabled(bool(category.row_color))
+        menu.addSeparator()
         delete_action = menu.addAction("Delete Folder")
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
         if chosen is rename_action:
@@ -2417,8 +2429,39 @@ class MainWindow(QMainWindow):
             self._toggle_setlist_category(category_id)
         elif chosen is renumber_action:
             self._renumber_songs_in_category(category_id)
+        elif chosen is folder_color_action:
+            self._pick_folder_color(category_id)
+        elif chosen is clear_folder_color_action:
+            self._clear_folder_color(category_id)
         elif chosen is delete_action:
             self._delete_setlist_category(category_id)
+
+    def _pick_folder_color(self, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        initial = QColor(category.row_color) if category.row_color else QColor(BG_SELECTED)
+        from cueplayer.ui.color_presets import get_color
+
+        chosen = get_color(initial, self, "Folder Color")
+        if not chosen.isValid():
+            return
+        hex_color = chosen.name().upper()
+        with self._setlist_edit("Folder Color"):
+            category.row_color = hex_color
+            self._mark_dirty()
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes())
+        self.status.showMessage(f'Folder color set for "{category.name}"', 2000)
+
+    def _clear_folder_color(self, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None or not category.row_color:
+            return
+        with self._setlist_edit("Clear Folder Color"):
+            category.row_color = ""
+            self._mark_dirty()
+            self._rebuild_song_list(select_indexes=self._selected_song_indexes())
+        self.status.showMessage(f'Folder color cleared for "{category.name}"', 2000)
 
     def _move_selected_songs(self, delta: int) -> None:
         indexes = self._selected_song_indexes()
