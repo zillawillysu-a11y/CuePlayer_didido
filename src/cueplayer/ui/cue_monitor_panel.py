@@ -90,6 +90,10 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 _MIME_NOW_SECONDARY = "application/x-cueplayer-now-secondary"
 _NOW_CARD_MIN_H = 72
 _NOW_CARD_MIN_H_BELOW = 52
+_NOW_PRIMARY_COL_MIN = 72
+_NOW_SECONDARY_COL_MIN = 64
+_CUE_LIST_BODY_MIN = 80
+_NOW_TITLE_CHROME = 30  # NOW label + layout spacing/margins
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
@@ -243,7 +247,9 @@ class CueMonitorPanel(QWidget):
 
         self._now_section = QWidget()
         self._now_section.setAcceptDrops(True)
-        self._now_section.setMinimumHeight(120)
+        self._now_section.setMinimumHeight(
+            _NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN
+        )
         self._now_section.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -254,6 +260,7 @@ class CueMonitorPanel(QWidget):
 
         self._primary_now_column = QWidget()
         self._primary_now_column.setMinimumWidth(120)
+        self._primary_now_column.setMinimumHeight(_NOW_PRIMARY_COL_MIN)
         self._primary_now_column.setAcceptDrops(True)
         primary_col_layout = QVBoxLayout(self._primary_now_column)
         primary_col_layout.setContentsMargins(0, 0, 0, 0)
@@ -263,7 +270,7 @@ class CueMonitorPanel(QWidget):
 
         self._secondary_now_column = QWidget()
         self._secondary_now_column.setMinimumWidth(72)
-        self._secondary_now_column.setMinimumHeight(40)
+        self._secondary_now_column.setMinimumHeight(_NOW_SECONDARY_COL_MIN)
         secondary_col_layout = QVBoxLayout(self._secondary_now_column)
         secondary_col_layout.setContentsMargins(0, 0, 0, 0)
         secondary_col_layout.setSpacing(4)
@@ -294,15 +301,6 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setSizes([260, 100])
         self._now_splitter.splitterMoved.connect(self._on_now_splitter_moved)
         now_layout.addWidget(self._now_splitter, stretch=1)
-        # Absorbs leftover NOW height in "below" mode so Primary↔Secondary stays put
-        # when the user drags NOW vs Cue List.
-        self._now_below_spacer = QWidget()
-        self._now_below_spacer.setMinimumHeight(0)
-        self._now_below_spacer.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self._now_below_spacer.hide()
-        now_layout.addWidget(self._now_below_spacer, stretch=0)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -366,7 +364,7 @@ class CueMonitorPanel(QWidget):
         # Cue List block — lives in a body splitter under NOW so raising NOW
         # height compresses Cue List instead of painting over it.
         self._cue_list_block = QWidget()
-        self._cue_list_block.setMinimumHeight(80)
+        self._cue_list_block.setMinimumHeight(_CUE_LIST_BODY_MIN)
         self._cue_list_block.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
@@ -501,48 +499,103 @@ class CueMonitorPanel(QWidget):
         self._sync_now_splitter_visibility()
 
     def _on_now_splitter_moved(self, *_args) -> None:
-        self._pin_now_inner_height()
         self._schedule_now_card_fit()
         self._ensure_now_body_fits_content()
         self.now_layout_changed.emit()
 
     def _on_body_splitter_moved(self, *_args) -> None:
-        # Only NOW vs Cue List changes. Re-pin Primary↔Secondary so Qt stretch
-        # does not redistribute that split while the body handle moves.
-        locked = list(self._now_splitter.sizes())
-        if len(locked) == 2 and sum(locked) > 0:
-            self._now_splitter.setSizes(locked)
-        self._pin_now_inner_height()
+        # Body handle = Secondary vs Cue List (Primary height stays in below mode).
+        # Never allow Secondary to collapse out of view.
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            self._apply_below_body_to_secondary()
+        else:
+            self._clamp_body_now_minimum()
         self.now_layout_changed.emit()
 
-    def _pin_now_inner_height(self) -> None:
-        """In below mode, freeze Primary/Secondary pixel heights inside NOW."""
-        if not hasattr(self, "_now_below_spacer"):
+    def _primary_col_min(self) -> int:
+        return max(_NOW_PRIMARY_COL_MIN, self.primary_cue.minimumHeight() + 20)
+
+    def _secondary_col_min(self) -> int:
+        return max(_NOW_SECONDARY_COL_MIN, self.secondary_cue.minimumHeight() + 20)
+
+    def _now_chrome_height(self) -> int:
+        return _NOW_TITLE_CHROME
+
+    def _below_now_floor(self, primary_h: int) -> int:
+        handle = max(8, self._now_splitter.handleWidth())
+        return (
+            self._now_chrome_height()
+            + max(primary_h, self._primary_col_min())
+            + handle
+            + self._secondary_col_min()
+        )
+
+    def _clamp_body_now_minimum(self) -> None:
+        """Keep NOW tall enough that Primary/Secondary cards stay visible."""
+        if not hasattr(self, "_body_splitter"):
             return
-        if self._now_placement != "below":
-            self._now_splitter.setMinimumHeight(0)
-            self._now_splitter.setMaximumHeight(16777215)
-            now_layout = self._now_section.layout()
-            if now_layout is not None:
-                now_layout.setStretchFactor(self._now_splitter, 1)
-                now_layout.setStretchFactor(self._now_below_spacer, 0)
-            self._now_below_spacer.hide()
+        sizes = self._body_splitter.sizes()
+        if len(sizes) != 2:
             return
-        sizes = self._now_splitter.sizes()
-        inner = sum(sizes) if sizes else 0
-        if inner <= 0:
-            inner = sum(
-                max(0, w.minimumHeight())
-                for w in (self._primary_now_column, self._secondary_now_column)
-                if w.isVisible()
-            )
-        inner = max(inner, 80) + max(0, self._now_splitter.handleWidth())
-        self._now_splitter.setFixedHeight(inner)
-        now_layout = self._now_section.layout()
-        if now_layout is not None:
-            now_layout.setStretchFactor(self._now_splitter, 0)
-            now_layout.setStretchFactor(self._now_below_spacer, 1)
-        self._now_below_spacer.show()
+        total = sum(sizes)
+        if total <= 0:
+            return
+        needed = self._now_content_min_height()
+        if sizes[0] >= needed:
+            self._now_section.setMinimumHeight(min(needed, sizes[0]))
+            return
+        now_h = needed
+        if total > needed + _CUE_LIST_BODY_MIN:
+            now_h = needed
+            cue_h = total - now_h
+        else:
+            now_h = max(needed, total - _CUE_LIST_BODY_MIN)
+            cue_h = max(0, total - now_h)
+        self._body_splitter.setSizes([now_h, cue_h])
+        self._now_section.setMinimumHeight(min(needed, now_h))
+
+    def _apply_below_body_to_secondary(self) -> None:
+        """
+        When Secondary is below Primary, dragging NOW↔Cue List resizes Secondary
+        (Primary stays) and squeezes Cue List — Secondary never disappears.
+        """
+        body = self._body_splitter.sizes()
+        if len(body) != 2:
+            return
+        total = sum(body)
+        if total <= 0:
+            total = max(self._body_splitter.height(), 320)
+        inner = self._now_splitter.sizes()
+        primary = inner[0] if len(inner) == 2 else 180
+        primary = max(primary, self._primary_col_min())
+        handle = max(8, self._now_splitter.handleWidth())
+        sec_min = self._secondary_col_min()
+        now_floor = self._below_now_floor(primary)
+
+        now_h = body[0]
+        if now_h < now_floor:
+            if total >= now_floor + _CUE_LIST_BODY_MIN:
+                now_h = now_floor
+            else:
+                # Prefer keeping Secondary visible over Cue List floor.
+                now_h = max(now_floor, total - _CUE_LIST_BODY_MIN)
+        cue_h = max(0, total - now_h)
+        self._body_splitter.setSizes([now_h, cue_h])
+
+        avail = max(0, now_h - self._now_chrome_height())
+        secondary = avail - primary - handle
+        if secondary < sec_min:
+            secondary = sec_min
+            primary = max(self._primary_col_min(), avail - handle - secondary)
+            if primary + handle + secondary > avail:
+                primary = max(40, avail - handle - sec_min)
+                secondary = max(sec_min, avail - primary - handle)
+        self._now_splitter.setStretchFactor(0, 0)
+        self._now_splitter.setStretchFactor(1, 0)
+        self._now_splitter.setMinimumHeight(0)
+        self._now_splitter.setMaximumHeight(16777215)
+        self._now_splitter.setSizes([max(1, primary), max(sec_min, secondary)])
+        self._now_section.setMinimumHeight(now_floor)
 
     def now_secondary_placement(self) -> str:
         return self._now_placement
@@ -570,9 +623,11 @@ class CueMonitorPanel(QWidget):
             self._body_splitter_state = QByteArray(self._body_splitter.saveState())
 
     def _apply_now_placement(self) -> None:
+        # Clear any leftover fixed-height pin from older builds.
+        self._now_splitter.setMinimumHeight(0)
+        self._now_splitter.setMaximumHeight(16777215)
         if self._now_placement == "below":
             self._now_splitter.setOrientation(Qt.Orientation.Vertical)
-            # Stretch 0 keeps Primary/Secondary pixel sizes when NOW↔Cue List is dragged.
             self._now_splitter.setStretchFactor(0, 0)
             self._now_splitter.setStretchFactor(1, 0)
             stashed = self._splitter_state_below
@@ -588,18 +643,25 @@ class CueMonitorPanel(QWidget):
             restored = bool(self._now_splitter.restoreState(stashed))
         if not restored:
             self._now_splitter.setSizes(default_sizes)
-        # restoreState can bring back old stretch factors — re-assert after restore.
         if self._now_placement == "below":
             self._now_splitter.setStretchFactor(0, 0)
             self._now_splitter.setStretchFactor(1, 0)
+            # Enforce Secondary floor so restoreState cannot collapse it.
+            sizes = self._now_splitter.sizes()
+            if len(sizes) == 2 and sizes[1] < self._secondary_col_min():
+                primary = max(self._primary_col_min(), sizes[0])
+                self._now_splitter.setSizes([primary, self._secondary_col_min()])
         else:
             self._now_splitter.setStretchFactor(0, 3)
             self._now_splitter.setStretchFactor(1, 1)
         self._sync_now_splitter_visibility()
-        self._pin_now_inner_height()
         self._refresh_splitter_handles()
         self._schedule_now_card_fit()
-        self._ensure_now_body_fits_content()
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            self._apply_below_body_to_secondary()
+        else:
+            self._ensure_now_body_fits_content()
+            self._clamp_body_now_minimum()
 
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
