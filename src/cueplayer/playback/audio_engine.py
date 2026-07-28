@@ -115,6 +115,8 @@ class AudioEngine(QObject):
         self._playback_rate = 48000
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
+        self._playback_resample_future = None
+        self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
@@ -533,8 +535,26 @@ class AudioEngine(QObject):
         self._resolve_device_and_route()
         self._refresh_ltc_detection()
         self.position_changed.emit(0.0)
+        if buffer is not None:
+            self._prewarm_output_stream()
         if was_playing and buffer is not None:
             self.play()
+
+    def _needs_output_stream(self) -> bool:
+        has_video_audio = self._song is not None and bool(self._song.video_clips)
+        return (
+            self._buffer is not None
+            or self._audio_settings.ltc_enabled
+            or has_video_audio
+        )
+
+    def _prewarm_output_stream(self) -> None:
+        """Open the device stream after load so Play does not hitch on ASIO open."""
+        if not self._needs_output_stream():
+            return
+        if self._uses_generated_ltc():
+            self._ensure_ltc_cache()
+        self._ensure_stream()
 
     def set_duration(self, seconds: float) -> None:
         if self._buffer is not None:
@@ -556,9 +576,7 @@ class AudioEngine(QObject):
         # back to the silent bookkeeping timer and its clips' audio was never
         # actually rendered — this was the root cause of "no video audio".
         has_video_audio = self._song is not None and bool(self._song.video_clips)
-        needs_stream = (
-            self._buffer is not None or self._audio_settings.ltc_enabled or has_video_audio
-        )
+        needs_stream = self._needs_output_stream()
         if needs_stream:
             if self._uses_generated_ltc():
                 self._ensure_ltc_cache()
@@ -1029,25 +1047,46 @@ class AudioEngine(QObject):
         """
         Keep a copy of the loaded buffer resampled to _playback_rate.
 
-        Resampling runs synchronously here so the realtime audio callback never
-        competes with a background resample job (that double-work caused severe
-        stutter / "slow motion" playback on Windows ASIO).
+        Rate mismatches resample in a background thread so song switches stay
+        responsive. The realtime callback reads ``_playback_samples`` only
+        (silence until the cache is ready — never per-buffer resample).
         """
         buf = self._buffer
         if buf is None:
             self._playback_samples = None
             self._playback_cache_key = None
+            self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
         if self._playback_cache_key == key and self._playback_samples is not None:
             return
         if int(buf.sample_rate) == int(self._playback_rate):
             self._playback_samples = buf.samples
-        else:
-            self._playback_samples = resample_linear(
-                buf.samples, float(buf.sample_rate), float(self._playback_rate)
-            )
+            self._playback_cache_key = key
+            self._playback_resample_future = None
+            return
         self._playback_cache_key = key
+        self._playback_samples = None
+        native = buf.samples
+        src_rate = float(buf.sample_rate)
+        dst_rate = float(self._playback_rate)
+
+        def _build() -> tuple[tuple, np.ndarray]:
+            return key, resample_linear(native, src_rate, dst_rate)
+
+        future = self._resample_executor.submit(_build)
+        self._playback_resample_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, pcm = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if self._playback_cache_key == built_key:
+                    self._playback_samples = pcm
+
+        future.add_done_callback(_done)
 
     def _music_chunk(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
         """Return stereo music (frames, 2), applying mute + master volume."""
@@ -1068,7 +1107,7 @@ class AudioEngine(QObject):
             out[:n, 0] = chunk[:, 0]
             out[:n, 1] = chunk[:, 0]
         else:
-            left_idx, right_idx = self._music_source_indices()
+            left_idx, right_idx = self._cached_music_indices
             out[:n, 0] = chunk[:, left_idx]
             out[:n, 1] = chunk[:, right_idx]
         if self._mute_music:
@@ -1168,12 +1207,13 @@ class AudioEngine(QObject):
         return out
 
     def _stream_token(self) -> tuple:
+        # Do not key on id(_playback_samples): the callback reads the live
+        # buffer, so song switches should not force an ASIO reopen on Play.
         return (
             self._device_index,
             self._output_channel_count,
             self._playback_rate,
             tuple(sorted((k, tuple(v)) for k, v in self._route.items())),
-            id(self._playback_samples),
             bool(self._audio_settings.ltc_enabled),
         )
 
