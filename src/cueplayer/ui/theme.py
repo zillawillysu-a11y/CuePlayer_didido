@@ -318,10 +318,22 @@ QTableWidget, QTableView, QListWidget, QTreeWidget {{
 }}
 QTableWidget::item, QListWidget::item {{
     padding: 4px 6px;
+    border: none;
+    outline: none;
 }}
 QTableWidget::item:selected, QListWidget::item:selected, QTreeWidget::item:selected {{
     background: {BG_SELECTED};
     color: #ffffff;
+    border: none;
+    outline: none;
+}}
+QTableWidget::item:focus, QListWidget::item:focus, QTreeWidget::item:focus {{
+    border: none;
+    outline: none;
+}}
+QTableWidget::item:selected:focus, QListWidget::item:selected:focus {{
+    border: none;
+    outline: none;
 }}
 QHeaderView::section {{
     background-color: {BG_RAISED};
@@ -334,6 +346,22 @@ QHeaderView::section {{
 QTableCornerButton::section {{
     background-color: {BG_RAISED};
     border: none;
+}}
+
+/* Setlist: selection is fill-only — no per-cell focus frames. */
+QWidget#setlistPanel QTableWidget {{
+    show-decoration-selected: 1;
+}}
+QWidget#setlistPanel QTableWidget::item {{
+    border: 0px;
+    outline: none;
+}}
+QWidget#setlistPanel QTableWidget::item:selected,
+QWidget#setlistPanel QTableWidget::item:focus,
+QWidget#setlistPanel QTableWidget::item:selected:active,
+QWidget#setlistPanel QTableWidget::item:selected:!active {{
+    border: 0px;
+    outline: none;
 }}
 
 /* --- Scrollbars ------------------------------------------------------- */

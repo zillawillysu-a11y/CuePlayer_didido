@@ -21,7 +21,7 @@ ROLE_ROW_COLOR = int(Qt.ItemDataRole.UserRole) + 50
 
 
 class RowColorDelegate(QStyledItemDelegate):
-    """Paint optional ``ROLE_ROW_COLOR`` background + accent selection chrome."""
+    """Paint optional ``ROLE_ROW_COLOR`` background + accent selection fill."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # noqa: N802
         color_hex = str(index.data(ROLE_ROW_COLOR) or "").strip()
@@ -33,6 +33,8 @@ class RowColorDelegate(QStyledItemDelegate):
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         opt.textElideMode = Qt.TextElideMode.ElideNone
+        # Drop per-cell focus/selection frames — row highlight is fill-only.
+        opt.state = opt.state & ~QStyle.StateFlag.State_HasFocus
 
         if base is None and not selected:
             super().paint(painter, opt, index)
@@ -50,10 +52,6 @@ class RowColorDelegate(QStyledItemDelegate):
         else:
             painter.fillRect(rect, QColor(BG_SELECTED))
             text_hex = "#ffffff"
-        if selected:
-            painter.fillRect(
-                int(rect.left()), int(rect.top()), 3, int(rect.height()), QColor(ACCENT)
-            )
         painter.restore()
 
         text_color = QColor(text_hex)

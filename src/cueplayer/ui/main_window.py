@@ -89,7 +89,7 @@ from cueplayer.domain.undo import (
     VideoClipSnapshot,
 )
 from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
-from cueplayer.media.audio_loader import AudioBuffer
+from cueplayer.media.audio_loader import AudioBuffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
@@ -208,6 +208,10 @@ class SetlistWidget(QTableWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, self.COL_COUNT, parent)
+        self.setStyleSheet(
+            "QTableWidget::item:focus { border: 0px; outline: none; }"
+            "QTableWidget::item:selected { border: 0px; outline: none; }"
+        )
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDropIndicatorShown(False)  # custom insert lines instead
@@ -628,6 +632,7 @@ class MainWindow(QMainWindow):
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
         self._audio_ltc_cache: dict[tuple[str, int, int], int | None] = {}
         self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
+        self._timeline_ltc_exclude: int | None = None
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
         self._ltc_detect_executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="ui-ltc-detect"
@@ -2722,6 +2727,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.engine.set_buffer(None)
+                self._timeline_ltc_exclude = None
                 self.timeline.set_audio_loading(True, audio_path.name)
                 self._load_audio_path(
                     audio_path, mark_dirty=False, replace_track=False, bump_token=False
@@ -2729,6 +2735,7 @@ class MainWindow(QMainWindow):
             self._prefetch_setlist_audio(skip_path=audio_path)
         else:
             self.engine.set_buffer(None)
+            self._timeline_ltc_exclude = None
             self.timeline.set_audio(None)
             self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
@@ -3598,6 +3605,29 @@ class MainWindow(QMainWindow):
             else:
                 item.setToolTip("")
         self.song_list.viewport().update()
+        self._refresh_timeline_waveform_for_ltc()
+
+    def _refresh_timeline_waveform_for_ltc(self) -> None:
+        """Redraw current-song waveform without the striped LTC channel."""
+        path = self._main_audio_path_for_song(self.current_song)
+        if path is None:
+            return
+        buffer = self._cached_audio_buffer(path)
+        if buffer is None:
+            return
+        exclude = self._ltc_channel_for_song(self.current_song)
+        if exclude == self._timeline_ltc_exclude:
+            return
+        prev = self._timeline_ltc_exclude
+        self._timeline_ltc_exclude = exclude
+        # Initial paint is in _apply_loaded_audio; only re-paint when LTC side
+        # becomes known (or a previous strip is cleared).
+        if exclude is None and prev is None:
+            return
+        self.timeline.set_audio(
+            waveform_display_buffer(buffer, exclude_channel=exclude),
+            reset_view=False,
+        )
 
     def _start_audio_load(self, path: Path, *, executor: ThreadPoolExecutor) -> object:
         path = Path(path)
@@ -3726,7 +3756,11 @@ class MainWindow(QMainWindow):
             elif key not in self._audio_ltc_cache:
                 self._schedule_ltc_detect_for_buffer(path, buffer)
         self._refresh_setlist_ltc_cells()
-        self.timeline.set_audio(buffer)
+        exclude = None
+        if key is not None:
+            exclude = self._audio_ltc_cache.get(key)
+        self._timeline_ltc_exclude = exclude
+        self.timeline.set_audio(waveform_display_buffer(buffer, exclude_channel=exclude))
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)
             self.monitor.set_song(self.current_song)

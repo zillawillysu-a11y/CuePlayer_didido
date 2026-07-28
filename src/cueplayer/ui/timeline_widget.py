@@ -832,14 +832,15 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return 9
         return sum(1 for lane in self._song.mark_lanes if lane.visible)
-    def set_audio(self, audio: AudioBuffer | None) -> None:
+    def set_audio(self, audio: AudioBuffer | None, *, reset_view: bool = True) -> None:
         self._audio = audio
         if audio is not None:
             self._audio_loading = False
             self._audio_loading_label = ""
-            # Start moderately zoomed for beat work; user can zoom further.
-            self._pixels_per_second = 150.0
-            self._scroll_x = 0.0
+            if reset_view:
+                # Start moderately zoomed for beat work; user can zoom further.
+                self._pixels_per_second = 150.0
+                self._scroll_x = 0.0
         self.update()
 
     def set_audio_loading(self, loading: bool, label: str = "") -> None:
