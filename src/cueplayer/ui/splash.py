@@ -45,7 +45,7 @@ def create_splash_pixmap(
     title_block = title_metrics.boundingRect(title)
     msg_block = msg_metrics.boundingRect(message)
 
-    gap_title_bar = 28
+    gap_title_bar = 14
     bar_height = 3
     bar_width = 72
     gap_bar_msg = 22

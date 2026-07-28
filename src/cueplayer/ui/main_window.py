@@ -146,6 +146,10 @@ _KEY_MAIN_STATE = "mainwindow/state"
 _KEY_MAIN_SPLITTER = "ui/main_splitter"
 _KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
 _KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
+_KEY_NOW_SPLITTER = "ui/now_splitter"
+_KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
+_KEY_NOW_SPLITTER_RIGHT = "ui/now_splitter_right"
+_KEY_NOW_SPLITTER_BELOW = "ui/now_splitter_below"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
@@ -903,6 +907,7 @@ class MainWindow(QMainWindow):
         self.timeline.ltc_track_visibility_changed.connect(self._on_ltc_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
+        self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         self.engine.position_changed.connect(self.video_sync.update_position)
         # Throttles video decode to a display cadence while playing, so the
         # audio clock's ~60Hz position ticks can't starve the UI thread the
@@ -927,6 +932,7 @@ class MainWindow(QMainWindow):
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
+        self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.playing_changed.connect(self.transport.set_playing)
@@ -964,6 +970,9 @@ class MainWindow(QMainWindow):
             if not self._try_restore_last_project():
                 self._maybe_load_demo_fixture()
             self._sync_timeline_geometry()
+            self.monitor.ensure_now_splitter_ready()
+            QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
+            QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
         finally:
             self._restoring_session = False
 
@@ -991,6 +1000,14 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
+        placement = str(self._settings.value(_KEY_NOW_SECONDARY_PLACEMENT, "right") or "right")
+        payload = {
+            "placement": placement,
+            "right": self._settings.value(_KEY_NOW_SPLITTER_RIGHT),
+            "below": self._settings.value(_KEY_NOW_SPLITTER_BELOW),
+            "current": self._settings.value(_KEY_NOW_SPLITTER),
+        }
+        self.monitor.restore_now_splitter_state(payload)
         mode = str(self._settings.value(_KEY_VIEW_MODE, "timeline") or "timeline")
         if mode == "ma_patch":
             self.toolbar.set_view_mode("ma_patch")
@@ -1015,6 +1032,11 @@ class MainWindow(QMainWindow):
             self._settings.setValue(
                 _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
             )
+        layout_state = self.monitor.save_now_splitter_state()
+        self._settings.setValue(_KEY_NOW_SECONDARY_PLACEMENT, layout_state["placement"])
+        self._settings.setValue(_KEY_NOW_SPLITTER, layout_state["current"])
+        self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
+        self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
         mode = "timeline"
         stack_index = self.view_stack.currentIndex()
         if stack_index == 1:
@@ -4089,6 +4111,22 @@ class MainWindow(QMainWindow):
         # matching Master Volume / lock-hide toggles).
         self.engine.set_music_volume(volume)
         self._mark_dirty()
+
+    def _on_now_layout_changed(self) -> None:
+        if self._restoring_session:
+            return
+        layout_state = self.monitor.save_now_splitter_state()
+        self._settings.setValue(_KEY_NOW_SECONDARY_PLACEMENT, layout_state["placement"])
+        self._settings.setValue(_KEY_NOW_SPLITTER, layout_state["current"])
+        self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
+        self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
+
+    def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:
+        del lane_index, new_name
+        self._mark_dirty()
+        self.monitor.set_song(self.current_song)
+        self.timeline.update()
+        self.status.showMessage("Mark track renamed", 2000)
 
     def _on_video_clip_edited(self, clip_id: str, old: tuple, new: tuple) -> None:
         self._push_song_undo(EditVideoClipsCommand(changes={clip_id: (old, new)}))
