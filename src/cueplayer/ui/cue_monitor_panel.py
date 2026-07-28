@@ -111,7 +111,7 @@ def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
         if note:
             detail_lines.append(note)
         if detail_lines:
-            return f"{lane_bit}\n\n" + "\n".join(detail_lines)
+            return f"{lane_bit}\n-\n" + "\n".join(detail_lines)
         return lane_bit
 
     if note:
