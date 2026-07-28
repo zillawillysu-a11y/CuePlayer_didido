@@ -20,6 +20,60 @@ def test_between_user_examples() -> None:
     assert between_main_cue_ids("1", "2") == "1.1"
     assert between_main_cue_ids("1.1", "2") == "1.2"
     assert between_main_cue_ids("1", "1.1") == "1.01"
+    assert between_main_cue_ids("27", "29") == "28"
+    assert between_main_cue_ids("27", "29", avoid={"28"}) == "27.1"
+
+
+def test_drag_28_between_26_and_27_becomes_26_1() -> None:
+    song = Song.create("Test")
+    m26 = song.add_mark(1, 1.0)
+    m27 = song.add_mark(1, 2.0)
+    m28 = song.add_mark(1, 3.0)
+    m29 = song.add_mark(1, 4.0)
+    m26.main_cue_id = "26"
+    m27.main_cue_id = "27"
+    m28.main_cue_id = "28"
+    m29.main_cue_id = "29"
+    m28.time_seconds = 1.5
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, m28, force=True)
+    assert m28.main_cue_id == "26.1"
+    assert m26.main_cue_id == "26"
+    assert m27.main_cue_id == "27"
+
+
+def test_drag_26_1_between_27_and_29_reclaims_28() -> None:
+    song = Song.create("Test")
+    m26 = song.add_mark(1, 1.0)
+    m27 = song.add_mark(1, 2.0)
+    m28 = song.add_mark(1, 3.0)
+    m29 = song.add_mark(1, 4.0)
+    m26.main_cue_id = "26"
+    m27.main_cue_id = "27"
+    m28.main_cue_id = "28"
+    m29.main_cue_id = "29"
+    m28.time_seconds = 1.5
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, m28, force=True)
+    assert m28.main_cue_id == "26.1"
+    m28.time_seconds = 2.5
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, m28, force=True)
+    assert m28.main_cue_id == "28"
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["26", "27", "28", "29"]
+
+
+def test_insert_between_27_and_29_uses_vacant_28() -> None:
+    song = Song.create("Test")
+    a = song.add_mark(1, 1.0)
+    b = song.add_mark(1, 2.0)
+    c = song.add_mark(1, 4.0)
+    a.main_cue_id = "26"
+    b.main_cue_id = "27"
+    c.main_cue_id = "29"
+    inserted = song.add_mark(1, 3.0)
+    assign_main_cue_id_for_mark(song, inserted, force=True)
+    assert inserted.main_cue_id == "28"
 
 
 def test_next_at_end() -> None:
