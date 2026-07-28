@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QEvent, QModelIndex, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -662,7 +662,9 @@ class MainWindow(QMainWindow):
         self.move_up_button.setToolTip("Move selected song(s) up")
         self.move_down_button.setToolTip("Move selected song(s) down")
         self.sort_by_number_button.setToolTip("Re-sort the list by custom number (supports 0.5)")
-        self.renumber_button.setToolTip("Reset to 1, 2, 3… following the current list order")
+        self.renumber_button.setToolTip(
+            "Renumber songs in the main list or a folder (1, 2, 3… in list order)"
+        )
         order_btns.addWidget(self.move_up_button)
         order_btns.addWidget(self.move_down_button)
         order_btns.addWidget(self.sort_by_number_button)
@@ -757,7 +759,7 @@ class MainWindow(QMainWindow):
         self.move_up_button.clicked.connect(lambda: self._move_selected_songs(-1))
         self.move_down_button.clicked.connect(lambda: self._move_selected_songs(1))
         self.sort_by_number_button.clicked.connect(self._sort_songs_by_number)
-        self.renumber_button.clicked.connect(self._renumber_songs_by_list_order)
+        self.renumber_button.clicked.connect(self._show_renumber_section_menu)
         self.song_list.currentCellChanged.connect(self._on_song_cell_changed)
         self.song_list.audio_files_dropped.connect(self._add_songs_from_media_paths)
         self.song_list.audio_drop_rejected.connect(
@@ -1842,6 +1844,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         en_action, bpm_action = self._add_setlist_column_actions(menu)
         menu.addSeparator()
+        renumber_action = menu.addAction("Renumber")
+        menu.addSeparator()
         up_action = menu.addAction("Move Up")
         down_action = menu.addAction("Move Down")
         menu.addSeparator()
@@ -1860,6 +1864,10 @@ class MainWindow(QMainWindow):
             has_selection and any(song.row_color for song in selected_songs)
         )
         delete_action.setEnabled(has_selection and len(self.project.songs) > 1)
+        renumber_action.setEnabled(has_selection)
+        renumber_action.setToolTip(
+            "Reset selected songs to 1, 2, 3… within each folder (list order)"
+        )
         up_action.setEnabled(has_selection)
         down_action.setEnabled(has_selection)
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
@@ -1883,6 +1891,8 @@ class MainWindow(QMainWindow):
             self._pick_row_color()
         elif chosen is clear_row_color_action:
             self._clear_row_color()
+        elif chosen is renumber_action:
+            self._renumber_selected_songs()
         elif chosen is up_action:
             self._move_selected_songs(-1)
         elif chosen is down_action:
@@ -2167,12 +2177,16 @@ class MainWindow(QMainWindow):
         toggle_action = menu.addAction(
             "Expand Folder" if category.collapsed else "Collapse Folder"
         )
+        renumber_action = menu.addAction("Renumber Folder")
+        renumber_action.setEnabled(bool(self.project.songs_in_category(category.id)))
         delete_action = menu.addAction("Delete Folder")
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
         if chosen is rename_action:
             self._rename_setlist_category(category_id)
         elif chosen is toggle_action:
             self._toggle_setlist_category(category_id)
+        elif chosen is renumber_action:
+            self._renumber_songs_in_category(category_id)
         elif chosen is delete_action:
             self._delete_setlist_category(category_id)
 
@@ -2232,15 +2246,108 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self.status.showMessage("Sorted by number", 2500)
 
-    def _renumber_songs_by_list_order(self) -> None:
+    def _setlist_section_label(self, category_id: str | None) -> str:
+        if category_id is None:
+            return "Main list"
+        category = self.project.setlist_category_by_id(category_id)
+        return category.name if category is not None else "Folder"
+
+    def _show_renumber_section_menu(self) -> None:
+        menu = QMenu(self)
+        section_actions: dict[QAction, str | None] = {}
+        main_action = menu.addAction("Main list (no folder)")
+        main_action.setEnabled(bool(self.project.songs_in_category(None)))
+        section_actions[main_action] = None
+        if self.project.setlist_categories:
+            menu.addSeparator()
+        for category in self.project.setlist_categories:
+            action = menu.addAction(category.name)
+            action.setEnabled(bool(self.project.songs_in_category(category.id)))
+            section_actions[action] = category.id
+        menu.addSeparator()
+        all_action = menu.addAction("All sections…")
+        chosen = menu.exec(
+            self.renumber_button.mapToGlobal(QPoint(0, self.renumber_button.height()))
+        )
+        if chosen is all_action:
+            self._renumber_all_sections()
+        elif chosen in section_actions:
+            self._renumber_songs_in_category(section_actions[chosen])
+
+    def _renumber_songs_in_category(self, category_id: str | None) -> None:
+        members = self.project.songs_in_category(category_id)
+        if not members:
+            return
+        section = self._setlist_section_label(category_id)
+        answer = QMessageBox.question(
+            self,
+            "Renumber",
+            f'Renumber all songs in "{section}" to 1, 2, 3… following list order?\n'
+            "(Custom numbers such as 0.5 will be overwritten.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for index, song in enumerate(members, start=1):
+            song.setlist_number = float(index)
+        self._finish_renumber()
+
+    def _renumber_selected_songs(self) -> None:
+        indexes = self._selected_song_indexes()
+        if not indexes:
+            return
+        selected_ids = {self.project.songs[i].id for i in indexes}
+        grouped: dict[str | None, list[Song]] = {}
+        for entry in self._setlist_display_rows():
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            if song.id not in selected_ids:
+                continue
+            grouped.setdefault(song.category_id, []).append(song)
+        if not grouped:
+            return
+        if len(grouped) == 1:
+            (category_id, songs) = next(iter(grouped.items()))
+            section = self._setlist_section_label(category_id)
+            prompt = (
+                f'Renumber {len(songs)} selected song(s) in "{section}" to 1, 2, 3… '
+                "following list order?\n(Custom numbers such as 0.5 will be overwritten.)"
+            )
+        else:
+            parts = [
+                f"{len(songs)} in \"{self._setlist_section_label(category_id)}\""
+                for category_id, songs in grouped.items()
+            ]
+            prompt = (
+                "Renumber selected songs to 1, 2, 3… within each folder?\n"
+                + " · ".join(parts)
+                + "\n(Custom numbers such as 0.5 will be overwritten.)"
+            )
+        answer = QMessageBox.question(
+            self,
+            "Renumber",
+            prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for songs in grouped.values():
+            for index, song in enumerate(songs, start=1):
+                song.setlist_number = float(index)
+        self._finish_renumber()
+
+    def _renumber_all_sections(self) -> None:
         if not self.project.songs:
             return
         answer = QMessageBox.question(
             self,
             "Renumber",
-            "Reset to 1, 2, 3… following the current top-to-bottom order?\n"
-            "Each folder (and the main list) gets its own 1, 2, 3… sequence.\n"
-            "(Custom numbers such as 0.5 will be overwritten)",
+            "Reset every section to 1, 2, 3… following the current top-to-bottom order?\n"
+            "Each folder and the main list get their own 1, 2, 3… sequence.\n"
+            "(Custom numbers such as 0.5 will be overwritten.)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2255,11 +2362,18 @@ class MainWindow(QMainWindow):
             num = next_by_category.get(cat, 1.0)
             song.setlist_number = num
             next_by_category[cat] = num + 1.0
+        self._finish_renumber(message="Renumbered all sections to 1, 2, 3…")
+
+    def _finish_renumber(self, *, message: str = "Renumbered to 1, 2, 3…") -> None:
         indexes = self._selected_song_indexes()
         self._rebuild_song_list(select_indexes=indexes)
         self._mark_dirty()
         self._refresh_status()
-        self.status.showMessage("Renumbered to 1, 2, 3…", 2500)
+        self.status.showMessage(message, 2500)
+
+    def _renumber_songs_by_list_order(self) -> None:
+        """Back-compat entry point — opens the section picker."""
+        self._show_renumber_section_menu()
 
     def _activate_song(self, index: int, *, stop_playback: bool = True) -> None:
         if index < 0 or index >= len(self.project.songs):
