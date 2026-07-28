@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,23 +29,40 @@ def _song_with_clip() -> Song:
     return song
 
 
-def test_show_video_track_persists(tmp_path: Path) -> None:
+def test_show_video_track_persists_project_global(tmp_path: Path) -> None:
     project = Project.create("Show")
-    project.songs[0].show_video_track = False
+    project.set_show_video_track(False)
     path = tmp_path / "中文" / "show.cueplayer.json"
     save_project(project, path)
     loaded = load_project(path)
+    assert loaded.show_video_track is False
     assert loaded.songs[0].show_video_track is False
+    assert loaded.songs[0].show_ltc_track is False
 
 
 def test_show_video_track_defaults_true_for_legacy(tmp_path: Path) -> None:
     project = Project.create("Legacy")
     path = tmp_path / "show.cueplayer.json"
     save_project(project, path)
-    text = path.read_text(encoding="utf-8").replace('"show_video_track": true,\n', "", 1)
-    path.write_text(text, encoding="utf-8")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("show_video_track", None)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     loaded = load_project(path)
+    assert loaded.show_video_track is True
     assert loaded.songs[0].show_video_track is True
+
+
+def test_legacy_project_inherits_eye_from_first_song(tmp_path: Path) -> None:
+    project = Project.create("Legacy Eye")
+    path = tmp_path / "legacy_eye.cueplayer.json"
+    save_project(project, path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("show_video_track", None)
+    data["songs"][0]["show_video_track"] = False
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    loaded = load_project(path)
+    assert loaded.show_video_track is False
+    assert all(s.show_video_track is False for s in loaded.songs)
 
 
 def test_hide_video_track_collapses_lane(app: QApplication) -> None:
@@ -87,8 +105,8 @@ def test_hide_button_hides_track(app: QApplication) -> None:
 def test_show_eye_button_restores_track(app: QApplication) -> None:
     widget = TimelineWidget()
     song = _song_with_clip()
-    song.show_video_track = False
     widget.set_song(song)
+    widget.set_show_video_track(False)
     widget.resize(900, 600)
     assert widget.video_show_button.isHidden() is False
     eye_pos = widget.video_show_button.pos()
@@ -106,12 +124,35 @@ def test_show_eye_button_restores_track(app: QApplication) -> None:
     assert widget.video_show_button._kind == "eye"
 
 
-def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
+def test_eye_stays_global_across_song_switch(app: QApplication) -> None:
     widget = TimelineWidget()
-    song = _song_with_clip()
-    song.show_video_track = False
-    widget.set_song(song)
+    a = _song_with_clip()
+    a.name = "Song A"
+    b = _song_with_clip()
+    b.name = "Song B"
+    b.show_video_track = False  # ignored — eye is global on the widget/project
+    widget.set_song(a)
+    widget.resize(900, 600)
+    widget.set_show_video_track(False)
+    assert widget._video_lane_visible() is False
+
+    widget.set_song(b)
     assert widget._show_video_track is False
     assert widget._video_lane_visible() is False
-    assert widget._video_eye_header_visible() is True
-    assert widget.video_show_button.isHidden() is False
+    assert b.show_video_track is False
+
+    widget.set_show_video_track(True)
+    widget.set_song(a)
+    assert widget._video_lane_visible() is True
+    assert a.show_video_track is True
+
+
+def test_project_set_show_video_track_syncs_all_songs() -> None:
+    project = Project.create("Jam")
+    project.songs.append(project.new_song("第二首"))
+    project.set_show_video_track(False)
+    assert project.show_video_track is False
+    assert all(s.show_video_track is False and s.show_ltc_track is False for s in project.songs)
+    third = project.new_song("第三首")
+    project.songs.append(third)
+    assert third.show_video_track is False

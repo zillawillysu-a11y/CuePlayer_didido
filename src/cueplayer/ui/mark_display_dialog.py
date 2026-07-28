@@ -61,9 +61,13 @@ class MarkDisplayDialog(QDialog):
         form.addRow("Tracks", self.tracks_box)
 
         self.video_track_box = QCheckBox("Show Video / LTC Tracks")
-        self.video_track_box.setChecked(song.show_video_track)
+        initial_video = (
+            project.show_video_track if project is not None else song.show_video_track
+        )
+        self.video_track_box.setChecked(bool(initial_video))
         self.video_track_box.setToolTip(
             "Hide Video + LTC after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
             "Preview / Clean Output keep playing either way. "
             "LTC lane appears under Video when a file stripe is known."
         )
@@ -306,8 +310,12 @@ class MarkDisplayDialog(QDialog):
     def _apply(self) -> None:
         self._sync_spacing_enabled()
         self._song.show_mark_tracks = self.tracks_box.isChecked()
-        self._song.show_video_track = self.video_track_box.isChecked()
-        self._song.show_ltc_track = self.video_track_box.isChecked()
+        show_video = self.video_track_box.isChecked()
+        if self._project is not None:
+            self._project.set_show_video_track(show_video)
+        else:
+            self._song.show_video_track = show_video
+            self._song.show_ltc_track = show_video
         self._song.show_mark_stem = self.stem_box.isChecked()
         style = str(self.line_style.currentData() or "solid")
         if style not in ("solid", "dash", "dot"):
