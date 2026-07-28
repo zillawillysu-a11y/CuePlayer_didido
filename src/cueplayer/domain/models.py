@@ -194,6 +194,19 @@ class Mark:
 
 
 @dataclass
+class SetlistCategory:
+    """Folder-like grouping in the Setlist (organizational only — export still uses songs)."""
+
+    id: str
+    name: str
+    collapsed: bool = False
+
+    @classmethod
+    def create(cls, name: str) -> SetlistCategory:
+        return cls(id=_new_id(), name=name.strip() or "Category")
+
+
+@dataclass
 class Song:
     id: str
     name: str
@@ -209,6 +222,8 @@ class Song:
     # Optional per-song setlist row background ("" = none); "#RRGGBB".
     # User-set marker for e.g. VIP songs or problematic cues; does not affect export.
     row_color: str = ""
+    # Optional Setlist folder (see Project.setlist_categories).
+    category_id: str | None = None
     audio_tracks: list[AudioTrack] = field(default_factory=list)
     video_clips: list[VideoClip] = field(default_factory=list)
     # Track-level mute for every video clip's embedded audio (picture keeps
@@ -363,6 +378,90 @@ class Song:
 
     def sort_marks(self) -> None:
         self.marks.sort(key=lambda m: (m.time_seconds, m.lane_index))
+
+    def duplicate(
+        self,
+        *,
+        name: str | None = None,
+        setlist_number: float | None = None,
+    ) -> Song:
+        """Copy marks, lanes, media links, and settings with fresh entity ids."""
+        dup = Song(
+            id=_new_id(),
+            name=name if name is not None else f"{self.name} (copy)",
+            start_timecode=self.start_timecode,
+            fps=self.fps,
+            duration_seconds=self.duration_seconds,
+            setlist_number=(
+                float(setlist_number) if setlist_number is not None else self.setlist_number
+            ),
+            ma_export_name=self.ma_export_name,
+            bpm=self.bpm,
+            row_color=self.row_color,
+            category_id=None,
+            video_track_muted=self.video_track_muted,
+            show_video_track=self.show_video_track,
+            music_volume=self.music_volume,
+            video_lane_height=self.video_lane_height,
+            mark_lanes=deepcopy(self.mark_lanes),
+            show_mark_tracks=self.show_mark_tracks,
+            show_mark_stem=self.show_mark_stem,
+            mark_line_style=self.mark_line_style,
+            mark_dash_on=self.mark_dash_on,
+            mark_dash_off=self.mark_dash_off,
+            mark_line_width=self.mark_line_width,
+            waveform_color=self.waveform_color,
+            now_lanes_configured=self.now_lanes_configured,
+            now_primary_lanes=list(self.now_primary_lanes),
+            now_secondary_lanes=list(self.now_secondary_lanes),
+            now_secondary_enabled=self.now_secondary_enabled,
+            now_primary_visible=self.now_primary_visible,
+            now_secondary_visible=self.now_secondary_visible,
+            now_secondary_clear_seconds=self.now_secondary_clear_seconds,
+        )
+        dup.audio_tracks = [
+            AudioTrack(
+                id=_new_id(),
+                name=track.name,
+                path=Path(track.path),
+                role=track.role,
+                color=track.color,
+                muted=track.muted,
+                solo=track.solo,
+                locked=track.locked,
+                hidden=track.hidden,
+                offset_seconds=track.offset_seconds,
+            )
+            for track in self.audio_tracks
+        ]
+        dup.video_clips = []
+        for clip in self.video_clips:
+            new_clip = VideoClip.create(
+                name=clip.name,
+                path=clip.path,
+                start_seconds=clip.start_seconds,
+                source_in_seconds=clip.source_in_seconds,
+                duration_seconds=clip.duration_seconds,
+                volume=clip.volume,
+                media_kind=clip.media_kind,
+                source_duration_seconds=clip.source_duration_seconds,
+            )
+            new_clip.locked = clip.locked
+            new_clip.hidden = clip.hidden
+            if clip.source_out_seconds is not None:
+                new_clip.source_out_seconds = clip.source_out_seconds
+            dup.video_clips.append(new_clip)
+        dup.marks = [
+            Mark(
+                id=_new_id(),
+                lane_index=mark.lane_index,
+                time_seconds=mark.time_seconds,
+                display_name=mark.display_name,
+                ma_export_name=mark.ma_export_name,
+            )
+            for mark in self.marks
+        ]
+        return dup
 
     def marks_for_lane(self, lane_index: int) -> list[Mark]:
         return [m for m in self.marks if m.lane_index == lane_index]
@@ -708,6 +807,7 @@ class Project:
     name: str
     schema_version: int = SCHEMA_VERSION
     songs: list[Song] = field(default_factory=list)
+    setlist_categories: list[SetlistCategory] = field(default_factory=list)
     # Setlist title display: Chinese / both / English (MA).
     setlist_name_mode: SetlistNameMode = "zh"
     # Optional setlist columns (right-click toggle).
@@ -736,3 +836,9 @@ class Project:
         """Create a song using the project Mark template when set."""
         lanes = self.default_mark_lanes or None
         return Song.create(name, mark_lanes=lanes)
+
+    def setlist_category_by_id(self, category_id: str) -> SetlistCategory | None:
+        for category in self.setlist_categories:
+            if category.id == category_id:
+                return category
+        return None

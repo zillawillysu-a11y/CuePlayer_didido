@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from PySide6.QtCore import QEvent, QModelIndex, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -55,6 +58,7 @@ from cueplayer.domain.models import (
     DEFAULT_STILL_CLIP_DURATION_SECONDS,
     AudioTrack,
     Project,
+    SetlistCategory,
     Song,
     VideoClip,
 )
@@ -128,6 +132,13 @@ _KEY_BACKUP_KEEP = "autosave/backup_keep"
 _DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
 
 
+@dataclass
+class _SetlistDisplayRow:
+    kind: Literal["song", "category"]
+    song_index: int | None = None
+    category_id: str | None = None
+
+
 def _text_input_has_focus() -> bool:
     """True when a widget that owns typing shortcuts is focused."""
     widget = QApplication.focusWidget()
@@ -156,16 +167,20 @@ class SetlistWidget(QTableWidget):
 
     # Shared with export/show-patch song lists (see cueplayer.ui.row_color).
     ROLE_ROW_COLOR = ROLE_ROW_COLOR
+    ROLE_KIND = Qt.ItemDataRole.UserRole + 10
+    ROLE_SONG_INDEX = Qt.ItemDataRole.UserRole + 11
 
     audio_files_dropped = Signal(list)
     audio_drop_rejected = Signal(str)
-    rows_reordered = Signal(list, int)  # song ids in drag order, insert-before row
-    setlist_number_edited = Signal(int, float)  # row, new number
-    setlist_number_edit_failed = Signal(int)  # row
-    song_title_edited = Signal(int, str)  # row, display title for column 1
-    song_ma_name_edited = Signal(int, str)  # row, English / MA name (column 2)
-    song_bpm_edited = Signal(int, object)  # row, float | None
-    song_bpm_edit_failed = Signal(int)  # row
+    rows_reordered = Signal(list, int)  # song ids in drag order, insert-before table row
+    songs_moved_to_category = Signal(list, str)  # song ids, category id
+    category_clicked = Signal(str)  # toggle collapse
+    setlist_number_edited = Signal(int, float)  # table row, new number
+    setlist_number_edit_failed = Signal(int)  # table row
+    song_title_edited = Signal(int, str)  # table row, display title for column 1
+    song_ma_name_edited = Signal(int, str)  # table row, English / MA name (column 2)
+    song_bpm_edited = Signal(int, object)  # table row, float | None
+    song_bpm_edit_failed = Signal(int)  # table row
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, 4, parent)
@@ -201,8 +216,9 @@ class SetlistWidget(QTableWidget):
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
         self.setToolTip(
-            "Double-click #/Name/BPM to edit; right-click to toggle columns or open full editor; "
-            "drag to reorder; drop audio or video files to add songs; Ctrl/Shift to multi-select"
+            "Double-click #/Name/BPM to edit; right-click for categories and full editor; "
+            "drag to reorder or drop songs onto a folder; drop audio/video to add songs; "
+            "Ctrl/Shift to multi-select"
         )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -240,6 +256,35 @@ class SetlistWidget(QTableWidget):
         # Back-compat for older callers.
         self.set_name_mode("both" if visible else "zh")
 
+    def row_kind(self, row: int) -> str:
+        item = self.item(row, 0)
+        if item is None:
+            return ""
+        return str(item.data(self.ROLE_KIND) or "")
+
+    def row_song_index(self, row: int) -> int | None:
+        if self.row_kind(row) != "song":
+            return None
+        item = self.item(row, 0)
+        if item is None:
+            return None
+        raw = item.data(self.ROLE_SONG_INDEX)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def row_category_id(self, row: int) -> str | None:
+        if self.row_kind(row) != "category":
+            return None
+        item = self.item(row, 0)
+        if item is None:
+            return None
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        return str(raw) if raw else None
+
     def edit(
         self,
         index: QModelIndex,
@@ -259,6 +304,8 @@ class SetlistWidget(QTableWidget):
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._block_number_signal or item is None:
+            return
+        if self.row_kind(item.row()) != "song":
             return
         col = item.column()
         if col == self.COL_NUM:
@@ -289,6 +336,8 @@ class SetlistWidget(QTableWidget):
     def startDrag(self, supportedActions) -> None:  # noqa: N802, ANN001
         ids: list[str] = []
         for row in sorted({idx.row() for idx in self.selectedIndexes()}):
+            if self.row_kind(row) != "song":
+                continue
             item = self.item(row, 0)
             if item is None:
                 continue
@@ -297,6 +346,25 @@ class SetlistWidget(QTableWidget):
                 ids.append(str(song_id))
         self._drag_song_ids = ids
         super().startDrag(supportedActions)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid():
+                cat_id = self.row_category_id(index.row())
+                if cat_id is not None:
+                    self.category_clicked.emit(cat_id)
+                    return
+        super().mousePressEvent(event)
+
+    def _category_row_at(self, row: int) -> str | None:
+        if 0 <= row < self.rowCount():
+            cat_id = self.row_category_id(row)
+            if cat_id is not None:
+                return cat_id
+        if 0 <= row - 1 < self.rowCount():
+            return self.row_category_id(row - 1)
+        return None
 
     def _insert_row_at(self, pos) -> int:  # noqa: ANN001
         drop_index = self.indexAt(pos)
@@ -445,6 +513,12 @@ class SetlistWidget(QTableWidget):
         # CopyAction: Qt must not delete source rows (MoveAction clears the list).
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
+        drop_index = self.indexAt(pos)
+        if drop_index.isValid() and self.row_kind(drop_index.row()) == "category":
+            cat_id = self.row_category_id(drop_index.row())
+            if cat_id:
+                self.songs_moved_to_category.emit(ids, cat_id)
+                return
         self.rows_reordered.emit(ids, drop_row)
 
 
@@ -666,6 +740,8 @@ class MainWindow(QMainWindow):
             lambda msg: self.status.showMessage(msg, 5000)
         )
         self.song_list.rows_reordered.connect(self._on_setlist_rows_reordered)
+        self.song_list.songs_moved_to_category.connect(self._on_songs_moved_to_category)
+        self.song_list.category_clicked.connect(self._toggle_setlist_category)
         self.song_list.setlist_number_edited.connect(self._on_setlist_number_edited)
         self.song_list.setlist_number_edit_failed.connect(self._on_setlist_number_edit_failed)
         self.song_list.song_title_edited.connect(self._on_song_title_edited)
@@ -1249,6 +1325,30 @@ class MainWindow(QMainWindow):
         self.song_list.set_name_mode(mode)
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
 
+    def _setlist_display_rows(self) -> list[_SetlistDisplayRow]:
+        rows: list[_SetlistDisplayRow] = []
+        for i, song in enumerate(self.project.songs):
+            if not song.category_id:
+                rows.append(_SetlistDisplayRow(kind="song", song_index=i))
+        for category in self.project.setlist_categories:
+            rows.append(_SetlistDisplayRow(kind="category", category_id=category.id))
+            if not category.collapsed:
+                for i, song in enumerate(self.project.songs):
+                    if song.category_id == category.id:
+                        rows.append(_SetlistDisplayRow(kind="song", song_index=i))
+        return rows
+
+    def _category_id_before_display_index(
+        self, rows: list[_SetlistDisplayRow], index: int
+    ) -> str | None:
+        for i in range(index - 1, -1, -1):
+            row = rows[i]
+            if row.kind == "category":
+                return row.category_id
+            if row.kind == "song" and row.song_index is not None:
+                return self.project.songs[row.song_index].category_id
+        return None
+
     def _rebuild_song_list(
         self,
         select_indexes: list[int] | None = None,
@@ -1268,18 +1368,50 @@ class MainWindow(QMainWindow):
         ]
         if not select_indexes and self.project.songs:
             select_indexes = [0]
-        current = select_indexes[-1] if select_indexes else 0
+        current_song_index = select_indexes[-1] if select_indexes else 0
         self._switching_song = True
         self.song_list.blockSignals(True)
         self.song_list._block_number_signal = True  # noqa: SLF001
-        self.song_list.setRowCount(0)
-        self.song_list.setRowCount(len(self.project.songs))
+        display_rows = self._setlist_display_rows()
+        self.song_list.clearSpans()
+        self.song_list.setRowCount(len(display_rows))
         mode = self.project.setlist_name_mode
         if mode not in ("zh", "both", "en"):
             mode = "zh"
         self.song_list.set_name_mode(mode)
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
-        for i, song in enumerate(self.project.songs):
+        song_index_to_table_row: dict[int, int] = {}
+        for table_row, entry in enumerate(display_rows):
+            if entry.kind == "category":
+                category = self.project.setlist_category_by_id(entry.category_id or "")
+                if category is None:
+                    continue
+                arrow = "▸" if category.collapsed else "▾"
+                label = f"{arrow} {category.name}"
+                folder_item = QTableWidgetItem(label)
+                folder_item.setData(Qt.ItemDataRole.UserRole, category.id)
+                folder_item.setData(SetlistWidget.ROLE_KIND, "category")
+                folder_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                )
+                folder_item.setToolTip(
+                    "Click to expand/collapse · right-click to rename or delete · "
+                    "drag songs here to file them in this folder"
+                )
+                folder_item.setForeground(QColor("#a5b4fc"))
+                font = folder_item.font()
+                font.setBold(True)
+                folder_item.setFont(font)
+                self.song_list.setItem(table_row, SetlistWidget.COL_NUM, folder_item)
+                self.song_list.setSpan(table_row, SetlistWidget.COL_NUM, 1, 4)
+                continue
+
+            song_index = entry.song_index
+            if song_index is None or song_index >= len(self.project.songs):
+                continue
+            song = self.project.songs[song_index]
+            song_index_to_table_row[song_index] = table_row
+
             num_text = format_setlist_number(song.setlist_number)
             num_item = QTableWidgetItem(num_text)
             num_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1291,8 +1423,10 @@ class MainWindow(QMainWindow):
             )
             num_item.setData(Qt.ItemDataRole.UserRole, song.id)
             num_item.setData(Qt.ItemDataRole.UserRole + 1, num_text)
+            num_item.setData(SetlistWidget.ROLE_KIND, "song")
+            num_item.setData(SetlistWidget.ROLE_SONG_INDEX, song_index)
             num_item.setToolTip("Double-click to edit the number (0.5 supported)")
-            self.song_list.setItem(i, SetlistWidget.COL_NUM, num_item)
+            self.song_list.setItem(table_row, SetlistWidget.COL_NUM, num_item)
 
             zh_name = song.name
             en_name = (song.ma_export_name or "").strip()
@@ -1322,7 +1456,7 @@ class MainWindow(QMainWindow):
                 name_item.setToolTip(
                     name_item.toolTip() + "\n(No English/MA name set yet, showing Chinese)"
                 )
-            self.song_list.setItem(i, SetlistWidget.COL_TITLE, name_item)
+            self.song_list.setItem(table_row, SetlistWidget.COL_TITLE, name_item)
 
             ma_item = QTableWidgetItem(en_name)
             ma_item.setFlags(
@@ -1332,7 +1466,7 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
             ma_item.setToolTip((en_name + "\n" if en_name else "") + "Double-click to edit the English/MA name")
-            self.song_list.setItem(i, SetlistWidget.COL_EN, ma_item)
+            self.song_list.setItem(table_row, SetlistWidget.COL_EN, ma_item)
 
             bpm_text = ""
             if song.bpm is not None and float(song.bpm) > 0:
@@ -1351,16 +1485,22 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
             bpm_item.setToolTip("Double-click to enter BPM (blank = not set)")
-            self.song_list.setItem(i, SetlistWidget.COL_BPM, bpm_item)
+            self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
             for cell in (num_item, name_item, ma_item, bpm_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
 
         self.song_list.clearSelection()
-        for idx in select_indexes:
-            self.song_list.selectRow(idx)
+        for song_index in select_indexes:
+            table_row = song_index_to_table_row.get(song_index)
+            if table_row is not None:
+                self.song_list.selectRow(table_row)
         if self.project.songs:
-            self.song_list.setCurrentCell(current, SetlistWidget.COL_TITLE)
+            current_table_row = song_index_to_table_row.get(
+                current_song_index, song_index_to_table_row.get(select_indexes[0], 0)
+            )
+            if current_table_row is not None:
+                self.song_list.setCurrentCell(current_table_row, SetlistWidget.COL_TITLE)
         self.song_list._block_number_signal = False  # noqa: SLF001
         self.song_list.blockSignals(False)
         self._switching_song = False
@@ -1369,8 +1509,20 @@ class MainWindow(QMainWindow):
             patch.sync_songs()
 
     def _selected_song_indexes(self) -> list[int]:
-        rows = sorted({idx.row() for idx in self.song_list.selectedIndexes()})
-        return [r for r in rows if 0 <= r < len(self.project.songs)]
+        indexes: list[int] = []
+        for row in sorted({idx.row() for idx in self.song_list.selectedIndexes()}):
+            song_index = self.song_list.row_song_index(row)
+            if song_index is not None:
+                indexes.append(song_index)
+        return indexes
+
+    def _table_rows_for_song_indexes(self, song_indexes: list[int]) -> list[int]:
+        rows: list[int] = []
+        display_rows = self._setlist_display_rows()
+        for table_row, entry in enumerate(display_rows):
+            if entry.kind == "song" and entry.song_index in song_indexes:
+                rows.append(table_row)
+        return rows
 
     def _song_to_draft(self, song: Song) -> SongDraft:
         audio_path = Path(song.audio_tracks[0].path) if song.audio_tracks else None
@@ -1459,16 +1611,20 @@ class MainWindow(QMainWindow):
     def _on_song_cell_changed(
         self, row: int, _column: int, _prev_row: int, _prev_column: int
     ) -> None:
-        if self._switching_song or row < 0 or row >= len(self.project.songs):
+        song_index = self.song_list.row_song_index(row)
+        if song_index is None:
             return
-        if self.project.songs[row] is self.current_song:
+        if self._switching_song or song_index < 0 or song_index >= len(self.project.songs):
             return
-        self._activate_song(row, stop_playback=True)
+        if self.project.songs[song_index] is self.current_song:
+            return
+        self._activate_song(song_index, stop_playback=True)
 
     def _on_song_title_edited(self, row: int, text: str) -> None:
-        if row < 0 or row >= len(self.project.songs):
+        song_index = self.song_list.row_song_index(row)
+        if song_index is None or song_index < 0 or song_index >= len(self.project.songs):
             return
-        song = self.project.songs[row]
+        song = self.project.songs[song_index]
         mode = self.project.setlist_name_mode
         if mode == "en":
             # Primary column shows English in EN mode.
@@ -1487,9 +1643,10 @@ class MainWindow(QMainWindow):
         self.timeline.update()
 
     def _on_song_ma_name_edited(self, row: int, text: str) -> None:
-        if row < 0 or row >= len(self.project.songs):
+        song_index = self.song_list.row_song_index(row)
+        if song_index is None or song_index < 0 or song_index >= len(self.project.songs):
             return
-        self._apply_inline_ma_name(self.project.songs[row], text, row=row)
+        self._apply_inline_ma_name(self.project.songs[song_index], text, row=song_index)
 
     def _apply_inline_ma_name(self, song: Song, text: str, *, row: int) -> None:
         from cueplayer.exporters.common import sanitize_ma_name
@@ -1522,9 +1679,10 @@ class MainWindow(QMainWindow):
         self._rebuild_song_list(select_indexes=[row])
 
     def _on_song_bpm_edited(self, row: int, value: object) -> None:
-        if row < 0 or row >= len(self.project.songs):
+        song_index = self.song_list.row_song_index(row)
+        if song_index is None or song_index < 0 or song_index >= len(self.project.songs):
             return
-        song = self.project.songs[row]
+        song = self.project.songs[song_index]
         bpm: float | None
         if value is None:
             bpm = None
@@ -1561,7 +1719,11 @@ class MainWindow(QMainWindow):
 
     def _on_song_bpm_edit_failed(self, row: int) -> None:
         QMessageBox.warning(self, "Invalid BPM", "Enter a positive number (e.g. 120, 128.5), or leave blank.")
-        indexes = self._selected_song_indexes() or [row]
+        indexes = self._selected_song_indexes()
+        if not indexes:
+            song_index = self.song_list.row_song_index(row)
+            if song_index is not None:
+                indexes = [song_index]
         self._rebuild_song_list(select_indexes=indexes)
 
     def _add_setlist_column_actions(self, menu: QMenu) -> tuple[QAction, QAction]:
@@ -1615,13 +1777,25 @@ class MainWindow(QMainWindow):
         index = self.song_list.indexAt(pos)
         if index.isValid():
             row = index.row()
-            # Right-click on unselected row → select that row only.
+            cat_id = self.song_list.row_category_id(row)
+            if cat_id is not None:
+                self._on_setlist_category_context_menu(cat_id, pos)
+                return
             selected = {idx.row() for idx in self.song_list.selectedIndexes()}
             if row not in selected:
                 self.song_list.selectRow(row)
         menu = QMenu(self)
         edit_action = menu.addAction("Edit…")
+        duplicate_action = menu.addAction("Duplicate")
         add_action = menu.addAction("Add Song…")
+        new_category_action = menu.addAction("New Folder…")
+        move_menu = menu.addMenu("Move to Folder")
+        remove_from_folder_action = move_menu.addAction("Main list (no folder)")
+        remove_from_folder_action.setEnabled(False)
+        category_actions: dict[QAction, str] = {}
+        for category in self.project.setlist_categories:
+            action = move_menu.addAction(category.name)
+            category_actions[action] = category.id
         menu.addSeparator()
         row_color_action = menu.addAction("Row Color…")
         clear_row_color_action = menu.addAction("Clear Row Color")
@@ -1635,6 +1809,11 @@ class MainWindow(QMainWindow):
         has_selection = bool(self._selected_song_indexes()) or self.song_list.currentRow() >= 0
         selected_songs = self._selected_songs()
         edit_action.setEnabled(has_selection)
+        duplicate_action.setEnabled(has_selection)
+        remove_from_folder_action.setEnabled(
+            has_selection and any(song.category_id for song in selected_songs)
+        )
+        move_menu.setEnabled(has_selection and bool(self.project.setlist_categories))
         row_color_action.setEnabled(has_selection)
         row_color_action.setToolTip("Pick a background color for the selected song(s) (e.g. VIP, problem cue)")
         clear_row_color_action.setEnabled(
@@ -1650,8 +1829,16 @@ class MainWindow(QMainWindow):
             return
         if chosen is edit_action:
             self._edit_song()
+        elif chosen is duplicate_action:
+            self._duplicate_song()
         elif chosen is add_action:
             self._add_song()
+        elif chosen is new_category_action:
+            self._add_setlist_category()
+        elif chosen is remove_from_folder_action:
+            self._move_selected_songs_to_category(None)
+        elif chosen in category_actions:
+            self._move_selected_songs_to_category(category_actions[chosen])
         elif chosen is row_color_action:
             self._pick_row_color()
         elif chosen is clear_row_color_action:
@@ -1694,13 +1881,18 @@ class MainWindow(QMainWindow):
 
     def _on_setlist_number_edit_failed(self, row: int) -> None:
         QMessageBox.warning(self, "Invalid Number", "Enter a number (e.g. 1, 0.5, 2.5).")
-        indexes = self._selected_song_indexes() or [row]
+        indexes = self._selected_song_indexes()
+        if not indexes:
+            song_index = self.song_list.row_song_index(row)
+            if song_index is not None:
+                indexes = [song_index]
         self._rebuild_song_list(select_indexes=indexes)
 
     def _on_setlist_number_edited(self, row: int, value: float) -> None:
-        if row < 0 or row >= len(self.project.songs):
+        song_index = self.song_list.row_song_index(row)
+        if song_index is None or song_index < 0 or song_index >= len(self.project.songs):
             return
-        song = self.project.songs[row]
+        song = self.project.songs[song_index]
         if abs(float(song.setlist_number) - value) < 1e-9:
             # Normalize display text.
             item = self.song_list.item(row, 0)
@@ -1734,18 +1926,56 @@ class MainWindow(QMainWindow):
         moving = [by_id[sid] for sid in ids if sid in by_id]
         if not moving:
             return
-        old_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
-        remaining = [song for song in self.project.songs if song.id not in id_set]
-        drop_row = int(drop_row)
-        removed_before = sum(1 for i in old_indexes if i < drop_row)
-        insert_at = max(0, min(drop_row - removed_before, len(remaining)))
+
+        entries = self._setlist_display_rows()
+        moving_entries = [
+            e
+            for e in entries
+            if e.kind == "song"
+            and e.song_index is not None
+            and self.project.songs[e.song_index].id in id_set
+        ]
+        rest = [
+            e
+            for e in entries
+            if not (
+                e.kind == "song"
+                and e.song_index is not None
+                and self.project.songs[e.song_index].id in id_set
+            )
+        ]
+        insert_at = max(0, min(int(drop_row), len(rest)))
+        new_entries = rest[:insert_at] + moving_entries + rest[insert_at:]
+
+        moving_id_set = id_set
+        for i, entry in enumerate(new_entries):
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            if song.id not in moving_id_set:
+                continue
+            song.category_id = self._category_id_before_display_index(new_entries, i)
+
+        ordered_songs: list[Song] = []
+        seen: set[str] = set()
+        for entry in new_entries:
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            if song.id in seen:
+                continue
+            seen.add(song.id)
+            ordered_songs.append(song)
+        for song in self.project.songs:
+            if song.id not in seen:
+                ordered_songs.append(song)
+
         keep_id = self.current_song.id
-        self.project.songs = remaining[:insert_at] + moving + remaining[insert_at:]
+        self.project.songs = ordered_songs
         new_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
         if not new_indexes:
-            new_indexes = [insert_at]
+            new_indexes = [min(insert_at, len(self.project.songs) - 1)]
         self._rebuild_song_list(select_indexes=new_indexes)
-        # Keep the same song loaded — do not stop/reload audio just for a reorder.
         try:
             current_row = next(
                 i for i, song in enumerate(self.project.songs) if song.id == keep_id
@@ -1756,6 +1986,127 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._refresh_status()
         self.status.showMessage("Song order updated by drag", 2000)
+
+    def _on_songs_moved_to_category(self, song_ids: list, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(str(category_id))
+        if category is None:
+            return
+        id_set = {str(sid) for sid in song_ids}
+        moved = 0
+        for song in self.project.songs:
+            if song.id in id_set:
+                song.category_id = category.id
+                moved += 1
+        if moved <= 0:
+            return
+        indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
+        self._rebuild_song_list(select_indexes=indexes)
+        self._mark_dirty()
+        self.status.showMessage(
+            f'Moved {moved} song(s) into "{category.name}"',
+            2500,
+        )
+
+    def _toggle_setlist_category(self, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        category.collapsed = not category.collapsed
+        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+        state = "collapsed" if category.collapsed else "expanded"
+        self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
+
+    def _add_setlist_category(self) -> None:
+        name, ok = QInputDialog.getText(self, "New Setlist Folder", "Folder name:")
+        if not ok:
+            return
+        category = SetlistCategory.create(name)
+        self.project.setlist_categories.append(category)
+        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+        self._mark_dirty()
+        self.status.showMessage(f'Created folder "{category.name}"', 2500)
+
+    def _rename_setlist_category(self, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Rename Folder", "Folder name:", text=category.name
+        )
+        if not ok:
+            return
+        new_name = name.strip() or category.name
+        if new_name == category.name:
+            return
+        category.name = new_name
+        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+        self._mark_dirty()
+        self.status.showMessage(f'Renamed folder to "{category.name}"', 2500)
+
+    def _delete_setlist_category(self, category_id: str) -> None:
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        member_count = sum(1 for song in self.project.songs if song.category_id == category.id)
+        prompt = (
+            f'Delete folder "{category.name}"?'
+            if member_count == 0
+            else (
+                f'Delete folder "{category.name}"?\n\n'
+                f"{member_count} song(s) inside will move back to the main list."
+            )
+        )
+        answer = QMessageBox.question(
+            self,
+            "Delete Folder",
+            prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for song in self.project.songs:
+            if song.category_id == category.id:
+                song.category_id = None
+        self.project.setlist_categories = [
+            c for c in self.project.setlist_categories if c.id != category.id
+        ]
+        self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+        self._mark_dirty()
+        self.status.showMessage(f'Deleted folder "{category.name}"', 2500)
+
+    def _move_selected_songs_to_category(self, category_id: str | None) -> None:
+        indexes = self._selected_song_indexes()
+        if not indexes:
+            return
+        for song in self._selected_songs():
+            song.category_id = category_id
+        self._rebuild_song_list(select_indexes=indexes)
+        self._mark_dirty()
+        if category_id is None:
+            self.status.showMessage("Moved song(s) out of folder", 2000)
+            return
+        category = self.project.setlist_category_by_id(category_id)
+        label = category.name if category is not None else "folder"
+        self.status.showMessage(f'Moved song(s) into "{label}"', 2000)
+
+    def _on_setlist_category_context_menu(self, category_id: str, pos) -> None:  # noqa: ANN001
+        category = self.project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename Folder…")
+        toggle_action = menu.addAction(
+            "Expand Folder" if category.collapsed else "Collapse Folder"
+        )
+        delete_action = menu.addAction("Delete Folder")
+        chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
+        if chosen is rename_action:
+            self._rename_setlist_category(category_id)
+        elif chosen is toggle_action:
+            self._toggle_setlist_category(category_id)
+        elif chosen is delete_action:
+            self._delete_setlist_category(category_id)
 
     def _move_selected_songs(self, delta: int) -> None:
         indexes = self._selected_song_indexes()
@@ -2021,6 +2372,47 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status.showMessage(f"Updated {len(indexes)} songs", 3000)
+
+    def _duplicate_song(self) -> None:
+        indexes = self._selected_song_indexes()
+        if not indexes:
+            row = self.song_list.currentRow()
+            if 0 <= row < len(self.project.songs):
+                indexes = [row]
+        if not indexes:
+            return
+
+        new_indexes: list[int] = []
+        for row in sorted(indexes, reverse=True):
+            source = self.project.songs[row]
+            dup = source.duplicate(
+                name=f"{source.name} (copy)",
+                setlist_number=self._next_setlist_number(),
+            )
+            insert_at = row + 1
+            self.project.songs.insert(insert_at, dup)
+            new_indexes.append(insert_at)
+        new_indexes.sort()
+
+        self._rebuild_song_list(select_indexes=new_indexes)
+        self._activate_song(new_indexes[0], stop_playback=True)
+        self._mark_dirty()
+        patch = getattr(self, "show_patch_page", None)
+        if patch is not None:
+            patch.sync_songs()
+
+        if len(new_indexes) == 1:
+            src_row = indexes[0]
+            dup = self.project.songs[new_indexes[0]]
+            src_name = self.project.songs[src_row].name
+            self.status.showMessage(
+                f'Duplicated "{src_name}" as #{format_setlist_number(dup.setlist_number)} '
+                f"{dup.name} — use Edit… to replace audio",
+                4000,
+            )
+            self._edit_song()
+        else:
+            self.status.showMessage(f"Duplicated {len(new_indexes)} songs", 3000)
 
     def _delete_song(self) -> None:
         indexes = self._selected_song_indexes()

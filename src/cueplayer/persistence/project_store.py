@@ -18,6 +18,7 @@ from cueplayer.domain.models import (
     MarkLane,
     MaExportSettings,
     Project,
+    SetlistCategory,
     SetlistNameMode,
     Song,
     VideoClip,
@@ -373,6 +374,14 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "audio_output": audio_output_to_dict(project.audio_output),
         "clean_video_output": clean_video_output_to_dict(project.clean_video_output),
         "video_decode_quality": project.video_decode_quality,
+        "setlist_categories": [
+            {
+                "id": category.id,
+                "name": category.name,
+                "collapsed": bool(category.collapsed),
+            }
+            for category in project.setlist_categories
+        ],
         "songs": [
             {
                 "id": song.id,
@@ -381,6 +390,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "ma_export_name": song.ma_export_name,
                 "bpm": song.bpm,
                 "row_color": song.row_color,
+                "category_id": song.category_id,
                 "start_timecode": song.start_timecode,
                 "fps": song.fps,
                 "duration_seconds": song.duration_seconds,
@@ -540,6 +550,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 ma_export_name=song_data.get("ma_export_name"),
                 bpm=_coerce_optional_bpm(song_data.get("bpm")),
                 row_color=_coerce_row_color(song_data.get("row_color")),
+                category_id=song_data.get("category_id"),
                 start_timecode=song_data.get("start_timecode", "01:00:00:00"),
                 fps=float(song_data.get("fps", 30.0)),
                 duration_seconds=float(song_data.get("duration_seconds", 60.0)),
@@ -576,12 +587,22 @@ def project_from_dict(data: dict[str, Any]) -> Project:
 
     line_style, line_width, dash_on, dash_off = _load_project_mark_line_settings(data, songs)
     wave_color = _load_project_waveform_color(data, songs)
+    categories = [
+        SetlistCategory(
+            id=str(item["id"]),
+            name=str(item.get("name") or "Category"),
+            collapsed=bool(item.get("collapsed", False)),
+        )
+        for item in data.get("setlist_categories") or []
+        if isinstance(item, dict) and item.get("id")
+    ]
 
     return Project(
         id=data["id"],
         name=data["name"],
         schema_version=int(data["schema_version"]),
         songs=songs,
+        setlist_categories=categories,
         setlist_name_mode=_coerce_setlist_name_mode(data),
         setlist_show_bpm=bool(data.get("setlist_show_bpm", True)),
         default_mark_lanes=dicts_to_lanes(data.get("default_mark_lanes") or []),
