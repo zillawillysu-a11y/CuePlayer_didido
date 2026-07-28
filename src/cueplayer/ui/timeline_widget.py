@@ -2069,8 +2069,6 @@ class TimelineWidget(QWidget):
 
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
-        width_px = x_right - x_left
-        del width_px  # visible width only; kept for future perf guard if needed
 
         for x in range(x_left, x_right):
             t0 = self._time_for_x(x)

@@ -13,7 +13,7 @@ so no extra chrome is ever drawn inside the capture surface.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QCloseEvent, QHideEvent, QResizeEvent, QShowEvent
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
@@ -48,6 +48,17 @@ _DECODE_QUALITY_LABELS: tuple[tuple[str, str], ...] = (
 )
 
 
+def content_size_for_aspect(
+    client_w: int, client_h: int, *, prefer_width: bool
+) -> tuple[int, int]:
+    """16:9 content size that fits inside a client area, following the dominant drag axis."""
+    client_w = max(1, int(client_w))
+    client_h = max(1, int(client_h))
+    if prefer_width:
+        return client_w, max(1, round(client_w * _ASPECT_H / _ASPECT_W))
+    return max(1, round(client_h * _ASPECT_W / _ASPECT_H)), client_h
+
+
 class CleanVideoOutputWindow(QWidget):
     visibility_changed = Signal(bool)
     # Content size or aspect-lock state changed; main_window marks the
@@ -59,17 +70,25 @@ class CleanVideoOutputWindow(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle(CLEAN_OUTPUT_WINDOW_TITLE)
+        # Stable OBS target: do not steal activation from the main editor.
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._aspect_locked = True
         self._adjusting = False
+        self._last_frame_pos: QPoint | None = None
         self._decode_quality: str = "1080p"
         # Normally the X button only hides this window (see closeEvent) so
         # that re-opening from the Tools menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
         # tear it down (and let the app quit) when the app itself closes.
         self._force_closing = False
+        self._settings_debounce = QTimer(self)
+        self._settings_debounce.setSingleShot(True)
+        self._settings_debounce.setInterval(300)
+        self._settings_debounce.timeout.connect(self.settings_changed.emit)
         self.setStyleSheet("background: black;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         # No placeholder text here: unplayed regions must stay pure black
         # for the OBS capture, with no debug text baked into the frame.
         self.preview = VideoPreviewWidget(self, placeholder_text="")
@@ -101,8 +120,8 @@ class CleanVideoOutputWindow(QWidget):
             return
         self._aspect_locked = locked
         if locked:
-            self._enforce_aspect_ratio()
-        self.settings_changed.emit()
+            self._apply_aspect_from_client(self.width(), self.height(), prefer_width=True)
+        self._schedule_settings_changed()
 
     def apply_preset(self, width: int, height: int) -> None:
         """Snap the content area to an exact pixel size; the window sizes around it."""
@@ -118,7 +137,7 @@ class CleanVideoOutputWindow(QWidget):
             self.preview.setMinimumSize(0, 0)
             self.preview.setMaximumSize(_QWIDGETSIZE_MAX, _QWIDGETSIZE_MAX)
             self._adjusting = False
-        self.settings_changed.emit()
+        self._schedule_settings_changed()
 
     def current_settings(self) -> CleanVideoOutputSettings:
         width, height = self.content_size()
@@ -133,61 +152,76 @@ class CleanVideoOutputWindow(QWidget):
         self._aspect_locked = bool(settings.aspect_locked)
         self.apply_preset(settings.width, settings.height)
 
-    def _enforce_aspect_ratio(self, event: QResizeEvent | None = None) -> None:
-        if self._adjusting:
-            return
-        old_size = event.oldSize() if event is not None else QSize()
-        if not old_size.isValid():
-            width = max(1, self.width())
-            target_height = max(1, round(width * _ASPECT_H / _ASPECT_W))
-            if target_height != self.height():
-                self._adjusting = True
-                try:
-                    self.resize(width, target_height)
-                finally:
-                    self._adjusting = False
+    def _schedule_settings_changed(self) -> None:
+        self._settings_debounce.start()
+
+    def _release_preview_size_pin(self) -> None:
+        self.preview.setMinimumSize(0, 0)
+        self.preview.setMaximumSize(_QWIDGETSIZE_MAX, _QWIDGETSIZE_MAX)
+
+    def _apply_aspect_from_client(
+        self, client_w: int, client_h: int, *, prefer_width: bool
+    ) -> None:
+        cw, ch = content_size_for_aspect(client_w, client_h, prefer_width=prefer_width)
+        self._adjusting = True
+        try:
+            self.preview.setFixedSize(cw, ch)
+            self.adjustSize()
+        finally:
+            self._release_preview_size_pin()
+            self._adjusting = False
+
+    def _handle_aspect_locked_resize(self, event: QResizeEvent) -> None:
+        old_size = event.oldSize()
+        new_size = event.size()
+        if not old_size.isValid() or old_size == new_size:
             return
 
-        new_size = self.size()
         dw = new_size.width() - old_size.width()
         dh = new_size.height() - old_size.height()
-        if dw == 0 and dh == 0:
-            return
+        prefer_width = abs(dw) >= abs(dh)
 
-        old_geo = self.frameGeometry()
-        if abs(dw) >= abs(dh):
-            target_w = max(1, new_size.width())
-            target_h = max(1, round(target_w * _ASPECT_H / _ASPECT_W))
-        else:
-            target_h = max(1, new_size.height())
-            target_w = max(1, round(target_h * _ASPECT_W / _ASPECT_H))
+        frame_tl = self.frameGeometry().topLeft()
+        anchor_bottom_right = (
+            self._last_frame_pos is not None and frame_tl != self._last_frame_pos
+        )
+        br_before = self.frameGeometry().bottomRight()
 
-        if target_w == new_size.width() and target_h == new_size.height():
-            return
+        cw, ch = content_size_for_aspect(
+            new_size.width(), new_size.height(), prefer_width=prefer_width
+        )
 
         self._adjusting = True
         try:
-            geo = self.frameGeometry()
-            # When the user drags a top/left edge, Qt moves the window origin;
-            # keep the opposite corner fixed so the resize feels natural.
-            anchor_bottom_right = geo.topLeft() != old_geo.topLeft()
+            self.preview.setFixedSize(cw, ch)
+            self.adjustSize()
             if anchor_bottom_right:
-                self.setGeometry(
-                    geo.right() - target_w + 1,
-                    geo.bottom() - target_h + 1,
-                    target_w,
-                    target_h,
+                frame = self.frameGeometry()
+                self.move(
+                    br_before.x() - frame.width() + 1,
+                    br_before.y() - frame.height() + 1,
                 )
-            else:
-                self.resize(target_w, target_h)
         finally:
+            self._release_preview_size_pin()
             self._adjusting = False
+            self._last_frame_pos = self.frameGeometry().topLeft()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
-        super().resizeEvent(event)
+        if self._adjusting:
+            super().resizeEvent(event)
+            return
         if self._aspect_locked:
-            self._enforce_aspect_ratio(event)
-        self.settings_changed.emit()
+            self._handle_aspect_locked_resize(event)
+        else:
+            super().resizeEvent(event)
+        self._schedule_settings_changed()
+
+    def present_for_obs_capture(self) -> None:
+        """Raise this window with a stable title so OBS Window Capture can find it."""
+        self.setWindowTitle(CLEAN_OUTPUT_WINDOW_TITLE)
+        if not self.isVisible():
+            self.show()
+        self.raise_()
 
     def current_decode_quality(self) -> str:
         return self._decode_quality
@@ -255,6 +289,7 @@ class CleanVideoOutputWindow(QWidget):
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
+        self._last_frame_pos = None
         self.visibility_changed.emit(True)
 
     def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802

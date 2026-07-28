@@ -162,6 +162,8 @@ def _song_list_has_keyboard_focus(song_list: QTableWidget) -> bool:
 class SetlistWidget(QTableWidget):
     """Setlist: click # to edit, drag rows to reorder, drop audio/video to add songs."""
 
+    _TRIANGLE_HIT_MIN_PX = 28
+
     COL_NUM = 0
     COL_TITLE = 1
     COL_EN = 2
@@ -177,7 +179,7 @@ class SetlistWidget(QTableWidget):
     rows_reordered = Signal(list, int)  # song ids in drag order, insert-before table row
     songs_moved_to_category = Signal(list, str)  # song ids, category id
     category_clicked = Signal(str)  # triangle: toggle collapse
-    category_name_clicked = Signal(str)  # folder label: select first song
+    category_rename_requested = Signal(str)  # folder label double-click
     setlist_number_edited = Signal(int, float)  # table row, new number
     setlist_number_edit_failed = Signal(int)  # table row
     song_title_edited = Signal(int, str)  # table row, display title for column 1
@@ -301,7 +303,8 @@ class SetlistWidget(QTableWidget):
         if not text or text[0] not in ("▸", "▾"):
             return False
         fm = QFontMetrics(item.font())
-        return local_x <= fm.horizontalAdvance(f"{text[0]} ")
+        tri_w = max(self._TRIANGLE_HIT_MIN_PX, fm.horizontalAdvance(f"{text[0]} ") + 4)
+        return local_x <= tri_w
 
     def edit(
         self,
@@ -367,18 +370,29 @@ class SetlistWidget(QTableWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         if event.button() == Qt.MouseButton.LeftButton:
-            index = self.indexAt(event.position().toPoint())
+            viewport_pos = self.viewport().mapFrom(self, event.position().toPoint())
+            index = self.indexAt(viewport_pos)
             if index.isValid():
                 row = index.row()
                 cat_id = self.row_category_id(row)
                 if cat_id is not None:
-                    x = int(event.position().toPoint().x())
-                    if self._category_triangle_hit(row, x):
+                    if self._category_triangle_hit(row, viewport_pos.x()):
                         self.category_clicked.emit(cat_id)
-                    else:
-                        self.category_name_clicked.emit(cat_id)
                     return
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            viewport_pos = self.viewport().mapFrom(self, event.position().toPoint())
+            index = self.indexAt(viewport_pos)
+            if index.isValid():
+                row = index.row()
+                cat_id = self.row_category_id(row)
+                if cat_id is not None:
+                    if not self._category_triangle_hit(row, viewport_pos.x()):
+                        self.category_rename_requested.emit(cat_id)
+                    return
+        super().mouseDoubleClickEvent(event)
 
     def _category_row_at(self, row: int) -> str | None:
         if 0 <= row < self.rowCount():
@@ -768,7 +782,7 @@ class MainWindow(QMainWindow):
         self.song_list.rows_reordered.connect(self._on_setlist_rows_reordered)
         self.song_list.songs_moved_to_category.connect(self._on_songs_moved_to_category)
         self.song_list.category_clicked.connect(self._toggle_setlist_category)
-        self.song_list.category_name_clicked.connect(self._select_first_song_in_category)
+        self.song_list.category_rename_requested.connect(self._rename_setlist_category)
         self.song_list.setlist_number_edited.connect(self._on_setlist_number_edited)
         self.song_list.setlist_number_edit_failed.connect(self._on_setlist_number_edit_failed)
         self.song_list.song_title_edited.connect(self._on_song_title_edited)
@@ -1430,9 +1444,8 @@ class MainWindow(QMainWindow):
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
                 folder_item.setToolTip(
-                    "Click ▸/▾ to expand or collapse · click the folder name to open "
-                    "its first song (collapsed folders stay collapsed) · right-click to "
-                    "rename or delete · drag songs here to file them in this folder"
+                    "Click ▸/▾ to expand or collapse · double-click folder name to rename · "
+                    "right-click for more · drag songs here to file them in this folder"
                 )
                 folder_item.setForeground(QColor("#a5b4fc"))
                 font = folder_item.font()
@@ -2063,36 +2076,6 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         state = "collapsed" if category.collapsed else "expanded"
         self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
-
-    def _select_first_song_in_category(self, category_id: str) -> None:
-        """Open the folder's first song without expanding a collapsed folder."""
-        category = self.project.setlist_category_by_id(category_id)
-        if category is None:
-            return
-        members = self.project.songs_in_category(category_id)
-        if not members:
-            self.status.showMessage(f'Folder "{category.name}" has no songs', 2000)
-            return
-        first = members[0]
-        try:
-            song_index = self.project.songs.index(first)
-        except ValueError:
-            return
-        self._activate_song(song_index, stop_playback=True)
-        if not category.collapsed:
-            table_row = self._song_table_row_for_index(song_index)
-            if table_row is not None:
-                self._switching_song = True
-                try:
-                    self.song_list.setCurrentCell(table_row, SetlistWidget.COL_TITLE)
-                finally:
-                    self._switching_song = False
-
-    def _song_table_row_for_index(self, song_index: int) -> int | None:
-        for row in range(self.song_list.rowCount()):
-            if self.song_list.row_song_index(row) == song_index:
-                return row
-        return None
 
     def _add_setlist_category(self) -> None:
         name, ok = QInputDialog.getText(self, "New Setlist Folder", "Folder name:")
@@ -3366,9 +3349,7 @@ class MainWindow(QMainWindow):
         self._block_clean_output_visibility_persist = True
         try:
             if want_open:
-                if not self.clean_output_window.isVisible():
-                    self.clean_output_window.show()
-                    self.clean_output_window.raise_()
+                self.clean_output_window.present_for_obs_capture()
                 self._clean_output_action.setChecked(True)
             else:
                 if self.clean_output_window.isVisible():
@@ -3377,10 +3358,14 @@ class MainWindow(QMainWindow):
         finally:
             self._block_clean_output_visibility_persist = False
 
+    def present_clean_output_for_obs(self) -> None:
+        """Re-raise Clean Output after the main window shows (OBS window picker)."""
+        if self.clean_output_window.isVisible():
+            self.clean_output_window.present_for_obs_capture()
+
     def _toggle_clean_output(self, checked: bool) -> None:
         if checked:
-            self.clean_output_window.show()
-            self.clean_output_window.raise_()
+            self.clean_output_window.present_for_obs_capture()
         else:
             self.clean_output_window.hide()
 

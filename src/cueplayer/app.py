@@ -11,7 +11,8 @@ if sys.platform == "win32":
 
 
 def main() -> int:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
 
     from cueplayer.ui.main_window import MainWindow
     from cueplayer.ui.theme import apply_dark_palette, build_stylesheet
@@ -29,6 +30,9 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
+    # If Clean Output was restored during init, show it again after the main
+    # window so OBS Window Capture keeps matching "CuePlayer Clean Video Output".
+    QTimer.singleShot(0, window.present_clean_output_for_obs)
     return app.exec()
 
 
