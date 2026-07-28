@@ -25,7 +25,6 @@ from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     VideoClipWaveformCache,
-    sample_clip_peaks_for_times,
     sample_source_peaks_for_clip_times,
     sample_source_raw_for_clip_times,
     timeline_to_clip_local,
@@ -2073,15 +2072,15 @@ class TimelineWidget(QWidget):
             or self._trimming_clip is not None
             or self._scrubbing
         )
-        fast_playback = self._playing and not interacting
+        playing = self._playing and not interacting
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
-        use_raw = (not fast_playback) and samples_per_pixel <= 1.5
+        # High-zoom raw mono is paused-only (expensive); playback uses the same
+        # pyramid path as edit mode so waveforms stay sharp enough to align on.
+        use_raw = samples_per_pixel <= 1.5 and not playing
         width_px = x_right - x_left
         x_step = 1
-        if fast_playback:
-            # Coarse envelope + wider columns keeps playback responsive while
-            # still showing enough shape to align clips on the video lane.
-            x_step = max(1, width_px // 400)
+        if playing and width_px > 2400:
+            x_step = 2
 
         for x in range(x_left, x_right, x_step):
             t0 = self._time_for_x(x)
@@ -2096,11 +2095,7 @@ class TimelineWidget(QWidget):
                 clip_t1 = duration
             clip_t0 = max(0.0, min(duration, clip_t0))
             clip_t1 = max(clip_t0, min(duration, clip_t1))
-            if fast_playback:
-                lo, hi = sample_clip_peaks_for_times(
-                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
-                )
-            elif use_raw:
+            if use_raw:
                 lo, hi = sample_source_raw_for_clip_times(
                     peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
                 )
@@ -2110,7 +2105,7 @@ class TimelineWidget(QWidget):
                     clip,
                     clip_t0=clip_t0,
                     clip_t1=clip_t1,
-                    samples_per_pixel=samples_per_pixel,
+                    samples_per_pixel=samples_per_pixel * x_step,
                 )
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
