@@ -17,6 +17,7 @@ class MarkSnapshot:
     time_seconds: float
     display_name: str = ""
     ma_export_name: str | None = None
+    main_cue_id: str = ""
 
     @classmethod
     def from_mark(cls, mark: Mark) -> MarkSnapshot:
@@ -26,6 +27,7 @@ class MarkSnapshot:
             time_seconds=mark.time_seconds,
             display_name=mark.display_name,
             ma_export_name=mark.ma_export_name,
+            main_cue_id=mark.main_cue_id,
         )
 
     def to_mark(self) -> Mark:
@@ -35,6 +37,7 @@ class MarkSnapshot:
             time_seconds=self.time_seconds,
             display_name=self.display_name,
             ma_export_name=self.ma_export_name,
+            main_cue_id=self.main_cue_id,
         )
 
 
