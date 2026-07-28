@@ -17,6 +17,7 @@ from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.ui.setlist_sheet_page import (
     build_setlist_sheet_rows,
     build_sheet_patch_lookup,
+    folder_row_label,
     format_sheet_bpm,
     format_sheet_order,
     sheet_rows_to_tsv,
@@ -94,6 +95,30 @@ def test_song_note_persists(tmp_path) -> None:
     assert loaded.songs[0].note == "VIP 安可"
 
 
+def test_build_setlist_sheet_rows_hides_collapsed_folder_songs() -> None:
+    project = Project.create("Collapse")
+    project.songs.clear()
+    folder = SetlistCategory.create("Encore")
+    folder.collapsed = True
+    project.setlist_categories.append(folder)
+    song = Song.create("Hidden")
+    song.category_id = folder.id
+    project.songs.append(song)
+    rows = build_setlist_sheet_rows(project)
+    assert len(rows) == 1
+    assert rows[0].is_folder
+    assert rows[0].collapsed is True
+    folder.collapsed = False
+    rows = build_setlist_sheet_rows(project)
+    assert len(rows) == 2
+    assert rows[1].name == "Hidden"
+
+
+def test_folder_row_label_arrow() -> None:
+    assert folder_row_label("VIP", collapsed=True) == "▸ VIP"
+    assert folder_row_label("VIP", collapsed=False) == "▾ VIP"
+
+
 def test_sheet_rows_to_tsv_includes_seq_cue_id_note() -> None:
     project = Project.create("Copy")
     folder = SetlistCategory.create("VIP")
@@ -109,7 +134,7 @@ def test_sheet_rows_to_tsv_includes_seq_cue_id_note() -> None:
     text = sheet_rows_to_tsv(build_setlist_sheet_rows(project))
     lines = text.strip().split("\n")
     assert "Seq\tCue ID" in lines[0]
-    assert lines[1] == "\t▸ VIP\t\t\t\t\t\t"
+    assert lines[1] == "\t▾ VIP\t\t\t\t\t\t"
     assert "05\t浴室\tBathroom\t1\tBathroom_Main\t01:20:00:00\t62\tslow fade" in lines[2]
 
 
