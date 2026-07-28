@@ -70,7 +70,9 @@ from cueplayer.persistence.backup import (
     list_backups,
 )
 from cueplayer.persistence.project_store import load_project, save_project
-from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
+from cueplayer.media.ltc_detect import detect_ltc_channel
+from cueplayer.ui.row_color import ROLE_ROW_COLOR
+from cueplayer.ui.setlist_delegate import ROLE_LTC_CHANNEL, SetlistRowDelegate
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -182,11 +184,14 @@ class SetlistWidget(QTableWidget):
     COL_TITLE = 1
     COL_EN = 2
     COL_BPM = 3
+    COL_LTC = 4
+    COL_COUNT = 5
 
     # Shared with export/show-patch song lists (see cueplayer.ui.row_color).
     ROLE_ROW_COLOR = ROLE_ROW_COLOR
     ROLE_KIND = Qt.ItemDataRole.UserRole + 10
     ROLE_SONG_INDEX = Qt.ItemDataRole.UserRole + 11
+    ROLE_LTC_CHANNEL = ROLE_LTC_CHANNEL
 
     audio_files_dropped = Signal(list)
     audio_drop_rejected = Signal(str)
@@ -202,7 +207,7 @@ class SetlistWidget(QTableWidget):
     song_bpm_edit_failed = Signal(int)  # table row
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, 4, parent)
+        super().__init__(0, self.COL_COUNT, parent)
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDropIndicatorShown(False)  # custom insert lines instead
@@ -231,6 +236,8 @@ class SetlistWidget(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(3, 56)
+        self.horizontalHeader().setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(self.COL_LTC, 68)
         self.setColumnHidden(2, True)
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
@@ -592,6 +599,8 @@ class SetlistWidget(QTableWidget):
 
 
 class MainWindow(QMainWindow):
+    _setlist_ltc_cache_updated = Signal()
+
     def __init__(self, project: Project | None = None) -> None:
         super().__init__()
         self.project = project or Project.create("Untitled Project")
@@ -617,7 +626,13 @@ class MainWindow(QMainWindow):
         self._audio_load_token = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
+        self._audio_ltc_cache: dict[tuple[str, int, int], int | None] = {}
+        self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
+        self._ltc_detect_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="ui-ltc-detect"
+        )
+        self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
@@ -679,7 +694,7 @@ class MainWindow(QMainWindow):
         title_row.addWidget(left_title)
         title_row.addStretch(1)
         self.song_list = SetlistWidget()
-        self.song_list.setItemDelegate(RowColorDelegate(self.song_list))
+        self.song_list.setItemDelegate(SetlistRowDelegate(self.song_list))
         self.song_list.set_name_mode(self.project.setlist_name_mode)
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
         self._rebuild_song_list(select_indexes=[0])
@@ -888,6 +903,7 @@ class MainWindow(QMainWindow):
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
         self.engine.timecode_status_changed.connect(self._refresh_timecode_status)
+        self.engine.timecode_status_changed.connect(self._refresh_setlist_ltc_cells)
         self._refresh_timecode_status()
 
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.engine.toggle)
@@ -1630,7 +1646,7 @@ class MainWindow(QMainWindow):
                 font.setBold(True)
                 folder_item.setFont(font)
                 self.song_list.setItem(table_row, SetlistWidget.COL_NUM, folder_item)
-                self.song_list.setSpan(table_row, SetlistWidget.COL_NUM, 1, 4)
+                self.song_list.setSpan(table_row, SetlistWidget.COL_NUM, 1, SetlistWidget.COL_COUNT)
                 continue
 
             song_index = entry.song_index
@@ -1714,7 +1730,22 @@ class MainWindow(QMainWindow):
             bpm_item.setToolTip("Double-click to enter BPM (blank = not set)")
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
-            for cell in (num_item, name_item, ma_item, bpm_item):
+            ltc_channel = self._ltc_channel_for_song(song)
+            ltc_item = QTableWidgetItem("")
+            ltc_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
+            ltc_item.setData(SetlistWidget.ROLE_LTC_CHANNEL, ltc_channel)
+            if ltc_channel == 0:
+                ltc_item.setToolTip("Striped LTC detected on Left channel")
+            elif ltc_channel == 1:
+                ltc_item.setToolTip("Striped LTC detected on Right channel")
+            self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
+            self._ensure_ltc_detect_scheduled(song)
+
+            for cell in (num_item, name_item, ma_item, bpm_item, ltc_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
 
         self.song_list.clearSelection()
@@ -3496,6 +3527,77 @@ class MainWindow(QMainWindow):
             self._audio_buffer_cache[key] = buffer
         if write_disk:
             self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
+        self._schedule_ltc_detect_for_buffer(path, buffer)
+
+    def _ltc_channel_for_song(self, song: Song) -> int | None:
+        path = self._main_audio_path_for_song(song)
+        if path is None:
+            return None
+        key = self._audio_cache_key(path)
+        if key is None:
+            return None
+        return self._audio_ltc_cache.get(key)
+
+    def _ensure_ltc_detect_scheduled(self, song: Song) -> None:
+        path = self._main_audio_path_for_song(song)
+        if path is None:
+            return
+        key = self._audio_cache_key(path)
+        if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
+            return
+        buffer = self._audio_buffer_cache.get(key)
+        if buffer is not None:
+            self._schedule_ltc_detect_for_buffer(path, buffer)
+
+    def _schedule_ltc_detect_for_buffer(self, path: Path, buffer: AudioBuffer) -> None:
+        key = self._audio_cache_key(path)
+        if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
+            return
+        if buffer.channels < 2:
+            self._audio_ltc_cache[key] = None
+            self._setlist_ltc_cache_updated.emit()
+            return
+
+        samples = buffer.samples
+        sample_rate = int(buffer.sample_rate)
+
+        def _run() -> tuple[tuple[str, int, int], int | None]:
+            return key, detect_ltc_channel(samples, sample_rate)
+
+        future = self._ltc_detect_executor.submit(_run)
+        self._audio_ltc_inflight[key] = future
+
+        def _done(fut) -> None:
+            self._audio_ltc_inflight.pop(key, None)
+            try:
+                cache_key, channel = fut.result()
+            except Exception:
+                return
+            self._audio_ltc_cache[cache_key] = channel
+            self._setlist_ltc_cache_updated.emit()
+
+        future.add_done_callback(_done)
+
+    def _refresh_setlist_ltc_cells(self) -> None:
+        for table_row in range(self.song_list.rowCount()):
+            if self.song_list.row_kind(table_row) != "song":
+                continue
+            song_index = self.song_list.row_song_index(table_row)
+            if song_index is None or song_index >= len(self.project.songs):
+                continue
+            song = self.project.songs[song_index]
+            channel = self._ltc_channel_for_song(song)
+            item = self.song_list.item(table_row, SetlistWidget.COL_LTC)
+            if item is None:
+                continue
+            item.setData(SetlistWidget.ROLE_LTC_CHANNEL, channel)
+            if channel == 0:
+                item.setToolTip("Striped LTC detected on Left channel")
+            elif channel == 1:
+                item.setToolTip("Striped LTC detected on Right channel")
+            else:
+                item.setToolTip("")
+        self.song_list.viewport().update()
 
     def _start_audio_load(self, path: Path, *, executor: ThreadPoolExecutor) -> object:
         path = Path(path)
@@ -3616,6 +3718,14 @@ class MainWindow(QMainWindow):
             ]
         self.engine.set_buffer(buffer)
         self.engine.ensure_playback_ready()
+        key = self._audio_cache_key(path)
+        if key is not None:
+            detected = self.engine.detected_ltc_channel
+            if detected is not None:
+                self._audio_ltc_cache[key] = detected
+            elif key not in self._audio_ltc_cache:
+                self._schedule_ltc_detect_for_buffer(path, buffer)
+        self._refresh_setlist_ltc_cells()
         self.timeline.set_audio(buffer)
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)

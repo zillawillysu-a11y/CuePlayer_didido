@@ -31,7 +31,7 @@ def test_category_triangle_hit_detects_arrow_zone(app: QApplication) -> None:
     item.setData(Qt.ItemDataRole.UserRole, "cat-1")
     widget.setRowCount(1)
     widget.setItem(0, SetlistWidget.COL_NUM, item)
-    widget.setSpan(0, SetlistWidget.COL_NUM, 1, 4)
+    widget.setSpan(0, SetlistWidget.COL_NUM, 1, SetlistWidget.COL_COUNT)
     app.processEvents()
 
     rect = widget._row_visual_rect(0)
