@@ -244,6 +244,8 @@ class Song:
     ma_export_name: str | None = None
     # Optional tempo for setlist display / future beat grid (None = unset).
     bpm: float | None = None
+    # Free-text production note (Setlist Sheet / show notes); not written into MA XML.
+    note: str = ""
     # Optional per-song setlist row background ("" = none); "#RRGGBB".
     # User-set marker for e.g. VIP songs or problematic cues; does not affect export.
     row_color: str = ""
@@ -432,6 +434,7 @@ class Song:
             ),
             ma_export_name=self.ma_export_name,
             bpm=self.bpm,
+            note=self.note,
             row_color=self.row_color,
             category_id=None,
             file_ltc_side=coerce_file_ltc_side(self.file_ltc_side),

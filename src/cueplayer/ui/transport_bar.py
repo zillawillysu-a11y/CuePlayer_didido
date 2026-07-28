@@ -30,7 +30,7 @@ _BIG_TEXT_BTN = "QPushButton { height: 48px; padding: 0 14px; font-size: 16px; f
 
 
 class TopToolBar(QWidget):
-    """View-mode row (Timeline / Setlist / Export) plus a hint label."""
+    """View-mode row (Timeline / Set List Sheet / Export) plus a hint label."""
 
     view_mode_changed = Signal(str)  # "timeline" | "setlist" | "ma_patch"
 
@@ -44,10 +44,10 @@ class TopToolBar(QWidget):
         self.timeline_mode_button.setCheckable(True)
         self.timeline_mode_button.setChecked(True)
         self.timeline_mode_button.setToolTip("Marking / waveform timeline")
-        self.setlist_mode_button = QPushButton("Setlist")
+        self.setlist_mode_button = QPushButton("Set List Sheet")
         self.setlist_mode_button.setCheckable(True)
         self.setlist_mode_button.setToolTip(
-            "Spreadsheet of song order, names, and Timecode Generator starts"
+            "Spreadsheet of song order, names, Timecode Generator starts, and notes"
         )
         self.patch_mode_button = QPushButton("Export")
         self.patch_mode_button.setCheckable(True)
