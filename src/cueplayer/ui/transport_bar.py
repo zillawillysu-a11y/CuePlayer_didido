@@ -30,9 +30,9 @@ _BIG_TEXT_BTN = "QPushButton { height: 48px; padding: 0 14px; font-size: 16px; f
 
 
 class TopToolBar(QWidget):
-    """View-mode row (Timeline / Export) plus a hint label."""
+    """View-mode row (Timeline / Setlist / Export) plus a hint label."""
 
-    view_mode_changed = Signal(str)  # "timeline" | "ma_patch"
+    view_mode_changed = Signal(str)  # "timeline" | "setlist" | "ma_patch"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -44,12 +44,18 @@ class TopToolBar(QWidget):
         self.timeline_mode_button.setCheckable(True)
         self.timeline_mode_button.setChecked(True)
         self.timeline_mode_button.setToolTip("Marking / waveform timeline")
+        self.setlist_mode_button = QPushButton("Setlist")
+        self.setlist_mode_button.setCheckable(True)
+        self.setlist_mode_button.setToolTip(
+            "Spreadsheet of song order, names, and Timecode Generator starts"
+        )
         self.patch_mode_button = QPushButton("Export")
         self.patch_mode_button.setCheckable(True)
         self.patch_mode_button.setToolTip("Show-wide Sequence / Fader patch and export")
         mode_group = QButtonGroup(self)
         mode_group.setExclusive(True)
         mode_group.addButton(self.timeline_mode_button)
+        mode_group.addButton(self.setlist_mode_button)
         mode_group.addButton(self.patch_mode_button)
 
         self.hint_label = QLabel(
@@ -59,17 +65,20 @@ class TopToolBar(QWidget):
 
         for button in (
             self.timeline_mode_button,
+            self.setlist_mode_button,
             self.patch_mode_button,
         ):
             button.setFixedHeight(30)
             button.setStyleSheet(_TEXT_BTN)
 
         layout.addWidget(self.timeline_mode_button)
+        layout.addWidget(self.setlist_mode_button)
         layout.addWidget(self.patch_mode_button)
         layout.addStretch(1)
         layout.addWidget(self.hint_label)
 
         self.timeline_mode_button.toggled.connect(self._emit_mode)
+        self.setlist_mode_button.toggled.connect(self._emit_mode)
         self.patch_mode_button.toggled.connect(self._emit_mode)
 
     def _emit_mode(self, checked: bool) -> None:
@@ -77,12 +86,16 @@ class TopToolBar(QWidget):
             return
         if self.patch_mode_button.isChecked():
             self.view_mode_changed.emit("ma_patch")
+        elif self.setlist_mode_button.isChecked():
+            self.view_mode_changed.emit("setlist")
         else:
             self.view_mode_changed.emit("timeline")
 
     def set_view_mode(self, mode: str) -> None:
         if mode == "ma_patch":
             self.patch_mode_button.setChecked(True)
+        elif mode == "setlist":
+            self.setlist_mode_button.setChecked(True)
         else:
             self.timeline_mode_button.setChecked(True)
 

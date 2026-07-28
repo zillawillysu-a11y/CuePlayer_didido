@@ -98,6 +98,7 @@ from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
 from cueplayer.ui.mark_manager_dialog import MarkManagerDialog
+from cueplayer.ui.setlist_sheet_page import SetlistSheetPage
 from cueplayer.ui.show_patch_page import ShowPatchPage
 from cueplayer.ui.song_edit_dialog import (
     SongDraft,
@@ -801,9 +802,12 @@ class MainWindow(QMainWindow):
 
         self.show_patch_page = ShowPatchPage()
         self.show_patch_page.set_project(self.project)
+        self.setlist_sheet_page = SetlistSheetPage()
+        self.setlist_sheet_page.set_project(self.project)
         self.view_stack = QStackedWidget()
         self.view_stack.addWidget(timeline_split)  # 0 = timeline
         self.view_stack.addWidget(self.show_patch_page)  # 1 = MA patch
+        self.view_stack.addWidget(self.setlist_sheet_page)  # 2 = setlist sheet
         self.view_stack.setAcceptDrops(True)
         self.view_stack.installEventFilter(self)
 
@@ -860,6 +864,7 @@ class MainWindow(QMainWindow):
         self.toolbar.view_mode_changed.connect(self._set_view_mode)
         self.show_patch_page.settings_changed.connect(self._mark_dirty)
         self.show_patch_page.export_finished.connect(self._on_ma_export_finished)
+        self.setlist_sheet_page.song_field_changed.connect(self._on_setlist_sheet_changed)
         self.transport.set_loop_a_clicked.connect(self._set_loop_a)
         self.transport.set_loop_b_clicked.connect(self._set_loop_b)
         self.transport.clear_loop_clicked.connect(self._clear_loop)
@@ -976,6 +981,9 @@ class MainWindow(QMainWindow):
         if mode == "ma_patch":
             self.toolbar.set_view_mode("ma_patch")
             self._set_view_mode("ma_patch")
+        elif mode == "setlist":
+            self.toolbar.set_view_mode("setlist")
+            self._set_view_mode("setlist")
 
     def _save_ui_session(self) -> None:
         if self._restoring_session:
@@ -993,7 +1001,12 @@ class MainWindow(QMainWindow):
             self._settings.setValue(
                 _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
             )
-        mode = "ma_patch" if self.view_stack.currentIndex() == 1 else "timeline"
+        mode = "timeline"
+        stack_index = self.view_stack.currentIndex()
+        if stack_index == 1:
+            mode = "ma_patch"
+        elif stack_index == 2:
+            mode = "setlist"
         self._settings.setValue(_KEY_VIEW_MODE, mode)
         if self._project_path is not None:
             self._settings.setValue(_KEY_LAST_PROJECT, str(self._project_path))
@@ -1108,6 +1121,13 @@ class MainWindow(QMainWindow):
         act_export.setShortcut(QKeySequence("Ctrl+E"))
         act_export.triggered.connect(self._open_ma_patch_page)
         menu.addAction(act_export)
+        act_setlist_sheet = QAction("Setlist &Sheet…", self)
+        act_setlist_sheet.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        act_setlist_sheet.setToolTip(
+            "Spreadsheet of song order, names, and Timecode Generator starts"
+        )
+        act_setlist_sheet.triggered.connect(self._open_setlist_sheet_page)
+        menu.addAction(act_setlist_sheet)
 
         tools_menu = self.menuBar().addMenu("&Tools")
         act_manager = QAction("&Manager", self)
@@ -1535,6 +1555,7 @@ class MainWindow(QMainWindow):
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
         self.show_patch_page.set_project(self.project)
+        self.setlist_sheet_page.set_project(self.project)
         self._sync_setlist_name_mode_ui()
         self.engine.apply_audio_settings(self.project.audio_output)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
@@ -1780,6 +1801,9 @@ class MainWindow(QMainWindow):
         patch = getattr(self, "show_patch_page", None)
         if patch is not None:
             patch.sync_songs()
+        sheet = getattr(self, "setlist_sheet_page", None)
+        if sheet is not None:
+            sheet.sync_songs()
 
     def _selected_song_indexes(self) -> list[int]:
         indexes: list[int] = []
@@ -3434,12 +3458,34 @@ class MainWindow(QMainWindow):
             self.show_patch_page.set_project(self.project)
             self.view_stack.setCurrentIndex(1)
             self.status.showMessage("Export: Sequence chain and Fader mapping", 2500)
+        elif mode == "setlist":
+            self.setlist_sheet_page.set_project(self.project)
+            self.view_stack.setCurrentIndex(2)
+            self.status.showMessage(
+                "Setlist sheet: Copy order / names / Timecode for MA3",
+                2500,
+            )
         else:
             self.view_stack.setCurrentIndex(0)
 
     def _open_ma_patch_page(self) -> None:
         self.toolbar.set_view_mode("ma_patch")
         self._set_view_mode("ma_patch")
+
+    def _open_setlist_sheet_page(self) -> None:
+        self.toolbar.set_view_mode("setlist")
+        self._set_view_mode("setlist")
+
+    def _on_setlist_sheet_changed(self) -> None:
+        self._mark_dirty()
+        self._refresh_status()
+        indexes = self._selected_song_indexes() or None
+        self._rebuild_song_list(select_indexes=indexes)
+        patch = getattr(self, "show_patch_page", None)
+        if patch is not None:
+            patch.sync_songs()
+        if self.current_song is not None:
+            self.timeline.update()
 
     def _on_ma_export_finished(self, paths: object) -> None:
         if isinstance(paths, dict) and paths:
