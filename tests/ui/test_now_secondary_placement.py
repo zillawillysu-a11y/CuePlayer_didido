@@ -17,6 +17,7 @@ from cueplayer.domain.models import Song
 from cueplayer.ui.cue_monitor_panel import (
     CueMonitorPanel,
     _NOW_SECONDARY_COL_MIN,
+    _NOW_TITLE_CHROME,
 )
 
 
@@ -85,7 +86,6 @@ def test_body_drag_keeps_secondary_visible(app: QApplication) -> None:
     panel._body_splitter.setSizes([320, 400])
     panel._apply_below_body_to_secondary()
     app.processEvents()
-    primary_before = panel._now_splitter.sizes()[0]
 
     # Drag Cue List up aggressively — Secondary must stay at/above floor.
     panel._body_splitter.setSizes([100, 620])
@@ -95,8 +95,27 @@ def test_body_drag_keeps_secondary_visible(app: QApplication) -> None:
     primary, secondary = panel._now_splitter.sizes()
     assert secondary >= _NOW_SECONDARY_COL_MIN
     assert primary >= 40
-    # Primary should stay roughly stable (body drag resizes Secondary).
-    assert abs(primary - primary_before) <= 80
+    # Secondary stays visible; Primary may shrink only if the panel is short.
+    assert secondary > 0
+    assert sum(panel._body_splitter.sizes()) <= 720 + 5
+
+
+def test_width_drag_does_not_grow_panel_min_height(app: QApplication) -> None:
+    panel = CueMonitorPanel()
+    panel.set_song(Song.create("Test"))
+    panel.resize(360, 700)
+    panel.show()
+    app.processEvents()
+    before = panel.minimumSizeHint().height()
+    panel._now_splitter.setSizes([80, 200])
+    panel._on_now_splitter_moved()
+    app.processEvents()
+    panel._fit_now_cards()
+    app.processEvents()
+    after = panel.minimumSizeHint().height()
+    # Width redistribution must not balloon the panel's minimum height.
+    assert after <= before + 80
+    assert panel._now_section.minimumHeight() <= _NOW_TITLE_CHROME + 120
 
 
 def test_secondary_text_is_vertically_centered(app: QApplication) -> None:

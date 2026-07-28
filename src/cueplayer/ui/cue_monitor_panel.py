@@ -171,6 +171,8 @@ class CueMonitorPanel(QWidget):
 
         self.setMinimumWidth(280)
         self.setMaximumWidth(440)
+        # Prefer shrinking children over forcing the main window taller.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(10)
@@ -399,7 +401,7 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         body_handle = self._body_splitter.handle(1)
         body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
-        body_handle.setToolTip("Drag to resize NOW vs Cue List")
+        body_handle.setToolTip("Drag to resize Secondary vs Cue List")
 
         layout.addWidget(clock_frame)
         layout.addWidget(self._body_splitter, stretch=1)
@@ -500,26 +502,37 @@ class CueMonitorPanel(QWidget):
 
     def _on_now_splitter_moved(self, *_args) -> None:
         self._schedule_now_card_fit()
-        self._ensure_now_body_fits_content()
+        # Redistribute inside the current panel only — never grow the window.
+        self._fit_body_within_panel()
         self.now_layout_changed.emit()
 
     def _on_body_splitter_moved(self, *_args) -> None:
         # Body handle = Secondary vs Cue List (Primary height stays in below mode).
-        # Never allow Secondary to collapse out of view.
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
             self._apply_below_body_to_secondary()
         else:
-            self._clamp_body_now_minimum()
+            self._fit_body_within_panel()
         self.now_layout_changed.emit()
 
     def _primary_col_min(self) -> int:
-        return max(_NOW_PRIMARY_COL_MIN, self.primary_cue.minimumHeight() + 20)
+        # Constant floor only — do not follow card minimumHeight (that feedback
+        # loop grows the main window off-screen when width wraps text).
+        return _NOW_PRIMARY_COL_MIN
 
     def _secondary_col_min(self) -> int:
-        return max(_NOW_SECONDARY_COL_MIN, self.secondary_cue.minimumHeight() + 20)
+        return _NOW_SECONDARY_COL_MIN
 
     def _now_chrome_height(self) -> int:
         return _NOW_TITLE_CHROME
+
+    def _body_total_height(self) -> int:
+        if not hasattr(self, "_body_splitter"):
+            return 0
+        sizes = self._body_splitter.sizes()
+        total = sum(sizes) if sizes else 0
+        if total > 0:
+            return total
+        return max(0, self._body_splitter.height())
 
     def _below_now_floor(self, primary_h: int) -> int:
         handle = max(8, self._now_splitter.handleWidth())
@@ -530,72 +543,68 @@ class CueMonitorPanel(QWidget):
             + self._secondary_col_min()
         )
 
-    def _clamp_body_now_minimum(self) -> None:
-        """Keep NOW tall enough that Primary/Secondary cards stay visible."""
+    def _fit_body_within_panel(self) -> None:
+        """Keep NOW/Cue List split inside the current panel height (no window grow)."""
         if not hasattr(self, "_body_splitter"):
             return
         sizes = self._body_splitter.sizes()
         if len(sizes) != 2:
             return
-        total = sum(sizes)
+        total = self._body_total_height()
         if total <= 0:
             return
-        needed = self._now_content_min_height()
-        if sizes[0] >= needed:
-            self._now_section.setMinimumHeight(min(needed, sizes[0]))
-            return
-        now_h = needed
-        if total > needed + _CUE_LIST_BODY_MIN:
-            now_h = needed
-            cue_h = total - now_h
-        else:
-            now_h = max(needed, total - _CUE_LIST_BODY_MIN)
-            cue_h = max(0, total - now_h)
-        self._body_splitter.setSizes([now_h, cue_h])
-        self._now_section.setMinimumHeight(min(needed, now_h))
+        max_now = max(40, total - max(40, _CUE_LIST_BODY_MIN // 2))
+        preferred = min(self._now_content_min_height(), max_now)
+        now_h = sizes[0]
+        if now_h < preferred:
+            now_h = preferred
+        now_h = min(max(40, now_h), max_now)
+        self._body_splitter.setSizes([now_h, max(0, total - now_h)])
+        # Constant floor only — never content-driven window expansion.
+        self._now_section.setMinimumHeight(_NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN)
 
     def _apply_below_body_to_secondary(self) -> None:
         """
         When Secondary is below Primary, dragging NOW↔Cue List resizes Secondary
         (Primary stays) and squeezes Cue List — Secondary never disappears.
+        All math stays inside the current body total (window cannot grow).
         """
         body = self._body_splitter.sizes()
         if len(body) != 2:
             return
-        total = sum(body)
+        total = self._body_total_height()
         if total <= 0:
-            total = max(self._body_splitter.height(), 320)
+            return
         inner = self._now_splitter.sizes()
         primary = inner[0] if len(inner) == 2 else 180
-        primary = max(primary, self._primary_col_min())
+        primary = max(self._primary_col_min(), min(primary, total))
         handle = max(8, self._now_splitter.handleWidth())
         sec_min = self._secondary_col_min()
         now_floor = self._below_now_floor(primary)
 
-        now_h = body[0]
-        if now_h < now_floor:
-            if total >= now_floor + _CUE_LIST_BODY_MIN:
-                now_h = now_floor
-            else:
-                # Prefer keeping Secondary visible over Cue List floor.
-                now_h = max(now_floor, total - _CUE_LIST_BODY_MIN)
+        # Ideal NOW height from the drag, clamped so Cue List keeps a sliver
+        # and Secondary keeps its floor — never increase `total`.
+        max_now = max(sec_min + self._now_chrome_height(), total - max(40, _CUE_LIST_BODY_MIN // 2))
+        now_h = min(max(body[0], min(now_floor, max_now)), max_now)
+        if now_h < now_floor and now_floor <= max_now:
+            now_h = now_floor
+        # If the panel is too short for full floors, shrink Primary so Secondary lives.
+        avail = max(0, now_h - self._now_chrome_height())
+        if primary + handle + sec_min > avail:
+            primary = max(40, avail - handle - sec_min)
+        secondary = max(sec_min, avail - primary - handle)
+        if primary + handle + secondary > avail:
+            secondary = max(sec_min, avail - primary - handle)
+            primary = max(40, avail - handle - secondary)
+
         cue_h = max(0, total - now_h)
         self._body_splitter.setSizes([now_h, cue_h])
-
-        avail = max(0, now_h - self._now_chrome_height())
-        secondary = avail - primary - handle
-        if secondary < sec_min:
-            secondary = sec_min
-            primary = max(self._primary_col_min(), avail - handle - secondary)
-            if primary + handle + secondary > avail:
-                primary = max(40, avail - handle - sec_min)
-                secondary = max(sec_min, avail - primary - handle)
         self._now_splitter.setStretchFactor(0, 0)
         self._now_splitter.setStretchFactor(1, 0)
         self._now_splitter.setMinimumHeight(0)
         self._now_splitter.setMaximumHeight(16777215)
-        self._now_splitter.setSizes([max(1, primary), max(sec_min, secondary)])
-        self._now_section.setMinimumHeight(now_floor)
+        self._now_splitter.setSizes([max(1, primary), max(1, secondary)])
+        self._now_section.setMinimumHeight(_NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN)
 
     def now_secondary_placement(self) -> str:
         return self._now_placement
@@ -646,7 +655,6 @@ class CueMonitorPanel(QWidget):
         if self._now_placement == "below":
             self._now_splitter.setStretchFactor(0, 0)
             self._now_splitter.setStretchFactor(1, 0)
-            # Enforce Secondary floor so restoreState cannot collapse it.
             sizes = self._now_splitter.sizes()
             if len(sizes) == 2 and sizes[1] < self._secondary_col_min():
                 primary = max(self._primary_col_min(), sizes[0])
@@ -660,9 +668,7 @@ class CueMonitorPanel(QWidget):
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
             self._apply_below_body_to_secondary()
         else:
-            self._ensure_now_body_fits_content()
-            self._clamp_body_now_minimum()
-
+            self._fit_body_within_panel()
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
         handle = self._now_splitter.handle(1)
@@ -721,7 +727,7 @@ class CueMonitorPanel(QWidget):
         ):
             self._body_splitter.restoreState(self._body_splitter_state)
         self._refresh_splitter_handles()
-        self._ensure_now_body_fits_content()
+        self._fit_body_within_panel()
         # Second pass after sizes settle (common cold-start failure mode).
         QTimer.singleShot(50, self._refresh_splitter_handles)
         QTimer.singleShot(150, self._refresh_splitter_handles)
@@ -777,69 +783,39 @@ class CueMonitorPanel(QWidget):
         QTimer.singleShot(0, self._fit_now_cards)
 
     def _fit_now_cards(self) -> None:
-        """Grow card height so wrapped Note text is not clipped."""
+        """Keep a modest card floor; never raise mins enough to grow the window."""
         below = self._now_placement == "below"
         floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
-        needed_primary = floor
-        needed_secondary = floor
-        for card, needed_attr in (
-            (self.primary_cue, "primary"),
-            (self.secondary_cue, "secondary"),
-        ):
+        # Cap by currently allocated card height so width-wrap cannot inflate
+        # minimumHeight and push the main window off-screen.
+        for card in (self.primary_cue, self.secondary_cue):
             if not card.isVisible():
+                card.setMinimumHeight(floor)
                 continue
+            allocated = card.height()
+            cap = allocated if allocated > floor else floor
             width = max(40, card.width())
-            height = card.heightForWidth(width)
-            if height <= 0:
-                height = card.sizeHint().height()
-            if needed_attr == "primary":
-                needed_primary = max(needed_primary, height)
-            else:
-                needed_secondary = max(needed_secondary, height)
-        if self.primary_cue.isVisible():
-            self.primary_cue.setMinimumHeight(needed_primary)
-        else:
-            self.primary_cue.setMinimumHeight(floor)
-        if self.secondary_cue.isVisible():
-            self.secondary_cue.setMinimumHeight(needed_secondary)
-        else:
-            self.secondary_cue.setMinimumHeight(floor)
-        self._ensure_now_body_fits_content()
+            natural = card.heightForWidth(width)
+            if natural <= 0:
+                natural = card.sizeHint().height()
+            card.setMinimumHeight(min(max(floor, natural), cap))
+        self._fit_body_within_panel()
 
     def _now_content_min_height(self) -> int:
-        """Minimum height the NOW pane needs so cards are not clipped."""
-        title_h = 20
+        """Preferred NOW height from constant floors (not escalating card mins)."""
+        title_h = _NOW_TITLE_CHROME
         track_h = 16
-        gaps = 14
-        primary_h = self.primary_cue.minimumHeight() if self.primary_cue.isVisible() else 0
-        secondary_h = (
-            self.secondary_cue.minimumHeight() if self.secondary_cue.isVisible() else 0
-        )
-        if self._now_placement == "below" and self.secondary_cue.isVisible():
+        gaps = 8
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
             handle = max(8, self._now_splitter.handleWidth())
-            return title_h + gaps + track_h + primary_h + handle + track_h + secondary_h
-        card_h = max(primary_h, secondary_h, _NOW_CARD_MIN_H)
-        return title_h + gaps + track_h + card_h
-
-    def _ensure_now_body_fits_content(self) -> None:
-        """Grow the NOW pane (and shrink Cue List) when cards need more height."""
-        if not hasattr(self, "_body_splitter"):
-            return
-        sizes = self._body_splitter.sizes()
-        if len(sizes) != 2:
-            return
-        total = sum(sizes)
-        if total <= 0:
-            total = max(self._body_splitter.height(), 320)
-        needed = self._now_content_min_height()
-        cue_floor = 80
-        now_h = sizes[0]
-        if now_h >= needed:
-            return
-        now_h = min(needed, max(120, total - cue_floor))
-        cue_h = max(cue_floor, total - now_h)
-        self._body_splitter.setSizes([now_h, cue_h])
-        self._now_section.setMinimumHeight(min(needed, now_h))
+            return (
+                title_h
+                + gaps
+                + self._primary_col_min()
+                + handle
+                + self._secondary_col_min()
+            )
+        return title_h + gaps + max(self._primary_col_min(), _NOW_CARD_MIN_H)
 
     def _apply_cue_list_visibility(self) -> None:
         visible = self._song is None or bool(self._song.cue_list_visible)
@@ -885,7 +861,10 @@ class CueMonitorPanel(QWidget):
                     )
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
-        if obj is self.cue_table and event.type() == QEvent.Type.KeyPress:
+        if (
+            getattr(self, "cue_table", None) is obj
+            and event.type() == QEvent.Type.KeyPress
+        ):
             if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 if self.cue_table.state() != QAbstractItemView.State.EditingState:
                     ids = self.selected_mark_ids()
