@@ -81,6 +81,7 @@ from cueplayer.domain.undo import (
     EditVideoClipsCommand,
     MarkSnapshot,
     MoveMarksCommand,
+    RenumberMainCueIdsCommand,
     RenameMarkCommand,
     SetlistEditCommand,
     SetlistStateSnapshot,
@@ -926,6 +927,7 @@ class MainWindow(QMainWindow):
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
+        self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
@@ -1298,6 +1300,21 @@ class MainWindow(QMainWindow):
         dirty = " *" if self._dirty else ""
         self.setWindowTitle(f"{MAIN_WINDOW_TITLE_PREFIX} — {name}{dirty}")
 
+    def _sync_undo_context(self) -> None:
+        self._undo_ctx.project = self.project
+        self._undo_ctx.current_song_id = self.current_song.id
+
+    def _push_song_undo(self, command: object) -> None:
+        self._undo.push(command, song_id=self.current_song.id)
+
+    def _focus_song_for_undo(self, song_id: str | None) -> None:
+        if not song_id or song_id == self.current_song.id:
+            return
+        for index, song in enumerate(self.project.songs):
+            if song.id == song_id:
+                self._activate_song(index, stop_playback=False)
+                return
+
     def _mark_dirty(self) -> None:
         if self._dirty:
             return
@@ -1565,6 +1582,7 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"Restored backup into editor: {path.name}", 4500)
 
     def _apply_project(self, *, preferred_song_id: str | None = None) -> None:
+        self._undo.clear()
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
         self.show_patch_page.set_project(self.project)
@@ -2785,8 +2803,7 @@ class MainWindow(QMainWindow):
         if stop_playback:
             self.engine.stop()
         self.current_song = self.project.songs[index]
-        self._undo.clear_song_scoped()
-        self._undo_ctx.current_song_id = self.current_song.id
+        self._sync_undo_context()
         self.engine.clear_loop()
         self._sync_loop_ui()
         self.timeline.clear_selection(emit=False)
@@ -3316,7 +3333,7 @@ class MainWindow(QMainWindow):
             return
         from cueplayer.domain.main_cue_id import refresh_main_cue_ids
 
-        self._undo.push(MoveMarksCommand(times=dict(moved)))
+        self._push_song_undo(MoveMarksCommand(times=dict(moved)))
         refresh_main_cue_ids(self.current_song, mark_ids=set(moved.keys()))
         self._mark_dirty()
         self._refresh_marks_ui()
@@ -3345,17 +3362,17 @@ class MainWindow(QMainWindow):
         from cueplayer.domain.main_cue_id import refresh_main_cue_ids
 
         refresh_main_cue_ids(self.current_song, mark_ids=set(moved.keys()))
-        self._undo.push(MoveMarksCommand(times=moved, label="Offset Mark"))
+        self._push_song_undo(MoveMarksCommand(times=moved, label="Offset Mark"))
         self._mark_dirty()
         self._refresh_marks_ui()
         self.status.showMessage(f"Offset {len(moved)} mark(s) by {delta:+.3f}s", 2500)
 
     def _on_note_changed(self, mark_id: str, old_name: str, new_name: str) -> None:
-        self._undo.push(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
+        self._push_song_undo(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
         self._mark_dirty()
 
     def _on_cue_id_changed(self, mark_id: str, old_id: str, new_id: str) -> None:
-        self._undo.push(
+        self._push_song_undo(
             EditMainCueIdCommand(mark_id=mark_id, old_id=old_id, new_id=new_id)
         )
         self._mark_dirty()
@@ -3366,10 +3383,11 @@ class MainWindow(QMainWindow):
         if result is None:
             self.status.showMessage("Nothing to undo", 1500)
             return
-        label, setlist_cmd = result
+        label, setlist_cmd, song_id = result
         if setlist_cmd is not None:
             self._sync_after_setlist_undo_redo(setlist_cmd)
         else:
+            self._focus_song_for_undo(song_id)
             self.timeline.clear_selection(emit=False)
             self.monitor.set_selected_mark_ids([])
             self.video_sync.refresh()
@@ -3383,10 +3401,11 @@ class MainWindow(QMainWindow):
         if result is None:
             self.status.showMessage("Nothing to redo", 1500)
             return
-        label, setlist_cmd = result
+        label, setlist_cmd, song_id = result
         if setlist_cmd is not None:
             self._sync_after_setlist_undo_redo(setlist_cmd)
         else:
+            self._focus_song_for_undo(song_id)
             self.timeline.clear_selection(emit=False)
             self.monitor.set_selected_mark_ids([])
             self.video_sync.refresh()
@@ -3394,6 +3413,28 @@ class MainWindow(QMainWindow):
             self._refresh_marks_ui()
         self._mark_dirty()
         self.status.showMessage(f"Redone: {label}", 2000)
+
+    def _renumber_main_cue_ids(self) -> None:
+        from cueplayer.domain.main_cue_id import (
+            capture_main_cue_ids,
+            renumber_main_cue_ids_sequential,
+        )
+
+        if self.current_song.main_lane_index() is None:
+            self.status.showMessage("No Main lane — nothing to renumber", 2500)
+            return
+        before = capture_main_cue_ids(self.current_song)
+        if not before:
+            self.status.showMessage("No Main cues to renumber", 2500)
+            return
+        after = renumber_main_cue_ids_sequential(self.current_song)
+        if before == after:
+            self.status.showMessage("Cue IDs already 1, 2, 3…", 2000)
+            return
+        self._push_song_undo(RenumberMainCueIdsCommand(before=before, after=after))
+        self._mark_dirty()
+        self._refresh_marks_ui()
+        self.status.showMessage("Renumbered Main Cue IDs to 1, 2, 3…", 2500)
 
     def _delete_marks(self, mark_ids: list) -> None:
         if not mark_ids:
@@ -3405,7 +3446,7 @@ class MainWindow(QMainWindow):
         removed = self.current_song.remove_marks_by_ids(mark_ids)
         if removed <= 0:
             return
-        self._undo.push(DeleteMarksCommand(marks=snapshots))
+        self._push_song_undo(DeleteMarksCommand(marks=snapshots))
         self._mark_dirty()
         self.timeline.clear_selection(emit=False)
         self.monitor.set_selected_mark_ids([])
@@ -4037,7 +4078,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_video_clip_edited(self, clip_id: str, old: tuple, new: tuple) -> None:
-        self._undo.push(EditVideoClipsCommand(changes={clip_id: (old, new)}))
+        self._push_song_undo(EditVideoClipsCommand(changes={clip_id: (old, new)}))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.refresh_video_clip_waveforms()
@@ -4046,7 +4087,7 @@ class MainWindow(QMainWindow):
     def _on_video_clips_batch_edited(self, changes: object) -> None:
         if not isinstance(changes, dict) or not changes:
             return
-        self._undo.push(EditVideoClipsCommand(changes=dict(changes)))
+        self._push_song_undo(EditVideoClipsCommand(changes=dict(changes)))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self._mark_dirty()
@@ -4090,7 +4131,7 @@ class MainWindow(QMainWindow):
             source_duration_seconds=source_duration,
         )
         self.current_song.add_video_clip(clip)
-        self._undo.push(AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(clip)]))
+        self._push_song_undo(AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(clip)]))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.refresh_video_clip_waveforms()
@@ -4125,7 +4166,7 @@ class MainWindow(QMainWindow):
         removed = self.current_song.remove_video_clips_by_ids(wanted)
         if removed <= 0:
             return
-        self._undo.push(DeleteVideoClipsCommand(clips=snapshots))
+        self._push_song_undo(DeleteVideoClipsCommand(clips=snapshots))
         self.timeline.set_selected_video_clip_ids([])
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
@@ -4155,7 +4196,7 @@ class MainWindow(QMainWindow):
         clip.duration_seconds = first_duration
         clip.source_out_seconds = clip.source_in_seconds + first_duration
         self.current_song.add_video_clip(second)
-        self._undo.push(
+        self._push_song_undo(
             EditVideoClipsCommand(
                 changes={
                     clip.id: (
@@ -4166,7 +4207,7 @@ class MainWindow(QMainWindow):
                 label="Split Video Clip",
             )
         )
-        self._undo.push(
+        self._push_song_undo(
             AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(second)], label="Split Video Clip")
         )
         self.video_sync.refresh()
@@ -4191,7 +4232,7 @@ class MainWindow(QMainWindow):
         dup.locked = clip.locked
         dup.hidden = clip.hidden
         self.current_song.add_video_clip(dup)
-        self._undo.push(
+        self._push_song_undo(
             AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(dup)], label="Duplicate Video Clip")
         )
         self.video_sync.refresh()
@@ -4249,7 +4290,7 @@ class MainWindow(QMainWindow):
             new_clips.append(clip)
         for clip in new_clips:
             self.current_song.add_video_clip(clip)
-        self._undo.push(
+        self._push_song_undo(
             AddVideoClipsCommand(
                 clips=[VideoClipSnapshot.from_clip(c) for c in new_clips],
                 label="Paste Video Clip" if len(new_clips) == 1 else "Paste Video Clips",
@@ -4277,7 +4318,7 @@ class MainWindow(QMainWindow):
         if lane is None or lane.locked:
             return
         mark = self.current_song.add_mark(lane_index, self.engine.position)
-        self._undo.push(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
+        self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
         self._refresh_marks_ui()
         lat_ms = self.engine.sync_offset_ms()

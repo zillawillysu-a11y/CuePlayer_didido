@@ -41,7 +41,7 @@ def test_renumber_is_undoable(app: QApplication) -> None:
 
         result = window._undo.undo(window._undo_ctx)
         assert result is not None
-        label, setlist_cmd = result
+        label, setlist_cmd, _song_id = result
         assert label == "Renumber"
         assert setlist_cmd is not None
         window._sync_after_setlist_undo_redo(setlist_cmd)
@@ -67,7 +67,7 @@ def test_sort_is_undoable(app: QApplication) -> None:
 
         result = window._undo.undo(UndoContext(project, window.current_song.id))
         assert result is not None
-        _, setlist_cmd = result
+        _, setlist_cmd, _song_id = result
         assert setlist_cmd is not None
         window._sync_after_setlist_undo_redo(setlist_cmd)
 

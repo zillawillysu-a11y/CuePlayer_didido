@@ -841,6 +841,14 @@ class TimelineWidget(QWidget):
             self._selected_mark_ids = boxed
         self.update()
 
+    def event(self, e) -> bool:  # noqa: ANN001, N802
+        if e.type() == QEvent.Type.ShortcutOverride:
+            key = e.key()
+            if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if self._selected_mark_ids or self._selected_clip_ids:
+                    e.accept()
+        return super().event(e)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if self._selected_clip_ids:
