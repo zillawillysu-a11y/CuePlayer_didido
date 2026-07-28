@@ -294,7 +294,6 @@ class AudioEngine(QObject):
             return
         if self._effective_ltc_source_channel() is None:
             return
-        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
         # Re-decode about twice per second (or on play/seek). QF pacing still
         # runs every timer tick from the mirrored origin.
         if (

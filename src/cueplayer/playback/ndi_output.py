@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from fractions import Fraction
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,15 @@ def ndi_status() -> str:
         "  py -m pip install cyndilib\n"
         "Also install NDI Tools / Runtime from ndi.video, then restart CuePlayer."
     )
+
+
+def _rgb_to_rgbx_bytes(rgb: np.ndarray) -> np.ndarray:
+    """Pack HxWx3 RGB24 into contiguous RGBX (A=255) uint8 flat buffer for NDI."""
+    h, w, _ = rgb.shape
+    out = np.empty((h, w, 4), dtype=np.uint8)
+    out[:, :, :3] = rgb[:, :, :3]
+    out[:, :, 3] = 255
+    return np.ascontiguousarray(out).reshape(-1)
 
 
 class NdiVideoOutput:
@@ -74,20 +84,16 @@ class NdiVideoOutput:
                 from cyndilib.video_frame import VideoSendFrame
                 from cyndilib.wrapper.ndi_structs import FourCC
 
-                sender = Sender(self._name)
+                # clock_video=False: CuePlayer already paces frames from the
+                # audio sample clock; do not let NDI add a second rate limiter.
+                sender = Sender(self._name, clock_video=False)
                 frame = VideoSendFrame()
                 frame.set_resolution(1920, 1080)
-                frame.set_frame_rate(30, 1)
-                try:
-                    frame.set_fourcc(FourCC.RGB)  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    try:
-                        frame.fourcc = FourCC.RGB  # type: ignore[attr-defined]
-                    except Exception:  # noqa: BLE001
-                        pass
+                # cyndilib expects a single Fraction, not (num, den) args.
+                frame.set_frame_rate(Fraction(30, 1))
+                frame.set_fourcc(FourCC.RGBX)
                 sender.set_video_frame(frame)
-                if hasattr(sender, "open") and not getattr(sender, "is_open", lambda: True)():
-                    sender.open()
+                sender.open()
                 self._sender = sender
                 self._frame = frame
                 self._width = 1920
@@ -115,27 +121,25 @@ class NdiVideoOutput:
                 h, w = int(rgb.shape[0]), int(rgb.shape[1])
                 if h <= 0 or w <= 0:
                     return
+                if rgb.dtype != np.uint8:
+                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
                 if (w, h) != (self._width, self._height):
+                    # Resolution must be set before the next write.
                     self._frame.set_resolution(w, h)
                     self._width = w
                     self._height = h
-                # Contiguous RGB888 bytes.
-                if rgb.dtype != np.uint8:
-                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-                if not rgb.flags["C_CONTIGUOUS"]:
-                    rgb = np.ascontiguousarray(rgb)
-                payload = rgb[:, :, :3]
-                write = getattr(self._frame, "write", None)
+                payload = _rgb_to_rgbx_bytes(rgb)
+                write_async = getattr(self._sender, "write_video_async", None)
+                if callable(write_async):
+                    write_async(payload)
+                    return
+                write = getattr(self._sender, "write_video", None)
                 if callable(write):
-                    write(payload.tobytes())
-                else:
-                    # Fallback attribute used by some cyndilib builds.
-                    self._frame.data = payload  # type: ignore[attr-defined]
-                send_video = getattr(self._sender, "send_video", None)
-                if callable(send_video):
-                    send_video()
-                else:
-                    self._sender.send(self._frame)
+                    write(payload)
+                    return
+                # Older fallback path.
+                self._frame.write_data(payload)
+                self._sender.send_video_async()
             except Exception as exc:  # noqa: BLE001
                 log.debug("NDI send_frame failed: %s", exc)
 

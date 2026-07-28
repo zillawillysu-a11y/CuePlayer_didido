@@ -21,6 +21,16 @@ def test_ndi_configure_disabled_is_noop() -> None:
     out.close()
 
 
+def test_rgb_to_rgbx_bytes() -> None:
+    from cueplayer.playback.ndi_output import _rgb_to_rgbx_bytes
+
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    rgb[0, 0] = (10, 20, 30)
+    flat = _rgb_to_rgbx_bytes(rgb)
+    assert flat.shape == (2 * 2 * 4,)
+    assert list(flat[0:4]) == [10, 20, 30, 255]
+
+
 def test_ndi_configure_without_library_returns_error() -> None:
     if ndi_available():
         return
