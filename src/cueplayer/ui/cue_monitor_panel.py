@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent
+from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -12,18 +12,60 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from cueplayer.domain.main_cue_id import main_cue_id_map
 from cueplayer.domain.models import Mark, Song
 from cueplayer.ui.transport_bar import format_time
 
 _COL_TIME = 0
-_COL_LANE = 1
-_COL_NOTE = 2
+_COL_CUE_ID = 1
+_COL_TYPE = 2
+_COL_NOTE = 3
+_COL_COUNT = 4
+_ROW_HEIGHT = 34
+
+
+class _RevealLabel(QLabel):
+    """Small affordance when the Cue List is collapsed."""
+
+    clicked = Signal()
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("color: #71717a; font-size: 11px; padding: 4px 0;")
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class _PaddedItemDelegate(QStyledItemDelegate):
+    """Extra vertical padding so edited text is not clipped."""
+
+    def paint(self, painter, option, index) -> None:  # noqa: ANN001
+        opt = QStyleOptionViewItem(option)
+        opt.rect = opt.rect.adjusted(0, 2, 0, -2)
+        super().paint(painter, opt, index)
+
+    def createEditor(self, parent, option, index):  # noqa: ANN001
+        editor = super().createEditor(parent, option, index)
+        if editor is not None:
+            editor.setStyleSheet(
+                "padding: 4px 6px; margin: 0; min-height: 1.4em;"
+            )
+        return editor
 
 
 def mark_now_text(song: Song, mark: Mark) -> str:
@@ -31,14 +73,15 @@ def mark_now_text(song: Song, mark: Mark) -> str:
     if note:
         return note
     lane = song.lane_by_index(mark.lane_index)
-    return lane.name if lane is not None else f"Mark {mark.lane_index}"
+    return lane.name if lane is not None else f"Type {mark.lane_index}"
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
     size = "18px" if secondary else "22px"
-    min_h = "56px" if secondary else "72px"
+    min_h = "64px" if secondary else "84px"
     return (
-        f"color: #e4e4e7; font-size: {size}; font-weight: 600; padding: 10px 12px;"
+        f"color: #e4e4e7; font-size: {size}; font-weight: 600;"
+        f"padding: 14px 12px; line-height: 1.35;"
         f"background: #141416; border-radius: 6px; border-left: 5px solid {accent};"
         f"min-height: {min_h};"
     )
@@ -46,22 +89,22 @@ def _now_card_style(accent: str, *, secondary: bool = False) -> str:
 
 def mark_now_body(song: Song, mark: Mark) -> str:
     lane = song.lane_by_index(mark.lane_index)
-    lane_bit = lane.name if lane is not None else f"Mark {mark.lane_index}"
+    lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
     if note:
-        return f"{note}\n{lane_bit}"
+        return f"{lane_bit}\n{note}"
     return lane_bit
 
 
-
 class CueMonitorPanel(QWidget):
-    """Cue list: click Time/Mark to seek; Note edits; Shift/Ctrl multi-select + Del."""
+    """Cue list: click Time/Type to seek; Note edits; Shift/Ctrl multi-select + Del."""
 
     seek_requested = Signal(float)
     delete_requested = Signal(list)  # list[str] mark ids
     selection_changed = Signal(list)  # list[str] mark ids
     note_changed = Signal(str, str, str)  # mark_id, old_name, new_name
     now_visibility_changed = Signal()
+    cue_list_visibility_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -107,8 +150,6 @@ class CueMonitorPanel(QWidget):
         clock_font.setPointSize(48)
         clock_font.setBold(True)
         self.clock_label.setFont(clock_font)
-        # Explicit px so the global QWidget font-size cannot shrink the clock.
-        # background: transparent — avoid a darker strip vs the frame chrome.
         self.clock_label.setStyleSheet(
             "color: #e4e4e7; background: transparent; font-size: 48px; font-weight: 700;"
             "font-family: Consolas, 'Cascadia Mono', monospace;"
@@ -126,7 +167,6 @@ class CueMonitorPanel(QWidget):
         now_title = QLabel("NOW")
         now_title.setStyleSheet("color: #a1a1aa; font-size: 11px; letter-spacing: 1px;")
 
-        # Primary: one Main Sequence card. Secondary: all Buttons compressed into one card.
         self.primary_track = QLabel("PRIMARY")
         self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
         self.primary_cue = QLabel("—")
@@ -162,28 +202,53 @@ class CueMonitorPanel(QWidget):
             widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             widget.customContextMenuRequested.connect(self._show_now_context_menu)
 
-        list_title = QLabel("Cue List (Shift/Ctrl to multi-select · Del to delete · click time to jump)")
-        list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
+        self._list_title = QLabel(
+            "Cue List (Shift/Ctrl to multi-select · Del to delete · click time to jump)"
+        )
+        self._list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
+        self._list_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list_title.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
-        self.cue_table = QTableWidget(0, 3)
-        self.cue_table.setHorizontalHeaderLabels(["Time", "Mark", "Note"])
+        self._list_collapsed = _RevealLabel("▸ Cue List hidden — click to show")
+        self._list_collapsed.clicked.connect(self._show_cue_list)
+        self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
+
+        self.cue_table = QTableWidget(0, _COL_COUNT)
+        self.cue_table.setHorizontalHeaderLabels(["Time", "Cue ID", "Type", "Note"])
+        self.cue_table.setItemDelegate(_PaddedItemDelegate(self.cue_table))
         self.cue_table.verticalHeader().setVisible(False)
+        self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.cue_table.setShowGrid(False)
         self.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.cue_table.horizontalHeader().setSectionResizeMode(_COL_TIME, QHeaderView.ResizeMode.ResizeToContents)
-        self.cue_table.horizontalHeader().setSectionResizeMode(_COL_LANE, QHeaderView.ResizeMode.ResizeToContents)
-        self.cue_table.horizontalHeader().setSectionResizeMode(_COL_NOTE, QHeaderView.ResizeMode.Stretch)
-        self.cue_table.setStyleSheet("QTableWidget::item { padding: 6px 8px; }")
+        self.cue_table.horizontalHeader().setSectionResizeMode(
+            _COL_TIME, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.cue_table.horizontalHeader().setSectionResizeMode(
+            _COL_CUE_ID, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.cue_table.horizontalHeader().setSectionResizeMode(
+            _COL_TYPE, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.cue_table.horizontalHeader().setSectionResizeMode(
+            _COL_NOTE, QHeaderView.ResizeMode.Stretch
+        )
+        self.cue_table.setStyleSheet(
+            "QTableWidget::item { padding: 8px 8px; }"
+            "QTableWidget QLineEdit { padding: 4px 6px; min-height: 1.4em; }"
+        )
         self.cue_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.cue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cue_table.customContextMenuRequested.connect(self._show_cue_list_context_menu)
         self.cue_table.cellClicked.connect(self._on_cell_clicked)
         self.cue_table.itemChanged.connect(self._on_item_changed)
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
 
         layout.addWidget(clock_frame)
         layout.addWidget(self._now_section)
-        layout.addWidget(list_title)
+        layout.addWidget(self._list_title)
+        layout.addWidget(self._list_collapsed)
         layout.addWidget(self.cue_table, stretch=1)
 
     def set_song(self, song: Song | None) -> None:
@@ -191,6 +256,7 @@ class CueMonitorPanel(QWidget):
         self._playhead_list_mark_id = None
         self.refresh_list()
         self._apply_now_panel_visibility()
+        self._apply_cue_list_visibility()
         self.set_position(self._position, getattr(song, "duration_seconds", 0.0) if song else 0.0)
 
     def apply_now_display_settings(self) -> None:
@@ -214,6 +280,31 @@ class CueMonitorPanel(QWidget):
         if not show_secondary:
             self.secondary_cue.setVisible(False)
             self._secondary_clear_timer.stop()
+
+    def _apply_cue_list_visibility(self) -> None:
+        visible = self._song is None or bool(self._song.cue_list_visible)
+        self._list_title.setVisible(visible)
+        self.cue_table.setVisible(visible)
+        self._list_collapsed.setVisible(not visible)
+
+    def _set_cue_list_visible(self, visible: bool) -> None:
+        if self._song is None:
+            return
+        self._song.cue_list_visible = bool(visible)
+        self._apply_cue_list_visibility()
+        self.cue_list_visibility_changed.emit()
+
+    def _show_cue_list(self) -> None:
+        self._set_cue_list_visible(True)
+
+    def _append_cue_list_menu_action(self, menu: QMenu) -> None:
+        if self._song is None:
+            return
+        show_list = QAction("Show Cue List", self)
+        show_list.setCheckable(True)
+        show_list.setChecked(bool(self._song.cue_list_visible))
+        show_list.toggled.connect(self._set_cue_list_visible)
+        menu.addAction(show_list)
 
     def _show_now_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
@@ -242,11 +333,24 @@ class CueMonitorPanel(QWidget):
         show_secondary.toggled.connect(_toggle_secondary)
         menu.addAction(show_primary)
         menu.addAction(show_secondary)
+        menu.addSeparator()
+        self._append_cue_list_menu_action(menu)
         sender = self.sender()
         if isinstance(sender, QWidget):
             menu.exec(sender.mapToGlobal(pos))
         else:
             menu.exec(self._now_section.mapToGlobal(pos))
+
+    def _show_cue_list_context_menu(self, pos) -> None:  # noqa: ANN001
+        if self._song is None:
+            return
+        menu = QMenu(self)
+        self._append_cue_list_menu_action(menu)
+        sender = self.sender()
+        if isinstance(sender, QWidget):
+            menu.exec(sender.mapToGlobal(pos))
+        else:
+            menu.exec(self.cue_table.viewport().mapToGlobal(pos))
 
     def _on_secondary_auto_clear(self) -> None:
         self._secondary_cleared = True
@@ -265,6 +369,7 @@ class CueMonitorPanel(QWidget):
         selected = set(self.selected_mark_ids())
         self._updating_table = True
         self.cue_table.setRowCount(0)
+        cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
         if self._song is not None:
             for mark in self._song.marks:
                 lane = self._song.lane_by_index(mark.lane_index)
@@ -272,18 +377,25 @@ class CueMonitorPanel(QWidget):
                     continue
                 row = self.cue_table.rowCount()
                 self.cue_table.insertRow(row)
+                self.cue_table.setRowHeight(row, _ROW_HEIGHT)
 
                 time_item = QTableWidgetItem(format_time(mark.time_seconds))
                 time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
                 self.cue_table.setItem(row, _COL_TIME, time_item)
 
-                lane_name = lane.name if lane is not None else f"Mark {mark.lane_index}"
+                cue_id_text = cue_ids.get(mark.id, "")
+                cue_id_item = QTableWidgetItem(cue_id_text)
+                cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.cue_table.setItem(row, _COL_CUE_ID, cue_id_item)
+
+                lane_name = lane.name if lane is not None else f"Type {mark.lane_index}"
                 lane_item = QTableWidgetItem(lane_name)
                 lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if lane is not None:
                     lane_item.setForeground(QColor(lane.color))
-                self.cue_table.setItem(row, _COL_LANE, lane_item)
+                self.cue_table.setItem(row, _COL_TYPE, lane_item)
 
                 note_item = QTableWidgetItem(mark.display_name)
                 note_item.setFlags(
@@ -414,7 +526,7 @@ class CueMonitorPanel(QWidget):
                 if lane is not None:
                     c = QColor(lane.color)
                     bg = QColor(c.red(), c.green(), c.blue(), 40)
-            for col in range(3):
+            for col in range(_COL_COUNT):
                 item = self.cue_table.item(row, col)
                 if item is None:
                     continue
@@ -523,7 +635,7 @@ class CueMonitorPanel(QWidget):
         changed = active_ids != self._current_mark_ids
         self._current_mark_ids = active_ids
         self._apply_now_highlight()
-        del changed, scroll_id  # NOW cards keep their own logic; list follows playhead below.
+        del changed, scroll_id
         self._follow_cue_list_to_playhead()
 
     def _follow_cue_list_to_playhead(self) -> None:

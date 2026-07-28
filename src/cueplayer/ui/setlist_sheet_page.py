@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -54,6 +56,20 @@ _ROLE_CATEGORY_ID = int(Qt.ItemDataRole.UserRole) + 2
 
 _FOLDER_BG = QColor("#1a1a28")
 _FOLDER_FG = QColor("#a5b4fc")
+_SHEET_ROW_HEIGHT = 34
+
+
+class _SheetItemDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index) -> None:  # noqa: ANN001
+        opt = QStyleOptionViewItem(option)
+        opt.rect = opt.rect.adjusted(0, 2, 0, -2)
+        super().paint(painter, opt, index)
+
+    def createEditor(self, parent, option, index):  # noqa: ANN001
+        editor = super().createEditor(parent, option, index)
+        if editor is not None:
+            editor.setStyleSheet("padding: 4px 6px; margin: 0; min-height: 1.4em;")
+        return editor
 
 
 @dataclass(frozen=True)
@@ -242,10 +258,12 @@ class SetlistSheetPage(QWidget):
 
         self.table = QTableWidget(0, _COL_COUNT)
         self.table.setHorizontalHeaderLabels(list(_HEADERS))
+        self.table.setItemDelegate(_SheetItemDelegate(self.table))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(_SHEET_ROW_HEIGHT)
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
         header.setSectionsMovable(False)
@@ -274,6 +292,8 @@ class SetlistSheetPage(QWidget):
             "  border: 1px solid #3f3f46;"
             "  font-weight: 600;"
             "}"
+            "QTableWidget::item { padding: 8px 6px; }"
+            "QTableWidget QLineEdit { padding: 4px 6px; min-height: 1.4em; }"
         )
         root.addWidget(self.table, stretch=1)
 

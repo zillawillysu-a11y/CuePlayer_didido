@@ -475,6 +475,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                         "time_seconds": mark.time_seconds,
                         "display_name": mark.display_name,
                         "ma_export_name": mark.ma_export_name,
+                        "main_cue_id": mark.main_cue_id,
                     }
                     for mark in song.marks
                 ],
@@ -486,6 +487,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_secondary_enabled": song.now_secondary_enabled,
                 "now_primary_visible": song.now_primary_visible,
                 "now_secondary_visible": song.now_secondary_visible,
+                "cue_list_visible": song.cue_list_visible,
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -560,6 +562,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 time_seconds=float(mark["time_seconds"]),
                 display_name=mark.get("display_name", ""),
                 ma_export_name=mark.get("ma_export_name"),
+                main_cue_id=str(mark.get("main_cue_id") or ""),
             )
             for mark in song_data.get("marks", [])
         ]
@@ -612,6 +615,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 now_secondary_enabled=bool(song_data.get("now_secondary_enabled", True)),
                 now_primary_visible=bool(song_data.get("now_primary_visible", True)),
                 now_secondary_visible=bool(song_data.get("now_secondary_visible", True)),
+                cue_list_visible=bool(song_data.get("cue_list_visible", True)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),
@@ -622,9 +626,12 @@ def project_from_dict(data: dict[str, Any]) -> Project:
     wave_color = _load_project_waveform_color(data, songs)
     playhead_color = _load_project_playhead_color(data)
     show_video_track = _load_project_show_video_track(data, songs)
+    from cueplayer.domain.main_cue_id import migrate_main_cue_ids
+
     for song in songs:
         song.show_video_track = show_video_track
         song.show_ltc_track = show_video_track
+        migrate_main_cue_ids(song)
     categories = [
         SetlistCategory(
             id=str(item["id"]),

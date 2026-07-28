@@ -919,6 +919,7 @@ class MainWindow(QMainWindow):
         self.monitor.delete_requested.connect(self._delete_marks)
         self.monitor.note_changed.connect(self._on_note_changed)
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
+        self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
@@ -3299,6 +3300,9 @@ class MainWindow(QMainWindow):
         self._refresh_status()
 
     def _refresh_marks_ui(self) -> None:
+        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+
+        refresh_main_cue_ids(self.current_song)
         self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
@@ -3309,6 +3313,7 @@ class MainWindow(QMainWindow):
             return
         self._undo.push(MoveMarksCommand(times=dict(moved)))
         self._mark_dirty()
+        self._refresh_marks_ui()
 
     def _offset_marks(self, mark_ids: list, delta: float) -> None:
         if not mark_ids or abs(delta) < 1e-9:
