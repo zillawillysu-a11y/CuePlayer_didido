@@ -131,6 +131,12 @@ class MarkDisplayDialog(QDialog):
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
 
+        self.playhead_color = ColorSwatchButton(
+            getattr(line_src, "playhead_color", None) or "#ff5a5f"
+        )
+        self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
+        form2.addRow("Playhead Color (project)", self.playhead_color)
+
         self.line_style = QComboBox()
         self.line_style.addItem("Solid", "solid")
         self.line_style.addItem("Dashed", "dash")
@@ -313,6 +319,10 @@ class MarkDisplayDialog(QDialog):
         target.mark_dash_on = spacing
         target.mark_dash_off = spacing
         target.waveform_color = self.wave_color.color()
+        if self._project is not None:
+            self._project.playhead_color = self.playhead_color.color()
+        elif hasattr(target, "playhead_color"):
+            target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
         primary, secondary = self._collect_now_lanes()
         self._song.now_lanes_configured = True
         self._song.now_primary_lanes = primary

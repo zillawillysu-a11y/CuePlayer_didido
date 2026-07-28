@@ -828,6 +828,8 @@ class Project:
     mark_dash_off: float = 4.0
     mark_line_width: float = 1.0
     waveform_color: str = "#3dd68c"
+    # Playhead (NOW) line on the timeline — project-global like waveform_color.
+    playhead_color: str = "#ff5a5f"
     ma_export: MaExportSettings = field(default_factory=MaExportSettings)
     audio_output: AudioOutputSettings = field(default_factory=AudioOutputSettings)
     clean_video_output: CleanVideoOutputSettings = field(

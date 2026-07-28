@@ -290,6 +290,10 @@ def _load_project_waveform_color(data: dict[str, Any], songs: list[Song]) -> str
     return "#3dd68c"
 
 
+def _load_project_playhead_color(data: dict[str, Any]) -> str:
+    return _coerce_waveform_color(data.get("playhead_color"), default="#ff5a5f")
+
+
 def _load_now_config(song_data: dict[str, Any]) -> tuple[bool, list[int], list[int]]:
     """Return (configured, primary_lanes, secondary_lanes), with legacy migration."""
     if "now_primary_lanes" in song_data or "now_secondary_lanes" in song_data:
@@ -372,6 +376,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "mark_dash_off": project.mark_dash_off,
         "mark_line_width": project.mark_line_width,
         "waveform_color": project.waveform_color,
+        "playhead_color": project.playhead_color,
         "ma_export": ma_export_to_dict(project.ma_export),
         "audio_output": audio_output_to_dict(project.audio_output),
         "clean_video_output": clean_video_output_to_dict(project.clean_video_output),
@@ -591,6 +596,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
 
     line_style, line_width, dash_on, dash_off = _load_project_mark_line_settings(data, songs)
     wave_color = _load_project_waveform_color(data, songs)
+    playhead_color = _load_project_playhead_color(data)
     categories = [
         SetlistCategory(
             id=str(item["id"]),
@@ -615,6 +621,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
         mark_dash_on=dash_on,
         mark_dash_off=dash_off,
         waveform_color=wave_color,
+        playhead_color=playhead_color,
         ma_export=dict_to_ma_export(data.get("ma_export")),
         audio_output=dict_to_audio_output(data.get("audio_output")),
         clean_video_output=dict_to_clean_video_output(data.get("clean_video_output")),

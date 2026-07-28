@@ -27,7 +27,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -2151,7 +2150,9 @@ class MainWindow(QMainWindow):
         if not songs:
             return
         initial = QColor(songs[0].row_color) if songs[0].row_color else QColor(BG_SELECTED)
-        chosen = QColorDialog.getColor(initial, self, "Row Color")
+        from cueplayer.ui.color_presets import get_color
+
+        chosen = get_color(initial, self, "Row Color")
         if not chosen.isValid():
             return
         hex_color = chosen.name().upper()
@@ -3406,6 +3407,7 @@ class MainWindow(QMainWindow):
             dash_on=float(p.mark_dash_on),
             dash_off=float(p.mark_dash_off),
             waveform_color=str(p.waveform_color or "#3dd68c"),
+            playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
 
     def _open_display_settings(self) -> None:

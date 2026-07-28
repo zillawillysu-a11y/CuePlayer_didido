@@ -120,6 +120,7 @@ class TimelineWidget(QWidget):
         self._mark_dash_off = 4.0
         self._mark_line_width = 1.0
         self._waveform_color = "#3dd68c"
+        self._playhead_color = "#ff5a5f"
         self._loop_a: float | None = None
         self._loop_b: float | None = None
         self._loop_enabled = False
@@ -555,8 +556,9 @@ class TimelineWidget(QWidget):
         dash_on: float,
         dash_off: float,
         waveform_color: str | None = None,
+        playhead_color: str | None = None,
     ) -> None:
-        """Project-global mark line look + waveform color."""
+        """Project-global mark line look + waveform / playhead colors."""
         if style not in ("solid", "dash", "dot"):
             style = "solid"
         self._mark_line_style = style  # type: ignore[assignment]
@@ -566,6 +568,9 @@ class TimelineWidget(QWidget):
         if waveform_color is not None:
             q = QColor(waveform_color)
             self._waveform_color = q.name() if q.isValid() else "#3dd68c"
+        if playhead_color is not None:
+            q = QColor(playhead_color)
+            self._playhead_color = q.name() if q.isValid() else "#ff5a5f"
         self.update()
 
     def selected_mark_ids(self) -> list[str]:
@@ -2482,5 +2487,8 @@ class TimelineWidget(QWidget):
         x = self._x_for_time(self._position)
         if x < self._header_width or x > self.width():
             return
-        painter.setPen(QPen(QColor("#ff5a5f"), 2))
+        color = QColor(self._playhead_color or "#ff5a5f")
+        if not color.isValid():
+            color = QColor("#ff5a5f")
+        painter.setPen(QPen(color, 2))
         painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))

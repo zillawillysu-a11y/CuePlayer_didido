@@ -28,6 +28,11 @@ def main() -> int:
     apply_dark_palette(app)
     app.setStyleSheet(build_stylesheet())
 
+    # Restore QColorDialog custom-color slots (bottom-left presets) from last run.
+    from cueplayer.ui.color_presets import restore_color_dialog_customs
+
+    restore_color_dialog_customs()
+
     window = MainWindow()
     window.show()
     # Restore Clean Output for OBS if it was open, but keep the main editor on top
