@@ -27,3 +27,20 @@ def test_song_duplicate_clears_category() -> None:
     song.category_id = "cat-1"
     dup = song.duplicate()
     assert dup.category_id is None
+
+
+def test_next_setlist_number_is_scoped_per_category() -> None:
+    project = Project.create("Show")
+    project.songs = [Song.create("A"), Song.create("B"), Song.create("C")]
+    folder = SetlistCategory.create("Archive")
+    project.setlist_categories = [folder]
+    project.songs[0].setlist_number = 3.0
+    project.songs[1].setlist_number = 1.0
+    project.songs[1].category_id = folder.id
+    project.songs[2].setlist_number = 5.0
+    project.songs[2].category_id = folder.id
+
+    assert project.next_setlist_number(None) == 4.0
+    assert project.next_setlist_number(folder.id) == 6.0
+    assert len(project.songs_in_category(None)) == 1
+    assert len(project.songs_in_category(folder.id)) == 2

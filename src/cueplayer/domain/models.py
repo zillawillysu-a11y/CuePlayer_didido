@@ -842,3 +842,14 @@ class Project:
             if category.id == category_id:
                 return category
         return None
+
+    def songs_in_category(self, category_id: str | None) -> list[Song]:
+        """Songs in one setlist folder (``None`` = main list, outside folders)."""
+        return [song for song in self.songs if song.category_id == category_id]
+
+    def next_setlist_number(self, category_id: str | None = None) -> float:
+        """Next # for a folder — numbers are independent per category."""
+        peers = self.songs_in_category(category_id)
+        if not peers:
+            return 1.0
+        return max(float(song.setlist_number) for song in peers) + 1.0

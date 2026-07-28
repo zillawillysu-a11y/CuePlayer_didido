@@ -1095,6 +1095,10 @@ class MainWindow(QMainWindow):
             return False
         if song.audio_tracks or song.video_clips or song.marks:
             return False
+        if self.project.setlist_categories:
+            return False
+        if any(song.category_id for song in self.project.songs):
+            return False
         return True
 
     def _confirm_new_project(self) -> bool:
@@ -1603,10 +1607,16 @@ class MainWindow(QMainWindow):
         song.duration_seconds = max(float(song.duration_seconds), clip.end_seconds)
         return clip
 
-    def _next_setlist_number(self) -> float:
-        if not self.project.songs:
-            return 1.0
-        return max(float(s.setlist_number) for s in self.project.songs) + 1.0
+    def _next_setlist_number(self, category_id: str | None = None) -> float:
+        return self.project.next_setlist_number(category_id)
+
+    def _assign_songs_to_category(self, songs: list[Song], category_id: str | None) -> None:
+        """Move songs into a folder (or back to the main list) with fresh local #s."""
+        next_num = self.project.next_setlist_number(category_id)
+        for song in songs:
+            song.category_id = category_id
+            song.setlist_number = next_num
+            next_num += 1.0
 
     def _on_song_cell_changed(
         self, row: int, _column: int, _prev_row: int, _prev_column: int
@@ -1913,7 +1923,7 @@ class MainWindow(QMainWindow):
             self.song_list._block_number_signal = False  # noqa: SLF001
         self._mark_dirty()
         self.status.showMessage(
-            f'Number changed to {format_setlist_number(value)} (use "Sort by Number" to reorder)',
+            f'Number changed to {format_setlist_number(value)} (within this folder)',
             2500,
         )
 
@@ -1992,18 +2002,15 @@ class MainWindow(QMainWindow):
         if category is None:
             return
         id_set = {str(sid) for sid in song_ids}
-        moved = 0
-        for song in self.project.songs:
-            if song.id in id_set:
-                song.category_id = category.id
-                moved += 1
-        if moved <= 0:
+        moving = [song for song in self.project.songs if song.id in id_set]
+        if not moving:
             return
+        self._assign_songs_to_category(moving, category.id)
         indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
         self._rebuild_song_list(select_indexes=indexes)
         self._mark_dirty()
         self.status.showMessage(
-            f'Moved {moved} song(s) into "{category.name}"',
+            f'Moved {len(moving)} song(s) into "{category.name}"',
             2500,
         )
 
@@ -2013,6 +2020,7 @@ class MainWindow(QMainWindow):
             return
         category.collapsed = not category.collapsed
         self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+        self._mark_dirty()
         state = "collapsed" if category.collapsed else "expanded"
         self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
 
@@ -2076,11 +2084,11 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f'Deleted folder "{category.name}"', 2500)
 
     def _move_selected_songs_to_category(self, category_id: str | None) -> None:
-        indexes = self._selected_song_indexes()
-        if not indexes:
+        songs = self._selected_songs()
+        if not songs:
             return
-        for song in self._selected_songs():
-            song.category_id = category_id
+        indexes = self._selected_song_indexes()
+        self._assign_songs_to_category(songs, category_id)
         self._rebuild_song_list(select_indexes=indexes)
         self._mark_dirty()
         if category_id is None:
@@ -2141,7 +2149,18 @@ class MainWindow(QMainWindow):
         if len(self.project.songs) <= 1:
             return
         current_id = self.current_song.id
-        self.project.songs.sort(key=lambda s: (float(s.setlist_number), s.name))
+        uncategorized = sorted(
+            self.project.songs_in_category(None),
+            key=lambda s: (float(s.setlist_number), s.name),
+        )
+        ordered: list[Song] = list(uncategorized)
+        for category in self.project.setlist_categories:
+            members = sorted(
+                self.project.songs_in_category(category.id),
+                key=lambda s: (float(s.setlist_number), s.name),
+            )
+            ordered.extend(members)
+        self.project.songs = ordered
         try:
             new_row = next(
                 i for i, s in enumerate(self.project.songs) if s.id == current_id
@@ -2160,15 +2179,23 @@ class MainWindow(QMainWindow):
             self,
             "Renumber",
             "Reset to 1, 2, 3… following the current top-to-bottom order?\n"
+            "Each folder (and the main list) gets its own 1, 2, 3… sequence.\n"
             "(Custom numbers such as 0.5 will be overwritten)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for i, song in enumerate(self.project.songs):
-            song.setlist_number = float(i + 1)
-        indexes = self._selected_song_indexes() or [self.song_list.currentRow()]
+        next_by_category: dict[str | None, float] = {}
+        for entry in self._setlist_display_rows():
+            if entry.kind != "song" or entry.song_index is None:
+                continue
+            song = self.project.songs[entry.song_index]
+            cat = song.category_id
+            num = next_by_category.get(cat, 1.0)
+            song.setlist_number = num
+            next_by_category[cat] = num + 1.0
+        indexes = self._selected_song_indexes()
         self._rebuild_song_list(select_indexes=indexes)
         self._mark_dirty()
         self._refresh_status()
@@ -2387,7 +2414,7 @@ class MainWindow(QMainWindow):
             source = self.project.songs[row]
             dup = source.duplicate(
                 name=f"{source.name} (copy)",
-                setlist_number=self._next_setlist_number(),
+                setlist_number=self._next_setlist_number(source.category_id),
             )
             insert_at = row + 1
             self.project.songs.insert(insert_at, dup)
