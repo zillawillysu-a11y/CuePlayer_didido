@@ -98,24 +98,25 @@ def _now_card_style(accent: str, *, secondary: bool = False) -> str:
 
 
 def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
-    lines: list[str] = []
-    if show_cue_id:
-        lane = song.lane_by_index(mark.lane_index)
-        if lane is not None and lane.cue_id_enabled:
-            cue_id = mark.main_cue_id.strip()
-            if cue_id:
-                lines.append(f"Cue {cue_id}")
     lane = song.lane_by_index(mark.lane_index)
     lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
+
+    if show_cue_id:
+        detail_lines: list[str] = []
+        if lane is not None and lane.cue_id_enabled:
+            cue_id = mark.main_cue_id.strip()
+            if cue_id:
+                detail_lines.append(f"Cue {cue_id}")
+        if note:
+            detail_lines.append(note)
+        if detail_lines:
+            return f"{lane_bit}\n\n" + "\n".join(detail_lines)
+        return lane_bit
+
     if note:
-        lines.append(lane_bit)
-        lines.append(note)
-    elif not lines:
-        lines.append(lane_bit)
-    else:
-        lines.append(lane_bit)
-    return "\n".join(lines)
+        return f"{lane_bit}\n{note}"
+    return lane_bit
 
 
 class CueMonitorPanel(QWidget):
