@@ -77,7 +77,7 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_loader import load_audio
+from cueplayer.media.audio_loader import AudioBuffer, load_audio
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
@@ -454,8 +454,11 @@ class MainWindow(QMainWindow):
         self._nudge_hold_start: dict[int, float] = {}
         self._nudge_last_time: dict[int, float] = {}
         self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
+        self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
         self._pending_audio_load: tuple | None = None
+        self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
+        self._audio_inflight: dict[tuple[str, int, int], object] = {}
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
@@ -1753,14 +1756,25 @@ class MainWindow(QMainWindow):
             self.current_song.start_timecode, self.current_song.fps
         )
         self.engine.set_buffer(None)
-        self.timeline.set_audio(None)
         main_audio = next(
             (t for t in self.current_song.audio_tracks if t.role == "main"),
             self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
         )
         if main_audio is not None and Path(main_audio.path).is_file():
-            self._load_audio_path(Path(main_audio.path), mark_dirty=False, replace_track=False)
+            audio_path = Path(main_audio.path)
+            cached = self._cached_audio_buffer(audio_path)
+            if cached is not None:
+                self.timeline.set_audio_loading(False)
+                self._apply_loaded_audio(
+                    cached, audio_path, mark_dirty=False, replace_track=False
+                )
+            else:
+                self.timeline.set_audio_loading(True, audio_path.name)
+                self._load_audio_path(audio_path, mark_dirty=False, replace_track=False)
+            self._prefetch_setlist_audio(skip_path=audio_path)
         else:
+            self.timeline.set_audio(None)
+            self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
             self.transport.set_times(0.0, self.engine.duration)
             self.monitor.set_position(0.0, self.engine.duration)
@@ -2425,13 +2439,97 @@ class MainWindow(QMainWindow):
         replace_track: bool = True,
     ) -> None:
         path = Path(path)
+        cached = self._cached_audio_buffer(path)
+        if cached is not None:
+            self.timeline.set_audio_loading(False)
+            if replace_track or self._audio_path_matches_current_song(path, replace_track=False):
+                self._apply_loaded_audio(
+                    cached, path, mark_dirty=mark_dirty, replace_track=replace_track
+                )
+            self._prefetch_setlist_audio(skip_path=path)
+            return
+
         self._audio_load_token += 1
         token = self._audio_load_token
+        self.timeline.set_audio_loading(True, path.name)
         self.status.showMessage(f"Loading {path.name}…", 0)
-        future = self._audio_load_executor.submit(load_audio, path)
+        future = self._start_audio_load(path, executor=self._audio_load_executor)
         self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
         if not self._audio_load_timer.isActive():
             self._audio_load_timer.start()
+
+    def _audio_cache_key(self, path: Path) -> tuple[str, int, int] | None:
+        try:
+            resolved = path.resolve()
+            stat = resolved.stat()
+            return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            return None
+
+    def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
+        key = self._audio_cache_key(path)
+        if key is None:
+            return None
+        return self._audio_buffer_cache.get(key)
+
+    def _store_audio_cache(self, path: Path, buffer: AudioBuffer) -> None:
+        key = self._audio_cache_key(path)
+        if key is not None:
+            self._audio_buffer_cache[key] = buffer
+
+    def _start_audio_load(self, path: Path, *, executor: ThreadPoolExecutor) -> object:
+        path = Path(path)
+        key = self._audio_cache_key(path)
+        if key is not None and key in self._audio_inflight:
+            return self._audio_inflight[key]
+        future = executor.submit(load_audio, path)
+        if key is not None:
+            self._audio_inflight[key] = future
+
+            def _done(fut) -> None:
+                self._audio_inflight.pop(key, None)
+                try:
+                    buffer = fut.result()
+                except Exception:
+                    return
+                self._store_audio_cache(path, buffer)
+
+            future.add_done_callback(_done)
+        return future
+
+    def _main_audio_path_for_song(self, song: Song) -> Path | None:
+        main_audio = next(
+            (t for t in song.audio_tracks if t.role == "main"),
+            song.audio_tracks[0] if song.audio_tracks else None,
+        )
+        if main_audio is None:
+            return None
+        path = Path(main_audio.path)
+        return path if path.is_file() else None
+
+    def _prefetch_setlist_audio(self, *, skip_path: Path | None = None) -> None:
+        skip_resolved: str | None = None
+        if skip_path is not None:
+            try:
+                skip_resolved = str(skip_path.resolve())
+            except OSError:
+                skip_resolved = str(skip_path)
+        for song in self.project.songs:
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                continue
+            try:
+                if skip_resolved is not None and str(path.resolve()) == skip_resolved:
+                    continue
+            except OSError:
+                if skip_resolved is not None and str(path) == skip_resolved:
+                    continue
+            if self._cached_audio_buffer(path) is not None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is not None and key in self._audio_inflight:
+                continue
+            self._start_audio_load(path, executor=self._audio_prefetch_executor)
 
     def _poll_pending_audio_load(self) -> None:
         pending = self._pending_audio_load
@@ -2442,6 +2540,7 @@ class MainWindow(QMainWindow):
         if token != self._audio_load_token:
             self._pending_audio_load = None
             self._audio_load_timer.stop()
+            self.timeline.set_audio_loading(False)
             return
         if not future.done():
             return
@@ -2451,6 +2550,7 @@ class MainWindow(QMainWindow):
             buffer = future.result()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Unable to Load Audio", str(exc))
+            self.timeline.set_audio_loading(False)
             self.status.clearMessage()
             return
         if not self._audio_path_matches_current_song(path, replace_track=replace_track):
@@ -2475,12 +2575,14 @@ class MainWindow(QMainWindow):
 
     def _apply_loaded_audio(
         self,
-        buffer,
+        buffer: AudioBuffer,
         path: Path,
         *,
         mark_dirty: bool = True,
         replace_track: bool = True,
     ) -> None:
+        self._store_audio_cache(path, buffer)
+        self.timeline.set_audio_loading(False)
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
             self.current_song.audio_tracks = [

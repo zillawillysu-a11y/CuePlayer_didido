@@ -82,6 +82,8 @@ class TimelineWidget(QWidget):
         super().__init__(parent)
         self._song: Song | None = None
         self._audio: AudioBuffer | None = None
+        self._audio_loading = False
+        self._audio_loading_label = ""
         self._position = 0.0
         self._pixels_per_second = 120.0
         self._scroll_x = 0.0
@@ -825,9 +827,19 @@ class TimelineWidget(QWidget):
     def set_audio(self, audio: AudioBuffer | None) -> None:
         self._audio = audio
         if audio is not None:
+            self._audio_loading = False
+            self._audio_loading_label = ""
             # Start moderately zoomed for beat work; user can zoom further.
             self._pixels_per_second = 150.0
             self._scroll_x = 0.0
+        self.update()
+
+    def set_audio_loading(self, loading: bool, label: str = "") -> None:
+        """Show a waveform-pane placeholder while audio decodes off the UI thread."""
+        self._audio_loading = bool(loading)
+        self._audio_loading_label = (label or "").strip()
+        if loading:
+            self._audio = None
         self.update()
 
     def set_auto_scroll(self, enabled: bool) -> None:
@@ -2206,6 +2218,18 @@ class TimelineWidget(QWidget):
         y0 = self._ruler_height
         y1 = y0 + self._wave_height
         painter.fillRect(self._header_width, y0, self.width(), self._wave_height, QColor("#09090b"))
+
+        if self._audio_loading:
+            painter.setPen(QColor("#a1a1aa"))
+            label = self._audio_loading_label
+            line1 = "Loading waveform…"
+            line2 = label if label else "Reading audio file"
+            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
+            painter.setPen(QColor("#71717a"))
+            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
+            painter.setPen(QColor("#27272a"))
+            painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
+            return y1
 
         if self._audio is None:
             painter.setPen(QColor("#71717a"))
