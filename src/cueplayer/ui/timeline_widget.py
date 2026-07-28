@@ -545,9 +545,9 @@ class TimelineWidget(QWidget):
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
-        self._show_video_track = bool(song.show_video_track) if song is not None else True
+        # Video + LTC eye is project-global — do not reset from per-song flags.
         if song is not None:
-            # LTC lane is bound to the Video eye — keep the persisted flag in sync.
+            song.show_video_track = self._show_video_track
             song.show_ltc_track = self._show_video_track
             self._ltc_lane_height = max(
                 self._ltc_lane_min_height, min(400.0, float(song.ltc_lane_height))

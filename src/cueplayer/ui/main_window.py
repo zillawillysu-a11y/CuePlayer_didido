@@ -1155,6 +1155,7 @@ class MainWindow(QMainWindow):
         self._show_video_track_action.setChecked(True)
         self._show_video_track_action.setToolTip(
             "Hide Video + LTC lanes after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
             "Preview / Clean Output keep playing either way. "
             "LTC appears under Video when a file stripe is known."
         )
@@ -1564,6 +1565,7 @@ class MainWindow(QMainWindow):
         self._restore_clean_output_visibility()
         self._sync_video_output_active()
         self._refresh_timecode_status()
+        self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
         song_index = 0
         if preferred_song_id:
             for i, song in enumerate(self.project.songs):
@@ -2785,8 +2787,10 @@ class MainWindow(QMainWindow):
         action = getattr(self, "_show_video_track_action", None)
         if action is not None:
             action.blockSignals(True)
-            action.setChecked(bool(self.current_song.show_video_track))
+            action.setChecked(bool(self.project.show_video_track))
             action.blockSignals(False)
+        # Keep timeline eye in sync with project-global preference across songs.
+        self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -3970,8 +3974,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_video_track_visibility_changed(self, visible: bool) -> None:
-        self.current_song.show_video_track = bool(visible)
-        self.current_song.show_ltc_track = bool(visible)
+        self.project.set_show_video_track(bool(visible))
         action = getattr(self, "_show_video_track_action", None)
         if action is not None:
             action.blockSignals(True)
@@ -3986,13 +3989,12 @@ class MainWindow(QMainWindow):
         )
 
     def _on_ltc_track_visibility_changed(self, visible: bool) -> None:
-        # Bound to the Video eye — keep persisted flag in sync only.
-        self.current_song.show_ltc_track = bool(visible)
+        # Bound to the Video eye — project-global sync.
+        self.project.set_show_video_track(bool(visible))
 
     def _on_show_video_track_toggled(self, checked: bool) -> None:
+        self.project.set_show_video_track(bool(checked))
         self.timeline.set_show_video_track(bool(checked))
-        self.current_song.show_video_track = bool(checked)
-        self.current_song.show_ltc_track = bool(checked)
         self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:

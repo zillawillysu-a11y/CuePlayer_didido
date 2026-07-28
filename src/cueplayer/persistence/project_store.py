@@ -295,6 +295,15 @@ def _load_project_playhead_color(data: dict[str, Any]) -> str:
     return _coerce_waveform_color(data.get("playhead_color"), default="#ff5a5f")
 
 
+def _load_project_show_video_track(data: dict[str, Any], songs: list[Song]) -> bool:
+    """Project-global eye; legacy projects inherit from the first song."""
+    if "show_video_track" in data:
+        return bool(data.get("show_video_track"))
+    if songs:
+        return bool(songs[0].show_video_track)
+    return True
+
+
 def _load_now_config(song_data: dict[str, Any]) -> tuple[bool, list[int], list[int]]:
     """Return (configured, primary_lanes, secondary_lanes), with legacy migration."""
     if "now_primary_lanes" in song_data or "now_secondary_lanes" in song_data:
@@ -378,6 +387,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "mark_line_width": project.mark_line_width,
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
+        "show_video_track": bool(project.show_video_track),
         "ma_export": ma_export_to_dict(project.ma_export),
         "audio_output": audio_output_to_dict(project.audio_output),
         "clean_video_output": clean_video_output_to_dict(project.clean_video_output),
@@ -609,6 +619,10 @@ def project_from_dict(data: dict[str, Any]) -> Project:
     line_style, line_width, dash_on, dash_off = _load_project_mark_line_settings(data, songs)
     wave_color = _load_project_waveform_color(data, songs)
     playhead_color = _load_project_playhead_color(data)
+    show_video_track = _load_project_show_video_track(data, songs)
+    for song in songs:
+        song.show_video_track = show_video_track
+        song.show_ltc_track = show_video_track
     categories = [
         SetlistCategory(
             id=str(item["id"]),
@@ -635,6 +649,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
         mark_dash_off=dash_off,
         waveform_color=wave_color,
         playhead_color=playhead_color,
+        show_video_track=show_video_track,
         ma_export=dict_to_ma_export(data.get("ma_export")),
         audio_output=dict_to_audio_output(data.get("audio_output")),
         clean_video_output=dict_to_clean_video_output(data.get("clean_video_output")),

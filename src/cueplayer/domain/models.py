@@ -264,9 +264,10 @@ class Song:
     # When False, the Video lane is collapsed out of the timeline after
     # alignment work is done — Preview / Clean Output keep playing; only the
     # editable track chrome is hidden until the user shows it again.
+    # Prefer Project.show_video_track (global eye); this field is kept in sync.
     show_video_track: bool = True
     # Optional LTC waveform lane under Music (inspect stripe quality / noise).
-    # Default off — turn on with the eye toggle when a file LTC channel is known.
+    # Bound to the Video eye — kept in sync with show_video_track / project flag.
     show_ltc_track: bool = False
     # Timeline height for the LTC inspect lane (pixels).
     ltc_lane_height: float = 56.0
@@ -863,6 +864,8 @@ class Project:
     waveform_color: str = "#3dd68c"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#ff5a5f"
+    # Video + LTC timeline lanes — one eye for the whole show (not per song).
+    show_video_track: bool = True
     ma_export: MaExportSettings = field(default_factory=MaExportSettings)
     audio_output: AudioOutputSettings = field(default_factory=AudioOutputSettings)
     clean_video_output: CleanVideoOutputSettings = field(
@@ -878,7 +881,18 @@ class Project:
     def new_song(self, name: str) -> Song:
         """Create a song using the project Mark template when set."""
         lanes = self.default_mark_lanes or None
-        return Song.create(name, mark_lanes=lanes)
+        song = Song.create(name, mark_lanes=lanes)
+        song.show_video_track = bool(self.show_video_track)
+        song.show_ltc_track = bool(self.show_video_track)
+        return song
+
+    def set_show_video_track(self, visible: bool) -> None:
+        """Global Video + LTC eye — applies to every song in the show."""
+        visible = bool(visible)
+        self.show_video_track = visible
+        for song in self.songs:
+            song.show_video_track = visible
+            song.show_ltc_track = visible
 
     def setlist_category_by_id(self, category_id: str) -> SetlistCategory | None:
         for category in self.setlist_categories:

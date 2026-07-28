@@ -93,8 +93,8 @@ def test_ltc_lane_uses_filled_silhouette_painters(app: QApplication) -> None:
 def test_video_eye_hides_ltc_together(app: QApplication) -> None:
     widget = TimelineWidget()
     song = Song.create("Stripe")
-    song.show_video_track = True
     widget.set_song(song)
+    widget.set_show_video_track(True)
     buf, ch = _stereo_buffer(ltc_on_right=False)
     widget.set_ltc_audio(ltc_waveform_display_buffer(buf, ch), channel=ch)
     widget.resize(900, 600)
@@ -118,8 +118,8 @@ def test_video_eye_hides_ltc_together(app: QApplication) -> None:
 def test_video_eye_shows_ltc_together(app: QApplication) -> None:
     widget = TimelineWidget()
     song = Song.create("Stripe")
-    song.show_video_track = False
     widget.set_song(song)
+    widget.set_show_video_track(False)
     buf, ch = _stereo_buffer()
     widget.set_ltc_audio(ltc_waveform_display_buffer(buf, ch), channel=ch)
     widget.resize(900, 600)
