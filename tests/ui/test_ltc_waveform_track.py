@@ -83,6 +83,13 @@ def test_ltc_sits_below_video(app: QApplication) -> None:
     assert widget._tracks_top_y() == widget._ltc_lane_top_y() + widget._ltc_band_height()
 
 
+def test_ltc_lane_uses_filled_silhouette_painters(app: QApplication) -> None:
+    """LTC must not reuse stroke-per-pixel music painters (looks falsely hairy)."""
+    widget = TimelineWidget()
+    assert hasattr(widget, "_paint_ltc_silhouette_peaks")
+    assert hasattr(widget, "_paint_ltc_silhouette_raw")
+
+
 def test_video_eye_hides_ltc_together(app: QApplication) -> None:
     widget = TimelineWidget()
     song = Song.create("Stripe")

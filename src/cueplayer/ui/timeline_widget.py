@@ -2408,16 +2408,19 @@ class TimelineWidget(QWidget):
         mid = top + height / 2
         amp = max(4.0, (height / 2) - 4)
         color = QColor(self._ltc_waveform_color)
-        painter.setPen(QPen(color, 1))
         view_left = self._header_width
         view_right = self.width()
         samples_per_pixel = self._ltc_audio.sample_rate / self._pixels_per_second
+        # Reaper-style filled silhouette. Stroke-per-pixel peak lines make
+        # bi-phase LTC look falsely "hairy" even when the stripe is clean —
+        # that noise is rendering, not the file. Real dropouts still show as
+        # thin / blank sections via the abs peak height.
         if samples_per_pixel <= 1.5:
-            self._paint_waveform_raw(
-                painter, self._ltc_audio, mid, amp, view_left, view_right
+            self._paint_ltc_silhouette_raw(
+                painter, self._ltc_audio, mid, amp, view_left, view_right, color
             )
         else:
-            self._paint_waveform_peaks(
+            self._paint_ltc_silhouette_peaks(
                 painter,
                 self._ltc_audio,
                 mid,
@@ -2425,9 +2428,71 @@ class TimelineWidget(QWidget):
                 view_left,
                 view_right,
                 samples_per_pixel,
+                color,
             )
         painter.setPen(QColor("#3f3f46"))
         painter.drawLine(QPointF(self._header_width, mid), QPointF(self.width(), mid))
+
+    def _paint_ltc_silhouette_peaks(
+        self,
+        painter: QPainter,
+        audio: AudioBuffer,
+        mid: float,
+        amp: float,
+        view_left: int,
+        view_right: int,
+        samples_per_pixel: float,
+        color: QColor,
+    ) -> None:
+        level = choose_peak_level(audio.peak_levels, samples_per_pixel)
+        if level is None:
+            return
+        painter.setPen(Qt.PenStyle.NoPen)
+        for x in range(view_left, view_right):
+            t0 = self._time_for_x(x)
+            t1 = self._time_for_x(x + 1)
+            if t1 <= 0 or t0 >= self._duration():
+                continue
+            s0 = int(t0 * audio.sample_rate)
+            s1 = int(t1 * audio.sample_rate)
+            b0 = max(0, s0 // level.samples_per_bucket)
+            b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+            lo = float(level.mins[b0:b1].min())
+            hi = float(level.maxs[b0:b1].max())
+            peak = max(abs(lo), abs(hi))
+            if peak < 0.02:
+                continue
+            y0 = int(mid - peak * amp)
+            y1 = int(mid + peak * amp)
+            painter.fillRect(x, y0, 1, max(1, y1 - y0), color)
+
+    def _paint_ltc_silhouette_raw(
+        self,
+        painter: QPainter,
+        audio: AudioBuffer,
+        mid: float,
+        amp: float,
+        view_left: int,
+        view_right: int,
+        color: QColor,
+    ) -> None:
+        mono = audio.mono
+        sr = audio.sample_rate
+        painter.setPen(Qt.PenStyle.NoPen)
+        for x in range(view_left, view_right):
+            t0 = self._time_for_x(x)
+            t1 = self._time_for_x(x + 1)
+            s0 = max(0, int(t0 * sr))
+            s1 = min(mono.size, max(s0 + 1, int(t1 * sr)))
+            if s0 >= mono.size:
+                continue
+            segment = mono[s0:s1]
+            peak = float(np.max(np.abs(segment)))
+            if peak < 0.02:
+                continue
+            y0 = int(mid - peak * amp)
+            y1 = int(mid + peak * amp)
+            painter.fillRect(x, y0, 1, max(1, y1 - y0), color)
 
     def _paint_waveform_peaks(
         self,
