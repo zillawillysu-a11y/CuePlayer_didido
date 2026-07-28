@@ -162,14 +162,20 @@ def build_setlist_sheet_rows(project: Project) -> list[SetlistSheetRow]:
 
 
 def _song_row(song: Song, slot: SongPatchSlot | None = None) -> SetlistSheetRow:
+    from cueplayer.exporters.common import ma_export_name_from_display
+
     seq = str(slot.main_sequence) if slot is not None else ""
     cue_id = slot.main_sequence_name if slot is not None else ""
+    english = (song.ma_export_name or "").strip()
+    if not english:
+        english = ma_export_name_from_display(song.name)
+        song.ma_export_name = english
     return SetlistSheetRow(
         kind="song",
         song_id=song.id,
         order=format_sheet_order(song.setlist_number),
         name=song.name,
-        english_name=(song.ma_export_name or "").strip(),
+        english_name=english,
         start_timecode=song.start_timecode,
         bpm=format_sheet_bpm(song.bpm),
         seq=seq,
@@ -503,24 +509,37 @@ class SetlistSheetPage(QWidget):
                 item.setText(name)
                 self._suppress = False
         elif col == _COL_EN:
+            from cueplayer.exporters.common import ma_export_name_from_display
+
             raw = text.strip()
-            ma = sanitize_ma_name(raw, fallback="") if raw else ""
-            if raw and not ma:
-                QMessageBox.warning(
-                    self,
-                    "Invalid English/MA Name",
-                    "Use letters/numbers (spaces, _ . - allowed); "
-                    "Chinese characters will be stripped.",
-                )
-                self._suppress = True
-                item.setText((song.ma_export_name or "").strip())
-                self._suppress = False
-                return
-            new_val = ma or None
+            if raw:
+                ma = sanitize_ma_name(raw, fallback="")
+                if not ma:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid English/MA Name",
+                        "Use letters/numbers (spaces, _ . - allowed). "
+                        "Chinese is converted to pinyin; leave blank to auto-fill from the song name.",
+                    )
+                    fallback = (song.ma_export_name or "").strip() or ma_export_name_from_display(
+                        song.name
+                    )
+                    if not (song.ma_export_name or "").strip():
+                        song.ma_export_name = fallback
+                    self._suppress = True
+                    item.setText(fallback)
+                    self._suppress = False
+                    return
+            else:
+                ma = ma_export_name_from_display(song.name)
+            new_val = ma or ma_export_name_from_display(song.name)
             if (song.ma_export_name or None) != new_val:
                 song.ma_export_name = new_val
                 changed = True
-            display = (song.ma_export_name or "").strip()
+            display = (song.ma_export_name or "").strip() or ma_export_name_from_display(song.name)
+            if not (song.ma_export_name or "").strip():
+                song.ma_export_name = display
+                changed = True
             if item.text() != display:
                 self._suppress = True
                 item.setText(display)

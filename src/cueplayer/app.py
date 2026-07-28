@@ -18,7 +18,6 @@ def main() -> int:
     from cueplayer.ui.splash import show_startup_splash
     from cueplayer.ui.theme import BG_APP, apply_dark_palette, build_stylesheet
 
-    # Dark chrome before any window is created (reduces Windows white flash).
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -26,36 +25,37 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("CuePlayer")
     app.setOrganizationName("CuePlayer")
-    # Single-main-window app: exit when the last visible top-level closes.
-    # MainWindow.closeEvent() also tears down Clean Output and calls quit()
-    # so a hide-on-X tool window cannot keep the process alive.
     app.setQuitOnLastWindowClosed(True)
     app.setStyle("Fusion")
+
+    splash = show_startup_splash(app, message="Starting…")
+    splash.set_progress(0.08, "Applying theme…")
     apply_dark_palette(app)
     app.setStyleSheet(build_stylesheet())
 
-    splash = show_startup_splash(app, message="Loading…")
-
-    # Restore QColorDialog custom-color slots (bottom-left presets) from last run.
+    splash.set_progress(0.18, "Loading color presets…")
     from cueplayer.ui.color_presets import restore_color_dialog_customs
 
     restore_color_dialog_customs()
 
+    splash.set_progress(0.28, "Building main window…")
     window = MainWindow()
-    # Ensure the first expose is dark even if children paint a frame late.
     window.setStyleSheet(f"QMainWindow {{ background-color: {BG_APP}; }}")
+    splash.set_progress(0.55, "Restoring session…")
 
-    # MainWindow queues session restore on singleShot(0). Keep it hidden until
-    # restore finishes so the small splash card does not sit on a white window.
-    def _after_main_ready() -> None:
-        def _finish_splash() -> None:
-            window.present_clean_output_for_obs()
+    def _on_startup_ready() -> None:
+        splash.set_progress(0.92, "Opening…")
+        window.present_clean_output_for_obs()
+
+        def _finish() -> None:
+            splash.set_progress(1.0, "Ready")
             window.show()
             splash.finish(window)
 
-        QTimer.singleShot(0, _finish_splash)
+        # Brief beat at 100% so the fill is visible before splash closes.
+        QTimer.singleShot(120, _finish)
 
-    QTimer.singleShot(0, _after_main_ready)
+    window.startup_ready.connect(_on_startup_ready)
     return app.exec()
 
 

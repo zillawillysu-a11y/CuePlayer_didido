@@ -15,6 +15,11 @@ _SPACE_RE = re.compile(r"\s+")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
+def ma_export_name_from_display(display_name: str) -> str:
+    """Always produce a non-empty MA/English label from a display name (Chinese → pinyin)."""
+    return sanitize_ma_name(display_name.strip() or "Song", fallback="Song")
+
+
 def chinese_to_pinyin_ascii(text: str) -> str:
     """
     Replace Chinese runs with tone-less pinyin (ASCII).

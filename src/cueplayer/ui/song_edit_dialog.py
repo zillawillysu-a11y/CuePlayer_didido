@@ -121,10 +121,10 @@ def normalize_timecode(text: str, *, fps: float = 30.0) -> str | None:
 
 
 def suggest_ma_export_name(display_name: str) -> str:
-    """Keep ASCII-ish names; leave blank when the display name is Chinese-only."""
-    if not re.search(r"[A-Za-z0-9]", display_name):
-        return ""
-    return sanitize_ma_name(display_name, fallback="")
+    """English / MA name: Chinese → pinyin; never blank."""
+    from cueplayer.exporters.common import ma_export_name_from_display
+
+    return ma_export_name_from_display(display_name)
 
 
 def _fps_label(fps: float) -> str:
@@ -318,8 +318,11 @@ class SongEditDialog(QDialog):
             name_edit.setToolTip("Name shown in the Setlist (Chinese allowed)")
             self.table.setCellWidget(row, _COL_NAME, name_edit)
 
-            ma_edit = _line_edit(draft.ma_export_name)
-            ma_edit.setToolTip("Pinyin or English; leave blank to fill in later at export time")
+            ma_initial = (draft.ma_export_name or "").strip() or suggest_ma_export_name(draft.name)
+            ma_edit = _line_edit(ma_initial)
+            ma_edit.setToolTip(
+                "Pinyin or English for MA export. Leave blank to auto-fill pinyin from the song name."
+            )
             self.table.setCellWidget(row, _COL_MA, ma_edit)
 
             bpm_edit = _line_edit(format_bpm(draft.bpm))
@@ -424,18 +427,23 @@ class SongEditDialog(QDialog):
                     widget.setFocus()
                 return
             ma_raw = self._edit_text(row, _COL_MA).strip()
-            ma_name = sanitize_ma_name(ma_raw, fallback="") if ma_raw else ""
-            if ma_raw and not ma_name:
-                QMessageBox.warning(
-                    self,
-                    "Invalid English / MA Name",
-                    f'Row {row + 1}: "English / MA" must use pinyin or letters/numbers '
-                    "(cannot be Chinese-only or symbols).",
-                )
-                widget = self.table.cellWidget(row, _COL_MA)
-                if isinstance(widget, QLineEdit):
-                    widget.setFocus()
-                return
+            if ma_raw:
+                ma_name = sanitize_ma_name(ma_raw, fallback="")
+                if not ma_name:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid English / MA Name",
+                        f'Row {row + 1}: "English / MA" must use pinyin or letters/numbers '
+                        "(spaces, _ . - allowed). Leave blank to auto-fill pinyin from the song name.",
+                    )
+                    widget = self.table.cellWidget(row, _COL_MA)
+                    if isinstance(widget, QLineEdit):
+                        widget.setFocus()
+                    return
+            else:
+                from cueplayer.exporters.common import ma_export_name_from_display
+
+                ma_name = ma_export_name_from_display(name)
             bpm = parse_bpm(self._edit_text(row, _COL_BPM))
             if bpm is False:
                 QMessageBox.warning(

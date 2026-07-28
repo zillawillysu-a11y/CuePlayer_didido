@@ -619,6 +619,7 @@ class SetlistWidget(QTableWidget):
 
 class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
+    startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
         super().__init__()
@@ -975,6 +976,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
         finally:
             self._restoring_session = False
+            # Let queued splitter/layout timers settle, then tell the splash we are ready.
+            QTimer.singleShot(0, self.startup_ready.emit)
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
@@ -1763,6 +1766,11 @@ class MainWindow(QMainWindow):
 
             zh_name = song.name
             en_name = (song.ma_export_name or "").strip()
+            if not en_name:
+                from cueplayer.exporters.common import ma_export_name_from_display
+
+                en_name = ma_export_name_from_display(zh_name)
+                song.ma_export_name = en_name
             if mode == "en":
                 primary = en_name or zh_name
             else:
@@ -1881,7 +1889,8 @@ class MainWindow(QMainWindow):
         return SongDraft(
             name=song.name,
             setlist_number=float(song.setlist_number),
-            ma_export_name=(song.ma_export_name or ""),
+            ma_export_name=(song.ma_export_name or "").strip()
+            or suggest_ma_export_name(song.name),
             bpm=song.bpm,
             start_timecode=song.start_timecode or "01:00:00:00",
             fps=float(song.fps or 30.0),
@@ -1892,9 +1901,14 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_draft_to_song(self, song: Song, draft: SongDraft) -> None:
+        from cueplayer.exporters.common import ma_export_name_from_display
+
         song.name = draft.name
         song.setlist_number = float(draft.setlist_number)
-        song.ma_export_name = draft.ma_export_name or None
+        # English / MA name must never stay blank — fall back to pinyin from display name.
+        song.ma_export_name = (draft.ma_export_name or "").strip() or ma_export_name_from_display(
+            draft.name
+        )
         song.bpm = draft.bpm
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
@@ -2016,22 +2030,25 @@ class MainWindow(QMainWindow):
         self._apply_inline_ma_name(self.project.songs[song_index], text, row=song_index)
 
     def _apply_inline_ma_name(self, song: Song, text: str, *, row: int) -> None:
-        from cueplayer.exporters.common import sanitize_ma_name
+        from cueplayer.exporters.common import ma_export_name_from_display, sanitize_ma_name
 
         raw = text.strip()
-        ma = sanitize_ma_name(raw, fallback="") if raw else ""
-        if raw and not ma:
-            QMessageBox.warning(
-                self,
-                "Invalid English/MA Name",
-                "Use letters/numbers (spaces, _ . - allowed); Chinese characters will be stripped.",
-            )
-            self._rebuild_song_list(select_indexes=[row])
-            return
-        new_val = ma or None
-        if (song.ma_export_name or None) == new_val:
-            # Normalize display if user typed unsanitized text.
-            if raw != (ma or ""):
+        if raw:
+            ma = sanitize_ma_name(raw, fallback="")
+            if not ma:
+                QMessageBox.warning(
+                    self,
+                    "Invalid English/MA Name",
+                    "Use letters/numbers (spaces, _ . - allowed). "
+                    "Chinese is converted to pinyin; leave blank to auto-fill from the song name.",
+                )
+                self._rebuild_song_list(select_indexes=[row])
+                return
+        else:
+            ma = ma_export_name_from_display(song.name)
+        new_val = ma or ma_export_name_from_display(song.name)
+        if (song.ma_export_name or "") == new_val:
+            if raw != new_val:
                 self._rebuild_song_list(select_indexes=[row])
             return
         with self._setlist_edit("Edit English/MA Name"):
@@ -2042,8 +2059,7 @@ class MainWindow(QMainWindow):
             if patch is not None:
                 patch.sync_songs()
             self._rebuild_song_list(select_indexes=[row])
-        label = ma or "(blank)"
-        self.status.showMessage(f'English/MA name changed to "{label}"', 2000)
+        self.status.showMessage(f'English/MA name changed to "{new_val}"', 2000)
 
     def _on_song_bpm_edited(self, row: int, value: object) -> None:
         song_index = self.song_list.row_song_index(row)

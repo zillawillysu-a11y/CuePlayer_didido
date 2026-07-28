@@ -14,9 +14,10 @@ def create_splash_pixmap(
     width: int = 520,
     height: int = 300,
     message: str = "Loading…",
+    progress: float = 0.0,
     fullscreen: bool = False,
 ) -> QPixmap:
-    """Paint a CuePlayer-branded dark splash (no external image assets)."""
+    """Paint a CuePlayer-branded dark splash with a real progress bar."""
     pixmap = QPixmap(max(320, width), max(200, height))
     pixmap.fill(QColor(BG_APP))
 
@@ -24,12 +25,10 @@ def create_splash_pixmap(
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
     if not fullscreen:
-        # Compact card (tests / fallback).
         painter.setPen(QColor(BORDER))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(pixmap.rect().adjusted(1, 1, -2, -2), 12, 12)
 
-    # Branding centered in the pixmap (card or full-screen).
     title = "CuePlayer"
     title_font = QFont()
     title_font.setFamilies(["Segoe UI", "Microsoft JhengHei UI", "Arial"])
@@ -46,9 +45,9 @@ def create_splash_pixmap(
     msg_block = msg_metrics.boundingRect(message)
 
     gap_title_bar = 14
-    bar_height = 3
-    bar_width = 72
-    gap_bar_msg = 22
+    bar_height = 4
+    bar_width = min(220, max(120, width // 5))
+    gap_bar_msg = 18
     block_h = (
         title_block.height()
         + gap_title_bar
@@ -70,7 +69,14 @@ def create_splash_pixmap(
     )
 
     bar_y = top_y + title_block.height() + gap_title_bar
-    painter.fillRect(width // 2 - bar_width // 2, bar_y, bar_width, bar_height, QColor(ACCENT))
+    bar_x = width // 2 - bar_width // 2
+    # Track (empty).
+    painter.fillRect(bar_x, bar_y, bar_width, bar_height, QColor(BORDER))
+    # Fill (0…100%).
+    fill = max(0.0, min(1.0, float(progress)))
+    fill_w = max(0, int(round(bar_width * fill)))
+    if fill_w > 0:
+        painter.fillRect(bar_x, bar_y, fill_w, bar_height, QColor(ACCENT))
 
     painter.setFont(msg_font)
     painter.setPen(QColor(TEXT_MUTED))
@@ -86,27 +92,59 @@ def create_splash_pixmap(
     return pixmap
 
 
-def show_startup_splash(app: QApplication, *, message: str = "Loading…") -> QSplashScreen:
-    """Show a full-screen dark splash immediately and force a paint before heavy init."""
-    screen = app.primaryScreen()
-    geo = screen.availableGeometry() if screen is not None else None
-    if geo is not None:
-        width = max(320, geo.width())
-        height = max(200, geo.height())
-        pixmap = create_splash_pixmap(
-            width=width,
-            height=height,
-            message=message,
-            fullscreen=True,
-        )
-        splash = QSplashScreen(pixmap)
-        splash.setGeometry(geo)
-    else:
-        pixmap = create_splash_pixmap(message=message, fullscreen=False)
-        splash = QSplashScreen(pixmap)
+class StartupSplash(QSplashScreen):
+    """Full-screen splash that can update loading progress while the app boots."""
 
-    splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-    splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    def __init__(self, app: QApplication, *, message: str = "Loading…") -> None:
+        screen = app.primaryScreen()
+        geo = screen.availableGeometry() if screen is not None else None
+        if geo is not None:
+            self._width = max(320, geo.width())
+            self._height = max(200, geo.height())
+            self._fullscreen = True
+            pixmap = create_splash_pixmap(
+                width=self._width,
+                height=self._height,
+                message=message,
+                progress=0.0,
+                fullscreen=True,
+            )
+            super().__init__(pixmap)
+            self.setGeometry(geo)
+        else:
+            self._width = 520
+            self._height = 300
+            self._fullscreen = False
+            pixmap = create_splash_pixmap(
+                message=message,
+                progress=0.0,
+                fullscreen=False,
+            )
+            super().__init__(pixmap)
+
+        self._message = message
+        self._progress = 0.0
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+
+    def set_progress(self, progress: float, message: str | None = None) -> None:
+        self._progress = max(0.0, min(1.0, float(progress)))
+        if message is not None:
+            self._message = message
+        pixmap = create_splash_pixmap(
+            width=self._width,
+            height=self._height,
+            message=self._message,
+            progress=self._progress,
+            fullscreen=self._fullscreen,
+        )
+        self.setPixmap(pixmap)
+        QApplication.processEvents()
+
+
+def show_startup_splash(app: QApplication, *, message: str = "Loading…") -> StartupSplash:
+    """Show a full-screen dark splash immediately and force a paint before heavy init."""
+    splash = StartupSplash(app, message=message)
     splash.show()
-    app.processEvents()
+    splash.set_progress(0.0, message)
     return splash

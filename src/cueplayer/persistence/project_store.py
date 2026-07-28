@@ -26,6 +26,7 @@ from cueplayer.domain.models import (
     coerce_file_ltc_side,
 )
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
+from cueplayer.exporters.common import ma_export_name_from_display
 from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order
 
 
@@ -591,7 +592,10 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 setlist_number=float(
                     song_data.get("setlist_number", song_index + 1)
                 ),
-                ma_export_name=song_data.get("ma_export_name"),
+                ma_export_name=(
+                    (song_data.get("ma_export_name") or "").strip()
+                    or ma_export_name_from_display(song_data["name"])
+                ),
                 bpm=_coerce_optional_bpm(song_data.get("bpm")),
                 note=str(song_data.get("note") or ""),
                 row_color=_coerce_row_color(song_data.get("row_color")),
