@@ -294,6 +294,15 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setSizes([260, 100])
         self._now_splitter.splitterMoved.connect(self._on_now_splitter_moved)
         now_layout.addWidget(self._now_splitter, stretch=1)
+        # Absorbs leftover NOW height in "below" mode so Primary↔Secondary stays put
+        # when the user drags NOW vs Cue List.
+        self._now_below_spacer = QWidget()
+        self._now_below_spacer.setMinimumHeight(0)
+        self._now_below_spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._now_below_spacer.hide()
+        now_layout.addWidget(self._now_below_spacer, stretch=0)
         self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
         for widget in (
@@ -492,13 +501,48 @@ class CueMonitorPanel(QWidget):
         self._sync_now_splitter_visibility()
 
     def _on_now_splitter_moved(self, *_args) -> None:
+        self._pin_now_inner_height()
         self._schedule_now_card_fit()
         self._ensure_now_body_fits_content()
         self.now_layout_changed.emit()
 
     def _on_body_splitter_moved(self, *_args) -> None:
-        self._schedule_now_card_fit()
+        # Only NOW vs Cue List changes. Re-pin Primary↔Secondary so Qt stretch
+        # does not redistribute that split while the body handle moves.
+        locked = list(self._now_splitter.sizes())
+        if len(locked) == 2 and sum(locked) > 0:
+            self._now_splitter.setSizes(locked)
+        self._pin_now_inner_height()
         self.now_layout_changed.emit()
+
+    def _pin_now_inner_height(self) -> None:
+        """In below mode, freeze Primary/Secondary pixel heights inside NOW."""
+        if not hasattr(self, "_now_below_spacer"):
+            return
+        if self._now_placement != "below":
+            self._now_splitter.setMinimumHeight(0)
+            self._now_splitter.setMaximumHeight(16777215)
+            now_layout = self._now_section.layout()
+            if now_layout is not None:
+                now_layout.setStretchFactor(self._now_splitter, 1)
+                now_layout.setStretchFactor(self._now_below_spacer, 0)
+            self._now_below_spacer.hide()
+            return
+        sizes = self._now_splitter.sizes()
+        inner = sum(sizes) if sizes else 0
+        if inner <= 0:
+            inner = sum(
+                max(0, w.minimumHeight())
+                for w in (self._primary_now_column, self._secondary_now_column)
+                if w.isVisible()
+            )
+        inner = max(inner, 80) + max(0, self._now_splitter.handleWidth())
+        self._now_splitter.setFixedHeight(inner)
+        now_layout = self._now_section.layout()
+        if now_layout is not None:
+            now_layout.setStretchFactor(self._now_splitter, 0)
+            now_layout.setStretchFactor(self._now_below_spacer, 1)
+        self._now_below_spacer.show()
 
     def now_secondary_placement(self) -> str:
         return self._now_placement
@@ -528,8 +572,9 @@ class CueMonitorPanel(QWidget):
     def _apply_now_placement(self) -> None:
         if self._now_placement == "below":
             self._now_splitter.setOrientation(Qt.Orientation.Vertical)
-            self._now_splitter.setStretchFactor(0, 3)
-            self._now_splitter.setStretchFactor(1, 1)
+            # Stretch 0 keeps Primary/Secondary pixel sizes when NOW↔Cue List is dragged.
+            self._now_splitter.setStretchFactor(0, 0)
+            self._now_splitter.setStretchFactor(1, 0)
             stashed = self._splitter_state_below
             default_sizes = [180, 88]
         else:
@@ -543,7 +588,15 @@ class CueMonitorPanel(QWidget):
             restored = bool(self._now_splitter.restoreState(stashed))
         if not restored:
             self._now_splitter.setSizes(default_sizes)
+        # restoreState can bring back old stretch factors — re-assert after restore.
+        if self._now_placement == "below":
+            self._now_splitter.setStretchFactor(0, 0)
+            self._now_splitter.setStretchFactor(1, 0)
+        else:
+            self._now_splitter.setStretchFactor(0, 3)
+            self._now_splitter.setStretchFactor(1, 1)
         self._sync_now_splitter_visibility()
+        self._pin_now_inner_height()
         self._refresh_splitter_handles()
         self._schedule_now_card_fit()
         self._ensure_now_body_fits_content()
