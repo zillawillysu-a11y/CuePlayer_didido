@@ -68,6 +68,7 @@ class CueMonitorPanel(QWidget):
         self._song: Song | None = None
         self._position = 0.0
         self._current_mark_ids: set[str] = set()
+        self._playhead_list_mark_id: str | None = None
         self._updating_table = False
         self._syncing_selection = False
         self._secondary_hold_mark_id: str | None = None
@@ -187,6 +188,7 @@ class CueMonitorPanel(QWidget):
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
+        self._playhead_list_mark_id = None
         self.refresh_list()
         self._apply_now_panel_visibility()
         self.set_position(self._position, getattr(song, "duration_seconds", 0.0) if song else 0.0)
@@ -521,14 +523,41 @@ class CueMonitorPanel(QWidget):
         changed = active_ids != self._current_mark_ids
         self._current_mark_ids = active_ids
         self._apply_now_highlight()
-        if changed and scroll_id is not None:
-            for row in range(self.cue_table.rowCount()):
-                time_item = self.cue_table.item(row, _COL_TIME)
-                if time_item is None:
-                    continue
-                if time_item.data(Qt.ItemDataRole.UserRole) == scroll_id:
-                    self.cue_table.scrollToItem(
-                        time_item,
-                        QAbstractItemView.ScrollHint.PositionAtCenter,
-                    )
-                    break
+        del changed, scroll_id  # NOW cards keep their own logic; list follows playhead below.
+        self._follow_cue_list_to_playhead()
+
+    def _follow_cue_list_to_playhead(self) -> None:
+        """Scroll/select the cue row for the current playhead (independent of NOW hold)."""
+        if self._song is None:
+            return
+        mark = self._song.last_mark_at_or_before(self._position)
+        if mark is None:
+            return
+        if mark.id == self._playhead_list_mark_id:
+            return
+        self._playhead_list_mark_id = mark.id
+        self._select_mark_row(mark.id, scroll=True, emit_selection=True)
+
+    def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> None:
+        self._syncing_selection = True
+        self.cue_table.clearSelection()
+        model = self.cue_table.selectionModel()
+        for row in range(self.cue_table.rowCount()):
+            time_item = self.cue_table.item(row, _COL_TIME)
+            if time_item is None:
+                continue
+            if time_item.data(Qt.ItemDataRole.UserRole) != mark_id:
+                continue
+            model.select(
+                self.cue_table.model().index(row, 0),
+                model.SelectionFlag.Select | model.SelectionFlag.Rows,
+            )
+            if scroll:
+                self.cue_table.scrollToItem(
+                    time_item,
+                    QAbstractItemView.ScrollHint.PositionAtCenter,
+                )
+            break
+        self._syncing_selection = False
+        if emit_selection:
+            self.selection_changed.emit([mark_id])
