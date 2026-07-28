@@ -3749,12 +3749,11 @@ class MainWindow(QMainWindow):
         self.engine.set_buffer(buffer)
         self.engine.ensure_playback_ready()
         key = self._audio_cache_key(path)
-        if key is not None:
-            detected = self.engine.detected_ltc_channel
-            if detected is not None:
-                self._audio_ltc_cache[key] = detected
-            elif key not in self._audio_ltc_cache:
-                self._schedule_ltc_detect_for_buffer(path, buffer)
+        # Never copy engine.detected_ltc_channel here — it can still be the
+        # previous song's result until async detect finishes, which wrongly
+        # lit LTC L/R on pure-music tracks after playing a striped song.
+        if key is not None and key not in self._audio_ltc_cache:
+            self._schedule_ltc_detect_for_buffer(path, buffer)
         self._refresh_setlist_ltc_cells()
         exclude = None
         if key is not None:

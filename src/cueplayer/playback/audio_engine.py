@@ -532,11 +532,12 @@ class AudioEngine(QObject):
             self._position_frame = 0
             self.clear_calibration_clicks()
         self._buffer = buffer
+        # Always clear stripe detection — a new buffer must not inherit the
+        # previous song's Left/Right LTC result (setlist badge + routing).
+        self._detected_ltc_channel = None
+        self._ltc_detect_ran = False
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
-        else:
-            self._detected_ltc_channel = None
-            self._ltc_detect_ran = False
         self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
