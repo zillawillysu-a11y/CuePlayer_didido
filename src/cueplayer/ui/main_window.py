@@ -1800,6 +1800,7 @@ class MainWindow(QMainWindow):
             audio_path=audio_path if audio_path is not None else None,
             video_path=video_path if video_path is not None else None,
             song_id=song.id,
+            use_left_ltc=bool(song.use_left_ltc),
         )
 
     def _apply_draft_to_song(self, song: Song, draft: SongDraft) -> None:
@@ -1809,6 +1810,7 @@ class MainWindow(QMainWindow):
         song.bpm = draft.bpm
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
+        song.use_left_ltc = bool(draft.use_left_ltc)
         if draft.audio_path is not None and Path(draft.audio_path).is_file():
             song.audio_tracks = [
                 AudioTrack(
@@ -1826,6 +1828,11 @@ class MainWindow(QMainWindow):
             song.video_clips = []
         if song is self.current_song:
             self.engine.set_song_timebase(song.start_timecode, song.fps)
+            self.engine.set_song(song)
+            self.engine.refresh_song_ltc_routing()
+            self._refresh_setlist_ltc_cells()
+            self._refresh_timeline_waveform_for_ltc()
+            self._refresh_timecode_status()
 
     def _attach_video_source_to_song(
         self,
@@ -3537,6 +3544,8 @@ class MainWindow(QMainWindow):
         self._schedule_ltc_detect_for_buffer(path, buffer)
 
     def _ltc_channel_for_song(self, song: Song) -> int | None:
+        if bool(getattr(song, "use_left_ltc", False)):
+            return 0
         path = self._main_audio_path_for_song(song)
         if path is None:
             return None
@@ -3755,9 +3764,7 @@ class MainWindow(QMainWindow):
         if key is not None and key not in self._audio_ltc_cache:
             self._schedule_ltc_detect_for_buffer(path, buffer)
         self._refresh_setlist_ltc_cells()
-        exclude = None
-        if key is not None:
-            exclude = self._audio_ltc_cache.get(key)
+        exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         self.timeline.set_audio(waveform_display_buffer(buffer, exclude_channel=exclude))
         if refresh_song_widgets:

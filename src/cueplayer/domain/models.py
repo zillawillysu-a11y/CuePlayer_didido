@@ -226,6 +226,9 @@ class Song:
     category_id: str | None = None
     audio_tracks: list[AudioTrack] = field(default_factory=list)
     video_clips: list[VideoClip] = field(default_factory=list)
+    # When True, route this song's file Left channel to the project LTC output
+    # channel(s) from Audio/Timecode settings (overrides generator for this song).
+    use_left_ltc: bool = False
     # Track-level mute for every video clip's embedded audio (picture keeps
     # showing — this only silences the clip's own audio bus). Defaults to
     # audible: alignment work needs to hear video against the music track;
@@ -399,6 +402,7 @@ class Song:
             bpm=self.bpm,
             row_color=self.row_color,
             category_id=None,
+            use_left_ltc=bool(self.use_left_ltc),
             video_track_muted=self.video_track_muted,
             show_video_track=self.show_video_track,
             music_volume=self.music_volume,

@@ -8,6 +8,7 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -40,7 +41,9 @@ _COL_MA = 2
 _COL_BPM = 3
 _COL_TC = 4
 _COL_FPS = 5
-_COL_FILE = 6
+_COL_LEFT_LTC = 6
+_COL_FILE = 7
+_COL_COUNT = 8
 
 
 _EDIT_STYLE = "QLineEdit { border-radius: 3px; }"
@@ -57,6 +60,8 @@ class SongDraft:
     audio_path: Path | None = None
     video_path: Path | None = None
     song_id: str | None = None
+    # Send file Left channel to Audio/Timecode settings LTC output channel(s).
+    use_left_ltc: bool = False
 
 
 def format_bpm(value: float | None) -> str:
@@ -206,7 +211,7 @@ class SongEditDialog(QDialog):
         if not drafts:
             raise ValueError("SongEditDialog requires at least one draft")
         self.setWindowTitle(title)
-        width = 1020 if len(drafts) > 1 else 820
+        width = 1140 if len(drafts) > 1 else 940
         self.resize(width, min(480, 180 + 44 * len(drafts)))
         self._drafts = [
             SongDraft(
@@ -219,6 +224,7 @@ class SongEditDialog(QDialog):
                 audio_path=d.audio_path,
                 video_path=d.video_path,
                 song_id=d.song_id,
+                use_left_ltc=bool(d.use_left_ltc),
             )
             for d in drafts
         ]
@@ -227,15 +233,26 @@ class SongEditDialog(QDialog):
         hint = QLabel(
             "Numbers can be customized (e.g. 0.5 for an interlude). After editing, use "
             '"Sort by Number" in the Setlist. Names can be Chinese; English/MA should use '
-            "pinyin or letters/numbers; BPM can be left blank."
+            "pinyin or letters/numbers; BPM can be left blank. "
+            "Check “Left LTC” to send this song’s Left channel to the LTC output "
+            "channel set in Audio / Timecode settings."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #888; margin-bottom: 4px;")
         root.addWidget(hint)
 
-        self.table = QTableWidget(len(self._drafts), 7)
+        self.table = QTableWidget(len(self._drafts), _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["Number", "Song Name", "English / MA", "BPM", "Start Timecode", "FPS", "Media File"]
+            [
+                "Number",
+                "Song Name",
+                "English / MA",
+                "BPM",
+                "Start Timecode",
+                "FPS",
+                "Left LTC",
+                "Media File",
+            ]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
@@ -256,6 +273,8 @@ class SongEditDialog(QDialog):
         header.resizeSection(_COL_TC, 130)
         header.setSectionResizeMode(_COL_FPS, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(_COL_FPS, 90)
+        header.setSectionResizeMode(_COL_LEFT_LTC, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(_COL_LEFT_LTC, 72)
         header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Stretch)
 
         for row, draft in enumerate(self._drafts):
@@ -289,6 +308,19 @@ class SongEditDialog(QDialog):
             idx = fps_combo.findText(_fps_label(draft.fps))
             fps_combo.setCurrentIndex(idx if idx >= 0 else fps_combo.findText("30"))
             self.table.setCellWidget(row, _COL_FPS, fps_combo)
+
+            ltc_check = QCheckBox()
+            ltc_check.setChecked(bool(draft.use_left_ltc))
+            ltc_check.setToolTip(
+                "Send this song’s Left audio channel to the LTC Channel "
+                "configured in Audio / Timecode settings (overrides generator for this song)"
+            )
+            ltc_wrap = QWidget()
+            ltc_layout = QHBoxLayout(ltc_wrap)
+            ltc_layout.setContentsMargins(0, 0, 0, 0)
+            ltc_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ltc_layout.addWidget(ltc_check)
+            self.table.setCellWidget(row, _COL_LEFT_LTC, ltc_wrap)
 
             file_cell = _AudioFileCell(draft.audio_path or draft.video_path)
             self.table.setCellWidget(row, _COL_FILE, file_cell)
@@ -328,6 +360,14 @@ class SongEditDialog(QDialog):
             except ValueError:
                 return 30.0
         return 30.0
+
+    def _left_ltc_at_row(self, row: int) -> bool:
+        widget = self.table.cellWidget(row, _COL_LEFT_LTC)
+        if isinstance(widget, QWidget):
+            check = widget.findChild(QCheckBox)
+            if check is not None:
+                return bool(check.isChecked())
+        return False
 
     def _accept(self) -> None:
         updated: list[SongDraft] = []
@@ -412,6 +452,7 @@ class SongEditDialog(QDialog):
                     audio_path=audio_path,
                     video_path=video_path,
                     song_id=self._drafts[row].song_id,
+                    use_left_ltc=self._left_ltc_at_row(row),
                 )
             )
         self._drafts = updated

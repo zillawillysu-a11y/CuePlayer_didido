@@ -158,7 +158,13 @@ class AudioEngine(QObject):
     def ltc_source_mode(self) -> str:
         return str(self._audio_settings.ltc_source)
 
+    def _song_uses_left_ltc(self) -> bool:
+        """Per-song override: file Left → project LTC output channel(s)."""
+        return bool(self._song is not None and getattr(self._song, "use_left_ltc", False))
+
     def _uses_generated_ltc(self) -> bool:
+        if self._song_uses_left_ltc():
+            return False
         return bool(
             self._audio_settings.ltc_enabled
             and self._audio_settings.ltc_source == "generator"
@@ -187,6 +193,8 @@ class AudioEngine(QObject):
 
     def _file_ltc_channel(self) -> int | None:
         """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
+        if self._song_uses_left_ltc():
+            return 0 if self._audio_settings.ltc_enabled else None
         s = self._audio_settings
         uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
         uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
@@ -196,6 +204,10 @@ class AudioEngine(QObject):
 
     def _resolved_file_ltc_channel(self, *, require_settings: bool = False) -> int | None:
         """Which loaded-file channel carries striped LTC (0=L, 1=R)."""
+        if self._song_uses_left_ltc():
+            if require_settings and not self._audio_settings.ltc_enabled:
+                return None
+            return 0
         s = self._audio_settings
         if require_settings:
             uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
@@ -220,6 +232,8 @@ class AudioEngine(QObject):
         """Source file channel for the dedicated LTC output bus."""
         if not self._audio_settings.ltc_enabled:
             return None
+        if self._song_uses_left_ltc():
+            return 0
         if self._audio_settings.ltc_source == "generator":
             return None
         return self._file_ltc_channel()
@@ -233,7 +247,8 @@ class AudioEngine(QObject):
         if ch_count <= 1:
             return 0, 0
         strip_ltc = (
-            is_music_source_route(self._audio_settings.music_l_route)
+            self._song_uses_left_ltc()
+            or is_music_source_route(self._audio_settings.music_l_route)
             or is_music_source_route(self._audio_settings.music_r_route)
             or is_ltc_route(self._audio_settings.music_l_route)
             or is_ltc_route(self._audio_settings.music_r_route)
@@ -338,6 +353,7 @@ class AudioEngine(QObject):
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
         self.refresh_video_clips()
+        self._refresh_source_routing_cache()
 
     def set_video_track_muted(self, muted: bool) -> None:
         """Silence every video clip's own embedded audio (picture keeps showing)."""
@@ -894,9 +910,29 @@ class AudioEngine(QObject):
         s = self._audio_settings
         if not s.ltc_enabled:
             return False
+        if self._song_uses_left_ltc():
+            return True
         if s.ltc_source == "generator":
             return bool(s.ltc_generator_enabled)
         return self._file_ltc_channel() is not None or s.ltc_source != "generator"
+
+    def refresh_song_ltc_routing(self) -> None:
+        """Re-resolve LTC/music routing after per-song Left-LTC flag changes."""
+        was_playing = self._playing
+        pos = self.raw_position
+        if was_playing:
+            self.pause()
+        if self._uses_generated_ltc():
+            self._ensure_ltc_cache()
+        else:
+            self._invalidate_ltc_cache()
+        self._resolve_device_and_route()
+        self._refresh_source_routing_cache()
+        self._rebuild_output_stream()
+        self.timecode_status_changed.emit()
+        if was_playing:
+            self.seek(pos)
+            self.play()
 
     def _parsed_stereo_routes(
         self, max_ch: int
