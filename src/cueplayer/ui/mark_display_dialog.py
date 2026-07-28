@@ -68,6 +68,13 @@ class MarkDisplayDialog(QDialog):
         )
         form.addRow("Video", self.video_track_box)
 
+        self.ltc_track_box = QCheckBox("Show LTC Track")
+        self.ltc_track_box.setChecked(song.show_ltc_track)
+        self.ltc_track_box.setToolTip(
+            "Show striped LTC waveform under Music to inspect noisy / fuzzy stripe quality."
+        )
+        form.addRow("LTC", self.ltc_track_box)
+
         self.stem_box = QCheckBox("Stem line through mark shapes")
         self.stem_box.setChecked(song.show_mark_stem)
         self.stem_box.setToolTip("Draws a vertical line above/below each Mark shape; turn off to show just the shape")
@@ -209,6 +216,7 @@ class MarkDisplayDialog(QDialog):
 
         self.tracks_box.toggled.connect(self._apply)
         self.video_track_box.toggled.connect(self._apply)
+        self.ltc_track_box.toggled.connect(self._apply)
         self.stem_box.toggled.connect(self._apply)
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
@@ -306,6 +314,7 @@ class MarkDisplayDialog(QDialog):
         self._sync_spacing_enabled()
         self._song.show_mark_tracks = self.tracks_box.isChecked()
         self._song.show_video_track = self.video_track_box.isChecked()
+        self._song.show_ltc_track = self.ltc_track_box.isChecked()
         self._song.show_mark_stem = self.stem_box.isChecked()
         style = str(self.line_style.currentData() or "solid")
         if style not in ("solid", "dash", "dot"):

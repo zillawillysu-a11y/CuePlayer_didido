@@ -37,7 +37,7 @@ from cueplayer.ui.drag_drop import (
 )
 from cueplayer.ui.icon_button import IconButton
 from cueplayer.ui.marker_draw import draw_marker_shape
-from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, with_alpha
+from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, WARNING, with_alpha
 from cueplayer.ui.video_clip_edit import (
     clip_duration_after_right_trim,
     clip_start_after_body_drag,
@@ -73,6 +73,7 @@ class TimelineWidget(QWidget):
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
     video_track_visibility_changed = Signal(bool)  # show_video_track
+    ltc_track_visibility_changed = Signal(bool)  # show_ltc_track
     content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
@@ -81,6 +82,8 @@ class TimelineWidget(QWidget):
         super().__init__(parent)
         self._song: Song | None = None
         self._audio: AudioBuffer | None = None
+        self._ltc_audio: AudioBuffer | None = None
+        self._ltc_channel: int | None = None
         self._audio_loading = False
         self._audio_loading_label = ""
         self._position = 0.0
@@ -104,6 +107,10 @@ class TimelineWidget(QWidget):
         self._video_track_expanded = False
         self._video_track_muted = False
         self._show_video_track = True
+        self._show_ltc_track = False
+        self._ltc_lane_height = 56.0
+        self._ltc_lane_min_height = 28.0
+        self._ltc_waveform_color = WARNING
         self._selected_clip_ids: set[str] = set()
         self._hover_clip_id: str | None = None
         self._dragging_clip: str | None = None
@@ -180,6 +187,7 @@ class TimelineWidget(QWidget):
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._build_zoom_overlay()
         self._build_video_track_overlay()
+        self._build_ltc_track_overlay()
         self._video_waveform_cache = VideoClipWaveformCache()
         self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready)
         self.video_clips_changed.connect(self.refresh_video_clip_waveforms)
@@ -373,11 +381,65 @@ class TimelineWidget(QWidget):
             w.raise_()
         self._layout_video_track_overlay()
 
+    def _build_ltc_track_overlay(self) -> None:
+        """LTC inspect lane: eye hide/show to review stripe quality (noisy / fuzzy)."""
+        btn_size = QSize(22, 22)
+        self.ltc_hide_button = IconButton(
+            "eye_off",
+            "Hide LTC Track (stripe waveform for Programmer feedback)",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
+        self.ltc_show_button = IconButton(
+            "eye",
+            "Show LTC Track — inspect striped timecode waveform quality",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
+        self.ltc_hide_button.clicked.connect(self._hide_ltc_track_clicked)
+        self.ltc_show_button.clicked.connect(self._show_ltc_track_clicked)
+        self.ltc_hide_button.raise_()
+        self.ltc_show_button.raise_()
+        self._layout_ltc_track_overlay()
+
+    def _hide_ltc_track_clicked(self) -> None:
+        self.set_show_ltc_track(False)
+
+    def _show_ltc_track_clicked(self) -> None:
+        self.set_show_ltc_track(True)
+
     def _hide_video_track_clicked(self) -> None:
         self.set_show_video_track(False)
 
     def _show_video_track_clicked(self) -> None:
         self.set_show_video_track(True)
+
+    def _layout_ltc_track_overlay(self) -> None:
+        if not hasattr(self, "ltc_hide_button"):
+            return
+        visible = self._ltc_lane_visible()
+        eye_header = self._ltc_eye_header_visible()
+        self.ltc_hide_button.setVisible(visible)
+        self.ltc_show_button.setVisible(eye_header)
+        if visible:
+            top = self._ltc_lane_top_y()
+            row_h = int(self._ltc_lane_height)
+            btn_y = top + (row_h - self.ltc_hide_button.height()) // 2
+            x = self._header_width - 6 - self.ltc_hide_button.width()
+            self.ltc_hide_button.move(x, btn_y)
+            self.ltc_hide_button.raise_()
+            return
+        if eye_header:
+            # Sit just above the music/video boundary, left of the Video show-eye.
+            top = self._wave_bottom_y()
+            btn_y = top - self.ltc_show_button.height() - 2
+            x = self._header_width - 6 - self.ltc_show_button.width()
+            if self._video_eye_header_visible():
+                x -= self.video_show_button.width() + 3
+            self.ltc_show_button.move(x, btn_y)
+            self.ltc_show_button.raise_()
 
     def _layout_video_track_overlay(self) -> None:
         if not hasattr(self, "video_mute_button"):
@@ -395,11 +457,15 @@ class TimelineWidget(QWidget):
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
             if eye_header:
-                top = self._wave_bottom_y()
+                # Below LTC band when LTC is shown; else bottom of music wave.
+                top = self._ltc_lane_top_y() + self._ltc_band_height()
+                if self._ltc_band_height() == 0:
+                    top = self._wave_bottom_y()
                 btn_y = top - self.video_show_button.height() - 2
                 x = self._header_width - 6 - self.video_show_button.width()
                 self.video_show_button.move(x, btn_y)
                 self.video_show_button.raise_()
+            self._layout_ltc_track_overlay()
             return
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
@@ -450,6 +516,7 @@ class TimelineWidget(QWidget):
             self.music_volume_caption.hide()
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
+        self._layout_ltc_track_overlay()
 
     def _toggle_video_track_muted(self) -> None:
         self.set_video_track_muted(not self._video_track_muted)
@@ -520,6 +587,11 @@ class TimelineWidget(QWidget):
         self._selected_clip_ids.clear()
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
         self._show_video_track = bool(song.show_video_track) if song is not None else True
+        self._show_ltc_track = bool(song.show_ltc_track) if song is not None else False
+        if song is not None:
+            self._ltc_lane_height = max(
+                self._ltc_lane_min_height, min(400.0, float(song.ltc_lane_height))
+            )
         self._sync_video_clip_volume_ui()
         self._sync_music_volume_ui()
         if song is not None:
@@ -539,6 +611,7 @@ class TimelineWidget(QWidget):
             QTimer.singleShot(0, _preload_video_waveforms)
         self._apply_layout_heights()
         self._layout_video_track_overlay()
+        self._layout_ltc_track_overlay()
         self.update()
 
     def refresh_video_clip_waveforms(self) -> None:
@@ -613,6 +686,16 @@ class TimelineWidget(QWidget):
         """Show-eye in the left header when the Video lane is hidden."""
         return self._song is not None and not self._show_video_track
 
+    def _ltc_available(self) -> bool:
+        return self._ltc_channel is not None and self._ltc_audio is not None
+
+    def _ltc_lane_visible(self) -> bool:
+        return self._ltc_available() and self._show_ltc_track
+
+    def _ltc_eye_header_visible(self) -> bool:
+        """Show-eye when a file LTC channel is known but the inspect lane is hidden."""
+        return self._ltc_available() and not self._show_ltc_track
+
     def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
         """Show / hide the Video lane (Preview / Clean Output keep playing)."""
         visible = bool(visible)
@@ -633,20 +716,56 @@ class TimelineWidget(QWidget):
         if emit and changed:
             self.video_track_visibility_changed.emit(visible)
 
+    def set_show_ltc_track(self, visible: bool, *, emit: bool = True) -> None:
+        """Show / hide the LTC inspect waveform lane."""
+        visible = bool(visible)
+        changed = visible != self._show_ltc_track or (
+            self._song is not None and self._song.show_ltc_track != visible
+        )
+        self._show_ltc_track = visible
+        if self._song is not None:
+            self._song.show_ltc_track = visible
+        self._apply_layout_heights()
+        self._layout_video_track_overlay()
+        self._layout_ltc_track_overlay()
+        self.update()
+        if emit and changed:
+            self.ltc_track_visibility_changed.emit(visible)
+
+    def set_ltc_audio(
+        self,
+        audio: AudioBuffer | None,
+        *,
+        channel: int | None = None,
+    ) -> None:
+        """Feed the LTC inspect lane (one file channel). ``None`` hides chrome."""
+        self._ltc_audio = audio
+        self._ltc_channel = int(channel) if channel is not None and audio is not None else None
+        self._apply_layout_heights()
+        self._layout_ltc_track_overlay()
+        self.update()
+
     @property
     def _video_lane_height(self) -> float:
         """Total video lane height, including the expanded clip-volume row."""
         extra = self._video_expand_extra if self._video_track_expanded else 0.0
         return self._video_lane_base_height + extra
 
-    def _video_lane_top_y(self) -> int:
+    def _ltc_lane_top_y(self) -> int:
         return self._wave_bottom_y()
 
+    def _ltc_band_height(self) -> int:
+        return int(self._ltc_lane_height) if self._ltc_lane_visible() else 0
+
+    def _video_lane_top_y(self) -> int:
+        return self._ltc_lane_top_y() + self._ltc_band_height()
+
     def _tracks_top_y(self) -> int:
-        """Y where mark lanes begin (below waveform + optional video lane)."""
+        """Y where mark lanes begin (below waveform + optional LTC + video)."""
+        y = self._video_lane_top_y()
         if self._video_lane_visible():
-            return self._wave_bottom_y() + int(self._video_lane_height)
-        return self._wave_bottom_y()
+            return y + int(self._video_lane_height)
+        return y
 
     def _video_lane_clip_bottom_y(self) -> int:
         return self._video_lane_top_y() + int(self._video_lane_base_height)
@@ -827,8 +946,13 @@ class TimelineWidget(QWidget):
         self._show_mark_tracks = self._song.show_mark_tracks
         self._show_mark_stem = self._song.show_mark_stem
         self.set_show_video_track(self._song.show_video_track, emit=False)
+        self.set_show_ltc_track(self._song.show_ltc_track, emit=False)
+        self._ltc_lane_height = max(
+            self._ltc_lane_min_height, min(400.0, float(self._song.ltc_lane_height))
+        )
         self._apply_layout_heights()
         self._layout_video_track_overlay()
+        self._layout_ltc_track_overlay()
         self.update()
 
     def _visible_lane_count(self) -> int:
@@ -854,6 +978,9 @@ class TimelineWidget(QWidget):
         self._audio_loading_label = (label or "").strip()
         if loading:
             self._audio = None
+            self._ltc_audio = None
+            self._ltc_channel = None
+            self._layout_ltc_track_overlay()
         self.update()
 
     def set_auto_scroll(self, enabled: bool) -> None:
@@ -1040,6 +1167,29 @@ class TimelineWidget(QWidget):
             return int(self._video_lane_height)
         return 0
 
+    def _apply_layout_heights(self) -> None:
+        # Taller wave → thinner lane rows so button timelines stay compact.
+        max_h = max(80, self._max_wave_height())
+        self._wave_height = max(80, min(max_h, self._wave_height))
+        t = (self._wave_height - 80) / max(1.0, float(max_h - 80))
+        t = min(1.0, max(0.0, t))
+        self._lane_height = int(round(32 - t * 14))  # 32 → 18
+        visible = self._visible_lane_count()
+        video_h = self._video_band_height()
+        ltc_h = self._ltc_band_height()
+        needed = (
+            self._ruler_height
+            + self._wave_height
+            + ltc_h
+            + video_h
+            + visible * self._lane_height
+            + 8
+        )
+        self._content_height = needed
+        self.setMinimumHeight(needed)
+        self._layout_video_track_overlay()
+        self.content_geometry_changed.emit()
+
     def _max_wave_height(self) -> int:
         # Independent from video lane — tall content scrolls in the parent scroll area.
         return 2400
@@ -1075,21 +1225,6 @@ class TimelineWidget(QWidget):
         lane.visible = visible
         self._apply_layout_heights()
         self.update()
-
-    def _apply_layout_heights(self) -> None:
-        # Taller wave → thinner lane rows so button timelines stay compact.
-        max_h = max(80, self._max_wave_height())
-        self._wave_height = max(80, min(max_h, self._wave_height))
-        t = (self._wave_height - 80) / max(1.0, float(max_h - 80))
-        t = min(1.0, max(0.0, t))
-        self._lane_height = int(round(32 - t * 14))  # 32 → 18
-        visible = self._visible_lane_count()
-        video_h = self._video_band_height()
-        needed = self._ruler_height + self._wave_height + video_h + visible * self._lane_height + 8
-        self._content_height = needed
-        self.setMinimumHeight(needed)
-        self._layout_video_track_overlay()
-        self.content_geometry_changed.emit()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -1942,6 +2077,7 @@ class TimelineWidget(QWidget):
 
         self._paint_ruler(painter)
         wave_bottom = self._paint_waveform(painter)
+        self._paint_ltc_lane(painter)
         self._paint_video_lane(painter)
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
@@ -2126,14 +2262,28 @@ class TimelineWidget(QWidget):
         elif self._audio is not None:
             painter.setPen(QColor("#a1a1aa"))
             painter.drawText(8, self._ruler_height + 22, self._audio.path.name)
+        if self._ltc_lane_visible():
+            ltc_top = self._ltc_lane_top_y()
+            ltc_h = self._ltc_band_height()
+            painter.fillRect(0, ltc_top, self._header_width, ltc_h, QColor("#111113"))
+            side = "L" if self._ltc_channel == 0 else "R" if self._ltc_channel == 1 else "?"
+            painter.setPen(QColor(self._ltc_waveform_color))
+            painter.drawText(8, ltc_top + int(ltc_h / 2) + 4, f"LTC {side}")
         if self._video_lane_visible():
-            painter.fillRect(0, wave_bottom, self._header_width, tracks_top - wave_bottom, QColor("#111113"))
+            video_top = self._video_lane_top_y()
+            painter.fillRect(
+                0,
+                video_top,
+                self._header_width,
+                tracks_top - video_top,
+                QColor("#111113"),
+            )
             row_h = int(self._video_lane_base_height)
             painter.setPen(QColor("#8b9cff"))
-            painter.drawText(8, wave_bottom + int(row_h / 2) + 4, "Video")
+            painter.drawText(8, video_top + int(row_h / 2) + 4, "Video")
             if self._video_track_expanded:
                 clip = self._single_selected_video_clip()
-                sub_top = wave_bottom + row_h
+                sub_top = video_top + row_h
                 painter.setPen(QColor("#71717a"))
                 name_text = (
                     fm.elidedText(clip.name, Qt.TextElideMode.ElideRight, text_w)
@@ -2278,26 +2428,69 @@ class TimelineWidget(QWidget):
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
         if samples_per_pixel <= 1.5:
-            self._paint_waveform_raw(painter, mid, amp, view_left, view_right)
+            self._paint_waveform_raw(
+                painter, self._audio, mid, amp, view_left, view_right
+            )
         else:
-            self._paint_waveform_peaks(painter, mid, amp, view_left, view_right, samples_per_pixel)
+            self._paint_waveform_peaks(
+                painter,
+                self._audio,
+                mid,
+                amp,
+                view_left,
+                view_right,
+                samples_per_pixel,
+            )
 
         painter.setPen(QColor("#27272a"))
         painter.drawLine(QPointF(self._header_width, mid), QPointF(self.width(), mid))
         painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
         return y1
 
+    def _paint_ltc_lane(self, painter: QPainter) -> None:
+        if not self._ltc_lane_visible() or self._ltc_audio is None:
+            return
+        top = self._ltc_lane_top_y()
+        height = self._ltc_band_height()
+        painter.fillRect(self._header_width, top, self.width(), height, QColor("#0c0c0e"))
+        painter.setPen(QColor("#27272a"))
+        painter.drawLine(0, top + height - 1, self.width(), top + height - 1)
+
+        mid = top + height / 2
+        amp = max(4.0, (height / 2) - 4)
+        color = QColor(self._ltc_waveform_color)
+        painter.setPen(QPen(color, 1))
+        view_left = self._header_width
+        view_right = self.width()
+        samples_per_pixel = self._ltc_audio.sample_rate / self._pixels_per_second
+        if samples_per_pixel <= 1.5:
+            self._paint_waveform_raw(
+                painter, self._ltc_audio, mid, amp, view_left, view_right
+            )
+        else:
+            self._paint_waveform_peaks(
+                painter,
+                self._ltc_audio,
+                mid,
+                amp,
+                view_left,
+                view_right,
+                samples_per_pixel,
+            )
+        painter.setPen(QColor("#3f3f46"))
+        painter.drawLine(QPointF(self._header_width, mid), QPointF(self.width(), mid))
+
     def _paint_waveform_peaks(
         self,
         painter: QPainter,
+        audio: AudioBuffer,
         mid: float,
         amp: float,
         view_left: int,
         view_right: int,
         samples_per_pixel: float,
     ) -> None:
-        assert self._audio is not None
-        level = choose_peak_level(self._audio.peak_levels, samples_per_pixel)
+        level = choose_peak_level(audio.peak_levels, samples_per_pixel)
         if level is None:
             return
         for x in range(view_left, view_right):
@@ -2305,8 +2498,8 @@ class TimelineWidget(QWidget):
             t1 = self._time_for_x(x + 1)
             if t1 <= 0 or t0 >= self._duration():
                 continue
-            s0 = int(t0 * self._audio.sample_rate)
-            s1 = int(t1 * self._audio.sample_rate)
+            s0 = int(t0 * audio.sample_rate)
+            s1 = int(t1 * audio.sample_rate)
             b0 = max(0, s0 // level.samples_per_bucket)
             b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
             lo = float(level.mins[b0:b1].min())
@@ -2316,14 +2509,14 @@ class TimelineWidget(QWidget):
     def _paint_waveform_raw(
         self,
         painter: QPainter,
+        audio: AudioBuffer,
         mid: float,
         amp: float,
         view_left: int,
         view_right: int,
     ) -> None:
-        assert self._audio is not None
-        mono = self._audio.mono
-        sr = self._audio.sample_rate
+        mono = audio.mono
+        sr = audio.sample_rate
         for x in range(view_left, view_right):
             t0 = self._time_for_x(x)
             t1 = self._time_for_x(x + 1)

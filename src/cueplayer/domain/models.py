@@ -261,6 +261,11 @@ class Song:
     # alignment work is done — Preview / Clean Output keep playing; only the
     # editable track chrome is hidden until the user shows it again.
     show_video_track: bool = True
+    # Optional LTC waveform lane under Music (inspect stripe quality / noise).
+    # Default off — turn on with the eye toggle when a file LTC channel is known.
+    show_ltc_track: bool = False
+    # Timeline height for the LTC inspect lane (pixels).
+    ltc_lane_height: float = 56.0
     # Dedicated music-bed gain for alignment (Video vs Music balancing) —
     # independent of Master Volume (which scales music + video clip audio
     # together) and of LTC (never touched by any volume control, per
@@ -427,6 +432,8 @@ class Song:
             file_ltc_side=coerce_file_ltc_side(self.file_ltc_side),
             video_track_muted=self.video_track_muted,
             show_video_track=self.show_video_track,
+            show_ltc_track=self.show_ltc_track,
+            ltc_lane_height=self.ltc_lane_height,
             music_volume=self.music_volume,
             video_lane_height=self.video_lane_height,
             mark_lanes=deepcopy(self.mark_lanes),

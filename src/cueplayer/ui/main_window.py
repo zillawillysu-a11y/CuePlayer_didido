@@ -88,7 +88,7 @@ from cueplayer.domain.undo import (
     VideoClipSnapshot,
 )
 from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
-from cueplayer.media.audio_loader import AudioBuffer, waveform_display_buffer
+from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
@@ -888,6 +888,7 @@ class MainWindow(QMainWindow):
         self.timeline.video_files_dropped.connect(self._add_video_clips_from_paths)
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
         self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
+        self.timeline.ltc_track_visibility_changed.connect(self._on_ltc_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
         self.engine.position_changed.connect(self.video_sync.update_position)
@@ -1138,6 +1139,14 @@ class MainWindow(QMainWindow):
         )
         self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
         tools_menu.addAction(self._show_video_track_action)
+        self._show_ltc_track_action = QAction("Show &LTC Track", self)
+        self._show_ltc_track_action.setCheckable(True)
+        self._show_ltc_track_action.setChecked(False)
+        self._show_ltc_track_action.setToolTip(
+            "Show the striped LTC waveform under Music (inspect noisy / fuzzy stripe quality)."
+        )
+        self._show_ltc_track_action.toggled.connect(self._on_show_ltc_track_toggled)
+        tools_menu.addAction(self._show_ltc_track_action)
         self._clean_output_action = QAction("&Clean Video Output", self)
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
@@ -2761,6 +2770,11 @@ class MainWindow(QMainWindow):
             action.blockSignals(True)
             action.setChecked(bool(self.current_song.show_video_track))
             action.blockSignals(False)
+        ltc_action = getattr(self, "_show_ltc_track_action", None)
+        if ltc_action is not None:
+            ltc_action.blockSignals(True)
+            ltc_action.setChecked(bool(self.current_song.show_ltc_track))
+            ltc_action.blockSignals(False)
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -2793,6 +2807,7 @@ class MainWindow(QMainWindow):
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
             self.timeline.set_audio(None)
+            self.timeline.set_ltc_audio(None)
             self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
             self.transport.set_times(0.0, self.engine.duration)
@@ -3680,26 +3695,36 @@ class MainWindow(QMainWindow):
         self._refresh_timeline_waveform_for_ltc()
 
     def _refresh_timeline_waveform_for_ltc(self) -> None:
-        """Redraw current-song waveform without the striped LTC channel."""
+        """Redraw Music (sans LTC) + optional LTC inspect lane for the current song."""
         path = self._main_audio_path_for_song(self.current_song)
         if path is None:
+            self.timeline.set_ltc_audio(None)
             return
         buffer = self._cached_audio_buffer(path)
         if buffer is None:
+            self.timeline.set_ltc_audio(None)
             return
         exclude = self._ltc_channel_for_song(self.current_song)
-        if exclude == self._timeline_ltc_exclude:
+        if exclude != self._timeline_ltc_exclude:
+            prev = self._timeline_ltc_exclude
+            self._timeline_ltc_exclude = exclude
+            # Initial paint is in _apply_loaded_audio; only re-paint Music when
+            # LTC side becomes known (or a previous strip is cleared).
+            if not (exclude is None and prev is None):
+                self.timeline.set_audio(
+                    waveform_display_buffer(buffer, exclude_channel=exclude),
+                    reset_view=False,
+                )
+        self._apply_timeline_ltc_lane(buffer, exclude)
+
+    def _apply_timeline_ltc_lane(
+        self, buffer: AudioBuffer, channel: int | None
+    ) -> None:
+        if channel is None:
+            self.timeline.set_ltc_audio(None)
             return
-        prev = self._timeline_ltc_exclude
-        self._timeline_ltc_exclude = exclude
-        # Initial paint is in _apply_loaded_audio; only re-paint when LTC side
-        # becomes known (or a previous strip is cleared).
-        if exclude is None and prev is None:
-            return
-        self.timeline.set_audio(
-            waveform_display_buffer(buffer, exclude_channel=exclude),
-            reset_view=False,
-        )
+        ltc_buf = ltc_waveform_display_buffer(buffer, channel)
+        self.timeline.set_ltc_audio(ltc_buf, channel=channel if ltc_buf is not None else None)
 
     def _start_audio_load(self, path: Path, *, executor: ThreadPoolExecutor) -> object:
         path = Path(path)
@@ -3830,6 +3855,7 @@ class MainWindow(QMainWindow):
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         self.timeline.set_audio(waveform_display_buffer(buffer, exclude_channel=exclude))
+        self._apply_timeline_ltc_lane(buffer, exclude)
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)
             self.monitor.set_song(self.current_song)
@@ -3924,9 +3950,29 @@ class MainWindow(QMainWindow):
             2500,
         )
 
+    def _on_ltc_track_visibility_changed(self, visible: bool) -> None:
+        self.current_song.show_ltc_track = bool(visible)
+        action = getattr(self, "_show_ltc_track_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(visible))
+            action.blockSignals(False)
+        self._mark_dirty()
+        self.status.showMessage(
+            "LTC Track shown — inspect stripe quality"
+            if visible
+            else "LTC Track hidden",
+            2500,
+        )
+
     def _on_show_video_track_toggled(self, checked: bool) -> None:
         self.timeline.set_show_video_track(bool(checked))
         self.current_song.show_video_track = bool(checked)
+        self._mark_dirty()
+
+    def _on_show_ltc_track_toggled(self, checked: bool) -> None:
+        self.timeline.set_show_ltc_track(bool(checked))
+        self.current_song.show_ltc_track = bool(checked)
         self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:
