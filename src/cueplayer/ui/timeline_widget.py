@@ -527,7 +527,14 @@ class TimelineWidget(QWidget):
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         if song is not None and song.video_clips:
-            self._video_waveform_cache.preload(list(song.video_clips))
+            clips = list(song.video_clips)
+
+            def _preload_video_waveforms() -> None:
+                if self._song is song:
+                    self._video_waveform_cache.preload(clips)
+                    self.update()
+
+            QTimer.singleShot(0, _preload_video_waveforms)
         self._apply_layout_heights()
         self._layout_video_track_overlay()
         self.update()

@@ -77,7 +77,8 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_loader import AudioBuffer, load_audio
+from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
+from cueplayer.media.audio_loader import AudioBuffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
@@ -1181,6 +1182,23 @@ class MainWindow(QMainWindow):
         self._refresh_timecode_status()
         self._rebuild_song_list(select_indexes=[0])
         self._activate_song(0, stop_playback=True)
+        self._warm_project_audio_on_open()
+
+    def _warm_project_audio_on_open(self) -> None:
+        """Background-decode / disk-load every setlist song once when a project opens."""
+        paths = [
+            p
+            for song in self.project.songs
+            if (p := self._main_audio_path_for_song(song)) is not None
+        ]
+        if not paths:
+            return
+        ready = sum(1 for p in paths if self._cached_audio_buffer(p) is not None)
+        if ready < len(paths):
+            self.status.showMessage(
+                f"Preparing audio cache ({ready}/{len(paths)} ready)…", 0
+            )
+        self._prefetch_setlist_audio()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -1755,7 +1773,6 @@ class MainWindow(QMainWindow):
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
         )
-        self.engine.set_buffer(None)
         main_audio = next(
             (t for t in self.current_song.audio_tracks if t.role == "main"),
             self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
@@ -1766,13 +1783,21 @@ class MainWindow(QMainWindow):
             if cached is not None:
                 self.timeline.set_audio_loading(False)
                 self._apply_loaded_audio(
-                    cached, audio_path, mark_dirty=False, replace_track=False
+                    cached,
+                    audio_path,
+                    mark_dirty=False,
+                    replace_track=False,
+                    refresh_song_widgets=False,
                 )
             else:
+                self.engine.set_buffer(None)
                 self.timeline.set_audio_loading(True, audio_path.name)
-                self._load_audio_path(audio_path, mark_dirty=False, replace_track=False)
+                self._load_audio_path(
+                    audio_path, mark_dirty=False, replace_track=False, bump_token=False
+                )
             self._prefetch_setlist_audio(skip_path=audio_path)
         else:
+            self.engine.set_buffer(None)
             self.timeline.set_audio(None)
             self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
@@ -2437,6 +2462,7 @@ class MainWindow(QMainWindow):
         *,
         mark_dirty: bool = True,
         replace_track: bool = True,
+        bump_token: bool = True,
     ) -> None:
         path = Path(path)
         cached = self._cached_audio_buffer(path)
@@ -2444,12 +2470,17 @@ class MainWindow(QMainWindow):
             self.timeline.set_audio_loading(False)
             if replace_track or self._audio_path_matches_current_song(path, replace_track=False):
                 self._apply_loaded_audio(
-                    cached, path, mark_dirty=mark_dirty, replace_track=replace_track
+                    cached,
+                    path,
+                    mark_dirty=mark_dirty,
+                    replace_track=replace_track,
+                    refresh_song_widgets=replace_track,
                 )
             self._prefetch_setlist_audio(skip_path=path)
             return
 
-        self._audio_load_token += 1
+        if bump_token:
+            self._audio_load_token += 1
         token = self._audio_load_token
         self.timeline.set_audio_loading(True, path.name)
         self.status.showMessage(f"Loading {path.name}…", 0)
@@ -2470,19 +2501,30 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        return self._audio_buffer_cache.get(key)
+        hit = self._audio_buffer_cache.get(key)
+        if hit is not None:
+            return hit
+        disk = load_cached_audio(path)
+        if disk is None:
+            return None
+        self._store_audio_cache(path, disk, write_disk=False)
+        return disk
 
-    def _store_audio_cache(self, path: Path, buffer: AudioBuffer) -> None:
+    def _store_audio_cache(
+        self, path: Path, buffer: AudioBuffer, *, write_disk: bool = True
+    ) -> None:
         key = self._audio_cache_key(path)
         if key is not None:
             self._audio_buffer_cache[key] = buffer
+        if write_disk:
+            self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
 
     def _start_audio_load(self, path: Path, *, executor: ThreadPoolExecutor) -> object:
         path = Path(path)
         key = self._audio_cache_key(path)
         if key is not None and key in self._audio_inflight:
             return self._audio_inflight[key]
-        future = executor.submit(load_audio, path)
+        future = executor.submit(load_audio_cached, path)
         if key is not None:
             self._audio_inflight[key] = future
 
@@ -2492,7 +2534,7 @@ class MainWindow(QMainWindow):
                     buffer = fut.result()
                 except Exception:
                     return
-                self._store_audio_cache(path, buffer)
+                self._store_audio_cache(path, buffer, write_disk=False)
 
             future.add_done_callback(_done)
         return future
@@ -2580,6 +2622,7 @@ class MainWindow(QMainWindow):
         *,
         mark_dirty: bool = True,
         replace_track: bool = True,
+        refresh_song_widgets: bool = True,
     ) -> None:
         self._store_audio_cache(path, buffer)
         self.timeline.set_audio_loading(False)
@@ -2595,8 +2638,9 @@ class MainWindow(QMainWindow):
             ]
         self.engine.set_buffer(buffer)
         self.timeline.set_audio(buffer)
-        self.timeline.set_song(self.current_song)
-        self.monitor.set_song(self.current_song)
+        if refresh_song_widgets:
+            self.timeline.set_song(self.current_song)
+            self.monitor.set_song(self.current_song)
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
         if mark_dirty:

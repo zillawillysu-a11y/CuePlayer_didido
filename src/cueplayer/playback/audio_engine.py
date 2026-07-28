@@ -523,7 +523,11 @@ class AudioEngine(QObject):
 
     def set_buffer(self, buffer: AudioBuffer | None) -> None:
         was_playing = self._playing
-        self.stop()
+        if was_playing:
+            self.stop()
+        else:
+            self._position_frame = 0
+            self.clear_calibration_clicks()
         self._buffer = buffer
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
