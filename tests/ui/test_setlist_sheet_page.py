@@ -99,7 +99,7 @@ def test_build_setlist_sheet_rows_hides_collapsed_folder_songs() -> None:
     project = Project.create("Collapse")
     project.songs.clear()
     folder = SetlistCategory.create("Encore")
-    folder.collapsed = True
+    folder.sheet_collapsed = True
     project.setlist_categories.append(folder)
     song = Song.create("Hidden")
     song.category_id = folder.id
@@ -108,10 +108,40 @@ def test_build_setlist_sheet_rows_hides_collapsed_folder_songs() -> None:
     assert len(rows) == 1
     assert rows[0].is_folder
     assert rows[0].collapsed is True
-    folder.collapsed = False
+    folder.sheet_collapsed = False
     rows = build_setlist_sheet_rows(project)
     assert len(rows) == 2
     assert rows[1].name == "Hidden"
+
+
+def test_sheet_and_setlist_folder_collapse_are_independent() -> None:
+    project = Project.create("Independent")
+    project.songs.clear()
+    folder = SetlistCategory.create("VIP")
+    folder.collapsed = True
+    folder.sheet_collapsed = False
+    project.setlist_categories.append(folder)
+    song = Song.create("Inside")
+    song.category_id = folder.id
+    project.songs.append(song)
+    rows = build_setlist_sheet_rows(project)
+    assert len(rows) == 2
+    assert rows[1].name == "Inside"
+    folder.sheet_collapsed = True
+    rows = build_setlist_sheet_rows(project)
+    assert len(rows) == 1
+
+
+def test_sheet_collapsed_persists(tmp_path) -> None:
+    project = Project.create("Persist")
+    folder = SetlistCategory.create("Fold")
+    folder.sheet_collapsed = True
+    project.setlist_categories = [folder]
+    path = tmp_path / "sheet.cueplayer.json"
+    save_project(project, path)
+    loaded = load_project(path)
+    assert loaded.setlist_categories[0].sheet_collapsed is True
+    assert loaded.setlist_categories[0].collapsed is False
 
 
 def test_folder_row_label_arrow() -> None:

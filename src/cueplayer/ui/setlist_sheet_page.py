@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -57,6 +57,7 @@ _ROLE_CATEGORY_ID = int(Qt.ItemDataRole.UserRole) + 2
 _FOLDER_BG = QColor("#1a1a28")
 _FOLDER_FG = QColor("#a5b4fc")
 _SHEET_ROW_HEIGHT = 34
+_TRIANGLE_HIT_MIN_PX = 28
 
 
 class _SheetItemDelegate(QStyledItemDelegate):
@@ -149,10 +150,10 @@ def build_setlist_sheet_rows(project: Project) -> list[SetlistSheetRow]:
                 kind="folder",
                 category_id=category.id,
                 name=category.name.strip() or "Folder",
-                collapsed=bool(category.collapsed),
+                collapsed=bool(category.sheet_collapsed),
             )
         )
-        if category.collapsed:
+        if category.sheet_collapsed:
             continue
         for song in project.songs:
             if song.category_id == category.id:
@@ -210,7 +211,7 @@ class SetlistSheetPage(QWidget):
     """Tabular Set List Sheet for copying song order / names / TC / notes into MA3."""
 
     song_field_changed = Signal()  # order / name / EN / TC / BPM / Note edited
-    folder_toggle_requested = Signal(str)  # category id — syncs with left Setlist
+    sheet_layout_changed = Signal()  # folder expand/collapse in sheet only
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -226,10 +227,10 @@ class SetlistSheetPage(QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
         hint = QLabel(
             "Spreadsheet of the current show: 曲序, 曲名, 英文名, Seq, Cue ID "
-            "(MA Main Sequence), Timecode Generator, BPM, Note. Click ▸/▾ Folder "
-            "rows to expand or collapse (synced with the left Setlist). Drag column "
-            "edges to resize. Double-click cells to edit. Copy All / Ctrl+C for "
-            "Excel / grandMA3."
+            "(MA Main Sequence), Timecode Generator, BPM, Note. Click ▸/▾ on a "
+            "Folder row to show or hide its songs in this sheet (independent of "
+            "the left Setlist). Drag column edges to resize. Double-click cells "
+            "to edit. Copy All / Ctrl+C for Excel / grandMA3."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -301,7 +302,7 @@ class SetlistSheetPage(QWidget):
         self.copy_selection_button.clicked.connect(self.copy_selection)
         self.refresh_button.clicked.connect(self.sync_songs)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.table.cellClicked.connect(self._on_cell_clicked)
+        self.table.viewport().installEventFilter(self)
         QShortcut(QKeySequence.StandardKey.Copy, self, activated=self.copy_selection)
 
     def set_project(self, project: Project) -> None:
@@ -340,18 +341,50 @@ class SetlistSheetPage(QWidget):
         font.setBold(True)
         item.setFont(font)
         item.setToolTip(
-            "Click ▸/▾ to expand or collapse this folder (same as left Setlist)"
+            "Click ▸/▾ to show or hide songs in this sheet (left Setlist is separate)"
         )
         self.table.setItem(r, _COL_ORDER, item)
         self.table.setSpan(r, _COL_ORDER, 1, _COL_COUNT)
 
-    def _on_cell_clicked(self, row: int, _col: int) -> None:
-        item = self.table.item(row, _COL_ORDER)
-        if item is None or item.data(_ROLE_KIND) != "folder":
+    def _folder_triangle_hit(self, item: QTableWidgetItem, local_x: int) -> bool:
+        text = item.text()
+        if not text:
+            return False
+        fm = self.table.fontMetrics()
+        tri_w = max(_TRIANGLE_HIT_MIN_PX, fm.horizontalAdvance(f"{text[0]} ") + 4)
+        return local_x < tri_w
+
+    def _toggle_sheet_folder(self, category_id: str) -> None:
+        if self._project is None:
             return
-        category_id = item.data(_ROLE_CATEGORY_ID)
-        if category_id:
-            self.folder_toggle_requested.emit(str(category_id))
+        category = self._project.setlist_category_by_id(category_id)
+        if category is None:
+            return
+        category.sheet_collapsed = not category.sheet_collapsed
+        self.sync_songs()
+        self.sheet_layout_changed.emit()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
+        if obj is self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                pos = (
+                    event.position().toPoint()
+                    if hasattr(event, "position")
+                    else event.pos()
+                )
+                index = self.table.indexAt(pos)
+                if index.isValid():
+                    row = index.row()
+                    item = self.table.item(row, _COL_ORDER)
+                    if item is not None and item.data(_ROLE_KIND) == "folder":
+                        rect = self.table.visualRect(self.table.model().index(row, _COL_ORDER))
+                        local_x = pos.x() - rect.left()
+                        if self._folder_triangle_hit(item, local_x):
+                            category_id = item.data(_ROLE_CATEGORY_ID)
+                            if category_id:
+                                self._toggle_sheet_folder(str(category_id))
+                            return True
+        return super().eventFilter(obj, event)
 
     def _fill_song_row(self, r: int, row: SetlistSheetRow) -> None:
         order_item = QTableWidgetItem(row.order)

@@ -398,6 +398,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "id": category.id,
                 "name": category.name,
                 "collapsed": bool(category.collapsed),
+                "sheet_collapsed": bool(category.sheet_collapsed),
                 "row_color": category.row_color,
             }
             for category in project.setlist_categories
@@ -642,6 +643,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
             id=str(item["id"]),
             name=str(item.get("name") or "Category"),
             collapsed=bool(item.get("collapsed", False)),
+            sheet_collapsed=bool(item.get("sheet_collapsed", False)),
             row_color=_coerce_row_color(item.get("row_color")),
         )
         for item in data.get("setlist_categories") or []

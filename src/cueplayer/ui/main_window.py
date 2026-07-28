@@ -871,7 +871,7 @@ class MainWindow(QMainWindow):
         self.show_patch_page.settings_changed.connect(self._mark_dirty)
         self.show_patch_page.export_finished.connect(self._on_ma_export_finished)
         self.setlist_sheet_page.song_field_changed.connect(self._on_setlist_sheet_changed)
-        self.setlist_sheet_page.folder_toggle_requested.connect(self._toggle_setlist_category)
+        self.setlist_sheet_page.sheet_layout_changed.connect(self._mark_dirty)
         self.transport.set_loop_a_clicked.connect(self._set_loop_a)
         self.transport.set_loop_b_clicked.connect(self._set_loop_b)
         self.transport.clear_loop_clicked.connect(self._clear_loop)
