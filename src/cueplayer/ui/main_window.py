@@ -131,6 +131,15 @@ _KEY_AUTOSAVE_ENABLED = "autosave/enabled"
 _KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
 _KEY_BACKUP_KEEP = "autosave/backup_keep"
 _KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
+_KEY_CLEAN_OUTPUT_GEOMETRY = "clean_output/geometry"
+_KEY_MAIN_GEOMETRY = "mainwindow/geometry"
+_KEY_MAIN_STATE = "mainwindow/state"
+_KEY_MAIN_SPLITTER = "ui/main_splitter"
+_KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
+_KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
+_KEY_VIEW_MODE = "ui/view_mode"
+_KEY_LAST_PROJECT = "session/last_project_path"
+_KEY_LAST_SONG_ID = "session/last_song_id"
 _DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
 
 
@@ -629,6 +638,7 @@ class MainWindow(QMainWindow):
         self.monitor.set_song(self.current_song)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter = splitter
         left = QWidget()
         left.setObjectName("setlistPanel")
         # Whole left chrome accepts Explorer audio drops (not only the table
@@ -731,6 +741,7 @@ class MainWindow(QMainWindow):
 
         # Right column is Cue list only (clock + scrolling marks).
         timeline_split = QSplitter(Qt.Orientation.Horizontal)
+        self._timeline_split = timeline_split
         timeline_split.setObjectName("timelineSplit")
         timeline_split.addWidget(timeline_preview_split)
         timeline_split.addWidget(self.monitor)
@@ -867,7 +878,114 @@ class MainWindow(QMainWindow):
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
 
-        # Auto-load demo fixture if present (Chinese path stress).
+        self._restoring_session = False
+        QTimer.singleShot(0, self._sync_timeline_geometry)
+        QTimer.singleShot(0, self._restore_startup_session)
+
+    def _restore_startup_session(self) -> None:
+        """Restore window layout, last project, and demo fixture fallback."""
+        self._restoring_session = True
+        try:
+            self._restore_ui_layout()
+            self._restore_clean_output_visibility()
+            self._restore_clean_output_geometry()
+            self._sync_video_output_active()
+            if not self._try_restore_last_project():
+                self._maybe_load_demo_fixture()
+            self._sync_timeline_geometry()
+        finally:
+            self._restoring_session = False
+
+    def _restore_ui_layout(self) -> None:
+        geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            self.resize(1600, 900)
+        state = self._settings.value(_KEY_MAIN_STATE)
+        if state:
+            self.restoreState(state)
+        main_split = getattr(self, "_main_splitter", None)
+        if main_split is not None:
+            raw = self._settings.value(_KEY_MAIN_SPLITTER)
+            if raw:
+                main_split.restoreState(raw)
+        timeline_split = getattr(self, "_timeline_split", None)
+        if timeline_split is not None:
+            raw = self._settings.value(_KEY_TIMELINE_SPLITTER)
+            if raw:
+                timeline_split.restoreState(raw)
+        preview_split = getattr(self, "_timeline_preview_split", None)
+        if preview_split is not None:
+            raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
+            if raw:
+                preview_split.restoreState(raw)
+        mode = str(self._settings.value(_KEY_VIEW_MODE, "timeline") or "timeline")
+        if mode == "ma_patch":
+            self.toolbar.set_view_mode("ma_patch")
+            self._set_view_mode("ma_patch")
+
+    def _save_ui_session(self) -> None:
+        if self._restoring_session:
+            return
+        self._settings.setValue(_KEY_MAIN_GEOMETRY, self.saveGeometry())
+        self._settings.setValue(_KEY_MAIN_STATE, self.saveState())
+        main_split = getattr(self, "_main_splitter", None)
+        if main_split is not None:
+            self._settings.setValue(_KEY_MAIN_SPLITTER, main_split.saveState())
+        timeline_split = getattr(self, "_timeline_split", None)
+        if timeline_split is not None:
+            self._settings.setValue(_KEY_TIMELINE_SPLITTER, timeline_split.saveState())
+        preview_split = getattr(self, "_timeline_preview_split", None)
+        if preview_split is not None:
+            self._settings.setValue(
+                _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
+            )
+        mode = "ma_patch" if self.view_stack.currentIndex() == 1 else "timeline"
+        self._settings.setValue(_KEY_VIEW_MODE, mode)
+        if self._project_path is not None:
+            self._settings.setValue(_KEY_LAST_PROJECT, str(self._project_path))
+            self._settings.setValue(_KEY_LAST_SONG_ID, self.current_song.id)
+        self._settings.setValue(
+            _KEY_CLEAN_OUTPUT_GEOMETRY, self.clean_output_window.saveGeometry()
+        )
+
+    def _try_restore_last_project(self) -> bool:
+        if self._project_path is not None:
+            return False
+        raw = self._settings.value(_KEY_LAST_PROJECT)
+        if not raw:
+            return False
+        path = Path(str(raw))
+        if not path.is_file():
+            return False
+        song_id = self._settings.value(_KEY_LAST_SONG_ID)
+        song_id_str = str(song_id) if song_id else None
+        if self._open_project_path(path, song_id=song_id_str, quiet=True):
+            self.status.showMessage(f"Restored: {path.name}", 3500)
+            return True
+        return False
+
+    def _open_project_path(
+        self, path: Path, *, song_id: str | None = None, quiet: bool = False
+    ) -> bool:
+        try:
+            project = load_project(path)
+        except Exception as exc:  # noqa: BLE001
+            if quiet:
+                self.status.showMessage(f"Could not reopen last project: {exc}", 6000)
+            else:
+                QMessageBox.warning(self, "Unable to Open Project", str(exc))
+            return False
+        self.engine.stop()
+        self.project = project
+        self._project_path = path
+        self._apply_project(preferred_song_id=song_id)
+        self._set_clean()
+        return True
+
+    def _maybe_load_demo_fixture(self) -> None:
+        """Auto-load demo fixture if present (Chinese path stress)."""
         demo = (
             Path(__file__).resolve().parents[2]
             / "fixtures"
@@ -878,9 +996,6 @@ class MainWindow(QMainWindow):
         if demo.is_file():
             self._load_audio_path(demo, mark_dirty=False)
             self._set_clean()
-        QTimer.singleShot(0, self._sync_timeline_geometry)
-        self._restore_clean_output_visibility()
-        self._sync_video_output_active()
 
     def _video_preview_visible(self) -> bool:
         panel = self.video_preview_panel
@@ -1192,17 +1307,8 @@ class MainWindow(QMainWindow):
         if not path_str:
             return
         path = Path(path_str)
-        try:
-            project = load_project(path)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Unable to Open Project", str(exc))
-            return
-        self.engine.stop()
-        self.project = project
-        self._project_path = path
-        self._apply_project()
-        self._set_clean()
-        self.status.showMessage(f"Opened: {path.name}", 3500)
+        if self._open_project_path(path):
+            self.status.showMessage(f"Opened: {path.name}", 3500)
 
     def _file_save(self, *, quiet: bool = False) -> bool:
         if self._project_path is None:
@@ -1330,7 +1436,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self.status.showMessage(f"Restored backup into editor: {path.name}", 4500)
 
-    def _apply_project(self) -> None:
+    def _apply_project(self, *, preferred_song_id: str | None = None) -> None:
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
         self.show_patch_page.set_project(self.project)
@@ -1342,8 +1448,14 @@ class MainWindow(QMainWindow):
         self._restore_clean_output_visibility()
         self._sync_video_output_active()
         self._refresh_timecode_status()
-        self._rebuild_song_list(select_indexes=[0])
-        self._activate_song(0, stop_playback=True)
+        song_index = 0
+        if preferred_song_id:
+            for i, song in enumerate(self.project.songs):
+                if song.id == preferred_song_id:
+                    song_index = i
+                    break
+        self._rebuild_song_list(select_indexes=[song_index])
+        self._activate_song(song_index, stop_playback=True)
         self._warm_project_audio_on_open()
 
     def _warm_project_audio_on_open(self) -> None:
@@ -2754,6 +2866,7 @@ class MainWindow(QMainWindow):
         was_open = self.clean_output_window.isVisible()
         self.project.clean_video_output.was_open = was_open
         self._settings.setValue(_KEY_CLEAN_OUTPUT_WAS_OPEN, was_open)
+        self._save_ui_session()
         # Clean Output normally only hides on its own X button (so re-opening
         # keeps the OBS capture target valid) — but that must not let it
         # survive the main window closing, or keep the app process alive.
@@ -3343,6 +3456,11 @@ class MainWindow(QMainWindow):
                 self._settings.value(_KEY_CLEAN_OUTPUT_WAS_OPEN, False, type=bool)
             )
         return False
+
+    def _restore_clean_output_geometry(self) -> None:
+        geometry = self._settings.value(_KEY_CLEAN_OUTPUT_GEOMETRY)
+        if geometry:
+            self.clean_output_window.restoreGeometry(geometry)
 
     def _restore_clean_output_visibility(self) -> None:
         want_open = self._clean_output_want_open()
