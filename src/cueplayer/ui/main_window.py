@@ -965,16 +965,21 @@ class MainWindow(QMainWindow):
         """Restore window layout, last project, and demo fixture fallback."""
         self._restoring_session = True
         try:
-            self._restore_ui_layout()
-            self._restore_clean_output_visibility()
-            self._restore_clean_output_geometry()
-            self._sync_video_output_active()
-            if not self._try_restore_last_project():
-                self._maybe_load_demo_fixture()
-            self._sync_timeline_geometry()
-            self.monitor.ensure_now_splitter_ready()
-            QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
-            QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
+            try:
+                self._restore_ui_layout()
+                self._restore_clean_output_visibility()
+                self._restore_clean_output_geometry()
+                self._sync_video_output_active()
+                if not self._try_restore_last_project():
+                    self._maybe_load_demo_fixture()
+                self._sync_timeline_geometry()
+                self.monitor.ensure_now_splitter_ready()
+                QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
+                QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
+            except Exception:  # noqa: BLE001
+                import traceback
+
+                traceback.print_exc()
         finally:
             self._restoring_session = False
             # Let queued splitter/layout timers settle, then tell the splash we are ready.
