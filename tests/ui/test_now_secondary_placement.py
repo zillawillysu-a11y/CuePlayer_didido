@@ -14,7 +14,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.domain.models import Song
-from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
+from cueplayer.ui.cue_monitor_panel import (
+    CueMonitorPanel,
+    _NOW_SECONDARY_COL_MIN,
+)
 
 
 @pytest.fixture
@@ -71,7 +74,7 @@ def test_body_splitter_sits_above_cue_list(app: QApplication) -> None:
     assert panel._now_splitter.handle(1).isEnabled()
 
 
-def test_body_splitter_does_not_change_now_split(app: QApplication) -> None:
+def test_body_drag_keeps_secondary_visible(app: QApplication) -> None:
     panel = CueMonitorPanel()
     panel.set_song(Song.create("Test"))
     panel.resize(360, 800)
@@ -79,16 +82,21 @@ def test_body_splitter_does_not_change_now_split(app: QApplication) -> None:
     app.processEvents()
     panel.set_now_secondary_placement("below")
     panel._now_splitter.setSizes([160, 90])
-    panel._pin_now_inner_height()
+    panel._body_splitter.setSizes([320, 400])
+    panel._apply_below_body_to_secondary()
     app.processEvents()
-    before = list(panel._now_splitter.sizes())
+    primary_before = panel._now_splitter.sizes()[0]
 
-    panel._body_splitter.setSizes([400, 300])
+    # Drag Cue List up aggressively — Secondary must stay at/above floor.
+    panel._body_splitter.setSizes([100, 620])
     panel._on_body_splitter_moved()
     app.processEvents()
 
-    after = list(panel._now_splitter.sizes())
-    assert after == before
+    primary, secondary = panel._now_splitter.sizes()
+    assert secondary >= _NOW_SECONDARY_COL_MIN
+    assert primary >= 40
+    # Primary should stay roughly stable (body drag resizes Secondary).
+    assert abs(primary - primary_before) <= 80
 
 
 def test_secondary_text_is_vertically_centered(app: QApplication) -> None:
@@ -96,4 +104,3 @@ def test_secondary_text_is_vertically_centered(app: QApplication) -> None:
     align = panel.secondary_cue.alignment()
     assert align & Qt.AlignmentFlag.AlignVCenter
     assert panel.secondary_cue.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-
