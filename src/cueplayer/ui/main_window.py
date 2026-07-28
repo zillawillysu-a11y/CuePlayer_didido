@@ -1817,7 +1817,7 @@ class MainWindow(QMainWindow):
             audio_path=audio_path if audio_path is not None else None,
             video_path=video_path if video_path is not None else None,
             song_id=song.id,
-            file_ltc_side=str(getattr(song, "file_ltc_side", "off") or "off"),
+            file_ltc_side=str(getattr(song, "file_ltc_side", "auto") or "auto"),
         )
 
     def _apply_draft_to_song(self, song: Song, draft: SongDraft) -> None:
@@ -3611,7 +3611,7 @@ class MainWindow(QMainWindow):
     def _ltc_channel_for_song(self, song: Song) -> int | None:
         from cueplayer.domain.models import coerce_file_ltc_side
 
-        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "off"))
+        side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "auto"))
         if side == "left":
             return 0
         if side == "right":

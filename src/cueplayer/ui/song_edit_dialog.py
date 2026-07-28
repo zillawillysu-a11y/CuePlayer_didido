@@ -62,7 +62,7 @@ class SongDraft:
     video_path: Path | None = None
     song_id: str | None = None
     # off | left | right | auto — send that file channel to Settings LTC Ch.
-    file_ltc_side: str = "off"
+    file_ltc_side: str = "auto"
 
 
 def format_bpm(value: float | None) -> str:
@@ -252,7 +252,7 @@ class SongEditDialog(QDialog):
                 audio_path=d.audio_path,
                 video_path=d.video_path,
                 song_id=d.song_id,
-                file_ltc_side=str(d.file_ltc_side or "off"),
+                file_ltc_side=str(d.file_ltc_side or "auto"),
             )
             for d in drafts
         ]
@@ -341,15 +341,15 @@ class SongEditDialog(QDialog):
 
             ltc_combo = QComboBox()
             for label, value in (
-                ("Off", "off"),
+                ("Auto", "auto"),
                 ("Left", "left"),
                 ("Right", "right"),
-                ("Auto", "auto"),
+                ("Off", "off"),
             ):
                 ltc_combo.addItem(label, value)
-            side = str(draft.file_ltc_side or "off")
+            side = str(draft.file_ltc_side or "auto")
             idx = ltc_combo.findData(side)
-            ltc_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            ltc_combo.setCurrentIndex(idx if idx >= 0 else ltc_combo.findData("auto"))
             ltc_combo.setToolTip(
                 "Send this song’s Left or Right (or Auto-detect) channel to the LTC "
                 "Channel in Audio / Timecode settings. That side is stripped from "
@@ -399,8 +399,8 @@ class SongEditDialog(QDialog):
     def _file_ltc_side_at_row(self, row: int) -> str:
         widget = self.table.cellWidget(row, _COL_LEFT_LTC)
         if isinstance(widget, QComboBox):
-            return str(widget.currentData() or "off")
-        return "off"
+            return str(widget.currentData() or "auto")
+        return "auto"
 
     def _accept(self) -> None:
         updated: list[SongDraft] = []

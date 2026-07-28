@@ -62,6 +62,19 @@ def test_file_ltc_side_persists_and_migrates_legacy() -> None:
     assert migrated.songs[0].file_ltc_side == "left"
 
 
+def test_new_song_defaults_file_ltc_to_auto() -> None:
+    assert Song.create("New").file_ltc_side == "auto"
+
+
+def test_missing_file_ltc_side_defaults_to_auto() -> None:
+    project = Project.create("Legacy")
+    data = project_to_dict(project)
+    data["songs"][0].pop("file_ltc_side", None)
+    data["songs"][0].pop("use_left_ltc", None)
+    loaded = project_from_dict(data)
+    assert loaded.songs[0].file_ltc_side == "auto"
+
+
 def test_file_ltc_right_strips_right_from_music(monkeypatch, app: QApplication) -> None:
     monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [_device()])
     monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
