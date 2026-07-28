@@ -39,6 +39,17 @@ Playback Engine is the only playback clock source.
 
 - **`pygame-ce`**, not classic **`pygame`**, in `pyproject.toml`. Classic pygame has no prebuilt wheels for Python 3.13+ and pip fails building from source (`Failed to build 'pygame'`). `pygame-ce` is API-compatible and still satisfies `mido.backends.pygame`.
 
+## Run
+
+After checkout / `git pull` and install:
+
+```powershell
+pip install -e ".[dev]"
+python -m cueplayer.app
+```
+
+(`cueplayer` also works if the venv Scripts folder is on PATH.)
+
 ## Recent handoff (2026-07)
 
 Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.

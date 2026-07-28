@@ -28,6 +28,17 @@ pip install -e ".[dev]"
 
 If `pip install` fails with `Failed to build 'pygame'`, you are on an old checkout — `master` depends on **`pygame-ce`** (prebuilt wheels for Python 3.13+), not classic `pygame`.
 
+### Sync from GitHub (laptop / desktop)
+
+```powershell
+git fetch origin
+git checkout master
+pip install -e ".[dev]"
+python -m cueplayer.app
+```
+
+Replace `master` with a feature branch name when testing a PR (e.g. `cursor/pygame-ce-install-fix-028d`).
+
 ## Run
 
 ```powershell
