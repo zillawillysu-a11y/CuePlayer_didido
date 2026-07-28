@@ -2067,24 +2067,14 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        interacting = (
-            self._dragging_clip is not None
-            or self._trimming_clip is not None
-            or self._scrubbing
-        )
-        playing = self._playing and not interacting
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
-        # High-zoom raw mono is paused-only (expensive); playback uses the same
-        # pyramid path as edit mode so waveforms stay sharp enough to align on.
-        use_raw = samples_per_pixel <= 1.5 and not playing
+        use_raw = samples_per_pixel <= 1.5
         width_px = x_right - x_left
-        x_step = 1
-        if playing and width_px > 2400:
-            x_step = 2
+        del width_px  # visible width only; kept for future perf guard if needed
 
-        for x in range(x_left, x_right, x_step):
+        for x in range(x_left, x_right):
             t0 = self._time_for_x(x)
-            t1 = self._time_for_x(x + x_step)
+            t1 = self._time_for_x(x + 1)
             clip_t0 = timeline_to_clip_local(t0, clip)
             clip_t1 = timeline_to_clip_local(t1, clip)
             if clip_t0 is None and clip_t1 is None:
@@ -2105,7 +2095,7 @@ class TimelineWidget(QWidget):
                     clip,
                     clip_t0=clip_t0,
                     clip_t1=clip_t1,
-                    samples_per_pixel=samples_per_pixel * x_step,
+                    samples_per_pixel=samples_per_pixel,
                 )
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
