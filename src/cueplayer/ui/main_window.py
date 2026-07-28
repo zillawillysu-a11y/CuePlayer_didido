@@ -150,6 +150,7 @@ _KEY_NOW_SPLITTER = "ui/now_splitter"
 _KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
 _KEY_NOW_SPLITTER_RIGHT = "ui/now_splitter_right"
 _KEY_NOW_SPLITTER_BELOW = "ui/now_splitter_below"
+_KEY_NOW_BODY_SPLITTER = "ui/now_body_splitter"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
@@ -1019,6 +1020,7 @@ class MainWindow(QMainWindow):
             "right": self._settings.value(_KEY_NOW_SPLITTER_RIGHT),
             "below": self._settings.value(_KEY_NOW_SPLITTER_BELOW),
             "current": self._settings.value(_KEY_NOW_SPLITTER),
+            "body": self._settings.value(_KEY_NOW_BODY_SPLITTER),
         }
         self.monitor.restore_now_splitter_state(payload)
         mode = str(self._settings.value(_KEY_VIEW_MODE, "timeline") or "timeline")
@@ -1050,6 +1052,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SPLITTER, layout_state["current"])
         self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
         self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
+        self._settings.setValue(_KEY_NOW_BODY_SPLITTER, layout_state.get("body"))
         mode = "timeline"
         stack_index = self.view_stack.currentIndex()
         if stack_index == 1:
@@ -4146,6 +4149,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SPLITTER, layout_state["current"])
         self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
         self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
+        self._settings.setValue(_KEY_NOW_BODY_SPLITTER, layout_state.get("body"))
 
     def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:
         del lane_index, new_name
