@@ -149,6 +149,7 @@ def test_engine_ltc_route_opens_three_channels_on_focusrite(monkeypatch) -> None
     tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
     mono, levels = build_peak_pyramid(tone, 48000)
     engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+    engine.flush_deferred_buffer_setup()
 
     assert engine._device_index == 1
     assert engine._output_channel_count >= 3
@@ -195,6 +196,7 @@ def test_probe_failure_switches_to_asio_multichannel(monkeypatch) -> None:
     tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
     mono, levels = build_peak_pyramid(tone, 48000)
     engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+    engine.flush_deferred_buffer_setup()
 
     assert engine._device_index == 3
     assert engine._output_channel_count >= 3
@@ -288,6 +290,7 @@ def test_play_pause_reuses_stream_without_reopen(monkeypatch) -> None:
     tone = __import__("numpy").zeros((n, 2), dtype=__import__("numpy").float32)
     mono, levels = build_peak_pyramid(tone, 48000)
     engine.set_buffer(AudioBuffer(path="x.wav", sample_rate=48000, samples=tone, mono=mono, peak_levels=levels))
+    engine.flush_deferred_buffer_setup()
 
     engine.play()
     assert opens == 1

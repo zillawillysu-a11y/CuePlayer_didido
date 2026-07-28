@@ -117,6 +117,9 @@ class AudioEngine(QObject):
         self._playback_cache_key: tuple | None = None
         self._playback_resample_future = None
         self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
+        self._ltc_detect_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-detect")
+        self._buffer_setup_token = 0
+        self._resume_play_after_buffer = False
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
@@ -348,8 +351,6 @@ class AudioEngine(QObject):
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
-        if self._uses_generated_ltc():
-            self._ensure_ltc_cache()
 
     def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
         """
@@ -402,6 +403,8 @@ class AudioEngine(QObject):
         if was_playing:
             self.seek(pos)
             self.play()
+        else:
+            self._rebuild_output_stream()
         warning = self._routing_warning
         if (
             self._audio_settings.ltc_enabled
@@ -530,15 +533,40 @@ class AudioEngine(QObject):
         self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
+        if buffer is not None and int(buffer.sample_rate) == int(self._playback_rate):
+            self._playback_samples = buffer.samples
+            self._playback_cache_key = (id(buffer), int(buffer.sample_rate), int(self._playback_rate))
+        else:
+            self._playback_samples = None
+            self._playback_cache_key = None
+        self.position_changed.emit(0.0)
+        self._resume_play_after_buffer = was_playing and buffer is not None
+        self._buffer_setup_token += 1
+        token = self._buffer_setup_token
+        if buffer is not None:
+            QTimer.singleShot(0, lambda t=token: self._complete_buffer_setup(t))
+        elif was_playing:
+            self._resume_play_after_buffer = False
+
+    def _complete_buffer_setup(self, token: int) -> None:
+        """Finish routing / LTC detect / stream prewarm off the setlist click path."""
+        if token != self._buffer_setup_token or self._buffer is None:
+            return
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
         self._resolve_device_and_route()
         self._refresh_ltc_detection()
-        self.position_changed.emit(0.0)
-        if buffer is not None:
-            self._prewarm_output_stream()
-        if was_playing and buffer is not None:
+        self._prewarm_output_stream()
+        if self._resume_play_after_buffer:
+            self._resume_play_after_buffer = False
             self.play()
+
+    def flush_deferred_buffer_setup(self) -> None:
+        """Block until the latest deferred buffer routing finishes (tests)."""
+        self._complete_buffer_setup(self._buffer_setup_token)
+        future = getattr(self, "_playback_resample_future", None)
+        if future is not None:
+            future.result()
 
     def _needs_output_stream(self) -> bool:
         has_video_audio = self._song is not None and bool(self._song.video_clips)
@@ -554,7 +582,17 @@ class AudioEngine(QObject):
             return
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
-        self._ensure_stream()
+        try:
+            self._ensure_stream()
+        except Exception:
+            # Song switches defer prewarm; a missing/test device must not block load.
+            pass
+
+    def _rebuild_output_stream(self) -> None:
+        """Apply new routing/device settings to the open PortAudio stream."""
+        self._stop_stream()
+        if self._needs_output_stream():
+            self._prewarm_output_stream()
 
     def set_duration(self, seconds: float) -> None:
         if self._buffer is not None:
@@ -1010,6 +1048,7 @@ class AudioEngine(QObject):
         self._video_mixer.set_playback_rate(self._playback_rate)
         self.refresh_video_clips()
         self._refresh_playback_samples()
+        self._refresh_source_routing_cache()
         self._refresh_ltc_detection()
 
     def _refresh_ltc_detection(self) -> None:
@@ -1020,9 +1059,28 @@ class AudioEngine(QObject):
             self._ltc_detect_ran = False
             self._refresh_source_routing_cache()
             return
-        self._detected_ltc_channel = detect_ltc_channel(buf.samples, int(buf.sample_rate))
-        self._ltc_detect_ran = True
-        self._refresh_source_routing_cache()
+        samples = buf.samples
+        sample_rate = int(buf.sample_rate)
+        buf_id = id(buf)
+
+        def _run() -> tuple[int, int | None]:
+            return buf_id, detect_ltc_channel(samples, sample_rate)
+
+        future = self._ltc_detect_executor.submit(_run)
+
+        def _done(fut) -> None:
+            try:
+                loaded_id, detected = fut.result()
+            except Exception:
+                return
+            if self._buffer is None or id(self._buffer) != loaded_id:
+                return
+            self._detected_ltc_channel = detected
+            self._ltc_detect_ran = True
+            self._refresh_source_routing_cache()
+            self.timecode_status_changed.emit()
+
+        future.add_done_callback(_done)
 
     def _refresh_source_routing_cache(self) -> None:
         """Precompute routing indices so the realtime callback stays O(chunk)."""

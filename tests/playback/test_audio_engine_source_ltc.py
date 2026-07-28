@@ -75,6 +75,7 @@ def test_source_ltc_routes_left_channel_to_ltc_bus(monkeypatch) -> None:
         )
     )
     engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
 
     ltc = engine._ltc_chunk(0, 2048)
     music = engine._music_chunk(0, 2048, engine._sample_rate())

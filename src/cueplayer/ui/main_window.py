@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QModelIndex, QSettings, Qt, QTimer, Signal
@@ -452,6 +453,12 @@ class MainWindow(QMainWindow):
         # direction, used to accelerate the seek step (see _nudge_frames()).
         self._nudge_hold_start: dict[int, float] = {}
         self._nudge_last_time: dict[int, float] = {}
+        self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
+        self._audio_load_token = 0
+        self._pending_audio_load: tuple | None = None
+        self._audio_load_timer = QTimer(self)
+        self._audio_load_timer.setInterval(25)
+        self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
 
         self.engine = AudioEngine(self)
         self.engine.set_duration(self.current_song.duration_seconds)
@@ -1722,6 +1729,7 @@ class MainWindow(QMainWindow):
     def _activate_song(self, index: int, *, stop_playback: bool = True) -> None:
         if index < 0 or index >= len(self.project.songs):
             return
+        self._audio_load_token += 1
         if stop_playback:
             self.engine.stop()
         self.current_song = self.project.songs[index]
@@ -2416,12 +2424,63 @@ class MainWindow(QMainWindow):
         mark_dirty: bool = True,
         replace_track: bool = True,
     ) -> None:
+        path = Path(path)
+        self._audio_load_token += 1
+        token = self._audio_load_token
+        self.status.showMessage(f"Loading {path.name}…", 0)
+        future = self._audio_load_executor.submit(load_audio, path)
+        self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
+        if not self._audio_load_timer.isActive():
+            self._audio_load_timer.start()
+
+    def _poll_pending_audio_load(self) -> None:
+        pending = self._pending_audio_load
+        if pending is None:
+            self._audio_load_timer.stop()
+            return
+        token, future, path, mark_dirty, replace_track = pending
+        if token != self._audio_load_token:
+            self._pending_audio_load = None
+            self._audio_load_timer.stop()
+            return
+        if not future.done():
+            return
+        self._audio_load_timer.stop()
+        self._pending_audio_load = None
         try:
-            buffer = load_audio(path)
+            buffer = future.result()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Unable to Load Audio", str(exc))
+            self.status.clearMessage()
             return
+        if not self._audio_path_matches_current_song(path, replace_track=replace_track):
+            return
+        self._apply_loaded_audio(
+            buffer, path, mark_dirty=mark_dirty, replace_track=replace_track
+        )
 
+    def _audio_path_matches_current_song(self, path: Path, *, replace_track: bool) -> bool:
+        if replace_track:
+            return True
+        main_audio = next(
+            (t for t in self.current_song.audio_tracks if t.role == "main"),
+            self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
+        )
+        if main_audio is None:
+            return False
+        try:
+            return Path(main_audio.path).resolve() == path.resolve()
+        except OSError:
+            return Path(main_audio.path) == path
+
+    def _apply_loaded_audio(
+        self,
+        buffer,
+        path: Path,
+        *,
+        mark_dirty: bool = True,
+        replace_track: bool = True,
+    ) -> None:
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
             self.current_song.audio_tracks = [
