@@ -128,7 +128,7 @@ class CueMonitorPanel(QWidget):
     cue_id_changed = Signal(str, str, str)  # mark_id, old_id, new_id
     cue_id_edit_failed = Signal(str)  # user-facing reason
     cue_list_layout_changed = Signal()
-    renumber_cue_ids_requested = Signal()
+    renumber_cue_ids_requested = Signal(object)  # lane_index: int | None (None = all)
     now_visibility_changed = Signal()
     cue_list_visibility_changed = Signal()
 
@@ -388,13 +388,24 @@ class CueMonitorPanel(QWidget):
         show_list.setChecked(bool(self._song.cue_list_visible))
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
-        from cueplayer.domain.main_cue_id import capture_main_cue_ids
-
-        renumber = QAction("Renumber Cue IDs (1, 2, 3…)", self)
-        renumber.setEnabled(bool(capture_main_cue_ids(self._song)))
-        renumber.triggered.connect(self.renumber_cue_ids_requested.emit)
         menu.addSeparator()
-        menu.addAction(renumber)
+        from cueplayer.domain.main_cue_id import renumberable_cue_list_lanes
+
+        lanes = renumberable_cue_list_lanes(self._song)
+        renumber_menu = menu.addMenu("Renumber Cue IDs (1, 2, 3…)")
+        renumber_menu.setEnabled(bool(lanes))
+        if lanes:
+            all_action = renumber_menu.addAction("All Cue List types")
+            all_action.triggered.connect(lambda: self.renumber_cue_ids_requested.emit(None))
+            if len(lanes) > 1:
+                renumber_menu.addSeparator()
+                for lane in lanes:
+                    lane_action = renumber_menu.addAction(lane.name)
+                    lane_action.triggered.connect(
+                        lambda _checked=False, lane_index=lane.index: self.renumber_cue_ids_requested.emit(
+                            lane_index
+                        )
+                    )
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
         if obj is self.cue_table and event.type() == QEvent.Type.KeyPress:

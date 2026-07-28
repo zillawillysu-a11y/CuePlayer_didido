@@ -3414,27 +3414,40 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self.status.showMessage(f"Redone: {label}", 2000)
 
-    def _renumber_main_cue_ids(self) -> None:
+    def _renumber_main_cue_ids(self, lane_index: int | None = None) -> None:
         from cueplayer.domain.main_cue_id import (
             capture_main_cue_ids,
             renumber_main_cue_ids_sequential,
+            renumberable_cue_list_lanes,
         )
 
-        if self.current_song.main_lane_index() is None:
-            self.status.showMessage("No Main lane — nothing to renumber", 2500)
+        lanes = renumberable_cue_list_lanes(self.current_song)
+        if not lanes:
+            self.status.showMessage("No Cue List Main marks to renumber", 2500)
             return
-        before = capture_main_cue_ids(self.current_song)
+        if lane_index is not None:
+            lane = self.current_song.lane_by_index(lane_index)
+            allowed = {item.index for item in lanes}
+            if lane is None or lane_index not in allowed:
+                self.status.showMessage("That mark type is not in the Cue List", 2500)
+                return
+            scope = {lane_index}
+            scope_label = lane.name
+        else:
+            scope = None
+            scope_label = "all Cue List types"
+        before = capture_main_cue_ids(self.current_song, lane_indices=scope)
         if not before:
             self.status.showMessage("No Main cues to renumber", 2500)
             return
-        after = renumber_main_cue_ids_sequential(self.current_song)
+        after = renumber_main_cue_ids_sequential(self.current_song, lane_indices=scope)
         if before == after:
             self.status.showMessage("Cue IDs already 1, 2, 3…", 2000)
             return
         self._push_song_undo(RenumberMainCueIdsCommand(before=before, after=after))
         self._mark_dirty()
         self._refresh_marks_ui()
-        self.status.showMessage("Renumbered Main Cue IDs to 1, 2, 3…", 2500)
+        self.status.showMessage(f"Renumbered {scope_label} to 1, 2, 3…", 2500)
 
     def _delete_marks(self, mark_ids: list) -> None:
         if not mark_ids:
