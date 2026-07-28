@@ -95,6 +95,7 @@ from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
+from cueplayer.playback.ndi_output import NdiVideoOutput
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
@@ -678,6 +679,7 @@ class MainWindow(QMainWindow):
         # must force-close it so the process can exit.
         self.clean_output_window = CleanVideoOutputWindow(self)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
+        self._ndi_output = NdiVideoOutput()
 
         self.setWindowTitle(f"{MAIN_WINDOW_TITLE_PREFIX} — {self.project.name}")
         self.resize(1600, 900)
@@ -915,12 +917,14 @@ class MainWindow(QMainWindow):
         self.engine.playing_changed.connect(self.video_sync.set_playing)
         self.video_sync.frame_changed.connect(self.video_preview.set_frame)
         self.video_sync.frame_changed.connect(self.clean_output_window.set_frame)
+        self.video_sync.frame_changed.connect(self._ndi_output.send_frame)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
         self.clean_output_window.visibility_changed.connect(self._persist_clean_output_was_open)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
+        self._apply_ndi_from_project(show_errors=False)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
         self.monitor.selection_changed.connect(self._on_monitor_selection)
         self.monitor.delete_requested.connect(self._delete_marks)
@@ -1126,8 +1130,14 @@ class MainWindow(QMainWindow):
         return self.clean_output_window.isVisible()
 
     def _sync_video_output_active(self) -> None:
-        """Skip video decode when neither Preview nor Clean Output is shown."""
-        active = self._video_preview_visible() or self._clean_output_visible()
+        """Skip video decode when neither Preview, Clean Output, nor NDI needs frames."""
+        if not hasattr(self, "video_preview_panel"):
+            return
+        active = (
+            self._video_preview_visible()
+            or self._clean_output_visible()
+            or bool(self.project.clean_video_output.ndi_enabled)
+        )
         self.video_sync.set_video_output_active(active)
 
     def _build_file_menu(self) -> None:
@@ -1214,6 +1224,17 @@ class MainWindow(QMainWindow):
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
         tools_menu.addAction(self._clean_output_action)
+        self._ndi_output_action = QAction("&NDI Video Output", self)
+        self._ndi_output_action.setCheckable(True)
+        self._ndi_output_action.setChecked(
+            bool(self.project.clean_video_output.ndi_enabled)
+        )
+        self._ndi_output_action.setToolTip(
+            "Send the same Clean Output frames over NDI (Depence / other receivers). "
+            "Requires cyndilib + NDI Runtime."
+        )
+        self._ndi_output_action.triggered.connect(self._toggle_ndi_output)
+        tools_menu.addAction(self._ndi_output_action)
         self._build_video_decode_quality_menu(tools_menu)
 
     def _autosave_enabled(self) -> bool:
@@ -1625,6 +1646,11 @@ class MainWindow(QMainWindow):
         self._sync_setlist_name_mode_ui()
         self.engine.apply_audio_settings(self.project.audio_output)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
+        self._apply_ndi_from_project(show_errors=False)
+        if hasattr(self, "_ndi_output_action"):
+            self._ndi_output_action.setChecked(
+                bool(self.project.clean_video_output.ndi_enabled)
+            )
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self._sync_video_decode_quality_ui()
         self._restore_clean_output_visibility()
@@ -3186,6 +3212,9 @@ class MainWindow(QMainWindow):
     def _shutdown_secondary_windows(self) -> None:
         """Close persistent tool windows so the app can exit with the main UI."""
         self.engine.stop()
+        self.engine.shutdown_midi_outputs()
+        if hasattr(self, "_ndi_output"):
+            self._ndi_output.close()
         self.clean_output_window.force_close()
         app = QApplication.instance()
         if app is None:
@@ -4166,6 +4195,35 @@ class MainWindow(QMainWindow):
             self.clean_output_window.present_for_obs_capture()
         else:
             self.clean_output_window.hide()
+
+    def _apply_ndi_from_project(self, *, show_errors: bool = True) -> str | None:
+        settings = self.project.clean_video_output
+        err = self._ndi_output.configure(
+            enabled=bool(settings.ndi_enabled),
+            name=str(settings.ndi_name or "CuePlayer"),
+        )
+        self.clean_output_window.set_ndi_enabled(bool(settings.ndi_enabled))
+        self._sync_video_output_active()
+        if err and show_errors:
+            QMessageBox.warning(self, "NDI Video Output", err)
+        return err
+
+    def _toggle_ndi_output(self, checked: bool) -> None:
+        self.project.clean_video_output.ndi_enabled = bool(checked)
+        self.clean_output_window.set_ndi_enabled(bool(checked))
+        err = self._apply_ndi_from_project(show_errors=True)
+        if err:
+            self.project.clean_video_output.ndi_enabled = False
+            self.clean_output_window.set_ndi_enabled(False)
+            self._ndi_output_action.setChecked(False)
+            self._apply_ndi_from_project(show_errors=False)
+            return
+        if checked:
+            self.status.showMessage(
+                f"NDI sending as “{self.project.clean_video_output.ndi_name or 'CuePlayer'}”",
+                4000,
+            )
+        self._mark_dirty()
 
     def _on_video_clips_changed(self) -> None:
         self.video_sync.refresh()

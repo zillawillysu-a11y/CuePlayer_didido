@@ -134,6 +134,11 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "ltc_channels": list(settings.ltc_channels),
         "mtc_enabled": bool(settings.mtc_enabled),
         "midi_port_name": settings.midi_port_name,
+        "midi_cue_notes_enabled": bool(settings.midi_cue_notes_enabled),
+        "midi_cue_channel": int(settings.midi_cue_channel),
+        "midi_cue_velocity": int(settings.midi_cue_velocity),
+        "midi_main_base_note": int(settings.midi_main_base_note),
+        "midi_button_base_note": int(settings.midi_button_base_note),
     }
 
 
@@ -173,6 +178,13 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
         mtc_enabled=bool(raw.get("mtc_enabled", False)),
         midi_port_name=str(raw.get("midi_port_name") or ""),
+        midi_cue_notes_enabled=bool(raw.get("midi_cue_notes_enabled", False)),
+        midi_cue_channel=max(1, min(16, int(raw.get("midi_cue_channel", 1) or 1))),
+        midi_cue_velocity=max(1, min(127, int(raw.get("midi_cue_velocity", 100) or 100))),
+        midi_main_base_note=max(0, min(127, int(raw.get("midi_main_base_note", 36) or 36))),
+        midi_button_base_note=max(
+            0, min(127, int(raw.get("midi_button_base_note", 48) or 48))
+        ),
     )
 
 
@@ -182,6 +194,8 @@ def clean_video_output_to_dict(settings: CleanVideoOutputSettings) -> dict[str, 
         "height": int(settings.height),
         "aspect_locked": bool(settings.aspect_locked),
         "was_open": bool(settings.was_open),
+        "ndi_enabled": bool(getattr(settings, "ndi_enabled", False)),
+        "ndi_name": str(getattr(settings, "ndi_name", "") or "CuePlayer"),
     }
 
 
@@ -206,6 +220,8 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
         height=height,
         aspect_locked=bool(raw.get("aspect_locked", default.aspect_locked)),
         was_open=bool(raw.get("was_open", default.was_open)),
+        ndi_enabled=bool(raw.get("ndi_enabled", False)),
+        ndi_name=str(raw.get("ndi_name") or "CuePlayer"),
     )
 
 
@@ -470,6 +486,8 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                         "export_enabled": lane.export_enabled,
                         "cue_id_enabled": lane.cue_id_enabled,
                         "cue_list_enabled": lane.cue_list_enabled,
+                        "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
+                        "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                         "marker_shape": lane.marker_shape,
                     }
                     for lane in song.mark_lanes
@@ -571,6 +589,8 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                             lane.get("lane_type", "top_button") == "main",
                         )
                     ),
+                    midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
+                    midi_note=int(lane.get("midi_note", 0) or 0),
                     marker_shape=shape,
                 )
             )

@@ -30,6 +30,11 @@ dev = [
 midi = [
   "pygame-ce>=2.5",
 ]
+# Optional NDI sender for Clean Video Output (Depence / other receivers).
+# Also requires NDI Tools / Runtime from ndi.video on the machine.
+ndi = [
+  "cyndilib>=0.0.7",
+]
 
 [project.scripts]
 cueplayer = "cueplayer.app:main"

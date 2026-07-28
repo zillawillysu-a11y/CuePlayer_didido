@@ -190,6 +190,16 @@ class MtcOutput:
         with self._lock:
             self._playing = False
 
+    def send_message(self, message: Any) -> None:
+        """Send an arbitrary short MIDI message on the open MTC port (shared with cue notes)."""
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(message)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("MIDI send_message failed: %s", exc)
+
     def tick(self, position_seconds: float) -> None:
         """Send any quarter frames due for the current sample-clock position."""
         with self._lock:

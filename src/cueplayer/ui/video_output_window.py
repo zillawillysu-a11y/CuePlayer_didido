@@ -76,6 +76,8 @@ class CleanVideoOutputWindow(QWidget):
         self._adjusting = False
         self._last_frame_pos: QPoint | None = None
         self._decode_quality: str = "1080p"
+        self._ndi_enabled = False
+        self._ndi_name = "CuePlayer"
         # Normally the X button only hides this window (see closeEvent) so
         # that re-opening from the Tools menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
@@ -146,11 +148,21 @@ class CleanVideoOutputWindow(QWidget):
             height=height,
             aspect_locked=self._aspect_locked,
             was_open=self.isVisible(),
+            ndi_enabled=bool(self._ndi_enabled),
+            ndi_name=str(self._ndi_name or "CuePlayer"),
         )
 
     def apply_settings(self, settings: CleanVideoOutputSettings) -> None:
         self._aspect_locked = bool(settings.aspect_locked)
+        self._ndi_enabled = bool(getattr(settings, "ndi_enabled", False))
+        self._ndi_name = str(getattr(settings, "ndi_name", "") or "CuePlayer")
         self.apply_preset(settings.width, settings.height)
+
+    def set_ndi_enabled(self, enabled: bool) -> None:
+        self._ndi_enabled = bool(enabled)
+
+    def ndi_enabled(self) -> bool:
+        return bool(self._ndi_enabled)
 
     def _schedule_settings_changed(self) -> None:
         self._settings_debounce.start()

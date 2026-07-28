@@ -43,6 +43,10 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
         ltc_channels=[2],
         mtc_enabled=True,
         midi_port_name="loopMIDI Port",
+        midi_cue_notes_enabled=True,
+        midi_cue_channel=2,
+        midi_main_base_note=40,
+        midi_button_base_note=52,
     )
     path = tmp_path / "中文專案" / "show.cueplayer.json"
     save_project(project, path)
@@ -55,3 +59,7 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
     assert ao.ltc_channels == [2]
     assert ao.mtc_enabled is True
     assert ao.midi_port_name == "loopMIDI Port"
+    assert ao.midi_cue_notes_enabled is True
+    assert ao.midi_cue_channel == 2
+    assert ao.midi_main_base_note == 40
+    assert ao.midi_button_base_note == 52
