@@ -411,6 +411,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "setlist_number": song.setlist_number,
                 "ma_export_name": song.ma_export_name,
                 "bpm": song.bpm,
+                "bpm_auto": bool(getattr(song, "bpm_auto", False) and song.bpm is not None),
                 "note": song.note,
                 "row_color": song.row_color,
                 "category_id": song.category_id,
@@ -597,6 +598,10 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                     or ma_export_name_from_display(song_data["name"])
                 ),
                 bpm=_coerce_optional_bpm(song_data.get("bpm")),
+                bpm_auto=bool(
+                    song_data.get("bpm_auto", False)
+                    and _coerce_optional_bpm(song_data.get("bpm")) is not None
+                ),
                 note=str(song_data.get("note") or ""),
                 row_color=_coerce_row_color(song_data.get("row_color")),
                 category_id=song_data.get("category_id"),

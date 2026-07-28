@@ -397,19 +397,13 @@ class SetlistWidget(QTableWidget):
         elif col == self.COL_EN:
             self.song_ma_name_edited.emit(item.row(), item.text().strip())
         elif col == self.COL_BPM:
-            raw = item.text().strip()
-            if not raw:
-                self.song_bpm_edited.emit(item.row(), None)
-                return
-            try:
-                value = float(raw.replace(",", "."))
-            except ValueError:
+            from cueplayer.media.bpm_analyzer import parse_bpm_cell
+
+            parsed = parse_bpm_cell(item.text())
+            if parsed is False:
                 self.song_bpm_edit_failed.emit(item.row())
                 return
-            if value <= 0:
-                self.song_bpm_edit_failed.emit(item.row())
-                return
-            self.song_bpm_edited.emit(item.row(), value)
+            self.song_bpm_edited.emit(item.row(), parsed)
 
     def startDrag(self, supportedActions) -> None:  # noqa: N802, ANN001
         ids: list[str] = []
@@ -620,6 +614,7 @@ class SetlistWidget(QTableWidget):
 
 class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
+    _bpm_detected = Signal(str, object)  # song_id, float | None
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -656,6 +651,8 @@ class MainWindow(QMainWindow):
             max_workers=2, thread_name_prefix="ui-ltc-detect"
         )
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._bpm_detect_inflight: set[str] = set()
+        self._bpm_detected.connect(self._on_bpm_detected)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
@@ -1824,12 +1821,9 @@ class MainWindow(QMainWindow):
 
             bpm_text = ""
             if song.bpm is not None and float(song.bpm) > 0:
-                bpm_val = float(song.bpm)
-                bpm_text = (
-                    str(int(bpm_val))
-                    if abs(bpm_val - round(bpm_val)) < 1e-9
-                    else f"{bpm_val:g}"
-                )
+                from cueplayer.media.bpm_analyzer import format_bpm_cell
+
+                bpm_text = format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto))
             bpm_item = QTableWidgetItem(bpm_text)
             bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             bpm_item.setFlags(
@@ -1838,7 +1832,15 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsEditable
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
-            bpm_item.setToolTip("Double-click to enter BPM (blank = not set)")
+            if song.bpm is not None and song.bpm_auto:
+                from cueplayer.ui.theme import TEXT_MUTED
+
+                bpm_item.setForeground(QColor(TEXT_MUTED))
+                bpm_item.setToolTip(
+                    "Auto-detected BPM (gray <n>). Type your value to override."
+                )
+            else:
+                bpm_item.setToolTip("Double-click to enter BPM (blank = not set)")
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
             ltc_channel = self._ltc_channel_for_song(song)
@@ -1923,6 +1925,8 @@ class MainWindow(QMainWindow):
             draft.name
         )
         song.bpm = draft.bpm
+        # Dialog value is always a user choice (including blank → clear auto).
+        song.bpm_auto = False
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
         from cueplayer.domain.models import coerce_file_ltc_side
@@ -1937,6 +1941,8 @@ class MainWindow(QMainWindow):
                     role="main",
                 )
             ]
+            if song.bpm is None:
+                self._schedule_bpm_detect_for_song(song, Path(draft.audio_path))
         else:
             song.audio_tracks = []
         if draft.video_path is not None and Path(draft.video_path).is_file():
@@ -2090,29 +2096,35 @@ class MainWindow(QMainWindow):
                 return
             if bpm <= 0:
                 bpm = None
-        if song.bpm == bpm or (
+        same_value = song.bpm == bpm or (
             song.bpm is not None
             and bpm is not None
             and abs(float(song.bpm) - bpm) < 1e-9
-        ):
-            # Normalize display.
+        )
+        # Typing the same number still marks it as a user override (white).
+        if same_value and (bpm is None or not song.bpm_auto):
+            from cueplayer.media.bpm_analyzer import format_bpm_cell
+
             item = self.song_list.item(row, SetlistWidget.COL_BPM)
-            if item is not None and bpm is not None:
-                text = (
-                    str(int(bpm)) if abs(bpm - round(bpm)) < 1e-9 else f"{bpm:g}"
-                )
+            if item is not None:
                 self.song_list._block_number_signal = True  # noqa: SLF001
-                item.setText(text)
+                item.setText(format_bpm_cell(bpm, auto=False))
                 self.song_list._block_number_signal = False  # noqa: SLF001
             return
         with self._setlist_edit("Edit BPM"):
             song.bpm = bpm
+            song.bpm_auto = False
             self._mark_dirty()
+            self._rebuild_song_list(select_indexes=[row])
+            sheet = getattr(self, "setlist_sheet_page", None)
+            if sheet is not None:
+                sheet.sync_songs()
         if bpm is None:
             self.status.showMessage("BPM cleared", 2000)
         else:
-            shown = str(int(bpm)) if abs(bpm - round(bpm)) < 1e-9 else f"{bpm:g}"
-            self.status.showMessage(f"BPM set to {shown}", 2000)
+            from cueplayer.media.bpm_analyzer import format_bpm_value
+
+            self.status.showMessage(f"BPM set to {format_bpm_value(bpm)}", 2000)
 
     def _on_song_bpm_edit_failed(self, row: int) -> None:
         QMessageBox.warning(self, "Invalid BPM", "Enter a positive number (e.g. 120, 128.5), or leave blank.")
@@ -3841,6 +3853,70 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(_done)
 
+    def _schedule_bpm_detect_for_song(self, song: Song, path: Path | None = None) -> None:
+        """Fill empty / auto BPM from the song's main audio (async)."""
+        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
+            return
+        audio_path = path or self._main_audio_path_for_song(song)
+        if audio_path is None or not Path(audio_path).is_file():
+            return
+        song_id = song.id
+        if song_id in self._bpm_detect_inflight:
+            return
+        resolved = Path(audio_path)
+
+        def _run() -> tuple[str, float | None]:
+            from cueplayer.media.bpm_analyzer import estimate_bpm_from_path
+
+            return song_id, estimate_bpm_from_path(resolved)
+
+        self._bpm_detect_inflight.add(song_id)
+        future = self._ltc_detect_executor.submit(_run)
+
+        def _done(fut) -> None:  # noqa: ANN001
+            self._bpm_detect_inflight.discard(song_id)
+            try:
+                sid, bpm = fut.result()
+            except Exception:  # noqa: BLE001
+                return
+            self._bpm_detected.emit(sid, bpm)
+
+        future.add_done_callback(_done)
+
+    def _on_bpm_detected(self, song_id: str, bpm: object) -> None:
+        if bpm is None:
+            return
+        try:
+            value = float(bpm)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        if value <= 0:
+            return
+        song = next((s for s in self.project.songs if s.id == song_id), None)
+        if song is None:
+            return
+        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
+            return
+        if (
+            song.bpm is not None
+            and song.bpm_auto
+            and abs(float(song.bpm) - value) < 1e-9
+        ):
+            return
+        song.bpm = value
+        song.bpm_auto = True
+        self._mark_dirty()
+        self._rebuild_song_list()
+        sheet = getattr(self, "setlist_sheet_page", None)
+        if sheet is not None:
+            sheet.sync_songs()
+        from cueplayer.media.bpm_analyzer import format_bpm_value
+
+        self.status.showMessage(
+            f'Auto BPM for "{song.name}": <{format_bpm_value(value)}>',
+            3500,
+        )
+
     def _refresh_setlist_ltc_cells(self) -> None:
         for table_row in range(self.song_list.rowCount()):
             if self.song_list.row_kind(table_row) != "song":
@@ -4033,6 +4109,10 @@ class MainWindow(QMainWindow):
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
+        if replace_track and (
+            self.current_song.bpm is None or bool(getattr(self.current_song, "bpm_auto", False))
+        ):
+            self._schedule_bpm_detect_for_song(self.current_song, path)
         msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
         det = self.engine.detected_ltc_channel
         if det is not None:
