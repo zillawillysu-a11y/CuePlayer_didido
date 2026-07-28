@@ -218,6 +218,7 @@ class MarkDisplayDialog(QDialog):
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
         self.wave_color.color_changed.connect(self._apply)
+        self.playhead_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
         self.dash_spacing.valueChanged.connect(self._apply)

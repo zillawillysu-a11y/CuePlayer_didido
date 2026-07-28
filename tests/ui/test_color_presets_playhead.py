@@ -64,3 +64,13 @@ def test_timeline_applies_playhead_color(app: QApplication) -> None:
         playhead_color="#00aaff",
     )
     assert widget._playhead_color.lower() == "#00aaff"
+
+
+def test_display_dialog_playhead_color_applies_live(app: QApplication) -> None:
+    from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
+
+    project = Project.create("Colors")
+    dialog = MarkDisplayDialog(project.songs[0], project=project)
+    dialog.playhead_color._on_chosen("#336699")
+    assert project.playhead_color.lower() == "#336699"
+    dialog.close()

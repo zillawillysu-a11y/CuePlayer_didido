@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
 
 from cueplayer.domain.main_cue_id import (
     is_valid_main_cue_id_text,
+    main_cue_id_fits_order,
     main_cue_id_map,
+    main_cue_id_order_hint,
     main_cue_id_taken,
     normalize_main_cue_id_text,
 )
@@ -619,11 +621,14 @@ class CueMonitorPanel(QWidget):
             self.cue_id_edit_failed.emit("Cue ID must be a positive number")
             return
         new_id = normalize_main_cue_id_text(raw)
-        if main_cue_id_taken(self._song, new_id, exclude_mark_id=mark.id):
+        if not main_cue_id_fits_order(self._song, mark.id, new_id):
             self._updating_table = True
             item.setText(old_id)
             self._updating_table = False
-            self.cue_id_edit_failed.emit(f"Cue ID {new_id!r} is already used")
+            if main_cue_id_taken(self._song, new_id, exclude_mark_id=mark.id):
+                self.cue_id_edit_failed.emit(f"Cue ID {new_id!r} is already used")
+            else:
+                self.cue_id_edit_failed.emit(main_cue_id_order_hint(self._song, mark.id))
             return
         if item.text() != new_id:
             self._updating_table = True
