@@ -12,8 +12,8 @@ from cueplayer.domain.models import Song
 
 def test_renumberable_cue_list_lanes_skips_button_and_disabled() -> None:
     song = Song.create("Test")
-    main = next(lane for lane in song.mark_lanes if lane.lane_type == "main")
-    button = next(lane for lane in song.mark_lanes if lane.lane_type == "top_button")
+    main = next(lane for lane in song.mark_lanes if lane.cue_id_enabled)
+    button = next(lane for lane in song.mark_lanes if not lane.cue_id_enabled)
     song.add_mark(main.index, 1.0)
     song.add_mark(button.index, 2.0)
 
@@ -25,7 +25,7 @@ def test_renumberable_cue_list_lanes_skips_button_and_disabled() -> None:
 
 def test_renumber_all_cue_list_lanes() -> None:
     song = Song.create("Test")
-    main = next(lane for lane in song.mark_lanes if lane.lane_type == "main")
+    main = next(lane for lane in song.mark_lanes if lane.cue_id_enabled)
     song.add_mark(main.index, 1.0)
     song.add_mark(main.index, 2.0)
     inserted = song.add_mark(main.index, 1.5)
@@ -38,7 +38,7 @@ def test_renumber_all_cue_list_lanes() -> None:
 
 def test_renumber_single_lane_scope() -> None:
     song = Song.create("Test")
-    main = next(lane for lane in song.mark_lanes if lane.lane_type == "main")
+    main = next(lane for lane in song.mark_lanes if lane.cue_id_enabled)
     song.add_mark(main.index, 1.0)
     song.add_mark(main.index, 2.0)
     song.marks[1].main_cue_id = "9"
@@ -52,8 +52,8 @@ def test_renumber_single_lane_scope() -> None:
 
 def test_renumber_ignores_button_lane_marks() -> None:
     song = Song.create("Test")
-    main = next(lane for lane in song.mark_lanes if lane.lane_type == "main")
-    button = next(lane for lane in song.mark_lanes if lane.lane_type == "top_button")
+    main = next(lane for lane in song.mark_lanes if lane.cue_id_enabled)
+    button = next(lane for lane in song.mark_lanes if not lane.cue_id_enabled)
     button.cue_list_enabled = True
     song.add_mark(main.index, 1.0)
     song.add_mark(button.index, 2.0)

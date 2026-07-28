@@ -2579,7 +2579,7 @@ class TimelineWidget(QWidget):
         for lane in self._song.mark_lanes:
             if not lane.visible:
                 continue
-            bg = QColor("#141416") if lane.lane_type == "main" else QColor("#111113")
+            bg = QColor("#141416") if lane.cue_id_enabled else QColor("#111113")
             painter.fillRect(self._header_width, y, self.width(), self._lane_height, bg)
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y + self._lane_height - 1, self.width(), y + self._lane_height - 1)

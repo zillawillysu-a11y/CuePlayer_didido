@@ -207,8 +207,8 @@ def test_main_cue_id_taken() -> None:
     song = Song.create("Test")
     first = song.add_mark(1, 1.0)
     song.add_mark(1, 2.0)
-    assert main_cue_id_taken(song, "1", exclude_mark_id=first.id) is False
-    assert main_cue_id_taken(song, "2", exclude_mark_id=first.id) is True
+    assert main_cue_id_taken(song, "1", exclude_mark_id=first.id, lane_index=1) is False
+    assert main_cue_id_taken(song, "2", exclude_mark_id=first.id, lane_index=1) is True
 
 
 def test_manual_cue_id_must_increase_in_time_order() -> None:

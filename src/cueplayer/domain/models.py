@@ -95,6 +95,8 @@ class MarkLane:
     visible: bool = True
     locked: bool = False
     export_enabled: bool = True
+    # When True, marks on this lane get numbered Cue IDs (1, 2, 3…).
+    cue_id_enabled: bool = False
     # When True, marks on this lane appear in the scrolling Cue List table.
     cue_list_enabled: bool = True
     marker_shape: MarkerShape = "circle"
@@ -338,6 +340,7 @@ class Song:
                 lane_type="main",
                 shortcut="1",
                 color="#E74C3C",
+                cue_id_enabled=True,
                 cue_list_enabled=True,
             ),
         ]
@@ -416,17 +419,26 @@ class Song:
         self.marks = [mark for mark in self.marks if mark.lane_index != index]
 
     def main_lane_index(self) -> int | None:
-        for lane in self.mark_lanes:
-            if lane.lane_type == "main":
+        """First lane with numbered Cue IDs (legacy name for export helpers)."""
+        for lane in sorted(self.mark_lanes, key=lambda item: item.index):
+            if lane.cue_id_enabled:
                 return lane.index
         return None
 
+    def cue_id_lane_indices(self) -> list[int]:
+        return sorted(lane.index for lane in self.mark_lanes if lane.cue_id_enabled)
+
+    def lane_has_cue_id(self, lane_index: int) -> bool:
+        lane = self.lane_by_index(lane_index)
+        return lane is not None and lane.cue_id_enabled
+
     def main_marks_sorted(self) -> list[Mark]:
-        main_index = self.main_lane_index()
-        if main_index is None:
+        """All marks on Cue-ID lanes, sorted by time (legacy helper)."""
+        id_lanes = set(self.cue_id_lane_indices())
+        if not id_lanes:
             return []
         return sorted(
-            (m for m in self.marks if m.lane_index == main_index),
+            (m for m in self.marks if m.lane_index in id_lanes),
             key=lambda m: (m.time_seconds, m.lane_index, m.id),
         )
 
@@ -556,14 +568,14 @@ class Song:
             return [], []
 
         if not self.now_lanes_configured:
-            primary = [lane.index for lane in lanes if lane.lane_type == "main"]
+            primary = [lane.index for lane in lanes if lane.cue_id_enabled]
             if not primary:
                 primary = [lanes[0].index]
             primary_set = set(primary)
             secondary = [
                 lane.index
                 for lane in lanes
-                if lane.lane_type == "top_button" and lane.index not in primary_set
+                if lane.cue_id_enabled and lane.index not in primary_set
             ]
             return primary, secondary
 

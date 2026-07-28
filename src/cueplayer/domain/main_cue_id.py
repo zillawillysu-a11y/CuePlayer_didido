@@ -1,4 +1,4 @@
-"""Fractional Main Cue IDs for timeline marks (1, 1.1, 1.01, 1.2, 2, …)."""
+"""Fractional Cue IDs for timeline marks (1, 1.1, 1.01, 1.2, 2, …)."""
 
 from __future__ import annotations
 
@@ -106,31 +106,30 @@ def between_main_cue_ids(
 
 
 def next_main_cue_id_at_end(existing_ids: list[str]) -> str:
-    """Assign the next integer id when appending a Main mark at the end."""
+    """Assign the next integer id when appending a mark at the end of one lane."""
     if not existing_ids:
         return "1"
     max_value = max(_to_decimal(cue_id) for cue_id in existing_ids)
     return str(int(max_value) + 1)
 
 
-def assign_main_cue_id_for_mark(song: Song, mark: Mark, *, force: bool = False) -> str:
-    """Pick and store a Main Cue ID for one mark.
+def main_marks_sorted_for_lane(song: Song, lane_index: int) -> list[Mark]:
+    return sorted(
+        (m for m in song.marks if m.lane_index == lane_index),
+        key=lambda m: (m.time_seconds, m.lane_index, m.id),
+    )
 
-    New marks: assign the first free slot at that time (append → next integer,
-    insert → fractional between neighbors). Existing marks keep their id unless
-    ``force`` (after a drag): then keep the id when it still fits between the
-    new neighbors, otherwise pick a new between/end slot. Other marks are never
-    renumbered.
-    """
-    main_index = song.main_lane_index()
-    if main_index is None or mark.lane_index != main_index:
+
+def assign_main_cue_id_for_mark(song: Song, mark: Mark, *, force: bool = False) -> str:
+    """Pick and store a Cue ID for one mark when its lane has Cue ID enabled."""
+    if not song.lane_has_cue_id(mark.lane_index):
         mark.main_cue_id = ""
         return ""
 
     if mark.main_cue_id and not force:
         return mark.main_cue_id
 
-    ordered = song.main_marks_sorted()
+    ordered = main_marks_sorted_for_lane(song, mark.lane_index)
     idx = next(i for i, m in enumerate(ordered) if m.id == mark.id)
     others = [m for m in ordered if m.id != mark.id]
     used = {m.main_cue_id for m in others if m.main_cue_id}
@@ -174,33 +173,42 @@ def assign_main_cue_id_for_mark(song: Song, mark: Mark, *, force: bool = False) 
 
 
 def refresh_main_cue_ids(song: Song, *, mark_ids: set[str] | None = None) -> None:
-    """Reassign Main Cue IDs only for new/moved marks — never renumber untouched cues."""
-    main_index = song.main_lane_index()
-    if main_index is None:
-        return
+    """Reassign Cue IDs only for new/moved marks — never renumber untouched cues."""
     if not mark_ids:
         return
     for mark_id in mark_ids:
         mark = song.mark_by_id(mark_id)
-        if mark is None or mark.lane_index != main_index:
+        if mark is None or not song.lane_has_cue_id(mark.lane_index):
             continue
         assign_main_cue_id_for_mark(song, mark, force=True)
 
 
+def sync_lane_cue_ids(song: Song) -> None:
+    """Clear or assign Cue IDs after lane Cue-ID / Button settings change."""
+    for mark in song.marks:
+        if not song.lane_has_cue_id(mark.lane_index):
+            mark.main_cue_id = ""
+    for lane_index in song.cue_id_lane_indices():
+        for mark in main_marks_sorted_for_lane(song, lane_index):
+            if not mark.main_cue_id:
+                assign_main_cue_id_for_mark(song, mark)
+
+
 def migrate_main_cue_ids(song: Song) -> None:
-    """Assign sequential integers to legacy main marks missing ids."""
-    main_marks = song.main_marks_sorted()
-    if not main_marks:
-        return
-    if all(mark.main_cue_id for mark in main_marks):
-        return
-    for index, mark in enumerate(main_marks, start=1):
-        if not mark.main_cue_id:
-            mark.main_cue_id = str(index)
+    """Assign sequential integers to legacy marks missing ids on Cue-ID lanes."""
+    for lane_index in song.cue_id_lane_indices():
+        lane_marks = main_marks_sorted_for_lane(song, lane_index)
+        if not lane_marks:
+            continue
+        if all(mark.main_cue_id for mark in lane_marks):
+            continue
+        for index, mark in enumerate(lane_marks, start=1):
+            if not mark.main_cue_id:
+                mark.main_cue_id = str(index)
 
 
 def normalize_main_cue_id_text(text: str) -> str:
-    """Normalize a manually typed Main Cue ID for storage."""
+    """Normalize a manually typed Cue ID for storage."""
     return _format_decimal(_to_decimal(text.strip()))
 
 
@@ -215,13 +223,16 @@ def is_valid_main_cue_id_text(text: str) -> bool:
         return False
 
 
-def main_cue_id_taken(song: Song, cue_id: str, *, exclude_mark_id: str) -> bool:
-    """True when another main-lane mark already uses this cue id."""
-    main_index = song.main_lane_index()
-    if main_index is None:
-        return False
+def main_cue_id_taken(
+    song: Song,
+    cue_id: str,
+    *,
+    exclude_mark_id: str,
+    lane_index: int,
+) -> bool:
+    """True when another mark on the same lane already uses this cue id."""
     for mark in song.marks:
-        if mark.lane_index != main_index or mark.id == exclude_mark_id:
+        if mark.lane_index != lane_index or mark.id == exclude_mark_id:
             continue
         if mark.main_cue_id == cue_id:
             return True
@@ -229,9 +240,12 @@ def main_cue_id_taken(song: Song, cue_id: str, *, exclude_mark_id: str) -> bool:
 
 
 def main_cue_id_neighbors(song: Song, mark_id: str) -> tuple[str | None, str | None]:
-    """Return (left_id, right_id) main-cue neighbors in time order for one mark."""
-    ordered = song.main_marks_sorted()
-    idx = next((i for i, mark in enumerate(ordered) if mark.id == mark_id), None)
+    """Return (left_id, right_id) neighbors in time order on the mark's lane."""
+    mark = song.mark_by_id(mark_id)
+    if mark is None or not song.lane_has_cue_id(mark.lane_index):
+        return None, None
+    ordered = main_marks_sorted_for_lane(song, mark.lane_index)
+    idx = next((i for i, item in enumerate(ordered) if item.id == mark_id), None)
     if idx is None:
         return None, None
     left_id = ordered[idx - 1].main_cue_id if idx > 0 else None
@@ -240,10 +254,18 @@ def main_cue_id_neighbors(song: Song, mark_id: str) -> tuple[str | None, str | N
 
 
 def main_cue_id_fits_order(song: Song, mark_id: str, cue_id: str) -> bool:
-    """True when cue_id is strictly between its main-lane neighbors in time order."""
+    """True when cue_id is strictly between its lane neighbors in time order."""
     if not is_valid_main_cue_id_text(cue_id):
         return False
-    if main_cue_id_taken(song, cue_id, exclude_mark_id=mark_id):
+    mark = song.mark_by_id(mark_id)
+    if mark is None or not song.lane_has_cue_id(mark.lane_index):
+        return False
+    if main_cue_id_taken(
+        song,
+        cue_id,
+        exclude_mark_id=mark_id,
+        lane_index=mark.lane_index,
+    ):
         return False
     left_id, right_id = main_cue_id_neighbors(song, mark_id)
     return _id_fits_between(cue_id, left_id, right_id)
@@ -262,21 +284,14 @@ def main_cue_id_order_hint(song: Song, mark_id: str) -> str:
 
 
 def renumberable_cue_list_lanes(song: Song) -> list[MarkLane]:
-    """Main lanes in the Cue List that have marks (Button lanes are excluded)."""
+    """Lanes with Cue IDs that also appear in the Cue List."""
     lanes: list[MarkLane] = []
     for lane in song.mark_lanes:
-        if lane.lane_type != "main" or not lane.cue_list_enabled:
+        if not lane.cue_id_enabled or not lane.cue_list_enabled:
             continue
         if any(mark.lane_index == lane.index for mark in song.marks):
             lanes.append(lane)
     return sorted(lanes, key=lambda item: item.index)
-
-
-def main_marks_sorted_for_lane(song: Song, lane_index: int) -> list[Mark]:
-    return sorted(
-        (m for m in song.marks if m.lane_index == lane_index),
-        key=lambda m: (m.time_seconds, m.lane_index, m.id),
-    )
 
 
 def _renumber_lane_indices(song: Song, lane_indices: set[int] | None) -> set[int]:
@@ -291,7 +306,7 @@ def capture_main_cue_ids(
     *,
     lane_indices: set[int] | None = None,
 ) -> dict[str, str]:
-    """Snapshot mark_id -> main_cue_id for renumberable Cue List main lanes."""
+    """Snapshot mark_id -> cue_id for renumberable Cue List lanes."""
     indices = _renumber_lane_indices(song, lane_indices)
     if not indices:
         return {}
@@ -314,11 +329,7 @@ def renumber_main_cue_ids_sequential(
     *,
     lane_indices: set[int] | None = None,
 ) -> dict[str, str]:
-    """Assign 1, 2, 3… per lane in time order; return resulting map.
-
-    When ``lane_indices`` is None, all Cue List main lanes are renumbered.
-    Button lanes and main lanes excluded from the Cue List are skipped.
-    """
+    """Assign 1, 2, 3… per lane in time order; return resulting map."""
     indices = sorted(_renumber_lane_indices(song, lane_indices))
     result: dict[str, str] = {}
     for lane_index in indices:
@@ -330,12 +341,12 @@ def renumber_main_cue_ids_sequential(
 
 
 def main_cue_id_map(song: Song) -> dict[str, str]:
-    """Display map mark_id -> cue id string (main lane only)."""
-    main_index = song.main_lane_index()
-    if main_index is None:
+    """Display map mark_id -> cue id string for all Cue-ID lanes."""
+    id_lanes = set(song.cue_id_lane_indices())
+    if not id_lanes:
         return {}
     return {
         mark.id: mark.main_cue_id
         for mark in song.marks
-        if mark.lane_index == main_index and mark.main_cue_id
+        if mark.lane_index in id_lanes and mark.main_cue_id
     }
