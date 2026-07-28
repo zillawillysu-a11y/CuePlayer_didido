@@ -1130,23 +1130,16 @@ class MainWindow(QMainWindow):
         act_video_preview.triggered.connect(self._toggle_video_preview_panel)
         tools_menu.addAction(act_video_preview)
         self._act_video_preview = act_video_preview
-        self._show_video_track_action = QAction("Show &Video Track", self)
+        self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
         self._show_video_track_action.setCheckable(True)
         self._show_video_track_action.setChecked(True)
         self._show_video_track_action.setToolTip(
-            "Hide after alignment to free timeline space. "
-            "Preview / Clean Output keep playing either way."
+            "Hide Video + LTC lanes after alignment to free timeline space. "
+            "Preview / Clean Output keep playing either way. "
+            "LTC appears under Video when a file stripe is known."
         )
         self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
         tools_menu.addAction(self._show_video_track_action)
-        self._show_ltc_track_action = QAction("Show &LTC Track", self)
-        self._show_ltc_track_action.setCheckable(True)
-        self._show_ltc_track_action.setChecked(False)
-        self._show_ltc_track_action.setToolTip(
-            "Show the striped LTC waveform under Music (inspect noisy / fuzzy stripe quality)."
-        )
-        self._show_ltc_track_action.toggled.connect(self._on_show_ltc_track_toggled)
-        tools_menu.addAction(self._show_ltc_track_action)
         self._clean_output_action = QAction("&Clean Video Output", self)
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
@@ -2770,11 +2763,6 @@ class MainWindow(QMainWindow):
             action.blockSignals(True)
             action.setChecked(bool(self.current_song.show_video_track))
             action.blockSignals(False)
-        ltc_action = getattr(self, "_show_ltc_track_action", None)
-        if ltc_action is not None:
-            ltc_action.blockSignals(True)
-            ltc_action.setChecked(bool(self.current_song.show_ltc_track))
-            ltc_action.blockSignals(False)
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -3937,6 +3925,7 @@ class MainWindow(QMainWindow):
 
     def _on_video_track_visibility_changed(self, visible: bool) -> None:
         self.current_song.show_video_track = bool(visible)
+        self.current_song.show_ltc_track = bool(visible)
         action = getattr(self, "_show_video_track_action", None)
         if action is not None:
             action.blockSignals(True)
@@ -3944,34 +3933,19 @@ class MainWindow(QMainWindow):
             action.blockSignals(False)
         self._mark_dirty()
         self.status.showMessage(
-            "Video Track shown"
+            "Video / LTC Tracks shown"
             if visible
-            else "Video Track hidden (Preview/Clean Output still play)",
+            else "Video / LTC Tracks hidden (Preview/Clean Output still play)",
             2500,
         )
 
     def _on_ltc_track_visibility_changed(self, visible: bool) -> None:
+        # Bound to the Video eye — keep persisted flag in sync only.
         self.current_song.show_ltc_track = bool(visible)
-        action = getattr(self, "_show_ltc_track_action", None)
-        if action is not None:
-            action.blockSignals(True)
-            action.setChecked(bool(visible))
-            action.blockSignals(False)
-        self._mark_dirty()
-        self.status.showMessage(
-            "LTC Track shown — inspect stripe quality"
-            if visible
-            else "LTC Track hidden",
-            2500,
-        )
 
     def _on_show_video_track_toggled(self, checked: bool) -> None:
         self.timeline.set_show_video_track(bool(checked))
         self.current_song.show_video_track = bool(checked)
-        self._mark_dirty()
-
-    def _on_show_ltc_track_toggled(self, checked: bool) -> None:
-        self.timeline.set_show_ltc_track(bool(checked))
         self.current_song.show_ltc_track = bool(checked)
         self._mark_dirty()
 
