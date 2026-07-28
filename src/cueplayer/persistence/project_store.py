@@ -189,6 +189,9 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
 
 
 def clean_video_output_to_dict(settings: CleanVideoOutputSettings) -> dict[str, Any]:
+    mode = str(getattr(settings, "ndi_frame_mode", "") or "output_window")
+    if mode not in ("video", "output_window"):
+        mode = "output_window"
     return {
         "width": int(settings.width),
         "height": int(settings.height),
@@ -196,6 +199,7 @@ def clean_video_output_to_dict(settings: CleanVideoOutputSettings) -> dict[str, 
         "was_open": bool(settings.was_open),
         "ndi_enabled": bool(getattr(settings, "ndi_enabled", False)),
         "ndi_name": str(getattr(settings, "ndi_name", "") or "CuePlayer"),
+        "ndi_frame_mode": mode,
     }
 
 
@@ -215,6 +219,9 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
         width = default.width
     if height <= 0:
         height = default.height
+    mode = str(raw.get("ndi_frame_mode") or "output_window")
+    if mode not in ("video", "output_window"):
+        mode = "output_window"
     return CleanVideoOutputSettings(
         width=width,
         height=height,
@@ -222,6 +229,7 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
         was_open=bool(raw.get("was_open", default.was_open)),
         ndi_enabled=bool(raw.get("ndi_enabled", False)),
         ndi_name=str(raw.get("ndi_name") or "CuePlayer"),
+        ndi_frame_mode=mode,
     )
 
 

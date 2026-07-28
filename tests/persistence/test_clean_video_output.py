@@ -29,6 +29,7 @@ def test_clean_video_output_roundtrip(tmp_path: Path) -> None:
         was_open=True,
         ndi_enabled=True,
         ndi_name="CuePlayerDepence",
+        ndi_frame_mode="video",
     )
     path = tmp_path / "中文專案" / "show.cueplayer.json"
     save_project(project, path)
@@ -40,6 +41,7 @@ def test_clean_video_output_roundtrip(tmp_path: Path) -> None:
     assert cvo.was_open is True
     assert cvo.ndi_enabled is True
     assert cvo.ndi_name == "CuePlayerDepence"
+    assert cvo.ndi_frame_mode == "video"
 
 
 def test_clean_video_output_missing_field_uses_default() -> None:
@@ -57,6 +59,7 @@ def test_clean_video_output_missing_field_uses_default() -> None:
     assert project.clean_video_output.was_open is False
     assert project.clean_video_output.ndi_enabled is False
     assert project.clean_video_output.ndi_name == "CuePlayer"
+    assert project.clean_video_output.ndi_frame_mode == "output_window"
 
 
 def test_clean_video_output_rejects_invalid_dimensions() -> None:

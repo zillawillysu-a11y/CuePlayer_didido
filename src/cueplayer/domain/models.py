@@ -863,6 +863,9 @@ class CleanVideoOutputSettings:
     # Optional NDI sender mirroring the same decoded frames (Depence / etc.).
     ndi_enabled: bool = False
     ndi_name: str = "CuePlayer"
+    # "video" = NDI size follows decoded frame; "output_window" = Clean Output
+    # canvas + Fit/Fill (what you see in the Output box).
+    ndi_frame_mode: str = "output_window"
 
 
 def default_channel_routing(output_channels: int) -> tuple[list[int], list[int], list[int]]:

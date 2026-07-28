@@ -922,10 +922,11 @@ class MainWindow(QMainWindow):
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
         self.clean_output_window.visibility_changed.connect(self._persist_clean_output_was_open)
-        self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.clean_output_window.decode_quality_changed.connect(self._set_video_decode_quality)
         self.clean_output_window.ndi_toggled.connect(self._toggle_ndi_output)
         self.clean_output_window.ndi_name_changed.connect(self._on_ndi_name_changed)
+        self.clean_output_window.ndi_frame_mode_changed.connect(self._on_ndi_frame_mode_changed)
+        self.clean_output_window.settings_changed.connect(self._on_clean_output_settings_changed)
         self._apply_ndi_from_project(show_errors=False)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
         self.monitor.selection_changed.connect(self._on_monitor_selection)
@@ -4204,27 +4205,51 @@ class MainWindow(QMainWindow):
 
     def _apply_ndi_from_project(self, *, show_errors: bool = True) -> str | None:
         settings = self.project.clean_video_output
-        # Prefer live Clean Output pixel size when the window exists.
         width, height = int(settings.width), int(settings.height)
+        fit_mode = "fit"
         if hasattr(self, "clean_output_window"):
             try:
                 width, height = self.clean_output_window.content_size()
+                fit_mode = self.clean_output_window.preview.fit_mode()
             except Exception:  # noqa: BLE001
                 pass
+        mode = str(getattr(settings, "ndi_frame_mode", "") or "output_window")
+        if mode not in ("video", "output_window"):
+            mode = "output_window"
         err = self._ndi_output.configure(
             enabled=bool(settings.ndi_enabled),
             name=str(settings.ndi_name or "CuePlayer"),
+            frame_mode=mode,
             width=width,
             height=height,
+            fit_mode=fit_mode,
         )
         self.clean_output_window.set_ndi_enabled(bool(settings.ndi_enabled))
         self.clean_output_window.set_ndi_name(str(settings.ndi_name or "CuePlayer"))
+        self.clean_output_window.set_ndi_frame_mode(mode)
         if hasattr(self, "_ndi_output_action"):
             self._ndi_output_action.setChecked(bool(settings.ndi_enabled) and err is None)
         self._sync_video_output_active()
         if err and show_errors:
             QMessageBox.warning(self, "NDI Video Output", err)
         return err
+
+    def _on_clean_output_settings_changed(self) -> None:
+        """Persist geometry / Fit-Fill; refresh NDI canvas when in Output-window mode."""
+        self._mark_dirty()
+        if not self.project.clean_video_output.ndi_enabled:
+            return
+        live = self.clean_output_window.current_settings()
+        self.project.clean_video_output.width = live.width
+        self.project.clean_video_output.height = live.height
+        self.project.clean_video_output.aspect_locked = live.aspect_locked
+        self.project.clean_video_output.ndi_frame_mode = live.ndi_frame_mode
+        if live.ndi_frame_mode == "output_window":
+            self._ndi_output.set_presentation(
+                width=live.width,
+                height=live.height,
+                fit_mode=self.clean_output_window.preview.fit_mode(),
+            )
 
     def _toggle_ndi_output(self, checked: bool) -> None:
         self.project.clean_video_output.ndi_enabled = bool(checked)
@@ -4238,9 +4263,15 @@ class MainWindow(QMainWindow):
             self._apply_ndi_from_project(show_errors=False)
             return
         if checked:
+            mode = self.project.clean_video_output.ndi_frame_mode
+            hint = (
+                "video size"
+                if mode == "video"
+                else "Output window (Fit/Fill)"
+            )
             self.status.showMessage(
-                f"NDI sending as “{self.project.clean_video_output.ndi_name or 'CuePlayer'}” "
-                f"— play a video clip to see picture",
+                f"NDI “{self.project.clean_video_output.ndi_name or 'CuePlayer'}” "
+                f"— {hint}. Play a clip to see picture.",
                 5000,
             )
         self._mark_dirty()
@@ -4249,12 +4280,23 @@ class MainWindow(QMainWindow):
         name = (name or "").strip() or "CuePlayer"
         self.project.clean_video_output.ndi_name = name
         self.clean_output_window.set_ndi_name(name)
-        # Re-open sender under the new name when NDI is already on.
         if self.project.clean_video_output.ndi_enabled:
             err = self._apply_ndi_from_project(show_errors=True)
             if err:
                 return
             self.status.showMessage(f"NDI renamed to “{name}”", 3500)
+        self._mark_dirty()
+
+    def _on_ndi_frame_mode_changed(self, mode: str) -> None:
+        mode = "video" if mode == "video" else "output_window"
+        self.project.clean_video_output.ndi_frame_mode = mode
+        self.clean_output_window.set_ndi_frame_mode(mode)
+        if self.project.clean_video_output.ndi_enabled:
+            err = self._apply_ndi_from_project(show_errors=True)
+            if err:
+                return
+            label = "Video (source size)" if mode == "video" else "Output window (Fit/Fill)"
+            self.status.showMessage(f"NDI frame size: {label}", 3500)
         self._mark_dirty()
 
     def _prompt_ndi_name(self) -> None:

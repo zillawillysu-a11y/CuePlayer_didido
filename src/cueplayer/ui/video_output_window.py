@@ -68,6 +68,7 @@ class CleanVideoOutputWindow(QWidget):
     decode_quality_changed = Signal(str)  # emitted when user picks a quality in this menu
     ndi_toggled = Signal(bool)
     ndi_name_changed = Signal(str)
+    ndi_frame_mode_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -80,6 +81,7 @@ class CleanVideoOutputWindow(QWidget):
         self._decode_quality: str = "1080p"
         self._ndi_enabled = False
         self._ndi_name = "CuePlayer"
+        self._ndi_frame_mode = "output_window"
         # Normally the X button only hides this window (see closeEvent) so
         # that re-opening from the Tools menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
@@ -152,12 +154,15 @@ class CleanVideoOutputWindow(QWidget):
             was_open=self.isVisible(),
             ndi_enabled=bool(self._ndi_enabled),
             ndi_name=str(self._ndi_name or "CuePlayer"),
+            ndi_frame_mode=str(self._ndi_frame_mode or "output_window"),
         )
 
     def apply_settings(self, settings: CleanVideoOutputSettings) -> None:
         self._aspect_locked = bool(settings.aspect_locked)
         self._ndi_enabled = bool(getattr(settings, "ndi_enabled", False))
         self._ndi_name = str(getattr(settings, "ndi_name", "") or "CuePlayer")
+        mode = str(getattr(settings, "ndi_frame_mode", "") or "output_window")
+        self._ndi_frame_mode = "video" if mode == "video" else "output_window"
         self.apply_preset(settings.width, settings.height)
 
     def set_ndi_enabled(self, enabled: bool) -> None:
@@ -171,6 +176,12 @@ class CleanVideoOutputWindow(QWidget):
 
     def ndi_name(self) -> str:
         return str(self._ndi_name or "CuePlayer")
+
+    def set_ndi_frame_mode(self, mode: str) -> None:
+        self._ndi_frame_mode = "video" if mode == "video" else "output_window"
+
+    def ndi_frame_mode(self) -> str:
+        return str(self._ndi_frame_mode or "output_window")
 
     def _schedule_settings_changed(self) -> None:
         self._settings_debounce.start()
@@ -293,14 +304,33 @@ class CleanVideoOutputWindow(QWidget):
         ndi_action.setToolTip("Send this Clean Output picture over NDI (Depence / etc.)")
         ndi_name_action = menu.addAction(f"NDI Name: {self._ndi_name}…")
         ndi_name_action.setToolTip("Custom NDI source name so Depence does not pick the wrong feed")
+        ndi_mode_menu = menu.addMenu("NDI Frame Size")
+        ndi_mode_group = QActionGroup(self)
+        ndi_mode_group.setExclusive(True)
+        ndi_mode_video = ndi_mode_menu.addAction("Video (source / decode size)")
+        ndi_mode_video.setCheckable(True)
+        ndi_mode_video.setToolTip("NDI resolution follows the decoded video frame")
+        ndi_mode_window = ndi_mode_menu.addAction("Output window (Fit / Fill)")
+        ndi_mode_window.setCheckable(True)
+        ndi_mode_window.setToolTip(
+            "NDI matches this window’s size and Fit/Fill — same picture as the Output box"
+        )
+        ndi_mode_group.addAction(ndi_mode_video)
+        ndi_mode_group.addAction(ndi_mode_window)
+        if self._ndi_frame_mode == "video":
+            ndi_mode_video.setChecked(True)
+        else:
+            ndi_mode_window.setChecked(True)
 
         menu.addSeparator()
         fullscreen_action = menu.addAction("Exit Fullscreen" if self.isFullScreen() else "Fullscreen")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is fit_action:
             self.preview.set_fit_mode("fit")
+            self._schedule_settings_changed()
         elif chosen is fill_action:
             self.preview.set_fit_mode("fill")
+            self._schedule_settings_changed()
         elif chosen is lock_action:
             self.set_aspect_locked(lock_action.isChecked())
         elif chosen in preset_actions:
@@ -316,6 +346,14 @@ class CleanVideoOutputWindow(QWidget):
             self.ndi_toggled.emit(enabled)
         elif chosen is ndi_name_action:
             self._prompt_ndi_name()
+        elif chosen is ndi_mode_video:
+            self._ndi_frame_mode = "video"
+            self.ndi_frame_mode_changed.emit("video")
+            self._schedule_settings_changed()
+        elif chosen is ndi_mode_window:
+            self._ndi_frame_mode = "output_window"
+            self.ndi_frame_mode_changed.emit("output_window")
+            self._schedule_settings_changed()
         elif chosen is fullscreen_action:
             if self.isFullScreen():
                 self.showNormal()

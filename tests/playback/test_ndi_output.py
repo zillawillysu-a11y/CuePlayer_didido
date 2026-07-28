@@ -6,7 +6,8 @@ import numpy as np
 
 from cueplayer.playback.ndi_output import (
     NdiVideoOutput,
-    _letterbox_rgb,
+    _fill_rgb,
+    _fit_rgb,
     _pack_rgbx_into,
     ndi_available,
     ndi_status,
@@ -27,21 +28,31 @@ def test_ndi_configure_disabled_is_noop() -> None:
     out.close()
 
 
-def test_letterbox_and_pack_rgbx() -> None:
+def test_fit_fill_and_pack_rgbx() -> None:
     rgb = np.zeros((10, 20, 3), dtype=np.uint8)
     rgb[0, 0] = (10, 20, 30)
-    canvas = _letterbox_rgb(rgb, 40, 20)
+    canvas = _fit_rgb(rgb, 40, 20)
     assert canvas.shape == (20, 40, 3)
+    filled = _fill_rgb(rgb, 40, 20)
+    assert filled.shape == (20, 40, 3)
     flat = np.zeros(20 * 40 * 4, dtype=np.uint8)
     _pack_rgbx_into(flat, canvas)
-    assert flat.reshape(20, 40, 4)[0, 10, 3] == 255  # alpha pad
+    assert flat.reshape(20, 40, 4)[0, 10, 3] == 255
 
 
 def test_ndi_configure_without_library_returns_error() -> None:
     if ndi_available():
         return
     out = NdiVideoOutput()
-    err = out.configure(enabled=True, name="CuePlayerTest")
+    err = out.configure(enabled=True, name="CuePlayerTest", frame_mode="video")
     assert err is not None
     assert "cyndilib" in err or "NDI" in err
     assert out.enabled is False
+
+
+def test_ndi_frame_mode_persists_default() -> None:
+    out = NdiVideoOutput()
+    assert out.configure(enabled=False, frame_mode="video") is None
+    assert out.frame_mode == "video"
+    assert out.configure(enabled=False, frame_mode="output_window") is None
+    assert out.frame_mode == "output_window"
