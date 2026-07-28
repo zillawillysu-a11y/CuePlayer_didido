@@ -55,6 +55,7 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
     assert widget._video_lane_visible() is True
     before_tracks = widget._tracks_top_y()
     wave_bottom = widget._wave_bottom_y()
+    eye_pos = widget.video_show_button.pos()
 
     events: list[bool] = []
     widget.video_track_visibility_changed.connect(events.append)
@@ -69,6 +70,7 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
     assert widget.video_mute_button.isHidden() is True
     assert widget.video_hide_button.isHidden() is True
     assert widget.video_show_button.isHidden() is False
+    assert widget.video_show_button.pos() == eye_pos
 
 
 def test_hide_button_hides_track(app: QApplication) -> None:
@@ -89,11 +91,19 @@ def test_show_eye_button_restores_track(app: QApplication) -> None:
     widget.set_song(song)
     widget.resize(900, 600)
     assert widget.video_show_button.isHidden() is False
+    eye_pos = widget.video_show_button.pos()
     widget.video_show_button.click()
     assert song.show_video_track is True
     assert widget._video_lane_visible() is True
-    assert widget.video_show_button.isHidden() is True
-    assert widget.video_hide_button.isHidden() is False
+    # Eye stays put on the Music header — icon flips to eye_off instead of moving.
+    assert widget.video_show_button.isHidden() is False
+    assert widget.video_show_button.pos() == eye_pos
+    assert widget.video_show_button._kind == "eye_off"
+    assert widget.video_hide_button.isHidden() is True
+    widget.video_show_button.click()
+    assert song.show_video_track is False
+    assert widget.video_show_button.pos() == eye_pos
+    assert widget.video_show_button._kind == "eye"
 
 
 def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
@@ -104,3 +114,4 @@ def test_set_song_restores_hidden_video_track(app: QApplication) -> None:
     assert widget._show_video_track is False
     assert widget._video_lane_visible() is False
     assert widget._video_eye_header_visible() is True
+    assert widget.video_show_button.isHidden() is False
