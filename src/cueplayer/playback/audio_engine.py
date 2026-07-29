@@ -181,11 +181,6 @@ class AudioEngine(QObject):
         if self.mtc_enabled:
             outputs.append("MTC")
 
-        import sys
-        print(f"[OTC] pos={pos:.2f} outputs={outputs} ltc_en={self._audio_settings.ltc_enabled} "
-              f"mtc_en={self._audio_settings.mtc_enabled} "
-              f"translate={self._audio_settings.ltc_to_mtc_translate} "
-              f"ltc_src={self._audio_settings.ltc_source!r}", file=sys.stderr, flush=True)
         tc_str = "—"
         if outputs:
             # When LTC source is from-file, the actual timecode numbers come from
@@ -339,13 +334,7 @@ class AudioEngine(QObject):
         Used so MTC can mirror the same numbers as the incoming LTC audio.
         Returns None for generator-only LTC or when decode fails.
         """
-        import sys
         ch = self._decode_source_channel()
-        s = self._audio_settings
-        print(f"[DECODE] ltc_source={s.ltc_source!r} ltc_enabled={s.ltc_enabled} "
-              f"translate={s.ltc_to_mtc_translate} ch={ch} "
-              f"buf={'yes' if self._buffer else 'None'} "
-              f"detected_ch={self._detected_ltc_channel}", file=sys.stderr, flush=True)
         if ch is None or self._buffer is None:
             return None
         sr = int(self._sample_rate())
@@ -524,6 +513,9 @@ class AudioEngine(QObject):
         if was_playing:
             self.pause()
 
+        import sys, traceback
+        print(f"[APPLY] ltc_src={settings.ltc_source!r} translate={getattr(settings,'ltc_to_mtc_translate',False)} mtc={settings.mtc_enabled}", file=sys.stderr, flush=True)
+        traceback.print_stack(file=sys.stderr, limit=6)
         self._routing_warning = None
         self._audio_settings = AudioOutputSettings(
             output_device_name=settings.output_device_name,
