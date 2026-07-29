@@ -72,7 +72,6 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
     widget.resize(900, 600)
     assert widget._video_lane_visible() is True
     before_height = widget._content_height
-    marks_top = widget._tracks_top_y()
     wave_bottom = widget._wave_bottom_y()
     eye_pos = widget.video_show_button.pos()
 
@@ -83,14 +82,29 @@ def test_hide_video_track_collapses_lane(app: QApplication) -> None:
     assert song.show_video_track is False
     assert widget._video_lane_visible() is False
     assert widget._video_eye_header_visible() is True
-    # Marks stay glued under Music whether Video is shown or hidden.
-    assert widget._tracks_top_y() == wave_bottom == marks_top
+    # With Video hidden, Marks sit directly under Music.
+    assert widget._tracks_top_y() == wave_bottom
     assert widget._content_height < before_height
     assert events == [False]
     assert widget.video_mute_button.isHidden() is True
     assert widget.video_hide_button.isHidden() is True
     assert widget.video_show_button.isHidden() is False
     assert widget.video_show_button.pos() == eye_pos
+
+
+def test_show_video_pushes_marks_below(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song = _song_with_clip()
+    widget.set_song(song)
+    widget.set_show_video_track(False)
+    widget.resize(900, 600)
+    marks_when_hidden = widget._tracks_top_y()
+    widget.set_show_video_track(True)
+    assert widget._video_lane_top_y() == widget._wave_bottom_y()
+    assert widget._tracks_top_y() > marks_when_hidden
+    assert widget._tracks_top_y() >= widget._video_lane_top_y() + int(
+        widget._video_lane_height
+    )
 
 
 def test_hide_button_hides_track(app: QApplication) -> None:

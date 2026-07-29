@@ -51,6 +51,7 @@ python -m cueplayer.app
 - Set List Sheet: 曲序/曲名/英文名/**Seq/Cue ID**/TC/BPM/Note、Folder 分隔、欄寬可拖、曲序可改
 - 左邊 Setlist 欄寬可拖
 - Video+LTC 眼睛固定在 Music、整場全域開/關
+- 時間軸順序：**Music → Video → LTC → Marks**（拉開高度可把 Marks 往下擠）
 - 深色啟動 Splash（避免大白）
 
 **Asked today but NOT done yet:**

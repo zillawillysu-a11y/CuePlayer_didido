@@ -142,6 +142,7 @@ class TimelineWidget(QWidget):
         self._scrubbing = False
         self._resizing_wave = False
         self._resizing_video_lane = False
+        self._geometry_sync_pending = False
         self._wave_split_hover = False
         self._video_lane_split_hover = False
         self._hover_mark_id: str | None = None
@@ -715,26 +716,26 @@ class TimelineWidget(QWidget):
             return 0
         return self._visible_lane_count() * self._lane_height
 
-    def _tracks_top_y(self) -> int:
-        """Y where mark lanes begin — directly under the Music waveform."""
-        return self._wave_bottom_y()
-
-    def _tracks_bottom_y(self) -> int:
-        return self._tracks_top_y() + self._marks_band_height()
-
     def _video_lane_top_y(self) -> int:
-        """Video sits below Mark lanes (Music → Marks → Video → LTC)."""
-        return self._tracks_bottom_y()
+        """Video sits directly under the Music waveform."""
+        return self._wave_bottom_y()
 
     def _ltc_band_height(self) -> int:
         return int(self._ltc_lane_height) if self._ltc_lane_visible() else 0
 
     def _ltc_lane_top_y(self) -> int:
-        """LTC sits under Video."""
+        """LTC sits under Video (Music → Video → LTC → Marks)."""
         y = self._video_lane_top_y()
         if self._video_lane_visible():
             return y + int(self._video_lane_height)
         return y
+
+    def _tracks_top_y(self) -> int:
+        """Y where mark lanes begin — below waveform + optional Video + LTC."""
+        return self._ltc_lane_top_y() + self._ltc_band_height()
+
+    def _tracks_bottom_y(self) -> int:
+        return self._tracks_top_y() + self._marks_band_height()
 
     def _video_lane_clip_bottom_y(self) -> int:
         return self._video_lane_top_y() + int(self._video_lane_base_height)
@@ -805,7 +806,7 @@ class TimelineWidget(QWidget):
         return None
 
     def _in_mark_tracks(self, x: float, y: float) -> bool:
-        """Mark lane rows directly under the Music waveform (box-select zone)."""
+        """Mark lane rows below Video/LTC (box-select zone)."""
         if not self._show_mark_tracks or self._song is None:
             return False
         if x < self._header_width:
@@ -1276,8 +1277,25 @@ class TimelineWidget(QWidget):
         self._layout_video_track_overlay()
         # Only notify when height actually changes — otherwise drag-resize
         # (resizeEvent → apply → emit → parent resize → …) can recurse until crash.
-        if changed:
-            self.content_geometry_changed.emit()
+        if not changed:
+            return
+        # While dragging a splitter, skip the parent scroll sync signal — the
+        # mouse-move path already updated min/content height; emitting causes
+        # viewport scrollbar churn that re-enters layout and can stack-overflow.
+        if self._resizing_wave or self._resizing_video_lane:
+            self._geometry_sync_pending = True
+            # Grow/shrink locally so the drag still feels live without going
+            # through MainWindow → QScrollArea → resizeEvent feedback.
+            target_h = max(self.minimumHeight(), self._content_height)
+            if self.height() != target_h:
+                was_busy = getattr(self, "_layout_heights_busy", False)
+                self._layout_heights_busy = True
+                try:
+                    self.resize(self.width(), target_h)
+                finally:
+                    self._layout_heights_busy = was_busy
+            return
+        self.content_geometry_changed.emit()
 
     def _max_wave_height(self) -> int:
         # Independent from video/mark lanes — tall content scrolls in the parent.
@@ -2104,6 +2122,7 @@ class TimelineWidget(QWidget):
             was_scrub = self._scrubbing
             was_box = self._box_selecting
             was_drag = self._dragging_marks
+            was_resize = self._resizing_wave or self._resizing_video_lane
             drag_moved = self._drag_moved
             click_seek = self._drag_click_seek
             box_click_seek = self._box_click_seek
@@ -2117,6 +2136,9 @@ class TimelineWidget(QWidget):
             self._scrub_timer.stop()
             self._invalidate_scrub_backdrop()
             self.releaseMouse()
+            if was_resize and self._geometry_sync_pending:
+                self._geometry_sync_pending = False
+                self.content_geometry_changed.emit()
             if was_scrub:
                 self._scrub_at(event.position().x(), force=True)
                 self.scrub_ended.emit()

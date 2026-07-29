@@ -13,6 +13,8 @@
 | **Space** | Play / Pause |
 | **← / →** | 微調 playhead（配合修飾鍵可改秒數／Frame） |
 | **1–9** | 在 playhead 打對應 Mark |
+| 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
+| Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
 
 ## Cue List（右側）
 
