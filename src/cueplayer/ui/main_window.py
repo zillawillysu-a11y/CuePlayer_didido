@@ -4746,6 +4746,7 @@ class MainWindow(QMainWindow):
         mark_dirty: bool = True,
         replace_track: bool = True,
         refresh_song_widgets: bool = True,
+        reset_view: bool | None = None,
     ) -> None:
         self._store_audio_cache(path, buffer)
         self.timeline.set_audio_loading(False)
@@ -4770,7 +4771,13 @@ class MainWindow(QMainWindow):
         self._refresh_setlist_ltc_cells()
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
-        self.timeline.set_audio(waveform_display_buffer(buffer, exclude_channel=exclude))
+        # Song switch (replace_track=False) keeps the current zoom scale;
+        # importing / replacing audio still resets to the default zoom.
+        keep_zoom = replace_track is False if reset_view is None else (not reset_view)
+        self.timeline.set_audio(
+            waveform_display_buffer(buffer, exclude_channel=exclude),
+            reset_view=not keep_zoom,
+        )
         self._apply_timeline_ltc_lane(buffer, exclude)
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)
