@@ -754,6 +754,9 @@ def estimate_bpm_from_path(
     progress: ProgressFn | None = None,
 ) -> float | None:
     """Read only the start of an audio file and estimate BPM (memory-light)."""
+    from cueplayer.util.thread_priority import lower_background_thread_priority
+
+    lower_background_thread_priority()
     import soundfile as sf
 
     file_path = Path(path)

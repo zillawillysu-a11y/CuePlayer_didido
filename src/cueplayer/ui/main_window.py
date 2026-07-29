@@ -90,7 +90,7 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
+from cueplayer.media.audio_disk_cache import load_audio_cached, save_cached_audio
 from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
@@ -876,6 +876,7 @@ class MainWindow(QMainWindow):
         self._audio_load_token = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
+        self._display_waveform_cache: dict[tuple[tuple[str, int, int] | None, int | None], AudioBuffer] = {}
         self._audio_ltc_cache: dict[tuple[str, int, int], int | None] = {}
         self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
         self._timeline_ltc_exclude: int | None = None
@@ -1954,23 +1955,7 @@ class MainWindow(QMainWindow):
 
     def _warm_nearby_audio_on_open(self) -> None:
         """Background-load current ±1 songs only (keeps open responsive)."""
-        paths: list[Path] = []
-        try:
-            idx = self.project.songs.index(self.current_song)
-        except ValueError:
-            idx = 0
-        for i in (idx - 1, idx, idx + 1):
-            if 0 <= i < len(self.project.songs):
-                path = self._main_audio_path_for_song(self.project.songs[i])
-                if path is not None:
-                    paths.append(path)
-        for path in paths:
-            if self._cached_audio_buffer(path) is not None:
-                continue
-            key = self._audio_cache_key(path)
-            if key is not None and key in self._audio_inflight:
-                continue
-            self._start_audio_load(path, executor=self._audio_prefetch_executor)
+        self._prefetch_neighbor_audio()
 
     def _warm_project_audio_on_open(self) -> None:
         """Deprecated full-setlist warm — kept as alias for nearby warm."""
@@ -3357,7 +3342,7 @@ class MainWindow(QMainWindow):
                 self._load_audio_path(
                     audio_path, mark_dirty=False, replace_track=False, bump_token=False
                 )
-            self._prefetch_setlist_audio(skip_path=audio_path)
+            self._prefetch_neighbor_audio(skip_path=audio_path)
         else:
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
@@ -3474,7 +3459,7 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
         if last_index is None:
             return
-        # Prefetch already began warm progress; keep the % visible after "Added".
+        self._prefetch_all_setlist_audio()
         if self._media_warm_active:
             self._refresh_media_warm_status()
         elif len(added_indexes) == 1:
@@ -4208,7 +4193,7 @@ class MainWindow(QMainWindow):
                     replace_track=replace_track,
                     refresh_song_widgets=replace_track,
                 )
-            self._prefetch_setlist_audio(skip_path=path)
+            self._prefetch_neighbor_audio(skip_path=path)
             return
 
         if bump_token:
@@ -4231,17 +4216,40 @@ class MainWindow(QMainWindow):
             return None
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
+        """Return a RAM-resident buffer only (never blocks on disk cache I/O)."""
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        hit = self._audio_buffer_cache.get(key)
-        if hit is not None:
-            return hit
-        disk = load_cached_audio(path)
-        if disk is None:
+        return self._audio_buffer_cache.get(key)
+
+    def _resolved_path_str(self, path: Path | None) -> str | None:
+        if path is None:
             return None
-        self._store_audio_cache(path, disk, write_disk=False)
-        return disk
+        try:
+            return str(path.resolve())
+        except OSError:
+            return str(path)
+
+    def _invalidate_display_waveform_cache(self, path: Path) -> None:
+        key = self._audio_cache_key(path)
+        if key is None:
+            return
+        drop = [k for k in self._display_waveform_cache if k[0] == key]
+        for cache_key in drop:
+            self._display_waveform_cache.pop(cache_key, None)
+
+    def _waveform_for_timeline(
+        self, buffer: AudioBuffer, path: Path, exclude: int | None
+    ) -> AudioBuffer:
+        key = self._audio_cache_key(path)
+        cache_key = (key, exclude)
+        cached = self._display_waveform_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = waveform_display_buffer(buffer, exclude_channel=exclude)
+        if key is not None and exclude is not None:
+            self._display_waveform_cache[cache_key] = result
+        return result
 
     def _store_audio_cache(
         self, path: Path, buffer: AudioBuffer, *, write_disk: bool = True
@@ -4249,6 +4257,7 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None:
             self._audio_buffer_cache[key] = buffer
+            self._invalidate_display_waveform_cache(path)
             self._note_media_warm_step(key, "audio")
             self._media_warm_progress.emit()
         if write_disk:
@@ -4385,6 +4394,9 @@ class MainWindow(QMainWindow):
 
         def _run() -> tuple[str, float | None]:
             from cueplayer.media.bpm_analyzer import estimate_bpm_from_path
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
 
             def _progress(percent: int) -> None:
                 # Worker thread → queued to UI via Signal.
@@ -4660,7 +4672,7 @@ class MainWindow(QMainWindow):
         song.bpm = value
         song.bpm_auto = True
         self._mark_dirty()
-        self._rebuild_song_list()
+        self._refresh_bpm_progress_cell(song_id)
         if sheet is not None:
             sheet.sync_songs()
         from cueplayer.media.bpm_analyzer import format_bpm_value
@@ -4710,7 +4722,7 @@ class MainWindow(QMainWindow):
             # LTC side becomes known (or a previous strip is cleared).
             if not (exclude is None and prev is None):
                 self.timeline.set_audio(
-                    waveform_display_buffer(buffer, exclude_channel=exclude),
+                    self._waveform_for_timeline(buffer, path, exclude),
                     reset_view=False,
                 )
         self._apply_timeline_ltc_lane(buffer, exclude)
@@ -4729,7 +4741,13 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None and key in self._audio_inflight:
             return self._audio_inflight[key]
-        future = executor.submit(load_audio_cached, path)
+        def _load() -> AudioBuffer:
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
+            return load_audio_cached(path)
+
+        future = executor.submit(_load)
         if key is not None:
             self._audio_inflight[key] = future
 
@@ -4817,24 +4835,35 @@ class MainWindow(QMainWindow):
         path = Path(main_audio.path)
         return path if path.is_file() else None
 
-    def _prefetch_setlist_audio(self, *, skip_path: Path | None = None) -> None:
-        skip_resolved: str | None = None
-        if skip_path is not None:
-            try:
-                skip_resolved = str(skip_path.resolve())
-            except OSError:
-                skip_resolved = str(skip_path)
+    def _prefetch_neighbor_audio(self, *, skip_path: Path | None = None) -> None:
+        """Background-load the current song's neighbors (keeps song switch responsive)."""
+        try:
+            idx = self.project.songs.index(self.current_song)
+        except ValueError:
+            return
+        skip_resolved = self._resolved_path_str(skip_path)
+        for i in (idx - 1, idx + 1):
+            if i < 0 or i >= len(self.project.songs):
+                continue
+            path = self._main_audio_path_for_song(self.project.songs[i])
+            if path is None:
+                continue
+            if skip_resolved is not None and self._resolved_path_str(path) == skip_resolved:
+                continue
+            if self._cached_audio_buffer(path) is not None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is not None and key in self._audio_inflight:
+                continue
+            self._start_audio_load(path, executor=self._audio_prefetch_executor)
+
+    def _prefetch_all_setlist_audio(self) -> None:
+        """Background-load every song (batch import) with status-bar warm progress."""
         self._begin_media_warm_progress()
         for song in self.project.songs:
             path = self._main_audio_path_for_song(song)
             if path is None:
                 continue
-            try:
-                if skip_resolved is not None and str(path.resolve()) == skip_resolved:
-                    continue
-            except OSError:
-                if skip_resolved is not None and str(path) == skip_resolved:
-                    continue
             if self._cached_audio_buffer(path) is not None:
                 continue
             key = self._audio_cache_key(path)
@@ -4908,21 +4937,21 @@ class MainWindow(QMainWindow):
                 )
             ]
         self.engine.set_buffer(buffer)
-        self.engine.ensure_playback_ready()
+        if replace_track:
+            self.engine.ensure_playback_ready()
         key = self._audio_cache_key(path)
         # Never copy engine.detected_ltc_channel here — it can still be the
         # previous song's result until async detect finishes, which wrongly
         # lit LTC L/R on pure-music tracks after playing a striped song.
         if key is not None and key not in self._audio_ltc_cache:
             self._schedule_ltc_detect_for_buffer(path, buffer)
-        self._refresh_setlist_ltc_cells()
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;
         # importing / replacing audio still resets to the default zoom.
         keep_zoom = replace_track is False if reset_view is None else (not reset_view)
         self.timeline.set_audio(
-            waveform_display_buffer(buffer, exclude_channel=exclude),
+            self._waveform_for_timeline(buffer, path, exclude),
             reset_view=not keep_zoom,
         )
         self._apply_timeline_ltc_lane(buffer, exclude)
