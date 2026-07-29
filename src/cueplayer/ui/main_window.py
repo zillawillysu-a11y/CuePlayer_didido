@@ -5327,7 +5327,10 @@ class MainWindow(QMainWindow):
         lane = self.current_song.lane_by_index(lane_index)
         if lane is None or lane.locked:
             return
-        mark = self.current_song.add_mark(lane_index, self.engine.position)
+        # Use the visual playhead (timeline), not engine.position — mid-scrub
+        # the engine still sits at press/last-seek while the line follows the cursor.
+        mark_at = self.timeline.playhead_seconds()
+        mark = self.current_song.add_mark(lane_index, mark_at)
         self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
         self._refresh_marks_ui()

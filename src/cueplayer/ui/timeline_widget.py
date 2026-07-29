@@ -1137,6 +1137,17 @@ class TimelineWidget(QWidget):
         self.loop_changed.emit(self._loop_a, self._loop_b)
         self.update()
 
+    def playhead_seconds(self) -> float:
+        """Visual playhead time — authoritative while scrubbing mid-drag.
+
+        Mid-scrub updates ``_position`` locally; the audio engine only seeks on
+        press/release. Mark shortcuts must use this, not ``engine.position``.
+        """
+        return float(self._position)
+
+    def is_scrubbing(self) -> bool:
+        return bool(self._scrubbing)
+
     def set_position(self, seconds: float) -> None:
         if self._scrubbing:
             # Playhead is owned by the scrub gesture; ignore engine ticks so
