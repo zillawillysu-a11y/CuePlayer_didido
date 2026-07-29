@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 13
+BPM_DETECT_VERSION = 14
 
 _BPM_READ_SECONDS = 75.0
 _BPM_ANALYZE_SECONDS = 75.0
@@ -137,14 +137,14 @@ def _to_mono(samples: np.ndarray, exclude_channel: int | None) -> np.ndarray:
 
 def _snap_show_bpm(bpm: float) -> float:
     bpm = float(bpm)
-    nearest_int = float(round(bpm))
-    # Slightly wider than before so 135.6 / 136.4 land on MixMeister integers.
-    if abs(bpm - nearest_int) <= 0.70:
-        return nearest_int
     half = round(bpm * 2.0) / 2.0
-    if abs(bpm - half) <= 0.30:
+    nearest_int = float(round(bpm))
+    # MixMeister often lands on .5 — keep it (68.5 must not banker-round to 68).
+    if abs(bpm - half) <= 0.26:
         return half
-    return nearest_int if abs(bpm - nearest_int) <= abs(bpm - half) else half
+    if abs(bpm - nearest_int) <= 0.35:
+        return nearest_int
+    return half if abs(bpm - half) < abs(bpm - nearest_int) else nearest_int
 
 
 def _resample_mono(mono: np.ndarray, sample_rate: int, target_sr: int) -> np.ndarray:
@@ -626,6 +626,53 @@ def _prefer_show_tactus(bpm: float) -> float:
     return float(value)
 
 
+def _promote_show_pulse(bpm: float, onset_rates: list[float]) -> float:
+    """Half-pulse on the .5 grid → MixMeister show BPM (68.5→137).
+
+    Uptempo grooves often lock onto half the tapped pulse; when the refined
+    value sits on .5 below ~100, the show integer is typically 2×.
+    Soft ballads (73 / 83) stay on the slow pulse even when on the integer grid.
+    """
+    b = _snap_show_bpm(bpm)
+    half = round(b * 2.0) / 2.0
+    on_grid = abs(b - half) <= 0.26
+    fractional = abs(half - round(half)) > 0.1
+    if not on_grid:
+        # Integer halftime (68→136) when the fast pulse fits better.
+        if 66.0 <= b <= 72.0:
+            show = _snap_show_bpm(b * 2.0)
+            if 130.0 <= show <= 145.0 and onset_rates:
+                med_or = float(np.median(np.asarray(onset_rates, dtype=np.float64)))
+                if _density_fit(med_or, show) >= _density_fit(med_or, b) * 0.88:
+                    return show
+        return b
+    if not (60.0 <= half <= 100.0):
+        return half
+    show = _snap_show_bpm(half * 2.0)
+    if not (118.0 <= show <= 158.0):
+        return half
+    med_or = (
+        float(np.median(np.asarray(onset_rates, dtype=np.float64)))
+        if onset_rates
+        else 0.0
+    )
+    dens_half = _density_fit(med_or, half) if onset_rates else 0.0
+    dens_show = _density_fit(med_or, show) if onset_rates else 0.0
+    # Integer grid in ballad range (73, 83) — never auto-double unless
+    # the fast pulse is overwhelmingly denser (not true on soft kicks).
+    if not fractional and half >= 71.0:
+        if dens_show >= dens_half * 1.35 and 125.0 <= show <= 145.0:
+            return show
+        return half
+    if fractional and half < 72.0 and dens_half >= 0.30 and dens_show < dens_half * 1.08:
+        return half
+    if onset_rates and dens_show >= dens_half * 0.85:
+        return show
+    if 125.0 <= show <= 145.0:
+        return show
+    return half
+
+
 def _estimate_core(
     mono: np.ndarray,
     sample_rate: int,
@@ -663,7 +710,8 @@ def _estimate_core(
     if consensus is None:
         return None
     _report_progress(progress, 95)
-    return _prefer_show_tactus(consensus)
+    promoted = _promote_show_pulse(consensus, onset_rates)
+    return _prefer_show_tactus(promoted)
 
 
 def estimate_bpm(
