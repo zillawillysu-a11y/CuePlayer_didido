@@ -623,6 +623,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, project: Project | None = None) -> None:
         super().__init__()
+        self.startup_session_ready = False
         self.project = project or Project.create("Untitled Project")
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
@@ -964,20 +965,29 @@ class MainWindow(QMainWindow):
         """Restore window layout, last project, and demo fixture fallback."""
         self._restoring_session = True
         try:
-            self._restore_ui_layout()
-            self._restore_clean_output_visibility()
-            self._restore_clean_output_geometry()
-            self._sync_video_output_active()
-            if not self._try_restore_last_project():
-                self._maybe_load_demo_fixture()
-            self._sync_timeline_geometry()
-            self.monitor.ensure_now_splitter_ready()
-            QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
-            QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
+            try:
+                self._restore_ui_layout()
+                self._restore_clean_output_visibility()
+                self._restore_clean_output_geometry()
+                self._sync_video_output_active()
+                if not self._try_restore_last_project():
+                    self._maybe_load_demo_fixture()
+                self._sync_timeline_geometry()
+                self.monitor.ensure_now_splitter_ready()
+                QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
+                QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
+            except Exception:  # noqa: BLE001
+                import traceback
+
+                traceback.print_exc()
         finally:
             self._restoring_session = False
             # Let queued splitter/layout timers settle, then tell the splash we are ready.
-            QTimer.singleShot(0, self.startup_ready.emit)
+            def _emit_ready() -> None:
+                self.startup_session_ready = True
+                self.startup_ready.emit()
+
+            QTimer.singleShot(0, _emit_ready)
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
