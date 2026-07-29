@@ -1493,7 +1493,7 @@ class MainWindow(QMainWindow):
         menu.addAction(act_setlist_sheet)
 
         tools_menu = self.menuBar().addMenu("&Tools")
-        act_manager = QAction("&Manager", self)
+        act_manager = QAction("Mark &Manager", self)
         act_manager.triggered.connect(self._open_mark_manager)
         act_display = QAction("&Display Settings…", self)
         act_display.triggered.connect(self._open_display_settings)
@@ -5602,7 +5602,7 @@ class MainWindow(QMainWindow):
     def _add_mark_by_shortcut(self, shortcut: str) -> None:
         lane = self.current_song.lane_by_shortcut(shortcut)
         if lane is None:
-            self.status.showMessage(f"Shortcut {shortcut} is not assigned to any Mark in Manager", 2500)
+            self.status.showMessage(f"Shortcut {shortcut} is not assigned to any mark in Mark Manager", 2500)
             return
         self._add_mark(lane.index)
 
