@@ -230,17 +230,7 @@ class SetlistSheetPage(QWidget):
 
         title = QLabel("Set List Sheet")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
-        hint = QLabel(
-            "Spreadsheet of the current show: 曲序, 曲名, 英文名, Seq, Cue ID "
-            "(MA Main Sequence), Timecode Generator, BPM, Note. Click ▸/▾ on a "
-            "Folder row to show or hide its songs in this sheet (independent of "
-            "the left Setlist). Drag column edges to resize. Double-click cells "
-            "to edit. Copy All / Ctrl+C for Excel / grandMA3."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e;")
         root.addWidget(title)
-        root.addWidget(hint)
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)

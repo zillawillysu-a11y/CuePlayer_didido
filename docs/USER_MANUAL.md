@@ -23,6 +23,27 @@
 | 點 **Time** | 跳到該 Mark |
 | 右鍵標題列 | 欄位顯示、Cue List 顯示／隱藏等 |
 
+## 左側 Setlist
+
+| 操作 | 說明 |
+|------|------|
+| 雙擊 **No. / Name / BPM** | 編輯 |
+| 拖欄寬 | 調整欄位寬度 |
+| 右鍵 | 資料夾、完整編輯、欄位顯示（Song English / BPM / LTC·Video Output Status） |
+| 拖歌曲 | 排序，或拖到 Folder |
+| 拖 Folder 標題 | 整夾（含歌曲）上下移動 |
+| 拖入音訊／影片 | 新增多首歌 |
+| **Ctrl / Shift** | 多選 |
+
+## Set List Sheet
+
+| 操作 | 說明 |
+|------|------|
+| 欄位 | 曲序、曲名、英文名、Seq、Cue ID、Timecode Generator、BPM、Note |
+| Folder 列 ▸/▾ | 展開／收合（與左側 Setlist 獨立） |
+| 雙擊儲存格 | 編輯 |
+| **Copy All** / **Ctrl+C** | 複製到 Excel / grandMA3 |
+
 ## 輸出時鐘（右側大秒數下方）
 
 | 操作 | 說明 |
