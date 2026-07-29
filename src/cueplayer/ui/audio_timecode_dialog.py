@@ -95,6 +95,7 @@ class AudioTimecodeDialog(QDialog):
             ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(settings.ltc_gain),
             ltc_channels=list(settings.ltc_channels),
+            ltc_to_mtc_translate=bool(settings.ltc_to_mtc_translate),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
             midi_cue_notes_enabled=bool(settings.midi_cue_notes_enabled),
@@ -220,6 +221,13 @@ class AudioTimecodeDialog(QDialog):
         mtc_form = QFormLayout(mtc_box)
         self.mtc_enable = TickCheckBox("Enable MTC generator")
         self.mtc_enable.setChecked(settings.mtc_enabled)
+        self.ltc_to_mtc_translate = TickCheckBox("Translate file LTC → MTC")
+        self.ltc_to_mtc_translate.setChecked(bool(settings.ltc_to_mtc_translate))
+        self.ltc_to_mtc_translate.setToolTip(
+            "Decode the LTC stripe from the audio file and send those exact "
+            "HH:MM:SS:FF numbers as MTC — without needing LTC output enabled. "
+            "Requires LTC source to be set to From file."
+        )
         self.midi_port = NoWheelComboBox()
         self.midi_port.addItem("(none)", "")
         midi_names = list_midi_output_names()
@@ -235,11 +243,11 @@ class AudioTimecodeDialog(QDialog):
         self.midi_port.setCurrentIndex(midi_sel)
         mtc_form.addRow(self.mtc_enable)
         mtc_form.addRow("MIDI Out", self.midi_port)
+        mtc_form.addRow(self.ltc_to_mtc_translate)
         mtc_sync_hint = QLabel(
-            "File LTC → MTC: when LTC source is From file, MTC reads the LTC "
-            "audio stripe and sends the same HH:MM:SS:FF over MIDI (for MA). "
-            "Generator LTC / no file stripe: MTC uses Song Start TC + playhead "
-            "(same numbers as generated LTC)."
+            "Translate file LTC → MTC: decode the audio stripe and send the "
+            "same HH:MM:SS:FF over MIDI (no LTC output needed). "
+            "Without translate: MTC uses Song Start TC + playhead position."
         )
         mtc_sync_hint.setWordWrap(True)
         mtc_sync_hint.setStyleSheet("color: #a1a1aa;")
@@ -484,6 +492,7 @@ class AudioTimecodeDialog(QDialog):
             ltc_channels=ltc if self.ltc_enable.isChecked() else (
                 ltc or default_ltc_channels_for_device(max_ch)
             ),
+            ltc_to_mtc_translate=self.ltc_to_mtc_translate.isChecked(),
             mtc_enabled=self.mtc_enable.isChecked(),
             midi_port_name=str(self.midi_port.currentData() or ""),
             midi_cue_notes_enabled=self.midi_notes_enable.isChecked(),

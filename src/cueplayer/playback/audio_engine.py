@@ -314,16 +314,27 @@ class AudioEngine(QObject):
     def _decode_source_channel(self) -> int | None:
         """File channel to decode timecode from for MTC/display purposes.
 
-        Unlike _effective_ltc_source_channel this does NOT require LTC output
-        to be enabled — MTC-only (LTC output off, source = from-file) should
-        still decode the stripe to send/display the correct numbers.
+        Returns a channel only when translation is actually wanted:
+        - LTC output enabled with a from-file source, OR
+        - ltc_to_mtc_translate is on (MTC-only mode, no LTC output needed).
+        Generator source always returns None.
         """
-        song_ch = self._song_file_ltc_channel()
-        if song_ch is not None:
-            return song_ch
-        if self._audio_settings.ltc_source == "generator":
+        s = self._audio_settings
+        if s.ltc_source == "generator":
             return None
-        return self._resolved_file_ltc_channel(require_settings=False)
+        # Per-song override always wins when LTC output is on.
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None and s.ltc_enabled:
+            return song_ch
+        # LTC output on → use full resolution.
+        if s.ltc_enabled:
+            return self._resolved_file_ltc_channel(require_settings=False)
+        # MTC-only translate mode: decode without needing LTC output.
+        if s.ltc_to_mtc_translate:
+            if song_ch is not None:
+                return song_ch
+            return self._resolved_file_ltc_channel(require_settings=False)
+        return None
 
     def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
         """

@@ -833,6 +833,9 @@ class AudioOutputSettings:
     ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
+    # Decode file LTC stripe and drive MTC with those numbers (instead of generator).
+    # Only applies when ltc_source != "generator" and mtc_enabled is True.
+    ltc_to_mtc_translate: bool = False
     # MIDI Timecode quarter-frame output (same song start TC + FPS as LTC).
     mtc_enabled: bool = False
     midi_port_name: str = ""
