@@ -38,6 +38,35 @@ def test_add_main_marks_sequential() -> None:
     assert third.main_cue_id == "3"
 
 
+def test_insert_between_1_and_2_preserves_existing_ids() -> None:
+    song = Song.create("Test")
+    m1 = song.add_mark(1, 1.0)
+    m2 = song.add_mark(1, 2.0)
+    m3 = song.add_mark(1, 3.0)
+    inserted = song.add_mark(1, 1.5)
+    assert inserted.main_cue_id == "1.1"
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["1", "1.1", "2", "3"]
+    assert m1.main_cue_id == "1"
+    assert m2.main_cue_id == "2"
+    assert m3.main_cue_id == "3"
+
+
+def test_refresh_main_cue_ids_does_not_renumber_existing() -> None:
+    from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+
+    song = Song.create("Test")
+    m1 = song.add_mark(1, 1.0)
+    m2 = song.add_mark(1, 2.0)
+    m3 = song.add_mark(1, 3.0)
+    inserted = song.add_mark(1, 1.5)
+    refresh_main_cue_ids(song)
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["1", "1.1", "2", "3"]
+    refresh_main_cue_ids(song, mark_ids={inserted.id})
+    assert m1.main_cue_id == "1"
+    assert m2.main_cue_id == "2"
+    assert m3.main_cue_id == "3"
+
+
 def test_insert_main_mark_between_integers() -> None:
     song = Song.create("Test")
     song.add_mark(1, 1.0)
@@ -69,13 +98,38 @@ def test_button_lane_has_no_main_cue_id() -> None:
 def test_assign_main_cue_id_for_mark_after_move() -> None:
     song = Song.create("Test")
     a = song.add_mark(1, 1.0)
-    b = song.add_mark(1, 3.0)
+    b = song.add_mark(1, 2.0)
+    c = song.add_mark(1, 3.0)
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["1", "2", "3"]
+    c.time_seconds = 1.5
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, c, force=True)
+    assert c.main_cue_id == "1.1"
     assert a.main_cue_id == "1"
     assert b.main_cue_id == "2"
-    b.time_seconds = 1.5
+
+
+def test_drag_integer_keeps_id_when_still_between_neighbors() -> None:
+    song = Song.create("Test")
+    a = song.add_mark(1, 1.0)
+    b = song.add_mark(1, 2.0)
+    c = song.add_mark(1, 3.0)
+    # Drag cue 2 later in time but still between 1 and 3.
+    b.time_seconds = 2.5
     song.sort_marks()
-    assign_main_cue_id_for_mark(song, b)
-    assert b.main_cue_id == "1.1"
+    assign_main_cue_id_for_mark(song, b, force=True)
+    assert [m.main_cue_id for m in song.main_marks_sorted()] == ["1", "2", "3"]
+
+
+def test_drag_to_end_keeps_high_integer_id() -> None:
+    song = Song.create("Test")
+    song.add_mark(1, 1.0)
+    song.add_mark(1, 2.0)
+    c = song.add_mark(1, 3.0)
+    c.time_seconds = 4.0
+    song.sort_marks()
+    assign_main_cue_id_for_mark(song, c, force=True)
+    assert c.main_cue_id == "3"
 
 
 def test_between_invalid_bounds_raises() -> None:

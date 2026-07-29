@@ -3300,9 +3300,6 @@ class MainWindow(QMainWindow):
         self._refresh_status()
 
     def _refresh_marks_ui(self) -> None:
-        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
-
-        refresh_main_cue_ids(self.current_song)
         self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
@@ -3311,7 +3308,10 @@ class MainWindow(QMainWindow):
     def _on_marks_moved(self, moved: object) -> None:
         if not isinstance(moved, dict) or not moved:
             return
+        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+
         self._undo.push(MoveMarksCommand(times=dict(moved)))
+        refresh_main_cue_ids(self.current_song, mark_ids=set(moved.keys()))
         self._mark_dirty()
         self._refresh_marks_ui()
 
@@ -3336,6 +3336,9 @@ class MainWindow(QMainWindow):
         if not moved:
             return
         self.current_song.sort_marks()
+        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+
+        refresh_main_cue_ids(self.current_song, mark_ids=set(moved.keys()))
         self._undo.push(MoveMarksCommand(times=moved, label="Offset Mark"))
         self._mark_dirty()
         self._refresh_marks_ui()

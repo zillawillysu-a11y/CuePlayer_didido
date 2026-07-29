@@ -11,6 +11,20 @@ def _to_decimal(cue_id: str) -> Decimal:
     return Decimal(cue_id.strip())
 
 
+def _id_fits_between(
+    cue_id: str,
+    left: str | None,
+    right: str | None,
+) -> bool:
+    """True when cue_id sits strictly between optional left/right neighbor ids."""
+    value = _to_decimal(cue_id)
+    if left is not None and value <= _to_decimal(left):
+        return False
+    if right is not None and value >= _to_decimal(right):
+        return False
+    return True
+
+
 def _format_decimal(value: Decimal) -> str:
     text = format(value.normalize(), "f")
     if "." in text:
@@ -18,8 +32,14 @@ def _format_decimal(value: Decimal) -> str:
     return text or "0"
 
 
-def between_main_cue_ids(left: str | None, right: str | None) -> str:
+def between_main_cue_ids(
+    left: str | None,
+    right: str | None,
+    *,
+    avoid: set[str] | None = None,
+) -> str:
     """Return a new id strictly between left and right (right None = append after left)."""
+    blocked = set(avoid or ())
     if left is None and right is None:
         return "1"
     if left is None:
@@ -29,12 +49,25 @@ def between_main_cue_ids(left: str | None, right: str | None) -> str:
         while step > Decimal("0.000001"):
             candidate = right_value - step
             if candidate > 0:
-                return _format_decimal(candidate)
+                formatted = _format_decimal(candidate)
+                if formatted not in blocked:
+                    return formatted
             step /= 10
         raise ValueError("no room before right bound")
     left_value = _to_decimal(left)
     if right is None:
-        return str(int(left_value) + 1)
+        candidate = str(int(left_value) + 1)
+        if candidate not in blocked:
+            return candidate
+        step = Decimal("0.1")
+        probe = left_value
+        while step > Decimal("0.000001"):
+            probe += step
+            formatted = _format_decimal(probe)
+            if formatted not in blocked:
+                return formatted
+            step /= 10
+        raise ValueError("no room after left bound")
 
     right_value = _to_decimal(right)
     if left_value >= right_value:
@@ -43,8 +76,11 @@ def between_main_cue_ids(left: str | None, right: str | None) -> str:
     step = Decimal("0.1")
     while step > Decimal("0.000001"):
         candidate = left_value + step
-        if candidate < right_value:
-            return _format_decimal(candidate)
+        while candidate < right_value:
+            formatted = _format_decimal(candidate)
+            if formatted not in blocked:
+                return formatted
+            candidate += step
         step /= 10
     raise ValueError(f"cannot insert between {left!r} and {right!r}")
 
@@ -57,39 +93,59 @@ def next_main_cue_id_at_end(existing_ids: list[str]) -> str:
     return str(int(max_value) + 1)
 
 
-def assign_main_cue_id_for_mark(song: Song, mark: Mark) -> str:
-    """Pick and store a Main Cue ID for one mark based on current song marks."""
+def assign_main_cue_id_for_mark(song: Song, mark: Mark, *, force: bool = False) -> str:
+    """Pick and store a Main Cue ID for one mark.
+
+    New marks: assign the first free slot at that time (append → next integer,
+    insert → fractional between neighbors). Existing marks keep their id unless
+    ``force`` (after a drag): then keep the id when it still fits between the
+    new neighbors, otherwise pick a new between/end slot. Other marks are never
+    renumbered.
+    """
     main_index = song.main_lane_index()
     if main_index is None or mark.lane_index != main_index:
         mark.main_cue_id = ""
         return ""
 
+    if mark.main_cue_id and not force:
+        return mark.main_cue_id
+
     ordered = song.main_marks_sorted()
     idx = next(i for i, m in enumerate(ordered) if m.id == mark.id)
     others = [m for m in ordered if m.id != mark.id]
+    used = {m.main_cue_id for m in others if m.main_cue_id}
+    current = mark.main_cue_id
 
     if not others:
         mark.main_cue_id = "1"
         return mark.main_cue_id
 
+    left_id = ordered[idx - 1].main_cue_id if idx > 0 else None
+    right_id = ordered[idx + 1].main_cue_id if idx < len(ordered) - 1 else None
+
+    if (
+        force
+        and current
+        and current not in used
+        and _id_fits_between(current, left_id, right_id)
+    ):
+        return current
+
     if idx == 0:
-        right = ordered[1].main_cue_id or None
-        mark.main_cue_id = between_main_cue_ids(None, right) if right else "1"
+        mark.main_cue_id = (
+            between_main_cue_ids(None, right_id, avoid=used) if right_id else "1"
+        )
         return mark.main_cue_id
 
-    left_id = ordered[idx - 1].main_cue_id or "1"
     if idx == len(ordered) - 1:
-        old_id = mark.main_cue_id
-        if old_id and _to_decimal(old_id) > _to_decimal(left_id):
-            mark.main_cue_id = between_main_cue_ids(left_id, old_id)
-            return mark.main_cue_id
-        existing = [m.main_cue_id for m in others if m.main_cue_id]
-        mark.main_cue_id = next_main_cue_id_at_end(existing)
+        mark.main_cue_id = next_main_cue_id_at_end(
+            [m.main_cue_id for m in others if m.main_cue_id]
+        )
         return mark.main_cue_id
 
-    right_id = ordered[idx + 1].main_cue_id
+    assert left_id is not None
     if right_id:
-        mark.main_cue_id = between_main_cue_ids(left_id, right_id)
+        mark.main_cue_id = between_main_cue_ids(left_id, right_id, avoid=used)
     else:
         mark.main_cue_id = next_main_cue_id_at_end(
             [m.main_cue_id for m in others if m.main_cue_id]
@@ -98,27 +154,17 @@ def assign_main_cue_id_for_mark(song: Song, mark: Mark) -> str:
 
 
 def refresh_main_cue_ids(song: Song, *, mark_ids: set[str] | None = None) -> None:
-    """Recompute stored Main Cue IDs after add/move (only main-lane marks)."""
+    """Reassign Main Cue IDs only for new/moved marks — never renumber untouched cues."""
     main_index = song.main_lane_index()
     if main_index is None:
         return
-    ordered = song.main_marks_sorted()
-    if not ordered:
+    if not mark_ids:
         return
-    for mark in song.marks:
-        if mark.lane_index != main_index:
-            mark.main_cue_id = ""
-    if mark_ids:
-        indices = [i for i, mark in enumerate(ordered) if mark.id in mark_ids]
-        if indices:
-            lo, hi = min(indices), max(indices)
-            targets = ordered[lo : hi + 1]
-        else:
-            targets = ordered
-    else:
-        targets = ordered
-    for mark in targets:
-        assign_main_cue_id_for_mark(song, mark)
+    for mark_id in mark_ids:
+        mark = song.mark_by_id(mark_id)
+        if mark is None or mark.lane_index != main_index:
+            continue
+        assign_main_cue_id_for_mark(song, mark, force=True)
 
 
 def migrate_main_cue_ids(song: Song) -> None:
