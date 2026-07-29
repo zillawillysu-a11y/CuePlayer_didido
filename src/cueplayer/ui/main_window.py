@@ -3406,6 +3406,7 @@ class MainWindow(QMainWindow):
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
         )
+        self._refresh_output_timecode_clock(0.0)
         main_audio = next(
             (t for t in self.current_song.audio_tracks if t.role == "main"),
             self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
@@ -5097,6 +5098,7 @@ class MainWindow(QMainWindow):
             self.monitor.set_song(self.current_song)
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
+        self._refresh_output_timecode_clock(0.0)
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
