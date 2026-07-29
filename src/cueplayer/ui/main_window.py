@@ -9,12 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QModelIndex, QPoint, QRect, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
     QColor,
+    QDrag,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
@@ -196,6 +197,7 @@ class SetlistWidget(QTableWidget):
     """Setlist: click No. to edit, drag rows to reorder, drop audio/video to add songs."""
 
     _TRIANGLE_HIT_MIN_PX = 28
+    _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -274,7 +276,8 @@ class SetlistWidget(QTableWidget):
         self.setToolTip(
             "Double-click No./Name/BPM to edit; drag column edges to resize; "
             "right-click for categories and full editor; "
-            "drag songs to reorder or onto a folder; drag folders to reorder; "
+            "drag songs to reorder or onto a folder; "
+            "drag a folder title to move that folder (and its songs) above/below other folders; "
             "drop audio/video to add songs; Ctrl/Shift to multi-select"
         )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
@@ -283,6 +286,8 @@ class SetlistWidget(QTableWidget):
         self._drag_song_ids: list[str] = []
         self._drag_category_id: str | None = None
         self._press_category_id: str | None = None
+        self._folder_press_pos: QPoint | None = None
+        self._saved_song_selection_rows: list[int] = []
         self._insert_indicator_row: int | None = None
         self._name_mode = "zh"
         self._show_bpm = True
@@ -422,11 +427,10 @@ class SetlistWidget(QTableWidget):
             self.song_bpm_edited.emit(item.row(), parsed)
 
     def startDrag(self, supportedActions) -> None:  # noqa: N802, ANN001
-        # Folder drag: started from a non-triangle press on a category row.
+        # Folder drags are started from mouseMoveEvent via _start_folder_drag —
+        # never hitchhike on selected song rows.
         if self._press_category_id:
-            self._drag_category_id = self._press_category_id
-            self._drag_song_ids = []
-            super().startDrag(supportedActions)
+            self._start_folder_drag()
             return
         self._drag_category_id = None
         ids: list[str] = []
@@ -442,8 +446,68 @@ class SetlistWidget(QTableWidget):
         self._drag_song_ids = ids
         super().startDrag(supportedActions)
 
+    def _start_folder_drag(self) -> None:
+        """Drag only this folder (+ songs stay in it); ignore other song selection."""
+        cat_id = self._press_category_id
+        if not cat_id:
+            return
+        self._drag_category_id = cat_id
+        self._drag_song_ids = []
+        self._saved_song_selection_rows = []
+        # Keep UI selection on the folder title alone so the drag pixmap
+        # does not look like a multi-song move.
+        folder_row = next(
+            (
+                row
+                for row in range(self.rowCount())
+                if self.row_category_id(row) == cat_id
+            ),
+            None,
+        )
+        self.clearSelection()
+        if folder_row is not None:
+            item = self.item(folder_row, self.COL_NUM)
+            if item is not None:
+                item.setSelected(True)
+                self.setCurrentItem(item)
+
+        mime = QMimeData()
+        mime.setData(self._MIME_FOLDER, QByteArray(cat_id.encode("utf-8")))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        if folder_row is not None:
+            rect = self._row_visual_rect(folder_row)
+            if rect.isValid() and rect.width() > 0 and rect.height() > 0:
+                pixmap = self.viewport().grab(rect)
+                drag.setPixmap(pixmap)
+                drag.setHotSpot(QPoint(min(24, rect.width() // 4), rect.height() // 2))
+        # CopyAction: drop handler must not delete the source folder row.
+        drag.exec(Qt.DropAction.CopyAction)
+        self._press_category_id = None
+        self._folder_press_pos = None
+        # dropEvent clears this on success; also clear on cancel so the next
+        # song drag cannot inherit a stale folder id.
+        self._drag_category_id = None
+
+    def _selected_song_rows(self) -> list[int]:
+        rows: list[int] = []
+        for row in sorted({idx.row() for idx in self.selectedIndexes()}):
+            if self.row_kind(row) == "song":
+                rows.append(row)
+        return rows
+
+    def _restore_song_selection(self, rows: list[int]) -> None:
+        self.clearSelection()
+        for row in rows:
+            if 0 <= row < self.rowCount() and self.row_kind(row) == "song":
+                item = self.item(row, self.COL_NUM)
+                if item is not None:
+                    item.setSelected(True)
+
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         self._press_category_id = None
+        self._folder_press_pos = None
+        self._saved_song_selection_rows = []
         if event.button() == Qt.MouseButton.LeftButton:
             viewport_pos = self._viewport_pos_from_event(event)
             row = self.rowAt(viewport_pos.y())
@@ -454,12 +518,48 @@ class SetlistWidget(QTableWidget):
                         row, viewport_pos.x(), viewport_pos.y()
                     ):
                         self.category_clicked.emit(cat_id)
+                        event.accept()
                         return
-                    # Name area: allow Qt drag so folders can be reordered.
+                    # Title area: exclusive folder drag — drop unrelated song selection.
                     self._press_category_id = cat_id
-                    super().mousePressEvent(event)
+                    self._folder_press_pos = QPoint(viewport_pos)
+                    self._saved_song_selection_rows = self._selected_song_rows()
+                    self.clearSelection()
+                    item = self.item(row, self.COL_NUM)
+                    if item is not None:
+                        item.setSelected(True)
+                        self.setCurrentItem(item)
+                    event.accept()
                     return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+        if (
+            self._press_category_id
+            and self._folder_press_pos is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            viewport_pos = self._viewport_pos_from_event(event)
+            if (
+                viewport_pos - self._folder_press_pos
+            ).manhattanLength() >= QApplication.startDragDistance():
+                self._start_folder_drag()
+                return
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton and self._press_category_id:
+            saved = list(self._saved_song_selection_rows)
+            self._press_category_id = None
+            self._folder_press_pos = None
+            self._saved_song_selection_rows = []
+            if saved:
+                self._restore_song_selection(saved)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
         if event.button() == Qt.MouseButton.LeftButton:
@@ -587,7 +687,7 @@ class SetlistWidget(QTableWidget):
         # until drop); still accept internal row reorders.
         if event.source() is self:
             accept_file_drag(event)
-            self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
+            self._set_insert_indicator(self._folder_or_song_insert_row(event))
             return
         if mime_looks_like_file_drop(event.mimeData()):
             accept_file_drag(event)
@@ -597,7 +697,7 @@ class SetlistWidget(QTableWidget):
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
         if event.source() is self:
             accept_file_drag(event)
-            self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
+            self._set_insert_indicator(self._folder_or_song_insert_row(event))
             return
         if mime_looks_like_file_drop(event.mimeData()):
             accept_file_drag(event)
@@ -609,6 +709,43 @@ class SetlistWidget(QTableWidget):
     def dragLeaveEvent(self, event) -> None:  # noqa: N802, ANN001
         self._clear_insert_indicator()
         super().dragLeaveEvent(event)
+
+    def _is_folder_drag(self, event=None) -> bool:  # noqa: ANN001
+        if self._drag_category_id:
+            return True
+        if event is not None:
+            mime = event.mimeData()
+            if mime is not None and mime.hasFormat(self._MIME_FOLDER):
+                return True
+        return False
+
+    def _folder_or_song_insert_row(self, event) -> int:  # noqa: ANN001
+        """Insert-before table row; folder drags snap to folder boundaries only."""
+        pos = event.position().toPoint()
+        if self._is_folder_drag(event):
+            return self._folder_boundary_insert_row(pos)
+        return self._insert_row_at(pos)
+
+    def _folder_boundary_insert_row(self, pos) -> int:  # noqa: ANN001
+        """Map pointer to an insert-before row at a folder header edge."""
+        folder_rows = [
+            row for row in range(self.rowCount()) if self.row_kind(row) == "category"
+        ]
+        if not folder_rows:
+            return 0
+        y = pos.y()
+        for row in folder_rows:
+            rect = self._row_visual_rect(row)
+            if not rect.isValid():
+                continue
+            if y < rect.center().y():
+                return row
+        # Below the midpoint of the last folder header → after that folder's block.
+        last = folder_rows[-1]
+        end = last + 1
+        while end < self.rowCount() and self.row_kind(end) == "song":
+            end += 1
+        return end
 
     def _folder_insert_index_at(self, drop_row: int) -> int:
         """Map a table insert-before row to an index among folder headers."""
@@ -631,16 +768,22 @@ class SetlistWidget(QTableWidget):
             event.ignore()
             return
         pos = event.position().toPoint()
-        drop_row = self._insert_row_at(pos)
+        mime = event.mimeData()
         category_id = self._drag_category_id
+        if not category_id and mime is not None and mime.hasFormat(self._MIME_FOLDER):
+            raw = bytes(mime.data(self._MIME_FOLDER)).decode("utf-8", errors="ignore")
+            category_id = raw or None
         self._drag_category_id = None
         self._press_category_id = None
+        self._folder_press_pos = None
         if category_id:
+            drop_row = self._folder_boundary_insert_row(pos)
             # CopyAction: Qt must not delete the source folder row.
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
             self.categories_reordered.emit(category_id, self._folder_insert_index_at(drop_row))
             return
+        drop_row = self._insert_row_at(pos)
         ids = list(self._drag_song_ids)
         self._drag_song_ids = []
         if not ids:
@@ -1875,9 +2018,14 @@ class MainWindow(QMainWindow):
                 folder_item.setData(Qt.ItemDataRole.UserRole, category.id)
                 folder_item.setData(SetlistWidget.ROLE_KIND, "category")
                 folder_item.setData(SetlistWidget.ROLE_ROW_COLOR, category.row_color or "")
-                folder_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled)
+                folder_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | Qt.ItemFlag.ItemIsDragEnabled
+                )
                 folder_item.setToolTip(
-                    "Click ▸/▾ to expand or collapse · drag folder name to reorder · "
+                    "Click ▸/▾ to expand or collapse · drag folder title to move "
+                    "this folder and its songs above/below other folders · "
                     "double-click name to rename · right-click for more · "
                     "drag songs here to file them in this folder"
                 )
