@@ -988,7 +988,18 @@ class TimelineWidget(QWidget):
                 # Start moderately zoomed for beat work; user can zoom further.
                 self._pixels_per_second = 150.0
                 self._scroll_x = 0.0
+            else:
+                # Keep the user's current zoom when switching songs; only
+                # clamp so a shorter song still fits the view minimum.
+                self._pixels_per_second = max(
+                    self._min_pixels_per_second(), float(self._pixels_per_second)
+                )
+                self._clamp_scroll()
+        self._invalidate_scrub_backdrop()
         self.update()
+
+    def pixels_per_second(self) -> float:
+        return float(self._pixels_per_second)
 
     def set_audio_loading(self, loading: bool, label: str = "") -> None:
         """Show a waveform-pane placeholder while audio decodes off the UI thread."""
