@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -69,7 +70,7 @@ def _clamp_channel_ui_text(
 
 
 class AudioTimecodeDialog(QDialog):
-    """Tools → Audio / Timecode…"""
+    """Tools → Audio / Midi / Timecode…"""
 
     def __init__(
         self,
@@ -77,7 +78,7 @@ class AudioTimecodeDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Audio / Timecode")
+        self.setWindowTitle("Audio / Midi / Timecode")
         self.resize(540, 640)
         self._all_devices = list_output_devices(dedupe=False)
         self._devices: list[OutputDeviceInfo] = []
@@ -94,6 +95,8 @@ class AudioTimecodeDialog(QDialog):
             ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(settings.ltc_gain),
             ltc_channels=list(settings.ltc_channels),
+            ltc_to_mtc_translate=bool(settings.ltc_to_mtc_translate),
+            midi_enabled=bool(getattr(settings, "midi_enabled", False)),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
             midi_cue_notes_enabled=bool(settings.midi_cue_notes_enabled),
@@ -104,6 +107,18 @@ class AudioTimecodeDialog(QDialog):
         )
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_content = QWidget()
+        inner = QVBoxLayout(scroll_content)
+        inner.setContentsMargins(12, 12, 12, 12)
+        inner.setSpacing(8)
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll, stretch=1)
 
         device_box = QGroupBox("Output Device")
         device_form = QFormLayout(device_box)
@@ -140,7 +155,7 @@ class AudioTimecodeDialog(QDialog):
         device_form.addRow("Device", self.device_combo)
         device_form.addRow(self.device_hint)
         device_form.addRow(self.driver_hint)
-        root.addWidget(device_box)
+        inner.addWidget(device_box)
 
         stereo_box = QGroupBox("Stereo Output (L / R legs)")
         stereo_form = QFormLayout(stereo_box)
@@ -159,7 +174,81 @@ class AudioTimecodeDialog(QDialog):
         stereo_tip.setStyleSheet("color: #a1a1aa;")
         stereo_tip.setWordWrap(True)
         stereo_form.addRow(stereo_tip)
-        root.addWidget(stereo_box)
+        inner.addWidget(stereo_box)
+
+        mtc_box = QGroupBox("MIDI Output")
+        mtc_form = QFormLayout(mtc_box)
+        self.midi_on = TickCheckBox("MIDI On")
+        self.midi_on.setChecked(bool(getattr(settings, "midi_enabled", False)))
+        self.midi_on.setToolTip(
+            "Master switch — MTC, Translate, and Cue Notes only work when MIDI is on."
+        )
+        self.midi_port = NoWheelComboBox()
+        self.midi_port.addItem("(none)", "")
+        midi_names = list_midi_output_names()
+        midi_sel = 0
+        for i, name in enumerate(midi_names):
+            self.midi_port.addItem(name, name)
+            if settings.midi_port_name and (
+                settings.midi_port_name == name or settings.midi_port_name in name
+            ):
+                midi_sel = i + 1
+        if not midi_names:
+            self.midi_port.addItem("(no MIDI ports found)", "")
+        self.midi_port.setCurrentIndex(midi_sel)
+
+        self.mtc_enable = TickCheckBox("MTC Generator")
+        self.mtc_enable.setChecked(settings.mtc_enabled)
+        self.mtc_enable.setToolTip(
+            "Send MIDI Timecode from Song Start TC + playhead (generator numbers)."
+        )
+        self.ltc_to_mtc_translate = TickCheckBox("Translate file LTC → MTC")
+        self.ltc_to_mtc_translate.setChecked(bool(settings.ltc_to_mtc_translate))
+        self.ltc_to_mtc_translate.setToolTip(
+            "Decode the LTC stripe from the audio file and send those HH:MM:SS:FF "
+            "numbers as MTC. Set LTC source to From file. Does not need LTC output."
+        )
+        self.midi_notes_enable = TickCheckBox("Send MIDI Cue Notes")
+        self.midi_notes_enable.setChecked(bool(settings.midi_cue_notes_enabled))
+        self.midi_notes_enable.setToolTip(
+            "Short Note On/Off when crossing enabled mark lanes (Mark Manager MIDI column)."
+        )
+        self.midi_cue_channel = NoWheelComboBox()
+        for ch in range(1, 17):
+            self.midi_cue_channel.addItem(f"CH {ch}", ch)
+        ch_idx = max(0, min(15, int(settings.midi_cue_channel) - 1))
+        self.midi_cue_channel.setCurrentIndex(ch_idx)
+        self.midi_main_base = NoWheelComboBox()
+        self.midi_button_base = NoWheelComboBox()
+        for note in range(0, 128):
+            label = f"{note}"
+            self.midi_main_base.addItem(label, note)
+            self.midi_button_base.addItem(label, note)
+        self.midi_main_base.setCurrentIndex(max(0, min(127, int(settings.midi_main_base_note))))
+        self.midi_button_base.setCurrentIndex(
+            max(0, min(127, int(settings.midi_button_base_note)))
+        )
+
+        mtc_form.addRow(self.midi_on)
+        mtc_form.addRow("MIDI Out", self.midi_port)
+        mtc_form.addRow(self.mtc_enable)
+        mtc_form.addRow(self.ltc_to_mtc_translate)
+        mtc_form.addRow(self.midi_notes_enable)
+        mtc_form.addRow("Notes channel", self.midi_cue_channel)
+        mtc_form.addRow("Main base note", self.midi_main_base)
+        mtc_form.addRow("Button base note", self.midi_button_base)
+        mtc_sync_hint = QLabel(
+            "MIDI On selects the port. Then choose what to send: MTC Generator "
+            "(Song Start TC), Translate (file LTC stripe), and/or Cue Notes."
+        )
+        mtc_sync_hint.setWordWrap(True)
+        mtc_sync_hint.setStyleSheet("color: #a1a1aa;")
+        mtc_form.addRow(mtc_sync_hint)
+        midi_hint = QLabel(midi_backend_status())
+        midi_hint.setWordWrap(True)
+        midi_hint.setStyleSheet("color: #a1a1aa;")
+        mtc_form.addRow(midi_hint)
+        inner.addWidget(mtc_box)
 
         ltc_box = QGroupBox("LTC Output")
         ltc_form = QFormLayout(ltc_box)
@@ -201,89 +290,27 @@ class AudioTimecodeDialog(QDialog):
         ltc_form.addRow(self.ltc_generator_enable)
         ltc_form.addRow("LTC Gain", gain_row)
         ltc_form.addRow(ltc_note)
-        root.addWidget(ltc_box)
+        inner.addWidget(ltc_box)
+        inner.addStretch(1)
 
-        mtc_box = QGroupBox("MIDI Timecode (MTC)")
-        mtc_form = QFormLayout(mtc_box)
-        self.mtc_enable = TickCheckBox("Enable MTC generator")
-        self.mtc_enable.setChecked(settings.mtc_enabled)
-        self.midi_port = NoWheelComboBox()
-        self.midi_port.addItem("(none)", "")
-        midi_names = list_midi_output_names()
-        midi_sel = 0
-        for i, name in enumerate(midi_names):
-            self.midi_port.addItem(name, name)
-            if settings.midi_port_name and (
-                settings.midi_port_name == name or settings.midi_port_name in name
-            ):
-                midi_sel = i + 1
-        if not midi_names:
-            self.midi_port.addItem("(no MIDI ports found)", "")
-        self.midi_port.setCurrentIndex(midi_sel)
-        mtc_form.addRow(self.mtc_enable)
-        mtc_form.addRow("MIDI Out", self.midi_port)
-        mtc_sync_hint = QLabel(
-            "File LTC → MTC: when LTC source is From file, MTC reads the LTC "
-            "audio stripe and sends the same HH:MM:SS:FF over MIDI (for MA). "
-            "Generator LTC / no file stripe: MTC uses Song Start TC + playhead "
-            "(same numbers as generated LTC)."
-        )
-        mtc_sync_hint.setWordWrap(True)
-        mtc_sync_hint.setStyleSheet("color: #a1a1aa;")
-        mtc_form.addRow(mtc_sync_hint)
-        midi_hint = QLabel(midi_backend_status())
-        midi_hint.setWordWrap(True)
-        midi_hint.setStyleSheet("color: #a1a1aa;")
-        mtc_form.addRow(midi_hint)
-        root.addWidget(mtc_box)
-
-        notes_box = QGroupBox("MIDI Cue Notes (MA record / link)")
-        notes_form = QFormLayout(notes_box)
-        self.midi_notes_enable = TickCheckBox("Send MIDI notes when crossing enabled mark lanes")
-        self.midi_notes_enable.setChecked(bool(settings.midi_cue_notes_enabled))
-        self.midi_notes_enable.setToolTip(
-            "Enable per-lane in Mark Manager (MIDI column). "
-            "Uses the same MIDI Out as MTC when both are on."
-        )
-        self.midi_cue_channel = NoWheelComboBox()
-        for ch in range(1, 17):
-            self.midi_cue_channel.addItem(f"CH {ch}", ch)
-        ch_idx = max(0, min(15, int(settings.midi_cue_channel) - 1))
-        self.midi_cue_channel.setCurrentIndex(ch_idx)
-        self.midi_main_base = NoWheelComboBox()
-        self.midi_button_base = NoWheelComboBox()
-        for note in range(0, 128):
-            label = f"{note}"
-            self.midi_main_base.addItem(label, note)
-            self.midi_button_base.addItem(label, note)
-        self.midi_main_base.setCurrentIndex(max(0, min(127, int(settings.midi_main_base_note))))
-        self.midi_button_base.setCurrentIndex(
-            max(0, min(127, int(settings.midi_button_base_note)))
-        )
-        notes_form.addRow(self.midi_notes_enable)
-        notes_form.addRow("Channel", self.midi_cue_channel)
-        notes_form.addRow("Main base note", self.midi_main_base)
-        notes_form.addRow("Button base note", self.midi_button_base)
-        notes_tip = QLabel(
-            "Default notes: Main = base + (lane#−1), Button = base + (lane#−1). "
-            "Override per lane in Mark Manager. Short Note On/Off pulse on each mark."
-        )
-        notes_tip.setWordWrap(True)
-        notes_tip.setStyleSheet("color: #a1a1aa;")
-        notes_form.addRow(notes_tip)
-        root.addWidget(notes_box)
-
+        btn_bar = QWidget()
+        btn_bar.setStyleSheet("border-top: 1px solid #27272a;")
+        btn_layout = QVBoxLayout(btn_bar)
+        btn_layout.setContentsMargins(12, 8, 12, 8)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        root.addWidget(btn_bar)
 
         self.hostapi_combo.currentIndexChanged.connect(lambda _idx: self._reload_devices())
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         self.ltc_source.currentIndexChanged.connect(self._on_ltc_source_changed)
         self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
+        self.midi_on.toggled.connect(self._sync_midi_ui)
+        self.midi_notes_enable.toggled.connect(self._sync_midi_ui)
         self.ltc_gain.valueChanged.connect(
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
@@ -297,6 +324,24 @@ class AudioTimecodeDialog(QDialog):
             ltc = default_ltc_channels_for_device(max_ch)
         self.ltc_channels.setEditText(_channels_to_ui(ltc) or ("3" if max_ch >= 3 else "1"))
         self._combo_hostapi = resolve_output_hostapi(str(settings.output_hostapi or ""))
+        self._sync_midi_ui()
+
+    def _sync_midi_ui(self) -> None:
+        midi_on = self.midi_on.isChecked()
+        for widget in (
+            self.midi_port,
+            self.mtc_enable,
+            self.ltc_to_mtc_translate,
+            self.midi_notes_enable,
+        ):
+            widget.setEnabled(midi_on)
+        notes_on = midi_on and self.midi_notes_enable.isChecked()
+        for widget in (
+            self.midi_cue_channel,
+            self.midi_main_base,
+            self.midi_button_base,
+        ):
+            widget.setEnabled(notes_on)
 
     def _current_hostapi(self) -> str:
         return resolve_output_hostapi(str(self.hostapi_combo.currentData() or ""))
@@ -439,15 +484,23 @@ class AudioTimecodeDialog(QDialog):
         if self.ltc_enable.isChecked() and not ltc:
             QMessageBox.warning(self, "LTC routing", "LTC is enabled but no output channel is set.")
             return
-        if self.mtc_enable.isChecked() and not (self.midi_port.currentData() or ""):
-            QMessageBox.warning(self, "MTC port", "MTC is enabled but no MIDI output port is selected.")
-            return
-        if self.midi_notes_enable.isChecked() and not (self.midi_port.currentData() or ""):
+        midi_on = self.midi_on.isChecked()
+        port = str(self.midi_port.currentData() or "")
+        if midi_on and not port:
             QMessageBox.warning(
                 self,
-                "MIDI cue notes",
-                "MIDI cue notes are enabled but no MIDI output port is selected.",
+                "MIDI",
+                "MIDI is on but no MIDI output port is selected.",
             )
+            return
+        if midi_on and self.mtc_enable.isChecked() and not port:
+            QMessageBox.warning(self, "MTC", "MTC Generator needs a MIDI output port.")
+            return
+        if midi_on and self.ltc_to_mtc_translate.isChecked() and not port:
+            QMessageBox.warning(self, "Translate", "LTC → MTC needs a MIDI output port.")
+            return
+        if midi_on and self.midi_notes_enable.isChecked() and not port:
+            QMessageBox.warning(self, "MIDI cue notes", "Cue notes need a MIDI output port.")
             return
         chosen = self._chosen_device()
         self._result = AudioOutputSettings(
@@ -465,8 +518,10 @@ class AudioTimecodeDialog(QDialog):
             ltc_channels=ltc if self.ltc_enable.isChecked() else (
                 ltc or default_ltc_channels_for_device(max_ch)
             ),
+            ltc_to_mtc_translate=self.ltc_to_mtc_translate.isChecked(),
+            midi_enabled=midi_on,
             mtc_enabled=self.mtc_enable.isChecked(),
-            midi_port_name=str(self.midi_port.currentData() or ""),
+            midi_port_name=port,
             midi_cue_notes_enabled=self.midi_notes_enable.isChecked(),
             midi_cue_channel=int(self.midi_cue_channel.currentData() or 1),
             midi_cue_velocity=100,

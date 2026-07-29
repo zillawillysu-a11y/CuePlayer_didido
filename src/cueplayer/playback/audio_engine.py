@@ -10,6 +10,7 @@ if sys.platform == "win32":
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import numpy as np
 import sounddevice as sd
@@ -54,7 +55,16 @@ from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
-from cueplayer.timecode.smpte import Timecode
+from cueplayer.timecode.smpte import Timecode, parse_timecode
+
+
+@dataclass(frozen=True, slots=True)
+class OutputTimecodeState:
+    """LTC/MTC output status for the monitor timecode clock."""
+
+    timecode: str
+    outputs: tuple[str, ...]
+    sending: bool
 
 
 class AudioEngine(QObject):
@@ -156,7 +166,62 @@ class AudioEngine(QObject):
 
     @property
     def mtc_enabled(self) -> bool:
-        return bool(self._audio_settings.mtc_enabled)
+        return bool(self._audio_settings.effective_mtc_output())
+
+    @property
+    def midi_enabled(self) -> bool:
+        return bool(self._audio_settings.midi_enabled)
+
+    def output_timecode_state(
+        self, position_seconds: float | None = None
+    ) -> OutputTimecodeState:
+        """Timecode the engine would output at ``position_seconds`` (default: playhead)."""
+        from cueplayer.timecode.mtc import absolute_timecode
+
+        pos = self.position if position_seconds is None else float(position_seconds)
+        outputs: list[str] = []
+        if self.ltc_enabled:
+            outputs.append("LTC")
+        s = self._audio_settings
+        translate_active = (
+            s.midi_enabled
+            and not s.ltc_enabled
+            and s.effective_ltc_to_mtc_translate()
+            and s.ltc_source != "generator"
+        )
+        if s.midi_enabled and s.mtc_enabled:
+            outputs.append("LTC → MTC" if translate_active else "MTC")
+        elif translate_active:
+            outputs.append("LTC → MTC")
+        if s.effective_midi_cue_notes():
+            outputs.append("Notes")
+
+        tc_str = "—"
+        tc_active = (
+            self.ltc_enabled
+            or (s.midi_enabled and s.mtc_enabled)
+            or translate_active
+        )
+        if tc_active:
+            # When LTC source is from-file, the actual timecode numbers come from
+            # decoding the stripe — regardless of whether LTC output is enabled.
+            # MTC mirrors the same source, so show file-decoded TC when available.
+            decode_ch = self._decode_source_channel()
+            decoded = self._decode_file_ltc_timecode(pos) if decode_ch is not None else None
+            if decoded is not None:
+                tc_str = decoded.format()
+            elif self.mtc_enabled:
+                tc_str = self._mtc.timecode_at(pos).format()
+            else:
+                start = parse_timecode(self._song_start_tc) or Timecode(1, 0, 0, 0)
+                tc_str = absolute_timecode(start, pos, self._song_fps).format()
+
+        sending = bool(self._playing and outputs)
+        return OutputTimecodeState(
+            timecode=tc_str,
+            outputs=tuple(outputs),
+            sending=sending,
+        )
 
     @property
     def detected_ltc_channel(self) -> int | None:
@@ -266,6 +331,21 @@ class AudioEngine(QObject):
             return None
         return self._file_ltc_channel()
 
+    def _decode_source_channel(self) -> int | None:
+        """File channel to decode timecode from for MTC/display purposes.
+
+        Returns a channel only when translation is actually wanted:
+        - LTC output enabled with a from-file source, OR
+        - ltc_to_mtc_translate is on (MTC-only mode, no LTC output needed).
+        Generator source always returns None.
+        """
+        s = self._audio_settings
+        if s.ltc_source == "generator":
+            return None
+        if not s.ltc_enabled and not s.effective_ltc_to_mtc_translate():
+            return None
+        return self._resolved_file_ltc_channel(require_settings=False)
+
     def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
         """
         Read HH:MM:SS:FF from striped file LTC at the playhead.
@@ -273,7 +353,7 @@ class AudioEngine(QObject):
         Used so MTC can mirror the same numbers as the incoming LTC audio.
         Returns None for generator-only LTC or when decode fails.
         """
-        ch = self._effective_ltc_source_channel()
+        ch = self._decode_source_channel()
         if ch is None or self._buffer is None:
             return None
         sr = int(self._sample_rate())
@@ -290,9 +370,9 @@ class AudioEngine(QObject):
         self, position_seconds: float, *, force: bool = False
     ) -> None:
         """When file LTC is active, lock MTC origin to the decoded stripe TC."""
-        if not self._audio_settings.mtc_enabled:
+        if not self._audio_settings.effective_mtc_output():
             return
-        if self._effective_ltc_source_channel() is None:
+        if self._decode_source_channel() is None:
             return
         # Re-decode about twice per second (or on play/seek). QF pacing still
         # runs every timer tick from the mirrored origin.
@@ -466,6 +546,8 @@ class AudioEngine(QObject):
             ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
+            ltc_to_mtc_translate=bool(getattr(settings, "ltc_to_mtc_translate", False)),
+            midi_enabled=bool(getattr(settings, "midi_enabled", False)),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
             midi_cue_notes_enabled=bool(getattr(settings, "midi_cue_notes_enabled", False)),
@@ -486,23 +568,29 @@ class AudioEngine(QObject):
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
 
+        # When switching away from generator source, allow auto-detect to re-run.
+        if self._audio_settings.ltc_source != "generator":
+            self._ltc_detect_ran = False
+
         self._refresh_source_routing_cache()
 
         mtc_err = self._mtc.configure(
-            enabled=self._audio_settings.mtc_enabled,
+            midi_master=bool(self._audio_settings.midi_enabled),
+            enabled=bool(self._audio_settings.effective_mtc_output()),
             port_name=self._audio_settings.midi_port_name,
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
-        # Share one MIDI Out handle when MTC + cue notes are both on (set before
-        # configure so MidiCueNotes does not open a second port).
-        share_mtc = (
-            self._audio_settings.mtc_enabled
-            and self._audio_settings.midi_cue_notes_enabled
+        # Share the MTC port for cue notes whenever MIDI is on.
+        share_midi_port = bool(
+            self._audio_settings.midi_enabled
+            and (self._audio_settings.midi_port_name or "").strip()
         )
-        self._midi_cues.set_send_function(self._mtc.send_message if share_mtc else None)
+        self._midi_cues.set_send_function(
+            self._mtc.send_message if share_midi_port else None
+        )
         cue_err = self._midi_cues.configure(
-            enabled=bool(self._audio_settings.midi_cue_notes_enabled),
+            enabled=bool(self._audio_settings.effective_midi_cue_notes()),
             port_name=self._audio_settings.midi_port_name,
             channel=int(self._audio_settings.midi_cue_channel),
             velocity=int(self._audio_settings.midi_cue_velocity),
@@ -754,6 +842,12 @@ class AudioEngine(QObject):
             self.seek(self._duration_seconds)
 
     def play(self) -> None:
+        # Request 1ms Windows timer resolution to reduce MIDI/Qt timer jitter.
+        try:
+            from cueplayer.playback.winmm_midi import request_timer_resolution
+            request_timer_resolution()
+        except Exception:  # noqa: BLE001
+            pass
         # Do not snap into A–B; allow previewing outside while keeping loop marks.
         self._refresh_loop_engage()
         if self.position >= self.duration - 1e-4:
@@ -793,7 +887,7 @@ class AudioEngine(QObject):
         self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
         self._midi_cues.on_play(self.position)
-        if self._audio_settings.mtc_enabled:
+        if self._audio_settings.effective_mtc_output() or self._audio_settings.effective_midi_cue_notes():
             self._mtc_timer.start()
         self.playing_changed.emit(True)
 
@@ -823,6 +917,11 @@ class AudioEngine(QObject):
         self._midi_cues.on_pause()
         if not for_scrub:
             self.playing_changed.emit(False)
+            try:
+                from cueplayer.playback.winmm_midi import release_timer_resolution
+                release_timer_resolution()
+            except Exception:  # noqa: BLE001
+                pass
         self._emit_position()
 
     def stop(self) -> None:
@@ -887,13 +986,12 @@ class AudioEngine(QObject):
             pos = self.raw_position
             self._sync_mtc_to_file_ltc(pos)
             self._mtc.tick(pos)
+            self._midi_cues.update(pos)
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
             return
         pos = self.position
-        if self._playing:
-            self._midi_cues.update(pos)
         self.position_changed.emit(pos)
         with self._lock:
             # `_position_frame` is bookkept in playback-rate frames (see

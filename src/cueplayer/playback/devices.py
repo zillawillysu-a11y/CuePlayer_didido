@@ -288,7 +288,7 @@ def resolve_output_hostapi(hostapi: str) -> str:
 
 
 def picker_hostapi_options() -> list[tuple[str, str]]:
-    """(label, hostapi name) rows for the Audio / Timecode driver combo."""
+    """(label, hostapi name) rows for the Audio / Midi / Timecode driver combo."""
     names = hostapi_names()
     preferred = [
         "ASIO",

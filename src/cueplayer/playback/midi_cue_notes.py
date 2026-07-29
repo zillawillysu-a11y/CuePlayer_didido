@@ -63,16 +63,20 @@ class MidiCueNotes:
         button_base_note: int = 48,
     ) -> str | None:
         with self._lock:
+            new_port_name = (port_name or "").strip()
+            port_changed = new_port_name != self._port_name
             self._enabled = bool(enabled)
-            self._port_name = (port_name or "").strip()
+            self._port_name = new_port_name
             self._channel = max(0, min(15, int(channel) - 1))
             self._velocity = max(1, min(127, int(velocity)))
             self._main_base = max(0, min(127, int(main_base_note)))
             self._button_base = max(0, min(127, int(button_base_note)))
             if not self._enabled:
-                self._close_port_locked()
+                # Keep port open for fast re-enable.
                 return None
             if self._send_fn is not None:
+                return None
+            if self._port is not None and not port_changed:
                 return None
             return self._reopen_port_locked()
 
@@ -178,19 +182,21 @@ class MidiCueNotes:
         from cueplayer.playback import mtc_output as mtc_mod
 
         if mtc_mod._use_winmm():  # noqa: SLF001
-            try:
-                from cueplayer.playback.winmm_midi import WinmmMidiOut
-
-                self._port = WinmmMidiOut.open_by_name(self._port_name)
-                self._owns_port = True
-                return None
-            except LookupError:
-                return f"MIDI port not found: {self._port_name}"
-            except Exception as exc:  # noqa: BLE001
-                log.warning("winmm MIDI cue open failed, trying mido: %s", exc)
+            import time
+            for attempt in range(5):
+                try:
+                    from cueplayer.playback.winmm_midi import WinmmMidiOut
+                    self._port = WinmmMidiOut.open_by_name(self._port_name)
+                    self._owns_port = True
+                    return None
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("winmm MIDI cue open attempt %d: %s", attempt + 1, exc)
+                    time.sleep(0.1)
+            names = list_midi_output_names()
+            hint = f" Available: {', '.join(names[:6])}" if names else ""
+            return f"MIDI port not found: {self._port_name}.{hint}"
         try:
             import mido
-
             mtc_mod._ensure_mido_backend()  # noqa: SLF001
             self._port = mido.open_output(self._port_name)
             self._owns_port = True

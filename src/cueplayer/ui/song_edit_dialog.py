@@ -263,7 +263,7 @@ class SongEditDialog(QDialog):
             '"Sort by Number" in the Setlist. Names can be Chinese; English/MA should use '
             "pinyin or letters/numbers; BPM can be left blank. "
             "File LTC: send Left/Right (or Auto-detect) striped timecode to the LTC "
-            "channel in Audio / Timecode settings; that side is removed from speakers."
+            "channel in Audio / Midi / Timecode settings; that side is removed from speakers."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #888; margin-bottom: 4px;")
@@ -358,7 +358,7 @@ class SongEditDialog(QDialog):
             ltc_combo.setCurrentIndex(idx if idx >= 0 else ltc_combo.findData("auto"))
             ltc_combo.setToolTip(
                 "Send this song’s Left or Right (or Auto-detect) channel to the LTC "
-                "Channel in Audio / Timecode settings. That side is stripped from "
+                "Channel in Audio / Midi / Timecode settings. That side is stripped from "
                 "speaker Music Source so LTC stays clean."
             )
             self.table.setCellWidget(row, _COL_LEFT_LTC, ltc_combo)

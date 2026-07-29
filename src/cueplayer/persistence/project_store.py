@@ -132,6 +132,8 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "ltc_generator_enabled": bool(settings.ltc_generator_enabled),
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
+        "ltc_to_mtc_translate": bool(settings.ltc_to_mtc_translate),
+        "midi_enabled": bool(settings.midi_enabled),
         "mtc_enabled": bool(settings.mtc_enabled),
         "midi_port_name": settings.midi_port_name,
         "midi_cue_notes_enabled": bool(settings.midi_cue_notes_enabled),
@@ -163,6 +165,13 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         dev_index = int(dev_index) if dev_index is not None else None
     except (TypeError, ValueError):
         dev_index = None
+    ltc_to_mtc = bool(raw.get("ltc_to_mtc_translate", False))
+    mtc_on = bool(raw.get("mtc_enabled", False))
+    notes_on = bool(raw.get("midi_cue_notes_enabled", False))
+    if "midi_enabled" in raw:
+        midi_on = bool(raw.get("midi_enabled"))
+    else:
+        midi_on = mtc_on or notes_on or ltc_to_mtc
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
         output_device_index=dev_index,
@@ -176,9 +185,11 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
-        mtc_enabled=bool(raw.get("mtc_enabled", False)),
+        ltc_to_mtc_translate=ltc_to_mtc,
+        midi_enabled=midi_on,
+        mtc_enabled=mtc_on,
         midi_port_name=str(raw.get("midi_port_name") or ""),
-        midi_cue_notes_enabled=bool(raw.get("midi_cue_notes_enabled", False)),
+        midi_cue_notes_enabled=notes_on,
         midi_cue_channel=max(1, min(16, int(raw.get("midi_cue_channel", 1) or 1))),
         midi_cue_velocity=max(1, min(127, int(raw.get("midi_cue_velocity", 100) or 100))),
         midi_main_base_note=max(0, min(127, int(raw.get("midi_main_base_note", 36) or 36))),
@@ -415,6 +426,9 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "mark_line_width": project.mark_line_width,
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
+        "show_output_timecode_clock": bool(project.show_output_timecode_clock),
+        "output_timecode_clock_color": project.output_timecode_clock_color,
+        "show_output_quick_toggles": bool(project.show_output_quick_toggles),
         "show_video_track": bool(project.show_video_track),
         "ma_export": ma_export_to_dict(project.ma_export),
         "audio_output": audio_output_to_dict(project.audio_output),
@@ -722,6 +736,11 @@ def project_from_dict(data: dict[str, Any]) -> Project:
         mark_dash_off=dash_off,
         waveform_color=wave_color,
         playhead_color=playhead_color,
+        show_output_timecode_clock=bool(data.get("show_output_timecode_clock", True)),
+        output_timecode_clock_color=_coerce_waveform_color(
+            data.get("output_timecode_clock_color"), default="#3dd68c"
+        ),
+        show_output_quick_toggles=bool(data.get("show_output_quick_toggles", True)),
         show_video_track=show_video_track,
         ma_export=dict_to_ma_export(data.get("ma_export")),
         audio_output=dict_to_audio_output(data.get("audio_output")),

@@ -36,6 +36,7 @@ from cueplayer.persistence.mark_template import (
     load_mark_template,
     save_mark_template,
 )
+from cueplayer.playback.midi_cue_notes import default_note_for_lane
 from cueplayer.ui.color_presets import (
     BUILTIN_PRESETS,
     add_user_preset,
@@ -43,6 +44,7 @@ from cueplayer.ui.color_presets import (
     get_color,
     remove_user_preset,
 )
+from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.marker_draw import draw_marker_shape
 
 _COL_INDEX = 0
@@ -54,7 +56,8 @@ _COL_VISIBLE = 5
 _COL_CUE_ID = 6
 _COL_CUE_LIST = 7
 _COL_MIDI = 8
-_COL_COUNT = 9
+_COL_MIDI_NOTE = 9
+_COL_COUNT = 10
 
 
 class ShapePreview(QWidget):
@@ -279,6 +282,7 @@ class MarkManagerDialog(QDialog):
         layout = QVBoxLayout(self)
         hint = QLabel(
             "Set the name, shortcut, shape, and color for each Mark. "
+            "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
             'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
         )
         hint.setWordWrap(True)
@@ -290,7 +294,7 @@ class MarkManagerDialog(QDialog):
 
         self.table = QTableWidget(0, _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI"]
+            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI On", "Note"]
         )
         self.table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(_COL_INDEX, 44)
@@ -300,7 +304,8 @@ class MarkManagerDialog(QDialog):
         self.table.setColumnWidth(_COL_VISIBLE, 56)
         self.table.setColumnWidth(_COL_CUE_ID, 72)
         self.table.setColumnWidth(_COL_CUE_LIST, 72)
-        self.table.setColumnWidth(_COL_MIDI, 56)
+        self.table.setColumnWidth(_COL_MIDI, 64)
+        self.table.setColumnWidth(_COL_MIDI_NOTE, 88)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -373,6 +378,7 @@ class MarkManagerDialog(QDialog):
             cue_id_wrap = self.table.cellWidget(row, _COL_CUE_ID)
             cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
             midi_wrap = self.table.cellWidget(row, _COL_MIDI)
+            midi_note_widget = self.table.cellWidget(row, _COL_MIDI_NOTE)
             if not all(
                 [
                     index_item,
@@ -383,6 +389,7 @@ class MarkManagerDialog(QDialog):
                     cue_id_wrap,
                     cue_list_wrap,
                     midi_wrap,
+                    midi_note_widget,
                 ]
             ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
@@ -414,6 +421,17 @@ class MarkManagerDialog(QDialog):
             if midi_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI toggle.")
                 return None
+            if not isinstance(midi_note_widget, NoWheelComboBox):
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI note.")
+                return None
+            midi_note = self._midi_note_from_widget(midi_note_widget)
+            if midi_note is None:
+                QMessageBox.warning(
+                    self,
+                    "Mark Manager",
+                    f"Row {row + 1}: enter auto or a MIDI note from 1 to 127.",
+                )
+                return None
             shortcut = str(key_widget.currentData() or "")
             if shortcut:
                 if shortcut in used_keys:
@@ -440,7 +458,7 @@ class MarkManagerDialog(QDialog):
                     cue_id_enabled=cue_id_enabled,
                     cue_list_enabled=cue_list_box.isChecked(),
                     midi_note_enabled=midi_box.isChecked(),
-                    midi_note=int(previous.midi_note) if previous else 0,
+                    midi_note=midi_note,
                     marker_shape=shape,  # type: ignore[arg-type]
                 )
             )
@@ -667,7 +685,7 @@ class MarkManagerDialog(QDialog):
         midi.setChecked(bool(getattr(lane, "midi_note_enabled", False)))
         midi.setToolTip(
             "Send a MIDI note when playback crosses marks on this lane "
-            "(enable globally in Audio / Timecode → MIDI Cue Notes)"
+            "(enable globally in Audio / Midi / Timecode → Send MIDI Cue Notes)"
         )
         midi_wrap = QWidget()
         midi_layout = QHBoxLayout(midi_wrap)
@@ -676,6 +694,53 @@ class MarkManagerDialog(QDialog):
         midi_layout.addWidget(midi)
         midi_wrap.setProperty("checkbox", midi)
         self.table.setCellWidget(row, _COL_MIDI, midi_wrap)
+
+        default_note = self._default_note_for_lane(lane)
+        note_combo = self._make_note_combo(lane, default_note)
+        self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+
+    def _make_note_combo(self, lane: MarkLane, default_note: int) -> NoWheelComboBox:
+        combo = NoWheelComboBox()
+        combo.setEditable(True)
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.addItem(f"auto ({default_note})", 0)
+        for n in range(1, 128):
+            combo.addItem(str(n), n)
+        stored = int(getattr(lane, "midi_note", 0) or 0)
+        if stored == 0:
+            combo.setCurrentIndex(0)
+        else:
+            idx = combo.findData(stored)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            if idx < 0:
+                combo.setEditText(str(stored))
+        combo.setToolTip(
+            f"Type auto or pick auto ({default_note}) for the default note on this lane. "
+            "Or enter any number from 1 to 127."
+        )
+        return combo
+
+    def _midi_note_from_widget(self, widget: NoWheelComboBox) -> int | None:
+        text = widget.currentText().strip().lower()
+        if not text or text.startswith("auto"):
+            return 0
+        try:
+            value = int(text)
+        except ValueError:
+            return None
+        if 1 <= value <= 127:
+            return value
+        return None
+
+    def _midi_bases(self) -> tuple[int, int]:
+        if self._project is not None:
+            ao = self._project.audio_output
+            return int(ao.midi_main_base_note), int(ao.midi_button_base_note)
+        return 36, 48
+
+    def _default_note_for_lane(self, lane: MarkLane) -> int:
+        main_base, button_base = self._midi_bases()
+        return default_note_for_lane(lane, main_base=main_base, button_base=button_base)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.

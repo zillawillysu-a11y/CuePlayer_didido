@@ -833,7 +833,12 @@ class AudioOutputSettings:
     ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
-    # MIDI Timecode quarter-frame output (same song start TC + FPS as LTC).
+    # Decode file LTC stripe and drive MTC with those numbers (instead of generator).
+    # Only applies when ltc_source != "generator" and MIDI is on.
+    ltc_to_mtc_translate: bool = False
+    # Master MIDI output switch — port + sub-features only active when True.
+    midi_enabled: bool = False
+    # MIDI Timecode quarter-frame output (Song Start TC + playhead).
     mtc_enabled: bool = False
     midi_port_name: str = ""
     # MIDI Note pulses when enabled mark lanes are crossed during play.
@@ -842,6 +847,19 @@ class AudioOutputSettings:
     midi_cue_velocity: int = 100
     midi_main_base_note: int = 36  # C2 + (lane.index - 1)
     midi_button_base_note: int = 48  # C3 + (lane.index - 1)
+
+    def effective_mtc_output(self) -> bool:
+        """MTC quarter-frames (generator and/or file LTC translate)."""
+        return bool(
+            self.midi_enabled
+            and (self.mtc_enabled or self.ltc_to_mtc_translate)
+        )
+
+    def effective_midi_cue_notes(self) -> bool:
+        return bool(self.midi_enabled and self.midi_cue_notes_enabled)
+
+    def effective_ltc_to_mtc_translate(self) -> bool:
+        return bool(self.midi_enabled and self.ltc_to_mtc_translate)
 
 
 @dataclass
@@ -946,6 +964,10 @@ class Project:
     waveform_color: str = "#3dd68c"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#ff5a5f"
+    # Output timecode clock under the monitor seconds display.
+    show_output_timecode_clock: bool = True
+    output_timecode_clock_color: str = "#3dd68c"
+    show_output_quick_toggles: bool = True
     # Video + LTC timeline lanes — one eye for the whole show (not per song).
     show_video_track: bool = True
     ma_export: MaExportSettings = field(default_factory=MaExportSettings)

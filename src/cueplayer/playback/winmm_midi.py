@@ -46,6 +46,37 @@ def winmm_available() -> bool:
     return sys.platform.startswith("win")
 
 
+_timer_period_set = False
+
+
+def request_timer_resolution(period_ms: int = 1) -> None:
+    """Ask Windows for high-resolution timer (timeBeginPeriod).
+
+    Reduces Qt/system timer jitter from ~15ms to ~1ms during playback.
+    Safe to call multiple times; tracks state to avoid double-set.
+    """
+    global _timer_period_set
+    if not sys.platform.startswith("win") or _timer_period_set:
+        return
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(period_ms)
+        _timer_period_set = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def release_timer_resolution(period_ms: int = 1) -> None:
+    """Release high-resolution timer request (timeEndPeriod)."""
+    global _timer_period_set
+    if not sys.platform.startswith("win") or not _timer_period_set:
+        return
+    try:
+        ctypes.windll.winmm.timeEndPeriod(period_ms)
+        _timer_period_set = False
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _winmm() -> Any:
     return ctypes.windll.winmm
 
@@ -84,13 +115,39 @@ class WinmmMidiOut:
             raise OSError(f"midiOutOpen failed ({result}) for {name!r}")
         self._closed = False
 
+    @staticmethod
+    def _norm_port_name(name: str) -> str:
+        return (
+            name.strip()
+            .replace("\u2019", "'")
+            .replace("\u2018", "'")
+            .casefold()
+        )
+
     @classmethod
     def open_by_name(cls, port_name: str) -> WinmmMidiOut:
         names = list_winmm_output_names()
         if port_name in names:
             index = names.index(port_name)
             return cls(index, port_name)
-        match = next((i for i, n in enumerate(names) if port_name in n), None)
+        want = cls._norm_port_name(port_name)
+        for i, n in enumerate(names):
+            if cls._norm_port_name(n) == want:
+                return cls(i, n)
+        match = next(
+            (i for i, n in enumerate(names) if port_name in n or n in port_name),
+            None,
+        )
+        if match is None:
+            match = next(
+                (
+                    i
+                    for i, n in enumerate(names)
+                    if want in cls._norm_port_name(n)
+                    or cls._norm_port_name(n) in want
+                ),
+                None,
+            )
         if match is None:
             raise LookupError(f"MIDI port not found: {port_name}")
         return cls(match, names[match])

@@ -1228,6 +1228,14 @@ class MainWindow(QMainWindow):
         )
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
+        self.monitor.output_timecode_clock_changed.connect(
+            self._on_output_timecode_clock_changed
+        )
+        self.monitor.output_quick_toggles_visibility_changed.connect(
+            self._on_output_quick_toggles_visibility_changed
+        )
+        self.monitor.output_toggle_changed.connect(self._on_output_quick_toggle)
+        self.monitor.audio_settings_requested.connect(self._open_audio_timecode)
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
         self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
@@ -1236,7 +1244,13 @@ class MainWindow(QMainWindow):
         self.engine.playing_changed.connect(self.timeline.set_playing)
         self.engine.timecode_status_changed.connect(self._refresh_timecode_status)
         self.engine.timecode_status_changed.connect(self._refresh_setlist_ltc_cells)
+        self.engine.timecode_status_changed.connect(self._refresh_output_timecode_clock)
+        self.engine.playing_changed.connect(
+            lambda _playing: self._refresh_output_timecode_clock()
+        )
         self._refresh_timecode_status()
+        self._sync_output_timecode_clock_ui()
+        self._refresh_output_timecode_clock()
 
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.engine.toggle)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self._nudge_frames(-1))
@@ -1484,11 +1498,11 @@ class MainWindow(QMainWindow):
         menu.addAction(act_setlist_sheet)
 
         tools_menu = self.menuBar().addMenu("&Tools")
-        act_manager = QAction("&Manager", self)
+        act_manager = QAction("Mark &Manager", self)
         act_manager.triggered.connect(self._open_mark_manager)
         act_display = QAction("&Display Settings…", self)
         act_display.triggered.connect(self._open_display_settings)
-        act_audio = QAction("&Audio / Timecode…", self)
+        act_audio = QAction("&Audio / Midi / Timecode…", self)
         act_audio.triggered.connect(self._open_audio_timecode)
         tools_menu.addAction(act_manager)
         tools_menu.addAction(act_display)
@@ -1971,6 +1985,8 @@ class MainWindow(QMainWindow):
         self._restore_clean_output_visibility()
         self._sync_video_output_active()
         self._refresh_timecode_status()
+        self._sync_output_timecode_clock_ui()
+        self._refresh_output_timecode_clock()
         self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
         song_index = 0
         if preferred_song_id:
@@ -3395,6 +3411,7 @@ class MainWindow(QMainWindow):
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
         )
+        self._refresh_output_timecode_clock(0.0)
         main_audio = next(
             (t for t in self.current_song.audio_tracks if t.role == "main"),
             self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
@@ -3808,11 +3825,13 @@ class MainWindow(QMainWindow):
         self.timeline.set_position(seconds)
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
+        self._refresh_output_timecode_clock(seconds)
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
+        self._refresh_output_timecode_clock(seconds)
 
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
@@ -4181,6 +4200,78 @@ class MainWindow(QMainWindow):
             waveform_color=str(p.waveform_color or "#3dd68c"),
             playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
+        if hasattr(self, "monitor"):
+            self._sync_output_timecode_clock_ui()
+
+    def _sync_output_timecode_clock_ui(self) -> None:
+        p = self.project
+        self.monitor.configure_output_timecode_clock(
+            visible=bool(getattr(p, "show_output_timecode_clock", True)),
+            color=str(getattr(p, "output_timecode_clock_color", None) or "#3dd68c"),
+        )
+        self.monitor.configure_output_quick_toggles(
+            visible=bool(getattr(p, "show_output_quick_toggles", True)),
+        )
+        self.monitor.sync_output_quick_toggles(self.project.audio_output)
+
+    @staticmethod
+    def _midi_features_active(ao) -> bool:  # noqa: ANN001
+        return bool(
+            ao.mtc_enabled
+            or ao.midi_cue_notes_enabled
+            or getattr(ao, "ltc_to_mtc_translate", False)
+        )
+
+    def _on_output_quick_toggle(self, key: str, enabled: bool) -> None:
+        ao = self.project.audio_output
+        if key == "translate":
+            ao.ltc_to_mtc_translate = enabled
+        elif key == "mtc":
+            ao.mtc_enabled = enabled
+        elif key == "ltc":
+            ao.ltc_enabled = enabled
+        elif key == "note":
+            ao.midi_cue_notes_enabled = enabled
+        else:
+            return
+
+        if enabled and key in ("translate", "mtc", "note"):
+            ao.midi_enabled = True
+        elif not self._midi_features_active(ao):
+            ao.midi_enabled = False
+
+        if ao.midi_enabled and not ao.midi_port_name:
+            QMessageBox.warning(
+                self,
+                "MIDI",
+                "Choose a MIDI output port in Audio / Midi / Timecode settings first.",
+            )
+            self.monitor.sync_output_quick_toggles(self.project.audio_output)
+            return
+
+        warning = self.engine.apply_audio_settings(ao)
+        self._refresh_timecode_status()
+        self._refresh_output_timecode_clock()
+        self.monitor.sync_output_quick_toggles(ao)
+        self._mark_dirty()
+        if warning:
+            self.status.showMessage(warning, 5000)
+
+    def _on_output_quick_toggles_visibility_changed(self) -> None:
+        self.project.show_output_quick_toggles = self.monitor.show_output_quick_toggles
+        self._mark_dirty()
+
+    def _refresh_output_timecode_clock(self, position: float | None = None) -> None:
+        state = self.engine.output_timecode_state(position)
+        self.monitor.set_output_timecode(
+            timecode=state.timecode,
+            outputs=state.outputs,
+            sending=state.sending,
+        )
+
+    def _on_output_timecode_clock_changed(self) -> None:
+        self.project.show_output_timecode_clock = self.monitor.show_output_timecode_clock
+        self._mark_dirty()
 
     def _open_display_settings(self) -> None:
         latency_ms = int(round(self.engine.sync_offset_ms()))
@@ -4196,6 +4287,7 @@ class MainWindow(QMainWindow):
             self.timeline.apply_song_display_settings()
             self._apply_project_mark_line_settings()
             self.monitor.apply_now_display_settings()
+            self._refresh_output_timecode_clock()
 
         def _run_calib() -> None:
             from cueplayer.ui.sync_calib_dialog import SyncCalibrationDialog
@@ -4222,16 +4314,48 @@ class MainWindow(QMainWindow):
         self.project.audio_output = settings
         warning = self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
+        self._refresh_output_timecode_clock()
+        self.monitor.sync_output_quick_toggles(settings)
         self._mark_dirty()
         if warning:
-            QMessageBox.warning(self, "Audio / Timecode", warning)
-            self.status.showMessage(warning, 6000)
+            # Virtual MIDI ports (e.g. Bome) sometimes need a moment after the
+            # previous handle is closed before accepting a new connection.
+            delays_ms = (400, 900, 1800, 3000)
+
+            def _retry_mtc(attempt: int = 0) -> None:
+                retry_warn = self.engine.apply_audio_settings(self.project.audio_output)
+                self._refresh_timecode_status()
+                self._refresh_output_timecode_clock()
+                if not retry_warn:
+                    self.status.showMessage("Audio routing updated (MIDI reconnected)", 3500)
+                    return
+                if attempt < len(delays_ms):
+                    self.status.showMessage(
+                        f"MIDI: retrying ({attempt + 1}/{len(delays_ms)})…",
+                        4000,
+                    )
+                    QTimer.singleShot(
+                        delays_ms[attempt],
+                        lambda a=attempt + 1: _retry_mtc(a),
+                    )
+                    return
+                QMessageBox.warning(self, "Audio / Midi / Timecode", retry_warn)
+                self.status.showMessage(retry_warn, 6000)
+
+            self.status.showMessage(f"MIDI: retrying… ({warning})", 3000)
+            QTimer.singleShot(delays_ms[0], lambda: _retry_mtc(0))
         else:
             parts = []
             if settings.ltc_enabled:
                 parts.append("LTC on")
-            if settings.mtc_enabled:
-                parts.append("MTC on")
+            if settings.midi_enabled:
+                parts.append("MIDI on")
+                if settings.mtc_enabled:
+                    parts.append("MTC")
+                if settings.ltc_to_mtc_translate:
+                    parts.append("Translate")
+                if settings.midi_cue_notes_enabled:
+                    parts.append("Notes")
             msg = "Audio routing updated"
             if parts:
                 msg += " · " + ", ".join(parts)
@@ -5062,6 +5186,7 @@ class MainWindow(QMainWindow):
             self.monitor.set_song(self.current_song)
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
+        self._refresh_output_timecode_clock(0.0)
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
@@ -5534,7 +5659,7 @@ class MainWindow(QMainWindow):
     def _add_mark_by_shortcut(self, shortcut: str) -> None:
         lane = self.current_song.lane_by_shortcut(shortcut)
         if lane is None:
-            self.status.showMessage(f"Shortcut {shortcut} is not assigned to any Mark in Manager", 2500)
+            self.status.showMessage(f"Shortcut {shortcut} is not assigned to any mark in Mark Manager", 2500)
             return
         self._add_mark(lane.index)
 
