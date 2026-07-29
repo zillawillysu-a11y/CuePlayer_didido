@@ -37,13 +37,14 @@ from cueplayer.persistence.mark_template import (
     save_mark_template,
 )
 from cueplayer.playback.midi_cue_notes import default_note_for_lane
-from cueplayer.ui.spinboxes import NoWheelSpinBox
+from cueplayer.ui.color_presets import (
     BUILTIN_PRESETS,
     add_user_preset,
     all_presets,
     get_color,
     remove_user_preset,
 )
+from cueplayer.ui.spinboxes import NoWheelSpinBox
 from cueplayer.ui.marker_draw import draw_marker_shape
 
 _COL_INDEX = 0
