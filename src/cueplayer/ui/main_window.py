@@ -1218,13 +1218,20 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         act_bpm_missing = QAction("Detect BPM (songs without BPM)", self)
         act_bpm_missing.setToolTip(
-            "Run auto BPM only for songs with audio and an empty BPM cell. "
-            "Does not re-run songs that already have a value."
+            "Run auto BPM only for songs with audio and an empty BPM cell."
         )
         act_bpm_missing.triggered.connect(
             lambda: self._schedule_bpm_detect_for_missing_songs(quiet=False)
         )
         tools_menu.addAction(act_bpm_missing)
+        act_bpm_all = QAction("Re-detect BPM (all songs)", self)
+        act_bpm_all.setToolTip(
+            "Force re-detect every song that has an audio file (one at a time). "
+            "Overwrites gray <n> and typed BPM. Use ×2/÷2 on the setlist if the "
+            "octave is wrong."
+        )
+        act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
+        tools_menu.addAction(act_bpm_all)
         tools_menu.addSeparator()
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
@@ -2278,11 +2285,23 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
         detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
+        detect_all_bpm_action = menu.addAction("Re-detect BPM (all songs)")
+        double_bpm_action = menu.addAction("BPM × 2")
+        halve_bpm_action = menu.addAction("BPM ÷ 2")
         detect_selected_bpm_action.setToolTip(
             "Re-run auto BPM for the selected song(s). Overwrites gray <n> and typed values."
         )
         detect_missing_bpm_action.setToolTip(
             "Only songs that still have an empty BPM cell and an audio file."
+        )
+        detect_all_bpm_action.setToolTip(
+            "Force re-detect every song with audio (queued one at a time)."
+        )
+        double_bpm_action.setToolTip(
+            "Double selected BPM (fix half-tempo guesses). Marks as user value."
+        )
+        halve_bpm_action.setToolTip(
+            "Halve selected BPM (fix double-tempo guesses). Marks as user value."
         )
         menu.addSeparator()
         renumber_action = menu.addAction("Renumber")
@@ -2315,6 +2334,14 @@ class MainWindow(QMainWindow):
                 for s in self.project.songs
             )
         )
+        detect_all_bpm_action.setEnabled(
+            any(self._main_audio_path_for_song(s) is not None for s in self.project.songs)
+        )
+        has_bpm = has_selection and any(
+            s.bpm is not None and float(s.bpm) > 0 for s in selected_songs
+        )
+        double_bpm_action.setEnabled(has_bpm)
+        halve_bpm_action.setEnabled(has_bpm)
         delete_action.setEnabled(has_selection and len(self.project.songs) > 1)
         renumber_action.setEnabled(has_selection)
         renumber_action.setToolTip(
@@ -2340,6 +2367,15 @@ class MainWindow(QMainWindow):
             return
         if chosen is detect_missing_bpm_action:
             self._schedule_bpm_detect_for_missing_songs(quiet=False)
+            return
+        if chosen is detect_all_bpm_action:
+            self._redetect_bpm_all_songs()
+            return
+        if chosen is double_bpm_action:
+            self._scale_selected_bpm(2.0)
+            return
+        if chosen is halve_bpm_action:
+            self._scale_selected_bpm(0.5)
             return
         if chosen is edit_action:
             self._edit_song()
@@ -4027,6 +4063,48 @@ class MainWindow(QMainWindow):
             else:
                 self.status.showMessage("All songs with audio already have a BPM.", 3000)
         return queued
+
+    def _redetect_bpm_all_songs(self) -> None:
+        """Force re-detect every song with audio (one at a time)."""
+        n = self._detect_bpm_for_songs(list(self.project.songs), force=True)
+        if n:
+            self.status.showMessage(
+                f"Re-detecting BPM for {n} song(s)… (queued one at a time)",
+                5000,
+            )
+        else:
+            self.status.showMessage("No songs with audio to re-detect.", 3000)
+
+    def _scale_selected_bpm(self, factor: float) -> None:
+        """×2 / ÷2 selected BPMs — marks as user values (not auto)."""
+        songs = self._selected_songs()
+        if not songs:
+            return
+        changed = 0
+        with self._setlist_edit("BPM ×2" if factor >= 1.5 else "BPM ÷2"):
+            for song in songs:
+                if song.bpm is None or float(song.bpm) <= 0:
+                    continue
+                new_bpm = float(song.bpm) * float(factor)
+                if new_bpm < 30.0 or new_bpm > 320.0:
+                    continue
+                # Prefer whole numbers for show use.
+                if abs(new_bpm - round(new_bpm)) < 0.05:
+                    new_bpm = float(round(new_bpm))
+                else:
+                    new_bpm = round(new_bpm * 2.0) / 2.0
+                song.bpm = new_bpm
+                song.bpm_auto = False
+                changed += 1
+        if changed:
+            self._rebuild_song_list()
+            sheet = getattr(self, "setlist_sheet_page", None)
+            if sheet is not None:
+                sheet.sync_songs()
+            self.status.showMessage(
+                f"Updated BPM on {changed} song(s)",
+                3000,
+            )
 
     def _detect_bpm_for_songs(self, songs: list[Song], *, force: bool = False) -> int:
         """Queue BPM detect for the given songs. ``force`` re-runs even if set."""
