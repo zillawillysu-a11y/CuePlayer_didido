@@ -1227,8 +1227,8 @@ class MainWindow(QMainWindow):
         act_bpm_all = QAction("Re-detect BPM (all songs)", self)
         act_bpm_all.setToolTip(
             "Force re-detect every song that has an audio file (one at a time). "
-            "Overwrites gray <n> and typed BPM. Use ×2/÷2 on the setlist if the "
-            "octave is wrong."
+            "Overwrites gray <n> and typed BPM. Uses librosa + octave check; "
+            "×2/÷2 remain if a rare half/double is still wrong."
         )
         act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
         tools_menu.addAction(act_bpm_all)
@@ -1917,8 +1917,8 @@ class MainWindow(QMainWindow):
 
                 bpm_item.setForeground(QColor(TEXT_MUTED))
                 bpm_item.setToolTip(
-                    "Auto-detected BPM (gray <n>) — starting guess only.\n"
-                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is wrong.\n"
+                    "Auto-detected BPM (gray <n>).\n"
+                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is still wrong.\n"
                     "Or type the correct value to override."
                 )
             else:
