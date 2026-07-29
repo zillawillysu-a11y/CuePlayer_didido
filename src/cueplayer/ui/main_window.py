@@ -90,7 +90,7 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_disk_cache import load_audio_cached, save_cached_audio
+from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
 from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
@@ -1967,16 +1967,6 @@ class MainWindow(QMainWindow):
                     break
         self._rebuild_song_list(select_indexes=[song_index])
         self._activate_song(song_index, stop_playback=True)
-        # Prefetch only nearby songs — full-setlist warm was thrashing CPU/RAM.
-        self._warm_nearby_audio_on_open()
-
-    def _warm_nearby_audio_on_open(self) -> None:
-        """Background-load current ±1 songs only (keeps open responsive)."""
-        self._prefetch_neighbor_audio()
-
-    def _warm_project_audio_on_open(self) -> None:
-        """Deprecated full-setlist warm — kept as alias for nearby warm."""
-        self._warm_nearby_audio_on_open()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -2215,7 +2205,8 @@ class MainWindow(QMainWindow):
             if tip_parts_media:
                 ltc_item.setToolTip("\n".join(tip_parts_media))
             self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
-            self._ensure_ltc_detect_scheduled(song)
+            if song.id == self.current_song.id:
+                self._ensure_ltc_detect_scheduled(song)
 
             for cell in (num_item, name_item, ma_item, bpm_item, ltc_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
@@ -3414,7 +3405,6 @@ class MainWindow(QMainWindow):
                 self._load_audio_path(
                     audio_path, mark_dirty=False, replace_track=False, bump_token=False
                 )
-            self._prefetch_neighbor_audio(skip_path=audio_path)
         else:
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
@@ -4270,7 +4260,6 @@ class MainWindow(QMainWindow):
                     replace_track=replace_track,
                     refresh_song_widgets=replace_track,
                 )
-            self._prefetch_neighbor_audio(skip_path=path)
             return
 
         if bump_token:
@@ -4293,11 +4282,18 @@ class MainWindow(QMainWindow):
             return None
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
-        """Return a RAM-resident buffer only (never blocks on disk cache I/O)."""
+        """RAM first; on miss load the on-disk .npz (no re-decode) for instant song switch."""
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        return self._audio_buffer_cache.get(key)
+        hit = self._audio_buffer_cache.get(key)
+        if hit is not None:
+            return hit
+        disk = load_cached_audio(path)
+        if disk is None:
+            return None
+        self._store_audio_cache(path, disk, write_disk=False, schedule_ltc=False)
+        return disk
 
     def _resolved_path_str(self, path: Path | None) -> str | None:
         if path is None:
@@ -4329,7 +4325,12 @@ class MainWindow(QMainWindow):
         return result
 
     def _store_audio_cache(
-        self, path: Path, buffer: AudioBuffer, *, write_disk: bool = True
+        self,
+        path: Path,
+        buffer: AudioBuffer,
+        *,
+        write_disk: bool = True,
+        schedule_ltc: bool = False,
     ) -> None:
         key = self._audio_cache_key(path)
         if key is not None:
@@ -4339,7 +4340,8 @@ class MainWindow(QMainWindow):
             self._media_warm_progress.emit()
         if write_disk:
             self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
-        self._schedule_ltc_detect_for_buffer(path, buffer)
+        if schedule_ltc:
+            self._schedule_ltc_detect_for_buffer(path, buffer)
 
     def _ltc_channel_for_song(self, song: Song) -> int | None:
         from cueplayer.domain.models import coerce_file_ltc_side
@@ -4838,7 +4840,7 @@ class MainWindow(QMainWindow):
                     self._note_media_warm_step(key, "ltc")
                     self._media_warm_progress.emit()
                     return
-                self._store_audio_cache(path, buffer, write_disk=False)
+                self._store_audio_cache(path, buffer, write_disk=False, schedule_ltc=False)
                 self._media_warm_progress.emit()
 
             future.add_done_callback(_done)
