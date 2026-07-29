@@ -173,6 +173,8 @@ class TimelineWidget(QWidget):
         self._playing = False
         self._last_play_repaint_ns = 0
         self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
+        self._last_scrub_repaint_ns = 0
+        self._scrub_repaint_interval_ns = 50_000_000  # ~20 Hz while dragging
         self._box_click_seek: float | None = None
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setInterval(33)
@@ -1129,6 +1131,11 @@ class TimelineWidget(QWidget):
             if scroll_moved or now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
                 self._last_play_repaint_ns = now
                 self.update()
+        elif self._scrubbing:
+            now = monotonic_ns()
+            if now - self._last_scrub_repaint_ns >= self._scrub_repaint_interval_ns:
+                self._last_scrub_repaint_ns = now
+                self.update()
         else:
             self.update()
 
@@ -1319,13 +1326,17 @@ class TimelineWidget(QWidget):
             self._scroll_x += max(4.0, (local - (view_w - edge)) * 0.45)
         self._clamp_scroll()
 
-        # Throttle seeks while dragging to keep UI responsive.
+        # Throttle seeks while dragging: each seek can trigger video decode +
+        # LTC mirror on the UI thread. Align roughly with scrub decode Hz (~10).
         now_ms = monotonic_ns() // 1_000_000
-        if force or near_edge or now_ms - self._last_scrub_emit_ms >= 24:
+        if force or near_edge or now_ms - self._last_scrub_emit_ms >= 80:
             self._last_scrub_emit_ms = now_ms
             self._seek_from_x(x)
         self._position = min(self._time_for_x(x), self._duration())
-        self.update()
+        now = monotonic_ns()
+        if force or now - self._last_scrub_repaint_ns >= self._scrub_repaint_interval_ns:
+            self._last_scrub_repaint_ns = now
+            self.update()
 
     def _scrub_tick(self) -> None:
         if not self._scrubbing:
@@ -2218,6 +2229,10 @@ class TimelineWidget(QWidget):
 
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
+            return
+        # Per-pixel waveform sampling is expensive; skip while scrubbing so
+        # drag stays responsive (clip rect + label still paint).
+        if self._scrubbing:
             return
         x_left = int(rect.left())
         x_right = int(rect.right())

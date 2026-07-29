@@ -26,12 +26,10 @@ from cueplayer.domain.models import (
 from cueplayer.media.video_loader import MediaDecoder, open_media_decoder
 
 # While the user is actively dragging the playhead (see set_scrubbing()),
-# cap actual decode+emit work to this rate. The timeline throttles scrub
-# seeks to ~40Hz on its own, and each of those can land far from the last
-# decoded frame (container seek + sequential decode + full-frame copy) —
-# fine at normal playback's steady forward pace, but enough to visibly
-# stutter dragging once a video clip is on the timeline.
-_MAX_SCRUB_DECODE_HZ = 24.0
+# cap actual decode+emit work to this rate. Scrub seeks jump around the
+# file (container re-seek + sequential decode on the UI thread) — 24 Hz was
+# still enough to make timeline drag feel sticky once a video clip is loaded.
+_MAX_SCRUB_DECODE_HZ = 10.0
 _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 
 # AudioEngine's master clock ticks position_changed at ~60Hz (16ms poll —

@@ -852,6 +852,8 @@ class AudioEngine(QObject):
         if not self._scrubbing:
             return
         self._scrubbing = False
+        # Land MTC / file-LTC mirror on the exact release position once.
+        self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         if self._resume_after_scrub:
             self._resume_after_scrub = False
             self.play()
@@ -866,7 +868,7 @@ class AudioEngine(QObject):
             # Update under lock so the audio callback cannot wrap to A
             # after a seek that intentionally left the A–B region.
             self._refresh_loop_engage()
-        self._sync_mtc_to_file_ltc(seconds, force=True)
+        self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
