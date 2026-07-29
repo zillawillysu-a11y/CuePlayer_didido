@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QKeyEvent,
     QPainter,
     QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QSlider, QWidget
 
@@ -173,8 +174,10 @@ class TimelineWidget(QWidget):
         self._playing = False
         self._last_play_repaint_ns = 0
         self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
-        self._last_scrub_repaint_ns = 0
-        self._scrub_repaint_interval_ns = 50_000_000  # ~20 Hz while dragging
+        self._scrub_backdrop: QPixmap | None = None
+        self._scrub_backdrop_scroll = 0.0
+        self._scrub_backdrop_pps = 0.0
+        self._scrub_backdrop_size = QSize()
         self._box_click_seek: float | None = None
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setInterval(33)
@@ -1113,9 +1116,13 @@ class TimelineWidget(QWidget):
         self.update()
 
     def set_position(self, seconds: float) -> None:
+        if self._scrubbing:
+            # Playhead is owned by the scrub gesture; ignore engine ticks so
+            # a delayed seek cannot yank the line away from the cursor.
+            return
         self._position = seconds
         scroll_moved = False
-        if self._auto_scroll and not self._scrubbing:
+        if self._auto_scroll:
             prev_scroll = self._scroll_x
             if self._view_pinned:
                 # Keep a click-seek / scrub pin until the playhead leaves the
@@ -1126,15 +1133,10 @@ class TimelineWidget(QWidget):
             else:
                 self._follow_playhead()
             scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
-        if self._playing and not self._scrubbing:
+        if self._playing:
             now = monotonic_ns()
             if scroll_moved or now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
                 self._last_play_repaint_ns = now
-                self.update()
-        elif self._scrubbing:
-            now = monotonic_ns()
-            if now - self._last_scrub_repaint_ns >= self._scrub_repaint_interval_ns:
-                self._last_scrub_repaint_ns = now
                 self.update()
         else:
             self.update()
@@ -1315,39 +1317,84 @@ class TimelineWidget(QWidget):
         self.seek_requested.emit(min(self._time_for_x(x), self._duration()))
 
     def _scrub_at(self, x: float, *, force: bool = False) -> None:
-        """Seek under cursor; pan view when dragging near / past left-right edges."""
+        """Move playhead under cursor; pan view near left/right edges.
+
+        Mid-drag is visual-only (local playhead + cached backdrop). Engine
+        seek / LTC / MTC / MIDI only run on force (press + release) so the
+        drag stays silky even with video tracks.
+        """
+        prev_scroll = self._scroll_x
         view_w = self._view_width()
         local = x - self._header_width
         edge = self._scrub_edge
-        near_edge = local < edge or local > view_w - edge
         if local < edge:
             self._scroll_x -= max(4.0, (edge - local) * 0.45)
         elif local > view_w - edge:
             self._scroll_x += max(4.0, (local - (view_w - edge)) * 0.45)
         self._clamp_scroll()
 
-        # Throttle seeks while dragging: each seek can trigger video decode +
-        # LTC mirror on the UI thread. Align roughly with scrub decode Hz (~10).
-        now_ms = monotonic_ns() // 1_000_000
-        if force or near_edge or now_ms - self._last_scrub_emit_ms >= 80:
-            self._last_scrub_emit_ms = now_ms
-            self._seek_from_x(x)
         self._position = min(self._time_for_x(x), self._duration())
-        now = monotonic_ns()
-        if force or now - self._last_scrub_repaint_ns >= self._scrub_repaint_interval_ns:
-            self._last_scrub_repaint_ns = now
-            self.update()
+        if force:
+            self._seek_from_x(x)
+        if abs(self._scroll_x - prev_scroll) > 0.5:
+            self._invalidate_scrub_backdrop()
+        self.update()
+
+    def _invalidate_scrub_backdrop(self) -> None:
+        self._scrub_backdrop = None
+
+    def _scrub_backdrop_valid(self) -> bool:
+        pm = self._scrub_backdrop
+        if pm is None or pm.isNull():
+            return False
+        return (
+            abs(self._scroll_x - self._scrub_backdrop_scroll) < 0.5
+            and abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
+            and self._scrub_backdrop_size == self.size()
+        )
+
+    def _rebuild_scrub_backdrop(self) -> None:
+        """Rasterize static timeline layers once; scrub only redraws the playhead."""
+        if self.width() <= 0 or self.height() <= 0:
+            self._scrub_backdrop = None
+            return
+        pm = QPixmap(self.size())
+        pm.fill(QColor(BG_APP))
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        self._paint_static_layers(painter)
+        painter.end()
+        self._scrub_backdrop = pm
+        self._scrub_backdrop_scroll = self._scroll_x
+        self._scrub_backdrop_pps = self._pixels_per_second
+        self._scrub_backdrop_size = QSize(self.size())
+
+    def _paint_static_layers(self, painter: QPainter) -> None:
+        self._paint_ruler(painter)
+        wave_bottom = self._paint_waveform(painter)
+        self._paint_video_lane(painter)
+        self._paint_ltc_lane(painter)
+        tracks_top = self._tracks_top_y()
+        self._paint_lanes(painter, start_y=tracks_top)
+        self._paint_marks(painter, start_y=tracks_top)
+        self._paint_loop_region(painter)
+        self._paint_wave_splitter(painter, wave_bottom)
+        self._paint_video_lane_splitter(painter)
+        self._paint_selection_box(painter)
+        painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
+        self._paint_headers(painter, wave_bottom, tracks_top)
 
     def _scrub_tick(self) -> None:
         if not self._scrubbing:
             self._scrub_timer.stop()
             return
         pos = self.mapFromGlobal(QCursor.pos())
-        # Only keep the timer for edge auto-pan while held still.
+        # Only keep the timer for edge auto-pan while held still (visual
+        # scroll + playhead). Engine seek waits for mouse-up.
         view_w = self._view_width()
         local = pos.x() - self._header_width
         if local < self._scrub_edge or local > view_w - self._scrub_edge:
-            self._scrub_at(pos.x(), force=True)
+            self._scrub_at(pos.x(), force=False)
 
     def _hit_mark_at(self, x: float, y: float) -> str | None:
         """Return mark id under cursor on tracks or waveform overlay lines."""
@@ -1757,6 +1804,7 @@ class TimelineWidget(QWidget):
                 self.clear_selection()
                 self._scrubbing = True
                 self._view_pinned = True
+                self._invalidate_scrub_backdrop()
                 self.scrub_started.emit()
                 self.grabMouse()
                 self._scrub_at(x, force=True)
@@ -1947,6 +1995,7 @@ class TimelineWidget(QWidget):
             self._drag_click_seek = None
             self._box_click_seek = None
             self._scrub_timer.stop()
+            self._invalidate_scrub_backdrop()
             self.releaseMouse()
             if was_scrub:
                 self._scrub_at(event.position().x(), force=True)
@@ -2113,24 +2162,22 @@ class TimelineWidget(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor(BG_APP))
 
-        self._paint_ruler(painter)
-        wave_bottom = self._paint_waveform(painter)
-        self._paint_video_lane(painter)
-        self._paint_ltc_lane(painter)
-        tracks_top = self._tracks_top_y()
-        self._paint_lanes(painter, start_y=tracks_top)
-        self._paint_marks(painter, start_y=tracks_top)
-        self._paint_loop_region(painter)
+        # Scrub path: blit a cached static timeline and only redraw the playhead
+        # so dragging stays smooth even with video / dense waveforms.
+        if self._scrubbing:
+            if not self._scrub_backdrop_valid():
+                self._rebuild_scrub_backdrop()
+            if self._scrub_backdrop_valid():
+                painter.drawPixmap(0, 0, self._scrub_backdrop)
+                self._paint_playhead(painter)
+                self._paint_drag_guides(painter)
+                return
+
+        painter.fillRect(self.rect(), QColor(BG_APP))
+        self._paint_static_layers(painter)
         self._paint_playhead(painter)
         self._paint_drag_guides(painter)
-        self._paint_wave_splitter(painter, wave_bottom)
-        self._paint_video_lane_splitter(painter)
-        self._paint_selection_box(painter)
-        # Fixed header overlay so labels don't scroll away.
-        painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
-        self._paint_headers(painter, wave_bottom, tracks_top)
 
     def _paint_selection_box(self, painter: QPainter) -> None:
         if not self._box_selecting:
