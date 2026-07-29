@@ -23,6 +23,48 @@ def _click_track(bpm: float, *, seconds: float = 12.0, sr: int = 44100) -> np.nd
     return mono.reshape(-1, 1)
 
 
+def _pop_groove(
+    bpm: float,
+    *,
+    seconds: float = 24.0,
+    sr: int = 44100,
+    eighth_hats: bool = True,
+) -> np.ndarray:
+    """Kick 1/3 + snare 2/4 (+ optional 8ths) — classic half/double trap."""
+    n = int(sr * seconds)
+    y = np.zeros(n, dtype=np.float32)
+    beat = 60.0 / bpm
+    rng = np.random.RandomState(int(bpm) % 97)
+
+    def hit(t: float, amp: float, *, bright: bool = False, length: int = 800) -> None:
+        i = int(t * sr)
+        if i >= n:
+            return
+        env = np.exp(-np.linspace(0, 9 if bright else 6, length))
+        if bright:
+            sig = rng.randn(length).astype(np.float32) * env * amp
+        else:
+            tl = np.arange(length) / sr
+            sig = (np.sin(2 * np.pi * 60.0 * tl) * env * amp).astype(np.float32)
+        end = min(n, i + length)
+        y[i:end] += sig[: end - i]
+
+    t = 0.0
+    beat_i = 0
+    while t < seconds:
+        if beat_i % 2 == 0:
+            hit(t, 1.0, bright=False, length=1100)
+        else:
+            hit(t, 0.85, bright=True, length=900)
+        if eighth_hats:
+            hit(t, 0.22, bright=True, length=280)
+            hit(t + beat * 0.5, 0.18, bright=True, length=240)
+        t += beat
+        beat_i += 1
+    y += rng.randn(n).astype(np.float32) * 0.01
+    return np.tanh(y * 0.8).astype(np.float32).reshape(-1, 1)
+
+
 def test_format_bpm_cell_auto_uses_brackets() -> None:
     assert format_bpm_cell(120, auto=True) == "<120>"
     assert format_bpm_cell(120.0, auto=False) == "120"
@@ -66,6 +108,24 @@ def test_estimate_bpm_ground_truth_show_tempos(bpm: float) -> None:
     est = estimate_bpm(_click_track(bpm, seconds=20.0), 44100)
     assert est is not None
     assert abs(float(est) - bpm) <= 2.0, f"expected ~{bpm}, got {est}"
+
+
+@pytest.mark.parametrize(
+    "bpm",
+    [
+        73.0,
+        83.0,
+        136.0,
+        167.0,
+        170.0,
+    ],
+)
+def test_estimate_bpm_pop_groove_tactus(bpm: float) -> None:
+    """Half-time / double-time pop grooves must resolve to the tapped pulse."""
+    eighth = bpm >= 120.0
+    est = estimate_bpm(_pop_groove(bpm, eighth_hats=eighth), 44100)
+    assert est is not None
+    assert abs(float(est) - bpm) <= 3.0, f"expected ~{bpm}, got {est}"
 
 
 def test_estimate_bpm_excludes_ltc_like_channel() -> None:

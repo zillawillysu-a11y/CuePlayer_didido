@@ -1,8 +1,9 @@
 """BPM estimation from PCM.
 
-Uses librosa beat tracking plus an on-beat vs off-beat octave check so
-half/double errors common in show files are corrected automatically when
-the evidence is clear. ×2 / ÷2 remain available in the UI for edge cases.
+Tempo errors on show files are usually *tactus* (which pulse you tap), not a
+wrong period math — e.g. 4/4 half-time (68 vs 136), ballad double (83 vs 166),
+or 6/8 dotted-quarter vs eighth feel. We estimate candidates with librosa, then
+pick the pulse that best matches onset density + beat-grid contrast.
 """
 
 from __future__ import annotations
@@ -11,13 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 6
+BPM_DETECT_VERSION = 7
 
 _BPM_READ_SECONDS = 90.0
 _BPM_ANALYZE_SECONDS = 60.0
 _DEFAULT_MIN_BPM = 60.0
 _DEFAULT_MAX_BPM = 200.0
-_OCTAVE_MARGIN = 1.12
 
 
 def format_bpm_value(bpm: float) -> str:
@@ -119,8 +119,26 @@ def _activity_starts(mono: np.ndarray, sample_rate: int) -> list[int]:
     return chosen or starts[:1]
 
 
-def _on_off_ratio(onset_env: np.ndarray, sr: int, hop: int, bpm: float) -> float:
-    """Higher when beat grid lands on onsets and misses the halfway points."""
+def _onset_rate_per_sec(mono: np.ndarray, sample_rate: int) -> float:
+    import librosa
+
+    times = librosa.onset.onset_detect(y=mono, sr=sample_rate, units="time")
+    if times is None or len(times) < 4:
+        return 0.0
+    times = np.asarray(times, dtype=float)
+    dur = float(mono.size) / float(sample_rate)
+    t0, t1 = dur * 0.1, dur * 0.9
+    times = times[(times >= t0) & (times <= t1)]
+    if len(times) < 4:
+        return 0.0
+    span = float(times[-1] - times[0])
+    if span < 1.0:
+        return 0.0
+    return float(len(times) / span)
+
+
+def _grid_contrast(onset_env: np.ndarray, sr: int, hop: int, bpm: float) -> float:
+    """On-beat vs halfway-beat onset contrast for a candidate pulse."""
     period_f = (60.0 / max(1e-6, bpm)) * float(sr) / float(hop)
     if period_f < 2.0:
         return -1.0
@@ -142,45 +160,115 @@ def _on_off_ratio(onset_env: np.ndarray, sr: int, hop: int, bpm: float) -> float
     return best
 
 
-def _bring_into_range(bpm: float, min_bpm: float, max_bpm: float) -> float:
-    value = float(bpm)
-    while value < min_bpm and value * 2.0 <= max_bpm * 1.01:
-        value *= 2.0
-    while value > max_bpm and value / 2.0 >= min_bpm * 0.99:
-        value /= 2.0
-    return value
+def _density_fit(onset_rate: float, bpm: float) -> float:
+    """
+    Prefer pulses where onset density ≈ 1× or 2× the beat rate.
+
+    4/4 with 8th hats → dens≈2; sparse ballad → dens≈1.
+    Half-time wrong guess (68 for a 136 song) → dens≈2.5–3 → poor fit at 68,
+    good fit after doubling. Double-time wrong guess on a ballad → dens≈0.5.
+    """
+    beat_rate = float(bpm) / 60.0
+    if beat_rate <= 1e-6 or onset_rate <= 1e-6:
+        return 0.05
+    dens = onset_rate / beat_rate
+    return float(
+        max(
+            np.exp(-((dens - 1.0) ** 2) / (2 * 0.35**2)),
+            0.90 * np.exp(-((dens - 2.0) ** 2) / (2 * 0.45**2)),
+            0.35 * np.exp(-((dens - 0.5) ** 2) / (2 * 0.25**2)),
+            # Compound / 6/8: three subdivisions per tapped pulse.
+            0.55 * np.exp(-((dens - 3.0) ** 2) / (2 * 0.55**2)),
+        )
+    )
 
 
-def _resolve_octave(
+def _tempo_prior(bpm: float) -> float:
+    """Mild preference for show-music tapping range (~70–160)."""
+    return float(np.exp(-((np.log(max(1.0, bpm)) - np.log(110.0)) ** 2) / (2 * 0.48**2)))
+
+
+def _candidate_pool(
     mono: np.ndarray,
     sample_rate: int,
-    bpm0: float,
     *,
     min_bpm: float,
     max_bpm: float,
-) -> float:
-    """Pick half/same/double using on-beat vs off-beat onset contrast."""
+) -> list[float]:
+    import librosa
+
+    pool: set[float] = set()
+    onset_env = librosa.onset.onset_strength(y=mono, sr=sample_rate)
+
+    for start_bpm in (80.0, 100.0, 120.0, 140.0, 160.0):
+        try:
+            tempo, _beats = librosa.beat.beat_track(
+                y=mono,
+                sr=sample_rate,
+                onset_envelope=onset_env,
+                start_bpm=start_bpm,
+                tightness=100,
+            )
+            raw = _as_float(tempo)
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        if raw > 1.0:
+            pool.add(raw)
+        try:
+            t2 = _as_float(
+                librosa.feature.tempo(
+                    onset_envelope=onset_env,
+                    sr=sample_rate,
+                    start_bpm=start_bpm,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            t2 = 0.0
+        if t2 > 1.0:
+            pool.add(t2)
+
+    # Meter / tactus relatives. Most show-file mistakes are 4/4 half-time or
+    # double-time (×1/2, ×2). Compound 6/8 (×2/3, ×3/2, ×3) is real but was
+    # stealing votes from straight 4/4 grooves (e.g. 136 → 91), so keep those
+    # out of the auto pool for now.
+    expanded: set[float] = set()
+    for bpm in list(pool):
+        for factor in (0.5, 1.0, 2.0):
+            expanded.add(bpm * factor)
+
+    return [
+        bpm
+        for bpm in expanded
+        if min_bpm * 0.98 <= bpm <= max_bpm * 1.02
+    ]
+
+
+def _pick_tactus(
+    mono: np.ndarray,
+    sample_rate: int,
+    candidates: list[float],
+    *,
+    onset_rate: float,
+) -> float | None:
+    if not candidates:
+        return None
     import librosa
 
     hop = 512
-    onset = librosa.onset.onset_strength(y=mono, sr=sample_rate, hop_length=hop)
-    base = _bring_into_range(bpm0, min_bpm, max_bpm)
+    onset_env = librosa.onset.onset_strength(y=mono, sr=sample_rate, hop_length=hop)
     scored: list[tuple[float, float]] = []
-    for factor in (0.5, 1.0, 2.0):
-        candidate = base * factor
-        if candidate < min_bpm * 0.98 or candidate > max_bpm * 1.02:
+    for bpm in candidates:
+        contrast = _grid_contrast(onset_env, sample_rate, hop, bpm)
+        if contrast <= 0.0:
             continue
-        scored.append((_on_off_ratio(onset, sample_rate, hop, candidate), candidate))
+        dens = _density_fit(onset_rate, bpm)
+        prior = _tempo_prior(bpm)
+        score = float(contrast) * dens * (0.50 + 0.50 * prior)
+        scored.append((score, bpm))
     if not scored:
-        return base
+        return None
     scored.sort(key=lambda item: item[0], reverse=True)
-    best_ratio, best_bpm = scored[0]
-    base_ratio = next((ratio for ratio, bpm in scored if abs(bpm - base) < 1e-6), None)
-    # Only flip octave when the alternative is clearly stronger — avoids
-    # doubling slow ballads when half/double are both plausible.
-    if base_ratio is not None and best_ratio < base_ratio * _OCTAVE_MARGIN:
-        return base
-    return best_bpm
+    return scored[0][1]
 
 
 def _estimate_with_librosa(
@@ -190,8 +278,6 @@ def _estimate_with_librosa(
     min_bpm: float,
     max_bpm: float,
 ) -> float | None:
-    import librosa
-
     starts = _activity_starts(mono, sample_rate)
     win = int(sample_rate * 30.0)
     votes: dict[float, float] = {}
@@ -199,38 +285,25 @@ def _estimate_with_librosa(
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate * 4:
             continue
-        # Soft peak normalize so quiet grooves still track.
         peak = float(np.max(np.abs(chunk)))
         if peak < 1e-6:
             continue
         y = (chunk / peak).astype(np.float32)
-        try:
-            tempo, _beats = librosa.beat.beat_track(
-                y=y,
-                sr=sample_rate,
-                start_bpm=float(np.clip((min_bpm + max_bpm) * 0.5, 90.0, 140.0)),
-                tightness=100,
-            )
-        except Exception:  # noqa: BLE001
+        onset_rate = _onset_rate_per_sec(y, sample_rate)
+        candidates = _candidate_pool(y, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+        picked = _pick_tactus(y, sample_rate, candidates, onset_rate=onset_rate)
+        if picked is None:
             continue
-        raw = _as_float(tempo)
-        if raw <= 1.0:
-            continue
-        resolved = _resolve_octave(
-            y,
-            sample_rate,
-            raw,
-            min_bpm=min_bpm,
-            max_bpm=max_bpm,
-        )
-        key = _snap_show_bpm(resolved)
+        key = _snap_show_bpm(picked)
         if key < min_bpm * 0.95 or key > max_bpm * 1.05:
             continue
-        votes[key] = votes.get(key, 0.0) + 1.0
+        # Weight by how well density fits the chosen pulse.
+        weight = max(0.15, _density_fit(onset_rate, key))
+        votes[key] = votes.get(key, 0.0) + weight
 
     if not votes:
         return None
-    return max(votes.items(), key=lambda kv: (kv[1], -abs(kv[0] - 120.0)))[0]
+    return max(votes.items(), key=lambda kv: (kv[1], -abs(kv[0] - 110.0)))[0]
 
 
 def estimate_bpm(
@@ -243,10 +316,10 @@ def estimate_bpm(
     exclude_channel: int | None = None,
 ) -> float | None:
     """
-    Estimate tempo with librosa beat tracking + octave resolve.
+    Estimate tempo by choosing the musical pulse (tactus), not only a period.
 
-    Analyzes the densest windows in the first ``max_seconds`` so rehearsal
-    talk/gaps before the groove are less likely to dominate.
+    Half/double (4/4 half-time) and compound-related (≈2/3, 3/2, 3) candidates
+    are scored with onset density + beat-grid contrast.
     """
     if samples is None or sample_rate <= 0:
         return None
