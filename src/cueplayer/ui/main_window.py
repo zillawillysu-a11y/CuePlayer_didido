@@ -847,6 +847,7 @@ class MainWindow(QMainWindow):
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
+    _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -882,6 +883,9 @@ class MainWindow(QMainWindow):
         self._ltc_detect_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ui-ltc-detect"
         )
+        # Waveform + LTC warm after setlist import / prefetch (status-bar %).
+        self._media_warm_active = False
+        self._media_warm_units: dict[tuple[str, int, int], dict[str, bool]] = {}
         # BPM is intentionally separate + single-threaded: each job reads PCM
         # and runs numpy corr — never stampede the machine on project open.
         self._bpm_detect_executor = ThreadPoolExecutor(
@@ -890,6 +894,7 @@ class MainWindow(QMainWindow):
         # JIT-warm librosa onset path so the first real detect is not a hitch.
         self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
         self._bpm_force_ids: set[str] = set()
@@ -3469,7 +3474,10 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
         if last_index is None:
             return
-        if len(added_indexes) == 1:
+        # Prefetch already began warm progress; keep the % visible after "Added".
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+        elif len(added_indexes) == 1:
             song = self.project.songs[last_index]
             self.status.showMessage(
                 f"Added song: #{format_setlist_number(song.setlist_number)} {song.name}",
@@ -4207,7 +4215,8 @@ class MainWindow(QMainWindow):
             self._audio_load_token += 1
         token = self._audio_load_token
         self.timeline.set_audio_loading(True, path.name)
-        self.status.showMessage(f"Loading {path.name}…", 0)
+        if not self._media_warm_active:
+            self.status.showMessage(f"Loading {path.name}…", 0)
         future = self._start_audio_load(path, executor=self._audio_load_executor)
         self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
         if not self._audio_load_timer.isActive():
@@ -4240,6 +4249,8 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None:
             self._audio_buffer_cache[key] = buffer
+            self._note_media_warm_step(key, "audio")
+            self._media_warm_progress.emit()
         if write_disk:
             self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
         self._schedule_ltc_detect_for_buffer(path, buffer)
@@ -4285,7 +4296,9 @@ class MainWindow(QMainWindow):
             return
         if buffer.channels < 2:
             self._audio_ltc_cache[key] = None
+            self._note_media_warm_step(key, "ltc")
             self._setlist_ltc_cache_updated.emit()
+            self._media_warm_progress.emit()
             return
 
         samples = buffer.samples
@@ -4302,9 +4315,13 @@ class MainWindow(QMainWindow):
             try:
                 cache_key, channel = fut.result()
             except Exception:
+                self._note_media_warm_step(key, "ltc")
+                self._media_warm_progress.emit()
                 return
             self._audio_ltc_cache[cache_key] = channel
+            self._note_media_warm_step(cache_key, "ltc")
             self._setlist_ltc_cache_updated.emit()
+            self._media_warm_progress.emit()
 
         future.add_done_callback(_done)
 
@@ -4413,6 +4430,8 @@ class MainWindow(QMainWindow):
         self._refresh_bpm_detect_status()
 
     def _refresh_bpm_detect_status(self) -> None:
+        if self._media_warm_active:
+            return
         active_id = self._bpm_active_song_id
         pending = len(self._bpm_detect_queue) + (1 if self._bpm_detect_running else 0)
         if active_id is None and pending <= 0:
@@ -4719,11 +4738,74 @@ class MainWindow(QMainWindow):
                 try:
                     buffer = fut.result()
                 except Exception:
+                    self._note_media_warm_step(key, "audio")
+                    self._note_media_warm_step(key, "ltc")
+                    self._media_warm_progress.emit()
                     return
                 self._store_audio_cache(path, buffer, write_disk=False)
+                self._media_warm_progress.emit()
 
             future.add_done_callback(_done)
         return future
+
+    def _begin_media_warm_progress(self) -> None:
+        """Track pending waveform decode + LTC detect for status-bar %."""
+        units: dict[tuple[str, int, int], dict[str, bool]] = {}
+        for song in self.project.songs:
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is None:
+                continue
+            audio_done = key in self._audio_buffer_cache
+            ltc_done = key in self._audio_ltc_cache
+            if audio_done and ltc_done:
+                continue
+            units[key] = {"audio": audio_done, "ltc": ltc_done}
+        self._media_warm_units = units
+        self._media_warm_active = bool(units)
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+
+    def _note_media_warm_step(self, key: tuple[str, int, int] | None, step: str) -> None:
+        if key is None or not self._media_warm_active:
+            return
+        unit = self._media_warm_units.get(key)
+        if unit is None:
+            return
+        if step in unit:
+            unit[step] = True
+
+    def _media_warm_counts(self) -> tuple[int, int]:
+        total = 0
+        done = 0
+        for unit in self._media_warm_units.values():
+            for step in ("audio", "ltc"):
+                total += 1
+                if unit.get(step):
+                    done += 1
+        return done, total
+
+    def _refresh_media_warm_status(self) -> None:
+        if not self._media_warm_active:
+            return
+        done, total = self._media_warm_counts()
+        if total <= 0 or done >= total:
+            self._media_warm_active = False
+            self._media_warm_units.clear()
+            self.status.showMessage("Waveform / LTC ready", 2500)
+            return
+        pct = int(round(100.0 * done / total))
+        pending_files = sum(
+            1
+            for unit in self._media_warm_units.values()
+            if not (unit.get("audio") and unit.get("ltc"))
+        )
+        self.status.showMessage(
+            f"Loading waveform / LTC: {pct}%（{done}/{total} · {pending_files} file(s) left）",
+            0,
+        )
 
     def _main_audio_path_for_song(self, song: Song) -> Path | None:
         main_audio = next(
@@ -4742,6 +4824,7 @@ class MainWindow(QMainWindow):
                 skip_resolved = str(skip_path.resolve())
             except OSError:
                 skip_resolved = str(skip_path)
+        self._begin_media_warm_progress()
         for song in self.project.songs:
             path = self._main_audio_path_for_song(song)
             if path is None:
@@ -4758,6 +4841,7 @@ class MainWindow(QMainWindow):
             if key is not None and key in self._audio_inflight:
                 continue
             self._start_audio_load(path, executor=self._audio_prefetch_executor)
+        self._refresh_media_warm_status()
 
     def _poll_pending_audio_load(self) -> None:
         pending = self._pending_audio_load
@@ -5343,6 +5427,9 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_status(self) -> None:
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+            return
         count = len(self.current_song.marks)
         lanes = len(self.current_song.mark_lanes)
         audio_name = self.current_song.audio_tracks[0].name if self.current_song.audio_tracks else "No audio"
