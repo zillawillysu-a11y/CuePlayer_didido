@@ -295,13 +295,6 @@ class SetlistWidget(QTableWidget):
         self._show_ltc_badge = True
         self._show_video_badge = True
         self._sync_media_column_visibility()
-        self.setToolTip(
-            "Double-click No./Name/BPM to edit; drag column edges to resize; "
-            "right-click for categories and full editor; "
-            "drag songs to reorder or onto a folder; "
-            "drag a folder title to move that folder (and its songs) above/below other folders; "
-            "drop audio/video to add songs; Ctrl/Shift to multi-select"
-        )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._block_number_signal = False
