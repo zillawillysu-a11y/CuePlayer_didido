@@ -181,6 +181,11 @@ class AudioEngine(QObject):
         if self.mtc_enabled:
             outputs.append("MTC")
 
+        import sys
+        print(f"[OTC] pos={pos:.2f} outputs={outputs} ltc_en={self._audio_settings.ltc_enabled} "
+              f"mtc_en={self._audio_settings.mtc_enabled} "
+              f"translate={self._audio_settings.ltc_to_mtc_translate} "
+              f"ltc_src={self._audio_settings.ltc_source!r}", file=sys.stderr, flush=True)
         tc_str = "—"
         if outputs:
             # When LTC source is from-file, the actual timecode numbers come from
