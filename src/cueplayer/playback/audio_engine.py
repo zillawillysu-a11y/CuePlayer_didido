@@ -188,11 +188,6 @@ class AudioEngine(QObject):
             # MTC mirrors the same source, so show file-decoded TC when available.
             decode_ch = self._decode_source_channel()
             decoded = self._decode_file_ltc_timecode(pos) if decode_ch is not None else None
-            import sys
-            print(f"[TC DEBUG] ltc_source={self._audio_settings.ltc_source!r} "
-                  f"ltc_enabled={self._audio_settings.ltc_enabled} "
-                  f"translate={self._audio_settings.ltc_to_mtc_translate} "
-                  f"decode_ch={decode_ch} decoded={decoded}", file=sys.stderr)
             if decoded is not None:
                 tc_str = decoded.format()
             elif self.mtc_enabled:
@@ -532,6 +527,7 @@ class AudioEngine(QObject):
             ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
+            ltc_to_mtc_translate=bool(getattr(settings, "ltc_to_mtc_translate", False)),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
             midi_cue_notes_enabled=bool(getattr(settings, "midi_cue_notes_enabled", False)),
