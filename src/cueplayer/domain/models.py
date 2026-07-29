@@ -323,6 +323,8 @@ class Song:
     cue_list_column_order: list[str] = field(
         default_factory=lambda: ["time", "type", "cue_id", "note"]
     )
+    # When False, the Cue ID column is hidden (right-click Cue List to toggle).
+    cue_list_show_cue_id: bool = True
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -519,6 +521,7 @@ class Song:
             now_secondary_visible=self.now_secondary_visible,
             cue_list_visible=self.cue_list_visible,
             cue_list_column_order=list(self.cue_list_column_order),
+            cue_list_show_cue_id=self.cue_list_show_cue_id,
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
         dup.audio_tracks = [

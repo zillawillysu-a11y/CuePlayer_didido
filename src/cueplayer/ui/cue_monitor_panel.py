@@ -411,6 +411,7 @@ class CueMonitorPanel(QWidget):
         self._song = song
         self._playhead_list_mark_id = None
         self._apply_column_order()
+        self._apply_cue_list_column_visibility()
         self.refresh_list()
         self._apply_now_panel_visibility()
         self._apply_cue_list_visibility()
@@ -453,6 +454,7 @@ class CueMonitorPanel(QWidget):
                 header.moveSection(current_visual, visual_pos)
         self._apply_column_resize_modes()
         self._reordering_header = False
+        self._apply_cue_list_column_visibility()
 
     def _on_header_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
         del logical_index, old_visual, new_visual
@@ -841,6 +843,14 @@ class CueMonitorPanel(QWidget):
         show_list.setChecked(bool(self._song.cue_list_visible))
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
+
+        show_cue_id = QAction("Show Cue ID", self)
+        show_cue_id.setCheckable(True)
+        show_cue_id.setChecked(bool(self._song.cue_list_show_cue_id))
+        show_cue_id.setToolTip("Show or hide the Cue ID column in Cue List")
+        show_cue_id.toggled.connect(self._set_cue_list_show_cue_id)
+        menu.addAction(show_cue_id)
+
         menu.addSeparator()
         from cueplayer.domain.main_cue_id import renumberable_cue_list_lanes
 
@@ -859,6 +869,19 @@ class CueMonitorPanel(QWidget):
                             lane_index
                         )
                     )
+
+    def _set_cue_list_show_cue_id(self, visible: bool) -> None:
+        if self._song is None:
+            return
+        self._song.cue_list_show_cue_id = bool(visible)
+        self._apply_cue_list_column_visibility()
+        self.cue_list_layout_changed.emit()
+
+    def _apply_cue_list_column_visibility(self) -> None:
+        """Show/hide Cue List columns from song preferences."""
+        show_cue_id = True if self._song is None else bool(self._song.cue_list_show_cue_id)
+        cue_id_logical = LOGICAL_INDEX_BY_FIELD["cue_id"]
+        self.cue_table.setColumnHidden(cue_id_logical, not show_cue_id)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
         if (
