@@ -63,6 +63,8 @@
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。
 
+**Save 時偵測外部媒體：** 若你從專案資料夾外（例如 Downloads）拖進音訊／影片，按 Save／另存時會問要不要拷貝進 `Media/<Setlist>/<歌名>/`。選 Yes＝拷貝後存檔（原檔不動）；No＝仍用絕對路徑存。Auto-save 不會跳出詢問。完整另存整包仍可用 **Collect Project Bundle**。
+
 在程式裡搬歌曲到 Setlist Folder／改 Folder 名：只改專案記憶體；**磁碟上的 `Media/` 要等 Save／另存／Auto-save／Bundle 才會跟著排**。
 
 ### 另存新檔後再開舊檔？

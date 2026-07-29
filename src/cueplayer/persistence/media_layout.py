@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from cueplayer.domain.models import Project, Song
-from cueplayer.media.audio_disk_cache import adopt_caches_for_path
+from cueplayer.media.audio_disk_cache import adopt_caches_for_path, clone_caches_for_copied_file
 from cueplayer.persistence.media_paths import path_exists, project_root_for
 
 DEFAULT_MEDIA_SUBDIR = "Media"
@@ -235,6 +236,165 @@ def sync_all_songs_media_to_setlist_folders(
             media_subdir=media_subdir,
         )
     return total
+
+
+@dataclass(frozen=True)
+class ExternalMediaRef:
+    """A media file that lives outside the project folder (not yet Bundled)."""
+
+    song_id: str
+    song_name: str
+    kind: str  # "audio" | "video"
+    item_id: str
+    item_name: str
+    path: Path
+
+    @property
+    def basename(self) -> str:
+        return self.path.name
+
+
+@dataclass
+class IngestExternalResult:
+    copied: list[tuple[Path, Path]] = field(default_factory=list)
+    failed: list[Path] = field(default_factory=list)
+
+
+def scan_external_media(
+    project: Project,
+    *,
+    project_file: Path | None,
+    media_subdir: str = DEFAULT_MEDIA_SUBDIR,
+) -> list[ExternalMediaRef]:
+    """
+    List audio/video files that exist on disk but sit **outside** the project
+    folder (typical Explorer drops from Downloads / another drive).
+
+    Files already under the project root (including outside ``Media/``) are
+    excluded — Save relocates those via ``sync_all_songs_media_to_setlist_folders``.
+    """
+    root = project_root_for(project_file)
+    if root is None:
+        return []
+    media_dir = root / (media_subdir.strip() or DEFAULT_MEDIA_SUBDIR)
+    found: list[ExternalMediaRef] = []
+    seen: set[str] = set()
+
+    def _consider(song: Song, *, kind: str, item_id: str, item_name: str, path: Path) -> None:
+        if not path_exists(path):
+            return
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            return
+        if path_under_media(path, media_dir) or path_under_root(path, root):
+            return
+        seen.add(key)
+        found.append(
+            ExternalMediaRef(
+                song_id=song.id,
+                song_name=song.name,
+                kind=kind,
+                item_id=item_id,
+                item_name=item_name,
+                path=Path(path),
+            )
+        )
+
+    for song in project.songs:
+        for track in song.audio_tracks:
+            _consider(
+                song,
+                kind="audio",
+                item_id=track.id,
+                item_name=track.name,
+                path=Path(track.path),
+            )
+        for clip in song.video_clips:
+            _consider(
+                song,
+                kind="video",
+                item_id=clip.id,
+                item_name=clip.name,
+                path=Path(clip.path),
+            )
+    return found
+
+
+def ingest_external_media_into_project(
+    project: Project,
+    *,
+    project_file: Path | None,
+    media_subdir: str = DEFAULT_MEDIA_SUBDIR,
+    only: list[ExternalMediaRef] | None = None,
+) -> IngestExternalResult:
+    """
+    Copy external media into ``Media/<Setlist>/<Song>/`` and rewrite project paths.
+
+    Leaves the original files in place (copy, not move) — same as Collect Bundle.
+    """
+    result = IngestExternalResult()
+    root = project_root_for(project_file)
+    if root is None:
+        return result
+    media_dir = root / (media_subdir.strip() or DEFAULT_MEDIA_SUBDIR)
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    targets: set[str] | None = None
+    if only is not None:
+        targets = set()
+        for ref in only:
+            try:
+                targets.add(str(Path(ref.path).resolve()))
+            except OSError:
+                targets.add(str(Path(ref.path)))
+
+    # source resolve → dest (dedupe shared files across songs)
+    placed: dict[str, Path] = {}
+
+    def _copy_into(song: Song, source: Path) -> Path | None:
+        try:
+            resolved = source.expanduser().resolve()
+        except OSError:
+            resolved = source.expanduser().absolute()
+        key = str(resolved)
+        if targets is not None and key not in targets:
+            return None
+        if key in placed:
+            return placed[key]
+        if not path_exists(resolved):
+            result.failed.append(source)
+            return None
+        if path_under_media(resolved, media_dir) or path_under_root(resolved, root):
+            return None
+        dest_folder = media_dir / song_media_rel_folder(project, song)
+        dest = unique_dest(dest_folder, resolved.name)
+        try:
+            shutil.copy2(resolved, dest)
+        except OSError:
+            result.failed.append(source)
+            return None
+        clone_caches_for_copied_file(resolved, dest)
+        try:
+            final = dest.resolve()
+        except OSError:
+            final = dest
+        placed[key] = final
+        result.copied.append((resolved, final))
+        return final
+
+    for song in project.songs:
+        for track in song.audio_tracks:
+            new_path = _copy_into(song, Path(track.path))
+            if new_path is not None:
+                track.path = new_path
+        for clip in song.video_clips:
+            new_path = _copy_into(song, Path(clip.path))
+            if new_path is not None:
+                clip.path = new_path
+    return result
 
 
 def sync_rename_setlist_media_folder(
