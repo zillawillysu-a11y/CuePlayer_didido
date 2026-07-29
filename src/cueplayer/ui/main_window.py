@@ -4195,7 +4195,8 @@ class MainWindow(QMainWindow):
             waveform_color=str(p.waveform_color or "#3dd68c"),
             playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
-        self._sync_output_timecode_clock_ui()
+        if hasattr(self, "monitor"):
+            self._sync_output_timecode_clock_ui()
 
     def _sync_output_timecode_clock_ui(self) -> None:
         p = self.project
