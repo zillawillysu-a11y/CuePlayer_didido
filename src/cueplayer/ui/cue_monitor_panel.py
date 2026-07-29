@@ -1215,7 +1215,7 @@ class CueMonitorPanel(QWidget):
         show_action = menu.addAction("Show output timecode clock")
         show_action.setCheckable(True)
         show_action.setChecked(self._show_output_tc_clock)
-        show_action.setToolTip("LTC / MTC timecode under the seconds display")
+        show_action.setToolTip("LTC / MTC output timecode under the seconds display (Notes-only shows status, not SMPTE)")
         chosen = menu.exec(self._clock_frame.mapToGlobal(pos))
         if chosen is show_action:
             self._show_output_tc_clock = show_action.isChecked()

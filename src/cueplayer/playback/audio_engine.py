@@ -197,7 +197,12 @@ class AudioEngine(QObject):
             outputs.append("Notes")
 
         tc_str = "—"
-        if outputs:
+        tc_active = (
+            self.ltc_enabled
+            or (s.midi_enabled and s.mtc_enabled)
+            or translate_active
+        )
+        if tc_active:
             # When LTC source is from-file, the actual timecode numbers come from
             # decoding the stripe — regardless of whether LTC output is enabled.
             # MTC mirrors the same source, so show file-decoded TC when available.

@@ -107,3 +107,27 @@ def test_engine_output_timecode_state_off() -> None:
     assert state.outputs == ()
     assert state.timecode == "—"
     assert state.sending is False
+
+
+def test_engine_output_timecode_state_notes_only_no_running_tc() -> None:
+    """Cue notes do not send SMPTE — clock shows Notes status but not HH:MM:SS:FF."""
+    engine = AudioEngine()
+    engine.set_song_timebase("04:00:00:00", 30.0)
+    engine.apply_audio_settings(
+        AudioOutputSettings(
+            midi_enabled=True,
+            midi_cue_notes_enabled=True,
+            ltc_enabled=False,
+            mtc_enabled=False,
+        )
+    )
+    state = engine.output_timecode_state(38.5)
+    assert state.outputs == ("Notes",)
+    assert state.timecode == "—"
+    assert state.sending is False
+
+    engine._playing = True  # noqa: SLF001
+    state = engine.output_timecode_state(38.5)
+    assert state.outputs == ("Notes",)
+    assert state.timecode == "—"
+    assert state.sending is True
