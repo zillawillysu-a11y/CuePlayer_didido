@@ -7,8 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-# Bump when the estimator changes (manual re-detect still required for old <n>).
-BPM_DETECT_VERSION = 3
+BPM_DETECT_VERSION = 4
+
+# Keep analysis light — rehearsal files can be huge; we only need a groove slice.
+_BPM_READ_SECONDS = 90.0
+_BPM_ANALYZE_SECONDS = 75.0
 
 
 def format_bpm_value(bpm: float) -> str:
@@ -64,10 +67,10 @@ def _to_mono(samples: np.ndarray, exclude_channel: int | None) -> np.ndarray:
 
 
 def _tempo_preference(bpm: float) -> float:
-    """Log-normal prior peaked near typical song tempo (~120)."""
+    """Mild prior — flatter than before so ballads (~73) aren't forced to 2×."""
     bpm = max(40.0, float(bpm))
-    mu = math.log(120.0)
-    sigma = 0.36
+    mu = math.log(110.0)
+    sigma = 0.55
     return float(math.exp(-0.5 * ((math.log(bpm) - mu) / sigma) ** 2))
 
 
@@ -87,7 +90,6 @@ def _onset_envelope(mono: np.ndarray, sample_rate: int, hop: int) -> np.ndarray 
 
 
 def _corr_at(corr: np.ndarray, lag: float) -> float:
-    """Linear-interpolated autocorrelation sample at a fractional lag."""
     if lag <= 0 or lag >= len(corr) - 1:
         return 0.0
     i0 = int(math.floor(lag))
@@ -97,12 +99,25 @@ def _corr_at(corr: np.ndarray, lag: float) -> float:
 
 
 def _comb_score(corr: np.ndarray, env_rate: float, bpm: float) -> float:
-    """Sum weighted autocorr peaks at tempo harmonics (lag, 2lag, …)."""
     lag = env_rate * 60.0 / max(1e-6, bpm)
     score = 0.0
     for k in (1, 2, 3, 4):
         score += _corr_at(corr, lag * k) / float(k)
     return score
+
+
+def _onset_peaks(onset: np.ndarray) -> np.ndarray:
+    if onset.size < 8:
+        return np.zeros(0, dtype=np.int64)
+    thr = float(np.percentile(onset, 80))
+    if thr <= 1e-12:
+        thr = float(np.max(onset)) * 0.3
+    peaks = np.where(
+        (onset[1:-1] > thr)
+        & (onset[1:-1] >= onset[:-2])
+        & (onset[1:-1] >= onset[2:])
+    )[0]
+    return peaks + 1
 
 
 def _ioi_bpm_hint(
@@ -112,20 +127,9 @@ def _ioi_bpm_hint(
     min_bpm: float,
     max_bpm: float,
 ) -> float | None:
-    """Median inter-onset interval → BPM hint (helps catch half-tempo misses)."""
-    if onset.size < 64:
-        return None
-    thr = float(np.percentile(onset, 90))
-    if thr <= 1e-12:
-        return None
-    peaks = np.where(
-        (onset[1:-1] > thr)
-        & (onset[1:-1] >= onset[:-2])
-        & (onset[1:-1] >= onset[2:])
-    )[0]
+    peaks = _onset_peaks(onset)
     if peaks.size < 10:
         return None
-    peaks = peaks + 1
     intervals = np.diff(peaks.astype(np.float64))
     lo = env_rate * 60.0 / max_bpm
     hi = env_rate * 60.0 / min_bpm
@@ -138,13 +142,58 @@ def _ioi_bpm_hint(
     return 60.0 * env_rate / med
 
 
+def _onset_rate_bpm(onset: np.ndarray, env_rate: float) -> float | None:
+    """Peaks-per-minute — distinguishes ballad (~80) from double-time (~160)."""
+    peaks = _onset_peaks(onset)
+    if peaks.size < 8 or env_rate <= 0:
+        return None
+    duration_s = onset.size / env_rate
+    if duration_s < 2.0:
+        return None
+    return float(peaks.size) * 60.0 / duration_s
+
+
 def _snap_show_bpm(bpm: float) -> float:
-    """Show music is usually whole BPM; collapse near-integers (fixes *.5 drift)."""
     bpm = float(bpm)
     nearest_int = float(round(bpm))
-    if abs(bpm - nearest_int) <= 0.7:
+    if abs(bpm - nearest_int) <= 0.75:
         return nearest_int
     return round(bpm * 2.0) / 2.0
+
+
+def _pick_octave_pair(
+    slow: float,
+    fast: float,
+    *,
+    slow_raw: float,
+    fast_raw: float,
+    ioi_hint: float | None,
+    onset_rate: float | None,
+) -> float:
+    """Disambiguate ballad vs double-time using onset rate / IOI, not prior alone."""
+
+    def _near(hint: float | None, bpm: float, tol: float = 8.0) -> bool:
+        return hint is not None and abs(hint - bpm) <= tol
+
+    # Onset density is the best cue we have for 73 vs 146 / 83 vs 167.
+    if onset_rate is not None:
+        if abs(onset_rate - fast) + 5.0 < abs(onset_rate - slow):
+            return fast
+        if abs(onset_rate - slow) + 5.0 < abs(onset_rate - fast):
+            return slow
+        # Rate near 2×fast (8th notes) still implies the fast pulse.
+        if abs(onset_rate - fast * 2.0) <= 12.0 and fast >= 140.0:
+            return fast
+
+    if _near(ioi_hint, slow) and not _near(ioi_hint, fast):
+        return slow
+    if _near(ioi_hint, fast) and not _near(ioi_hint, slow):
+        return fast
+
+    # Raw comb: only flip to double if it clearly wins (not just prior-boosted).
+    if fast_raw >= slow_raw * 1.20:
+        return fast
+    return slow
 
 
 def _pick_tempo_octave(
@@ -155,65 +204,57 @@ def _pick_tempo_octave(
     min_bpm: float,
     max_bpm: float,
     ioi_hint: float | None = None,
+    onset_rate: float | None = None,
 ) -> float | None:
-    """Choose among a tempo and its octave partners."""
     if not scored:
         return None
     scored_sorted = sorted(scored, key=lambda kv: kv[1], reverse=True)
-    seeds = [bpm for bpm, _s in scored_sorted[:8]]
+    seeds = [bpm for bpm, _s in scored_sorted[:10]]
     if ioi_hint is not None:
         seeds = [ioi_hint, ioi_hint * 2.0, ioi_hint * 0.5, *seeds]
+    if onset_rate is not None:
+        seeds = [onset_rate, onset_rate * 0.5, onset_rate * 2.0, *seeds]
 
-    pool: dict[float, float] = {}
+    # Raw comb pool (no prior) for fair octave compare.
+    raw_pool: dict[float, float] = {}
     for seed in seeds:
         for cand in (seed, seed * 2.0, seed * 0.5):
             key = round(cand * 2.0) / 2.0
             if not (min_bpm <= key <= max_bpm):
                 continue
-            score = _comb_score(corr, env_rate, key) * (
-                0.50 + 0.50 * _tempo_preference(key)
-            )
-            # Soft pull toward the IOI hint / its octave.
-            if ioi_hint is not None and ioi_hint > 0:
-                for target in (ioi_hint, ioi_hint * 2.0, ioi_hint * 0.5):
-                    if min_bpm <= target <= max_bpm and abs(key - target) <= 3.0:
-                        score *= 1.12
-                        break
-            pool[key] = max(pool.get(key, 0.0), score)
+            raw_pool[key] = max(raw_pool.get(key, 0.0), _comb_score(corr, env_rate, key))
 
-    if not pool:
+    if not raw_pool:
         return None
-    max_s = max(pool.values())
-    if max_s <= 0.0:
+    max_raw = max(raw_pool.values())
+    if max_raw <= 0.0:
         return None
-    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.60]
+    viable = [(b, s) for b, s in raw_pool.items() if s >= max_raw * 0.55]
     if not viable:
-        return max(pool.items(), key=lambda kv: kv[1])[0]
+        return max(raw_pool.items(), key=lambda kv: kv[1])[0]
 
-    sweet = [(b, s) for b, s in viable if 92.0 <= b <= 145.0]
+    # Mild prior only for ranking within a band — not for forcing octaves.
+    def _rank_key(item: tuple[float, float]) -> float:
+        bpm, raw = item
+        return raw * (0.75 + 0.25 * _tempo_preference(bpm))
+
+    sweet = [(b, s) for b, s in viable if 95.0 <= b <= 145.0]
     if sweet:
-        return max(sweet, key=lambda kv: kv[1])[0]
+        return max(sweet, key=_rank_key)[0]
 
     viable.sort(key=lambda kv: kv[0])
-    slow_bpm, slow_s = viable[0]
-    fastest_bpm, fastest_score = viable[-1]
-
-    def _near(hint: float | None, bpm: float, tol: float = 5.0) -> bool:
-        return hint is not None and abs(hint - bpm) <= tol
-
-    # Slow winners are often half-tempo — promote double only when IOI agrees
-    # or the double's comb score is nearly tied (avoid flipping true ~75 ballads).
-    if slow_bpm < 92.0 and fastest_bpm >= slow_bpm * 1.8:
-        if _near(ioi_hint, fastest_bpm) and not _near(ioi_hint, slow_bpm):
-            return fastest_bpm
-        if fastest_score >= max_s * 0.88:
-            return fastest_bpm
-        if _near(ioi_hint, slow_bpm):
-            return slow_bpm
-
-    if fastest_score >= max_s * 0.55 and fastest_bpm >= 100.0:
-        return fastest_bpm
-    return max(viable, key=lambda kv: kv[1])[0]
+    slow_bpm, slow_raw = viable[0]
+    fast_bpm, fast_raw = viable[-1]
+    if slow_bpm < 95.0 and fast_bpm >= slow_bpm * 1.85:
+        return _pick_octave_pair(
+            slow_bpm,
+            fast_bpm,
+            slow_raw=slow_raw,
+            fast_raw=fast_raw,
+            ioi_hint=ioi_hint,
+            onset_rate=onset_rate,
+        )
+    return max(viable, key=_rank_key)[0]
 
 
 def _estimate_bpm_window(
@@ -223,8 +264,6 @@ def _estimate_bpm_window(
     min_bpm: float,
     max_bpm: float,
 ) -> tuple[float, float] | None:
-    """Return (bpm, score) for one mono window, or None if unreliable."""
-    # Finer hop → less *.5 quantization drift on mid tempos.
     hop = max(192, int(round(sample_rate / 120.0)))
     onset = _onset_envelope(mono, sample_rate, hop)
     if onset is None:
@@ -242,16 +281,17 @@ def _estimate_bpm_window(
     window = corr[min_lag : max_lag + 1]
     peak = float(np.max(window))
     med = float(np.median(window))
-    if peak <= 0.0 or peak < med * 1.35:
+    if peak <= 0.0 or peak < med * 1.30:
         return None
 
     ioi_hint = _ioi_bpm_hint(onset, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+    onset_rate = _onset_rate_bpm(onset, env_rate)
 
     scored: list[tuple[float, float]] = []
     for bpm_i in range(int(round(min_bpm * 2)), int(round(max_bpm * 2)) + 1):
         bpm = bpm_i / 2.0
-        score = _comb_score(corr, env_rate, bpm) * (0.50 + 0.50 * _tempo_preference(bpm))
-        scored.append((bpm, score))
+        raw = _comb_score(corr, env_rate, bpm)
+        scored.append((bpm, raw * (0.75 + 0.25 * _tempo_preference(bpm))))
     best = _pick_tempo_octave(
         corr,
         env_rate,
@@ -259,15 +299,14 @@ def _estimate_bpm_window(
         min_bpm=min_bpm,
         max_bpm=max_bpm,
         ioi_hint=ioi_hint,
+        onset_rate=onset_rate,
     )
     if best is None:
         return None
-    best_score = _comb_score(corr, env_rate, best) * (
-        0.50 + 0.50 * _tempo_preference(best)
-    )
-    if best_score <= 0.0:
+    best_raw = _comb_score(corr, env_rate, best)
+    if best_raw <= 0.0:
         return None
-    return _snap_show_bpm(best), float(best_score)
+    return _snap_show_bpm(best), float(best_raw)
 
 
 def _consolidate_octave_votes(
@@ -275,8 +314,8 @@ def _consolidate_octave_votes(
     *,
     min_bpm: float,
     max_bpm: float,
+    onset_rate_hints: list[float],
 ) -> float | None:
-    """After multi-window voting, resolve half/double across the whole file."""
     if not votes:
         return None
     ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
@@ -284,30 +323,33 @@ def _consolidate_octave_votes(
     for bpm, score in ranked[:5]:
         for cand in (bpm * 2.0, bpm * 0.5):
             key = _snap_show_bpm(cand)
-            if not (min_bpm <= key <= max_bpm):
-                continue
-            pool[key] = pool.get(key, 0.0) + score * 0.45
+            if min_bpm <= key <= max_bpm:
+                pool[key] = pool.get(key, 0.0) + score * 0.35
 
     max_s = max(pool.values())
-    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.55]
+    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.50]
     if not viable:
         return _snap_show_bpm(ranked[0][0])
 
-    sweet = [(b, s) for b, s in viable if 92.0 <= b <= 145.0]
+    sweet = [(b, s) for b, s in viable if 95.0 <= b <= 145.0]
     if sweet:
         return _snap_show_bpm(max(sweet, key=lambda kv: kv[1])[0])
 
     viable.sort(key=lambda kv: kv[0])
     slow_bpm, slow_s = viable[0]
     fast_bpm, fast_s = viable[-1]
-    # Only promote slow→fast when the double is nearly as strong as the half.
-    if (
-        slow_bpm < 92.0
-        and fast_bpm >= slow_bpm * 1.8
-        and fast_s >= slow_s * 0.90
-        and fast_s >= max_s * 0.70
-    ):
-        return _snap_show_bpm(fast_bpm)
+    rate = float(np.median(onset_rate_hints)) if onset_rate_hints else None
+    if slow_bpm < 95.0 and fast_bpm >= slow_bpm * 1.85:
+        return _snap_show_bpm(
+            _pick_octave_pair(
+                slow_bpm,
+                fast_bpm,
+                slow_raw=slow_s,
+                fast_raw=fast_s,
+                ioi_hint=None,
+                onset_rate=rate,
+            )
+        )
     return _snap_show_bpm(max(viable, key=lambda kv: kv[1])[0])
 
 
@@ -315,21 +357,17 @@ def estimate_bpm(
     samples: np.ndarray,
     sample_rate: int,
     *,
-    min_bpm: float = 70.0,
+    min_bpm: float = 65.0,
     max_bpm: float = 180.0,
-    max_seconds: float = 180.0,
+    max_seconds: float = _BPM_ANALYZE_SECONDS,
     exclude_channel: int | None = None,
 ) -> float | None:
     """
     Estimate tempo via onset-energy comb autocorrelation.
 
-    Uses a ~120 BPM perceptual prior and harmonic comb scoring so half/double
-    tempo mistakes are less common than a single raw peak pick. Returns a
-    value rounded toward whole BPM when close (show music), else 0.5 BPM.
-
-    Rehearsal / show files often have talk and silence: we scan up to
-    ``max_seconds``, score candidate windows by onset activity, and only vote
-    with the densest musical slices (skipping gaps).
+    Octave (half/double) is resolved with onset-peak rate so ballads (~73/83)
+    are not forced up to ~150/165 by a mid-tempo prior. Returns whole BPM when
+    close, else 0.5 BPM.
     """
     if samples is None or sample_rate <= 0:
         return None
@@ -338,11 +376,11 @@ def estimate_bpm(
         return None
     max_n = int(max(1, sample_rate * max_seconds))
     mono = mono[:max_n]
-    if mono.size < sample_rate:  # need ~1s
+    if mono.size < sample_rate:
         return None
 
-    win = int(sample_rate * 30.0)
-    hop = int(sample_rate * 15.0)
+    win = int(sample_rate * 25.0)
+    hop = int(sample_rate * 12.0)
     starts: list[int] = [0]
     if mono.size > win:
         t = hop
@@ -350,8 +388,8 @@ def estimate_bpm(
             starts.append(t)
             t += hop
 
-    ranked: list[tuple[float, int]] = []
     hop_n = max(192, int(round(sample_rate / 120.0)))
+    ranked: list[tuple[float, int]] = []
     for start in starts:
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate * 2:
@@ -364,16 +402,23 @@ def estimate_bpm(
             continue
         ranked.append((activity, start))
     ranked.sort(key=lambda item: item[0], reverse=True)
-    chosen_starts = [start for _act, start in ranked[:5]]
+    chosen_starts = [start for _act, start in ranked[:4]]
     if not chosen_starts:
-        chosen_starts = starts[:3]
+        chosen_starts = starts[:2]
 
     votes: dict[float, float] = {}
+    rate_hints: list[float] = []
     top_act = ranked[0][0] if ranked else 1.0
     for start in chosen_starts:
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate:
             continue
+        onset = _onset_envelope(chunk, sample_rate, hop_n)
+        if onset is not None:
+            env_rate = float(sample_rate) / float(hop_n)
+            rate = _onset_rate_bpm(onset, env_rate)
+            if rate is not None:
+                rate_hints.append(rate)
         result = _estimate_bpm_window(chunk, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
         if result is None:
             continue
@@ -382,7 +427,12 @@ def estimate_bpm(
         activity = next((a for a, s in ranked if s == start), 1.0)
         votes[key] = votes.get(key, 0.0) + score * (0.5 + 0.5 * activity / top_act)
 
-    return _consolidate_octave_votes(votes, min_bpm=min_bpm, max_bpm=max_bpm)
+    return _consolidate_octave_votes(
+        votes,
+        min_bpm=min_bpm,
+        max_bpm=max_bpm,
+        onset_rate_hints=rate_hints,
+    )
 
 
 def estimate_bpm_from_path(
@@ -390,18 +440,23 @@ def estimate_bpm_from_path(
     *,
     exclude_channel: int | None = None,
 ) -> float | None:
-    """Read an audio file and estimate BPM (first ~3 minutes of audio).
-
-    When ``exclude_channel`` is omitted on stereo files, tries LTC detection
-    and strips that channel so striped show files don't poison the onset.
-    """
+    """Read only the start of an audio file and estimate BPM (memory-light)."""
     import soundfile as sf
 
     file_path = Path(path)
     if not file_path.is_file():
         return None
     try:
-        data, sample_rate = sf.read(str(file_path), always_2d=True, dtype="float32")
+        info = sf.info(str(file_path))
+        sr = int(info.samplerate)
+        frames = int(min(info.frames, max(1, sr * _BPM_READ_SECONDS)))
+        data, sample_rate = sf.read(
+            str(file_path),
+            always_2d=True,
+            dtype="float32",
+            frames=frames,
+            start=0,
+        )
     except Exception:  # noqa: BLE001
         return None
     sr = int(sample_rate)

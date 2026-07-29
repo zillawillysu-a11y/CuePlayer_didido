@@ -616,6 +616,7 @@ class SetlistWidget(QTableWidget):
 class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
     _bpm_detected = Signal(str, object)  # song_id, float | None
+    _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -649,13 +650,21 @@ class MainWindow(QMainWindow):
         self._timeline_ltc_exclude: int | None = None
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
         self._ltc_detect_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="ui-ltc-detect"
+            max_workers=1, thread_name_prefix="ui-ltc-detect"
+        )
+        # BPM is intentionally separate + single-threaded: each job reads PCM
+        # and runs numpy corr — never stampede the machine on project open.
+        self._bpm_detect_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="ui-bpm-detect"
         )
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
         self._bpm_force_ids: set[str] = set()
+        self._bpm_detect_queue: list[tuple[str, Path, int | None, bool]] = []
+        self._bpm_detect_running = False
         self._bpm_detected.connect(self._on_bpm_detected)
+        self._bpm_job_finished.connect(self._pump_bpm_detect_queue)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
@@ -1686,25 +1695,32 @@ class MainWindow(QMainWindow):
                     break
         self._rebuild_song_list(select_indexes=[song_index])
         self._activate_song(song_index, stop_playback=True)
-        self._warm_project_audio_on_open()
-        # Only songs that still have a blank BPM — never re-run existing values.
-        self._schedule_bpm_detect_for_missing_songs(quiet=True)
+        # Prefetch only nearby songs — full-setlist warm was thrashing CPU/RAM.
+        self._warm_nearby_audio_on_open()
+
+    def _warm_nearby_audio_on_open(self) -> None:
+        """Background-load current ±1 songs only (keeps open responsive)."""
+        paths: list[Path] = []
+        try:
+            idx = self.project.songs.index(self.current_song)
+        except ValueError:
+            idx = 0
+        for i in (idx - 1, idx, idx + 1):
+            if 0 <= i < len(self.project.songs):
+                path = self._main_audio_path_for_song(self.project.songs[i])
+                if path is not None:
+                    paths.append(path)
+        for path in paths:
+            if self._cached_audio_buffer(path) is not None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is not None and key in self._audio_inflight:
+                continue
+            self._start_audio_load(path, executor=self._audio_prefetch_executor)
 
     def _warm_project_audio_on_open(self) -> None:
-        """Background-decode / disk-load every setlist song once when a project opens."""
-        paths = [
-            p
-            for song in self.project.songs
-            if (p := self._main_audio_path_for_song(song)) is not None
-        ]
-        if not paths:
-            return
-        ready = sum(1 for p in paths if self._cached_audio_buffer(p) is not None)
-        if ready < len(paths):
-            self.status.showMessage(
-                f"Preparing audio cache ({ready}/{len(paths)} ready)…", 0
-            )
-        self._prefetch_setlist_audio()
+        """Deprecated full-setlist warm — kept as alias for nearby warm."""
+        self._warm_nearby_audio_on_open()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -3941,14 +3957,12 @@ class MainWindow(QMainWindow):
         *,
         force: bool = False,
     ) -> bool:
-        """Estimate BPM from the song's main audio (async, one shot).
+        """Estimate BPM from the song's main audio (async, one at a time).
 
-        Default (``force=False``): only runs when ``song.bpm`` is still empty —
-        attaching audio / opening a project never re-reads songs that already
-        have a value (auto or typed). ``force=True`` is for explicit menu
-        actions and may overwrite auto *or* typed BPM with a new auto guess.
-
-        Returns True when a new background job was queued.
+        Default (``force=False``): only runs when ``song.bpm`` is still empty.
+        ``force=True`` overwrites auto or typed BPM (explicit menu actions).
+        Jobs are serialized on ``_bpm_detect_executor`` so opening a project
+        or "detect all" cannot peg the machine.
         """
         if not force and song.bpm is not None:
             return False
@@ -3958,32 +3972,45 @@ class MainWindow(QMainWindow):
         song_id = song.id
         if song_id in self._bpm_detect_inflight:
             return False
+        if any(item[0] == song_id for item in self._bpm_detect_queue):
+            return False
         resolved = Path(audio_path)
         exclude = self._ltc_channel_for_song(song)
+        if force:
+            self._bpm_force_ids.add(song_id)
+        else:
+            self._bpm_force_ids.discard(song_id)
+        self._bpm_detect_inflight.add(song_id)
+        self._bpm_detect_queue.append((song_id, resolved, exclude, force))
+        self._pump_bpm_detect_queue()
+        return True
+
+    def _pump_bpm_detect_queue(self) -> None:
+        if self._bpm_detect_running or not self._bpm_detect_queue:
+            return
+        song_id, resolved, exclude, _force = self._bpm_detect_queue.pop(0)
+        self._bpm_detect_running = True
 
         def _run() -> tuple[str, float | None]:
             from cueplayer.media.bpm_analyzer import estimate_bpm_from_path
 
             return song_id, estimate_bpm_from_path(resolved, exclude_channel=exclude)
 
-        self._bpm_detect_inflight.add(song_id)
-        if force:
-            self._bpm_force_ids.add(song_id)
-        else:
-            self._bpm_force_ids.discard(song_id)
-        future = self._ltc_detect_executor.submit(_run)
+        future = self._bpm_detect_executor.submit(_run)
 
         def _done(fut) -> None:  # noqa: ANN001
+            self._bpm_detect_running = False
             self._bpm_detect_inflight.discard(song_id)
             try:
                 sid, bpm = fut.result()
             except Exception:  # noqa: BLE001
                 self._bpm_force_ids.discard(song_id)
+                self._bpm_job_finished.emit()
                 return
             self._bpm_detected.emit(sid, bpm)
+            self._bpm_job_finished.emit()
 
         future.add_done_callback(_done)
-        return True
 
     def _schedule_bpm_detect_for_missing_songs(self, *, quiet: bool = False) -> int:
         """Queue detect for songs that have audio but no BPM yet."""
