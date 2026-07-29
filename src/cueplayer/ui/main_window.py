@@ -70,9 +70,18 @@ from cueplayer.persistence.backup import (
     list_backups,
 )
 from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.persistence.media_layout import (
+    DEFAULT_MEDIA_SUBDIR,
+    sync_all_songs_media_to_setlist_folders,
+    sync_rename_setlist_media_folder,
+    sync_song_media_to_setlist_folder,
+)
+from cueplayer.persistence.project_bundle import collect_project_bundle
+from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
 from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
+from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -289,13 +298,6 @@ class SetlistWidget(QTableWidget):
         self._show_ltc_badge = True
         self._show_video_badge = True
         self._sync_media_column_visibility()
-        self.setToolTip(
-            "Double-click No./Name/BPM to edit; drag column edges to resize; "
-            "right-click for categories and full editor; "
-            "drag songs to reorder or onto a folder; "
-            "drag a folder title to move that folder (and its songs) above/below other folders; "
-            "drop audio/video to add songs; Ctrl/Shift to multi-select"
-        )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._block_number_signal = False
@@ -1409,7 +1411,161 @@ class MainWindow(QMainWindow):
         self._apply_project(preferred_song_id=song_id)
         self._set_clean()
         self._ltc_idle_timer.start()
+        self._maybe_prompt_missing_media(quiet=quiet)
         return True
+
+    def _open_missing_media_relink(self) -> None:
+        initial = self._project_path.parent if self._project_path is not None else None
+        dialog = MissingMediaRelinkDialog(
+            self.project, parent=self, initial_dir=initial
+        )
+        dialog.exec()
+        if dialog.changed:
+            self._mark_dirty()
+            # Reload current song so waveforms / video pick up new paths.
+            idx = self.project.songs.index(self.current_song) if self.current_song in self.project.songs else 0
+            self._activate_song(idx, stop_playback=False)
+            remaining = scan_missing_media(self.project)
+            if remaining:
+                self.status.showMessage(
+                    f"Relinked — {len(remaining)} file(s) still missing", 4500
+                )
+            else:
+                self.status.showMessage("All media files linked", 3500)
+
+    def _bundle_project_filename(self) -> str:
+        if self._project_path is not None:
+            name = self._project_path.name
+            if name.lower().endswith(".cueplayer.json"):
+                return name
+        stem = (self.project.name or "Show").strip() or "Show"
+        for ch in '<>:"/\\|?*':
+            stem = stem.replace(ch, "_")
+        return f"{stem}.cueplayer.json"
+
+    def _collect_project_bundle(self) -> None:
+        missing = scan_missing_media(self.project)
+        if missing:
+            answer = QMessageBox.question(
+                self,
+                "Collect Project Bundle",
+                f"{len(missing)} media file(s) are missing and cannot be copied.\n\n"
+                "Continue and bundle the files that are still available?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        start = (
+            str(self._project_path.parent)
+            if self._project_path is not None
+            else ""
+        )
+        dest_str = QFileDialog.getExistingDirectory(
+            self,
+            "Choose empty folder for the Bundle "
+            f"(project file at root, {DEFAULT_MEDIA_SUBDIR}/<Setlist folder>/ inside)",
+            start,
+        )
+        if not dest_str:
+            return
+        dest_dir = Path(dest_str)
+        # Warn when the destination already has files (avoid Media/_2 clutter).
+        existing = [p for p in dest_dir.iterdir() if not p.name.startswith(".")]
+        if existing:
+            names = ", ".join(p.name for p in existing[:6])
+            extra = "…" if len(existing) > 6 else ""
+            cont = QMessageBox.question(
+                self,
+                "Folder not empty",
+                f"This folder already contains:\n{names}{extra}\n\n"
+                "Bundling here may leave leftover Media files or overwrite the project.\n"
+                "Continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if cont != QMessageBox.StandardButton.Yes:
+                return
+        project_name = self._bundle_project_filename()
+        target_project = dest_dir / project_name
+        if target_project.exists():
+            overwrite = QMessageBox.question(
+                self,
+                "Overwrite?",
+                f"{project_name} already exists in this folder.\nOverwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if overwrite != QMessageBox.StandardButton.Yes:
+                return
+
+        self.project.clean_video_output = self.clean_output_window.current_settings()
+        self.project.video_decode_quality = self.video_sync.decode_quality()
+        try:
+            result = collect_project_bundle(
+                self.project,
+                dest_dir,
+                project_filename=project_name,
+                media_subdir=DEFAULT_MEDIA_SUBDIR,
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Bundle Failed", str(exc))
+            return
+
+        lines = [
+            f"Project: {result.project_path.name}",
+            f"Media folder: {result.media_dir.name}/",
+            f"Copied: {len(result.copied)} file(s)",
+        ]
+        if result.reused:
+            lines.append(f"Shared refs (same file): {len(result.reused)}")
+        if result.renamed:
+            lines.append(f"Renamed (name clash): {len(result.renamed)}")
+        if result.missing:
+            lines.append(f"Still missing (not copied): {len(result.missing)}")
+        lines.append("")
+        lines.append("Open the bundled project now?")
+
+        open_now = QMessageBox.question(
+            self,
+            "Bundle Ready",
+            "\n".join(lines),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self.status.showMessage(
+            f"Bundle saved → {result.project_path} ({len(result.copied)} media)",
+            6000,
+        )
+        if open_now == QMessageBox.StandardButton.Yes:
+            if not self._confirm_discard_if_dirty():
+                return
+            if self._open_project_path(result.project_path):
+                self.status.showMessage(f"Opened bundle: {result.project_path.name}", 3500)
+
+    def _maybe_prompt_missing_media(self, *, quiet: bool = False) -> None:
+        missing = scan_missing_media(self.project)
+        if not missing:
+            return
+        msg = f"{len(missing)} media file(s) missing"
+        if quiet:
+            self.status.showMessage(
+                f"{msg} — File → Relink Missing Media…",
+                8000,
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Missing Media",
+            f"{msg}.\n\nOpen Relink dialog now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._open_missing_media_relink()
+        else:
+            self.status.showMessage(f"{msg} — File → Relink Missing Media…", 6000)
 
     def _maybe_load_demo_fixture(self) -> None:
         """Auto-load demo fixture if present (Chinese path stress)."""
@@ -1484,6 +1640,18 @@ class MainWindow(QMainWindow):
         )
         act_restore.triggered.connect(self._file_restore_backup)
         menu.addAction(act_restore)
+        act_relink = QAction("Relink &Missing Media…", self)
+        act_relink.setToolTip(
+            "Find audio/video files that moved — relink one file or a whole folder by name"
+        )
+        act_relink.triggered.connect(self._open_missing_media_relink)
+        menu.addAction(act_relink)
+        act_bundle = QAction("Collect Project &Bundle…", self)
+        act_bundle.setToolTip(
+            "Copy all used media into a folder: project file at the root, Media/ beside it"
+        )
+        act_bundle.triggered.connect(self._collect_project_bundle)
+        menu.addAction(act_bundle)
         menu.addSeparator()
         act_export = QAction("&Export…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -1740,6 +1908,8 @@ class MainWindow(QMainWindow):
         ]
         if not select_indexes:
             select_indexes = [idx]
+        # Folder move/rename may have moved files on disk; reconcile Media/ paths.
+        self._sync_all_media_to_setlist_folders()
         self._rebuild_song_list(select_indexes=select_indexes)
         self._activate_song(idx, stop_playback=False)
         patch = getattr(self, "show_patch_page", None)
@@ -1747,6 +1917,37 @@ class MainWindow(QMainWindow):
             patch.sync_songs()
         self._refresh_window_title()
         self._refresh_status()
+
+    def _sync_media_files_for_songs(self, songs: list) -> int:
+        """Move Media/ files to match each song's Setlist folder. No-op if unsaved."""
+        if self._project_path is None:
+            return 0
+        total = 0
+        for song in songs:
+            total += sync_song_media_to_setlist_folder(
+                self.project,
+                song,
+                project_file=self._project_path,
+            )
+        return total
+
+    def _sync_all_media_to_setlist_folders(self) -> int:
+        if self._project_path is None:
+            return 0
+        return sync_all_songs_media_to_setlist_folders(
+            self.project,
+            project_file=self._project_path,
+        )
+
+    def _sync_rename_media_folder(self, old_name: str, new_name: str) -> int:
+        if self._project_path is None:
+            return 0
+        return sync_rename_setlist_media_folder(
+            self.project,
+            project_file=self._project_path,
+            old_name=old_name,
+            new_name=new_name,
+        )
 
     def _set_clean(self) -> None:
         self._dirty = False
@@ -2525,11 +2726,11 @@ class MainWindow(QMainWindow):
         bpm_action.setCheckable(True)
         bpm_action.setChecked(bool(self.project.setlist_show_bpm))
         bpm_action.setToolTip("Show the BPM column")
-        ltc_action = menu.addAction("LTC badge")
+        ltc_action = menu.addAction("LTC Output Status")
         ltc_action.setCheckable(True)
         ltc_action.setChecked(bool(self.project.setlist_show_ltc_badge))
         ltc_action.setToolTip("Show striped LTC L/R in the media column")
-        video_action = menu.addAction("Video badge")
+        video_action = menu.addAction("Video Output Status")
         video_action.setCheckable(True)
         video_action.setChecked(bool(self.project.setlist_show_video_badge))
         video_action.setToolTip("Show V when the song has video clips")
@@ -2569,7 +2770,9 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
             self.song_list.viewport().update()
             self.status.showMessage(
-                "LTC badge shown" if ltc_action.isChecked() else "LTC badge hidden",
+                "LTC Output Status shown"
+                if ltc_action.isChecked()
+                else "LTC Output Status hidden",
                 1500,
             )
             return True
@@ -2579,7 +2782,9 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
             self.song_list.viewport().update()
             self.status.showMessage(
-                "Video badge shown" if video_action.isChecked() else "Video badge hidden",
+                "Video Output Status shown"
+                if video_action.isChecked()
+                else "Video Output Status hidden",
                 1500,
             )
             return True
@@ -2905,11 +3110,13 @@ class MainWindow(QMainWindow):
             return
         with self._setlist_edit("Move to Folder"):
             self._assign_songs_to_category(moving, category.id)
+            n_files = self._sync_media_files_for_songs(moving)
             indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
+        extra = f" · {n_files} media file(s) synced" if n_files else ""
         self.status.showMessage(
-            f'Moved {len(moving)} song(s) into "{category.name}"',
+            f'Moved {len(moving)} song(s) into "{category.name}"{extra}',
             2500,
         )
 
@@ -2962,8 +3169,10 @@ class MainWindow(QMainWindow):
         category = SetlistCategory.create(name)
         with self._setlist_edit("New Folder"):
             self.project.setlist_categories.append(category)
+            n_files = 0
             if wrap_selected and selected:
                 self._assign_songs_to_category(selected, category.id)
+                n_files = self._sync_media_files_for_songs(selected)
             indexes = (
                 [self.project.songs.index(s) for s in selected]
                 if wrap_selected and selected
@@ -2972,8 +3181,9 @@ class MainWindow(QMainWindow):
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
         if wrap_selected and selected:
+            extra = f" · {n_files} media file(s) synced" if n_files else ""
             self.status.showMessage(
-                f'Created folder "{category.name}" with {len(selected)} song(s)',
+                f'Created folder "{category.name}" with {len(selected)} song(s){extra}',
                 2500,
             )
         else:
@@ -2991,11 +3201,14 @@ class MainWindow(QMainWindow):
         new_name = name.strip() or category.name
         if new_name == category.name:
             return
+        old_name = category.name
         with self._setlist_edit("Rename Folder"):
             category.name = new_name
+            n_files = self._sync_rename_media_folder(old_name, new_name)
             self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
             self._mark_dirty()
-        self.status.showMessage(f'Renamed folder to "{category.name}"', 2500)
+        extra = f" · Media folder + {n_files} path(s) updated" if n_files else ""
+        self.status.showMessage(f'Renamed folder to "{category.name}"{extra}', 2500)
 
     def _delete_setlist_category(self, category_id: str) -> None:
         category = self.project.setlist_category_by_id(category_id)
@@ -3019,16 +3232,18 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        released = [song for song in self.project.songs if song.category_id == category.id]
         with self._setlist_edit("Delete Folder"):
-            for song in self.project.songs:
-                if song.category_id == category.id:
-                    song.category_id = None
+            for song in released:
+                song.category_id = None
             self.project.setlist_categories = [
                 c for c in self.project.setlist_categories if c.id != category.id
             ]
+            n_files = self._sync_media_files_for_songs(released)
             self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
             self._mark_dirty()
-        self.status.showMessage(f'Deleted folder "{category.name}"', 2500)
+        extra = f" · {n_files} media file(s) → _Unfiled" if n_files else ""
+        self.status.showMessage(f'Deleted folder "{category.name}"{extra}', 2500)
 
     def _move_selected_songs_to_category(self, category_id: str | None) -> None:
         songs = self._selected_songs()
@@ -3037,14 +3252,16 @@ class MainWindow(QMainWindow):
         indexes = self._selected_song_indexes()
         with self._setlist_edit("Move to Folder"):
             self._assign_songs_to_category(songs, category_id)
+            n_files = self._sync_media_files_for_songs(songs)
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
+        extra = f" · {n_files} media file(s) synced" if n_files else ""
         if category_id is None:
-            self.status.showMessage("Moved song(s) out of folder", 2000)
+            self.status.showMessage(f"Moved song(s) out of folder{extra}", 2000)
             return
         category = self.project.setlist_category_by_id(category_id)
         label = category.name if category is not None else "folder"
-        self.status.showMessage(f'Moved song(s) into "{label}"', 2000)
+        self.status.showMessage(f'Moved song(s) into "{label}"{extra}', 2000)
 
     def _on_setlist_category_context_menu(self, category_id: str, pos) -> None:  # noqa: ANN001
         category = self.project.setlist_category_by_id(category_id)
@@ -3446,7 +3663,8 @@ class MainWindow(QMainWindow):
             self.monitor.set_position(0.0, self.engine.duration)
             if main_audio is not None:
                 self.status.showMessage(
-                    f"Audio file not found: {main_audio.path} (drop a new audio file to relink)",
+                    f"Audio file not found: {main_audio.path} "
+                    "(File → Relink Missing Media…)",
                     5000,
                 )
         self._refresh_window_title()

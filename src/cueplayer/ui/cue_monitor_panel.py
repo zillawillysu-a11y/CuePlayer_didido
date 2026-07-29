@@ -369,10 +369,11 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.installEventFilter(self)
         self._primary_now_column.installEventFilter(self)
 
-        self._list_title = QLabel(
-            "Cue List (Shift/Ctrl to multi-select · Del to delete · click time to jump)"
-        )
+        self._list_title = QLabel("Cue List")
         self._list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
+        self._list_title.setToolTip(
+            "Shift/Ctrl multi-select · Del to delete · click Time to jump"
+        )
         self._list_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list_title.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 

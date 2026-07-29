@@ -173,3 +173,122 @@ def save_ltc_channel(
         tmp.replace(_LTC_CACHE_FILE)
     except OSError:
         pass
+
+
+def clone_caches_for_copied_file(source: Path, dest: Path) -> bool:
+    """
+    After copying ``source`` → ``dest``, reuse waveform + LTC disk caches.
+
+    Keys include the absolute path, so Bundle/Relink copies would otherwise
+    force a full re-decode and LTC re-detect. ``shutil.copy2`` preserves
+    mtime/size; only the path portion of the key changes.
+    """
+    import shutil
+
+    source = Path(source)
+    dest = Path(dest)
+    old_key = audio_cache_key(source)
+    new_key = audio_cache_key(dest)
+    if old_key is None or new_key is None:
+        return False
+    if old_key == new_key:
+        return True
+
+    cloned_wave = False
+    old_npz = _cache_file(old_key)
+    new_npz = _cache_file(new_key)
+    if old_npz.is_file():
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            if (
+                not new_npz.is_file()
+                or new_npz.stat().st_size != old_npz.stat().st_size
+            ):
+                shutil.copy2(old_npz, new_npz)
+            cloned_wave = True
+        except OSError:
+            pass
+
+    rows = load_all_ltc_channels()
+    if old_key in rows:
+        try:
+            save_ltc_channel(new_key, rows[old_key])
+        except Exception:  # noqa: BLE001
+            pass
+
+    return cloned_wave
+
+
+def adopt_caches_for_path(
+    dest: Path, *, former_path: Path | None = None
+) -> bool:
+    """
+    Reuse waveform/LTC caches for ``dest`` when the old file is gone.
+
+    Looks up a donor cache entry by matching mtime+size (and optionally the
+    former absolute path stored in the LTC JSON). Used by Relink after a
+    move/copy where ``former_path`` no longer exists on disk.
+    """
+    import shutil
+
+    dest = Path(dest)
+    if former_path is not None and Path(former_path).is_file() and dest.is_file():
+        return clone_caches_for_copied_file(Path(former_path), dest)
+
+    new_key = audio_cache_key(dest)
+    if new_key is None:
+        return False
+
+    _path, mtime_ns, size = new_key
+    rows = load_all_ltc_channels()
+    donor: tuple[str, int, int] | None = None
+    channel: int | None | object = object()
+
+    former_norm: str | None = None
+    if former_path is not None:
+        try:
+            former_norm = str(Path(former_path).expanduser().resolve())
+        except OSError:
+            former_norm = str(Path(former_path))
+
+    # Prefer exact former-path row, then mtime+size match.
+    if former_norm is not None:
+        for key, ch in rows.items():
+            if key[0] == former_norm:
+                donor = key
+                channel = ch
+                break
+    if donor is None:
+        for key, ch in rows.items():
+            if key[1] == mtime_ns and key[2] == size:
+                donor = key
+                channel = ch
+                break
+
+    if donor is None:
+        return False
+    if donor == new_key:
+        return True
+
+    cloned_wave = False
+    old_npz = _cache_file(donor)
+    new_npz = _cache_file(new_key)
+    if old_npz.is_file():
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            if (
+                not new_npz.is_file()
+                or new_npz.stat().st_size != old_npz.stat().st_size
+            ):
+                shutil.copy2(old_npz, new_npz)
+            cloned_wave = True
+        except OSError:
+            pass
+
+    if channel is not object:
+        try:
+            save_ltc_channel(new_key, channel)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001
+            pass
+
+    return cloned_wave

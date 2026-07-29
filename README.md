@@ -14,6 +14,7 @@ Laptop all-in-one branch: `cursor/laptop-ux-pack-028d`
 Latest UX fixes (video drag, Explorer drop, decode perf, Video Preview under timeline): `cursor/video-drag-drop-perf-028d`
 
 Product requirements: `docs/PRODUCT_SPEC.md`  
+User tips (shortcuts / Bundle / Relink): `docs/USER_MANUAL.md`  
 Agent handoff: `AGENTS.md`
 
 ## Requirements

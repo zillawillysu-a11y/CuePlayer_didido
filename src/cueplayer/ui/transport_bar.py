@@ -30,7 +30,7 @@ _BIG_TEXT_BTN = "QPushButton { height: 48px; padding: 0 14px; font-size: 16px; f
 
 
 class TopToolBar(QWidget):
-    """View-mode row (Timeline / Set List Sheet / Export) plus a hint label."""
+    """View-mode row (Timeline / Set List Sheet / Export)."""
 
     view_mode_changed = Signal(str)  # "timeline" | "setlist" | "ma_patch"
 
@@ -58,11 +58,6 @@ class TopToolBar(QWidget):
         mode_group.addButton(self.setlist_mode_button)
         mode_group.addButton(self.patch_mode_button)
 
-        self.hint_label = QLabel(
-            "Top-left S = drag Mark · dashed box = box-select · A/B draggable anytime · Ctrl+Z"
-        )
-        self.hint_label.setStyleSheet("color: #8b949e;")
-
         for button in (
             self.timeline_mode_button,
             self.setlist_mode_button,
@@ -75,7 +70,6 @@ class TopToolBar(QWidget):
         layout.addWidget(self.setlist_mode_button)
         layout.addWidget(self.patch_mode_button)
         layout.addStretch(1)
-        layout.addWidget(self.hint_label)
 
         self.timeline_mode_button.toggled.connect(self._emit_mode)
         self.setlist_mode_button.toggled.connect(self._emit_mode)
