@@ -44,7 +44,7 @@ from cueplayer.ui.color_presets import (
     get_color,
     remove_user_preset,
 )
-from cueplayer.ui.spinboxes import NoWheelSpinBox
+from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.marker_draw import draw_marker_shape
 
 _COL_INDEX = 0
@@ -305,7 +305,7 @@ class MarkManagerDialog(QDialog):
         self.table.setColumnWidth(_COL_CUE_ID, 72)
         self.table.setColumnWidth(_COL_CUE_LIST, 72)
         self.table.setColumnWidth(_COL_MIDI, 64)
-        self.table.setColumnWidth(_COL_MIDI_NOTE, 72)
+        self.table.setColumnWidth(_COL_MIDI_NOTE, 88)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -421,12 +421,16 @@ class MarkManagerDialog(QDialog):
             if midi_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI toggle.")
                 return None
-            if not isinstance(midi_note_widget, NoWheelSpinBox):
+            if not isinstance(midi_note_widget, NoWheelComboBox):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI note.")
                 return None
-            midi_note = int(midi_note_widget.value())
-            if midi_note < 0 or midi_note > 127:
-                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1}: MIDI note must be 0–127.")
+            midi_note = self._midi_note_from_widget(midi_note_widget)
+            if midi_note is None:
+                QMessageBox.warning(
+                    self,
+                    "Mark Manager",
+                    f"Row {row + 1}: enter auto or a MIDI note from 1 to 127.",
+                )
                 return None
             shortcut = str(key_widget.currentData() or "")
             if shortcut:
@@ -681,7 +685,7 @@ class MarkManagerDialog(QDialog):
         midi.setChecked(bool(getattr(lane, "midi_note_enabled", False)))
         midi.setToolTip(
             "Send a MIDI note when playback crosses marks on this lane "
-            "(enable globally in Audio / Timecode → MIDI Cue Notes)"
+            "(enable globally in Audio / Midi / Timecode → Send MIDI Cue Notes)"
         )
         midi_wrap = QWidget()
         midi_layout = QHBoxLayout(midi_wrap)
@@ -692,18 +696,41 @@ class MarkManagerDialog(QDialog):
         self.table.setCellWidget(row, _COL_MIDI, midi_wrap)
 
         default_note = self._default_note_for_lane(lane)
-        note_spin = NoWheelSpinBox()
-        note_spin.setRange(0, 127)
-        note_spin.setSpecialValueText("auto")
+        note_combo = self._make_note_combo(lane, default_note)
+        self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+
+    def _make_note_combo(self, lane: MarkLane, default_note: int) -> NoWheelComboBox:
+        combo = NoWheelComboBox()
+        combo.setEditable(True)
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.addItem(f"auto ({default_note})", 0)
+        for n in range(1, 128):
+            combo.addItem(str(n), n)
         stored = int(getattr(lane, "midi_note", 0) or 0)
-        note_spin.setValue(stored if 0 <= stored <= 127 else 0)
-        note_spin.setToolTip(
-            f"0 = auto (default {default_note} for this lane). "
-            "1–127 = fixed MIDI note sent when playback crosses marks."
+        if stored == 0:
+            combo.setCurrentIndex(0)
+        else:
+            idx = combo.findData(stored)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            if idx < 0:
+                combo.setEditText(str(stored))
+        combo.setToolTip(
+            f"Type auto or pick auto ({default_note}) for the default note on this lane. "
+            "Or enter any number from 1 to 127."
         )
-        note_spin.setEnabled(midi.isChecked())
-        midi.toggled.connect(lambda _checked, r=row: self._sync_midi_note_row(r))
-        self.table.setCellWidget(row, _COL_MIDI_NOTE, note_spin)
+        return combo
+
+    def _midi_note_from_widget(self, widget: NoWheelComboBox) -> int | None:
+        text = widget.currentText().strip().lower()
+        if not text or text.startswith("auto"):
+            return 0
+        try:
+            value = int(text)
+        except ValueError:
+            return None
+        if 1 <= value <= 127:
+            return value
+        return None
 
     def _midi_bases(self) -> tuple[int, int]:
         if self._project is not None:
@@ -714,18 +741,6 @@ class MarkManagerDialog(QDialog):
     def _default_note_for_lane(self, lane: MarkLane) -> int:
         main_base, button_base = self._midi_bases()
         return default_note_for_lane(lane, main_base=main_base, button_base=button_base)
-
-    def _sync_midi_note_row(self, row: int) -> None:
-        midi_wrap = self.table.cellWidget(row, _COL_MIDI)
-        note_spin = self.table.cellWidget(row, _COL_MIDI_NOTE)
-        if midi_wrap is None or not isinstance(note_spin, NoWheelSpinBox):
-            return
-        midi_box = midi_wrap.property("checkbox")
-        if not isinstance(midi_box, QCheckBox):
-            midi_box = midi_wrap.findChild(QCheckBox)
-        if midi_box is None:
-            return
-        note_spin.setEnabled(midi_box.isChecked())
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.

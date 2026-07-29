@@ -1497,7 +1497,7 @@ class MainWindow(QMainWindow):
         act_manager.triggered.connect(self._open_mark_manager)
         act_display = QAction("&Display Settings…", self)
         act_display.triggered.connect(self._open_display_settings)
-        act_audio = QAction("&Audio / Timecode…", self)
+        act_audio = QAction("&Audio / Midi / Timecode…", self)
         act_audio.triggered.connect(self._open_audio_timecode)
         tools_menu.addAction(act_manager)
         tools_menu.addAction(act_display)
@@ -4282,7 +4282,7 @@ class MainWindow(QMainWindow):
                         lambda a=attempt + 1: _retry_mtc(a),
                     )
                     return
-                QMessageBox.warning(self, "Audio / Timecode", retry_warn)
+                QMessageBox.warning(self, "Audio / Midi / Timecode", retry_warn)
                 self.status.showMessage(retry_warn, 6000)
 
             self.status.showMessage(f"MIDI: retrying… ({warning})", 3000)

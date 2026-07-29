@@ -171,7 +171,7 @@ class BottomTransportBar(QWidget):
         self.tc_status.setStyleSheet(
             "color: #a1a1aa; font-size: 12px; min-width: 72px;"
         )
-        self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Timecode)")
+        self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         layout.addStretch(1)

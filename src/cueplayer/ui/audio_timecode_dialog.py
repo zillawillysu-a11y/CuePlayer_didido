@@ -70,7 +70,7 @@ def _clamp_channel_ui_text(
 
 
 class AudioTimecodeDialog(QDialog):
-    """Tools → Audio / Timecode…"""
+    """Tools → Audio / Midi / Timecode…"""
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class AudioTimecodeDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Audio / Timecode")
+        self.setWindowTitle("Audio / Midi / Timecode")
         self.resize(540, 640)
         self._all_devices = list_output_devices(dedupe=False)
         self._devices: list[OutputDeviceInfo] = []
