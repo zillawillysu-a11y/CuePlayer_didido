@@ -827,6 +827,12 @@ class AudioEngine(QObject):
             self.seek(self._duration_seconds)
 
     def play(self) -> None:
+        # Request 1ms Windows timer resolution to reduce MIDI/Qt timer jitter.
+        try:
+            from cueplayer.playback.winmm_midi import request_timer_resolution
+            request_timer_resolution()
+        except Exception:  # noqa: BLE001
+            pass
         # Do not snap into A–B; allow previewing outside while keeping loop marks.
         self._refresh_loop_engage()
         if self.position >= self.duration - 1e-4:
@@ -896,6 +902,11 @@ class AudioEngine(QObject):
         self._midi_cues.on_pause()
         if not for_scrub:
             self.playing_changed.emit(False)
+            try:
+                from cueplayer.playback.winmm_midi import release_timer_resolution
+                release_timer_resolution()
+            except Exception:  # noqa: BLE001
+                pass
         self._emit_position()
 
     def stop(self) -> None:

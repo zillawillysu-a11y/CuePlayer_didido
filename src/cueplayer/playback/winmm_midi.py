@@ -46,6 +46,37 @@ def winmm_available() -> bool:
     return sys.platform.startswith("win")
 
 
+_timer_period_set = False
+
+
+def request_timer_resolution(period_ms: int = 1) -> None:
+    """Ask Windows for high-resolution timer (timeBeginPeriod).
+
+    Reduces Qt/system timer jitter from ~15ms to ~1ms during playback.
+    Safe to call multiple times; tracks state to avoid double-set.
+    """
+    global _timer_period_set
+    if not sys.platform.startswith("win") or _timer_period_set:
+        return
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(period_ms)
+        _timer_period_set = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def release_timer_resolution(period_ms: int = 1) -> None:
+    """Release high-resolution timer request (timeEndPeriod)."""
+    global _timer_period_set
+    if not sys.platform.startswith("win") or not _timer_period_set:
+        return
+    try:
+        ctypes.windll.winmm.timeEndPeriod(period_ms)
+        _timer_period_set = False
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _winmm() -> Any:
     return ctypes.windll.winmm
 
