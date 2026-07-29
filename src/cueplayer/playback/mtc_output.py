@@ -153,12 +153,20 @@ class MtcOutput:
         while enabled; otherwise None.
         """
         with self._lock:
+            new_port_name = (port_name or "").strip()
+            port_changed = new_port_name != self._port_name
             self._enabled = bool(enabled)
-            self._port_name = (port_name or "").strip()
+            self._port_name = new_port_name
             self._fps = float(fps) if fps > 0 else 30.0
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
+            if not self._enabled:
+                # Keep the port open so toggling back on reconnects instantly.
+                return None
+            if self._port is not None and not port_changed:
+                # Port already open and name unchanged — no need to reopen.
+                return None
             err = self._reopen_port_locked()
             return err
 

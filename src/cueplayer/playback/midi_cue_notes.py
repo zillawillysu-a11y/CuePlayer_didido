@@ -63,16 +63,20 @@ class MidiCueNotes:
         button_base_note: int = 48,
     ) -> str | None:
         with self._lock:
+            new_port_name = (port_name or "").strip()
+            port_changed = new_port_name != self._port_name
             self._enabled = bool(enabled)
-            self._port_name = (port_name or "").strip()
+            self._port_name = new_port_name
             self._channel = max(0, min(15, int(channel) - 1))
             self._velocity = max(1, min(127, int(velocity)))
             self._main_base = max(0, min(127, int(main_base_note)))
             self._button_base = max(0, min(127, int(button_base_note)))
             if not self._enabled:
-                self._close_port_locked()
+                # Keep port open for fast re-enable.
                 return None
             if self._send_fn is not None:
+                return None
+            if self._port is not None and not port_changed:
                 return None
             return self._reopen_port_locked()
 
