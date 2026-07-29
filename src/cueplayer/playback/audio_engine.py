@@ -567,13 +567,16 @@ class AudioEngine(QObject):
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
-        # Share one MIDI Out handle when MTC + cue notes are both on (set before
-        # configure so MidiCueNotes does not open a second port).
-        share_mtc = (
-            self._audio_settings.mtc_enabled
-            and self._audio_settings.midi_cue_notes_enabled
+        # Share the MTC port for cue notes whenever they use the same MIDI Out.
+        # The port stays open even when MTC generator is off, so disabling MTC
+        # must not make cue notes try to open a second handle (Bome rejects that).
+        share_midi_port = bool(
+            self._audio_settings.midi_cue_notes_enabled
+            and (self._audio_settings.midi_port_name or "").strip()
         )
-        self._midi_cues.set_send_function(self._mtc.send_message if share_mtc else None)
+        self._midi_cues.set_send_function(
+            self._mtc.send_message if share_midi_port else None
+        )
         cue_err = self._midi_cues.configure(
             enabled=bool(self._audio_settings.midi_cue_notes_enabled),
             port_name=self._audio_settings.midi_port_name,
