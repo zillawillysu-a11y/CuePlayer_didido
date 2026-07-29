@@ -39,6 +39,21 @@ def category_folder_name(project: Project, category_id: str | None) -> str:
     return safe_folder_name(cat.name)
 
 
+def safe_song_folder_name(name: str) -> str:
+    """Filesystem-safe song subfolder under a Setlist Media folder."""
+    return safe_folder_name(name or "Song")
+
+
+def song_media_rel_folder(project: Project, song: Song) -> str:
+    """
+    Relative folder under Media/ for a song: ``<SetlistFolder>/<SongName>``.
+
+    Uncategorized songs use ``_Unfiled/<SongName>``.
+    """
+    folder = category_folder_name(project, song.category_id)
+    return f"{folder}/{safe_song_folder_name(song.name)}"
+
+
 def path_under_media(path: Path, media_dir: Path) -> bool:
     try:
         path.resolve().relative_to(media_dir.resolve())
@@ -140,7 +155,8 @@ def sync_song_media_to_setlist_folder(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> int:
     """
-    If song media lives under ``Media/``, move it into ``Media/<Folder>/``.
+    If song media lives under ``Media/``, move it into
+    ``Media/<SetlistFolder>/<SongName>/``.
 
     Only touches files already inside the project Media tree — external
     absolute paths are left alone. Returns how many files were moved or
@@ -149,8 +165,7 @@ def sync_song_media_to_setlist_folder(
     media_dir = media_root(project_file, media_subdir=media_subdir)
     if media_dir is None or not media_dir.is_dir():
         return 0
-    folder_name = category_folder_name(project, song.category_id)
-    dest_folder = media_dir / folder_name
+    dest_folder = media_dir / song_media_rel_folder(project, song)
     updated = 0
     for track in song.audio_tracks:
         former = Path(track.path)

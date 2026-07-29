@@ -1276,7 +1276,23 @@ class TimelineWidget(QWidget):
         self.content_geometry_changed.emit()
 
     def _max_wave_height(self) -> int:
-        # Independent from video lane — tall content scrolls in the parent scroll area.
+        # Prefer leaving Mark tracks visible in the parent scroll viewport.
+        # Tall content can still scroll; this only caps accidental drag-grow.
+        reserved = (
+            self._ruler_height
+            + self._marks_band_height()
+            + self._video_band_height()
+            + self._ltc_band_height()
+            + 24
+        )
+        parent = self.parent()
+        if parent is not None:
+            try:
+                avail = int(parent.height()) - reserved
+                if avail >= 120:
+                    return max(120, min(2400, avail))
+            except Exception:  # noqa: BLE001
+                pass
         return 2400
 
     def _clamp_wave_height(self, height: int | float) -> int:
