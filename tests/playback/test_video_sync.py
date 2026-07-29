@@ -404,3 +404,40 @@ def test_video_output_reenable_uses_last_position(
     frame = frames[0]
     assert isinstance(frame, np.ndarray)
     assert frame.mean(axis=(0, 1))[2] > frame.mean(axis=(0, 1))[0]
+
+
+def test_scrubbing_uses_preloaded_cache_without_live_decoder(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Once scrub posters are warm, mid-drag Preview must not open/seek the
+    live UI-thread decoder (that hitch felt like 'loading video')."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not controller._scrub_cache.ready(clip.id):
+        time.sleep(0.05)
+    assert controller._scrub_cache.ready(clip.id)
+
+    # Ensure no live decoder is open, then scrub.
+    controller._close_all_decoders()
+    assert clip.id not in controller._decoders
+
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_scrubbing(True)
+    controller.update_position(0.3)
+    controller.update_position(1.2)
+
+    assert len(frames) >= 1
+    assert all(isinstance(f, np.ndarray) for f in frames if f is not None)
+    # Mid-scrub must not have opened the live decoder.
+    assert clip.id not in controller._decoders
+
+    controller.set_scrubbing(False)
+    # Mouse-up flush may open the live decoder for the exact land frame.
+    assert clip.id in controller._decoders

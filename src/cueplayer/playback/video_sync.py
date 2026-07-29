@@ -23,13 +23,13 @@ from cueplayer.domain.models import (
     VideoDecodeQuality,
     video_clip_crossfade_weight,
 )
+from cueplayer.media.scrub_frame_cache import ScrubFrameCache
 from cueplayer.media.video_loader import MediaDecoder, open_media_decoder
 
-# While scrubbing, decode Preview/Clean at a capped rate so the frame
-# follows the playhead without starving timeline paint (PyAV re-seek is
-# expensive on the UI thread). set_scrubbing(False) flushes the exact
-# release-point frame via _flush_pending().
-_MAX_SCRUB_DECODE_HZ = 12.0
+# While scrubbing with a warm ScrubFrameCache, lookups are cheap — allow a
+# higher emit rate so Preview tracks the drag. Cold cache / live decode still
+# falls back to this interval as a safety cap when we must touch PyAV.
+_MAX_SCRUB_DECODE_HZ = 24.0
 _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 
 # AudioEngine's master clock ticks position_changed at ~60Hz (16ms poll —
@@ -89,6 +89,9 @@ class VideoSyncController(QObject):
         # that follows it — entirely. _UNSET (not None) so the very first
         # emit always goes through, even if that first frame is None.
         self._last_emitted_frame: object = _UNSET
+        # Sparse RGB posters for scrub — filled off-thread so drag never
+        # pays PyAV seek on the UI thread (see scrub_frame_cache.py).
+        self._scrub_cache = ScrubFrameCache()
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -109,11 +112,13 @@ class VideoSyncController(QObject):
         if not active:
             self._cancel_pending()
             self._close_all_decoders()
+            self._scrub_cache.clear()
             return
         song = self._song
         seconds = self._last_position_seconds
         if song is None or seconds is None:
             return
+        self._scrub_cache.preload(list(song.video_clips))
         self._maybe_warn_overlap(song, seconds)
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
@@ -123,17 +128,22 @@ class VideoSyncController(QObject):
     def set_scrubbing(self, active: bool) -> None:
         """Call from the timeline's scrub_started/scrub_ended signals.
 
-        While dragging, decode is throttled to _MAX_SCRUB_DECODE_HZ so
-        Preview/Clean still follow the playhead without starving the
-        timeline. On release, flush the exact land frame.
+        While dragging, Preview/Clean prefer the prebuilt scrub-frame cache
+        (no UI-thread PyAV seek). On release, flush the exact land frame via
+        the live decoder.
         """
         active = bool(active)
         if active == self._scrubbing:
             return
         self._scrubbing = active
-        if not active:
+        if active:
+            # Kick / refresh preload for whatever is on the song right now.
+            song = self._song
+            if song is not None and self._video_output_active:
+                self._scrub_cache.preload(list(song.video_clips))
+        else:
             # Scrub just ended: make sure the exact release-point frame —
-            # not a throttled mid-drag stand-in — is what's on screen.
+            # not a sparse scrub poster — is what's on screen.
             self._flush_timer.stop()
             self._flush_pending()
 
@@ -169,28 +179,36 @@ class VideoSyncController(QObject):
         self._decode_quality = quality
         self._decode_max_height = max_height
         # Cached decoders were opened for the old cap; drop them so the next
-        # frame request reopens at the new one.
+        # frame request reopens at the new one. Scrub posters use their own
+        # fixed height — leave that cache warm.
         self._close_all_decoders()
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._cancel_pending()
         self._close_all_decoders()
+        self._scrub_cache.clear()
         self._warned_overlap_keys.clear()
         self._set_active(None)
         self._last_emitted_frame = _UNSET  # force this emit through even if unchanged
         self._emit_frame(None)
+        if song is not None and self._video_output_active:
+            self._scrub_cache.preload(list(song.video_clips))
 
     def refresh(self) -> None:
         """Call after clips are added / removed / re-pathed."""
         if self._song is None:
             self._close_all_decoders()
+            self._scrub_cache.clear()
             return
         valid_ids = {clip.id for clip in self._song.video_clips}
         for clip_id in list(self._decoders):
             if clip_id not in valid_ids:
                 self._decoders.pop(clip_id).close()
                 self._decoder_paths.pop(clip_id, None)
+                self._scrub_cache.drop_clip(clip_id)
+        if self._video_output_active:
+            self._scrub_cache.preload(list(self._song.video_clips))
 
     def update_position(self, seconds: float) -> None:
         """Call on every AudioEngine.position_changed tick (the master clock)."""
@@ -216,6 +234,17 @@ class VideoSyncController(QObject):
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
 
+        # Scrub: prefer prebuilt posters (no UI-thread PyAV seek). If the
+        # ladder is still cold, fall through to the throttled live path.
+        if self._scrubbing:
+            self._pending_clip = primary
+            self._pending_seconds = seconds
+            frame = self._scrub_composite(song, seconds)
+            if frame is not None:
+                self._last_decode_time = monotonic()
+                self._emit_frame(frame)
+                return
+
         min_interval = self._current_min_decode_interval()
         if min_interval > 0.0:
             now = monotonic()
@@ -240,6 +269,48 @@ class VideoSyncController(QObject):
         if self._playing:
             return _MIN_PLAY_DECODE_INTERVAL
         return 0.0
+
+    def _scrub_composite(self, song: Song, seconds: float) -> np.ndarray | None:
+        """Nearest scrub-cache frames for the active clip(s), or None if cold."""
+        clips = song.active_video_clips_at(seconds)
+        if not clips:
+            return None
+        weighted: list[tuple[VideoClip, float]] = []
+        for clip in clips:
+            weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
+            if weight > 1e-6:
+                weighted.append((clip, weight))
+        if not weighted:
+            return None
+        if len(weighted) == 1:
+            clip, _weight = weighted[0]
+            if clip.media_kind == "still":
+                decoder = self._decoder_for(clip)
+                if decoder is None:
+                    return None
+                try:
+                    return decoder.frame_at(clip.source_time_for(seconds))
+                except Exception:
+                    return None
+            return self._scrub_cache.nearest(clip.id, clip.source_time_for(seconds))
+        total_weight = sum(w for _clip, w in weighted)
+        composite: np.ndarray | None = None
+        for clip, weight in weighted:
+            if clip.media_kind == "still":
+                decoder = self._decoder_for(clip)
+                try:
+                    frame = decoder.frame_at(clip.source_time_for(seconds)) if decoder else None
+                except Exception:
+                    frame = None
+            else:
+                frame = self._scrub_cache.nearest(clip.id, clip.source_time_for(seconds))
+            if frame is None:
+                continue
+            scaled = frame.astype(np.float32) * (weight / total_weight)
+            composite = scaled if composite is None else composite + scaled
+        if composite is None:
+            return None
+        return np.clip(composite, 0, 255).astype(np.uint8)
 
     def _decode_and_emit(self, song: Song, seconds: float) -> None:
         self._last_decode_time = monotonic()

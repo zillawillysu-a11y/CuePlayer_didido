@@ -1338,8 +1338,8 @@ class TimelineWidget(QWidget):
 
         self._position = min(self._time_for_x(x), self._duration())
         now_ms = monotonic_ns() // 1_000_000
-        # ~12 Hz — matches VideoSyncController scrub decode cap.
-        if force or now_ms - self._last_scrub_preview_ms >= 80:
+        # ~24 Hz — scrub posters are cache lookups; keep Preview following.
+        if force or now_ms - self._last_scrub_preview_ms >= 40:
             self._last_scrub_preview_ms = now_ms
             self.scrub_preview_requested.emit(self._position)
         if force:
