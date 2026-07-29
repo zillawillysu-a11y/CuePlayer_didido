@@ -2681,11 +2681,11 @@ class MainWindow(QMainWindow):
         bpm_action.setCheckable(True)
         bpm_action.setChecked(bool(self.project.setlist_show_bpm))
         bpm_action.setToolTip("Show the BPM column")
-        ltc_action = menu.addAction("LTC badge")
+        ltc_action = menu.addAction("LTC Output Status")
         ltc_action.setCheckable(True)
         ltc_action.setChecked(bool(self.project.setlist_show_ltc_badge))
         ltc_action.setToolTip("Show striped LTC L/R in the media column")
-        video_action = menu.addAction("Video badge")
+        video_action = menu.addAction("Video Output Status")
         video_action.setCheckable(True)
         video_action.setChecked(bool(self.project.setlist_show_video_badge))
         video_action.setToolTip("Show V when the song has video clips")
@@ -2725,7 +2725,9 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
             self.song_list.viewport().update()
             self.status.showMessage(
-                "LTC badge shown" if ltc_action.isChecked() else "LTC badge hidden",
+                "LTC Output Status shown"
+                if ltc_action.isChecked()
+                else "LTC Output Status hidden",
                 1500,
             )
             return True
@@ -2735,7 +2737,9 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
             self.song_list.viewport().update()
             self.status.showMessage(
-                "Video badge shown" if video_action.isChecked() else "Video badge hidden",
+                "Video Output Status shown"
+                if video_action.isChecked()
+                else "Video Output Status hidden",
                 1500,
             )
             return True
