@@ -1,20 +1,23 @@
-"""Lightweight BPM estimation from PCM (numpy only, no extra deps).
+"""BPM estimation from PCM.
 
-Auto BPM is a best-effort starting point for show files (talk, gaps, LTC).
-Half/double ambiguity is common — the UI exposes ×2 / ÷2 for one-click fix.
+Uses librosa beat tracking plus an on-beat vs off-beat octave check so
+half/double errors common in show files are corrected automatically when
+the evidence is clear. ×2 / ÷2 remain available in the UI for edge cases.
 """
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 5
+BPM_DETECT_VERSION = 6
 
 _BPM_READ_SECONDS = 90.0
 _BPM_ANALYZE_SECONDS = 60.0
+_DEFAULT_MIN_BPM = 60.0
+_DEFAULT_MAX_BPM = 200.0
+_OCTAVE_MARGIN = 1.12
 
 
 def format_bpm_value(bpm: float) -> str:
@@ -69,37 +72,6 @@ def _to_mono(samples: np.ndarray, exclude_channel: int | None) -> np.ndarray:
     return arr.mean(axis=1)
 
 
-def _onset_envelope(mono: np.ndarray, sample_rate: int, hop: int) -> np.ndarray | None:
-    hp = np.diff(mono, prepend=mono[:1]).astype(np.float64)
-    n = (hp.size // hop) * hop
-    if n < hop * 32:
-        return None
-    frames = hp[:n].reshape(-1, hop)
-    env = np.sqrt(np.mean(frames * frames, axis=1))
-    onset = np.maximum(0.0, np.diff(env, prepend=env[:1]))
-    onset -= onset.mean()
-    if float(np.max(np.abs(onset))) < 1e-9:
-        return None
-    return onset
-
-
-def _corr_at(corr: np.ndarray, lag: float) -> float:
-    if lag <= 0 or lag >= len(corr) - 1:
-        return 0.0
-    i0 = int(math.floor(lag))
-    i1 = i0 + 1
-    frac = lag - i0
-    return float(corr[i0] * (1.0 - frac) + corr[i1] * frac)
-
-
-def _comb_score(corr: np.ndarray, env_rate: float, bpm: float) -> float:
-    lag = env_rate * 60.0 / max(1e-6, bpm)
-    score = 0.0
-    for k in (1, 2, 3, 4):
-        score += _corr_at(corr, lag * k) / float(k)
-    return score
-
-
 def _snap_show_bpm(bpm: float) -> float:
     bpm = float(bpm)
     nearest_int = float(round(bpm))
@@ -108,77 +80,173 @@ def _snap_show_bpm(bpm: float) -> float:
     return round(bpm * 2.0) / 2.0
 
 
-def _estimate_bpm_window(
+def _as_float(value: object) -> float:
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return 0.0
+    return float(arr[0])
+
+
+def _activity_starts(mono: np.ndarray, sample_rate: int) -> list[int]:
+    """Pick densest windows so talk/gaps before the groove are skipped."""
+    win = int(sample_rate * 25.0)
+    hop = int(sample_rate * 12.0)
+    starts: list[int] = [0]
+    if mono.size > win:
+        t = hop
+        while t + win // 2 < mono.size:
+            starts.append(t)
+            t += hop
+
+    frame = max(256, int(sample_rate * 0.02))
+    ranked: list[tuple[float, int]] = []
+    for start in starts:
+        chunk = mono[start : start + win] if mono.size > win else mono
+        if chunk.size < sample_rate * 2:
+            continue
+        n = (chunk.size // frame) * frame
+        if n < frame * 8:
+            continue
+        frames = chunk[:n].reshape(-1, frame)
+        energy = np.sqrt(np.mean(frames * frames, axis=1))
+        onset = np.maximum(0.0, np.diff(energy, prepend=energy[:1]))
+        activity = float(np.mean(onset * onset))
+        if activity <= 1e-12:
+            continue
+        ranked.append((activity, start))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    chosen = [start for _act, start in ranked[:3]]
+    return chosen or starts[:1]
+
+
+def _on_off_ratio(onset_env: np.ndarray, sr: int, hop: int, bpm: float) -> float:
+    """Higher when beat grid lands on onsets and misses the halfway points."""
+    period_f = (60.0 / max(1e-6, bpm)) * float(sr) / float(hop)
+    if period_f < 2.0:
+        return -1.0
+    n = len(onset_env)
+    best = -1.0
+    phase_count = max(8, int(period_f))
+    for phase in np.linspace(0.0, period_f, num=phase_count, endpoint=False):
+        on_idx = (phase + np.arange(0.0, n, period_f)).astype(int)
+        off_idx = (phase + period_f * 0.5 + np.arange(0.0, n, period_f)).astype(int)
+        on_idx = on_idx[(on_idx >= 0) & (on_idx < n)]
+        off_idx = off_idx[(off_idx >= 0) & (off_idx < n)]
+        if len(on_idx) < 4 or len(off_idx) < 4:
+            continue
+        on_s = float(np.mean(onset_env[on_idx]))
+        off_s = float(np.mean(onset_env[off_idx]))
+        ratio = on_s / (off_s + 1e-9)
+        if ratio > best:
+            best = ratio
+    return best
+
+
+def _bring_into_range(bpm: float, min_bpm: float, max_bpm: float) -> float:
+    value = float(bpm)
+    while value < min_bpm and value * 2.0 <= max_bpm * 1.01:
+        value *= 2.0
+    while value > max_bpm and value / 2.0 >= min_bpm * 0.99:
+        value /= 2.0
+    return value
+
+
+def _resolve_octave(
+    mono: np.ndarray,
+    sample_rate: int,
+    bpm0: float,
+    *,
+    min_bpm: float,
+    max_bpm: float,
+) -> float:
+    """Pick half/same/double using on-beat vs off-beat onset contrast."""
+    import librosa
+
+    hop = 512
+    onset = librosa.onset.onset_strength(y=mono, sr=sample_rate, hop_length=hop)
+    base = _bring_into_range(bpm0, min_bpm, max_bpm)
+    scored: list[tuple[float, float]] = []
+    for factor in (0.5, 1.0, 2.0):
+        candidate = base * factor
+        if candidate < min_bpm * 0.98 or candidate > max_bpm * 1.02:
+            continue
+        scored.append((_on_off_ratio(onset, sample_rate, hop, candidate), candidate))
+    if not scored:
+        return base
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_ratio, best_bpm = scored[0]
+    base_ratio = next((ratio for ratio, bpm in scored if abs(bpm - base) < 1e-6), None)
+    # Only flip octave when the alternative is clearly stronger — avoids
+    # doubling slow ballads when half/double are both plausible.
+    if base_ratio is not None and best_ratio < base_ratio * _OCTAVE_MARGIN:
+        return base
+    return best_bpm
+
+
+def _estimate_with_librosa(
     mono: np.ndarray,
     sample_rate: int,
     *,
     min_bpm: float,
     max_bpm: float,
-) -> tuple[float, float] | None:
-    """Return (bpm, raw_comb_score) for one mono window — no octave flipping."""
-    hop = max(192, int(round(sample_rate / 110.0)))
-    onset = _onset_envelope(mono, sample_rate, hop)
-    if onset is None:
-        return None
+) -> float | None:
+    import librosa
 
-    corr = np.correlate(onset, onset, mode="full")
-    mid = len(corr) // 2
-    corr = corr[mid:].astype(np.float64)
-    env_rate = float(sample_rate) / float(hop)
-    min_lag = max(1, int(env_rate * 60.0 / max_bpm))
-    max_lag = int(env_rate * 60.0 / min_bpm)
-    if max_lag <= min_lag + 1 or max_lag >= len(corr):
-        return None
+    starts = _activity_starts(mono, sample_rate)
+    win = int(sample_rate * 30.0)
+    votes: dict[float, float] = {}
+    for start in starts:
+        chunk = mono[start : start + win] if mono.size > win else mono
+        if chunk.size < sample_rate * 4:
+            continue
+        # Soft peak normalize so quiet grooves still track.
+        peak = float(np.max(np.abs(chunk)))
+        if peak < 1e-6:
+            continue
+        y = (chunk / peak).astype(np.float32)
+        try:
+            tempo, _beats = librosa.beat.beat_track(
+                y=y,
+                sr=sample_rate,
+                start_bpm=float(np.clip((min_bpm + max_bpm) * 0.5, 90.0, 140.0)),
+                tightness=100,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        raw = _as_float(tempo)
+        if raw <= 1.0:
+            continue
+        resolved = _resolve_octave(
+            y,
+            sample_rate,
+            raw,
+            min_bpm=min_bpm,
+            max_bpm=max_bpm,
+        )
+        key = _snap_show_bpm(resolved)
+        if key < min_bpm * 0.95 or key > max_bpm * 1.05:
+            continue
+        votes[key] = votes.get(key, 0.0) + 1.0
 
-    window = corr[min_lag : max_lag + 1]
-    peak = float(np.max(window))
-    med = float(np.median(window))
-    if peak <= 0.0 or peak < med * 1.30:
+    if not votes:
         return None
-
-    # Strongest comb on a 0.5 BPM grid. Deliberately do NOT auto-pick ×2/÷2 —
-    # that guess was wrong more often than right on real show files. Users fix
-    # octave with setlist ×2 / ÷2.
-    best_bpm = None
-    best_score = -1.0
-    for bpm_i in range(int(round(min_bpm * 2)), int(round(max_bpm * 2)) + 1):
-        bpm = bpm_i / 2.0
-        score = _comb_score(corr, env_rate, bpm)
-        if score > best_score:
-            best_score = score
-            best_bpm = bpm
-    if best_bpm is None or best_score <= 0.0:
-        return None
-    # Sub-grid refine: parabolic peak around the winning lag (cuts ±1 BPM drift).
-    lag = env_rate * 60.0 / best_bpm
-    y0 = _corr_at(corr, lag - 1.0)
-    y1 = _corr_at(corr, lag)
-    y2 = _corr_at(corr, lag + 1.0)
-    denom = (y0 - 2.0 * y1 + y2)
-    if abs(denom) > 1e-12 and y1 >= y0 and y1 >= y2:
-        delta = 0.5 * (y0 - y2) / denom
-        if abs(delta) <= 1.0:
-            refined_lag = lag + delta
-            if refined_lag > 1e-6:
-                best_bpm = 60.0 * env_rate / refined_lag
-    return _snap_show_bpm(best_bpm), float(best_score)
+    return max(votes.items(), key=lambda kv: (kv[1], -abs(kv[0] - 120.0)))[0]
 
 
 def estimate_bpm(
     samples: np.ndarray,
     sample_rate: int,
     *,
-    min_bpm: float = 65.0,
-    max_bpm: float = 180.0,
+    min_bpm: float = _DEFAULT_MIN_BPM,
+    max_bpm: float = _DEFAULT_MAX_BPM,
     max_seconds: float = _BPM_ANALYZE_SECONDS,
     exclude_channel: int | None = None,
 ) -> float | None:
     """
-    Estimate tempo via onset-energy comb autocorrelation.
+    Estimate tempo with librosa beat tracking + octave resolve.
 
-    Picks the strongest period in ``min_bpm``–``max_bpm`` across the densest
-    audio windows. Does not invent half/double — those need human ×2/÷2 on
-    show material with talk/gaps.
+    Analyzes the densest windows in the first ``max_seconds`` so rehearsal
+    talk/gaps before the groove are less likely to dominate.
     """
     if samples is None or sample_rate <= 0:
         return None
@@ -189,51 +257,15 @@ def estimate_bpm(
     mono = mono[:max_n]
     if mono.size < sample_rate:
         return None
-
-    win = int(sample_rate * 25.0)
-    hop = int(sample_rate * 12.0)
-    starts: list[int] = [0]
-    if mono.size > win:
-        t = hop
-        while t + win // 2 < mono.size:
-            starts.append(t)
-            t += hop
-
-    hop_n = max(192, int(round(sample_rate / 110.0)))
-    ranked: list[tuple[float, int]] = []
-    for start in starts:
-        chunk = mono[start : start + win] if mono.size > win else mono
-        if chunk.size < sample_rate * 2:
-            continue
-        onset = _onset_envelope(chunk, sample_rate, hop_n)
-        if onset is None:
-            continue
-        activity = float(np.mean(onset * onset))
-        if activity <= 1e-12:
-            continue
-        ranked.append((activity, start))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    chosen_starts = [start for _act, start in ranked[:4]]
-    if not chosen_starts:
-        chosen_starts = starts[:2]
-
-    votes: dict[float, float] = {}
-    top_act = ranked[0][0] if ranked else 1.0
-    for start in chosen_starts:
-        chunk = mono[start : start + win] if mono.size > win else mono
-        if chunk.size < sample_rate:
-            continue
-        result = _estimate_bpm_window(chunk, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
-        if result is None:
-            continue
-        bpm, score = result
-        key = _snap_show_bpm(bpm)
-        activity = next((a for a, s in ranked if s == start), 1.0)
-        votes[key] = votes.get(key, 0.0) + score * (0.5 + 0.5 * activity / top_act)
-
-    if not votes:
+    try:
+        return _estimate_with_librosa(
+            mono,
+            sample_rate,
+            min_bpm=float(min_bpm),
+            max_bpm=float(max_bpm),
+        )
+    except ImportError:
         return None
-    return _snap_show_bpm(max(votes.items(), key=lambda kv: kv[1])[0])
 
 
 def estimate_bpm_from_path(

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from cueplayer.media.bpm_analyzer import (
     estimate_bpm,
     format_bpm_cell,
     parse_bpm_cell,
 )
+
+librosa = pytest.importorskip("librosa")
 
 
 def _click_track(bpm: float, *, seconds: float = 12.0, sr: int = 44100) -> np.ndarray:
@@ -36,21 +39,38 @@ def test_parse_bpm_cell_strips_brackets() -> None:
 
 def test_estimate_bpm_on_click_track() -> None:
     bpm = 120.0
-    est = estimate_bpm(_click_track(bpm), 44100)
+    est = estimate_bpm(_click_track(bpm, seconds=16.0), 44100)
     assert est is not None
     assert abs(float(est) - bpm) <= 2.0
 
 
 def test_estimate_bpm_mid_tempos() -> None:
     for bpm in (96.0, 100.0, 129.0):
-        est = estimate_bpm(_click_track(bpm, seconds=16.0), 44100)
+        est = estimate_bpm(_click_track(bpm, seconds=18.0), 44100)
         assert est is not None
         assert abs(float(est) - bpm) <= 3.0
 
 
+@pytest.mark.parametrize(
+    "bpm",
+    [
+        73.0,  # 未曾準備好
+        83.0,  # 歸零
+        136.0,  # 牽我
+        167.0,  # 又閣減一工
+        170.0,  # Neon
+    ],
+)
+def test_estimate_bpm_ground_truth_show_tempos(bpm: float) -> None:
+    """Match tempos the user verified in other DAW/BPM software."""
+    est = estimate_bpm(_click_track(bpm, seconds=20.0), 44100)
+    assert est is not None
+    assert abs(float(est) - bpm) <= 2.0, f"expected ~{bpm}, got {est}"
+
+
 def test_estimate_bpm_excludes_ltc_like_channel() -> None:
     sr = 44100
-    music = _click_track(120.0, seconds=10.0, sr=sr)[:, 0]
+    music = _click_track(120.0, seconds=16.0, sr=sr)[:, 0]
     t = np.arange(music.size, dtype=np.float32) / sr
     ltc = (np.sign(np.sin(2 * np.pi * 2000.0 * t)) * 0.4).astype(np.float32)
     stereo = np.stack([music, ltc], axis=1)
