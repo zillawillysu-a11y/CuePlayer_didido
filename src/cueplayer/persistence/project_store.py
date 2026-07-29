@@ -521,6 +521,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_secondary_visible": song.now_secondary_visible,
                 "cue_list_visible": song.cue_list_visible,
                 "cue_list_column_order": list(song.cue_list_column_order),
+                "cue_list_show_cue_id": bool(song.cue_list_show_cue_id),
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -673,6 +674,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 cue_list_column_order=normalize_cue_list_column_order(
                     song_data.get("cue_list_column_order")
                 ),
+                cue_list_show_cue_id=bool(song_data.get("cue_list_show_cue_id", True)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),
