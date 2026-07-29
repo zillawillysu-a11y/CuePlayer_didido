@@ -205,6 +205,7 @@ class SetlistWidget(QTableWidget):
     audio_drop_rejected = Signal(str)
     rows_reordered = Signal(list, int)  # song ids in drag order, insert-before table row
     songs_moved_to_category = Signal(list, str)  # song ids, category id
+    categories_reordered = Signal(str, int)  # category id, insert-before folder index
     category_clicked = Signal(str)  # triangle: toggle collapse
     category_rename_requested = Signal(str)  # folder label double-click
     setlist_number_edited = Signal(int, float)  # table row, new number
@@ -264,13 +265,15 @@ class SetlistWidget(QTableWidget):
         self.setToolTip(
             "Double-click No./Name/BPM to edit; drag column edges to resize; "
             "right-click for categories and full editor; "
-            "drag to reorder or drop songs onto a folder; drop audio/video to add songs; "
-            "Ctrl/Shift to multi-select"
+            "drag songs to reorder or onto a folder; drag folders to reorder; "
+            "drop audio/video to add songs; Ctrl/Shift to multi-select"
         )
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._block_number_signal = False
         self._drag_song_ids: list[str] = []
+        self._drag_category_id: str | None = None
+        self._press_category_id: str | None = None
         self._insert_indicator_row: int | None = None
         self._name_mode = "zh"
         self._show_bpm = True
@@ -410,6 +413,13 @@ class SetlistWidget(QTableWidget):
             self.song_bpm_edited.emit(item.row(), parsed)
 
     def startDrag(self, supportedActions) -> None:  # noqa: N802, ANN001
+        # Folder drag: started from a non-triangle press on a category row.
+        if self._press_category_id:
+            self._drag_category_id = self._press_category_id
+            self._drag_song_ids = []
+            super().startDrag(supportedActions)
+            return
+        self._drag_category_id = None
         ids: list[str] = []
         for row in sorted({idx.row() for idx in self.selectedIndexes()}):
             if self.row_kind(row) != "song":
@@ -424,6 +434,7 @@ class SetlistWidget(QTableWidget):
         super().startDrag(supportedActions)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        self._press_category_id = None
         if event.button() == Qt.MouseButton.LeftButton:
             viewport_pos = self._viewport_pos_from_event(event)
             row = self.rowAt(viewport_pos.y())
@@ -434,6 +445,10 @@ class SetlistWidget(QTableWidget):
                         row, viewport_pos.x(), viewport_pos.y()
                     ):
                         self.category_clicked.emit(cat_id)
+                        return
+                    # Name area: allow Qt drag so folders can be reordered.
+                    self._press_category_id = cat_id
+                    super().mousePressEvent(event)
                     return
         super().mousePressEvent(event)
 
@@ -586,6 +601,15 @@ class SetlistWidget(QTableWidget):
         self._clear_insert_indicator()
         super().dragLeaveEvent(event)
 
+    def _folder_insert_index_at(self, drop_row: int) -> int:
+        """Map a table insert-before row to an index among folder headers."""
+        count = 0
+        limit = max(0, min(int(drop_row), self.rowCount()))
+        for row in range(limit):
+            if self.row_kind(row) == "category":
+                count += 1
+        return count
+
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._clear_insert_indicator()
         if event.source() is not self:
@@ -599,6 +623,15 @@ class SetlistWidget(QTableWidget):
             return
         pos = event.position().toPoint()
         drop_row = self._insert_row_at(pos)
+        category_id = self._drag_category_id
+        self._drag_category_id = None
+        self._press_category_id = None
+        if category_id:
+            # CopyAction: Qt must not delete the source folder row.
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            self.categories_reordered.emit(category_id, self._folder_insert_index_at(drop_row))
+            return
         ids = list(self._drag_song_ids)
         self._drag_song_ids = []
         if not ids:
@@ -877,6 +910,7 @@ class MainWindow(QMainWindow):
         )
         self.song_list.rows_reordered.connect(self._on_setlist_rows_reordered)
         self.song_list.songs_moved_to_category.connect(self._on_songs_moved_to_category)
+        self.song_list.categories_reordered.connect(self._on_setlist_categories_reordered)
         self.song_list.category_clicked.connect(self._toggle_setlist_category)
         self.song_list.category_rename_requested.connect(self._rename_setlist_category)
         self.song_list.setlist_number_edited.connect(self._on_setlist_number_edited)
@@ -1830,10 +1864,11 @@ class MainWindow(QMainWindow):
                 folder_item.setData(Qt.ItemDataRole.UserRole, category.id)
                 folder_item.setData(SetlistWidget.ROLE_KIND, "category")
                 folder_item.setData(SetlistWidget.ROLE_ROW_COLOR, category.row_color or "")
-                folder_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                folder_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled)
                 folder_item.setToolTip(
-                    "Click ▸/▾ to expand or collapse · double-click folder name to rename · "
-                    "right-click for more · drag songs here to file them in this folder"
+                    "Click ▸/▾ to expand or collapse · drag folder name to reorder · "
+                    "double-click name to rename · right-click for more · "
+                    "drag songs here to file them in this folder"
                 )
                 if category.row_color:
                     folder_item.setForeground(QColor(contrast_text_color(category.row_color)))
@@ -2606,6 +2641,28 @@ class MainWindow(QMainWindow):
             f'Moved {len(moving)} song(s) into "{category.name}"',
             2500,
         )
+
+    def _on_setlist_categories_reordered(self, category_id: str, insert_before: int) -> None:
+        """Drag a folder header to a new place among other folders."""
+        cats = self.project.setlist_categories
+        cat_id = str(category_id)
+        old_index = next((i for i, cat in enumerate(cats) if cat.id == cat_id), None)
+        if old_index is None:
+            return
+        target = max(0, min(int(insert_before), len(cats)))
+        if old_index < target:
+            target -= 1
+        if target == old_index:
+            return
+        with self._setlist_edit("Reorder Folders"):
+            category = cats.pop(old_index)
+            cats.insert(target, category)
+            self._rebuild_song_list()
+            sheet = getattr(self, "setlist_sheet_page", None)
+            if sheet is not None:
+                sheet.sync_songs()
+            self._mark_dirty()
+        self.status.showMessage(f'Folder order updated: "{category.name}"', 2000)
 
     def _toggle_setlist_category(self, category_id: str) -> None:
         category = self.project.setlist_category_by_id(category_id)
