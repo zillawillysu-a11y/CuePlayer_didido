@@ -8,10 +8,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cueplayer.domain.models import Project
-from cueplayer.media.audio_disk_cache import clone_caches_for_copied_file
+from cueplayer.media.audio_disk_cache import (
+    adopt_caches_for_path,
+    clone_caches_for_copied_file,
+)
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
     UNFILED_FOLDER,
+    path_under_media,
     safe_folder_name,
     song_media_rel_folder,
     unique_dest,
@@ -26,10 +30,26 @@ class BundleResult:
     media_dir: Path
     copied: list[tuple[Path, Path]] = field(default_factory=list)
     reused: list[tuple[Path, Path]] = field(default_factory=list)
+    moved: list[tuple[Path, Path]] = field(default_factory=list)
     missing: list[Path] = field(default_factory=list)
     renamed: list[tuple[Path, str]] = field(default_factory=list)
     # Top-level Setlist folder names that received at least one file.
     folders_used: list[str] = field(default_factory=list)
+
+
+def _same_file_fingerprint(a: Path, b: Path) -> bool:
+    """True when ``b`` can stand in for ``a`` (skip re-copy)."""
+    import filecmp
+
+    try:
+        if int(a.stat().st_size) != int(b.stat().st_size):
+            return False
+    except OSError:
+        return False
+    try:
+        return bool(filecmp.cmp(a, b, shallow=False))
+    except OSError:
+        return False
 
 
 def collect_project_bundle(
@@ -40,8 +60,12 @@ def collect_project_bundle(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> BundleResult:
     """
-    Copy all reachable media into Setlist-mirrored folders and write the
-    project JSON at ``dest_dir / project_filename`` with relative paths.
+    Copy / reuse media into Setlist-mirrored folders and write the project JSON
+    at ``dest_dir / project_filename`` with relative paths.
+
+    Incremental-friendly: files already under ``dest_dir/Media/`` are reused or
+    moved into the correct ``<Folder>/<Song>/`` slot — not copied again. New
+    external media is copied in. Safe to re-run on the same Bundle folder.
 
     Layout::
 
@@ -54,9 +78,6 @@ def collect_project_bundle(
             _Unfiled/
               Loose/
                 loose.wav
-
-    Same source file referenced multiple times is only copied once (first
-    song's folder wins). Basename collisions get ``_2``, ``_3``, … suffixes.
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +99,11 @@ def collect_project_bundle(
     source_map: dict[str, Path] = {}
     folders_used: set[str] = set()
 
+    def _note_folder(rel_folder: str) -> None:
+        top = rel_folder.split("/", 1)[0]
+        if top:
+            folders_used.add(top)
+
     def _place(source: Path, *, rel_folder: str) -> Path | None:
         try:
             resolved = source.expanduser().resolve()
@@ -87,10 +113,66 @@ def collect_project_bundle(
         if key in source_map:
             result.reused.append((resolved, source_map[key]))
             return source_map[key]
+
+        dest_folder = media_dir / rel_folder
+        dest_folder.mkdir(parents=True, exist_ok=True)
+
+        # Already inside this Bundle's Media/ — reuse or relocate, never re-copy.
+        if path_exists(resolved) and path_under_media(resolved, media_dir):
+            try:
+                if resolved.parent.resolve() == dest_folder.resolve():
+                    source_map[key] = resolved
+                    result.reused.append((resolved, resolved))
+                    _note_folder(rel_folder)
+                    return resolved
+            except OSError:
+                if resolved.parent == dest_folder:
+                    source_map[key] = resolved
+                    result.reused.append((resolved, resolved))
+                    _note_folder(rel_folder)
+                    return resolved
+            dest = unique_dest(dest_folder, resolved.name)
+            try:
+                if dest.resolve() == resolved.resolve():
+                    source_map[key] = resolved
+                    result.reused.append((resolved, resolved))
+                    _note_folder(rel_folder)
+                    return resolved
+            except OSError:
+                pass
+            former = resolved
+            try:
+                shutil.move(str(resolved), str(dest))
+            except OSError:
+                result.missing.append(source)
+                return None
+            adopt_caches_for_path(dest, former_path=former)
+            source_map[key] = dest
+            # Remap under the new path so later refs to the old location reuse.
+            try:
+                source_map[str(dest.resolve())] = dest
+            except OSError:
+                source_map[str(dest)] = dest
+            result.moved.append((former, dest))
+            _note_folder(rel_folder)
+            return dest
+
         if not path_exists(resolved):
             result.missing.append(source)
             return None
-        dest_folder = media_dir / rel_folder
+
+        # Incremental: identical file already sitting at the destination.
+        candidate = dest_folder / resolved.name
+        if candidate.is_file() and _same_file_fingerprint(resolved, candidate):
+            try:
+                dest = candidate.resolve()
+            except OSError:
+                dest = candidate
+            source_map[key] = dest
+            result.reused.append((resolved, dest))
+            _note_folder(rel_folder)
+            return dest
+
         dest = unique_dest(dest_folder, resolved.name)
         if dest.name != resolved.name:
             result.renamed.append((resolved, dest.name))
@@ -98,9 +180,7 @@ def collect_project_bundle(
         clone_caches_for_copied_file(resolved, dest)
         source_map[key] = dest
         result.copied.append((resolved, dest))
-        top = rel_folder.split("/", 1)[0]
-        if top:
-            folders_used.add(top)
+        _note_folder(rel_folder)
         return dest
 
     for song in bundled.songs:

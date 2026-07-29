@@ -1270,29 +1270,17 @@ class TimelineWidget(QWidget):
             + visible * self._lane_height
             + 8
         )
+        changed = needed != self._content_height
         self._content_height = needed
         self.setMinimumHeight(needed)
         self._layout_video_track_overlay()
-        self.content_geometry_changed.emit()
+        # Only notify when height actually changes — otherwise drag-resize
+        # (resizeEvent → apply → emit → parent resize → …) can recurse until crash.
+        if changed:
+            self.content_geometry_changed.emit()
 
     def _max_wave_height(self) -> int:
-        # Prefer leaving Mark tracks visible in the parent scroll viewport.
-        # Tall content can still scroll; this only caps accidental drag-grow.
-        reserved = (
-            self._ruler_height
-            + self._marks_band_height()
-            + self._video_band_height()
-            + self._ltc_band_height()
-            + 24
-        )
-        parent = self.parent()
-        if parent is not None:
-            try:
-                avail = int(parent.height()) - reserved
-                if avail >= 120:
-                    return max(120, min(2400, avail))
-            except Exception:  # noqa: BLE001
-                pass
+        # Independent from video/mark lanes — tall content scrolls in the parent.
         return 2400
 
     def _clamp_wave_height(self, height: int | float) -> int:
@@ -1329,17 +1317,23 @@ class TimelineWidget(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
-        clamped = self._clamp_wave_height(self._wave_height)
-        if clamped != self._wave_height:
-            self._wave_height = clamped
-        lane_clamped = self._clamp_video_lane_height(self._video_lane_base_height)
-        if lane_clamped != self._video_lane_base_height:
-            self._video_lane_base_height = lane_clamped
-            if self._song is not None:
-                self._song.video_lane_height = lane_clamped
-        self._apply_layout_heights()
-        self._layout_zoom_overlay()
-        self._layout_video_track_overlay()
+        if getattr(self, "_layout_heights_busy", False):
+            return
+        self._layout_heights_busy = True
+        try:
+            clamped = self._clamp_wave_height(self._wave_height)
+            if clamped != self._wave_height:
+                self._wave_height = clamped
+            lane_clamped = self._clamp_video_lane_height(self._video_lane_base_height)
+            if lane_clamped != self._video_lane_base_height:
+                self._video_lane_base_height = lane_clamped
+                if self._song is not None:
+                    self._song.video_lane_height = lane_clamped
+            self._apply_layout_heights()
+            self._layout_zoom_overlay()
+            self._layout_video_track_overlay()
+        finally:
+            self._layout_heights_busy = False
 
     def _duration(self) -> float:
         if self._audio is not None:

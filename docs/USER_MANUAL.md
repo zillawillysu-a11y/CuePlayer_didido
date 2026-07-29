@@ -21,8 +21,8 @@
 | **Shift / Ctrl** | 多選 |
 | **Del / Backspace** | 刪除選取 |
 | 點 **Time** | 跳到該 Mark |
-| 右鍵 Cue List | 欄位顯示、Cue ID 欄、Cue List 顯示／隱藏等 |
-| 右鍵 PRIMARY NOW | 顯示／隱藏主顯示上的 Cue ID、Primary／Secondary 顯示等 |
+| 右鍵 Cue List | 顯示／隱藏 Cue List |
+| 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID 行（如 Cue 2）；也可顯示／隱藏 Primary／Secondary |
 
 ## 左側 Setlist
 
@@ -56,12 +56,23 @@
 
 | 選單 | 說明 |
 |------|------|
-| **File → Collect Project Bundle…** | 複製用到的媒體到資料夾：`專案.cueplayer.json` 在根層、`Media/<Setlist 資料夾>/<歌名>/` 放素材（未分類進 `_Unfiled/<歌名>/`）；波形與 LTC L/R 快取一併沿用。建議選空資料夾。 |
+| **File → Collect Project Bundle…** | 另存成 Bundle 資料夾：可命名 `.cueplayer.json`，並切換成用該檔繼續工作。`Media/<Setlist>/<歌名>/` 放素材。再次選同一個 Bundle 資料夾時，已在裡面的檔案會沿用／搬到正確 Folder，只拷貝新增的媒體。舊的專案檔／資料夾不會被改動，之後仍可分開開啟。 |
 | **File → Relink Missing Media…** | 檔案搬走後單檔或整資料夾依檔名重新連結（遞迴掃媒體副檔名）；同名多份需手動指定。Relink 後請 Save。若檔案是搬移／拷貝且 mtime 相同，波形與 LTC 快取也會沿用。 |
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。
 
-已存檔且存在 `Media/` 時，在程式裡把歌曲移到 Setlist Folder、或重新命名／刪除 Folder，會同步搬移或重新命名磁碟上的對應資料夾（僅限已在 `Media/` 內的檔；外部絕對路徑不動）。同磁碟搬移／改名是檔案系統 metadata，不會重解碼波形，耗資源很低。
+在程式裡搬歌曲到 Setlist Folder／改 Folder 名：只改專案記憶體；**磁碟上的 `Media/` 要等 Save／另存／Auto-save／Bundle 才會跟著排**。
+
+### 另存新檔後再開舊檔？
+
+| 你做了什麼 | 再開「舊的」`.cueplayer.json` |
+|------------|-------------------------------|
+| 只在記憶體裡改 Folder／歌名，**還沒 Save** | 舊檔與舊 `Media/` 都沒動，照常開。 |
+| **另存到別的資料夾**（一般 Save As） | 舊檔不被覆寫；媒體通常仍留在原專案旁，舊檔可照常開。新檔多半用**絕對路徑**指回原媒體（兩份專案檔共用同一批檔）。 |
+| **Collect Project Bundle** | 舊資料夾完全不動；Bundle 內是獨立 `Media/` 副本。舊檔、Bundle 可分開開。 |
+| **對原檔 Save**（或 Auto-save） | 舊檔被更新，且 `Media/` 會排成與目前 Setlist 一致；再開的就是這個新狀態。 |
+| 另存到**同一個資料夾**但換檔名 | 與舊檔共用同一棵 `Media/`；程式**不會**在另存當下重排媒體，舊檔可照常開。之後若對**新檔**按 Save 且要排資料夾，仍可能動到共用 `Media/`。要真正獨立副本請用 Bundle。 |
+
 ## 相關文件
 
 - 產品規格：`docs/PRODUCT_SPEC.md`

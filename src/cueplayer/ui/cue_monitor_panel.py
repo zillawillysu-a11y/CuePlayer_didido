@@ -890,32 +890,6 @@ class CueMonitorPanel(QWidget):
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
 
-        show_cue_id = QAction("Show Cue ID", self)
-        show_cue_id.setCheckable(True)
-        show_cue_id.setChecked(bool(self._song.cue_list_show_cue_id))
-        show_cue_id.setToolTip("Show or hide the Cue ID column in Cue List")
-        show_cue_id.toggled.connect(self._set_cue_list_show_cue_id)
-        menu.addAction(show_cue_id)
-
-        menu.addSeparator()
-        from cueplayer.domain.main_cue_id import renumberable_cue_list_lanes
-
-        lanes = renumberable_cue_list_lanes(self._song)
-        renumber_menu = menu.addMenu("Renumber Cue IDs (1, 2, 3…)")
-        renumber_menu.setEnabled(bool(lanes))
-        if lanes:
-            all_action = renumber_menu.addAction("All Cue List types")
-            all_action.triggered.connect(lambda: self.renumber_cue_ids_requested.emit(None))
-            if len(lanes) > 1:
-                renumber_menu.addSeparator()
-                for lane in lanes:
-                    lane_action = renumber_menu.addAction(lane.name)
-                    lane_action.triggered.connect(
-                        lambda _checked=False, lane_index=lane.index: self.renumber_cue_ids_requested.emit(
-                            lane_index
-                        )
-                    )
-
     def _set_cue_list_show_cue_id(self, visible: bool) -> None:
         if self._song is None:
             return
@@ -1014,6 +988,25 @@ class CueMonitorPanel(QWidget):
         if self._song is None:
             return
         menu = QMenu(self)
+
+        # Lead with the PRIMARY card Cue ID line (e.g. "Cue 2") — not the Cue List column.
+        show_primary_cue_id = QAction("Show Cue ID", self)
+        show_primary_cue_id.setCheckable(True)
+        show_primary_cue_id.setChecked(bool(self._song.now_primary_show_cue_id))
+        show_primary_cue_id.setToolTip(
+            "Show or hide the Cue ID line on the PRIMARY card (e.g. “Cue 2”)"
+        )
+        show_primary_cue_id.setEnabled(bool(self._song.now_primary_visible))
+
+        def _toggle_primary_cue_id(checked: bool) -> None:
+            self._song.now_primary_show_cue_id = bool(checked)
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
+        menu.addAction(show_primary_cue_id)
+        menu.addSeparator()
+
         show_primary = QAction("Show Primary display", self)
         show_primary.setCheckable(True)
         show_primary.setChecked(bool(self._song.now_primary_visible))
@@ -1037,20 +1030,6 @@ class CueMonitorPanel(QWidget):
         show_secondary.toggled.connect(_toggle_secondary)
         menu.addAction(show_primary)
         menu.addAction(show_secondary)
-        menu.addSeparator()
-        show_primary_cue_id = QAction("Show Cue ID on Primary", self)
-        show_primary_cue_id.setCheckable(True)
-        show_primary_cue_id.setChecked(bool(self._song.now_primary_show_cue_id))
-        show_primary_cue_id.setToolTip("Show or hide Cue ID lines on the PRIMARY NOW card")
-        show_primary_cue_id.setEnabled(bool(self._song.now_primary_visible))
-
-        def _toggle_primary_cue_id(checked: bool) -> None:
-            self._song.now_primary_show_cue_id = bool(checked)
-            self._sync_current(force_now=True)
-            self.now_visibility_changed.emit()
-
-        show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
-        menu.addAction(show_primary_cue_id)
         menu.addSeparator()
         place_right = QAction("Secondary on the right", self)
         place_right.setCheckable(True)

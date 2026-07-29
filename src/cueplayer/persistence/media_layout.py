@@ -1,4 +1,4 @@
-"""Keep Media/ folders aligned with Setlist folders (Bundle + live sync)."""
+"""Keep Media/ folders aligned with Setlist folders (Save / Bundle)."""
 
 from __future__ import annotations
 
@@ -147,6 +147,30 @@ def _apply_relocated_path(holder_path: Path, new_path: Path, *, did_move: bool) 
     return 1 if changed else 0
 
 
+def path_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def locate_project_media_file(
+    path: Path, *, media_dir: Path, project_root: Path
+) -> Path | None:
+    """Find a file under Media/ or elsewhere under the project root."""
+    found = locate_under_media(path, media_dir)
+    if found is not None:
+        return found
+    path = Path(path)
+    if path_exists(path) and path_under_root(path, project_root):
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+    return None
+
+
 def sync_song_media_to_setlist_folder(
     project: Project,
     song: Song,
@@ -155,21 +179,24 @@ def sync_song_media_to_setlist_folder(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> int:
     """
-    If song media lives under ``Media/``, move it into
+    If song media lives under the project folder, move it into
     ``Media/<SetlistFolder>/<SongName>/``.
 
-    Only touches files already inside the project Media tree — external
-    absolute paths are left alone. Returns how many files were moved or
-    whose stored path was rewritten (e.g. after a folder rename).
+    Prefers files already inside ``Media/``. Also relocates files that sit
+    elsewhere under the project root (legacy flat layout). External absolute
+    paths outside the project folder are left alone. Returns how many files
+    were moved or whose stored path was rewritten.
     """
-    media_dir = media_root(project_file, media_subdir=media_subdir)
-    if media_dir is None or not media_dir.is_dir():
+    root = project_root_for(project_file)
+    if root is None:
         return 0
+    media_dir = root / (media_subdir.strip() or DEFAULT_MEDIA_SUBDIR)
+    media_dir.mkdir(parents=True, exist_ok=True)
     dest_folder = media_dir / song_media_rel_folder(project, song)
     updated = 0
     for track in song.audio_tracks:
         former = Path(track.path)
-        src = locate_under_media(former, media_dir)
+        src = locate_project_media_file(former, media_dir=media_dir, project_root=root)
         if src is None:
             continue
         new_path, did_move = relocate_path_into_folder(src, dest_folder)
@@ -180,7 +207,7 @@ def sync_song_media_to_setlist_folder(
         updated += n
     for clip in song.video_clips:
         former = Path(clip.path)
-        src = locate_under_media(former, media_dir)
+        src = locate_project_media_file(former, media_dir=media_dir, project_root=root)
         if src is None:
             continue
         new_path, did_move = relocate_path_into_folder(src, dest_folder)

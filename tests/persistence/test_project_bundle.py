@@ -270,6 +270,71 @@ def test_sync_move_song_between_media_folders(tmp_path: Path) -> None:
     assert Path(song.audio_tracks[0].path).resolve() == dest.resolve()
 
 
+def test_bundle_incremental_reuses_existing_media(tmp_path: Path) -> None:
+    """Re-bundling into the same folder must not duplicate already-copied files."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    audio = sources / "a.wav"
+    audio.write_bytes(b"AAAA")
+    project = Project.create("Show")
+    cat = SetlistCategory.create("開場")
+    project.setlist_categories.append(cat)
+    song = project.songs[0]
+    song.name = "曲目"
+    song.category_id = cat.id
+    song.audio_tracks.append(AudioTrack(id="a1", name="Main", path=audio, role="main"))
+
+    dest = tmp_path / "bundle"
+    first = collect_project_bundle(project, dest, project_filename="show.cueplayer.json")
+    assert len(first.copied) == 1
+    bundled_path = first.media_dir / "開場" / "曲目" / "a.wav"
+    assert bundled_path.is_file()
+    mtime = bundled_path.stat().st_mtime_ns
+
+    # Reload as if we're working inside the Bundle, then add a new external file.
+    loaded = load_project(first.project_path)
+    new_src = sources / "b.wav"
+    new_src.write_bytes(b"BBBB")
+    song2 = loaded.new_song("新歌")
+    song2.category_id = cat.id
+    song2.audio_tracks.append(AudioTrack(id="a2", name="Main", path=new_src, role="main"))
+    loaded.songs.append(song2)
+
+    second = collect_project_bundle(loaded, dest, project_filename="show.cueplayer.json")
+    assert len(second.copied) == 1  # only b.wav
+    assert any(p[1].name == "b.wav" for p in second.copied)
+    assert second.reused  # a.wav already in Media/
+    assert bundled_path.is_file()
+    assert bundled_path.stat().st_mtime_ns == mtime  # untouched
+    assert (second.media_dir / "開場" / "新歌" / "b.wav").is_file()
+    # Still only one a.wav (no a_2.wav clutter)
+    assert list((second.media_dir / "開場" / "曲目").glob("a*.wav")) == [bundled_path]
+
+
+def test_bundle_incremental_moves_within_media_on_folder_change(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    audio = sources / "x.wav"
+    audio.write_bytes(b"X")
+    project = Project.create("Show")
+    c1 = SetlistCategory.create("A")
+    c2 = SetlistCategory.create("B")
+    project.setlist_categories.extend([c1, c2])
+    song = project.songs[0]
+    song.name = "Tune"
+    song.category_id = c1.id
+    song.audio_tracks.append(AudioTrack(id="a1", name="Main", path=audio, role="main"))
+    dest = tmp_path / "bundle"
+    first = collect_project_bundle(project, dest, project_filename="show.cueplayer.json")
+    loaded = load_project(first.project_path)
+    loaded.songs[0].category_id = c2.id
+    second = collect_project_bundle(loaded, dest, project_filename="show.cueplayer.json")
+    assert len(second.copied) == 0
+    assert len(second.moved) == 1
+    assert (second.media_dir / "B" / "Tune" / "x.wav").is_file()
+    assert not (second.media_dir / "A" / "Tune" / "x.wav").exists()
+
+
 def test_sync_rename_setlist_media_folder(tmp_path: Path) -> None:
     root = tmp_path / "show"
     media = root / "Media" / "舊名" / "曲目"
