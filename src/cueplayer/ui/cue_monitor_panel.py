@@ -149,7 +149,8 @@ class CueMonitorPanel(QWidget):
     cue_list_visibility_changed = Signal()
     now_layout_changed = Signal()
     output_timecode_clock_changed = Signal()  # secondary right/below or splitter sizes
-    output_toggle_changed = Signal(str, bool)  # midi | mtc | ltc | notes
+    output_toggle_changed = Signal(str, bool)  # translate | note | mtc | ltc
+    output_quick_toggles_visibility_changed = Signal()
     audio_settings_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -244,17 +245,17 @@ class CueMonitorPanel(QWidget):
         self.tc_output_value.setFont(tc_font)
         self._tc_clock_color = "#3dd68c"
         self._show_output_tc_clock = True
+        self._show_output_quick_toggles = True
         self._apply_output_timecode_style()
 
         tc_out_layout.addWidget(self.tc_output_status)
         tc_out_layout.addWidget(self.tc_output_value)
+        clock_layout.addWidget(self._tc_output_block)
 
         self.output_quick_toggles = OutputQuickToggles()
         self.output_quick_toggles.set_accent_color(self._tc_clock_color)
         self.output_quick_toggles.toggled.connect(self.output_toggle_changed)
-        tc_out_layout.addWidget(self.output_quick_toggles)
-
-        clock_layout.addWidget(self._tc_output_block)
+        clock_layout.addWidget(self.output_quick_toggles)
 
         clock_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         clock_frame.customContextMenuRequested.connect(self._show_clock_context_menu)
@@ -1174,6 +1175,10 @@ class CueMonitorPanel(QWidget):
     def show_output_timecode_clock(self) -> bool:
         return self._show_output_tc_clock
 
+    @property
+    def show_output_quick_toggles(self) -> bool:
+        return self._show_output_quick_toggles
+
     def configure_output_timecode_clock(self, *, visible: bool, color: str) -> None:
         self._show_output_tc_clock = bool(visible)
         q = QColor(color or "#3dd68c")
@@ -1182,7 +1187,11 @@ class CueMonitorPanel(QWidget):
         self.output_quick_toggles.set_accent_color(self._tc_clock_color)
         self._apply_output_timecode_style()
 
-    def sync_output_quick_toggles(self, settings) -> None:  # noqa: ANN001
+    def configure_output_quick_toggles(self, *, visible: bool) -> None:
+        self._show_output_quick_toggles = bool(visible)
+        self.output_quick_toggles.setVisible(self._show_output_quick_toggles)
+
+    def sync_output_quick_toggles(self, settings: AudioOutputSettings) -> None:
         self.output_quick_toggles.apply_settings(settings)
 
     def set_output_timecode(
@@ -1225,18 +1234,26 @@ class CueMonitorPanel(QWidget):
 
     def _show_clock_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        show_action = menu.addAction("Show output timecode clock")
-        show_action.setCheckable(True)
-        show_action.setChecked(self._show_output_tc_clock)
-        show_action.setToolTip("LTC / MTC output timecode under the seconds display (Notes-only shows status, not SMPTE)")
+        show_clock = menu.addAction("Show output timecode clock")
+        show_clock.setCheckable(True)
+        show_clock.setChecked(self._show_output_tc_clock)
+        show_clock.setToolTip("LTC / MTC SMPTE under the seconds display")
+        show_toggles = menu.addAction("Show output toggles")
+        show_toggles.setCheckable(True)
+        show_toggles.setChecked(self._show_output_quick_toggles)
+        show_toggles.setToolTip("L→M · Note · MTC · LTC quick switches under the clock")
         menu.addSeparator()
         settings_action = menu.addAction("Audio / Midi / Timecode settings…")
-        settings_action.setToolTip("Port, routing, Translate, LTC source, and advanced options")
+        settings_action.setToolTip("MIDI port, routing, LTC source, and advanced options")
         chosen = menu.exec(self._clock_frame.mapToGlobal(pos))
-        if chosen is show_action:
-            self._show_output_tc_clock = show_action.isChecked()
+        if chosen is show_clock:
+            self._show_output_tc_clock = show_clock.isChecked()
             self._tc_output_block.setVisible(self._show_output_tc_clock)
             self.output_timecode_clock_changed.emit()
+        elif chosen is show_toggles:
+            self._show_output_quick_toggles = show_toggles.isChecked()
+            self.output_quick_toggles.setVisible(self._show_output_quick_toggles)
+            self.output_quick_toggles_visibility_changed.emit()
         elif chosen is settings_action:
             self.audio_settings_requested.emit()
 

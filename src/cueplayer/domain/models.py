@@ -967,6 +967,7 @@ class Project:
     # Output timecode clock under the monitor seconds display.
     show_output_timecode_clock: bool = True
     output_timecode_clock_color: str = "#3dd68c"
+    show_output_quick_toggles: bool = True
     # Video + LTC timeline lanes — one eye for the whole show (not per song).
     show_video_track: bool = True
     ma_export: MaExportSettings = field(default_factory=MaExportSettings)

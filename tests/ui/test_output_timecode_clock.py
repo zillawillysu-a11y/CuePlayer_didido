@@ -78,24 +78,44 @@ def test_output_quick_toggles_reflect_settings(app: QApplication) -> None:
     settings = AudioOutputSettings(
         midi_enabled=True,
         mtc_enabled=True,
+        ltc_to_mtc_translate=True,
         ltc_enabled=False,
         midi_cue_notes_enabled=True,
     )
     toggles.apply_settings(settings)
-    assert toggles._midi.isChecked()  # noqa: SLF001
+    assert toggles._translate.isChecked()  # noqa: SLF001
+    assert toggles._note.isChecked()  # noqa: SLF001
     assert toggles._mtc.isChecked()  # noqa: SLF001
     assert not toggles._ltc.isChecked()  # noqa: SLF001
-    assert toggles._notes.isChecked()  # noqa: SLF001
-    assert toggles._mtc.isEnabled()  # noqa: SLF001
-    assert toggles._notes.isEnabled()  # noqa: SLF001
+
+
+def test_output_quick_toggles_prefs_persist() -> None:
+    project = Project.create("TC Clock")
+    project.show_output_quick_toggles = False
+    restored = project_from_dict(project_to_dict(project))
+    assert restored.show_output_quick_toggles is False
+
+
+def test_monitor_output_quick_toggles_visibility(app: QApplication) -> None:
+    panel = CueMonitorPanel()
+    panel.show()
+    app.processEvents()
+    panel.configure_output_quick_toggles(visible=False)
+    assert panel.show_output_quick_toggles is False
+    assert not panel.output_quick_toggles.isVisible()
+    panel.configure_output_quick_toggles(visible=True)
+    assert panel.show_output_quick_toggles is True
+    assert panel.output_quick_toggles.isVisible()
 
 
 def test_display_dialog_tc_clock_settings_apply_live(app: QApplication) -> None:
     project = Project.create("TC Clock")
     dialog = MarkDisplayDialog(project.songs[0], project=project)
     dialog.tc_clock_box.setChecked(False)
+    dialog.output_toggles_box.setChecked(False)
     dialog.tc_clock_color._on_chosen("#445566")
     assert project.show_output_timecode_clock is False
+    assert project.show_output_quick_toggles is False
     assert project.output_timecode_clock_color.lower() == "#445566"
     dialog.close()
 

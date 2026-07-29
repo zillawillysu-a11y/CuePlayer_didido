@@ -1,4 +1,4 @@
-"""Compact output toggles for the monitor clock (MIDI / MTC / LTC / Notes)."""
+"""Compact output toggles for the monitor clock (L→M / Note / MTC / LTC)."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ _CHIP_BASE = """
 QPushButton {
     min-height: 22px;
     max-height: 22px;
-    padding: 1px 9px;
+    padding: 1px 7px;
     border-radius: 11px;
     border: 1px solid #3f3f46;
     background: #18181b;
     color: #71717a;
     font-size: 10px;
     font-weight: 600;
-    letter-spacing: 0.3px;
+    letter-spacing: 0.2px;
 }
 QPushButton:hover:enabled {
     border-color: #52525b;
@@ -33,11 +33,6 @@ QPushButton:checked {
 QPushButton:checked:hover:enabled {
     border-color: %(accent_hover)s;
     color: %(accent_hover)s;
-}
-QPushButton:disabled {
-    background: #141416;
-    border-color: #27272a;
-    color: #3f3f46;
 }
 """
 
@@ -53,7 +48,7 @@ def _chip_style(*, accent: str, bg: str, accent_hover: str) -> str:
 class OutputQuickToggles(QWidget):
     """Pill toggles under the output timecode clock."""
 
-    toggled = Signal(str, bool)  # key: midi | mtc | ltc | notes
+    toggled = Signal(str, bool)  # key: translate | note | mtc | ltc
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,16 +58,28 @@ class OutputQuickToggles(QWidget):
         self._accent_bg = "#132218"
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 6, 0, 0)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 6, 0, 2)
+        layout.setSpacing(4)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._midi = self._make_chip("MIDI", "midi", "Master MIDI output")
-        self._mtc = self._make_chip("MTC", "mtc", "MTC Generator (Song Start TC)")
+        self._translate = self._make_chip(
+            "L→M",
+            "translate",
+            "Translate file LTC stripe → MTC (auto-enables MIDI)",
+        )
+        self._note = self._make_chip(
+            "Note",
+            "note",
+            "Send MIDI cue notes at marks (auto-enables MIDI)",
+        )
+        self._mtc = self._make_chip(
+            "MTC",
+            "mtc",
+            "MTC Generator from Song Start TC (auto-enables MIDI)",
+        )
         self._ltc = self._make_chip("LTC", "ltc", "LTC on audio output")
-        self._notes = self._make_chip("Notes", "notes", "Send MIDI cue notes at marks")
 
-        for chip in (self._midi, self._mtc, self._ltc, self._notes):
+        for chip in (self._translate, self._note, self._mtc, self._ltc):
             layout.addWidget(chip)
 
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -85,6 +92,9 @@ class OutputQuickToggles(QWidget):
         btn.setProperty("toggle_key", key)
         btn.toggled.connect(lambda checked, k=key: self._on_toggled(k, checked))
         return btn
+
+    def _all_chips(self) -> tuple[QPushButton, ...]:
+        return self._translate, self._note, self._mtc, self._ltc
 
     def set_accent_color(self, color: str) -> None:
         qcolor = QColor(color or "#3dd68c")
@@ -106,25 +116,18 @@ class OutputQuickToggles(QWidget):
             bg=self._accent_bg,
             accent_hover=self._accent_hover,
         )
-        for chip in (self._midi, self._mtc, self._ltc, self._notes):
+        for chip in self._all_chips():
             chip.setStyleSheet(style)
 
     def apply_settings(self, settings: AudioOutputSettings) -> None:
         self._syncing = True
         try:
-            self._midi.setChecked(bool(settings.midi_enabled))
+            self._translate.setChecked(bool(settings.ltc_to_mtc_translate))
+            self._note.setChecked(bool(settings.midi_cue_notes_enabled))
             self._mtc.setChecked(bool(settings.mtc_enabled))
             self._ltc.setChecked(bool(settings.ltc_enabled))
-            self._notes.setChecked(bool(settings.midi_cue_notes_enabled))
-            self._sync_dependent_enabled(settings)
         finally:
             self._syncing = False
-
-    def _sync_dependent_enabled(self, settings: AudioOutputSettings) -> None:
-        midi_on = bool(settings.midi_enabled)
-        self._mtc.setEnabled(midi_on)
-        self._notes.setEnabled(midi_on)
-        self._ltc.setEnabled(True)
 
     def _on_toggled(self, key: str, checked: bool) -> None:
         if self._syncing:

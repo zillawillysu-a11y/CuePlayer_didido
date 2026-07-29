@@ -1231,6 +1231,9 @@ class MainWindow(QMainWindow):
         self.monitor.output_timecode_clock_changed.connect(
             self._on_output_timecode_clock_changed
         )
+        self.monitor.output_quick_toggles_visibility_changed.connect(
+            self._on_output_quick_toggles_visibility_changed
+        )
         self.monitor.output_toggle_changed.connect(self._on_output_quick_toggle)
         self.monitor.audio_settings_requested.connect(self._open_audio_timecode)
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
@@ -4206,24 +4209,36 @@ class MainWindow(QMainWindow):
             visible=bool(getattr(p, "show_output_timecode_clock", True)),
             color=str(getattr(p, "output_timecode_clock_color", None) or "#3dd68c"),
         )
+        self.monitor.configure_output_quick_toggles(
+            visible=bool(getattr(p, "show_output_quick_toggles", True)),
+        )
         self.monitor.sync_output_quick_toggles(self.project.audio_output)
+
+    @staticmethod
+    def _midi_features_active(ao) -> bool:  # noqa: ANN001
+        return bool(
+            ao.mtc_enabled
+            or ao.midi_cue_notes_enabled
+            or getattr(ao, "ltc_to_mtc_translate", False)
+        )
 
     def _on_output_quick_toggle(self, key: str, enabled: bool) -> None:
         ao = self.project.audio_output
-        if key == "midi":
-            ao.midi_enabled = enabled
+        if key == "translate":
+            ao.ltc_to_mtc_translate = enabled
         elif key == "mtc":
-            if enabled:
-                ao.midi_enabled = True
             ao.mtc_enabled = enabled
         elif key == "ltc":
             ao.ltc_enabled = enabled
-        elif key == "notes":
-            if enabled:
-                ao.midi_enabled = True
+        elif key == "note":
             ao.midi_cue_notes_enabled = enabled
         else:
             return
+
+        if enabled and key in ("translate", "mtc", "note"):
+            ao.midi_enabled = True
+        elif not self._midi_features_active(ao):
+            ao.midi_enabled = False
 
         if ao.midi_enabled and not ao.midi_port_name:
             QMessageBox.warning(
@@ -4241,6 +4256,10 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         if warning:
             self.status.showMessage(warning, 5000)
+
+    def _on_output_quick_toggles_visibility_changed(self) -> None:
+        self.project.show_output_quick_toggles = self.monitor.show_output_quick_toggles
+        self._mark_dirty()
 
     def _refresh_output_timecode_clock(self, position: float | None = None) -> None:
         state = self.engine.output_timecode_state(position)

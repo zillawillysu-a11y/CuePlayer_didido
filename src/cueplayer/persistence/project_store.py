@@ -428,6 +428,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "playhead_color": project.playhead_color,
         "show_output_timecode_clock": bool(project.show_output_timecode_clock),
         "output_timecode_clock_color": project.output_timecode_clock_color,
+        "show_output_quick_toggles": bool(project.show_output_quick_toggles),
         "show_video_track": bool(project.show_video_track),
         "ma_export": ma_export_to_dict(project.ma_export),
         "audio_output": audio_output_to_dict(project.audio_output),
@@ -739,6 +740,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
         output_timecode_clock_color=_coerce_waveform_color(
             data.get("output_timecode_clock_color"), default="#3dd68c"
         ),
+        show_output_quick_toggles=bool(data.get("show_output_quick_toggles", True)),
         show_video_track=show_video_track,
         ma_export=dict_to_ma_export(data.get("ma_export")),
         audio_output=dict_to_audio_output(data.get("audio_output")),

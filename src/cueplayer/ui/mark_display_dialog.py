@@ -152,6 +152,15 @@ class MarkDisplayDialog(QDialog):
         )
         form2.addRow("Timecode Clock", self.tc_clock_box)
 
+        self.output_toggles_box = QCheckBox("Show output toggles (L→M · Note · MTC · LTC)")
+        self.output_toggles_box.setChecked(
+            bool(getattr(line_src, "show_output_quick_toggles", True))
+        )
+        self.output_toggles_box.setToolTip(
+            "Quick output switches under the clock — right-click the clock to toggle too"
+        )
+        form2.addRow("Output Toggles", self.output_toggles_box)
+
         self.tc_clock_color = ColorSwatchButton(
             getattr(line_src, "output_timecode_clock_color", None) or "#3dd68c"
         )
@@ -238,6 +247,7 @@ class MarkDisplayDialog(QDialog):
         self.wave_color.color_changed.connect(self._apply)
         self.playhead_color.color_changed.connect(self._apply)
         self.tc_clock_box.toggled.connect(self._apply)
+        self.output_toggles_box.toggled.connect(self._apply)
         self.tc_clock_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
@@ -353,6 +363,7 @@ class MarkDisplayDialog(QDialog):
             self._project.playhead_color = self.playhead_color.color()
             self._project.show_output_timecode_clock = self.tc_clock_box.isChecked()
             self._project.output_timecode_clock_color = self.tc_clock_color.color()
+            self._project.show_output_quick_toggles = self.output_toggles_box.isChecked()
         elif hasattr(target, "playhead_color"):
             target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
         primary, secondary = self._collect_now_lanes()
