@@ -228,6 +228,9 @@ def adopt_caches_for_path(
     Looks up a donor cache entry by matching mtime+size (and optionally the
     former absolute path stored in the LTC JSON). Used by Relink after a
     move/copy where ``former_path`` no longer exists on disk.
+
+    Also probes the waveform ``.npz`` keyed by ``(former_path, mtime, size)``
+    even when no LTC row exists — otherwise Media moves re-decode waveforms.
     """
     import shutil
 
@@ -264,6 +267,13 @@ def adopt_caches_for_path(
                 donor = key
                 channel = ch
                 break
+
+    # Waveform-only: synthesize the old key from the known former path + new
+    # file's mtime/size (move preserves those).
+    if donor is None and former_norm is not None:
+        synthetic = (former_norm, mtime_ns, size)
+        if _cache_file(synthetic).is_file():
+            donor = synthetic
 
     if donor is None:
         return False

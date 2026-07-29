@@ -15,6 +15,7 @@
 | **1–9** | 在 playhead 打對應 Mark |
 | 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
 | Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
+| 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |
 
 ## Cue List（右側）
 
@@ -63,7 +64,7 @@
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。
 
-**Save 時偵測外部媒體：** 若你從專案資料夾外（例如 Downloads）拖進音訊／影片，按 Save／另存時會問要不要拷貝進 `Media/<Setlist>/<歌名>/`。選 Yes＝拷貝後存檔（原檔不動）；No＝仍用絕對路徑存。Auto-save 不會跳出詢問。完整另存整包仍可用 **Collect Project Bundle**。
+**Save 時偵測外部媒體：** 若你從專案資料夾外（例如 Downloads）拖進音訊／影片，按 Save／另存時會問要不要拷貝進 `Media/<Setlist>/<歌名>/`。選 Yes＝拷貝後存檔（原檔不動）；No＝仍用絕對路徑存。Auto-save 不會跳出詢問。完整另存整包仍可用 **Collect Project Bundle**。已在 `Media/` 內的檔案可被多首歌共用（不會因 Save 被拆成複本）；搬 Folder 後空的舊資料夾會清掉。Bundle／搬移會沿用波形與 LTC 快取，避免重測。
 
 在程式裡搬歌曲到 Setlist Folder／改 Folder 名：只改專案記憶體；**磁碟上的 `Media/` 要等 Save／另存／Auto-save／Bundle 才會跟著排**。
 

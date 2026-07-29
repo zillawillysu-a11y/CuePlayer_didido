@@ -79,6 +79,7 @@ class TimelineWidget(QWidget):
     video_track_visibility_changed = Signal(bool)  # show_video_track
     ltc_track_visibility_changed = Signal(bool)  # show_ltc_track
     content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
+    view_changed = Signal()  # scroll / zoom / playhead — overview navigator should refresh
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
     lane_name_changed = Signal(int, str)  # lane_index, new name
@@ -1159,6 +1160,13 @@ class TimelineWidget(QWidget):
     def is_scrubbing(self) -> bool:
         return bool(self._scrubbing)
 
+    def visible_time_window(self) -> tuple[float, float]:
+        """Seconds [start, end] currently visible in the waveform viewport."""
+        start = self._time_for_x(float(self._header_width))
+        end = self._time_for_x(float(self.width()))
+        duration = self._duration()
+        return (max(0.0, start), min(duration, max(start + 0.01, end)))
+
     def set_position(self, seconds: float) -> None:
         if self._scrubbing:
             # Playhead is owned by the scrub gesture; ignore engine ticks so
@@ -1194,6 +1202,7 @@ class TimelineWidget(QWidget):
                 self.update()
         else:
             self.update()
+        self.view_changed.emit()
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
         lo = self._min_pixels_per_second()
@@ -1212,6 +1221,7 @@ class TimelineWidget(QWidget):
             self._center_on_playhead()
         self._invalidate_scrub_backdrop()
         self.update()
+        self.view_changed.emit()
 
     def zoom_by(self, factor: float, anchor_x: float | None = None) -> None:
         self.set_zoom(self._pixels_per_second * factor, anchor_x=anchor_x)
@@ -1223,6 +1233,7 @@ class TimelineWidget(QWidget):
         self._scroll_x = 0.0
         self._invalidate_scrub_backdrop()
         self.update()
+        self.view_changed.emit()
 
     def _release_view_pin(self, *, center_now: bool = True) -> None:
         """First scroll after a click-seek: allow centering again."""
@@ -1449,6 +1460,7 @@ class TimelineWidget(QWidget):
         if abs(self._scroll_x - prev_scroll) > 0.5:
             self._invalidate_scrub_backdrop()
         self.update()
+        self.view_changed.emit()
 
     def _invalidate_scrub_backdrop(self) -> None:
         self._scrub_backdrop = None
@@ -1969,6 +1981,7 @@ class TimelineWidget(QWidget):
                 self._clamp_scroll()
                 self._invalidate_scrub_backdrop()
                 self.update()
+                self.view_changed.emit()
         elif self._dragging_loop is not None and event.buttons() & Qt.MouseButton.LeftButton:
             dx = x - self._loop_drag_origin_x
             if abs(dx) >= self._drag_slop:
@@ -2261,6 +2274,7 @@ class TimelineWidget(QWidget):
             self._clamp_scroll()
             self._invalidate_scrub_backdrop()
             self.update()
+            self.view_changed.emit()
 
         # Windows touchpads often only send angleDelta (same as a mouse wheel),
         # so also check device type / synthesized source / scroll phases.
