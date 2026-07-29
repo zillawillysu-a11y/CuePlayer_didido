@@ -133,6 +133,7 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
         "ltc_to_mtc_translate": bool(settings.ltc_to_mtc_translate),
+        "midi_enabled": bool(settings.midi_enabled),
         "mtc_enabled": bool(settings.mtc_enabled),
         "midi_port_name": settings.midi_port_name,
         "midi_cue_notes_enabled": bool(settings.midi_cue_notes_enabled),
@@ -164,6 +165,13 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         dev_index = int(dev_index) if dev_index is not None else None
     except (TypeError, ValueError):
         dev_index = None
+    ltc_to_mtc = bool(raw.get("ltc_to_mtc_translate", False))
+    mtc_on = bool(raw.get("mtc_enabled", False))
+    notes_on = bool(raw.get("midi_cue_notes_enabled", False))
+    if "midi_enabled" in raw:
+        midi_on = bool(raw.get("midi_enabled"))
+    else:
+        midi_on = mtc_on or notes_on or ltc_to_mtc
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
         output_device_index=dev_index,
@@ -177,10 +185,11 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
-        ltc_to_mtc_translate=bool(raw.get("ltc_to_mtc_translate", False)),
-        mtc_enabled=bool(raw.get("mtc_enabled", False)),
+        ltc_to_mtc_translate=ltc_to_mtc,
+        midi_enabled=midi_on,
+        mtc_enabled=mtc_on,
         midi_port_name=str(raw.get("midi_port_name") or ""),
-        midi_cue_notes_enabled=bool(raw.get("midi_cue_notes_enabled", False)),
+        midi_cue_notes_enabled=notes_on,
         midi_cue_channel=max(1, min(16, int(raw.get("midi_cue_channel", 1) or 1))),
         midi_cue_velocity=max(1, min(127, int(raw.get("midi_cue_velocity", 100) or 100))),
         midi_main_base_note=max(0, min(127, int(raw.get("midi_main_base_note", 36) or 36))),

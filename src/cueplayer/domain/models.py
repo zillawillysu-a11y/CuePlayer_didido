@@ -834,9 +834,11 @@ class AudioOutputSettings:
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
     # Decode file LTC stripe and drive MTC with those numbers (instead of generator).
-    # Only applies when ltc_source != "generator" and mtc_enabled is True.
+    # Only applies when ltc_source != "generator" and MIDI is on.
     ltc_to_mtc_translate: bool = False
-    # MIDI Timecode quarter-frame output (same song start TC + FPS as LTC).
+    # Master MIDI output switch — port + sub-features only active when True.
+    midi_enabled: bool = False
+    # MIDI Timecode quarter-frame output (Song Start TC + playhead).
     mtc_enabled: bool = False
     midi_port_name: str = ""
     # MIDI Note pulses when enabled mark lanes are crossed during play.
@@ -845,6 +847,19 @@ class AudioOutputSettings:
     midi_cue_velocity: int = 100
     midi_main_base_note: int = 36  # C2 + (lane.index - 1)
     midi_button_base_note: int = 48  # C3 + (lane.index - 1)
+
+    def effective_mtc_output(self) -> bool:
+        """MTC quarter-frames (generator and/or file LTC translate)."""
+        return bool(
+            self.midi_enabled
+            and (self.mtc_enabled or self.ltc_to_mtc_translate)
+        )
+
+    def effective_midi_cue_notes(self) -> bool:
+        return bool(self.midi_enabled and self.midi_cue_notes_enabled)
+
+    def effective_ltc_to_mtc_translate(self) -> bool:
+        return bool(self.midi_enabled and self.ltc_to_mtc_translate)
 
 
 @dataclass

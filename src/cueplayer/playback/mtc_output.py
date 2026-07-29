@@ -143,6 +143,7 @@ class MtcOutput:
     def configure(
         self,
         *,
+        midi_master: bool,
         enabled: bool,
         port_name: str,
         start_timecode: str,
@@ -150,11 +151,18 @@ class MtcOutput:
     ) -> str | None:
         """
         Apply settings. Returns an error message if the port cannot be opened
-        while enabled; otherwise None.
+        while MIDI is on; otherwise None.
+
+        ``midi_master`` opens/closes the port. ``enabled`` controls whether MTC
+        quarter-frames are sent (generator and/or file-LTC translate).
         """
         with self._lock:
             new_port_name = (port_name or "").strip()
             port_changed = new_port_name != self._port_name
+            if not midi_master:
+                self._enabled = False
+                self._close_port_locked()
+                return None
             self._enabled = bool(enabled)
             self._port_name = new_port_name
             self._fps = float(fps) if fps > 0 else 30.0
@@ -167,11 +175,8 @@ class MtcOutput:
                 return None
             if self._port_name:
                 err = self._reopen_port_locked()
-                if self._enabled:
-                    return err
-                # Pre-open while disabled so first enable does not race Bome.
                 if err:
-                    log.debug("MIDI pre-open (MTC off): %s", err)
+                    return err
             return None
 
     def set_timebase(self, start_timecode: str, fps: float) -> None:

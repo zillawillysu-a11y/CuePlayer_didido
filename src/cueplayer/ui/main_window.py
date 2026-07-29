@@ -4291,8 +4291,14 @@ class MainWindow(QMainWindow):
             parts = []
             if settings.ltc_enabled:
                 parts.append("LTC on")
-            if settings.mtc_enabled:
-                parts.append("MTC on")
+            if settings.midi_enabled:
+                parts.append("MIDI on")
+                if settings.mtc_enabled:
+                    parts.append("MTC")
+                if settings.ltc_to_mtc_translate:
+                    parts.append("Translate")
+                if settings.midi_cue_notes_enabled:
+                    parts.append("Notes")
             msg = "Audio routing updated"
             if parts:
                 msg += " · " + ", ".join(parts)

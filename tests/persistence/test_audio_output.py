@@ -42,6 +42,7 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
         ltc_gain=0.55,
         ltc_channels=[2],
         mtc_enabled=True,
+        midi_enabled=True,
         midi_port_name="loopMIDI Port",
         midi_cue_notes_enabled=True,
         midi_cue_channel=2,
@@ -58,6 +59,7 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
     assert ao.ltc_gain == pytest.approx(0.55)
     assert ao.ltc_channels == [2]
     assert ao.mtc_enabled is True
+    assert ao.midi_enabled is True
     assert ao.midi_port_name == "loopMIDI Port"
     assert ao.midi_cue_notes_enabled is True
     assert ao.midi_cue_channel == 2

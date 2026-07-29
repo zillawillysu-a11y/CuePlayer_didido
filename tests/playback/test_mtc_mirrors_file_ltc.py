@@ -49,6 +49,7 @@ def test_engine_mirrors_file_ltc_into_mtc_origin() -> None:
         AudioOutputSettings(
             ltc_enabled=True,
             ltc_source="source_right",
+            midi_enabled=True,
             mtc_enabled=True,
             midi_port_name="",
         )

@@ -166,7 +166,11 @@ class AudioEngine(QObject):
 
     @property
     def mtc_enabled(self) -> bool:
-        return bool(self._audio_settings.mtc_enabled)
+        return bool(self._audio_settings.effective_mtc_output())
+
+    @property
+    def midi_enabled(self) -> bool:
+        return bool(self._audio_settings.midi_enabled)
 
     def output_timecode_state(
         self, position_seconds: float | None = None
@@ -180,13 +184,17 @@ class AudioEngine(QObject):
             outputs.append("LTC")
         s = self._audio_settings
         translate_active = (
-            s.mtc_enabled
+            s.midi_enabled
             and not s.ltc_enabled
-            and s.ltc_to_mtc_translate
+            and s.effective_ltc_to_mtc_translate()
             and s.ltc_source != "generator"
         )
-        if s.mtc_enabled:
+        if s.midi_enabled and s.mtc_enabled:
             outputs.append("LTC → MTC" if translate_active else "MTC")
+        elif translate_active:
+            outputs.append("LTC → MTC")
+        if s.effective_midi_cue_notes():
+            outputs.append("Notes")
 
         tc_str = "—"
         if outputs:
@@ -329,8 +337,7 @@ class AudioEngine(QObject):
         s = self._audio_settings
         if s.ltc_source == "generator":
             return None
-        # Only decode if LTC output is on, or translate mode is explicitly enabled.
-        if not s.ltc_enabled and not s.ltc_to_mtc_translate:
+        if not s.ltc_enabled and not s.effective_ltc_to_mtc_translate():
             return None
         return self._resolved_file_ltc_channel(require_settings=False)
 
@@ -358,7 +365,7 @@ class AudioEngine(QObject):
         self, position_seconds: float, *, force: bool = False
     ) -> None:
         """When file LTC is active, lock MTC origin to the decoded stripe TC."""
-        if not self._audio_settings.mtc_enabled:
+        if not self._audio_settings.effective_mtc_output():
             return
         if self._decode_source_channel() is None:
             return
@@ -535,6 +542,7 @@ class AudioEngine(QObject):
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
             ltc_to_mtc_translate=bool(getattr(settings, "ltc_to_mtc_translate", False)),
+            midi_enabled=bool(getattr(settings, "midi_enabled", False)),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
             midi_cue_notes_enabled=bool(getattr(settings, "midi_cue_notes_enabled", False)),
@@ -562,23 +570,22 @@ class AudioEngine(QObject):
         self._refresh_source_routing_cache()
 
         mtc_err = self._mtc.configure(
-            enabled=self._audio_settings.mtc_enabled,
+            midi_master=bool(self._audio_settings.midi_enabled),
+            enabled=bool(self._audio_settings.effective_mtc_output()),
             port_name=self._audio_settings.midi_port_name,
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
-        # Share the MTC port for cue notes whenever they use the same MIDI Out.
-        # The port stays open even when MTC generator is off, so disabling MTC
-        # must not make cue notes try to open a second handle (Bome rejects that).
+        # Share the MTC port for cue notes whenever MIDI is on.
         share_midi_port = bool(
-            self._audio_settings.midi_cue_notes_enabled
+            self._audio_settings.midi_enabled
             and (self._audio_settings.midi_port_name or "").strip()
         )
         self._midi_cues.set_send_function(
             self._mtc.send_message if share_midi_port else None
         )
         cue_err = self._midi_cues.configure(
-            enabled=bool(self._audio_settings.midi_cue_notes_enabled),
+            enabled=bool(self._audio_settings.effective_midi_cue_notes()),
             port_name=self._audio_settings.midi_port_name,
             channel=int(self._audio_settings.midi_cue_channel),
             velocity=int(self._audio_settings.midi_cue_velocity),
@@ -875,7 +882,7 @@ class AudioEngine(QObject):
         self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
         self._midi_cues.on_play(self.position)
-        if self._audio_settings.mtc_enabled or self._audio_settings.midi_cue_notes_enabled:
+        if self._audio_settings.effective_mtc_output() or self._audio_settings.effective_midi_cue_notes():
             self._mtc_timer.start()
         self.playing_changed.emit(True)
 
