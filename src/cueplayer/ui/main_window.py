@@ -923,7 +923,13 @@ class MainWindow(QMainWindow):
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
         self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
-        self.engine.position_changed.connect(self.video_sync.update_position)
+        # Video decode must not run ahead of timeline/MIDI on the UI thread.
+        # QueuedConnection lets playhead + cue-list update finish first; decode
+        # follows on the next event-loop turn (still driven by the audio clock).
+        self.engine.position_changed.connect(
+            self.video_sync.update_position,
+            Qt.ConnectionType.QueuedConnection,
+        )
         # Throttles video decode to a display cadence while playing, so the
         # audio clock's ~60Hz position ticks can't starve the UI thread the
         # timeline also lives on — see VideoSyncController.set_playing().
