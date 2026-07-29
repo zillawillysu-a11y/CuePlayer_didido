@@ -5,7 +5,9 @@ period search via autocorrelation / comb filtering, then pick the tapped
 pulse. We follow that shape, but:
 
 - analyze at 22.05 kHz on one dense ~25 s window (fast)
-- resolve half/double with onset-density fit (ballad vs 8th-hat grooves)
+- resolve half/double with density + grid contrast (not dens² — that
+  locked busy 8th-hat grooves onto 2×, e.g. 95→190)
+- prefer the show tapping band (≈88–142) when comb is competitive
 - refine ±2 BPM on a 0.25 grid so values land on 73 / 136 / 170, not 72/137/169
 
 ``librosa`` is used only for onset strength (+ optional resample). Numba JIT
@@ -19,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 8
+BPM_DETECT_VERSION = 9
 
 _BPM_READ_SECONDS = 60.0
 _BPM_ANALYZE_SECONDS = 45.0
@@ -305,16 +307,21 @@ def _pick_tactus(
     candidates: list[tuple[float, float]],
     *,
     onset_rate: float,
+    corr: np.ndarray | None = None,
 ) -> float | None:
-    """Pick tempo like MixMeister: strongest period, then choose octave by density."""
-    del onset_env, env_rate
+    """Pick tempo like MixMeister: strongest period, then choose octave carefully.
+
+    Busy 8th/16th hats often make density prefer 2× (95→190). Prefer the
+    comb peak when it sits in the common show tapping band, and use grid
+    contrast as a tie-breaker instead of squaring density.
+    """
     if not candidates:
         return None
-    seed = max(candidates, key=lambda item: item[0])[1]
+    seed_comb, seed = max(candidates, key=lambda item: item[0])
     octave_pool: list[float] = []
     for factor in (0.5, 1.0, 2.0):
         octave_pool.append(seed * factor)
-    for _comb, bpm in candidates[:12]:
+    for _comb, bpm in candidates[:16]:
         for factor in (0.5, 1.0, 2.0):
             rel = seed * factor
             if abs(bpm - rel) / max(rel, 1e-6) < 0.08:
@@ -330,12 +337,27 @@ def _pick_tactus(
         if key < 60.0 * 0.98 or key > 200.0 * 1.02:
             continue
         comb = next((c for c, b in candidates if abs(b - key) < 0.13), 0.0)
+        if comb <= 0.0 and corr is not None:
+            comb = _comb_score(corr, env_rate, key)
         if comb <= 0.0:
-            comb = max((c for c, _b in candidates), default=0.0) * 0.25
+            comb = float(seed_comb) * 0.25
         dens = _density_fit(onset_rate, key)
         prior = _tempo_prior(key)
-        # Density decides half/double; comb keeps near-peak accuracy.
-        score = float(comb) * dens * dens * (0.40 + 0.60 * prior)
+        grid = _grid_contrast(onset_env, env_rate, key)
+        grid_term = 0.65 + 0.35 * (
+            max(0.2, min(float(grid) if grid > 0 else 0.2, 8.0)) / 4.0
+        )
+        # Linear dens (not dens²): avoids locking onto hi-hat doubles.
+        score = float(comb) * (0.48 + 0.52 * dens) * (0.48 + 0.52 * prior) * grid_term
+        if abs(key - seed) / max(seed, 1e-6) < 0.06:
+            score *= 1.10
+        # Show tapping band: keep 金黃色/彗尾-style mid tempos when comb is strong.
+        if 88.0 <= key <= 142.0 and comb >= 0.92 * float(seed_comb):
+            score *= 1.16
+        elif key >= 178.0 and comb < 0.985 * float(seed_comb):
+            score *= 0.88
+        elif key <= 72.0 and comb < 0.985 * float(seed_comb):
+            score *= 0.90
         ranked.append((score, key))
     if not ranked:
         return float(seed)
@@ -395,7 +417,9 @@ def _estimate_core(
     corr = corr[len(corr) // 2 :].astype(np.float64)
     _report_progress(progress, 65)
     candidates = _candidate_tempos(corr, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
-    picked = _pick_tactus(onset, env_rate, candidates, onset_rate=onset_rate)
+    picked = _pick_tactus(
+        onset, env_rate, candidates, onset_rate=onset_rate, corr=corr
+    )
     if picked is None:
         return None
     _report_progress(progress, 85)
