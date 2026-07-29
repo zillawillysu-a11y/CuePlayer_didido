@@ -1404,6 +1404,15 @@ class TimelineWidget(QWidget):
     def _invalidate_scrub_backdrop(self) -> None:
         self._scrub_backdrop = None
 
+    def invalidate_static_layers(self) -> None:
+        """Drop the play/scrub pixmap cache so marks/clips appear immediately.
+
+        While playing, paint blits ``_scrub_backdrop`` (static layers + marks)
+        and only redraws the playhead. Mark/clip mutations must clear that
+        cache — otherwise the new mark stays invisible until pause.
+        """
+        self._invalidate_scrub_backdrop()
+
     def _scrub_backdrop_valid(self) -> bool:
         pm = self._scrub_backdrop
         if pm is None or pm.isNull():

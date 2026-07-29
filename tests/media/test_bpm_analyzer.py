@@ -269,6 +269,18 @@ def test_estimate_bpm_silence_returns_none() -> None:
     assert estimate_bpm(silence, sr) is None
 
 
+def test_prefer_show_tactus_halves_absurd_double() -> None:
+    from cueplayer.media.bpm_analyzer import _prefer_show_tactus
+
+    assert _prefer_show_tactus(204.0) == 102.0
+    assert _prefer_show_tactus(200.0) == 100.0
+    assert _prefer_show_tactus(192.0) == 96.0
+    # Legitimate fast show tempos stay put.
+    assert _prefer_show_tactus(170.0) == 170.0
+    assert _prefer_show_tactus(167.0) == 167.0
+    assert _prefer_show_tactus(135.0) == 135.0
+
+
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [

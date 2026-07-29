@@ -199,7 +199,7 @@ class SetlistWidget(QTableWidget):
     _TRIANGLE_HIT_MIN_PX = 28
     _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
     # Wide enough for bold "LTC L R" badge; Fixed so Song/BPM never squeeze it.
-    _LTC_COLUMN_WIDTH = 78
+    _LTC_COLUMN_WIDTH = 54
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -612,6 +612,24 @@ class SetlistWidget(QTableWidget):
             return drop_row
         return self.rowCount()
 
+    def _category_drop_target(self, pos) -> str | None:  # noqa: ANN001
+        """Folder id when the pointer is on (or just under) a folder title row.
+
+        Dropping selected songs onto a folder header must assign them to that
+        folder — never dump them into the main (uncategorized) list.
+        """
+        for row in range(self.rowCount()):
+            if self.row_kind(row) != "category":
+                continue
+            rect = self._row_visual_rect(row)
+            # Slightly extend below the header so a drop near the title counts.
+            if rect.adjusted(0, -1, 0, 8).contains(pos):
+                return self.row_category_id(row)
+        index = self.indexAt(pos)
+        if index.isValid() and self.row_kind(index.row()) == "category":
+            return self.row_category_id(index.row())
+        return None
+
     def _set_insert_indicator(self, row: int | None) -> None:
         if self._insert_indicator_row == row:
             return
@@ -810,12 +828,17 @@ class SetlistWidget(QTableWidget):
         # CopyAction: Qt must not delete source rows (MoveAction clears the list).
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
-        drop_index = self.indexAt(pos)
-        if drop_index.isValid() and self.row_kind(drop_index.row()) == "category":
-            cat_id = self.row_category_id(drop_index.row())
-            if cat_id:
-                self.songs_moved_to_category.emit(ids, cat_id)
-                return
+        cat_id = self._category_drop_target(pos)
+        if cat_id:
+            self.songs_moved_to_category.emit(ids, cat_id)
+            return
+        # Insert slot immediately under a folder header → into that folder.
+        if drop_row > 0 and drop_row - 1 < self.rowCount():
+            if self.row_kind(drop_row - 1) == "category":
+                under = self.row_category_id(drop_row - 1)
+                if under:
+                    self.songs_moved_to_category.emit(ids, under)
+                    return
         self.rows_reordered.emit(ids, drop_row)
 
 
@@ -2511,7 +2534,13 @@ class MainWindow(QMainWindow):
         edit_action = menu.addAction("Edit…")
         duplicate_action = menu.addAction("Duplicate")
         add_action = menu.addAction("Add Song…")
-        new_category_action = menu.addAction("New Folder…")
+        selected_songs = self._selected_songs()
+        if selected_songs:
+            new_category_action = menu.addAction(
+                f"New Folder with Selected ({len(selected_songs)})…"
+            )
+        else:
+            new_category_action = menu.addAction("New Folder…")
         move_menu = menu.addMenu("Move to Folder")
         remove_from_folder_action = move_menu.addAction("Main list (no folder)")
         remove_from_folder_action.setEnabled(False)
@@ -2547,7 +2576,6 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
         has_selection = bool(self._selected_song_indexes()) or self.song_list.currentRow() >= 0
-        selected_songs = self._selected_songs()
         edit_action.setEnabled(has_selection)
         duplicate_action.setEnabled(has_selection)
         remove_from_folder_action.setEnabled(
@@ -2836,16 +2864,38 @@ class MainWindow(QMainWindow):
         state = "collapsed" if category.collapsed else "expanded"
         self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
 
-    def _add_setlist_category(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Setlist Folder", "Folder name:")
+    def _add_setlist_category(self, *, wrap_selected: bool | None = None) -> None:
+        selected = self._selected_songs()
+        if wrap_selected is None:
+            wrap_selected = bool(selected)
+        title = "New Folder with Selected" if wrap_selected and selected else "New Setlist Folder"
+        prompt = (
+            f"Folder name for {len(selected)} selected song(s):"
+            if wrap_selected and selected
+            else "Folder name:"
+        )
+        name, ok = QInputDialog.getText(self, title, prompt)
         if not ok:
             return
         category = SetlistCategory.create(name)
         with self._setlist_edit("New Folder"):
             self.project.setlist_categories.append(category)
-            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            if wrap_selected and selected:
+                self._assign_songs_to_category(selected, category.id)
+            indexes = (
+                [self.project.songs.index(s) for s in selected]
+                if wrap_selected and selected
+                else (self._selected_song_indexes() or None)
+            )
+            self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
-        self.status.showMessage(f'Created folder "{category.name}"', 2500)
+        if wrap_selected and selected:
+            self.status.showMessage(
+                f'Created folder "{category.name}" with {len(selected)} song(s)',
+                2500,
+            )
+        else:
+            self.status.showMessage(f'Created folder "{category.name}"', 2500)
 
     def _rename_setlist_category(self, category_id: str) -> None:
         category = self.project.setlist_category_by_id(category_id)
@@ -2919,6 +2969,7 @@ class MainWindow(QMainWindow):
         if category is None:
             return
         menu = QMenu(self)
+        add_song_action = menu.addAction("Add Song…")
         rename_action = menu.addAction("Rename Folder…")
         toggle_action = menu.addAction(
             "Expand Folder" if category.collapsed else "Collapse Folder"
@@ -2933,7 +2984,9 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         delete_action = menu.addAction("Delete Folder")
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
-        if chosen is rename_action:
+        if chosen is add_song_action:
+            self._add_song(category_id)
+        elif chosen is rename_action:
             self._rename_setlist_category(category_id)
         elif chosen is toggle_action:
             self._toggle_setlist_category(category_id)
@@ -3330,10 +3383,10 @@ class MainWindow(QMainWindow):
             return float(self.project.songs[-1].fps or 30.0)
         return 30.0
 
-    def _add_song(self) -> None:
+    def _add_song(self, category_id: str | None = None) -> None:
         draft = SongDraft(
             name=self._next_song_default_name(),
-            setlist_number=self._next_setlist_number(),
+            setlist_number=self._next_setlist_number(category_id),
             ma_export_name="",
             start_timecode=self._default_start_timecode(),
             fps=self._default_fps(),
@@ -3345,14 +3398,18 @@ class MainWindow(QMainWindow):
         song = self.project.new_song(result.name)
         with self._setlist_edit("Add Song"):
             self._apply_draft_to_song(song, result)
+            if category_id is not None:
+                song.category_id = category_id
             self.project.songs.append(song)
             index = len(self.project.songs) - 1
             self._rebuild_song_list(select_indexes=[index])
             self._activate_song(index, stop_playback=True)
             self._mark_dirty()
+        folder = self.project.setlist_category_by_id(category_id) if category_id else None
+        where = f' in "{folder.name}"' if folder is not None else ""
         ma = f" · MA {song.ma_export_name}" if song.ma_export_name else ""
         self.status.showMessage(
-            f"Added song: #{format_setlist_number(song.setlist_number)} {song.name}{ma}",
+            f"Added song{where}: #{format_setlist_number(song.setlist_number)} {song.name}{ma}",
             3000,
         )
 
@@ -3773,11 +3830,17 @@ class MainWindow(QMainWindow):
             self._delete_marks(ids)
 
     def _on_marks_changed(self) -> None:
+        self.timeline.invalidate_static_layers()
+        self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
         self._refresh_status()
 
     def _refresh_marks_ui(self) -> None:
+        # CRITICAL: while playing, the timeline paints from a cached backdrop.
+        # Invalidate it so a new Mark appears on the very next paint — never
+        # wait for pause / auto-scroll to clear the cache.
+        self.timeline.invalidate_static_layers()
         self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)

@@ -10,6 +10,7 @@ pulse. We follow that shape, but:
 - resolve half/double with density + kick/full agreement, then
   activity-weighted octave-fold consensus across windows (fixes ±1 drift
   like 135→136 / 136→137 on real show stems)
+- fold absurd double-time locks above ~190 (204→102)
 - refine ±2 BPM on a 0.25 comb grid, then snap to show integers
 
 ``librosa`` is used for onset strength / STFT (+ optional resample). Numba
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 11
+BPM_DETECT_VERSION = 12
 
 _BPM_READ_SECONDS = 75.0
 _BPM_ANALYZE_SECONDS = 75.0
@@ -35,6 +36,8 @@ _WINDOW_HOP_SECONDS = 5.0
 _MAX_WINDOWS = 10
 _DEFAULT_MIN_BPM = 60.0
 _DEFAULT_MAX_BPM = 200.0
+# Show tapping almost never sits above this as the pulse; prefer half (204→102).
+_SHOW_TACTUS_CEILING = 190.0
 _KICK_MAX_HZ = 180.0
 
 ProgressFn = Callable[[int], None]
@@ -601,6 +604,18 @@ def _consensus_bpm(
     return float(ranked[0][0])
 
 
+def _prefer_show_tactus(bpm: float) -> float:
+    """Halve absurd double-time locks above the show ceiling (204→102).
+
+    Legitimate fast taps like Neon (~170) stay put; only values above
+    ``_SHOW_TACTUS_CEILING`` fold down while half remains a valid tempo.
+    """
+    value = float(bpm)
+    while value > _SHOW_TACTUS_CEILING and (value * 0.5) >= _DEFAULT_MIN_BPM:
+        value = _snap_show_bpm(value * 0.5)
+    return float(value)
+
+
 def _estimate_core(
     mono: np.ndarray,
     sample_rate: int,
@@ -635,8 +650,10 @@ def _estimate_core(
 
     _report_progress(progress, 90)
     consensus = _consensus_bpm(estimates, onset_rates, activities)
+    if consensus is None:
+        return None
     _report_progress(progress, 95)
-    return consensus
+    return _prefer_show_tactus(consensus)
 
 
 def estimate_bpm(

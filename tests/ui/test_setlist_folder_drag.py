@@ -48,7 +48,27 @@ def _song(widget: SetlistWidget, row: int, song_id: str) -> None:
     widget.setItem(row, SetlistWidget.COL_NUM, item)
 
 
-def test_folder_insert_index_counts_headers_before_drop_row(app: QApplication) -> None:
+def test_category_drop_target_hits_folder_title(app: QApplication) -> None:
+    widget = SetlistWidget()
+    widget.resize(320, 240)
+    widget.setRowCount(4)
+    for row in range(4):
+        widget.setRowHeight(row, 28)
+    _song(widget, 0, "s0")
+    _cat(widget, 1, "folder-a")
+    _song(widget, 2, "s1")
+    _song(widget, 3, "s2")
+    widget.show()
+    app.processEvents()
+
+    rect = widget._row_visual_rect(1)
+    assert widget._category_drop_target(QPoint(20, rect.center().y())) == "folder-a"
+    # Just under the header still counts as the folder (not main list).
+    assert widget._category_drop_target(QPoint(20, rect.bottom() + 4)) == "folder-a"
+    # Deep into a song row under the folder is not a folder-title drop.
+    song_rect = widget._row_visual_rect(3)
+    assert widget._category_drop_target(QPoint(20, song_rect.center().y())) is None
+
     widget = SetlistWidget()
     widget.setRowCount(5)
 
