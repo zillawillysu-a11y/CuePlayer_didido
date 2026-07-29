@@ -866,7 +866,7 @@ class AudioEngine(QObject):
         self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
         self._midi_cues.on_play(self.position)
-        if self._audio_settings.mtc_enabled:
+        if self._audio_settings.mtc_enabled or self._audio_settings.midi_cue_notes_enabled:
             self._mtc_timer.start()
         self.playing_changed.emit(True)
 
@@ -960,13 +960,12 @@ class AudioEngine(QObject):
             pos = self.raw_position
             self._sync_mtc_to_file_ltc(pos)
             self._mtc.tick(pos)
+            self._midi_cues.update(pos)
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
             return
         pos = self.position
-        if self._playing:
-            self._midi_cues.update(pos)
         self.position_changed.emit(pos)
         with self._lock:
             # `_position_frame` is bookkept in playback-rate frames (see
