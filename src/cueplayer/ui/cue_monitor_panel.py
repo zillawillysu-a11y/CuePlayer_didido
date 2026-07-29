@@ -1038,6 +1038,20 @@ class CueMonitorPanel(QWidget):
         menu.addAction(show_primary)
         menu.addAction(show_secondary)
         menu.addSeparator()
+        show_primary_cue_id = QAction("Show Cue ID on Primary", self)
+        show_primary_cue_id.setCheckable(True)
+        show_primary_cue_id.setChecked(bool(self._song.now_primary_show_cue_id))
+        show_primary_cue_id.setToolTip("Show or hide Cue ID lines on the PRIMARY NOW card")
+        show_primary_cue_id.setEnabled(bool(self._song.now_primary_visible))
+
+        def _toggle_primary_cue_id(checked: bool) -> None:
+            self._song.now_primary_show_cue_id = bool(checked)
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
+        menu.addAction(show_primary_cue_id)
+        menu.addSeparator()
         place_right = QAction("Secondary on the right", self)
         place_right.setCheckable(True)
         place_right.setChecked(self._now_placement == "right")
@@ -1439,7 +1453,17 @@ class CueMonitorPanel(QWidget):
         lane_name = lane.name if lane is not None else title
         track.setText(f"{title} · {lane_name}")
         track.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 600;")
-        cue.setText(mark_now_body(self._song, active, show_cue_id=not secondary))
+        cue.setText(
+            mark_now_body(
+                self._song,
+                active,
+                show_cue_id=(
+                    False
+                    if secondary
+                    else bool(self._song.now_primary_show_cue_id)
+                ),
+            )
+        )
         cue.setStyleSheet(_now_card_style(accent, secondary=secondary))
         active_ids.add(active.id)
         return active.id

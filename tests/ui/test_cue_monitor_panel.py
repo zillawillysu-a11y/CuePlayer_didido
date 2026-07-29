@@ -26,6 +26,13 @@ def test_mark_now_body_primary_cue_id_with_note() -> None:
     assert mark_now_body(song, mark, show_cue_id=True) == "Main\n-\nCue 3\nChorus"
 
 
+def test_mark_now_body_hides_cue_id_when_disabled() -> None:
+    song = Song.create("Test")
+    mark = song.add_mark(1, 1.0, display_name="Verse")
+    assert mark.main_cue_id == "1"
+    assert mark_now_body(song, mark, show_cue_id=False) == "Main\nVerse"
+
+
 def test_mark_now_body_type_only_when_note_empty() -> None:
     song = Song.create("Test")
     mark = Mark.create(lane_index=1, time_seconds=1.0, display_name="")
