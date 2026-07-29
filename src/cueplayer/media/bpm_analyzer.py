@@ -4,10 +4,12 @@ MixMeister BPM Analyzer is the user's ground-truth tool: onset strength →
 period search via autocorrelation / comb filtering, then pick the tapped
 pulse. We follow that shape, but:
 
-- analyze at 22.05 kHz on one dense ~25 s window (fast)
+- analyze at 22.05 kHz across several ~25 s windows (not only the densest)
 - full-spectrum onset for busy grooves; kick-band (<180 Hz) onset to
   stop soft ballads locking onto 2× (73→146, 83→164)
-- resolve half/double with density + kick/full agreement
+- resolve half/double with density + kick/full agreement, then
+  activity-weighted octave-fold consensus across windows (fixes ±1 drift
+  like 135→136 / 136→137 on real show stems)
 - refine ±2 BPM on a 0.25 comb grid, then snap to show integers
 
 ``librosa`` is used for onset strength / STFT (+ optional resample). Numba
@@ -16,18 +18,21 @@ JIT is warmed once in the background so the first real detect is not a hitch.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 10
+BPM_DETECT_VERSION = 11
 
-_BPM_READ_SECONDS = 60.0
-_BPM_ANALYZE_SECONDS = 45.0
+_BPM_READ_SECONDS = 75.0
+_BPM_ANALYZE_SECONDS = 75.0
 _ANALYZE_SR = 22050
 _HOP = 256
 _WINDOW_SECONDS = 25.0
+_WINDOW_HOP_SECONDS = 5.0
+_MAX_WINDOWS = 10
 _DEFAULT_MIN_BPM = 60.0
 _DEFAULT_MAX_BPM = 200.0
 _KICK_MAX_HZ = 180.0
@@ -447,6 +452,155 @@ def _refine_nearby(
     return best_bpm
 
 
+def _window_activity(mono: np.ndarray, sample_rate: int) -> float:
+    frame = max(256, int(sample_rate * 0.02))
+    n = (mono.size // frame) * frame
+    if n < frame * 8:
+        return 0.0
+    frames = mono[:n].reshape(-1, frame)
+    energy = np.sqrt(np.mean(frames * frames, axis=1))
+    onset = np.maximum(0.0, np.diff(energy, prepend=energy[:1]))
+    peaky = float(np.percentile(onset, 92))
+    return float(peaky * peaky * (float(np.mean(onset * onset)) + 1e-12))
+
+
+def _analysis_windows(mono: np.ndarray, sample_rate: int) -> list[np.ndarray]:
+    """Densest groove window plus evenly spaced companions across the buffer."""
+    win_n = int(sample_rate * _WINDOW_SECONDS)
+    if mono.size < sample_rate * 4:
+        return []
+    if mono.size <= win_n:
+        return [mono]
+
+    hop = max(sample_rate // 2, int(sample_rate * _WINDOW_HOP_SECONDS))
+    max_start = mono.size - win_n
+    starts = list(range(0, max_start + 1, hop))
+    if starts[-1] != max_start:
+        starts.append(max_start)
+    if len(starts) > _MAX_WINDOWS:
+        idx = np.linspace(0, len(starts) - 1, num=_MAX_WINDOWS, dtype=int)
+        starts = [starts[int(i)] for i in idx]
+
+    windows = [mono[s : s + win_n] for s in starts]
+    # Always include densest groove slice (may overlap a companion window).
+    windows.append(_densest_window(mono, sample_rate, _WINDOW_SECONDS))
+    return windows
+
+
+def _estimate_one_window(
+    mono: np.ndarray,
+    sample_rate: int,
+    *,
+    min_bpm: float,
+    max_bpm: float,
+) -> tuple[float, float, float] | None:
+    """Return (snapped_bpm, onset_rate, activity) for one analysis window."""
+    onset = _onset_envelope(mono, sample_rate)
+    if onset is None:
+        return None
+    onset_rate = _onset_rate_per_sec(mono, sample_rate)
+    env_rate = float(sample_rate) / float(_HOP)
+    corr = np.correlate(onset, onset, mode="full")
+    corr = corr[len(corr) // 2 :].astype(np.float64)
+    candidates = _candidate_tempos(corr, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+    picked = _pick_tactus(
+        onset, env_rate, candidates, onset_rate=onset_rate, corr=corr
+    )
+    if picked is None:
+        return None
+    kick = _kick_band_seed(mono, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+    picked = _merge_full_and_kick(picked, kick, onset_rate=onset_rate)
+    refined = _refine_nearby(
+        onset,
+        corr,
+        env_rate,
+        picked,
+        onset_rate=onset_rate,
+        min_bpm=min_bpm,
+        max_bpm=max_bpm,
+    )
+    snapped = _snap_show_bpm(refined)
+    return float(snapped), float(onset_rate), _window_activity(mono, sample_rate)
+
+
+def _consensus_bpm(
+    estimates: list[float],
+    onset_rates: list[float],
+    activities: list[float],
+) -> float | None:
+    """Pick a reference tempo, map windows onto that octave, then majority vote.
+
+    Soft octave votes find the tapped pulse (68 vs 136). Mapping then keeps
+    legitimate fast clicks (167) from being pulled to half by the midrange prior.
+    """
+    if not estimates:
+        return None
+    if len(estimates) == 1:
+        return float(estimates[0])
+    med_or = float(np.median(np.asarray(onset_rates, dtype=np.float64)))
+    acts = np.asarray(activities, dtype=np.float64)
+    if acts.size == 0:
+        return float(estimates[0])
+    if float(np.max(acts)) < 1e-18:
+        # Synthetic clicks / flat envelopes: fall back to equal votes.
+        acts = np.ones(acts.shape[0], dtype=np.float64)
+    else:
+        acts = np.sqrt(np.maximum(acts, 0.0))
+        acts = acts / (float(np.max(acts)) + 1e-18)
+
+    pool: set[float] = set()
+    for bpm in estimates:
+        for factor in (0.5, 1.0, 2.0):
+            cand = _snap_show_bpm(float(bpm) * factor)
+            if _DEFAULT_MIN_BPM <= cand <= _DEFAULT_MAX_BPM:
+                pool.add(float(cand))
+
+    ref_ranked: list[tuple[float, float]] = []
+    for cand in pool:
+        score = 0.0
+        for bpm, _onset_rate, act in zip(estimates, onset_rates, acts, strict=True):
+            for factor, weight in ((1.0, 1.0), (0.5, 0.7), (2.0, 0.7)):
+                alt = float(bpm) * factor
+                if abs(alt - cand) / max(cand, 1e-6) <= 0.05:
+                    score += float(act) * weight
+                    break
+        # Mild prior only — must not overturn clear majorities at 160+.
+        score *= 0.75 + 0.25 * _tempo_prior(cand)
+        score *= 0.7 + 0.3 * _density_fit(med_or, cand)
+        ref_ranked.append((score, cand))
+    ref_ranked.sort(reverse=True)
+    reference = float(ref_ranked[0][1])
+
+    mapped: list[float] = []
+    for bpm in estimates:
+        opts = [float(bpm)]
+        for factor in (0.5, 2.0):
+            alt = _snap_show_bpm(float(bpm) * factor)
+            if _DEFAULT_MIN_BPM <= alt <= _DEFAULT_MAX_BPM:
+                opts.append(float(alt))
+        mapped.append(
+            float(min(opts, key=lambda x: abs(np.log(max(x, 1e-6) / max(reference, 1e-6)))))
+        )
+
+    weighted: Counter[float] = Counter()
+    raw_counts: Counter[float] = Counter()
+    for bpm, act in zip(mapped, acts, strict=True):
+        weighted[float(bpm)] += float(act)
+        raw_counts[float(bpm)] += 1
+
+    ranked = sorted(
+        raw_counts.items(),
+        key=lambda item: (item[1], weighted[item[0]]),
+        reverse=True,
+    )
+    if len(ranked) >= 2:
+        (bpm0, count0), (bpm1, count1) = ranked[0], ranked[1]
+        if count0 == count1 and abs(bpm0 - bpm1) <= 1.5:
+            med = float(np.median(np.asarray(mapped, dtype=np.float64)))
+            return float(bpm1 if abs(bpm1 - med) < abs(bpm0 - med) else bpm0)
+    return float(ranked[0][0])
+
+
 def _estimate_core(
     mono: np.ndarray,
     sample_rate: int,
@@ -458,40 +612,31 @@ def _estimate_core(
     _report_progress(progress, 15)
     mono = _resample_mono(mono, sample_rate, _ANALYZE_SR)
     sample_rate = _ANALYZE_SR
-    _report_progress(progress, 30)
-    mono = _densest_window(mono, sample_rate, _WINDOW_SECONDS)
-    if mono.size < sample_rate * 4:
+    _report_progress(progress, 28)
+    windows = _analysis_windows(mono, sample_rate)
+    if not windows:
         return None
-    _report_progress(progress, 45)
-    onset = _onset_envelope(mono, sample_rate)
-    if onset is None:
-        return None
-    onset_rate = _onset_rate_per_sec(mono, sample_rate)
-    env_rate = float(sample_rate) / float(_HOP)
-    corr = np.correlate(onset, onset, mode="full")
-    corr = corr[len(corr) // 2 :].astype(np.float64)
-    _report_progress(progress, 60)
-    candidates = _candidate_tempos(corr, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
-    picked = _pick_tactus(
-        onset, env_rate, candidates, onset_rate=onset_rate, corr=corr
-    )
-    if picked is None:
-        return None
-    _report_progress(progress, 75)
-    kick = _kick_band_seed(mono, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
-    picked = _merge_full_and_kick(picked, kick, onset_rate=onset_rate)
-    _report_progress(progress, 88)
-    refined = _refine_nearby(
-        onset,
-        corr,
-        env_rate,
-        picked,
-        onset_rate=onset_rate,
-        min_bpm=min_bpm,
-        max_bpm=max_bpm,
-    )
+
+    estimates: list[float] = []
+    onset_rates: list[float] = []
+    activities: list[float] = []
+    n = len(windows)
+    for i, win in enumerate(windows):
+        _report_progress(progress, 30 + int(55 * (i / max(1, n))))
+        one = _estimate_one_window(
+            win, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm
+        )
+        if one is None:
+            continue
+        bpm, onset_rate, activity = one
+        estimates.append(bpm)
+        onset_rates.append(onset_rate)
+        activities.append(activity)
+
+    _report_progress(progress, 90)
+    consensus = _consensus_bpm(estimates, onset_rates, activities)
     _report_progress(progress, 95)
-    return _snap_show_bpm(refined)
+    return consensus
 
 
 def estimate_bpm(

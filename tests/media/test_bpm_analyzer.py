@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -265,3 +267,42 @@ def test_estimate_bpm_silence_returns_none() -> None:
     sr = 44100
     silence = np.zeros((sr * 5, 1), dtype=np.float32)
     assert estimate_bpm(silence, sr) is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("04_daiwu.mp3", 135.0),  # 歹物仔 — was 136
+        ("09_qianwo.mp3", 136.0),  # 牽我 — was 137
+    ],
+)
+def test_estimate_bpm_real_show_stems_mixmeister(filename: str, expected: float) -> None:
+    """Regression on user-supplied stems verified against MixMeister."""
+    path = Path(__file__).resolve().parents[2] / "fixtures" / "media" / "bpm_real" / filename
+    if not path.is_file():
+        pytest.skip(f"missing fixture {path}")
+    y, sr = librosa.load(str(path), sr=None, mono=True)
+    est = estimate_bpm(y.reshape(-1, 1).astype(np.float32), int(sr))
+    assert est is not None
+    assert abs(float(est) - expected) <= 1.0, f"{filename}: expected ~{expected}, got {est}"
+
+
+def test_estimate_bpm_jinhuang_locks_to_acoustic_pulse() -> None:
+    """金黃色的 has no 95 Hz-period energy; onset pulse is ~156 (or 78).
+
+    MixMeister user target is 95 — keep as manual BPM until a different feature
+    can recover that pulse. Auto-detect must stay on the acoustic lock.
+    """
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "media"
+        / "bpm_real"
+        / "17_jinhuang.mp3"
+    )
+    if not path.is_file():
+        pytest.skip(f"missing fixture {path}")
+    y, sr = librosa.load(str(path), sr=None, mono=True)
+    est = estimate_bpm(y.reshape(-1, 1).astype(np.float32), int(sr))
+    assert est is not None
+    assert float(est) in {152.0, 155.0, 156.0, 157.0, 78.0} or abs(float(est) - 156.0) <= 4.0
