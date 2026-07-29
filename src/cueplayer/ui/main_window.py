@@ -653,6 +653,9 @@ class MainWindow(QMainWindow):
         )
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._bpm_detect_inflight: set[str] = set()
+        # Song ids whose auto BPM was refreshed with the current estimator
+        # this session (avoids re-running on every song switch).
+        self._bpm_auto_verified: set[str] = set()
         self._bpm_detected.connect(self._on_bpm_detected)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
@@ -1648,6 +1651,9 @@ class MainWindow(QMainWindow):
 
     def _apply_project(self, *, preferred_song_id: str | None = None) -> None:
         self._undo.clear()
+        # New project (or reopen): allow auto BPM cells to refresh with the
+        # current estimator once (see _bpm_auto_verified).
+        self._bpm_auto_verified.clear()
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
         self.show_patch_page.set_project(self.project)
@@ -1892,6 +1898,7 @@ class MainWindow(QMainWindow):
                 ltc_item.setToolTip("Striped LTC detected on Right channel")
             self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
             self._ensure_ltc_detect_scheduled(song)
+            self._ensure_bpm_detect_scheduled(song)
 
             for cell in (num_item, name_item, ma_item, bpm_item, ltc_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
@@ -3891,9 +3898,22 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(_done)
 
-    def _schedule_bpm_detect_for_song(self, song: Song, path: Path | None = None) -> None:
-        """Fill empty / auto BPM from the song's main audio (async)."""
+    def _ensure_bpm_detect_scheduled(self, song: Song) -> None:
+        """Queue auto BPM (re)detect for empty / gray ``<n>`` cells."""
         if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
+            return
+        self._schedule_bpm_detect_for_song(song)
+
+    def _schedule_bpm_detect_for_song(self, song: Song, path: Path | None = None) -> None:
+        """Fill empty / auto BPM from the song's main audio (async).
+
+        User-typed BPM is never overwritten. Auto values are re-estimated once
+        per session so algorithm upgrades (BPM_DETECT_VERSION) can correct
+        stale ``<n>`` guesses after pull.
+        """
+        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
+            return
+        if bool(getattr(song, "bpm_auto", False)) and song.id in self._bpm_auto_verified:
             return
         audio_path = path or self._main_audio_path_for_song(song)
         if audio_path is None or not Path(audio_path).is_file():
@@ -3902,11 +3922,12 @@ class MainWindow(QMainWindow):
         if song_id in self._bpm_detect_inflight:
             return
         resolved = Path(audio_path)
+        exclude = self._ltc_channel_for_song(song)
 
         def _run() -> tuple[str, float | None]:
             from cueplayer.media.bpm_analyzer import estimate_bpm_from_path
 
-            return song_id, estimate_bpm_from_path(resolved)
+            return song_id, estimate_bpm_from_path(resolved, exclude_channel=exclude)
 
         self._bpm_detect_inflight.add(song_id)
         future = self._ltc_detect_executor.submit(_run)
@@ -3922,19 +3943,24 @@ class MainWindow(QMainWindow):
         future.add_done_callback(_done)
 
     def _on_bpm_detected(self, song_id: str, bpm: object) -> None:
-        if bpm is None:
-            return
-        try:
-            value = float(bpm)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return
-        if value <= 0:
-            return
         song = next((s for s in self.project.songs if s.id == song_id), None)
         if song is None:
             return
         if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
             return
+        if bpm is None:
+            # Mark verified so we don't spin; keep any previous auto guess.
+            self._bpm_auto_verified.add(song_id)
+            return
+        try:
+            value = float(bpm)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            self._bpm_auto_verified.add(song_id)
+            return
+        if value <= 0:
+            self._bpm_auto_verified.add(song_id)
+            return
+        self._bpm_auto_verified.add(song_id)
         if (
             song.bpm is not None
             and song.bpm_auto
@@ -4147,7 +4173,7 @@ class MainWindow(QMainWindow):
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
-        if self.current_song.bpm is None:
+        if self.current_song.bpm is None or bool(getattr(self.current_song, "bpm_auto", False)):
             self._schedule_bpm_detect_for_song(self.current_song, path)
         msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
         det = self.engine.detected_ltc_channel
