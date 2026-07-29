@@ -1451,14 +1451,6 @@ class MainWindow(QMainWindow):
         )
         act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
         tools_menu.addAction(act_bpm_all)
-        act_bpm_double = QAction("Selected BPM × 2", self)
-        act_bpm_double.setToolTip("Double BPM on selected songs (fix half-tempo).")
-        act_bpm_double.triggered.connect(lambda: self._scale_selected_bpm(2.0))
-        tools_menu.addAction(act_bpm_double)
-        act_bpm_halve = QAction("Selected BPM ÷ 2", self)
-        act_bpm_halve.setToolTip("Halve BPM on selected songs (fix double-tempo).")
-        act_bpm_halve.triggered.connect(lambda: self._scale_selected_bpm(0.5))
-        tools_menu.addAction(act_bpm_halve)
         tools_menu.addSeparator()
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
@@ -2157,13 +2149,11 @@ class MainWindow(QMainWindow):
                 bpm_item.setForeground(QColor(TEXT_MUTED))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
-                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is still wrong.\n"
-                    "Or type the correct value to override."
+                    "Double-click to type the correct value if needed."
                 )
             else:
                 bpm_item.setToolTip(
-                    "Double-click to enter BPM (blank = not set).\n"
-                    "Right-click → BPM × 2 / ÷ 2 to fix octave."
+                    "Double-click to enter BPM (blank = not set)."
                 )
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
@@ -2538,8 +2528,6 @@ class MainWindow(QMainWindow):
         detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
         detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
         detect_all_bpm_action = menu.addAction("Re-detect BPM (auto / empty only)")
-        double_bpm_action = menu.addAction("BPM × 2")
-        halve_bpm_action = menu.addAction("BPM ÷ 2")
         detect_selected_bpm_action.setToolTip(
             "Re-run auto BPM for selected songs that are auto or empty. "
             "Manual typed BPM is skipped."
@@ -2549,12 +2537,6 @@ class MainWindow(QMainWindow):
         )
         detect_all_bpm_action.setToolTip(
             "Re-detect auto BPM / empty cells only — never overwrites typed BPM."
-        )
-        double_bpm_action.setToolTip(
-            "Double selected BPM (fix half-tempo guesses). Marks as user value."
-        )
-        halve_bpm_action.setToolTip(
-            "Halve selected BPM (fix double-tempo guesses). Marks as user value."
         )
         menu.addSeparator()
         renumber_action = menu.addAction("Renumber")
@@ -2590,11 +2572,6 @@ class MainWindow(QMainWindow):
         detect_all_bpm_action.setEnabled(
             any(self._main_audio_path_for_song(s) is not None for s in self.project.songs)
         )
-        has_bpm = has_selection and any(
-            s.bpm is not None and float(s.bpm) > 0 for s in selected_songs
-        )
-        double_bpm_action.setEnabled(has_bpm)
-        halve_bpm_action.setEnabled(has_bpm)
         delete_action.setEnabled(has_selection and len(self.project.songs) > 1)
         renumber_action.setEnabled(has_selection)
         renumber_action.setToolTip(
@@ -2636,12 +2613,6 @@ class MainWindow(QMainWindow):
             return
         if chosen is detect_all_bpm_action:
             self._redetect_bpm_all_songs()
-            return
-        if chosen is double_bpm_action:
-            self._scale_selected_bpm(2.0)
-            return
-        if chosen is halve_bpm_action:
-            self._scale_selected_bpm(0.5)
             return
         if chosen is edit_action:
             self._edit_song()
@@ -4482,14 +4453,12 @@ class MainWindow(QMainWindow):
                 bpm_item.setForeground(QColor(TEXT_MUTED))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
-                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is still wrong.\n"
-                    "Or type the correct value to override."
+                    "Double-click to type the correct value if needed."
                 )
             else:
                 bpm_item.setForeground(QColor())
                 bpm_item.setToolTip(
-                    "Double-click to enter BPM (blank = not set).\n"
-                    "Right-click → BPM × 2 / ÷ 2 to fix octave."
+                    "Double-click to enter BPM (blank = not set)."
                 )
             self.song_list._block_number_signal = False  # noqa: SLF001
         else:
@@ -4497,8 +4466,7 @@ class MainWindow(QMainWindow):
             bpm_item.setText("")
             bpm_item.setForeground(QColor())
             bpm_item.setToolTip(
-                "Double-click to enter BPM (blank = not set).\n"
-                "Right-click → BPM × 2 / ÷ 2 to fix octave."
+                "Double-click to enter BPM (blank = not set)."
             )
             self.song_list._block_number_signal = False  # noqa: SLF001
 
@@ -4546,37 +4514,6 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status.showMessage("No songs with audio to re-detect.", 3000)
-
-    def _scale_selected_bpm(self, factor: float) -> None:
-        """×2 / ÷2 selected BPMs — marks as user values (not auto)."""
-        songs = self._selected_songs()
-        if not songs:
-            return
-        changed = 0
-        with self._setlist_edit("BPM ×2" if factor >= 1.5 else "BPM ÷2"):
-            for song in songs:
-                if song.bpm is None or float(song.bpm) <= 0:
-                    continue
-                new_bpm = float(song.bpm) * float(factor)
-                if new_bpm < 30.0 or new_bpm > 320.0:
-                    continue
-                # Prefer whole numbers for show use.
-                if abs(new_bpm - round(new_bpm)) < 0.05:
-                    new_bpm = float(round(new_bpm))
-                else:
-                    new_bpm = round(new_bpm * 2.0) / 2.0
-                song.bpm = new_bpm
-                song.bpm_auto = False
-                changed += 1
-        if changed:
-            self._rebuild_song_list()
-            sheet = getattr(self, "setlist_sheet_page", None)
-            if sheet is not None:
-                sheet.sync_songs()
-            self.status.showMessage(
-                f"Updated BPM on {changed} song(s)",
-                3000,
-            )
 
     def _detect_bpm_for_songs(self, songs: list[Song], *, force: bool = False) -> int:
         """Queue BPM detect for the given songs. ``force`` re-runs even if set."""
@@ -4646,13 +4583,8 @@ class MainWindow(QMainWindow):
             sheet.sync_songs()
         from cueplayer.media.bpm_analyzer import format_bpm_value
 
-        hint = ""
-        if value < 90.0:
-            hint = "  ·  if this feels half-tempo: right-click → BPM × 2"
-        elif value > 155.0:
-            hint = "  ·  if this feels double-tempo: right-click → BPM ÷ 2"
         self.status.showMessage(
-            f'Auto BPM for "{song.name}": <{format_bpm_value(value)}>{hint}',
+            f'Auto BPM for "{song.name}": <{format_bpm_value(value)}>',
             5000,
         )
 
