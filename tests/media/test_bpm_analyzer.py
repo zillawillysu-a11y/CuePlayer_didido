@@ -79,6 +79,18 @@ def test_estimate_bpm_excludes_ltc_like_channel() -> None:
     del poisoned
 
 
+def test_estimate_bpm_skips_quiet_gap_before_groove() -> None:
+    """Rehearsal-like: talk/silence first, then a clear click groove."""
+    sr = 44100
+    bpm = 120.0
+    talk = np.random.RandomState(0).randn(sr * 20).astype(np.float32) * 0.02
+    groove = _click_track(bpm, seconds=40.0, sr=sr)[:, 0]
+    mono = np.concatenate([talk, groove]).reshape(-1, 1)
+    est = estimate_bpm(mono, sr, max_seconds=90.0)
+    assert est is not None
+    assert abs(float(est) - bpm) <= 3.0
+
+
 def test_estimate_bpm_silence_returns_none() -> None:
     sr = 44100
     silence = np.zeros((sr * 5, 1), dtype=np.float32)

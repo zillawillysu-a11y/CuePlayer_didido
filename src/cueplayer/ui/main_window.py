@@ -653,9 +653,8 @@ class MainWindow(QMainWindow):
         )
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._bpm_detect_inflight: set[str] = set()
-        # Song ids whose auto BPM was refreshed with the current estimator
-        # this session (avoids re-running on every song switch).
-        self._bpm_auto_verified: set[str] = set()
+        # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
+        self._bpm_force_ids: set[str] = set()
         self._bpm_detected.connect(self._on_bpm_detected)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
@@ -1208,6 +1207,16 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addSeparator()
+        act_bpm_missing = QAction("Detect BPM (songs without BPM)", self)
+        act_bpm_missing.setToolTip(
+            "Run auto BPM only for songs with audio and an empty BPM cell. "
+            "Does not re-run songs that already have a value."
+        )
+        act_bpm_missing.triggered.connect(
+            lambda: self._schedule_bpm_detect_for_missing_songs(quiet=False)
+        )
+        tools_menu.addAction(act_bpm_missing)
+        tools_menu.addSeparator()
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
         tools_menu.addAction(act_add_video)
@@ -1651,9 +1660,6 @@ class MainWindow(QMainWindow):
 
     def _apply_project(self, *, preferred_song_id: str | None = None) -> None:
         self._undo.clear()
-        # New project (or reopen): allow auto BPM cells to refresh with the
-        # current estimator once (see _bpm_auto_verified).
-        self._bpm_auto_verified.clear()
         if not self.project.songs:
             self.project.songs.append(self.project.new_song("Untitled Song"))
         self.show_patch_page.set_project(self.project)
@@ -1681,6 +1687,8 @@ class MainWindow(QMainWindow):
         self._rebuild_song_list(select_indexes=[song_index])
         self._activate_song(song_index, stop_playback=True)
         self._warm_project_audio_on_open()
+        # Only songs that still have a blank BPM — never re-run existing values.
+        self._schedule_bpm_detect_for_missing_songs(quiet=True)
 
     def _warm_project_audio_on_open(self) -> None:
         """Background-decode / disk-load every setlist song once when a project opens."""
@@ -1898,7 +1906,6 @@ class MainWindow(QMainWindow):
                 ltc_item.setToolTip("Striped LTC detected on Right channel")
             self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
             self._ensure_ltc_detect_scheduled(song)
-            self._ensure_bpm_detect_scheduled(song)
 
             for cell in (num_item, name_item, ma_item, bpm_item, ltc_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
@@ -2253,6 +2260,15 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         en_action, bpm_action = self._add_setlist_column_actions(menu)
         menu.addSeparator()
+        detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
+        detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
+        detect_selected_bpm_action.setToolTip(
+            "Re-run auto BPM for the selected song(s). Overwrites gray <n> and typed values."
+        )
+        detect_missing_bpm_action.setToolTip(
+            "Only songs that still have an empty BPM cell and an audio file."
+        )
+        menu.addSeparator()
         renumber_action = menu.addAction("Renumber")
         set_numbers_action = menu.addAction("Set Numbers Starting at…")
         menu.addSeparator()
@@ -2273,6 +2289,16 @@ class MainWindow(QMainWindow):
         clear_row_color_action.setEnabled(
             has_selection and any(song.row_color for song in selected_songs)
         )
+        detect_selected_bpm_action.setEnabled(
+            has_selection
+            and any(self._main_audio_path_for_song(s) is not None for s in selected_songs)
+        )
+        detect_missing_bpm_action.setEnabled(
+            any(
+                s.bpm is None and self._main_audio_path_for_song(s) is not None
+                for s in self.project.songs
+            )
+        )
         delete_action.setEnabled(has_selection and len(self.project.songs) > 1)
         renumber_action.setEnabled(has_selection)
         renumber_action.setToolTip(
@@ -2288,6 +2314,16 @@ class MainWindow(QMainWindow):
         if self._apply_setlist_column_action(
             chosen, en_action=en_action, bpm_action=bpm_action
         ):
+            return
+        if chosen is detect_selected_bpm_action:
+            n = self._detect_bpm_for_songs(selected_songs, force=True)
+            if n:
+                self.status.showMessage(f"Detecting BPM for {n} selected song(s)…", 4000)
+            else:
+                self.status.showMessage("No audio file on the selected song(s).", 3000)
+            return
+        if chosen is detect_missing_bpm_action:
+            self._schedule_bpm_detect_for_missing_songs(quiet=False)
             return
         if chosen is edit_action:
             self._edit_song()
@@ -3898,29 +3934,30 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(_done)
 
-    def _ensure_bpm_detect_scheduled(self, song: Song) -> None:
-        """Queue auto BPM (re)detect for empty / gray ``<n>`` cells."""
-        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
-            return
-        self._schedule_bpm_detect_for_song(song)
+    def _schedule_bpm_detect_for_song(
+        self,
+        song: Song,
+        path: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Estimate BPM from the song's main audio (async, one shot).
 
-    def _schedule_bpm_detect_for_song(self, song: Song, path: Path | None = None) -> None:
-        """Fill empty / auto BPM from the song's main audio (async).
+        Default (``force=False``): only runs when ``song.bpm`` is still empty —
+        attaching audio / opening a project never re-reads songs that already
+        have a value (auto or typed). ``force=True`` is for explicit menu
+        actions and may overwrite auto *or* typed BPM with a new auto guess.
 
-        User-typed BPM is never overwritten. Auto values are re-estimated once
-        per session so algorithm upgrades (BPM_DETECT_VERSION) can correct
-        stale ``<n>`` guesses after pull.
+        Returns True when a new background job was queued.
         """
-        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
-            return
-        if bool(getattr(song, "bpm_auto", False)) and song.id in self._bpm_auto_verified:
-            return
+        if not force and song.bpm is not None:
+            return False
         audio_path = path or self._main_audio_path_for_song(song)
         if audio_path is None or not Path(audio_path).is_file():
-            return
+            return False
         song_id = song.id
         if song_id in self._bpm_detect_inflight:
-            return
+            return False
         resolved = Path(audio_path)
         exclude = self._ltc_channel_for_song(song)
 
@@ -3930,6 +3967,10 @@ class MainWindow(QMainWindow):
             return song_id, estimate_bpm_from_path(resolved, exclude_channel=exclude)
 
         self._bpm_detect_inflight.add(song_id)
+        if force:
+            self._bpm_force_ids.add(song_id)
+        else:
+            self._bpm_force_ids.discard(song_id)
         future = self._ltc_detect_executor.submit(_run)
 
         def _done(fut) -> None:  # noqa: ANN001
@@ -3937,34 +3978,66 @@ class MainWindow(QMainWindow):
             try:
                 sid, bpm = fut.result()
             except Exception:  # noqa: BLE001
+                self._bpm_force_ids.discard(song_id)
                 return
             self._bpm_detected.emit(sid, bpm)
 
         future.add_done_callback(_done)
+        return True
+
+    def _schedule_bpm_detect_for_missing_songs(self, *, quiet: bool = False) -> int:
+        """Queue detect for songs that have audio but no BPM yet."""
+        queued = 0
+        for song in self.project.songs:
+            if self._schedule_bpm_detect_for_song(song, force=False):
+                queued += 1
+        if not quiet:
+            if queued:
+                self.status.showMessage(
+                    f"Detecting BPM for {queued} song(s) without BPM…",
+                    4000,
+                )
+            else:
+                self.status.showMessage("All songs with audio already have a BPM.", 3000)
+        return queued
+
+    def _detect_bpm_for_songs(self, songs: list[Song], *, force: bool = False) -> int:
+        """Queue BPM detect for the given songs. ``force`` re-runs even if set."""
+        queued = 0
+        for song in songs:
+            if self._schedule_bpm_detect_for_song(song, force=force):
+                queued += 1
+        return queued
 
     def _on_bpm_detected(self, song_id: str, bpm: object) -> None:
         song = next((s for s in self.project.songs if s.id == song_id), None)
+        forced = song_id in self._bpm_force_ids
+        self._bpm_force_ids.discard(song_id)
         if song is None:
             return
-        if song.bpm is not None and not bool(getattr(song, "bpm_auto", False)):
+        # Without force, never overwrite a user-typed BPM (e.g. typed while detect ran).
+        if (
+            not forced
+            and song.bpm is not None
+            and not bool(getattr(song, "bpm_auto", False))
+        ):
             return
         if bpm is None:
-            # Mark verified so we don't spin; keep any previous auto guess.
-            self._bpm_auto_verified.add(song_id)
+            self.status.showMessage(
+                f'Could not detect BPM for "{song.name}" (too quiet / talky?)',
+                4000,
+            )
             return
         try:
             value = float(bpm)  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            self._bpm_auto_verified.add(song_id)
             return
         if value <= 0:
-            self._bpm_auto_verified.add(song_id)
             return
-        self._bpm_auto_verified.add(song_id)
         if (
             song.bpm is not None
-            and song.bpm_auto
             and abs(float(song.bpm) - value) < 1e-9
+            and bool(getattr(song, "bpm_auto", False))
         ):
             return
         song.bpm = value
@@ -4173,7 +4246,7 @@ class MainWindow(QMainWindow):
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
-        if self.current_song.bpm is None or bool(getattr(self.current_song, "bpm_auto", False)):
+        if self.current_song.bpm is None:
             self._schedule_bpm_detect_for_song(self.current_song, path)
         msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
         det = self.engine.detected_ltc_channel

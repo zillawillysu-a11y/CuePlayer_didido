@@ -216,7 +216,7 @@ def estimate_bpm(
     *,
     min_bpm: float = 70.0,
     max_bpm: float = 180.0,
-    max_seconds: float = 90.0,
+    max_seconds: float = 180.0,
     exclude_channel: int | None = None,
 ) -> float | None:
     """
@@ -225,6 +225,10 @@ def estimate_bpm(
     Uses a ~120 BPM perceptual prior and harmonic comb scoring so half/double
     tempo mistakes are less common than a single raw peak pick. Returns a
     value rounded to the nearest 0.5 BPM, or None if unreliable.
+
+    Rehearsal / show files often have talk and silence: we scan up to
+    ``max_seconds``, score candidate windows by onset activity, and only vote
+    with the densest musical slices (skipping gaps).
     """
     if samples is None or sample_rate <= 0:
         return None
@@ -236,18 +240,38 @@ def estimate_bpm(
     if mono.size < sample_rate:  # need ~1s
         return None
 
-    # Several windows so intros without groove don't dominate.
     win = int(sample_rate * 30.0)
-    hop = int(sample_rate * 20.0)
-    starts = [0]
+    hop = int(sample_rate * 15.0)
+    # Candidate starts across the scanned prefix (rehearsal talk may sit first).
+    starts: list[int] = [0]
     if mono.size > win:
         t = hop
-        while t + win // 2 < mono.size and len(starts) < 4:
+        while t + win // 2 < mono.size:
             starts.append(t)
             t += hop
 
-    votes: dict[float, float] = {}
+    # Rank windows by onset density so dialogue / silence lose to groove.
+    ranked: list[tuple[float, int]] = []
     for start in starts:
+        chunk = mono[start : start + win] if mono.size > win else mono
+        if chunk.size < sample_rate * 2:
+            continue
+        hop_n = max(256, int(round(sample_rate / 86.0)))
+        onset = _onset_envelope(chunk, sample_rate, hop_n)
+        if onset is None:
+            continue
+        activity = float(np.mean(onset * onset))
+        if activity <= 1e-12:
+            continue
+        ranked.append((activity, start))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    # Keep the busiest few slices (typical song body), not every gap.
+    chosen_starts = [start for _act, start in ranked[:4]]
+    if not chosen_starts:
+        chosen_starts = starts[:3]
+
+    votes: dict[float, float] = {}
+    for start in chosen_starts:
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate:
             continue
@@ -256,7 +280,9 @@ def estimate_bpm(
             continue
         bpm, score = result
         key = round(bpm * 2.0) / 2.0
-        votes[key] = votes.get(key, 0.0) + score
+        # Weight by window activity so a weak talk window can't outvote groove.
+        activity = next((a for a, s in ranked if s == start), 1.0)
+        votes[key] = votes.get(key, 0.0) + score * (0.5 + 0.5 * activity / (ranked[0][0] if ranked else 1.0))
 
     if not votes:
         return None
