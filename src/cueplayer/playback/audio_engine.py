@@ -513,9 +513,6 @@ class AudioEngine(QObject):
         if was_playing:
             self.pause()
 
-        import sys, traceback
-        print(f"[APPLY] ltc_src={settings.ltc_source!r} translate={getattr(settings,'ltc_to_mtc_translate',False)} mtc={settings.mtc_enabled}", file=sys.stderr, flush=True)
-        traceback.print_stack(file=sys.stderr, limit=6)
         self._routing_warning = None
         self._audio_settings = AudioOutputSettings(
             output_device_name=settings.output_device_name,
@@ -550,6 +547,10 @@ class AudioEngine(QObject):
             with self._lock:
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
+
+        # When switching away from generator source, allow auto-detect to re-run.
+        if self._audio_settings.ltc_source != "generator":
+            self._ltc_detect_ran = False
 
         self._refresh_source_routing_cache()
 
