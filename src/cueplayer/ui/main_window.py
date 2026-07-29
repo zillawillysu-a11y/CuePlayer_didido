@@ -1059,7 +1059,7 @@ class MainWindow(QMainWindow):
         self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
 
-        # Center column: Timeline (Music → Marks → Video → LTC) on top,
+        # Center column: Timeline (Music → Video → LTC → Marks) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
         self.video_preview_panel = QWidget()
         self.video_preview_panel.setObjectName("videoPreviewPanel")
@@ -3997,25 +3997,43 @@ class MainWindow(QMainWindow):
         Timeline horizontal pan/zoom uses ``_scroll_x`` against the *visible*
         width — never stretch the widget to the full song pixel width.
         """
+        if getattr(self, "_syncing_timeline_geometry", False):
+            return
         scroll = getattr(self, "_timeline_scroll", None)
         if scroll is None:
             return
-        vp = scroll.viewport()
-        tl = self.timeline
-        w = max(1, vp.width())
-        h = max(tl.minimumHeight(), tl._content_height)  # noqa: SLF001
-        if tl.width() != w or tl.height() != h:
-            tl.resize(w, h)
-            tl._clamp_scroll()  # noqa: SLF001
-        tl.update()
-        self._ensure_mark_tracks_in_view()
+        self._syncing_timeline_geometry = True
+        try:
+            vp = scroll.viewport()
+            tl = self.timeline
+            w = max(1, vp.width())
+            h = max(tl.minimumHeight(), tl._content_height)  # noqa: SLF001
+            resizing = bool(
+                getattr(tl, "_resizing_wave", False)
+                or getattr(tl, "_resizing_video_lane", False)
+            )
+            if tl.width() != w or tl.height() != h:
+                # Mark busy so timeline.resizeEvent does not re-enter layout
+                # apply while we are syncing from the parent scroll area.
+                tl._layout_heights_busy = True  # noqa: SLF001
+                try:
+                    tl.resize(w, h)
+                    tl._clamp_scroll()  # noqa: SLF001
+                finally:
+                    tl._layout_heights_busy = False  # noqa: SLF001
+            tl.update()
+            # Don't yank the scrollbar while the user is dragging a splitter.
+            if not resizing:
+                self._ensure_mark_tracks_in_view()
+        finally:
+            self._syncing_timeline_geometry = False
 
     def _ensure_mark_tracks_in_view(self) -> None:
-        """Keep Music + Mark tracks in the vertical viewport when possible.
+        """If Marks were scrolled completely out of view above, pull them back.
 
-        Opening Video/LTC or switching songs can leave the scroll bar parked
-        over the Video lane so Marks look “gone” until the app is restarted
-        (scroll resets). Pull the view back up when Marks are above the fold.
+        Order is Music → Video → LTC → Marks, so Marks often sit below the fold
+        when Video is open — that is intentional (scroll down). Only recover when
+        the user has scrolled *past* the mark band.
         """
         scroll = getattr(self, "_timeline_scroll", None)
         if scroll is None:
@@ -4026,16 +4044,9 @@ class MainWindow(QMainWindow):
         tl = self.timeline
         marks_top = int(tl._tracks_top_y())  # noqa: SLF001
         marks_bottom = int(tl._tracks_bottom_y())  # noqa: SLF001
-        vp_h = max(1, scroll.viewport().height())
         value = int(bar.value())
-        # Marks scrolled away above the viewport → jump back so they show.
+        # Entire mark band scrolled away above the viewport → jump back.
         if marks_bottom <= value:
-            bar.setValue(max(0, marks_top - 8))
-            return
-        # Marks only partially below a tall Music wave: prefer showing the
-        # start of the mark band when the whole band still fits.
-        band = max(1, marks_bottom - marks_top)
-        if band <= vp_h and marks_top < value:
             bar.setValue(max(0, marks_top - 8))
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001

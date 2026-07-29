@@ -1,4 +1,4 @@
-"""LTC lane under Video; Marks stay under Music; one eye toggles Video + LTC."""
+"""LTC lane under Video; Marks under Video/LTC; one eye toggles Video + LTC."""
 
 from __future__ import annotations
 
@@ -76,25 +76,27 @@ def test_ltc_sits_below_video(app: QApplication) -> None:
     widget.set_ltc_audio(ltc_waveform_display_buffer(buf, ch), channel=ch)
     widget.resize(900, 600)
     assert widget._ltc_lane_visible() is True
-    # Music → Marks → Video → LTC
-    assert widget._tracks_top_y() == widget._wave_bottom_y()
-    assert widget._video_lane_top_y() == widget._tracks_bottom_y()
+    # Music → Video → LTC → Marks
+    assert widget._video_lane_top_y() == widget._wave_bottom_y()
     assert widget._ltc_lane_top_y() == widget._video_lane_top_y() + int(
         widget._video_lane_height
     )
+    assert widget._tracks_top_y() == widget._ltc_lane_top_y() + widget._ltc_band_height()
 
 
-def test_marks_stay_under_music_when_video_shown(app: QApplication) -> None:
-    """Regression: Video must not push Mark tracks out of the primary view."""
+def test_marks_sit_below_video_and_ltc(app: QApplication) -> None:
+    """Video/LTC stay under Music; Marks are pushed below (scroll to reach)."""
     widget = TimelineWidget()
     song = Song.create("With Video")
     song.show_video_track = True
     widget.set_song(song)
     widget.set_show_video_track(True)
     widget.resize(900, 600)
+    assert widget._video_lane_top_y() == widget._wave_bottom_y()
+    assert widget._tracks_top_y() >= widget._video_lane_top_y() + int(
+        widget._video_lane_height
+    )
     marks_top = widget._tracks_top_y()
-    assert marks_top == widget._wave_bottom_y()
-    assert widget._video_lane_top_y() > marks_top
     assert widget._in_mark_tracks(widget._header_width + 10, marks_top + 4)
     assert not widget._in_mark_tracks(
         widget._header_width + 10, widget._video_lane_top_y() + 4
