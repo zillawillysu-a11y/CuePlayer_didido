@@ -398,8 +398,11 @@ class SetlistWidget(QTableWidget):
         elif col == self.COL_EN:
             self.song_ma_name_edited.emit(item.row(), item.text().strip())
         elif col == self.COL_BPM:
-            from cueplayer.media.bpm_analyzer import parse_bpm_cell
+            from cueplayer.media.bpm_analyzer import is_bpm_progress_text, parse_bpm_cell
 
+            # Programmatic detect progress (… / 67%) must not open Invalid BPM.
+            if is_bpm_progress_text(item.text()):
+                return
             parsed = parse_bpm_cell(item.text())
             if parsed is False:
                 self.song_bpm_edit_failed.emit(item.row())
@@ -4193,15 +4196,20 @@ class MainWindow(QMainWindow):
 
         if progress is not None:
             if progress < 0:
-                bpm_item.setText("…")
-                bpm_item.setToolTip("排隊偵測 BPM 中…")
+                text = "…"
+                tip = "排隊偵測 BPM 中…"
             else:
-                bpm_item.setText(f"{min(100, int(progress))}%")
-                bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
+                text = f"{min(100, int(progress))}%"
+                tip = f"正在偵測 BPM… {min(100, int(progress))}%"
+            self.song_list._block_number_signal = True  # noqa: SLF001
+            bpm_item.setText(text)
+            bpm_item.setToolTip(tip)
             bpm_item.setForeground(QColor(ACCENT))
+            self.song_list._block_number_signal = False  # noqa: SLF001
         elif song.bpm is not None and float(song.bpm) > 0:
             from cueplayer.media.bpm_analyzer import format_bpm_cell
 
+            self.song_list._block_number_signal = True  # noqa: SLF001
             bpm_item.setText(format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto)))
             if song.bpm_auto:
                 bpm_item.setForeground(QColor(TEXT_MUTED))
@@ -4216,13 +4224,16 @@ class MainWindow(QMainWindow):
                     "Double-click to enter BPM (blank = not set).\n"
                     "Right-click → BPM × 2 / ÷ 2 to fix octave."
                 )
+            self.song_list._block_number_signal = False  # noqa: SLF001
         else:
+            self.song_list._block_number_signal = True  # noqa: SLF001
             bpm_item.setText("")
             bpm_item.setForeground(QColor())
             bpm_item.setToolTip(
                 "Double-click to enter BPM (blank = not set).\n"
                 "Right-click → BPM × 2 / ÷ 2 to fix octave."
             )
+            self.song_list._block_number_signal = False  # noqa: SLF001
 
         sheet = getattr(self, "setlist_sheet_page", None)
         if sheet is not None and hasattr(sheet, "set_song_bpm_progress"):

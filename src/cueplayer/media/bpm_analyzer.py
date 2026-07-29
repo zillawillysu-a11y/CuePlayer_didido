@@ -38,6 +38,23 @@ def format_bpm_cell(bpm: float | None, *, auto: bool = False) -> str:
     return f"<{text}>" if auto else text
 
 
+def is_bpm_progress_text(text: str) -> bool:
+    """True for detect-progress placeholders (``…`` / ``67%``), not user BPM."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if raw in {"…", "...", "⋯", "．．．"}:
+        return True
+    if raw.endswith("%"):
+        num = raw[:-1].strip().replace(",", ".")
+        try:
+            pct = float(num)
+        except ValueError:
+            return False
+        return 0.0 <= pct <= 100.0
+    return False
+
+
 def parse_bpm_cell(text: str) -> float | None | bool:
     """
     Parse a BPM cell.
@@ -48,6 +65,9 @@ def parse_bpm_cell(text: str) -> float | None | bool:
       - False if invalid
     """
     raw = (text or "").strip()
+    if is_bpm_progress_text(raw):
+        # Progress UI text must never be treated as a typed BPM value.
+        return False
     if raw.startswith("<") and raw.endswith(">") and len(raw) >= 2:
         raw = raw[1:-1].strip()
     raw = raw.replace(",", ".")
