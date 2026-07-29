@@ -79,6 +79,20 @@ def test_parse_bpm_cell_strips_brackets() -> None:
     assert parse_bpm_cell("abc") is False
 
 
+def test_bpm_progress_placeholders_are_not_user_values() -> None:
+    from cueplayer.media.bpm_analyzer import is_bpm_progress_text
+
+    assert is_bpm_progress_text("…")
+    assert is_bpm_progress_text("...")
+    assert is_bpm_progress_text("67%")
+    assert is_bpm_progress_text("100%")
+    assert not is_bpm_progress_text("<120>")
+    assert not is_bpm_progress_text("120")
+    # Progress text must not raise Invalid BPM via the edit path.
+    assert parse_bpm_cell("…") is False
+    assert parse_bpm_cell("42%") is False
+
+
 def test_estimate_bpm_on_click_track() -> None:
     bpm = 120.0
     est = estimate_bpm(_click_track(bpm, seconds=16.0), 44100)

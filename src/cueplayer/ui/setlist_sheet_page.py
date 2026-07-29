@@ -628,8 +628,10 @@ class SetlistSheetPage(QWidget):
                 item.setText(normalized)
                 self._suppress = False
         elif col == _COL_BPM:
-            from cueplayer.media.bpm_analyzer import parse_bpm_cell
+            from cueplayer.media.bpm_analyzer import is_bpm_progress_text, parse_bpm_cell
 
+            if is_bpm_progress_text(text):
+                return
             parsed = parse_bpm_cell(text)
             if parsed is False:
                 QMessageBox.warning(self, "Invalid BPM", "Enter a number or leave blank.")
