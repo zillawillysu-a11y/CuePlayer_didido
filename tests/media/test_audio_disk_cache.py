@@ -9,9 +9,12 @@ import pytest
 
 from cueplayer.media.audio_disk_cache import (
     audio_cache_key,
+    clone_caches_for_copied_file,
+    load_all_ltc_channels,
     load_audio_cached,
     load_cached_audio,
     save_cached_audio,
+    save_ltc_channel,
 )
 from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
 
@@ -72,3 +75,31 @@ def test_load_audio_cached_writes_disk(tmp_path: Path, monkeypatch: pytest.Monke
     assert first.sample_rate == 48000
     assert second.sample_rate == 48000
     assert calls == [audio_path]
+
+
+def test_clone_caches_for_copied_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    import cueplayer.media.audio_disk_cache as mod
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mod, "_LTC_CACHE_FILE", tmp_path / "cache" / "ltc_channels.json")
+
+    src = tmp_path / "original" / "song.wav"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"WAVDATA")
+    save_cached_audio(src, _tiny_buffer(src))
+    src_key = audio_cache_key(src)
+    assert src_key is not None
+    save_ltc_channel(src_key, 0)  # Left
+
+    dest = tmp_path / "Media" / "song.wav"
+    dest.parent.mkdir(parents=True)
+    shutil.copy2(src, dest)
+
+    assert clone_caches_for_copied_file(src, dest) is True
+    assert load_cached_audio(dest) is not None
+    dest_key = audio_cache_key(dest)
+    assert dest_key is not None
+    assert dest_key != src_key
+    assert load_all_ltc_channels().get(dest_key) == 0

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cueplayer.domain.models import Project
+from cueplayer.media.audio_disk_cache import clone_caches_for_copied_file
 from cueplayer.persistence.media_paths import path_exists
 from cueplayer.persistence.project_store import save_project
 
@@ -115,6 +116,8 @@ def collect_project_bundle(
             result.renamed.append((resolved, basename))
         dest = media_dir / basename
         shutil.copy2(resolved, dest)
+        # Keep waveform + LTC L/R caches so opening the bundle is instant.
+        clone_caches_for_copied_file(resolved, dest)
         source_map[key] = dest
         result.copied.append((resolved, dest))
         return dest

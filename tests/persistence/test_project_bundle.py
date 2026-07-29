@@ -54,6 +54,54 @@ def test_collect_bundle_layout_and_relative_paths(tmp_path: Path) -> None:
     assert loaded.songs[0].video_clips[0].path.is_file()
 
 
+def test_collect_bundle_clones_audio_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cueplayer.media.audio_disk_cache as mod
+    from cueplayer.media.audio_disk_cache import (
+        audio_cache_key,
+        load_all_ltc_channels,
+        load_cached_audio,
+        save_cached_audio,
+        save_ltc_channel,
+    )
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    import numpy as np
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mod, "_LTC_CACHE_FILE", tmp_path / "cache" / "ltc_channels.json")
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    audio = sources / "曲.wav"
+    audio.write_bytes(b"RIFFDATA")
+    samples = np.zeros((2400, 2), dtype=np.float32)
+    mono, levels = build_peak_pyramid(samples, 48000)
+    save_cached_audio(
+        audio,
+        AudioBuffer(
+            path=audio, sample_rate=48000, samples=samples, mono=mono, peak_levels=levels
+        ),
+    )
+    key = audio_cache_key(audio)
+    assert key is not None
+    save_ltc_channel(key, 1)
+
+    project = Project.create("Warm")
+    project.songs[0].audio_tracks.append(
+        AudioTrack(id="a1", name="Main", path=audio, role="main")
+    )
+    result = collect_project_bundle(
+        project, tmp_path / "out", project_filename="warm.cueplayer.json"
+    )
+    bundled_audio = result.media_dir / "曲.wav"
+    assert bundled_audio.is_file()
+    assert load_cached_audio(bundled_audio) is not None
+    new_key = audio_cache_key(bundled_audio)
+    assert new_key is not None
+    assert load_all_ltc_channels().get(new_key) == 1
+
+
 def test_collect_bundle_dedupes_shared_source(tmp_path: Path) -> None:
     shared = tmp_path / "shared.wav"
     shared.write_bytes(b"SAME")

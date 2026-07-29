@@ -173,3 +173,47 @@ def save_ltc_channel(
         tmp.replace(_LTC_CACHE_FILE)
     except OSError:
         pass
+
+
+def clone_caches_for_copied_file(source: Path, dest: Path) -> bool:
+    """
+    After copying ``source`` → ``dest``, reuse waveform + LTC disk caches.
+
+    Keys include the absolute path, so Bundle/Relink copies would otherwise
+    force a full re-decode and LTC re-detect. ``shutil.copy2`` preserves
+    mtime/size; only the path portion of the key changes.
+    """
+    import shutil
+
+    source = Path(source)
+    dest = Path(dest)
+    old_key = audio_cache_key(source)
+    new_key = audio_cache_key(dest)
+    if old_key is None or new_key is None:
+        return False
+    if old_key == new_key:
+        return True
+
+    cloned_wave = False
+    old_npz = _cache_file(old_key)
+    new_npz = _cache_file(new_key)
+    if old_npz.is_file():
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            if (
+                not new_npz.is_file()
+                or new_npz.stat().st_size != old_npz.stat().st_size
+            ):
+                shutil.copy2(old_npz, new_npz)
+            cloned_wave = True
+        except OSError:
+            pass
+
+    rows = load_all_ltc_channels()
+    if old_key in rows:
+        try:
+            save_ltc_channel(new_key, rows[old_key])
+        except Exception:  # noqa: BLE001
+            pass
+
+    return cloned_wave

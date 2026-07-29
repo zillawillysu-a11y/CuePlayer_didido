@@ -55,7 +55,7 @@
 
 | 選單 | 說明 |
 |------|------|
-| **File → Collect Project Bundle…** | 複製用到的媒體到資料夾：`專案.cueplayer.json` 在根層、`Media/` 放素材 |
+| **File → Collect Project Bundle…** | 複製用到的媒體到資料夾：`專案.cueplayer.json` 在根層、`Media/` 放素材；波形與 LTC L/R 快取一併沿用，打開不必重等 |
 | **File → Relink Missing Media…** | 檔案搬走後單檔或整資料夾依檔名重新連結 |
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。

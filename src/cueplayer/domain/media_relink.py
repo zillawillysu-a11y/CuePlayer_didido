@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cueplayer.domain.models import Project
+from cueplayer.media.audio_disk_cache import clone_caches_for_copied_file
 from cueplayer.persistence.media_paths import path_exists
 
 
@@ -62,6 +63,7 @@ def scan_missing_media(project: Project) -> list[MissingMediaRef]:
 def apply_relink(project: Project, ref: MissingMediaRef, new_path: Path) -> bool:
     """Point one missing item at ``new_path``. Returns True if updated."""
     new_path = Path(new_path)
+    old_path = Path(ref.path)
     for song in project.songs:
         if song.id != ref.song_id:
             continue
@@ -69,6 +71,8 @@ def apply_relink(project: Project, ref: MissingMediaRef, new_path: Path) -> bool
             for track in song.audio_tracks:
                 if track.id == ref.item_id:
                     track.path = new_path
+                    if old_path.is_file() and new_path.is_file():
+                        clone_caches_for_copied_file(old_path, new_path)
                     return True
         else:
             for clip in song.video_clips:
