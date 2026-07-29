@@ -186,8 +186,13 @@ class AudioEngine(QObject):
             # When LTC source is from-file, the actual timecode numbers come from
             # decoding the stripe — regardless of whether LTC output is enabled.
             # MTC mirrors the same source, so show file-decoded TC when available.
-            uses_file_ltc = self._decode_source_channel() is not None
-            decoded = self._decode_file_ltc_timecode(pos) if uses_file_ltc else None
+            decode_ch = self._decode_source_channel()
+            decoded = self._decode_file_ltc_timecode(pos) if decode_ch is not None else None
+            import sys
+            print(f"[TC DEBUG] ltc_source={self._audio_settings.ltc_source!r} "
+                  f"ltc_enabled={self._audio_settings.ltc_enabled} "
+                  f"translate={self._audio_settings.ltc_to_mtc_translate} "
+                  f"decode_ch={decode_ch} decoded={decoded}", file=sys.stderr)
             if decoded is not None:
                 tc_str = decoded.format()
             elif self.mtc_enabled:
