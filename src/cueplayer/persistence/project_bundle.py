@@ -1,4 +1,4 @@
-"""Collect a portable project bundle: project JSON at root + Media/ copies."""
+"""Collect a portable project bundle: project JSON at root + Media/<Folder>/."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ from pathlib import Path
 
 from cueplayer.domain.models import Project
 from cueplayer.media.audio_disk_cache import clone_caches_for_copied_file
+from cueplayer.persistence.media_layout import (
+    DEFAULT_MEDIA_SUBDIR,
+    UNFILED_FOLDER,
+    category_folder_name,
+    safe_folder_name,
+    unique_dest,
+)
 from cueplayer.persistence.media_paths import path_exists
 from cueplayer.persistence.project_store import save_project
-
-DEFAULT_MEDIA_SUBDIR = "Media"
 
 
 @dataclass
@@ -25,24 +30,6 @@ class BundleResult:
     renamed: list[tuple[Path, str]] = field(default_factory=list)
 
 
-def _unique_basename(media_dir: Path, basename: str, used: set[str]) -> str:
-    """Pick a free name under media_dir; avoid case-insensitive collisions."""
-    key = basename.casefold()
-    if key not in used and not (media_dir / basename).exists():
-        used.add(key)
-        return basename
-    stem = Path(basename).stem
-    suffix = Path(basename).suffix
-    n = 2
-    while True:
-        candidate = f"{stem}_{n}{suffix}"
-        ckey = candidate.casefold()
-        if ckey not in used and not (media_dir / candidate).exists():
-            used.add(ckey)
-            return candidate
-        n += 1
-
-
 def collect_project_bundle(
     project: Project,
     dest_dir: Path,
@@ -51,7 +38,7 @@ def collect_project_bundle(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> BundleResult:
     """
-    Copy all reachable media into ``dest_dir / media_subdir`` and write the
+    Copy all reachable media into Setlist-mirrored folders and write the
     project JSON at ``dest_dir / project_filename`` with relative paths.
 
     Layout::
@@ -59,12 +46,13 @@ def collect_project_bundle(
         dest_dir/
           show.cueplayer.json
           Media/
-            song.wav
-            clip.mp4
+            Act1/
+              song.wav
+            _Unfiled/
+              loose.wav
 
-    Same source file referenced multiple times is only copied once.
-    Basename collisions from different sources get ``_2``, ``_3``, … suffixes.
-    Missing sources are listed and left pointing at the old path (still absolute).
+    Same source file referenced multiple times is only copied once (first
+    song's folder wins). Basename collisions get ``_2``, ``_3``, … suffixes.
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -77,11 +65,15 @@ def collect_project_bundle(
         media_dir=media_dir,
     )
 
+    # Ensure every category has a folder on disk (even if empty).
+    for category in bundled.setlist_categories:
+        (media_dir / safe_folder_name(category.name)).mkdir(parents=True, exist_ok=True)
+    (media_dir / UNFILED_FOLDER).mkdir(parents=True, exist_ok=True)
+
     # source resolve key → destination path inside Media/
     source_map: dict[str, Path] = {}
-    used_names: set[str] = set()
 
-    def _place(source: Path) -> Path | None:
+    def _place(source: Path, *, folder_name: str) -> Path | None:
         try:
             resolved = source.expanduser().resolve()
         except OSError:
@@ -93,24 +85,24 @@ def collect_project_bundle(
         if not path_exists(resolved):
             result.missing.append(source)
             return None
-        basename = _unique_basename(media_dir, resolved.name, used_names)
-        if basename != resolved.name:
-            result.renamed.append((resolved, basename))
-        dest = media_dir / basename
+        dest_folder = media_dir / folder_name
+        dest = unique_dest(dest_folder, resolved.name)
+        if dest.name != resolved.name:
+            result.renamed.append((resolved, dest.name))
         shutil.copy2(resolved, dest)
-        # Keep waveform + LTC L/R caches so opening the bundle is instant.
         clone_caches_for_copied_file(resolved, dest)
         source_map[key] = dest
         result.copied.append((resolved, dest))
         return dest
 
     for song in bundled.songs:
+        folder_name = category_folder_name(bundled, song.category_id)
         for track in song.audio_tracks:
-            placed = _place(Path(track.path))
+            placed = _place(Path(track.path), folder_name=folder_name)
             if placed is not None:
                 track.path = placed
         for clip in song.video_clips:
-            placed = _place(Path(clip.path))
+            placed = _place(Path(clip.path), folder_name=folder_name)
             if placed is not None:
                 clip.path = placed
 
