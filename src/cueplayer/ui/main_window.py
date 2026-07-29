@@ -1444,6 +1444,7 @@ class MainWindow(QMainWindow):
         return f"{stem}.cueplayer.json"
 
     def _collect_project_bundle(self) -> None:
+        """Save As into a Bundle folder (incremental — safe to re-use the same folder)."""
         missing = scan_missing_media(self.project)
         if missing:
             answer = QMessageBox.question(
@@ -1464,32 +1465,45 @@ class MainWindow(QMainWindow):
         )
         dest_str = QFileDialog.getExistingDirectory(
             self,
-            "Choose empty folder for the Bundle "
-            f"(project file at root, {DEFAULT_MEDIA_SUBDIR}/<Setlist folder>/ inside)",
+            "Bundle / Save As — choose folder "
+            f"(project file at root, {DEFAULT_MEDIA_SUBDIR}/<Setlist>/<Song>/ inside). "
+            "Re-selecting your current Bundle folder only adds new media.",
             start,
         )
         if not dest_str:
             return
         dest_dir = Path(dest_str)
-        # Warn when the destination already has files (avoid Media/_2 clutter).
-        existing = [p for p in dest_dir.iterdir() if not p.name.startswith(".")]
-        if existing:
-            names = ", ".join(p.name for p in existing[:6])
-            extra = "…" if len(existing) > 6 else ""
-            cont = QMessageBox.question(
-                self,
-                "Folder not empty",
-                f"This folder already contains:\n{names}{extra}\n\n"
-                "Bundling here may leave leftover Media files or overwrite the project.\n"
-                "Continue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if cont != QMessageBox.StandardButton.Yes:
-                return
-        project_name = self._bundle_project_filename()
+
+        default_name = self._bundle_project_filename()
+        # If we're already inside this folder, keep the live project filename.
+        if (
+            self._project_path is not None
+            and self._project_path.parent.resolve() == dest_dir.resolve()
+        ):
+            default_name = self._project_path.name
+        project_name, ok = QInputDialog.getText(
+            self,
+            "Project file name",
+            "Name for the .cueplayer.json in this folder:",
+            text=default_name,
+        )
+        if not ok:
+            return
+        project_name = (project_name or "").strip() or default_name
+        if not project_name.endswith(".json"):
+            if project_name.endswith(".cueplayer"):
+                project_name = f"{project_name}.json"
+            else:
+                project_name = f"{project_name}.cueplayer.json"
+        for ch in '<>:"/\\|?*':
+            project_name = project_name.replace(ch, "_")
+
         target_project = dest_dir / project_name
-        if target_project.exists():
+        updating_same = (
+            self._project_path is not None
+            and self._project_path.resolve() == target_project.resolve()
+        )
+        if target_project.exists() and not updating_same:
             overwrite = QMessageBox.question(
                 self,
                 "Overwrite?",
@@ -1515,36 +1529,43 @@ class MainWindow(QMainWindow):
 
         lines = [
             f"Project: {result.project_path.name}",
-            f"Media folder: {result.media_dir.name}/<Setlist folder>/<Song>/",
-            f"Copied: {len(result.copied)} file(s)",
+            f"Media: {result.media_dir.name}/<Setlist folder>/<Song>/",
+            f"Copied (new): {len(result.copied)}",
+            f"Reused (already in folder): {len(result.reused)}",
+            f"Moved inside Media: {len(result.moved)}",
         ]
         if result.folders_used:
             lines.append("Setlist folders: " + ", ".join(result.folders_used))
-        if result.reused:
-            lines.append(f"Shared refs (same file): {len(result.reused)}")
         if result.renamed:
             lines.append(f"Renamed (name clash): {len(result.renamed)}")
         if result.missing:
             lines.append(f"Still missing (not copied): {len(result.missing)}")
         lines.append("")
-        lines.append("Open the bundled project now?")
+        lines.append("This project now points at the Bundle folder.")
 
-        open_now = QMessageBox.question(
-            self,
-            "Bundle Ready",
-            "\n".join(lines),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
+        QMessageBox.information(self, "Bundle Saved", "\n".join(lines))
+
+        # Save As: switch the live session onto the bundled project.
+        try:
+            loaded = load_project(result.project_path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self,
+                "Bundle Saved",
+                f"Bundle written, but could not open it:\n{exc}",
+            )
+            return
+        preferred = self.current_song.id if self.project.songs else None
+        self.engine.stop()
+        self.project = loaded
+        self._project_path = result.project_path
+        self._apply_project(preferred_song_id=preferred)
+        self._set_clean()
         self.status.showMessage(
-            f"Bundle saved → {result.project_path} ({len(result.copied)} media)",
+            f"Working in Bundle: {result.project_path} "
+            f"(+{len(result.copied)} new, {len(result.reused)} reused)",
             6000,
         )
-        if open_now == QMessageBox.StandardButton.Yes:
-            if not self._confirm_discard_if_dirty():
-                return
-            if self._open_project_path(result.project_path):
-                self.status.showMessage(f"Opened bundle: {result.project_path.name}", 3500)
 
     def _maybe_prompt_missing_media(self, *, quiet: bool = False) -> None:
         missing = scan_missing_media(self.project)
@@ -1648,9 +1669,10 @@ class MainWindow(QMainWindow):
         )
         act_relink.triggered.connect(self._open_missing_media_relink)
         menu.addAction(act_relink)
-        act_bundle = QAction("Collect Project &Bundle…", self)
+        act_bundle = QAction("Collect Project &Bundle / Save As…", self)
         act_bundle.setToolTip(
-            "Copy all used media into a folder: project file at the root, Media/ beside it"
+            "Save into a Bundle folder (name the project file). "
+            "Re-run on the same folder to add new media without re-copying existing files."
         )
         act_bundle.triggered.connect(self._collect_project_bundle)
         menu.addAction(act_bundle)
@@ -2616,13 +2638,15 @@ class MainWindow(QMainWindow):
             return
         with self._setlist_edit("Rename Song"):
             song.name = name
+            n_files = self._sync_media_files_for_songs([song])
             self._mark_dirty()
             self._refresh_status()
             patch = getattr(self, "show_patch_page", None)
             if patch is not None:
                 patch.sync_songs()
             self.timeline.update()
-        self.status.showMessage(f'Song name changed to "{name}"', 2000)
+        extra = f" · {n_files} media path(s) updated" if n_files else ""
+        self.status.showMessage(f'Song name changed to "{name}"{extra}', 2000)
 
     def _on_song_ma_name_edited(self, row: int, text: str) -> None:
         song_index = self.song_list.row_song_index(row)
@@ -3041,6 +3065,7 @@ class MainWindow(QMainWindow):
             return
 
         with self._setlist_edit("Reorder Songs"):
+            old_categories = {song.id: song.category_id for song in moving}
             entries = self._setlist_display_rows()
             moving_entries = [
                 e
@@ -3086,6 +3111,13 @@ class MainWindow(QMainWindow):
 
             keep_id = self.current_song.id
             self.project.songs = ordered_songs
+            # Dragging into another folder goes through reorder — sync Media/.
+            folder_changed = [
+                song
+                for song in moving
+                if song.category_id != old_categories.get(song.id)
+            ]
+            n_files = self._sync_media_files_for_songs(folder_changed)
             new_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
             if not new_indexes:
                 new_indexes = [min(insert_at, len(self.project.songs) - 1)]
@@ -3100,7 +3132,8 @@ class MainWindow(QMainWindow):
             self._undo_ctx.current_song_id = self.current_song.id
             self._mark_dirty()
             self._refresh_status()
-        self.status.showMessage("Song order updated by drag", 2000)
+        extra = f" · {n_files} media file(s) synced" if n_files else ""
+        self.status.showMessage(f"Song order updated by drag{extra}", 2000)
 
     def _on_songs_moved_to_category(self, song_ids: list, category_id: str) -> None:
         category = self.project.setlist_category_by_id(str(category_id))
