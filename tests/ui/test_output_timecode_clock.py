@@ -17,6 +17,7 @@ from cueplayer.persistence.project_store import project_from_dict, project_to_di
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
+from cueplayer.ui.output_quick_toggles import OutputQuickToggles
 
 
 @pytest.fixture
@@ -70,6 +71,23 @@ def test_monitor_tc_off_state(app: QApplication) -> None:
     panel.set_output_timecode(timecode="—", outputs=(), sending=False)
     assert panel.tc_output_status.text() == "TC off"
     assert panel.tc_output_value.text() == "—"
+
+
+def test_output_quick_toggles_reflect_settings(app: QApplication) -> None:
+    toggles = OutputQuickToggles()
+    settings = AudioOutputSettings(
+        midi_enabled=True,
+        mtc_enabled=True,
+        ltc_enabled=False,
+        midi_cue_notes_enabled=True,
+    )
+    toggles.apply_settings(settings)
+    assert toggles._midi.isChecked()  # noqa: SLF001
+    assert toggles._mtc.isChecked()  # noqa: SLF001
+    assert not toggles._ltc.isChecked()  # noqa: SLF001
+    assert toggles._notes.isChecked()  # noqa: SLF001
+    assert toggles._mtc.isEnabled()  # noqa: SLF001
+    assert toggles._notes.isEnabled()  # noqa: SLF001
 
 
 def test_display_dialog_tc_clock_settings_apply_live(app: QApplication) -> None:

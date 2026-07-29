@@ -176,48 +176,6 @@ class AudioTimecodeDialog(QDialog):
         stereo_form.addRow(stereo_tip)
         inner.addWidget(stereo_box)
 
-        ltc_box = QGroupBox("LTC Output")
-        ltc_form = QFormLayout(ltc_box)
-        self.ltc_enable = TickCheckBox("Enable LTC on output")
-        self.ltc_enable.setChecked(settings.ltc_enabled)
-        self.ltc_channels = NoWheelComboBox()
-        self.ltc_channels.setEditable(True)
-        self.ltc_source = NoWheelComboBox()
-        self.ltc_source.addItem("Internal generator", "generator")
-        self.ltc_source.addItem("From file — auto-detect L/R", "auto")
-        self.ltc_source.addItem("From file — Left channel", "source_left")
-        self.ltc_source.addItem("From file — Right channel", "source_right")
-        for i in range(self.ltc_source.count()):
-            if self.ltc_source.itemData(i) == settings.ltc_source:
-                self.ltc_source.setCurrentIndex(i)
-                break
-        self.ltc_generator_enable = TickCheckBox("Enable internal LTC generator")
-        self.ltc_generator_enable.setChecked(settings.ltc_generator_enabled)
-        self.ltc_generator_enable.setToolTip(
-            "Only when LTC source is Internal generator. File pass-through ignores this."
-        )
-        self.ltc_gain = QSlider(Qt.Orientation.Horizontal)
-        self.ltc_gain.setRange(0, 150)
-        self.ltc_gain.setValue(int(round(settings.ltc_gain * 100)))
-        self.ltc_gain.setStyleSheet(SLIDER_QSS)
-        self.ltc_gain_label = QLabel(f"{int(self.ltc_gain.value())}%")
-        gain_row = QHBoxLayout()
-        gain_row.addWidget(self.ltc_gain, stretch=1)
-        gain_row.addWidget(self.ltc_gain_label)
-        ltc_note = QLabel(
-            "Enable LTC on output + LTC→CH3 sends timecode to your interface. "
-            "Use file source for striped audio; use Internal generator only when needed."
-        )
-        ltc_note.setStyleSheet("color: #a1a1aa;")
-        ltc_note.setWordWrap(True)
-        ltc_form.addRow(self.ltc_enable)
-        ltc_form.addRow("LTC →", self.ltc_channels)
-        ltc_form.addRow("LTC source", self.ltc_source)
-        ltc_form.addRow(self.ltc_generator_enable)
-        ltc_form.addRow("LTC Gain", gain_row)
-        ltc_form.addRow(ltc_note)
-        inner.addWidget(ltc_box)
-
         mtc_box = QGroupBox("MIDI Output")
         mtc_form = QFormLayout(mtc_box)
         self.midi_on = TickCheckBox("MIDI On")
@@ -291,6 +249,48 @@ class AudioTimecodeDialog(QDialog):
         midi_hint.setStyleSheet("color: #a1a1aa;")
         mtc_form.addRow(midi_hint)
         inner.addWidget(mtc_box)
+
+        ltc_box = QGroupBox("LTC Output")
+        ltc_form = QFormLayout(ltc_box)
+        self.ltc_enable = TickCheckBox("Enable LTC on output")
+        self.ltc_enable.setChecked(settings.ltc_enabled)
+        self.ltc_channels = NoWheelComboBox()
+        self.ltc_channels.setEditable(True)
+        self.ltc_source = NoWheelComboBox()
+        self.ltc_source.addItem("Internal generator", "generator")
+        self.ltc_source.addItem("From file — auto-detect L/R", "auto")
+        self.ltc_source.addItem("From file — Left channel", "source_left")
+        self.ltc_source.addItem("From file — Right channel", "source_right")
+        for i in range(self.ltc_source.count()):
+            if self.ltc_source.itemData(i) == settings.ltc_source:
+                self.ltc_source.setCurrentIndex(i)
+                break
+        self.ltc_generator_enable = TickCheckBox("Enable internal LTC generator")
+        self.ltc_generator_enable.setChecked(settings.ltc_generator_enabled)
+        self.ltc_generator_enable.setToolTip(
+            "Only when LTC source is Internal generator. File pass-through ignores this."
+        )
+        self.ltc_gain = QSlider(Qt.Orientation.Horizontal)
+        self.ltc_gain.setRange(0, 150)
+        self.ltc_gain.setValue(int(round(settings.ltc_gain * 100)))
+        self.ltc_gain.setStyleSheet(SLIDER_QSS)
+        self.ltc_gain_label = QLabel(f"{int(self.ltc_gain.value())}%")
+        gain_row = QHBoxLayout()
+        gain_row.addWidget(self.ltc_gain, stretch=1)
+        gain_row.addWidget(self.ltc_gain_label)
+        ltc_note = QLabel(
+            "Enable LTC on output + LTC→CH3 sends timecode to your interface. "
+            "Use file source for striped audio; use Internal generator only when needed."
+        )
+        ltc_note.setStyleSheet("color: #a1a1aa;")
+        ltc_note.setWordWrap(True)
+        ltc_form.addRow(self.ltc_enable)
+        ltc_form.addRow("LTC →", self.ltc_channels)
+        ltc_form.addRow("LTC source", self.ltc_source)
+        ltc_form.addRow(self.ltc_generator_enable)
+        ltc_form.addRow("LTC Gain", gain_row)
+        ltc_form.addRow(ltc_note)
+        inner.addWidget(ltc_box)
         inner.addStretch(1)
 
         btn_bar = QWidget()

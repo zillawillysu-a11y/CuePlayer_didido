@@ -1231,6 +1231,8 @@ class MainWindow(QMainWindow):
         self.monitor.output_timecode_clock_changed.connect(
             self._on_output_timecode_clock_changed
         )
+        self.monitor.output_toggle_changed.connect(self._on_output_quick_toggle)
+        self.monitor.audio_settings_requested.connect(self._open_audio_timecode)
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
         self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
@@ -4204,6 +4206,41 @@ class MainWindow(QMainWindow):
             visible=bool(getattr(p, "show_output_timecode_clock", True)),
             color=str(getattr(p, "output_timecode_clock_color", None) or "#3dd68c"),
         )
+        self.monitor.sync_output_quick_toggles(self.project.audio_output)
+
+    def _on_output_quick_toggle(self, key: str, enabled: bool) -> None:
+        ao = self.project.audio_output
+        if key == "midi":
+            ao.midi_enabled = enabled
+        elif key == "mtc":
+            if enabled:
+                ao.midi_enabled = True
+            ao.mtc_enabled = enabled
+        elif key == "ltc":
+            ao.ltc_enabled = enabled
+        elif key == "notes":
+            if enabled:
+                ao.midi_enabled = True
+            ao.midi_cue_notes_enabled = enabled
+        else:
+            return
+
+        if ao.midi_enabled and not ao.midi_port_name:
+            QMessageBox.warning(
+                self,
+                "MIDI",
+                "Choose a MIDI output port in Audio / Midi / Timecode settings first.",
+            )
+            self.monitor.sync_output_quick_toggles(self.project.audio_output)
+            return
+
+        warning = self.engine.apply_audio_settings(ao)
+        self._refresh_timecode_status()
+        self._refresh_output_timecode_clock()
+        self.monitor.sync_output_quick_toggles(ao)
+        self._mark_dirty()
+        if warning:
+            self.status.showMessage(warning, 5000)
 
     def _refresh_output_timecode_clock(self, position: float | None = None) -> None:
         state = self.engine.output_timecode_state(position)
@@ -4259,6 +4296,7 @@ class MainWindow(QMainWindow):
         warning = self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
+        self.monitor.sync_output_quick_toggles(settings)
         self._mark_dirty()
         if warning:
             # Virtual MIDI ports (e.g. Bome) sometimes need a moment after the

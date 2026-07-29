@@ -29,7 +29,7 @@ from cueplayer.domain.main_cue_id import (
     main_cue_id_taken,
     normalize_main_cue_id_text,
 )
-from cueplayer.domain.models import Mark, Song
+from cueplayer.domain.models import AudioOutputSettings, Mark, Song
 from cueplayer.ui.cue_list_columns import (
     CUE_LIST_FIELD_LABELS,
     CUE_LIST_FIELDS,
@@ -37,6 +37,7 @@ from cueplayer.ui.cue_list_columns import (
     LOGICAL_INDEX_BY_FIELD,
     normalize_cue_list_column_order,
 )
+from cueplayer.ui.output_quick_toggles import OutputQuickToggles
 from cueplayer.ui.transport_bar import format_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
@@ -148,6 +149,8 @@ class CueMonitorPanel(QWidget):
     cue_list_visibility_changed = Signal()
     now_layout_changed = Signal()
     output_timecode_clock_changed = Signal()  # secondary right/below or splitter sizes
+    output_toggle_changed = Signal(str, bool)  # midi | mtc | ltc | notes
+    audio_settings_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -245,6 +248,12 @@ class CueMonitorPanel(QWidget):
 
         tc_out_layout.addWidget(self.tc_output_status)
         tc_out_layout.addWidget(self.tc_output_value)
+
+        self.output_quick_toggles = OutputQuickToggles()
+        self.output_quick_toggles.set_accent_color(self._tc_clock_color)
+        self.output_quick_toggles.toggled.connect(self.output_toggle_changed)
+        tc_out_layout.addWidget(self.output_quick_toggles)
+
         clock_layout.addWidget(self._tc_output_block)
 
         clock_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1170,7 +1179,11 @@ class CueMonitorPanel(QWidget):
         q = QColor(color or "#3dd68c")
         self._tc_clock_color = q.name() if q.isValid() else "#3dd68c"
         self._tc_output_block.setVisible(self._show_output_tc_clock)
+        self.output_quick_toggles.set_accent_color(self._tc_clock_color)
         self._apply_output_timecode_style()
+
+    def sync_output_quick_toggles(self, settings) -> None:  # noqa: ANN001
+        self.output_quick_toggles.apply_settings(settings)
 
     def set_output_timecode(
         self,
@@ -1216,11 +1229,16 @@ class CueMonitorPanel(QWidget):
         show_action.setCheckable(True)
         show_action.setChecked(self._show_output_tc_clock)
         show_action.setToolTip("LTC / MTC output timecode under the seconds display (Notes-only shows status, not SMPTE)")
+        menu.addSeparator()
+        settings_action = menu.addAction("Audio / Midi / Timecode settings…")
+        settings_action.setToolTip("Port, routing, Translate, LTC source, and advanced options")
         chosen = menu.exec(self._clock_frame.mapToGlobal(pos))
         if chosen is show_action:
             self._show_output_tc_clock = show_action.isChecked()
             self._tc_output_block.setVisible(self._show_output_tc_clock)
             self.output_timecode_clock_changed.emit()
+        elif chosen is settings_action:
+            self.audio_settings_requested.emit()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
