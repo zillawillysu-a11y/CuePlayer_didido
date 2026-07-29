@@ -322,19 +322,10 @@ class AudioEngine(QObject):
         s = self._audio_settings
         if s.ltc_source == "generator":
             return None
-        # Per-song override always wins when LTC output is on.
-        song_ch = self._song_file_ltc_channel()
-        if song_ch is not None and s.ltc_enabled:
-            return song_ch
-        # LTC output on → use full resolution.
-        if s.ltc_enabled:
-            return self._resolved_file_ltc_channel(require_settings=False)
-        # MTC-only translate mode: decode without needing LTC output.
-        if s.ltc_to_mtc_translate:
-            if song_ch is not None:
-                return song_ch
-            return self._resolved_file_ltc_channel(require_settings=False)
-        return None
+        # Only decode if LTC output is on, or translate mode is explicitly enabled.
+        if not s.ltc_enabled and not s.ltc_to_mtc_translate:
+            return None
+        return self._resolved_file_ltc_channel(require_settings=False)
 
     def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
         """
