@@ -161,14 +161,18 @@ class MtcOutput:
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
-            if not self._enabled:
-                # Keep the port open so toggling back on reconnects instantly.
-                return None
+            if port_changed and self._port is not None:
+                self._close_port_locked()
             if self._port is not None and not port_changed:
-                # Port already open and name unchanged — no need to reopen.
                 return None
-            err = self._reopen_port_locked()
-            return err
+            if self._port_name:
+                err = self._reopen_port_locked()
+                if self._enabled:
+                    return err
+                # Pre-open while disabled so first enable does not race Bome.
+                if err:
+                    log.debug("MIDI pre-open (MTC off): %s", err)
+            return None
 
     def set_timebase(self, start_timecode: str, fps: float) -> None:
         with self._lock:
@@ -278,15 +282,15 @@ class MtcOutput:
 
     def _reopen_port_locked(self) -> str | None:
         self._close_port_locked()
-        if not self._enabled:
-            return None
         if not self._port_name:
-            return "MTC is enabled but no MIDI output port is selected."
+            if self._enabled:
+                return "MTC is enabled but no MIDI output port is selected."
+            return None
 
         if _use_winmm():
             import time
             last_exc: Exception | None = None
-            for attempt in range(5):
+            for attempt in range(20):
                 try:
                     from cueplayer.playback.winmm_midi import WinmmMidiOut
                     self._port = WinmmMidiOut.open_by_name(self._port_name)
@@ -297,11 +301,15 @@ class MtcOutput:
                     # like Bome need time after the previous handle is closed).
                     last_exc = LookupError(f"MIDI port not found: {self._port_name}")
                     log.warning("winmm MIDI port not found attempt %d, retrying…", attempt + 1)
-                    time.sleep(0.1)
+                    time.sleep(0.15)
+                except OSError as exc:
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.15)
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
-                    time.sleep(0.1)
+                    time.sleep(0.15)
             # All attempts failed — report without falling through to mido.
             return f"MIDI port not found after retries: {self._port_name}"
 

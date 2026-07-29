@@ -4263,18 +4263,30 @@ class MainWindow(QMainWindow):
         if warning:
             # Virtual MIDI ports (e.g. Bome) sometimes need a moment after the
             # previous handle is closed before accepting a new connection.
-            # Retry silently after 300 ms before showing a warning dialog.
-            def _retry_mtc() -> None:
+            delays_ms = (400, 900, 1800, 3000)
+
+            def _retry_mtc(attempt: int = 0) -> None:
                 retry_warn = self.engine.apply_audio_settings(self.project.audio_output)
                 self._refresh_timecode_status()
                 self._refresh_output_timecode_clock()
-                if retry_warn:
-                    QMessageBox.warning(self, "Audio / Timecode", retry_warn)
-                    self.status.showMessage(retry_warn, 6000)
-                else:
+                if not retry_warn:
                     self.status.showMessage("Audio routing updated (MIDI reconnected)", 3500)
-            QTimer.singleShot(700, _retry_mtc)
+                    return
+                if attempt < len(delays_ms):
+                    self.status.showMessage(
+                        f"MIDI: retrying ({attempt + 1}/{len(delays_ms)})…",
+                        4000,
+                    )
+                    QTimer.singleShot(
+                        delays_ms[attempt],
+                        lambda a=attempt + 1: _retry_mtc(a),
+                    )
+                    return
+                QMessageBox.warning(self, "Audio / Timecode", retry_warn)
+                self.status.showMessage(retry_warn, 6000)
+
             self.status.showMessage(f"MIDI: retrying… ({warning})", 3000)
+            QTimer.singleShot(delays_ms[0], lambda: _retry_mtc(0))
         else:
             parts = []
             if settings.ltc_enabled:
