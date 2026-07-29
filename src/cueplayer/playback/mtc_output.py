@@ -276,16 +276,21 @@ class MtcOutput:
             return "MTC is enabled but no MIDI output port is selected."
 
         if _use_winmm():
-            try:
-                from cueplayer.playback.winmm_midi import WinmmMidiOut
-
-                self._port = WinmmMidiOut.open_by_name(self._port_name)
-                self._port_name = self._port.name
-                return None
-            except LookupError:
-                return f"MIDI port not found: {self._port_name}"
-            except Exception as exc:  # noqa: BLE001
-                log.warning("winmm MIDI open failed, trying mido: %s", exc)
+            import time
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    from cueplayer.playback.winmm_midi import WinmmMidiOut
+                    self._port = WinmmMidiOut.open_by_name(self._port_name)
+                    self._port_name = self._port.name
+                    return None
+                except LookupError:
+                    return f"MIDI port not found: {self._port_name}"
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.05)
+            log.warning("winmm MIDI open failed after retries, trying mido: %s", last_exc)
 
         try:
             import mido
