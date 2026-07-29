@@ -43,24 +43,6 @@ def _unique_basename(media_dir: Path, basename: str, used: set[str]) -> str:
         n += 1
 
 
-def iter_media_paths(project: Project) -> list[Path]:
-    """Unique media paths referenced by the project (order preserved)."""
-    seen: set[str] = set()
-    paths: list[Path] = []
-    for song in project.songs:
-        for track in song.audio_tracks:
-            key = str(Path(track.path))
-            if key not in seen:
-                seen.add(key)
-                paths.append(Path(track.path))
-        for clip in song.video_clips:
-            key = str(Path(clip.path))
-            if key not in seen:
-                seen.add(key)
-                paths.append(Path(clip.path))
-    return paths
-
-
 def collect_project_bundle(
     project: Project,
     dest_dir: Path,

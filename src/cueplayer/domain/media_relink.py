@@ -6,11 +6,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cueplayer.domain.models import Project
-from cueplayer.media.audio_disk_cache import clone_caches_for_copied_file
+from cueplayer.media.audio_disk_cache import adopt_caches_for_path
 from cueplayer.persistence.media_paths import path_exists
 
 
 MediaKind = str  # "audio" | "video"
+
+_MEDIA_SUFFIXES = {
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".mp3",
+    ".aiff",
+    ".aif",
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".avi",
+    ".webm",
+    ".m4v",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".bmp",
+    ".webp",
+}
 
 
 @dataclass(frozen=True)
@@ -62,7 +84,10 @@ def scan_missing_media(project: Project) -> list[MissingMediaRef]:
 
 def apply_relink(project: Project, ref: MissingMediaRef, new_path: Path) -> bool:
     """Point one missing item at ``new_path``. Returns True if updated."""
-    new_path = Path(new_path)
+    try:
+        new_path = Path(new_path).expanduser().resolve()
+    except OSError:
+        new_path = Path(new_path)
     old_path = Path(ref.path)
     for song in project.songs:
         if song.id != ref.song_id:
@@ -71,8 +96,8 @@ def apply_relink(project: Project, ref: MissingMediaRef, new_path: Path) -> bool
             for track in song.audio_tracks:
                 if track.id == ref.item_id:
                     track.path = new_path
-                    if old_path.is_file() and new_path.is_file():
-                        clone_caches_for_copied_file(old_path, new_path)
+                    if new_path.is_file():
+                        adopt_caches_for_path(new_path, former_path=old_path)
                     return True
         else:
             for clip in song.video_clips:
@@ -86,23 +111,39 @@ def index_folder_basenames(
     folder: Path, *, recursive: bool = True
 ) -> dict[str, list[Path]]:
     """
-    Map lowercased basename → candidate files under ``folder``.
+    Map lowercased basename → candidate media files under ``folder``.
 
+    Skips hidden/dot directories. Only indexes common audio/video/image suffixes.
     Multiple files with the same name land in the same list (caller decides).
     """
     root = Path(folder)
     if not root.is_dir():
         return {}
     index: dict[str, list[Path]] = {}
-    iterator = root.rglob("*") if recursive else root.iterdir()
-    for path in iterator:
+
+    def _consider(path: Path) -> None:
         try:
             if not path.is_file():
-                continue
+                return
         except OSError:
-            continue
+            return
+        if path.suffix.casefold() not in _MEDIA_SUFFIXES:
+            return
         key = path.name.casefold()
         index.setdefault(key, []).append(path)
+
+    if not recursive:
+        for path in root.iterdir():
+            _consider(path)
+        return index
+
+    for dirpath, dirnames, filenames in root.walk():
+        # Prune hidden / system directories.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            _consider(dirpath / name)
     return index
 
 

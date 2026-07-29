@@ -1468,6 +1468,22 @@ class MainWindow(QMainWindow):
         if not dest_str:
             return
         dest_dir = Path(dest_str)
+        # Warn when the destination already has files (avoid Media/_2 clutter).
+        existing = [p for p in dest_dir.iterdir() if not p.name.startswith(".")]
+        if existing:
+            names = ", ".join(p.name for p in existing[:6])
+            extra = "…" if len(existing) > 6 else ""
+            cont = QMessageBox.question(
+                self,
+                "Folder not empty",
+                f"This folder already contains:\n{names}{extra}\n\n"
+                "Bundling here may leave leftover Media files or overwrite the project.\n"
+                "Continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if cont != QMessageBox.StandardButton.Yes:
+                return
         project_name = self._bundle_project_filename()
         target_project = dest_dir / project_name
         if target_project.exists():
@@ -3599,7 +3615,8 @@ class MainWindow(QMainWindow):
             self.monitor.set_position(0.0, self.engine.duration)
             if main_audio is not None:
                 self.status.showMessage(
-                    f"Audio file not found: {main_audio.path} (drop a new audio file to relink)",
+                    f"Audio file not found: {main_audio.path} "
+                    "(File → Relink Missing Media…)",
                     5000,
                 )
         self._refresh_window_title()

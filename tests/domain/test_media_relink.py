@@ -77,6 +77,24 @@ def test_relink_from_folder_by_basename(tmp_path: Path) -> None:
     assert scan_missing_media(project) == []
 
 
+def test_index_folder_skips_non_media_and_dot_dirs(tmp_path: Path) -> None:
+    from cueplayer.domain.media_relink import index_folder_basenames
+
+    (tmp_path / "keep.wav").write_bytes(b"a")
+    (tmp_path / "notes.txt").write_bytes(b"b")
+    hidden = tmp_path / ".cache"
+    hidden.mkdir()
+    (hidden / "secret.wav").write_bytes(b"c")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "clip.mp4").write_bytes(b"d")
+
+    index = index_folder_basenames(tmp_path, recursive=True)
+    assert set(index) == {"keep.wav", "clip.mp4"}
+    assert "notes.txt" not in index
+    assert "secret.wav" not in index
+
+
 def test_relink_folder_ambiguous_same_basename(tmp_path: Path) -> None:
     old = tmp_path / "missing" / "same.wav"
     folder = tmp_path / "pool"

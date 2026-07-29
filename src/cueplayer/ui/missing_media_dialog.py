@@ -119,7 +119,7 @@ class MissingMediaRelinkDialog(QDialog):
                 self.table.setItem(row, col, item)
         n = len(self._missing)
         if n == 0:
-            self.status.setText("All media files found.")
+            self.status.setText("All media files are linked.")
             self.relink_file_btn.setEnabled(False)
             self.relink_folder_btn.setEnabled(False)
         else:

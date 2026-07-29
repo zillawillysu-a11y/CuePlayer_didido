@@ -103,3 +103,35 @@ def test_clone_caches_for_copied_file(tmp_path: Path, monkeypatch: pytest.Monkey
     assert dest_key is not None
     assert dest_key != src_key
     assert load_all_ltc_channels().get(dest_key) == 0
+
+
+def test_adopt_caches_when_former_path_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    import cueplayer.media.audio_disk_cache as mod
+    from cueplayer.media.audio_disk_cache import adopt_caches_for_path
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mod, "_LTC_CACHE_FILE", tmp_path / "cache" / "ltc_channels.json")
+
+    src = tmp_path / "was" / "song.wav"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"WAVDATA")
+    save_cached_audio(src, _tiny_buffer(src))
+    src_key = audio_cache_key(src)
+    assert src_key is not None
+    save_ltc_channel(src_key, 1)
+
+    dest = tmp_path / "now" / "song.wav"
+    dest.parent.mkdir(parents=True)
+    shutil.copy2(src, dest)
+    former = src
+    src.unlink()  # simulate move — old path gone
+
+    assert adopt_caches_for_path(dest, former_path=former) is True
+    assert load_cached_audio(dest) is not None
+    dest_key = audio_cache_key(dest)
+    assert dest_key is not None
+    assert load_all_ltc_channels().get(dest_key) == 1
