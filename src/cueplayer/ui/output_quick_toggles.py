@@ -1,4 +1,4 @@
-"""Compact output toggles for the monitor clock (L→M / Note / MTC / LTC)."""
+"""Compact output toggles for the monitor clock (TRANS / Note / MTC / LTC)."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class OutputQuickToggles(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._translate = self._make_chip(
-            "L→M",
+            "TRANS",
             "translate",
             "Translate file LTC stripe → MTC (auto-enables MIDI)",
         )

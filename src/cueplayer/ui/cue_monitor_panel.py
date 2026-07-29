@@ -1241,7 +1241,7 @@ class CueMonitorPanel(QWidget):
         show_toggles = menu.addAction("Show output toggles")
         show_toggles.setCheckable(True)
         show_toggles.setChecked(self._show_output_quick_toggles)
-        show_toggles.setToolTip("L→M · Note · MTC · LTC quick switches under the clock")
+        show_toggles.setToolTip("TRANS · Note · MTC · LTC quick switches under the clock")
         menu.addSeparator()
         settings_action = menu.addAction("Audio / Midi / Timecode settings…")
         settings_action.setToolTip("MIDI port, routing, LTC source, and advanced options")

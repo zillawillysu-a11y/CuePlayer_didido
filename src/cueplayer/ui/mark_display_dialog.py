@@ -152,7 +152,7 @@ class MarkDisplayDialog(QDialog):
         )
         form2.addRow("Timecode Clock", self.tc_clock_box)
 
-        self.output_toggles_box = QCheckBox("Show output toggles (L→M · Note · MTC · LTC)")
+        self.output_toggles_box = QCheckBox("Show output toggles (TRANS · Note · MTC · LTC)")
         self.output_toggles_box.setChecked(
             bool(getattr(line_src, "show_output_quick_toggles", True))
         )
