@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -104,6 +105,18 @@ class AudioTimecodeDialog(QDialog):
         )
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_content = QWidget()
+        inner = QVBoxLayout(scroll_content)
+        inner.setContentsMargins(12, 12, 12, 12)
+        inner.setSpacing(8)
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll, stretch=1)
 
         device_box = QGroupBox("Output Device")
         device_form = QFormLayout(device_box)
@@ -140,7 +153,7 @@ class AudioTimecodeDialog(QDialog):
         device_form.addRow("Device", self.device_combo)
         device_form.addRow(self.device_hint)
         device_form.addRow(self.driver_hint)
-        root.addWidget(device_box)
+        inner.addWidget(device_box)
 
         stereo_box = QGroupBox("Stereo Output (L / R legs)")
         stereo_form = QFormLayout(stereo_box)
@@ -159,7 +172,7 @@ class AudioTimecodeDialog(QDialog):
         stereo_tip.setStyleSheet("color: #a1a1aa;")
         stereo_tip.setWordWrap(True)
         stereo_form.addRow(stereo_tip)
-        root.addWidget(stereo_box)
+        inner.addWidget(stereo_box)
 
         ltc_box = QGroupBox("LTC Output")
         ltc_form = QFormLayout(ltc_box)
@@ -201,7 +214,7 @@ class AudioTimecodeDialog(QDialog):
         ltc_form.addRow(self.ltc_generator_enable)
         ltc_form.addRow("LTC Gain", gain_row)
         ltc_form.addRow(ltc_note)
-        root.addWidget(ltc_box)
+        inner.addWidget(ltc_box)
 
         mtc_box = QGroupBox("MIDI Timecode (MTC)")
         mtc_form = QFormLayout(mtc_box)
@@ -235,7 +248,7 @@ class AudioTimecodeDialog(QDialog):
         midi_hint.setWordWrap(True)
         midi_hint.setStyleSheet("color: #a1a1aa;")
         mtc_form.addRow(midi_hint)
-        root.addWidget(mtc_box)
+        inner.addWidget(mtc_box)
 
         notes_box = QGroupBox("MIDI Cue Notes (MA record / link)")
         notes_form = QFormLayout(notes_box)
@@ -271,14 +284,20 @@ class AudioTimecodeDialog(QDialog):
         notes_tip.setWordWrap(True)
         notes_tip.setStyleSheet("color: #a1a1aa;")
         notes_form.addRow(notes_tip)
-        root.addWidget(notes_box)
+        inner.addWidget(notes_box)
+        inner.addStretch(1)
 
+        btn_bar = QWidget()
+        btn_bar.setStyleSheet("border-top: 1px solid #27272a;")
+        btn_layout = QVBoxLayout(btn_bar)
+        btn_layout.setContentsMargins(12, 8, 12, 8)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        root.addWidget(btn_bar)
 
         self.hostapi_combo.currentIndexChanged.connect(lambda _idx: self._reload_devices())
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
