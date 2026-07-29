@@ -1366,10 +1366,17 @@ class TimelineWidget(QWidget):
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
             return
-        pm = QPixmap(self.size())
+        # Match paintEvent: QPainter(QPixmap) defaults to QApplication.font(),
+        # not the stylesheet-resolved widget font (theme sets 13px on QWidget).
+        # Without copying self.font(), ruler/lane/header text looks smaller for
+        # the whole scrub gesture and snaps back on mouse-up.
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
         pm.fill(QColor(BG_APP))
         painter = QPainter(pm)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setFont(self.font())
         self._paint_static_layers(painter)
         painter.end()
         self._scrub_backdrop = pm
