@@ -72,7 +72,7 @@ from cueplayer.persistence.backup import (
 from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
-from cueplayer.ui.setlist_delegate import ROLE_LTC_CHANNEL, SetlistRowDelegate
+from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -90,7 +90,13 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_disk_cache import load_audio_cached, save_cached_audio
+from cueplayer.media.audio_disk_cache import (
+    load_audio_cached,
+    load_cached_audio,
+    load_all_ltc_channels,
+    save_cached_audio,
+    save_ltc_channel,
+)
 from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
@@ -198,8 +204,8 @@ class SetlistWidget(QTableWidget):
 
     _TRIANGLE_HIT_MIN_PX = 28
     _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
-    # Wide enough for bold "LTC L R" badge; Fixed so Song/BPM never squeeze it.
-    _LTC_COLUMN_WIDTH = 54
+    # Wide enough for bold "V LTC L R" badge; Fixed so Song/BPM never squeeze it.
+    _LTC_COLUMN_WIDTH = 68
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -213,6 +219,7 @@ class SetlistWidget(QTableWidget):
     ROLE_KIND = Qt.ItemDataRole.UserRole + 10
     ROLE_SONG_INDEX = Qt.ItemDataRole.UserRole + 11
     ROLE_LTC_CHANNEL = ROLE_LTC_CHANNEL
+    ROLE_HAS_VIDEO = ROLE_HAS_VIDEO
 
     audio_files_dropped = Signal(list)
     audio_drop_rejected = Signal(str)
@@ -274,11 +281,14 @@ class SetlistWidget(QTableWidget):
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
             ltc_header.setToolTip(
-                "Striped LTC badge (L/R) when file timecode is detected or set in Edit → File LTC"
+                "Media badges: V = video clips; LTC L/R = striped timecode side"
             )
         self.setColumnHidden(2, True)
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
+        self._show_ltc_badge = True
+        self._show_video_badge = True
+        self._sync_media_column_visibility()
         self.setToolTip(
             "Double-click No./Name/BPM to edit; drag column edges to resize; "
             "right-click for categories and full editor; "
@@ -323,16 +333,28 @@ class SetlistWidget(QTableWidget):
             self.setColumnHidden(self.COL_EN, True)
             header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
-        # Re-assert fixed LTC width after column show/hide (Qt can redistribute).
+        self._sync_media_column_width()
+
+    def _sync_media_column_width(self) -> None:
+        header = self.horizontalHeader()
         header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
+
+    def _sync_media_column_visibility(self) -> None:
+        visible = self._show_ltc_badge or self._show_video_badge
+        self.setColumnHidden(self.COL_LTC, not visible)
+        self._sync_media_column_width()
+
+    def set_show_media_badges(self, *, show_ltc: bool, show_video: bool) -> None:
+        self._show_ltc_badge = bool(show_ltc)
+        self._show_video_badge = bool(show_video)
+        self._sync_media_column_visibility()
+        self.viewport().update()
 
     def set_show_bpm(self, visible: bool) -> None:
         self._show_bpm = bool(visible)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
-        header = self.horizontalHeader()
-        header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
+        self._sync_media_column_width()
 
     def set_ma_column_visible(self, visible: bool) -> None:
         # Back-compat for older callers.
@@ -878,6 +900,10 @@ class MainWindow(QMainWindow):
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
         self._display_waveform_cache: dict[tuple[tuple[str, int, int] | None, int | None], AudioBuffer] = {}
         self._audio_ltc_cache: dict[tuple[str, int, int], int | None] = {}
+        self._ltc_idle_timer: QTimer = QTimer(self)
+        self._ltc_idle_timer.setSingleShot(True)
+        self._ltc_idle_timer.setInterval(2000)
+        self._ltc_idle_timer.timeout.connect(self._schedule_idle_ltc_detect)
         self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
         self._timeline_ltc_exclude: int | None = None
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
@@ -895,6 +921,7 @@ class MainWindow(QMainWindow):
         # JIT-warm librosa onset path so the first real detect is not a hitch.
         self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
@@ -971,7 +998,7 @@ class MainWindow(QMainWindow):
         self.song_list = SetlistWidget()
         self.song_list.setItemDelegate(SetlistRowDelegate(self.song_list))
         self.song_list.set_name_mode(self.project.setlist_name_mode)
-        self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self._sync_setlist_column_prefs()
         self._rebuild_song_list(select_indexes=[0])
         song_btns = QHBoxLayout()
         song_btns.setContentsMargins(0, 0, 0, 0)
@@ -1146,6 +1173,7 @@ class MainWindow(QMainWindow):
         self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
         self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
         self.timeline.scrub_preview_requested.connect(self.video_sync.update_position)
+        self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
         self.timeline.marks_changed.connect(self._on_marks_changed)
@@ -1363,8 +1391,10 @@ class MainWindow(QMainWindow):
         self.engine.stop()
         self.project = project
         self._project_path = path
+        self._audio_ltc_cache.update(load_all_ltc_channels())
         self._apply_project(preferred_song_id=song_id)
         self._set_clean()
+        self._ltc_idle_timer.start()
         return True
 
     def _maybe_load_demo_fixture(self) -> None:
@@ -1950,16 +1980,6 @@ class MainWindow(QMainWindow):
                     break
         self._rebuild_song_list(select_indexes=[song_index])
         self._activate_song(song_index, stop_playback=True)
-        # Prefetch only nearby songs — full-setlist warm was thrashing CPU/RAM.
-        self._warm_nearby_audio_on_open()
-
-    def _warm_nearby_audio_on_open(self) -> None:
-        """Background-load current ±1 songs only (keeps open responsive)."""
-        self._prefetch_neighbor_audio()
-
-    def _warm_project_audio_on_open(self) -> None:
-        """Deprecated full-setlist warm — kept as alias for nearby warm."""
-        self._warm_nearby_audio_on_open()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -1971,7 +1991,14 @@ class MainWindow(QMainWindow):
             mode = "both"
             self.project.setlist_name_mode = "both"  # type: ignore[assignment]
         self.song_list.set_name_mode(mode)
+        self._sync_setlist_column_prefs()
+
+    def _sync_setlist_column_prefs(self) -> None:
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self.song_list.set_show_media_badges(
+            show_ltc=bool(self.project.setlist_show_ltc_badge),
+            show_video=bool(self.project.setlist_show_video_badge),
+        )
 
     def _setlist_display_rows(self) -> list[_SetlistDisplayRow]:
         rows: list[_SetlistDisplayRow] = []
@@ -2027,7 +2054,7 @@ class MainWindow(QMainWindow):
         if mode not in ("zh", "both", "en"):
             mode = "zh"
         self.song_list.set_name_mode(mode)
-        self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self._sync_setlist_column_prefs()
         song_index_to_table_row: dict[int, int] = {}
         for table_row, entry in enumerate(display_rows):
             if entry.kind == "category":
@@ -2157,9 +2184,10 @@ class MainWindow(QMainWindow):
                 else:
                     bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
             elif song.bpm is not None and song.bpm_auto:
-                from cueplayer.ui.theme import TEXT_MUTED
+                from cueplayer.ui.theme import secondary_text_on_background
 
-                bpm_item.setForeground(QColor(TEXT_MUTED))
+                row_color = (song.row_color or "").strip() or None
+                bpm_item.setForeground(QColor(secondary_text_on_background(row_color)))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
                     "Double-click to type the correct value if needed."
@@ -2171,6 +2199,7 @@ class MainWindow(QMainWindow):
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
             ltc_channel = self._ltc_channel_for_song(song)
+            has_video = bool(song.video_clips)
             ltc_item = QTableWidgetItem("")
             ltc_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
@@ -2178,12 +2207,19 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
             ltc_item.setData(SetlistWidget.ROLE_LTC_CHANNEL, ltc_channel)
+            ltc_item.setData(SetlistWidget.ROLE_HAS_VIDEO, has_video)
+            tip_parts_media: list[str] = []
+            if has_video:
+                tip_parts_media.append("Has video clip(s) on the timeline")
             if ltc_channel == 0:
-                ltc_item.setToolTip("Striped LTC detected on Left channel")
+                tip_parts_media.append("Striped LTC detected on Left channel")
             elif ltc_channel == 1:
-                ltc_item.setToolTip("Striped LTC detected on Right channel")
+                tip_parts_media.append("Striped LTC detected on Right channel")
+            if tip_parts_media:
+                ltc_item.setToolTip("\n".join(tip_parts_media))
             self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
-            self._ensure_ltc_detect_scheduled(song)
+            if song.id == self.current_song.id:
+                self._ensure_ltc_detect_scheduled(song)
 
             for cell in (num_item, name_item, ma_item, bpm_item, ltc_item):
                 cell.setData(SetlistWidget.ROLE_ROW_COLOR, song.row_color or "")
@@ -2462,7 +2498,9 @@ class MainWindow(QMainWindow):
                 indexes = [song_index]
         self._rebuild_song_list(select_indexes=indexes)
 
-    def _add_setlist_column_actions(self, menu: QMenu) -> tuple[QAction, QAction]:
+    def _add_setlist_column_actions(
+        self, menu: QMenu
+    ) -> tuple[QAction, QAction, QAction, QAction]:
         en_action = menu.addAction("Song English")
         en_action.setCheckable(True)
         en_action.setChecked(self.project.setlist_name_mode in ("both", "en"))
@@ -2471,7 +2509,15 @@ class MainWindow(QMainWindow):
         bpm_action.setCheckable(True)
         bpm_action.setChecked(bool(self.project.setlist_show_bpm))
         bpm_action.setToolTip("Show the BPM column")
-        return en_action, bpm_action
+        ltc_action = menu.addAction("LTC badge")
+        ltc_action.setCheckable(True)
+        ltc_action.setChecked(bool(self.project.setlist_show_ltc_badge))
+        ltc_action.setToolTip("Show striped LTC L/R in the media column")
+        video_action = menu.addAction("Video badge")
+        video_action.setCheckable(True)
+        video_action.setChecked(bool(self.project.setlist_show_video_badge))
+        video_action.setToolTip("Show V when the song has video clips")
+        return en_action, bpm_action, ltc_action, video_action
 
     def _apply_setlist_column_action(
         self,
@@ -2479,6 +2525,8 @@ class MainWindow(QMainWindow):
         *,
         en_action: QAction,
         bpm_action: QAction,
+        ltc_action: QAction,
+        video_action: QAction,
     ) -> bool:
         if chosen is en_action:
             self.project.setlist_name_mode = "both" if en_action.isChecked() else "zh"  # type: ignore[assignment]
@@ -2499,14 +2547,38 @@ class MainWindow(QMainWindow):
                 1500,
             )
             return True
+        if chosen is ltc_action:
+            self.project.setlist_show_ltc_badge = bool(ltc_action.isChecked())
+            self._sync_setlist_column_prefs()
+            self._mark_dirty()
+            self.song_list.viewport().update()
+            self.status.showMessage(
+                "LTC badge shown" if ltc_action.isChecked() else "LTC badge hidden",
+                1500,
+            )
+            return True
+        if chosen is video_action:
+            self.project.setlist_show_video_badge = bool(video_action.isChecked())
+            self._sync_setlist_column_prefs()
+            self._mark_dirty()
+            self.song_list.viewport().update()
+            self.status.showMessage(
+                "Video badge shown" if video_action.isChecked() else "Video badge hidden",
+                1500,
+            )
+            return True
         return False
 
     def _on_setlist_header_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        en_action, bpm_action = self._add_setlist_column_actions(menu)
+        en_action, bpm_action, ltc_action, video_action = self._add_setlist_column_actions(menu)
         chosen = menu.exec(self.song_list.horizontalHeader().mapToGlobal(pos))
         self._apply_setlist_column_action(
-            chosen, en_action=en_action, bpm_action=bpm_action
+            chosen,
+            en_action=en_action,
+            bpm_action=bpm_action,
+            ltc_action=ltc_action,
+            video_action=video_action,
         )
 
     def _on_setlist_context_menu(self, pos) -> None:  # noqa: ANN001
@@ -2542,7 +2614,7 @@ class MainWindow(QMainWindow):
         row_color_action = menu.addAction("Row Color…")
         clear_row_color_action = menu.addAction("Clear Row Color")
         menu.addSeparator()
-        en_action, bpm_action = self._add_setlist_column_actions(menu)
+        en_action, bpm_action, ltc_action, video_action = self._add_setlist_column_actions(menu)
         menu.addSeparator()
         detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
         detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
@@ -2603,7 +2675,11 @@ class MainWindow(QMainWindow):
         down_action.setEnabled(has_selection)
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
         if self._apply_setlist_column_action(
-            chosen, en_action=en_action, bpm_action=bpm_action
+            chosen,
+            en_action=en_action,
+            bpm_action=bpm_action,
+            ltc_action=ltc_action,
+            video_action=video_action,
         ):
             return
         if chosen is detect_selected_bpm_action:
@@ -3342,7 +3418,6 @@ class MainWindow(QMainWindow):
                 self._load_audio_path(
                     audio_path, mark_dirty=False, replace_track=False, bump_token=False
                 )
-            self._prefetch_neighbor_audio(skip_path=audio_path)
         else:
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
@@ -3731,6 +3806,11 @@ class MainWindow(QMainWindow):
 
     def _on_position_changed(self, seconds: float) -> None:
         self.timeline.set_position(seconds)
+        self.transport.set_times(seconds, self.engine.duration)
+        self.monitor.set_position(seconds, self.engine.duration)
+
+    def _on_scrub_preview(self, seconds: float) -> None:
+        """Update transport + cue list while dragging the timeline playhead."""
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
 
@@ -4193,7 +4273,6 @@ class MainWindow(QMainWindow):
                     replace_track=replace_track,
                     refresh_song_widgets=replace_track,
                 )
-            self._prefetch_neighbor_audio(skip_path=path)
             return
 
         if bump_token:
@@ -4216,11 +4295,18 @@ class MainWindow(QMainWindow):
             return None
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
-        """Return a RAM-resident buffer only (never blocks on disk cache I/O)."""
+        """RAM first; on miss load the on-disk .npz (no re-decode) for instant song switch."""
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        return self._audio_buffer_cache.get(key)
+        hit = self._audio_buffer_cache.get(key)
+        if hit is not None:
+            return hit
+        disk = load_cached_audio(path)
+        if disk is None:
+            return None
+        self._store_audio_cache(path, disk, write_disk=False, schedule_ltc=False)
+        return disk
 
     def _resolved_path_str(self, path: Path | None) -> str | None:
         if path is None:
@@ -4252,7 +4338,12 @@ class MainWindow(QMainWindow):
         return result
 
     def _store_audio_cache(
-        self, path: Path, buffer: AudioBuffer, *, write_disk: bool = True
+        self,
+        path: Path,
+        buffer: AudioBuffer,
+        *,
+        write_disk: bool = True,
+        schedule_ltc: bool = False,
     ) -> None:
         key = self._audio_cache_key(path)
         if key is not None:
@@ -4262,7 +4353,8 @@ class MainWindow(QMainWindow):
             self._media_warm_progress.emit()
         if write_disk:
             self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
-        self._schedule_ltc_detect_for_buffer(path, buffer)
+        if schedule_ltc:
+            self._schedule_ltc_detect_for_buffer(path, buffer)
 
     def _ltc_channel_for_song(self, song: Song) -> int | None:
         from cueplayer.domain.models import coerce_file_ltc_side
@@ -4299,6 +4391,19 @@ class MainWindow(QMainWindow):
         if buffer is not None:
             self._schedule_ltc_detect_for_buffer(path, buffer)
 
+    def _schedule_idle_ltc_detect(self) -> None:
+        """After 2 s of idle: run LTC detect for songs whose buffer is cached but LTC unknown."""
+        for song in self.project.songs:
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
+                continue
+            buffer = self._audio_buffer_cache.get(key)
+            if buffer is not None:
+                self._schedule_ltc_detect_for_buffer(path, buffer)
+
     def _schedule_ltc_detect_for_buffer(self, path: Path, buffer: AudioBuffer) -> None:
         key = self._audio_cache_key(path)
         if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
@@ -4331,6 +4436,8 @@ class MainWindow(QMainWindow):
             self._note_media_warm_step(cache_key, "ltc")
             self._setlist_ltc_cache_updated.emit()
             self._media_warm_progress.emit()
+            self._audio_prefetch_executor.submit(save_ltc_channel, cache_key, channel)
+            self._ltc_idle_timer.start()
 
         future.add_done_callback(_done)
 
@@ -4512,7 +4619,7 @@ class MainWindow(QMainWindow):
         if song is None:
             return
 
-        from cueplayer.ui.theme import ACCENT, TEXT_MUTED
+        from cueplayer.ui.theme import ACCENT, secondary_text_on_background
 
         bpm_item = self.song_list.item(row, SetlistWidget.COL_BPM)
         if bpm_item is None:
@@ -4544,7 +4651,8 @@ class MainWindow(QMainWindow):
             self.song_list._block_number_signal = True  # noqa: SLF001
             bpm_item.setText(format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto)))
             if song.bpm_auto:
-                bpm_item.setForeground(QColor(TEXT_MUTED))
+                row_color = (song.row_color or "").strip() or None
+                bpm_item.setForeground(QColor(secondary_text_on_background(row_color)))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
                     "Double-click to type the correct value if needed."
@@ -4760,7 +4868,7 @@ class MainWindow(QMainWindow):
                     self._note_media_warm_step(key, "ltc")
                     self._media_warm_progress.emit()
                     return
-                self._store_audio_cache(path, buffer, write_disk=False)
+                self._store_audio_cache(path, buffer, write_disk=False, schedule_ltc=False)
                 self._media_warm_progress.emit()
 
             future.add_done_callback(_done)
@@ -4924,7 +5032,7 @@ class MainWindow(QMainWindow):
         refresh_song_widgets: bool = True,
         reset_view: bool | None = None,
     ) -> None:
-        self._store_audio_cache(path, buffer)
+        self._store_audio_cache(path, buffer, schedule_ltc=True)
         self.timeline.set_audio_loading(False)
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
@@ -4939,12 +5047,6 @@ class MainWindow(QMainWindow):
         self.engine.set_buffer(buffer)
         if replace_track:
             self.engine.ensure_playback_ready()
-        key = self._audio_cache_key(path)
-        # Never copy engine.detected_ltc_channel here — it can still be the
-        # previous song's result until async detect finishes, which wrongly
-        # lit LTC L/R on pure-music tracks after playing a striped song.
-        if key is not None and key not in self._audio_ltc_cache:
-            self._schedule_ltc_detect_for_buffer(path, buffer)
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;

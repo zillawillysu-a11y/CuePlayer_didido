@@ -406,6 +406,8 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         "name": project.name,
         "setlist_name_mode": project.setlist_name_mode,
         "setlist_show_bpm": bool(project.setlist_show_bpm),
+        "setlist_show_ltc_badge": bool(project.setlist_show_ltc_badge),
+        "setlist_show_video_badge": bool(project.setlist_show_video_badge),
         "default_mark_lanes": lanes_to_dicts(project.default_mark_lanes),
         "mark_line_style": project.mark_line_style,
         "mark_dash_on": project.mark_dash_on,
@@ -711,6 +713,8 @@ def project_from_dict(data: dict[str, Any]) -> Project:
         setlist_categories=categories,
         setlist_name_mode=_coerce_setlist_name_mode(data),
         setlist_show_bpm=bool(data.get("setlist_show_bpm", True)),
+        setlist_show_ltc_badge=bool(data.get("setlist_show_ltc_badge", True)),
+        setlist_show_video_badge=bool(data.get("setlist_show_video_badge", True)),
         default_mark_lanes=dicts_to_lanes(data.get("default_mark_lanes") or []),
         mark_line_style=line_style,  # type: ignore[arg-type]
         mark_line_width=line_width,

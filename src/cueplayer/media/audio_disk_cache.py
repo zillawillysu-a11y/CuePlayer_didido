@@ -1,16 +1,19 @@
-"""Persistent on-disk cache for decoded song audio (waveform + playback)."""
+"""Persistent on-disk cache for decoded song audio and LTC detection results."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from cueplayer.media.audio_loader import AudioBuffer, PeakLevel, load_audio
 
 _CACHE_DIR = Path(os.environ.get("CUEPLAYER_AUDIO_CACHE", Path.home() / ".cache" / "cueplayer" / "audio"))
+_LTC_CACHE_FILE = _CACHE_DIR / "ltc_channels.json"
 
 
 def audio_cache_key(path: Path) -> tuple[str, int, int] | None:
@@ -98,3 +101,75 @@ def load_audio_cached(path: Path) -> AudioBuffer:
     buffer = load_audio(path)
     save_cached_audio(path, buffer)
     return buffer
+
+
+# ---------------------------------------------------------------------------
+# Persistent LTC detection results
+# ---------------------------------------------------------------------------
+# Stored as a single JSON file mapping cache-key → channel (0, 1, or -1=none).
+# Key format: "<hex-digest>" (same SHA-256 used for the waveform .npz).
+
+def _ltc_json_key(key: tuple[str, int, int]) -> str:
+    path_str, mtime_ns, size = key
+    return hashlib.sha256(f"{path_str}\0{mtime_ns}\0{size}".encode("utf-8")).hexdigest()[:32]
+
+
+def _load_ltc_json() -> dict[str, Any]:
+    if not _LTC_CACHE_FILE.is_file():
+        return {}
+    try:
+        with _LTC_CACHE_FILE.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def load_all_ltc_channels() -> dict[tuple[str, int, int], int | None]:
+    """Return every persisted LTC result keyed by audio cache key.
+
+    The caller is responsible for mapping these back to audio paths via
+    ``audio_cache_key``.  Values: ``0`` = Left, ``1`` = Right, ``None`` = none.
+    Values are keyed by their hex digest so songs on other drives still restore.
+    """
+    raw = _load_ltc_json()
+    result: dict[tuple[str, int, int], int | None] = {}
+    for jk, v in raw.items():
+        # Stored as {"hex32": {"path": ..., "mtime": ..., "size": ..., "channel": ...}}
+        if not isinstance(v, dict):
+            continue
+        try:
+            key: tuple[str, int, int] = (str(v["path"]), int(v["mtime"]), int(v["size"]))
+            raw_ch = v.get("channel")
+            channel: int | None = None if raw_ch is None else int(raw_ch)
+        except (KeyError, TypeError, ValueError):
+            continue
+        result[key] = channel
+    return result
+
+
+def save_ltc_channel(
+    key: tuple[str, int, int], channel: int | None
+) -> None:
+    """Persist one LTC detection result to the JSON store."""
+    from cueplayer.util.thread_priority import lower_background_thread_priority
+    lower_background_thread_priority()
+    jk = _ltc_json_key(key)
+    path_str, mtime_ns, size = key
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        data = _load_ltc_json()
+        data[jk] = {
+            "path": path_str,
+            "mtime": mtime_ns,
+            "size": size,
+            "channel": channel,
+        }
+        tmp = _LTC_CACHE_FILE.with_suffix(".tmp.json")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        tmp.replace(_LTC_CACHE_FILE)
+    except OSError:
+        pass
