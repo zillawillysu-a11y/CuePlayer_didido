@@ -178,6 +178,7 @@ def sync_song_media_to_setlist_folder(
     *,
     project_file: Path | None,
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
+    shared_media_keys: set[str] | None = None,
 ) -> int:
     """
     If song media lives under the project folder, move it into
@@ -187,6 +188,9 @@ def sync_song_media_to_setlist_folder(
     elsewhere under the project root (legacy flat layout). External absolute
     paths outside the project folder are left alone. Returns how many files
     were moved or whose stored path was rewritten.
+
+    Files already under ``Media/`` that are shared by multiple songs
+    (``shared_media_keys``) stay put so songs can keep pointing at one copy.
     """
     root = project_root_for(project_file)
     if root is None:
@@ -200,6 +204,19 @@ def sync_song_media_to_setlist_folder(
         src = locate_project_media_file(former, media_dir=media_dir, project_root=root)
         if src is None:
             continue
+        try:
+            src_key = str(src.resolve())
+        except OSError:
+            src_key = str(src)
+        if (
+            shared_media_keys is not None
+            and src_key in shared_media_keys
+            and path_under_media(src, media_dir)
+        ):
+            n = _apply_relocated_path(former, src, did_move=False)
+            track.path = src
+            updated += n
+            continue
         new_path, did_move = relocate_path_into_folder(src, dest_folder)
         if new_path is None:
             continue
@@ -211,6 +228,19 @@ def sync_song_media_to_setlist_folder(
         src = locate_project_media_file(former, media_dir=media_dir, project_root=root)
         if src is None:
             continue
+        try:
+            src_key = str(src.resolve())
+        except OSError:
+            src_key = str(src)
+        if (
+            shared_media_keys is not None
+            and src_key in shared_media_keys
+            and path_under_media(src, media_dir)
+        ):
+            n = _apply_relocated_path(former, src, did_move=False)
+            clip.path = src
+            updated += n
+            continue
         new_path, did_move = relocate_path_into_folder(src, dest_folder)
         if new_path is None:
             continue
@@ -220,6 +250,75 @@ def sync_song_media_to_setlist_folder(
     return updated
 
 
+def _shared_media_keys(
+    project: Project, *, media_dir: Path
+) -> set[str]:
+    """Resolved Media/ paths referenced by more than one audio/video item."""
+    counts: dict[str, int] = {}
+    for song in project.songs:
+        for track in song.audio_tracks:
+            path = Path(track.path)
+            if not path_exists(path) or not path_under_media(path, media_dir):
+                continue
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            counts[key] = counts.get(key, 0) + 1
+        for clip in song.video_clips:
+            path = Path(clip.path)
+            if not path_exists(path) or not path_under_media(path, media_dir):
+                continue
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            counts[key] = counts.get(key, 0) + 1
+    return {key for key, n in counts.items() if n > 1}
+
+
+def prune_empty_dirs_under_media(
+    media_dir: Path,
+    *,
+    preserve_names: set[str] | None = None,
+) -> int:
+    """
+    Remove empty directories under ``Media/`` (bottom-up).
+
+    Never deletes ``media_dir`` itself. Optional ``preserve_names`` keeps empty
+    top-level Setlist stubs (e.g. category folders Bundle created on purpose).
+    """
+    media_dir = Path(media_dir)
+    if not media_dir.is_dir():
+        return 0
+    preserve = {safe_folder_name(n) for n in (preserve_names or set())}
+    removed = 0
+    # Deepest paths first so parents become empty after children go.
+    try:
+        candidates = sorted(
+            (p for p in media_dir.rglob("*") if p.is_dir()),
+            key=lambda p: len(p.parts),
+            reverse=True,
+        )
+    except OSError:
+        return 0
+    for folder in candidates:
+        try:
+            rel = folder.relative_to(media_dir)
+        except ValueError:
+            continue
+        if len(rel.parts) == 1 and rel.parts[0] in preserve:
+            continue
+        try:
+            if any(folder.iterdir()):
+                continue
+            folder.rmdir()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def sync_all_songs_media_to_setlist_folders(
     project: Project,
     *,
@@ -227,6 +326,13 @@ def sync_all_songs_media_to_setlist_folders(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> int:
     """Reconcile every song's Media/ files with its current Setlist folder."""
+    root = project_root_for(project_file)
+    media_dir = (
+        root / (media_subdir.strip() or DEFAULT_MEDIA_SUBDIR) if root is not None else None
+    )
+    shared: set[str] = set()
+    if media_dir is not None:
+        shared = _shared_media_keys(project, media_dir=media_dir)
     total = 0
     for song in project.songs:
         total += sync_song_media_to_setlist_folder(
@@ -234,7 +340,10 @@ def sync_all_songs_media_to_setlist_folders(
             song,
             project_file=project_file,
             media_subdir=media_subdir,
+            shared_media_keys=shared,
         )
+    if media_dir is not None:
+        prune_empty_dirs_under_media(media_dir)
     return total
 
 

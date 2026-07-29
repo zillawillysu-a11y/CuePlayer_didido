@@ -140,6 +140,7 @@ from cueplayer.ui.drag_drop import (
 )
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
+from cueplayer.ui.timeline_overview import TimelineOverviewBar
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
@@ -1060,6 +1061,8 @@ class MainWindow(QMainWindow):
         self.timeline.content_geometry_changed.connect(self._sync_timeline_geometry)
         self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
+        self.timeline_overview = TimelineOverviewBar()
+        center_layout.addWidget(self.timeline_overview)
 
         # Center column: Timeline (Music → Video → LTC → Marks) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
@@ -1167,6 +1170,9 @@ class MainWindow(QMainWindow):
         self.transport.loop_toggled.connect(self._set_loop_enabled)
         self.transport.volume_changed.connect(self.engine.set_volume)
         self.timeline.seek_requested.connect(self.engine.seek)
+        self.timeline_overview.seek_requested.connect(self.engine.seek)
+        self.timeline.view_changed.connect(self._sync_timeline_overview)
+        self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
         self.timeline.scrub_started.connect(self.engine.begin_scrub)
         self.timeline.scrub_ended.connect(self.engine.end_scrub)
         # Throttle video decode while the playhead is actively being
@@ -4069,6 +4075,19 @@ class MainWindow(QMainWindow):
             if widget is self or not widget.isVisible():
                 continue
             widget.close()
+
+    def _sync_timeline_overview(self) -> None:
+        overview = getattr(self, "timeline_overview", None)
+        timeline = getattr(self, "timeline", None)
+        if overview is None or timeline is None:
+            return
+        view_start, view_end = timeline.visible_time_window()
+        overview.set_state(
+            duration=float(timeline._duration()),  # noqa: SLF001
+            position=float(timeline.playhead_seconds()),
+            view_start=view_start,
+            view_end=view_end,
+        )
 
     def _sync_timeline_geometry(self) -> None:
         """QScrollArea(widgetResizable=False): match viewport width, content height.

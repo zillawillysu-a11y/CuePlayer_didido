@@ -135,3 +135,32 @@ def test_adopt_caches_when_former_path_gone(
     dest_key = audio_cache_key(dest)
     assert dest_key is not None
     assert load_all_ltc_channels().get(dest_key) == 1
+
+
+def test_adopt_waveform_only_without_ltc_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Media move must reuse waveform even when LTC was never detected."""
+    import shutil
+
+    import cueplayer.media.audio_disk_cache as mod
+    from cueplayer.media.audio_disk_cache import adopt_caches_for_path
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mod, "_LTC_CACHE_FILE", tmp_path / "cache" / "ltc_channels.json")
+
+    src = tmp_path / "was" / "song.wav"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"WAVDATA")
+    save_cached_audio(src, _tiny_buffer(src))
+    assert audio_cache_key(src) is not None
+    assert load_all_ltc_channels() == {}
+
+    dest = tmp_path / "now" / "song.wav"
+    dest.parent.mkdir(parents=True)
+    shutil.copy2(src, dest)
+    former = src
+    src.unlink()
+
+    assert adopt_caches_for_path(dest, former_path=former) is True
+    assert load_cached_audio(dest) is not None

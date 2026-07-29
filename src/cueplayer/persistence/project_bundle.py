@@ -16,6 +16,7 @@ from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
     UNFILED_FOLDER,
     path_under_media,
+    prune_empty_dirs_under_media,
     safe_folder_name,
     song_media_rel_folder,
     unique_dest,
@@ -168,6 +169,10 @@ def collect_project_bundle(
                 dest = candidate.resolve()
             except OSError:
                 dest = candidate
+            # Dest may already exist from a prior Bundle — still clone caches so
+            # opening the Bundle does not re-decode waveform / re-detect LTC.
+            if dest != resolved:
+                clone_caches_for_copied_file(resolved, dest)
             source_map[key] = dest
             result.reused.append((resolved, dest))
             _note_folder(rel_folder)
@@ -206,6 +211,11 @@ def collect_project_bundle(
         if name not in ordered:
             ordered.append(name)
     result.folders_used = ordered
+
+    # Drop empty leftovers from Media-internal moves; keep declared Setlist stubs.
+    preserve = {safe_folder_name(c.name) for c in bundled.setlist_categories}
+    preserve.add(UNFILED_FOLDER)
+    prune_empty_dirs_under_media(media_dir, preserve_names=preserve)
 
     save_project(bundled, result.project_path)
     return result
