@@ -11,6 +11,7 @@ pulse. We follow that shape, but:
   activity-weighted octave-fold consensus across windows (fixes ±1 drift
   like 135→136 / 136→137 on real show stems)
 - fold absurd double-time locks above ~190 (204→102)
+- resolve 3:2 locks (彗尾 64↔96) via sesqui soft votes toward show prior
 - refine ±2 BPM on a 0.25 comb grid, then snap to show integers
 
 ``librosa`` is used for onset strength / STFT (+ optional resample). Numba
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 12
+BPM_DETECT_VERSION = 13
 
 _BPM_READ_SECONDS = 75.0
 _BPM_ANALYZE_SECONDS = 75.0
@@ -531,10 +532,10 @@ def _consensus_bpm(
     onset_rates: list[float],
     activities: list[float],
 ) -> float | None:
-    """Pick a reference tempo, map windows onto that octave, then majority vote.
+    """Pick a reference tempo, map windows onto related pulses, then majority vote.
 
-    Soft octave votes find the tapped pulse (68 vs 136). Mapping then keeps
-    legitimate fast clicks (167) from being pulled to half by the midrange prior.
+    Soft votes cover octaves (68 vs 136) and 3:2 sesqui pairs (彗尾 64 vs 96).
+    Mapping then keeps legitimate fast clicks (167) from collapsing to half.
     """
     if not estimates:
         return None
@@ -551,9 +552,18 @@ def _consensus_bpm(
         acts = np.sqrt(np.maximum(acts, 0.0))
         acts = acts / (float(np.max(acts)) + 1e-18)
 
+    # (factor, vote weight) — 3:2 covers dotted-feel ballads like 彗尾.
+    related = (
+        (1.0, 1.0),
+        (0.5, 0.7),
+        (2.0, 0.7),
+        (2.0 / 3.0, 0.55),
+        (1.5, 0.55),
+    )
+
     pool: set[float] = set()
     for bpm in estimates:
-        for factor in (0.5, 1.0, 2.0):
+        for factor, _weight in related:
             cand = _snap_show_bpm(float(bpm) * factor)
             if _DEFAULT_MIN_BPM <= cand <= _DEFAULT_MAX_BPM:
                 pool.add(float(cand))
@@ -562,14 +572,14 @@ def _consensus_bpm(
     for cand in pool:
         score = 0.0
         for bpm, _onset_rate, act in zip(estimates, onset_rates, acts, strict=True):
-            for factor, weight in ((1.0, 1.0), (0.5, 0.7), (2.0, 0.7)):
+            for factor, weight in related:
                 alt = float(bpm) * factor
                 if abs(alt - cand) / max(cand, 1e-6) <= 0.05:
                     score += float(act) * weight
                     break
-        # Mild prior only — must not overturn clear majorities at 160+.
-        score *= 0.75 + 0.25 * _tempo_prior(cand)
-        score *= 0.7 + 0.3 * _density_fit(med_or, cand)
+        # Prior helps break 64 vs 96 when both are musically plausible.
+        score *= 0.65 + 0.35 * _tempo_prior(cand)
+        score *= 0.65 + 0.35 * _density_fit(med_or, cand)
         ref_ranked.append((score, cand))
     ref_ranked.sort(reverse=True)
     reference = float(ref_ranked[0][1])
@@ -577,7 +587,7 @@ def _consensus_bpm(
     mapped: list[float] = []
     for bpm in estimates:
         opts = [float(bpm)]
-        for factor in (0.5, 2.0):
+        for factor, _weight in related[1:]:
             alt = _snap_show_bpm(float(bpm) * factor)
             if _DEFAULT_MIN_BPM <= alt <= _DEFAULT_MAX_BPM:
                 opts.append(float(alt))

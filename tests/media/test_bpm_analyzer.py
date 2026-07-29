@@ -286,6 +286,7 @@ def test_prefer_show_tactus_halves_absurd_double() -> None:
     [
         ("04_daiwu.mp3", 135.0),  # 歹物仔 — was 136
         ("09_qianwo.mp3", 136.0),  # 牽我 — was 137
+        ("10_huiwei.mp3", 96.0),  # 彗尾 — was 64 (3:2)
     ],
 )
 def test_estimate_bpm_real_show_stems_mixmeister(filename: str, expected: float) -> None:
