@@ -710,22 +710,31 @@ class TimelineWidget(QWidget):
         extra = self._video_expand_extra if self._video_track_expanded else 0.0
         return self._video_lane_base_height + extra
 
-    def _video_lane_top_y(self) -> int:
+    def _marks_band_height(self) -> int:
+        if not self._show_mark_tracks:
+            return 0
+        return self._visible_lane_count() * self._lane_height
+
+    def _tracks_top_y(self) -> int:
+        """Y where mark lanes begin — directly under the Music waveform."""
         return self._wave_bottom_y()
+
+    def _tracks_bottom_y(self) -> int:
+        return self._tracks_top_y() + self._marks_band_height()
+
+    def _video_lane_top_y(self) -> int:
+        """Video sits below Mark lanes (Music → Marks → Video → LTC)."""
+        return self._tracks_bottom_y()
 
     def _ltc_band_height(self) -> int:
         return int(self._ltc_lane_height) if self._ltc_lane_visible() else 0
 
     def _ltc_lane_top_y(self) -> int:
-        """LTC sits under Video (Music → Video → LTC → Marks)."""
+        """LTC sits under Video."""
         y = self._video_lane_top_y()
         if self._video_lane_visible():
             return y + int(self._video_lane_height)
         return y
-
-    def _tracks_top_y(self) -> int:
-        """Y where mark lanes begin (below waveform + optional video + LTC)."""
-        return self._ltc_lane_top_y() + self._ltc_band_height()
 
     def _video_lane_clip_bottom_y(self) -> int:
         return self._video_lane_top_y() + int(self._video_lane_base_height)
@@ -736,7 +745,7 @@ class TimelineWidget(QWidget):
         return abs(y - self._video_lane_clip_bottom_y()) <= self._video_lane_split_hit
 
     def set_video_lane_height(self, height: float) -> None:
-        """Grow / shrink the Video clip row (waveforms); mark lanes shrink."""
+        """Grow / shrink the Video clip row (waveforms)."""
         clamped = self._clamp_video_lane_height(height)
         if clamped == self._video_lane_base_height:
             return
@@ -796,12 +805,13 @@ class TimelineWidget(QWidget):
         return None
 
     def _in_mark_tracks(self, x: float, y: float) -> bool:
-        """Mark lane area below the waveform + video lane (box-select zone)."""
+        """Mark lane rows directly under the Music waveform (box-select zone)."""
         if not self._show_mark_tracks or self._song is None:
             return False
         if x < self._header_width:
             return False
-        return y >= self._tracks_top_y()
+        top = self._tracks_top_y()
+        return top <= y < self._tracks_bottom_y()
 
     def _lane_rects(self) -> list[tuple[int, float, float]]:
         """Return (lane_index, y0, y1) for visible lanes."""
@@ -863,7 +873,7 @@ class TimelineWidget(QWidget):
         hit: set[str] = set()
         lane_rects = {idx: (y0, y1) for idx, y0, y1 in self._lane_rects()}
         wave_top = float(self._ruler_height)
-        wave_bottom = float(self._tracks_top_y())
+        wave_bottom = float(self._wave_bottom_y())
         for mark in self._song.marks:
             lane = self._song.lane_by_index(mark.lane_index)
             if lane is not None and not lane.visible:
@@ -1840,7 +1850,7 @@ class TimelineWidget(QWidget):
 
     def _video_lane_dirty_rect(self) -> QRect:
         top = self._video_lane_top_y()
-        bottom = self._tracks_top_y()
+        bottom = self._ltc_lane_top_y() + self._ltc_band_height()
         return QRect(0, top, self.width(), max(1, bottom - top))
 
     def _update_video_lane(self) -> None:

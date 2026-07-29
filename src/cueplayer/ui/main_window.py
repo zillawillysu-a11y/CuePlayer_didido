@@ -1061,7 +1061,7 @@ class MainWindow(QMainWindow):
         self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
 
-        # Center column: Timeline (waveform + video lane + mark lanes) on top,
+        # Center column: Timeline (Music → Marks → Video → LTC) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
         self.video_preview_panel = QWidget()
         self.video_preview_panel.setObjectName("videoPreviewPanel")
