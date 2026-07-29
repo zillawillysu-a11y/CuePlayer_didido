@@ -156,6 +156,53 @@ def test_estimate_bpm_busy_hats_keeps_kick_tactus(bpm: float) -> None:
     assert abs(float(est) - bpm) <= 2.5, f"expected ~{bpm}, got {est}"
 
 
+def _soft_ballad(bpm: float, *, seconds: float = 30.0, sr: int = 44100) -> np.ndarray:
+    """Soft kicks + 8th hats — previously doubled 73→146 / 83→164."""
+    n = int(sr * seconds)
+    y = np.zeros(n, dtype=np.float32)
+    beat = 60.0 / bpm
+    rng = np.random.RandomState(11)
+
+    def hit(t: float, amp: float, *, bright: bool = False, length: int = 1400) -> None:
+        i = int(t * sr)
+        if i >= n:
+            return
+        env = np.exp(-np.linspace(0, 4 if not bright else 9, length))
+        if bright:
+            sig = rng.randn(length).astype(np.float32) * env * amp
+        else:
+            tl = np.arange(length) / sr
+            sig = (np.sin(2 * np.pi * 48.0 * tl) * env * amp).astype(np.float32)
+        end = min(n, i + length)
+        y[i:end] += sig[: end - i]
+
+    t = 0.0
+    beat_i = 0
+    while t < seconds:
+        hit(t, 0.55, bright=False, length=1600)
+        if beat_i % 2:
+            hit(t, 0.25, bright=True, length=700)
+        hit(t + beat * 0.5, 0.18, bright=True, length=260)
+        t += beat
+        beat_i += 1
+    tline = np.arange(n) / sr
+    y += (
+        0.04
+        * np.sin(2 * np.pi * 110.0 * tline)
+        * np.sin(2 * np.pi * (bpm / 60.0 / 4.0) * tline)
+    ).astype(np.float32)
+    y += rng.randn(n).astype(np.float32) * 0.006
+    return np.tanh(y * 1.2).astype(np.float32).reshape(-1, 1)
+
+
+@pytest.mark.parametrize("bpm", [73.0, 83.0, 95.0, 96.0])
+def test_estimate_bpm_soft_ballad_not_doubled(bpm: float) -> None:
+    """Kick-band merge must keep 未曾準備好/歸零-style ballads at the tapped pulse."""
+    est = estimate_bpm(_soft_ballad(bpm), 44100)
+    assert est is not None
+    assert abs(float(est) - bpm) <= 2.0, f"expected ~{bpm}, got {est}"
+
+
 def _busy_hat_groove(bpm: float, *, seconds: float = 28.0, sr: int = 44100) -> np.ndarray:
     """Kick + strong 8ths/16ths — previously estimated as 2× for ~95 BPM."""
     n = int(sr * seconds)

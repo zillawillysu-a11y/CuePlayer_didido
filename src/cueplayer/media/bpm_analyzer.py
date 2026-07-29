@@ -5,13 +5,13 @@ period search via autocorrelation / comb filtering, then pick the tapped
 pulse. We follow that shape, but:
 
 - analyze at 22.05 kHz on one dense ~25 s window (fast)
-- resolve half/double with density + grid contrast (not dens² — that
-  locked busy 8th-hat grooves onto 2×, e.g. 95→190)
-- prefer the show tapping band (≈88–142) when comb is competitive
-- refine ±2 BPM on a 0.25 grid so values land on 73 / 136 / 170, not 72/137/169
+- full-spectrum onset for busy grooves; kick-band (<180 Hz) onset to
+  stop soft ballads locking onto 2× (73→146, 83→164)
+- resolve half/double with density + kick/full agreement
+- refine ±2 BPM on a 0.25 comb grid, then snap to show integers
 
-``librosa`` is used only for onset strength (+ optional resample). Numba JIT
-is warmed once in the background so the first real detect is not a hitch.
+``librosa`` is used for onset strength / STFT (+ optional resample). Numba
+JIT is warmed once in the background so the first real detect is not a hitch.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 9
+BPM_DETECT_VERSION = 10
 
 _BPM_READ_SECONDS = 60.0
 _BPM_ANALYZE_SECONDS = 45.0
@@ -30,6 +30,7 @@ _HOP = 256
 _WINDOW_SECONDS = 25.0
 _DEFAULT_MIN_BPM = 60.0
 _DEFAULT_MAX_BPM = 200.0
+_KICK_MAX_HZ = 180.0
 
 ProgressFn = Callable[[int], None]
 
@@ -128,7 +129,8 @@ def _to_mono(samples: np.ndarray, exclude_channel: int | None) -> np.ndarray:
 def _snap_show_bpm(bpm: float) -> float:
     bpm = float(bpm)
     nearest_int = float(round(bpm))
-    if abs(bpm - nearest_int) <= 0.55:
+    # Slightly wider than before so 135.6 / 136.4 land on MixMeister integers.
+    if abs(bpm - nearest_int) <= 0.70:
         return nearest_int
     half = round(bpm * 2.0) / 2.0
     if abs(bpm - half) <= 0.30:
@@ -309,12 +311,7 @@ def _pick_tactus(
     onset_rate: float,
     corr: np.ndarray | None = None,
 ) -> float | None:
-    """Pick tempo like MixMeister: strongest period, then choose octave carefully.
-
-    Busy 8th/16th hats often make density prefer 2× (95→190). Prefer the
-    comb peak when it sits in the common show tapping band, and use grid
-    contrast as a tie-breaker instead of squaring density.
-    """
+    """Pick tempo: strongest comb period, then octave via density + grid."""
     if not candidates:
         return None
     seed_comb, seed = max(candidates, key=lambda item: item[0])
@@ -347,22 +344,77 @@ def _pick_tactus(
         grid_term = 0.65 + 0.35 * (
             max(0.2, min(float(grid) if grid > 0 else 0.2, 8.0)) / 4.0
         )
-        # Linear dens (not dens²): avoids locking onto hi-hat doubles.
         score = float(comb) * (0.48 + 0.52 * dens) * (0.48 + 0.52 * prior) * grid_term
         if abs(key - seed) / max(seed, 1e-6) < 0.06:
-            score *= 1.10
-        # Show tapping band: keep 金黃色/彗尾-style mid tempos when comb is strong.
-        if 88.0 <= key <= 142.0 and comb >= 0.92 * float(seed_comb):
-            score *= 1.16
-        elif key >= 178.0 and comb < 0.985 * float(seed_comb):
-            score *= 0.88
-        elif key <= 72.0 and comb < 0.985 * float(seed_comb):
-            score *= 0.90
+            score *= 1.08
         ranked.append((score, key))
     if not ranked:
         return float(seed)
     ranked.sort(reverse=True)
     return ranked[0][1]
+
+
+def _kick_band_seed(
+    mono: np.ndarray,
+    sample_rate: int,
+    *,
+    min_bpm: float,
+    max_bpm: float,
+) -> float | None:
+    """Dominant tempo from low-band energy flux (kick / bass pulse)."""
+    import librosa
+
+    peak = float(np.max(np.abs(mono)))
+    if peak < 1e-6:
+        return None
+    y = (mono / peak).astype(np.float32)
+    stft = np.abs(librosa.stft(y, n_fft=2048, hop_length=_HOP))
+    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=2048)
+    low_bins = freqs <= _KICK_MAX_HZ
+    if not np.any(low_bins):
+        return None
+    low = stft[low_bins].mean(axis=0)
+    onset = np.maximum(0.0, np.diff(low, prepend=low[:1])).astype(np.float64)
+    onset = onset - float(onset.mean())
+    if float(np.max(np.abs(onset))) < 1e-9 or onset.size < 32:
+        return None
+    env_rate = float(sample_rate) / float(_HOP)
+    corr = np.correlate(onset, onset, mode="full")
+    corr = corr[len(corr) // 2 :].astype(np.float64)
+    candidates = _candidate_tempos(corr, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+    if not candidates:
+        return None
+    return float(candidates[0][1])
+
+
+def _merge_full_and_kick(
+    full_bpm: float,
+    kick_bpm: float | None,
+    *,
+    onset_rate: float,
+) -> float:
+    """Prefer kick when full-spectrum locked onto a soft-ballad double."""
+    if kick_bpm is None or kick_bpm <= 0:
+        return float(full_bpm)
+    full = float(full_bpm)
+    kick = float(kick_bpm)
+    dens_full = onset_rate / max(1e-6, full / 60.0)
+    ratio = full / max(kick, 1e-6)
+    # Classic failure: full≈2×kick (73→146, 83→164). Keep kick unless the
+    # full-band density clearly shows a busy groove at the fast pulse.
+    if 1.85 <= ratio <= 2.15 and 66.0 <= kick <= 115.0:
+        if dens_full < 1.75:
+            return kick
+        return full
+    # Near agreement — stay with full (already refined).
+    if abs(full - kick) / max(full, 1e-6) <= 0.06:
+        return full
+    # Unrelated mid-tempo kick (金黃色-style): trust kick in show ballad range
+    # when full looks like an odd non-octave lock.
+    if 70.0 <= kick <= 110.0 and not (1.85 <= ratio <= 2.15) and dens_full < 1.35:
+        if abs(full - kick) >= 12.0:
+            return kick
+    return full
 
 
 def _refine_nearby(
@@ -375,20 +427,23 @@ def _refine_nearby(
     min_bpm: float,
     max_bpm: float,
 ) -> float:
-    """Local ±1.25 BPM search at 0.25 resolution — cuts ±1 drift vs MixMeister."""
-    del onset_env
+    """Local ±2 BPM comb search, then prefer a nearby integer when close."""
+    del onset_env, onset_rate
     best_bpm = bpm
     best_score = -1.0
-    for bpm_i in range(int(round((bpm - 1.25) * 4)), int(round((bpm + 1.25) * 4)) + 1):
+    for bpm_i in range(int(round((bpm - 2.0) * 4)), int(round((bpm + 2.0) * 4)) + 1):
         cand = bpm_i / 4.0
         if cand < min_bpm * 0.98 or cand > max_bpm * 1.02:
             continue
-        comb = _comb_score(corr, env_rate, cand)
-        dens = _density_fit(onset_rate, cand)
-        score = comb * dens
+        score = _comb_score(corr, env_rate, cand)
         if score > best_score:
             best_score = score
             best_bpm = cand
+    nearest = float(round(best_bpm))
+    if abs(best_bpm - nearest) <= 0.85 and min_bpm <= nearest <= max_bpm:
+        int_score = _comb_score(corr, env_rate, nearest)
+        if int_score >= 0.96 * best_score:
+            return nearest
     return best_bpm
 
 
@@ -415,14 +470,17 @@ def _estimate_core(
     env_rate = float(sample_rate) / float(_HOP)
     corr = np.correlate(onset, onset, mode="full")
     corr = corr[len(corr) // 2 :].astype(np.float64)
-    _report_progress(progress, 65)
+    _report_progress(progress, 60)
     candidates = _candidate_tempos(corr, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
     picked = _pick_tactus(
         onset, env_rate, candidates, onset_rate=onset_rate, corr=corr
     )
     if picked is None:
         return None
-    _report_progress(progress, 85)
+    _report_progress(progress, 75)
+    kick = _kick_band_seed(mono, sample_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+    picked = _merge_full_and_kick(picked, kick, onset_rate=onset_rate)
+    _report_progress(progress, 88)
     refined = _refine_nearby(
         onset,
         corr,
