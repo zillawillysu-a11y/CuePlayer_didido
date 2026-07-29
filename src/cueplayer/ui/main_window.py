@@ -70,6 +70,10 @@ from cueplayer.persistence.backup import (
     list_backups,
 )
 from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.persistence.project_bundle import (
+    DEFAULT_MEDIA_SUBDIR,
+    collect_project_bundle,
+)
 from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
@@ -1433,6 +1437,101 @@ class MainWindow(QMainWindow):
             else:
                 self.status.showMessage("All media files linked", 3500)
 
+    def _bundle_project_filename(self) -> str:
+        if self._project_path is not None:
+            name = self._project_path.name
+            if name.lower().endswith(".cueplayer.json"):
+                return name
+        stem = (self.project.name or "Show").strip() or "Show"
+        for ch in '<>:"/\\|?*':
+            stem = stem.replace(ch, "_")
+        return f"{stem}.cueplayer.json"
+
+    def _collect_project_bundle(self) -> None:
+        missing = scan_missing_media(self.project)
+        if missing:
+            answer = QMessageBox.question(
+                self,
+                "Collect Project Bundle",
+                f"{len(missing)} media file(s) are missing and cannot be copied.\n\n"
+                "Continue and bundle the files that are still available?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        start = (
+            str(self._project_path.parent)
+            if self._project_path is not None
+            else ""
+        )
+        dest_str = QFileDialog.getExistingDirectory(
+            self,
+            "Choose empty folder for the Bundle "
+            f"(project file at root, {DEFAULT_MEDIA_SUBDIR}/ inside)",
+            start,
+        )
+        if not dest_str:
+            return
+        dest_dir = Path(dest_str)
+        project_name = self._bundle_project_filename()
+        target_project = dest_dir / project_name
+        if target_project.exists():
+            overwrite = QMessageBox.question(
+                self,
+                "Overwrite?",
+                f"{project_name} already exists in this folder.\nOverwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if overwrite != QMessageBox.StandardButton.Yes:
+                return
+
+        self.project.clean_video_output = self.clean_output_window.current_settings()
+        self.project.video_decode_quality = self.video_sync.decode_quality()
+        try:
+            result = collect_project_bundle(
+                self.project,
+                dest_dir,
+                project_filename=project_name,
+                media_subdir=DEFAULT_MEDIA_SUBDIR,
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Bundle Failed", str(exc))
+            return
+
+        lines = [
+            f"Project: {result.project_path.name}",
+            f"Media folder: {result.media_dir.name}/",
+            f"Copied: {len(result.copied)} file(s)",
+        ]
+        if result.reused:
+            lines.append(f"Shared refs (same file): {len(result.reused)}")
+        if result.renamed:
+            lines.append(f"Renamed (name clash): {len(result.renamed)}")
+        if result.missing:
+            lines.append(f"Still missing (not copied): {len(result.missing)}")
+        lines.append("")
+        lines.append("Open the bundled project now?")
+
+        open_now = QMessageBox.question(
+            self,
+            "Bundle Ready",
+            "\n".join(lines),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self.status.showMessage(
+            f"Bundle saved → {result.project_path} ({len(result.copied)} media)",
+            6000,
+        )
+        if open_now == QMessageBox.StandardButton.Yes:
+            if not self._confirm_discard_if_dirty():
+                return
+            if self._open_project_path(result.project_path):
+                self.status.showMessage(f"Opened bundle: {result.project_path.name}", 3500)
+
     def _maybe_prompt_missing_media(self, *, quiet: bool = False) -> None:
         missing = scan_missing_media(self.project)
         if not missing:
@@ -1535,6 +1634,12 @@ class MainWindow(QMainWindow):
         )
         act_relink.triggered.connect(self._open_missing_media_relink)
         menu.addAction(act_relink)
+        act_bundle = QAction("Collect Project &Bundle…", self)
+        act_bundle.setToolTip(
+            "Copy all used media into a folder: project file at the root, Media/ beside it"
+        )
+        act_bundle.triggered.connect(self._collect_project_bundle)
+        menu.addAction(act_bundle)
         menu.addSeparator()
         act_export = QAction("&Export…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
