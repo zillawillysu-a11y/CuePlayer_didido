@@ -218,8 +218,10 @@ class CueMonitorPanel(QWidget):
         clock_layout.addWidget(self.duration_label)
 
         self._tc_output_block = QWidget()
+        self._tc_output_block.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._tc_output_block.setStyleSheet("background: transparent;")
         tc_out_layout = QVBoxLayout(self._tc_output_block)
-        tc_out_layout.setContentsMargins(0, 4, 0, 0)
+        tc_out_layout.setContentsMargins(0, 8, 0, 4)
         tc_out_layout.setSpacing(2)
 
         self.tc_output_status = QLabel("TC off")
