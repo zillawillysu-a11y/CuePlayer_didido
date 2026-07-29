@@ -278,19 +278,24 @@ class MtcOutput:
         if _use_winmm():
             import time
             last_exc: Exception | None = None
-            for attempt in range(3):
+            for attempt in range(5):
                 try:
                     from cueplayer.playback.winmm_midi import WinmmMidiOut
                     self._port = WinmmMidiOut.open_by_name(self._port_name)
                     self._port_name = self._port.name
                     return None
                 except LookupError:
-                    return f"MIDI port not found: {self._port_name}"
+                    # Port listed but can't open — wait and retry (virtual ports
+                    # like Bome need time after the previous handle is closed).
+                    last_exc = LookupError(f"MIDI port not found: {self._port_name}")
+                    log.warning("winmm MIDI port not found attempt %d, retrying…", attempt + 1)
+                    time.sleep(0.1)
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
-                    time.sleep(0.05)
-            log.warning("winmm MIDI open failed after retries, trying mido: %s", last_exc)
+                    time.sleep(0.1)
+            # All attempts failed — report without falling through to mido.
+            return f"MIDI port not found after retries: {self._port_name}"
 
         try:
             import mido

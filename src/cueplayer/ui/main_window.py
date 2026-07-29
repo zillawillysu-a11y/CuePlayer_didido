@@ -4273,7 +4273,7 @@ class MainWindow(QMainWindow):
                     self.status.showMessage(retry_warn, 6000)
                 else:
                     self.status.showMessage("Audio routing updated (MIDI reconnected)", 3500)
-            QTimer.singleShot(300, _retry_mtc)
+            QTimer.singleShot(700, _retry_mtc)
             self.status.showMessage(f"MIDI: retrying… ({warning})", 3000)
         else:
             parts = []
