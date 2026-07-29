@@ -26,6 +26,11 @@ from cueplayer.domain.models import (
     coerce_file_ltc_side,
 )
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
+from cueplayer.persistence.media_paths import (
+    from_storage_path,
+    project_root_for,
+    to_storage_path,
+)
 from cueplayer.exporters.common import ma_export_name_from_display
 from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order
 
@@ -254,12 +259,12 @@ class SchemaError(ValueError):
     """Raised when a project file cannot be migrated or parsed."""
 
 
-def _path_to_str(path: Path) -> str:
-    return str(path)
+def _path_to_str(path: Path, project_dir: Path | None = None) -> str:
+    return to_storage_path(path, project_dir)
 
 
-def _str_to_path(value: str) -> Path:
-    return Path(value)
+def _str_to_path(value: str, project_dir: Path | None = None) -> Path:
+    return from_storage_path(value, project_dir)
 
 
 def _coerce_mark_line_style(value: Any, *, default: str = "solid") -> str:
@@ -410,7 +415,9 @@ def _coerce_int_list(raw: Any) -> list[int]:
 
 
 
-def project_to_dict(project: Project) -> dict[str, Any]:
+def project_to_dict(
+    project: Project, *, project_dir: Path | None = None
+) -> dict[str, Any]:
     return {
         "schema_version": project.schema_version,
         "id": project.id,
@@ -464,7 +471,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     {
                         "id": track.id,
                         "name": track.name,
-                        "path": _path_to_str(track.path),
+                        "path": _path_to_str(track.path, project_dir),
                         "role": track.role,
                         "color": track.color,
                         "muted": track.muted,
@@ -479,7 +486,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     {
                         "id": clip.id,
                         "name": clip.name,
-                        "path": _path_to_str(clip.path),
+                        "path": _path_to_str(clip.path, project_dir),
                         "start_seconds": clip.start_seconds,
                         "source_in_seconds": clip.source_in_seconds,
                         "source_out_seconds": clip.source_out_seconds,
@@ -545,7 +552,9 @@ def project_to_dict(project: Project) -> dict[str, Any]:
     }
 
 
-def project_from_dict(data: dict[str, Any]) -> Project:
+def project_from_dict(
+    data: dict[str, Any], *, project_dir: Path | None = None
+) -> Project:
     version = int(data.get("schema_version", 0))
     data = migrate_project_dict(data, version)
 
@@ -555,7 +564,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
             AudioTrack(
                 id=track["id"],
                 name=track["name"],
-                path=_str_to_path(track["path"]),
+                path=_str_to_path(track["path"], project_dir),
                 role=track.get("role", "reference"),
                 color=track.get("color", "#2BB673"),
                 muted=bool(track.get("muted", False)),
@@ -570,7 +579,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
             VideoClip(
                 id=clip["id"],
                 name=clip["name"],
-                path=_str_to_path(clip["path"]),
+                path=_str_to_path(clip["path"], project_dir),
                 start_seconds=float(clip.get("start_seconds", 0.0)),
                 source_in_seconds=float(clip.get("source_in_seconds", 0.0)),
                 source_out_seconds=clip.get("source_out_seconds"),
@@ -773,7 +782,7 @@ def migrate_project_dict(data: dict[str, Any], from_version: int) -> dict[str, A
 def save_project(project: Project, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = project_to_dict(project)
+    payload = project_to_dict(project, project_dir=project_root_for(path))
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     path.write_text(text + "\n", encoding="utf-8")
 
@@ -784,4 +793,4 @@ def load_project(path: Path) -> Project:
     data = json.loads(text)
     if not isinstance(data, dict):
         raise SchemaError("Project file root must be a JSON object.")
-    return project_from_dict(data)
+    return project_from_dict(data, project_dir=project_root_for(path))

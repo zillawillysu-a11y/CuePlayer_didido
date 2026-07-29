@@ -70,9 +70,11 @@ from cueplayer.persistence.backup import (
     list_backups,
 )
 from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
 from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
+from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -1409,7 +1411,50 @@ class MainWindow(QMainWindow):
         self._apply_project(preferred_song_id=song_id)
         self._set_clean()
         self._ltc_idle_timer.start()
+        self._maybe_prompt_missing_media(quiet=quiet)
         return True
+
+    def _open_missing_media_relink(self) -> None:
+        initial = self._project_path.parent if self._project_path is not None else None
+        dialog = MissingMediaRelinkDialog(
+            self.project, parent=self, initial_dir=initial
+        )
+        dialog.exec()
+        if dialog.changed:
+            self._mark_dirty()
+            # Reload current song so waveforms / video pick up new paths.
+            idx = self.project.songs.index(self.current_song) if self.current_song in self.project.songs else 0
+            self._activate_song(idx, stop_playback=False)
+            remaining = scan_missing_media(self.project)
+            if remaining:
+                self.status.showMessage(
+                    f"Relinked — {len(remaining)} file(s) still missing", 4500
+                )
+            else:
+                self.status.showMessage("All media files linked", 3500)
+
+    def _maybe_prompt_missing_media(self, *, quiet: bool = False) -> None:
+        missing = scan_missing_media(self.project)
+        if not missing:
+            return
+        msg = f"{len(missing)} media file(s) missing"
+        if quiet:
+            self.status.showMessage(
+                f"{msg} — File → Relink Missing Media…",
+                8000,
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Missing Media",
+            f"{msg}.\n\nOpen Relink dialog now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._open_missing_media_relink()
+        else:
+            self.status.showMessage(f"{msg} — File → Relink Missing Media…", 6000)
 
     def _maybe_load_demo_fixture(self) -> None:
         """Auto-load demo fixture if present (Chinese path stress)."""
@@ -1484,6 +1529,12 @@ class MainWindow(QMainWindow):
         )
         act_restore.triggered.connect(self._file_restore_backup)
         menu.addAction(act_restore)
+        act_relink = QAction("Relink &Missing Media…", self)
+        act_relink.setToolTip(
+            "Find audio/video files that moved — relink one file or a whole folder by name"
+        )
+        act_relink.triggered.connect(self._open_missing_media_relink)
+        menu.addAction(act_relink)
         menu.addSeparator()
         act_export = QAction("&Export…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
