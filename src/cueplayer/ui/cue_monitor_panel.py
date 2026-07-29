@@ -98,24 +98,25 @@ def _now_card_style(accent: str, *, secondary: bool = False) -> str:
 
 
 def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
-    lines: list[str] = []
-    if show_cue_id:
-        main_index = song.main_lane_index()
-        if main_index is not None and mark.lane_index == main_index:
-            cue_id = mark.main_cue_id.strip()
-            if cue_id:
-                lines.append(f"Cue {cue_id}")
     lane = song.lane_by_index(mark.lane_index)
     lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
+
+    if show_cue_id:
+        detail_lines: list[str] = []
+        if lane is not None and lane.cue_id_enabled:
+            cue_id = mark.main_cue_id.strip()
+            if cue_id:
+                detail_lines.append(f"Cue {cue_id}")
+        if note:
+            detail_lines.append(note)
+        if detail_lines:
+            return f"{lane_bit}\n\n" + "\n".join(detail_lines)
+        return lane_bit
+
     if note:
-        lines.append(lane_bit)
-        lines.append(note)
-    elif not lines:
-        lines.append(lane_bit)
-    else:
-        lines.append(lane_bit)
-    return "\n".join(lines)
+        return f"{lane_bit}\n{note}"
+    return lane_bit
 
 
 class CueMonitorPanel(QWidget):
@@ -481,7 +482,6 @@ class CueMonitorPanel(QWidget):
         self._updating_table = True
         self.cue_table.setRowCount(0)
         cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
-        main_index = self._song.main_lane_index() if self._song is not None else None
         time_col = self._time_col()
         type_col = self._col_for_field("type")
         cue_id_col = self._col_for_field("cue_id")
@@ -504,14 +504,15 @@ class CueMonitorPanel(QWidget):
 
                 cue_id_text = cue_ids.get(mark.id, "")
                 cue_id_item = QTableWidgetItem(cue_id_text)
-                if main_index is not None and mark.lane_index == main_index:
+                lane_has_id = lane is not None and lane.cue_id_enabled
+                if lane_has_id:
                     cue_id_item.setFlags(
                         cue_id_item.flags()
                         | Qt.ItemFlag.ItemIsEditable
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
-                    cue_id_item.setToolTip("Click to edit Cue ID (Main lane)")
+                    cue_id_item.setToolTip("Click to edit Cue ID")
                 else:
                     cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -650,7 +651,12 @@ class CueMonitorPanel(QWidget):
             self._updating_table = True
             item.setText(old_id)
             self._updating_table = False
-            if main_cue_id_taken(self._song, new_id, exclude_mark_id=mark.id):
+            if main_cue_id_taken(
+                self._song,
+                new_id,
+                exclude_mark_id=mark.id,
+                lane_index=mark.lane_index,
+            ):
                 self.cue_id_edit_failed.emit(f"Cue ID {new_id!r} is already used")
             else:
                 self.cue_id_edit_failed.emit(main_cue_id_order_hint(self._song, mark.id))

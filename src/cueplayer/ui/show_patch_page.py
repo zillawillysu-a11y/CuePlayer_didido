@@ -57,7 +57,7 @@ _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
 
 
 def _lane_color_for_main(song) -> str:  # noqa: ANN001
-    lane = next((l for l in song.mark_lanes if l.lane_type == "main"), None)
+    lane = next((l for l in song.mark_lanes if l.cue_id_enabled), None)
     return (lane.color if lane and lane.color else "#E74C3C")
 
 

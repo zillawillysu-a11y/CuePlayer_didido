@@ -466,6 +466,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                         "visible": lane.visible,
                         "locked": lane.locked,
                         "export_enabled": lane.export_enabled,
+                        "cue_id_enabled": lane.cue_id_enabled,
                         "cue_list_enabled": lane.cue_list_enabled,
                         "marker_shape": lane.marker_shape,
                     }
@@ -556,6 +557,12 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                     visible=bool(lane.get("visible", True)),
                     locked=bool(lane.get("locked", False)),
                     export_enabled=bool(lane.get("export_enabled", True)),
+                    cue_id_enabled=bool(
+                        lane.get(
+                            "cue_id_enabled",
+                            lane.get("lane_type", "top_button") == "main",
+                        )
+                    ),
                     cue_list_enabled=bool(
                         lane.get(
                             "cue_list_enabled",

@@ -51,7 +51,7 @@ _COL_KEY = 2
 _COL_SHAPE = 3
 _COL_COLOR = 4
 _COL_VISIBLE = 5
-_COL_TYPE = 6
+_COL_CUE_ID = 6
 _COL_CUE_LIST = 7
 
 
@@ -288,7 +288,7 @@ class MarkManagerDialog(QDialog):
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Type", "Cue List"]
+            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List"]
         )
         self.table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(_COL_INDEX, 44)
@@ -296,7 +296,7 @@ class MarkManagerDialog(QDialog):
         self.table.setColumnWidth(_COL_SHAPE, 120)
         self.table.setColumnWidth(_COL_COLOR, 70)
         self.table.setColumnWidth(_COL_VISIBLE, 56)
-        self.table.setColumnWidth(_COL_TYPE, 110)
+        self.table.setColumnWidth(_COL_CUE_ID, 72)
         self.table.setColumnWidth(_COL_CUE_LIST, 72)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -367,17 +367,16 @@ class MarkManagerDialog(QDialog):
             key_widget = self.table.cellWidget(row, _COL_KEY)
             shape_widget = self.table.cellWidget(row, _COL_SHAPE)
             visible_wrap = self.table.cellWidget(row, _COL_VISIBLE)
-            type_widget = self.table.cellWidget(row, _COL_TYPE)
+            cue_id_wrap = self.table.cellWidget(row, _COL_CUE_ID)
             cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
             if not all(
-                [index_item, name_edit, key_widget, shape_widget, visible_wrap, type_widget, cue_list_wrap]
+                [index_item, name_edit, key_widget, shape_widget, visible_wrap, cue_id_wrap, cue_list_wrap]
             ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
                 return None
             assert isinstance(name_edit, QLineEdit)
             assert isinstance(key_widget, QComboBox)
             assert isinstance(shape_widget, QComboBox)
-            assert isinstance(type_widget, QComboBox)
             checkbox = visible_wrap.property("checkbox")
             if not isinstance(checkbox, QCheckBox):
                 checkbox = visible_wrap.findChild(QCheckBox)
@@ -390,6 +389,12 @@ class MarkManagerDialog(QDialog):
             if cue_list_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Cue List toggle.")
                 return None
+            cue_id_box = cue_id_wrap.property("checkbox")
+            if not isinstance(cue_id_box, QCheckBox):
+                cue_id_box = cue_id_wrap.findChild(QCheckBox)
+            if cue_id_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Cue ID toggle.")
+                return None
             shortcut = str(key_widget.currentData() or "")
             if shortcut:
                 if shortcut in used_keys:
@@ -399,9 +404,8 @@ class MarkManagerDialog(QDialog):
             shape = str(shape_widget.currentData() or "circle")
             if shape not in MARKER_SHAPE_LABELS:
                 shape = "circle"
-            lane_type = str(type_widget.currentData() or "top_button")
-            if lane_type not in ("main", "top_button"):
-                lane_type = "top_button"
+            cue_id_enabled = cue_id_box.isChecked()
+            lane_type = "main" if cue_id_enabled else "top_button"
             index = int(index_item.text())
             previous = self._song.lane_by_index(index)
             draft.append(
@@ -414,6 +418,7 @@ class MarkManagerDialog(QDialog):
                     visible=checkbox.isChecked(),
                     locked=previous.locked if previous else False,
                     export_enabled=previous.export_enabled if previous else True,
+                    cue_id_enabled=cue_id_enabled,
                     cue_list_enabled=cue_list_box.isChecked(),
                     marker_shape=shape,  # type: ignore[arg-type]
                 )
@@ -615,12 +620,16 @@ class MarkManagerDialog(QDialog):
         visible_wrap.setProperty("checkbox", visible)
         self.table.setCellWidget(row, _COL_VISIBLE, visible_wrap)
 
-        mark_type = QComboBox()
-        mark_type.addItem("Main", "main")
-        mark_type.addItem("Top Button", "top_button")
-        type_idx = mark_type.findData(lane.lane_type)
-        mark_type.setCurrentIndex(type_idx if type_idx >= 0 else 1)
-        self.table.setCellWidget(row, _COL_TYPE, mark_type)
+        cue_id = QCheckBox()
+        cue_id.setChecked(lane.cue_id_enabled)
+        cue_id.setToolTip("Numbered Cue IDs (1, 2, 3…). Unchecked = Button lane.")
+        cue_id_wrap = QWidget()
+        cue_id_layout = QHBoxLayout(cue_id_wrap)
+        cue_id_layout.setContentsMargins(0, 0, 0, 0)
+        cue_id_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cue_id_layout.addWidget(cue_id)
+        cue_id_wrap.setProperty("checkbox", cue_id)
+        self.table.setCellWidget(row, _COL_CUE_ID, cue_id_wrap)
 
         cue_list = QCheckBox()
         cue_list.setChecked(lane.cue_list_enabled)
@@ -772,6 +781,7 @@ class MarkManagerDialog(QDialog):
                 color=color,
                 shortcut=shortcut,
                 visible=True,
+                cue_id_enabled=(index == 1),
                 cue_list_enabled=(index == 1),
                 marker_shape="circle",
             )
@@ -815,6 +825,9 @@ class MarkManagerDialog(QDialog):
         keep = {lane.index for lane in draft}
         self._song.marks = [m for m in self._song.marks if m.lane_index in keep]
         self._song.mark_lanes = draft
+        from cueplayer.domain.main_cue_id import sync_lane_cue_ids
+
+        sync_lane_cue_ids(self._song)
         self.accept()
 
 
