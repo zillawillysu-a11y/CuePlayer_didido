@@ -49,11 +49,16 @@ def test_fullscreen_splash_pixmap_is_dark_edge_to_edge() -> None:
 
 
 def test_show_startup_splash(qapp=None) -> None:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     splash = show_startup_splash(app, message="Loading…")
     assert splash.isVisible()
+    assert not splash._fullscreen
+    assert splash.width() == splash._WINDOW_WIDTH
+    assert splash.height() == splash._WINDOW_HEIGHT
+    assert not bool(splash.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
     assert splash._progress == 0.0
     splash.set_progress(0.5, "Halfway…")
     assert splash._progress == 0.5
