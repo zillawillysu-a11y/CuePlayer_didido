@@ -104,7 +104,7 @@ def test_estimate_bpm_mid_tempos() -> None:
     for bpm in (96.0, 100.0, 129.0):
         est = estimate_bpm(_click_track(bpm, seconds=18.0), 44100)
         assert est is not None
-        assert abs(float(est) - bpm) <= 3.0
+        assert abs(float(est) - bpm) <= 1.0
 
 
 @pytest.mark.parametrize(
@@ -118,10 +118,10 @@ def test_estimate_bpm_mid_tempos() -> None:
     ],
 )
 def test_estimate_bpm_ground_truth_show_tempos(bpm: float) -> None:
-    """Match tempos the user verified in other DAW/BPM software."""
+    """Match tempos the user verified in MixMeister / other BPM software."""
     est = estimate_bpm(_click_track(bpm, seconds=20.0), 44100)
     assert est is not None
-    assert abs(float(est) - bpm) <= 2.0, f"expected ~{bpm}, got {est}"
+    assert abs(float(est) - bpm) <= 1.0, f"expected ~{bpm}, got {est}"
 
 
 @pytest.mark.parametrize(
@@ -139,7 +139,7 @@ def test_estimate_bpm_pop_groove_tactus(bpm: float) -> None:
     eighth = bpm >= 120.0
     est = estimate_bpm(_pop_groove(bpm, eighth_hats=eighth), 44100)
     assert est is not None
-    assert abs(float(est) - bpm) <= 3.0, f"expected ~{bpm}, got {est}"
+    assert abs(float(est) - bpm) <= 2.0, f"expected ~{bpm}, got {est}"
 
 
 def test_estimate_bpm_excludes_ltc_like_channel() -> None:
