@@ -53,6 +53,8 @@ _COL_COLOR = 4
 _COL_VISIBLE = 5
 _COL_CUE_ID = 6
 _COL_CUE_LIST = 7
+_COL_MIDI = 8
+_COL_COUNT = 9
 
 
 class ShapePreview(QWidget):
@@ -286,9 +288,9 @@ class MarkManagerDialog(QDialog):
         self.preview = ShapePreview()
         layout.addWidget(self.preview)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List"]
+            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI"]
         )
         self.table.horizontalHeader().setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(_COL_INDEX, 44)
@@ -298,6 +300,7 @@ class MarkManagerDialog(QDialog):
         self.table.setColumnWidth(_COL_VISIBLE, 56)
         self.table.setColumnWidth(_COL_CUE_ID, 72)
         self.table.setColumnWidth(_COL_CUE_LIST, 72)
+        self.table.setColumnWidth(_COL_MIDI, 56)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -369,8 +372,18 @@ class MarkManagerDialog(QDialog):
             visible_wrap = self.table.cellWidget(row, _COL_VISIBLE)
             cue_id_wrap = self.table.cellWidget(row, _COL_CUE_ID)
             cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
+            midi_wrap = self.table.cellWidget(row, _COL_MIDI)
             if not all(
-                [index_item, name_edit, key_widget, shape_widget, visible_wrap, cue_id_wrap, cue_list_wrap]
+                [
+                    index_item,
+                    name_edit,
+                    key_widget,
+                    shape_widget,
+                    visible_wrap,
+                    cue_id_wrap,
+                    cue_list_wrap,
+                    midi_wrap,
+                ]
             ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
                 return None
@@ -394,6 +407,12 @@ class MarkManagerDialog(QDialog):
                 cue_id_box = cue_id_wrap.findChild(QCheckBox)
             if cue_id_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Cue ID toggle.")
+                return None
+            midi_box = midi_wrap.property("checkbox")
+            if not isinstance(midi_box, QCheckBox):
+                midi_box = midi_wrap.findChild(QCheckBox)
+            if midi_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI toggle.")
                 return None
             shortcut = str(key_widget.currentData() or "")
             if shortcut:
@@ -420,6 +439,8 @@ class MarkManagerDialog(QDialog):
                     export_enabled=previous.export_enabled if previous else True,
                     cue_id_enabled=cue_id_enabled,
                     cue_list_enabled=cue_list_box.isChecked(),
+                    midi_note_enabled=midi_box.isChecked(),
+                    midi_note=int(previous.midi_note) if previous else 0,
                     marker_shape=shape,  # type: ignore[arg-type]
                 )
             )
@@ -641,6 +662,20 @@ class MarkManagerDialog(QDialog):
         cue_list_layout.addWidget(cue_list)
         cue_list_wrap.setProperty("checkbox", cue_list)
         self.table.setCellWidget(row, _COL_CUE_LIST, cue_list_wrap)
+
+        midi = QCheckBox()
+        midi.setChecked(bool(getattr(lane, "midi_note_enabled", False)))
+        midi.setToolTip(
+            "Send a MIDI note when playback crosses marks on this lane "
+            "(enable globally in Audio / Timecode → MIDI Cue Notes)"
+        )
+        midi_wrap = QWidget()
+        midi_layout = QHBoxLayout(midi_wrap)
+        midi_layout.setContentsMargins(0, 0, 0, 0)
+        midi_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        midi_layout.addWidget(midi)
+        midi_wrap.setProperty("checkbox", midi)
+        self.table.setCellWidget(row, _COL_MIDI, midi_wrap)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.

@@ -99,6 +99,11 @@ class MarkLane:
     cue_id_enabled: bool = False
     # When True, marks on this lane appear in the scrolling Cue List table.
     cue_list_enabled: bool = True
+    # When True (and project MIDI cue notes enabled), crossing a mark on this
+    # lane while playing sends a short MIDI note (for MA Timecode record / link).
+    midi_note_enabled: bool = False
+    # 1–127 overrides the default note; 0 = auto from Main/Button base + lane index.
+    midi_note: int = 0
     marker_shape: MarkerShape = "circle"
 
 
@@ -825,9 +830,15 @@ class AudioOutputSettings:
     ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
-    # MIDI Timecode quarter-frame output (independent of LTC).
+    # MIDI Timecode quarter-frame output (same song start TC + FPS as LTC).
     mtc_enabled: bool = False
     midi_port_name: str = ""
+    # MIDI Note pulses when enabled mark lanes are crossed during play.
+    midi_cue_notes_enabled: bool = False
+    midi_cue_channel: int = 1  # 1–16
+    midi_cue_velocity: int = 100
+    midi_main_base_note: int = 36  # C2 + (lane.index - 1)
+    midi_button_base_note: int = 48  # C3 + (lane.index - 1)
 
 
 @dataclass
@@ -849,6 +860,12 @@ class CleanVideoOutputSettings:
     # Capture keeps targeting "CuePlayer Clean Video Output" instead of the
     # main UI.
     was_open: bool = False
+    # Optional NDI sender mirroring the same decoded frames (Depence / etc.).
+    ndi_enabled: bool = False
+    ndi_name: str = "CuePlayer"
+    # "video" = NDI size follows decoded frame; "output_window" = Clean Output
+    # canvas + Fit/Fill (what you see in the Output box).
+    ndi_frame_mode: str = "output_window"
 
 
 def default_channel_routing(output_channels: int) -> tuple[list[int], list[int], list[int]]:

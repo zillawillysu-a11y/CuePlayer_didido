@@ -48,10 +48,13 @@ from cueplayer.playback.routing_parse import (
     speaker_channels_without_ltc,
 )
 from cueplayer.playback.mtc_output import MtcOutput
+from cueplayer.playback.midi_cue_notes import MidiCueNotes
 from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
+from cueplayer.timecode.ltc_decode import decode_ltc_timecode
+from cueplayer.timecode.smpte import Timecode
 
 
 class AudioEngine(QObject):
@@ -96,6 +99,8 @@ class AudioEngine(QObject):
         self._music_volume = 1.0
         self._song: Song | None = None
         self._video_mixer = VideoAudioMixer()
+        self._ltc_mirror_last_pos = -1e9
+        self._ltc_mirror_last_ok = False
         self._audio_settings = AudioOutputSettings()
         self._ltc_pcm: np.ndarray | None = None
         self._ltc_cache_key: tuple | None = None
@@ -126,6 +131,7 @@ class AudioEngine(QObject):
         self._resume_play_after_buffer = False
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
+        self._midi_cues = MidiCueNotes()
         self._poll = QTimer(self)
         self._poll.setInterval(16)
         self._poll.timeout.connect(self._emit_position)
@@ -260,6 +266,49 @@ class AudioEngine(QObject):
             return None
         return self._file_ltc_channel()
 
+    def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
+        """
+        Read HH:MM:SS:FF from striped file LTC at the playhead.
+
+        Used so MTC can mirror the same numbers as the incoming LTC audio.
+        Returns None for generator-only LTC or when decode fails.
+        """
+        ch = self._effective_ltc_source_channel()
+        if ch is None or self._buffer is None:
+            return None
+        sr = int(self._sample_rate())
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        frame_len = max(160, int(round(sr / fps)))
+        window = frame_len * 4
+        center = max(0, int(round(max(0.0, float(position_seconds)) * sr)))
+        start = max(0, center - frame_len // 2)
+        # Decode from the raw file channel (no LTC output gain).
+        pcm = self._source_channel_chunk(ch, start, window)
+        return decode_ltc_timecode(pcm, sr, fps)
+
+    def _sync_mtc_to_file_ltc(
+        self, position_seconds: float, *, force: bool = False
+    ) -> None:
+        """When file LTC is active, lock MTC origin to the decoded stripe TC."""
+        if not self._audio_settings.mtc_enabled:
+            return
+        if self._effective_ltc_source_channel() is None:
+            return
+        # Re-decode about twice per second (or on play/seek). QF pacing still
+        # runs every timer tick from the mirrored origin.
+        if (
+            not force
+            and abs(float(position_seconds) - self._ltc_mirror_last_pos) < 0.45
+        ):
+            return
+        decoded = self._decode_file_ltc_timecode(position_seconds)
+        self._ltc_mirror_last_pos = float(position_seconds)
+        if decoded is not None:
+            self._mtc.set_mirror_origin(decoded, position_seconds)
+            self._ltc_mirror_last_ok = True
+        else:
+            self._ltc_mirror_last_ok = False
+
     def _music_source_indices(self) -> tuple[int, int]:
         """Which loaded-file channels feed the music L/R bus (mono duplicates when needed)."""
         samples = self._playback_samples
@@ -374,6 +423,7 @@ class AudioEngine(QObject):
         self._video_mixer.set_song(song)
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
+        self._midi_cues.set_song(song)
         self.refresh_video_clips()
         self._refresh_source_routing_cache()
 
@@ -418,6 +468,11 @@ class AudioEngine(QObject):
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
+            midi_cue_notes_enabled=bool(getattr(settings, "midi_cue_notes_enabled", False)),
+            midi_cue_channel=int(getattr(settings, "midi_cue_channel", 1) or 1),
+            midi_cue_velocity=int(getattr(settings, "midi_cue_velocity", 100) or 100),
+            midi_main_base_note=int(getattr(settings, "midi_main_base_note", 36) or 36),
+            midi_button_base_note=int(getattr(settings, "midi_button_base_note", 48) or 48),
         )
         self._resolve_device_and_route()
         if self._uses_generated_ltc():
@@ -439,6 +494,23 @@ class AudioEngine(QObject):
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
+        # Share one MIDI Out handle when MTC + cue notes are both on (set before
+        # configure so MidiCueNotes does not open a second port).
+        share_mtc = (
+            self._audio_settings.mtc_enabled
+            and self._audio_settings.midi_cue_notes_enabled
+        )
+        self._midi_cues.set_send_function(self._mtc.send_message if share_mtc else None)
+        cue_err = self._midi_cues.configure(
+            enabled=bool(self._audio_settings.midi_cue_notes_enabled),
+            port_name=self._audio_settings.midi_port_name,
+            channel=int(self._audio_settings.midi_cue_channel),
+            velocity=int(self._audio_settings.midi_cue_velocity),
+            main_base_note=int(self._audio_settings.midi_main_base_note),
+            button_base_note=int(self._audio_settings.midi_button_base_note),
+        )
+        if self._song is not None:
+            self._midi_cues.set_song(self._song)
         self.timecode_status_changed.emit()
 
         if was_playing:
@@ -459,8 +531,9 @@ class AudioEngine(QObject):
                 "choose Left or Right manually to avoid LTC on Music CH1–2."
             )
             warning = f"{warning} {auto_warn}" if warning else auto_warn
-        if mtc_err:
-            return mtc_err if warning is None else f"{warning} {mtc_err}"
+        for err in (mtc_err, cue_err):
+            if err:
+                warning = f"{warning} {err}" if warning else err
         return warning
 
     def clear_calibration_clicks(self) -> None:
@@ -703,6 +776,7 @@ class AudioEngine(QObject):
                 self._poll.stop()
                 self._mtc_timer.stop()
                 self._mtc.on_pause()
+                self._midi_cues.on_pause()
                 self.playing_changed.emit(False)
                 self.timecode_status_changed.emit()
                 self._emit_position()
@@ -716,7 +790,9 @@ class AudioEngine(QObject):
             self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
+        self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
+        self._midi_cues.on_play(self.position)
         if self._audio_settings.mtc_enabled:
             self._mtc_timer.start()
         self.playing_changed.emit(True)
@@ -744,6 +820,7 @@ class AudioEngine(QObject):
         self._poll.stop()
         self._mtc_timer.stop()
         self._mtc.on_pause()
+        self._midi_cues.on_pause()
         if not for_scrub:
             self.playing_changed.emit(False)
         self._emit_position()
@@ -775,6 +852,8 @@ class AudioEngine(QObject):
         if not self._scrubbing:
             return
         self._scrubbing = False
+        # Land MTC / file-LTC mirror on the exact release position once.
+        self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         if self._resume_after_scrub:
             self._resume_after_scrub = False
             self.play()
@@ -789,20 +868,32 @@ class AudioEngine(QObject):
             # Update under lock so the audio callback cannot wrap to A
             # after a seek that intentionally left the A–B region.
             self._refresh_loop_engage()
+        self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
+        self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
 
     def nudge(self, delta_seconds: float) -> None:
         self.seek(self.position + delta_seconds)
 
+    def shutdown_midi_outputs(self) -> None:
+        """Release MTC / MIDI cue note ports (call on app exit)."""
+        self._mtc_timer.stop()
+        self._mtc.close()
+        self._midi_cues.close()
+
     def _mtc_tick(self) -> None:
         if self._playing:
-            self._mtc.tick(self.raw_position)
+            pos = self.raw_position
+            self._sync_mtc_to_file_ltc(pos)
+            self._mtc.tick(pos)
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
             return
         pos = self.position
+        if self._playing:
+            self._midi_cues.update(pos)
         self.position_changed.emit(pos)
         with self._lock:
             # `_position_frame` is bookkept in playback-rate frames (see

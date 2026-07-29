@@ -12,7 +12,7 @@ from cueplayer.timecode.mtc import (
     full_frame_sysex,
     quarter_frame_payload,
 )
-from cueplayer.timecode.smpte import Timecode, parse_timecode
+from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +169,17 @@ class MtcOutput:
             if parsed is not None:
                 self._start_tc = parsed
 
+    def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
+        """
+        Align MTC so ``absolute`` is the timecode at ``position_seconds``.
+
+        Used when mirroring decoded file LTC: MTC numbers match the LTC stripe
+        even if Song Start TC differs.
+        """
+        with self._lock:
+            delta = -int(round(max(0.0, float(position_seconds)) * self._fps))
+            self._start_tc = add_frames(absolute, delta, self._fps)
+
     def on_play(self, position_seconds: float) -> None:
         with self._lock:
             if not self._enabled or self._port is None:
@@ -189,6 +200,16 @@ class MtcOutput:
     def on_pause(self) -> None:
         with self._lock:
             self._playing = False
+
+    def send_message(self, message: Any) -> None:
+        """Send an arbitrary short MIDI message on the open MTC port (shared with cue notes)."""
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(message)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("MIDI send_message failed: %s", exc)
 
     def tick(self, position_seconds: float) -> None:
         """Send any quarter frames due for the current sample-clock position."""

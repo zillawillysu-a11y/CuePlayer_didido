@@ -32,6 +32,8 @@ def lanes_to_dicts(lanes: list[MarkLane]) -> list[dict[str, Any]]:
                 "export_enabled": bool(lane.export_enabled),
                 "cue_id_enabled": bool(lane.cue_id_enabled),
                 "cue_list_enabled": bool(lane.cue_list_enabled),
+                "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
+                "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                 "marker_shape": lane.marker_shape,
             }
         )
@@ -71,6 +73,8 @@ def dicts_to_lanes(raw: list[Any]) -> list[MarkLane]:
                         lane_type == "main",
                     )
                 ),
+                midi_note_enabled=bool(item.get("midi_note_enabled", False)),
+                midi_note=int(item.get("midi_note", 0) or 0),
                 marker_shape=shape,  # type: ignore[arg-type]
             )
         )
