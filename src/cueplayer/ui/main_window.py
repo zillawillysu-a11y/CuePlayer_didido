@@ -72,6 +72,8 @@ from cueplayer.persistence.backup import (
 from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
+    ingest_external_media_into_project,
+    scan_external_media,
     sync_all_songs_media_to_setlist_folders,
 )
 from cueplayer.persistence.project_bundle import collect_project_bundle
@@ -1961,6 +1963,67 @@ class MainWindow(QMainWindow):
             project_file=project_file,
         )
 
+    def _maybe_bundle_external_media_on_save(
+        self,
+        project_file: Path,
+        *,
+        quiet: bool = False,
+    ) -> int:
+        """
+        If the user dropped media from outside the project folder, ask whether
+        to copy those files into ``Media/<Setlist>/<Song>/`` before saving.
+
+        Skipped during auto-save (``quiet``) so timers never block on a dialog.
+        Returns how many files were copied in.
+        """
+        if quiet:
+            return 0
+        external = scan_external_media(self.project, project_file=project_file)
+        if not external:
+            return 0
+        # Deduped display names (same file may be referenced twice).
+        names: list[str] = []
+        seen: set[str] = set()
+        for ref in external:
+            key = str(ref.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(ref.basename)
+        preview = "\n".join(f"  · {n}" for n in names[:8])
+        more = "" if len(names) <= 8 else f"\n  · …and {len(names) - 8} more"
+        answer = QMessageBox.question(
+            self,
+            "Bundle New Media?",
+            f"{len(names)} media file(s) were added from outside this project "
+            f"folder.\n\nCopy them into {DEFAULT_MEDIA_SUBDIR}/<Setlist>/<Song>/ "
+            "so the show stays portable?\n\n"
+            f"{preview}{more}\n\n"
+            "Yes = copy into Media/ then Save\n"
+            "No = Save with absolute paths (original files stay where they are)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return 0
+        try:
+            result = ingest_external_media_into_project(
+                self.project,
+                project_file=project_file,
+                only=external,
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Bundle Media Failed", str(exc))
+            return 0
+        if result.failed:
+            QMessageBox.warning(
+                self,
+                "Bundle Media",
+                f"Could not copy {len(result.failed)} file(s). "
+                "Other files were bundled; continuing Save.",
+            )
+        return len(result.copied)
+
     def _set_clean(self) -> None:
         self._dirty = False
         self._refresh_window_title()
@@ -2058,6 +2121,9 @@ class MainWindow(QMainWindow):
             return self._file_save_as()
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
+        n_bundled = self._maybe_bundle_external_media_on_save(
+            self._project_path, quiet=quiet
+        )
         n_media = self._sync_media_layout_for_save(self._project_path)
         self._backup_before_overwrite(self._project_path)
         try:
@@ -2070,7 +2136,12 @@ class MainWindow(QMainWindow):
             return False
         self._set_clean()
         label = "Auto-saved" if quiet else "Saved"
-        extra = f" · {n_media} media file(s) arranged" if n_media else ""
+        bits: list[str] = []
+        if n_bundled:
+            bits.append(f"{n_bundled} bundled into Media/")
+        if n_media:
+            bits.append(f"{n_media} media file(s) arranged")
+        extra = f" · {'; '.join(bits)}" if bits else ""
         self.status.showMessage(f"{label}: {self._project_path.name}{extra}", 2500)
         return True
 
@@ -2111,6 +2182,9 @@ class MainWindow(QMainWindow):
                 )
             except OSError:
                 shared_beside_original = False
+        n_bundled = 0
+        if not shared_beside_original:
+            n_bundled = self._maybe_bundle_external_media_on_save(path, quiet=False)
         n_media = self._sync_media_layout_for_save(
             path,
             rearrange_disk=not shared_beside_original,
@@ -2138,7 +2212,12 @@ class MainWindow(QMainWindow):
                 4500,
             )
         else:
-            extra = f" · {n_media} media file(s) arranged" if n_media else ""
+            bits: list[str] = []
+            if n_bundled:
+                bits.append(f"{n_bundled} bundled into Media/")
+            if n_media:
+                bits.append(f"{n_media} media file(s) arranged")
+            extra = f" · {'; '.join(bits)}" if bits else ""
             self.status.showMessage(f"Saved: {path.name}{extra}", 2500)
         return True
 
