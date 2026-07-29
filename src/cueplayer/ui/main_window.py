@@ -1426,11 +1426,10 @@ class MainWindow(QMainWindow):
             lambda: self._schedule_bpm_detect_for_missing_songs(quiet=False)
         )
         tools_menu.addAction(act_bpm_missing)
-        act_bpm_all = QAction("Re-detect BPM (all songs)", self)
+        act_bpm_all = QAction("Re-detect BPM (auto / empty only)", self)
         act_bpm_all.setToolTip(
-            "Force re-detect every song that has an audio file (one at a time). "
-            "Overwrites gray <n> and typed BPM. Uses librosa + octave check; "
-            "×2/÷2 remain if a rare half/double is still wrong."
+            "Re-detect songs with auto BPM (<n>) or no BPM (one at a time). "
+            "Manual typed BPM is never overwritten — clear the cell first to re-detect."
         )
         act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
         tools_menu.addAction(act_bpm_all)
@@ -2520,17 +2519,18 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
         detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
-        detect_all_bpm_action = menu.addAction("Re-detect BPM (all songs)")
+        detect_all_bpm_action = menu.addAction("Re-detect BPM (auto / empty only)")
         double_bpm_action = menu.addAction("BPM × 2")
         halve_bpm_action = menu.addAction("BPM ÷ 2")
         detect_selected_bpm_action.setToolTip(
-            "Re-run auto BPM for the selected song(s). Overwrites gray <n> and typed values."
+            "Re-run auto BPM for selected songs that are auto or empty. "
+            "Manual typed BPM is skipped."
         )
         detect_missing_bpm_action.setToolTip(
             "Only songs that still have an empty BPM cell and an audio file."
         )
         detect_all_bpm_action.setToolTip(
-            "Force re-detect every song with audio (queued one at a time)."
+            "Re-detect auto BPM / empty cells only — never overwrites typed BPM."
         )
         double_bpm_action.setToolTip(
             "Double selected BPM (fix half-tempo guesses). Marks as user value."
@@ -2595,8 +2595,21 @@ class MainWindow(QMainWindow):
             return
         if chosen is detect_selected_bpm_action:
             n = self._detect_bpm_for_songs(selected_songs, force=True)
+            skipped_manual = sum(
+                1
+                for s in selected_songs
+                if s.bpm is not None
+                and float(s.bpm) > 0
+                and not bool(getattr(s, "bpm_auto", False))
+            )
             if n:
                 self.status.showMessage(f"Detecting BPM for {n} selected song(s)…", 4000)
+            elif skipped_manual:
+                self.status.showMessage(
+                    f"Skipped {skipped_manual} song(s) with manual BPM "
+                    "(clear the cell to re-detect).",
+                    4000,
+                )
             else:
                 self.status.showMessage("No audio file on the selected song(s).", 3000)
             return
@@ -4253,10 +4266,19 @@ class MainWindow(QMainWindow):
         """Estimate BPM from the song's main audio (async, one at a time).
 
         Default (``force=False``): only runs when ``song.bpm`` is still empty.
-        ``force=True`` overwrites auto or typed BPM (explicit menu actions).
+        ``force=True`` re-runs for auto BPM (gray ``<n>``) or empty cells.
+        Manual typed BPM (``bpm_auto=False``) is never overwritten — clear the
+        cell first if you want a fresh detect.
         Jobs are serialized on ``_bpm_detect_executor`` so opening a project
         or "detect all" cannot peg the machine.
         """
+        # Sticky manual BPM: Re-detect / Detect selected must not wipe it.
+        if (
+            song.bpm is not None
+            and float(song.bpm) > 0
+            and not bool(getattr(song, "bpm_auto", False))
+        ):
+            return False
         if not force and song.bpm is not None:
             return False
         audio_path = path or self._main_audio_path_for_song(song)
@@ -4379,6 +4401,18 @@ class MainWindow(QMainWindow):
 
     def _refresh_bpm_progress_cell(self, song_id: str) -> None:
         """Update one setlist BPM cell without rebuilding the whole list."""
+        progress = self._bpm_ui_progress.get(song_id)
+        # Cap displayed progress below 100% — 100 only appears briefly before
+        # the result handler clears progress; never leave Sheet stuck on "100%".
+        display_progress = progress
+        if display_progress is not None and display_progress >= 100:
+            display_progress = 99
+
+        sheet = getattr(self, "setlist_sheet_page", None)
+        if sheet is not None and hasattr(sheet, "set_song_bpm_progress"):
+            # Always sync Sheet, even when the setlist row is hidden/collapsed.
+            sheet.set_song_bpm_progress(song_id, display_progress)
+
         row = self._table_row_for_song_id(song_id)
         if row is None:
             return
@@ -4397,7 +4431,6 @@ class MainWindow(QMainWindow):
 
         from cueplayer.ui.theme import ACCENT, TEXT_MUTED
 
-        progress = self._bpm_ui_progress.get(song_id)
         bpm_item = self.song_list.item(row, SetlistWidget.COL_BPM)
         if bpm_item is None:
             bpm_item = QTableWidgetItem("")
@@ -4410,13 +4443,13 @@ class MainWindow(QMainWindow):
             )
             self.song_list.setItem(row, SetlistWidget.COL_BPM, bpm_item)
 
-        if progress is not None:
-            if progress < 0:
+        if display_progress is not None:
+            if display_progress < 0:
                 text = "…"
                 tip = "排隊偵測 BPM 中…"
             else:
-                text = f"{min(100, int(progress))}%"
-                tip = f"正在偵測 BPM… {min(100, int(progress))}%"
+                text = f"{min(99, int(display_progress))}%"
+                tip = f"正在偵測 BPM… {min(99, int(display_progress))}%"
             self.song_list._block_number_signal = True  # noqa: SLF001
             bpm_item.setText(text)
             bpm_item.setToolTip(tip)
@@ -4451,10 +4484,6 @@ class MainWindow(QMainWindow):
             )
             self.song_list._block_number_signal = False  # noqa: SLF001
 
-        sheet = getattr(self, "setlist_sheet_page", None)
-        if sheet is not None and hasattr(sheet, "set_song_bpm_progress"):
-            sheet.set_song_bpm_progress(song_id, progress)
-
     def _schedule_bpm_detect_for_missing_songs(self, *, quiet: bool = False) -> int:
         """Queue detect for songs that have audio but no BPM yet."""
         queued = 0
@@ -4472,12 +4501,30 @@ class MainWindow(QMainWindow):
         return queued
 
     def _redetect_bpm_all_songs(self) -> None:
-        """Force re-detect every song with audio (one at a time)."""
+        """Re-detect auto/empty BPM only — never overwrite manual typed values."""
         n = self._detect_bpm_for_songs(list(self.project.songs), force=True)
+        skipped_manual = sum(
+            1
+            for s in self.project.songs
+            if s.bpm is not None
+            and float(s.bpm) > 0
+            and not bool(getattr(s, "bpm_auto", False))
+            and self._main_audio_path_for_song(s) is not None
+        )
         if n:
+            extra = (
+                f" (skipped {skipped_manual} manual)"
+                if skipped_manual
+                else ""
+            )
             self.status.showMessage(
-                f"Re-detecting BPM for {n} song(s)… (queued one at a time)",
+                f"Re-detecting BPM for {n} song(s)…{extra} (queued one at a time)",
                 5000,
+            )
+        elif skipped_manual:
+            self.status.showMessage(
+                f"All songs with audio have manual BPM ({skipped_manual}) — nothing to re-detect.",
+                4000,
             )
         else:
             self.status.showMessage("No songs with audio to re-detect.", 3000)
@@ -4523,6 +4570,12 @@ class MainWindow(QMainWindow):
 
     def _on_bpm_detected(self, song_id: str, bpm: object) -> None:
         self._bpm_ui_progress.pop(song_id, None)
+        # Clear Sheet progress before any rebuild/sync so "100%" cannot stick.
+        sheet = getattr(self, "setlist_sheet_page", None)
+        if sheet is not None and hasattr(sheet, "clear_song_bpm_progress"):
+            sheet.clear_song_bpm_progress(song_id)
+        elif sheet is not None and hasattr(sheet, "set_song_bpm_progress"):
+            sheet.set_song_bpm_progress(song_id, None)
         song = next((s for s in self.project.songs if s.id == song_id), None)
         forced = song_id in self._bpm_force_ids
         self._bpm_force_ids.discard(song_id)
@@ -4533,6 +4586,14 @@ class MainWindow(QMainWindow):
         if (
             not forced
             and song.bpm is not None
+            and not bool(getattr(song, "bpm_auto", False))
+        ):
+            self._refresh_bpm_progress_cell(song_id)
+            return
+        # Force path also respects sticky manual BPM (scheduled only for auto/empty).
+        if (
+            song.bpm is not None
+            and float(song.bpm) > 0
             and not bool(getattr(song, "bpm_auto", False))
         ):
             self._refresh_bpm_progress_cell(song_id)
@@ -4563,7 +4624,6 @@ class MainWindow(QMainWindow):
         song.bpm_auto = True
         self._mark_dirty()
         self._rebuild_song_list()
-        sheet = getattr(self, "setlist_sheet_page", None)
         if sheet is not None:
             sheet.sync_songs()
         from cueplayer.media.bpm_analyzer import format_bpm_value
