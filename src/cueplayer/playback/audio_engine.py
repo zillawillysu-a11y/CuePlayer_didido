@@ -186,7 +186,7 @@ class AudioEngine(QObject):
             # When LTC source is from-file, the actual timecode numbers come from
             # decoding the stripe — regardless of whether LTC output is enabled.
             # MTC mirrors the same source, so show file-decoded TC when available.
-            uses_file_ltc = self._song_uses_file_ltc()
+            uses_file_ltc = self._decode_source_channel() is not None
             decoded = self._decode_file_ltc_timecode(pos) if uses_file_ltc else None
             if decoded is not None:
                 tc_str = decoded.format()
@@ -311,6 +311,20 @@ class AudioEngine(QObject):
             return None
         return self._file_ltc_channel()
 
+    def _decode_source_channel(self) -> int | None:
+        """File channel to decode timecode from for MTC/display purposes.
+
+        Unlike _effective_ltc_source_channel this does NOT require LTC output
+        to be enabled — MTC-only (LTC output off, source = from-file) should
+        still decode the stripe to send/display the correct numbers.
+        """
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None:
+            return song_ch
+        if self._audio_settings.ltc_source == "generator":
+            return None
+        return self._resolved_file_ltc_channel(require_settings=False)
+
     def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
         """
         Read HH:MM:SS:FF from striped file LTC at the playhead.
@@ -318,7 +332,7 @@ class AudioEngine(QObject):
         Used so MTC can mirror the same numbers as the incoming LTC audio.
         Returns None for generator-only LTC or when decode fails.
         """
-        ch = self._effective_ltc_source_channel()
+        ch = self._decode_source_channel()
         if ch is None or self._buffer is None:
             return None
         sr = int(self._sample_rate())
@@ -337,7 +351,7 @@ class AudioEngine(QObject):
         """When file LTC is active, lock MTC origin to the decoded stripe TC."""
         if not self._audio_settings.mtc_enabled:
             return
-        if self._effective_ltc_source_channel() is None:
+        if self._decode_source_channel() is None:
             return
         # Re-decode about twice per second (or on play/seek). QF pacing still
         # runs every timer tick from the mirrored origin.
