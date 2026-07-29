@@ -221,6 +221,8 @@ class SetlistSheetPage(QWidget):
         self._project: Project | None = None
         self._suppress = False
         self._song_ids: list[str | None] = []
+        # song_id → -1 queued / 0..100 detecting (mirrors MainWindow BPM progress)
+        self._bpm_progress: dict[str, int] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 8, 12, 8)
@@ -332,6 +334,53 @@ class SetlistSheetPage(QWidget):
             self._fill_song_row(r, row)
         self._suppress = False
 
+    def set_song_bpm_progress(self, song_id: str, progress: int | None) -> None:
+        """Show detecting % / queued … in the BPM column for one song."""
+        if not song_id:
+            return
+        if progress is None:
+            self._bpm_progress.pop(song_id, None)
+        else:
+            self._bpm_progress[song_id] = int(progress)
+        try:
+            row = self._song_ids.index(song_id)
+        except ValueError:
+            return
+        song = self._song_at_row(row)
+        if song is None:
+            return
+        from cueplayer.ui.theme import ACCENT, TEXT_MUTED
+
+        item = self.table.item(row, _COL_BPM)
+        if item is None:
+            item = QTableWidgetItem("")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEditable
+            )
+            self.table.setItem(row, _COL_BPM, item)
+        self._suppress = True
+        if progress is not None:
+            if progress < 0:
+                item.setText("…")
+                item.setToolTip("排隊偵測 BPM 中…")
+            else:
+                item.setText(f"{min(100, int(progress))}%")
+                item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
+            item.setForeground(QColor(ACCENT))
+        else:
+            text = format_sheet_bpm(song.bpm, auto=bool(getattr(song, "bpm_auto", False)))
+            item.setText(text)
+            if text.startswith("<") and text.endswith(">"):
+                item.setForeground(QColor(TEXT_MUTED))
+                item.setToolTip("Auto-detected BPM (gray <n>). Type your value to override.")
+            else:
+                item.setForeground(QColor())
+                item.setToolTip("BPM (blank = not set)")
+        self._suppress = False
+
     def _fill_folder_row(self, r: int, row: SetlistSheetRow) -> None:
         label = folder_row_label(row.name, collapsed=row.collapsed)
         item = QTableWidgetItem(label)
@@ -441,7 +490,18 @@ class SetlistSheetPage(QWidget):
             | Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsEditable
         )
-        if row.bpm.startswith("<") and row.bpm.endswith(">"):
+        progress = self._bpm_progress.get(row.song_id) if row.song_id else None
+        if progress is not None:
+            from cueplayer.ui.theme import ACCENT
+
+            if progress < 0:
+                bpm_item.setText("…")
+                bpm_item.setToolTip("排隊偵測 BPM 中…")
+            else:
+                bpm_item.setText(f"{min(100, int(progress))}%")
+                bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
+            bpm_item.setForeground(QColor(ACCENT))
+        elif row.bpm.startswith("<") and row.bpm.endswith(">"):
             from cueplayer.ui.theme import TEXT_MUTED
 
             bpm_item.setForeground(QColor(TEXT_MUTED))

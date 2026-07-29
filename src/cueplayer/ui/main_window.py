@@ -251,7 +251,7 @@ class SetlistWidget(QTableWidget):
         self.setColumnWidth(self.COL_NUM, 48)
         self.setColumnWidth(self.COL_TITLE, 160)
         self.setColumnWidth(self.COL_EN, 110)
-        self.setColumnWidth(self.COL_BPM, 56)
+        self.setColumnWidth(self.COL_BPM, 64)
         self.setColumnWidth(self.COL_LTC, 68)
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
@@ -617,6 +617,7 @@ class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
+    _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -663,8 +664,12 @@ class MainWindow(QMainWindow):
         self._bpm_force_ids: set[str] = set()
         self._bpm_detect_queue: list[tuple[str, Path, int | None, bool]] = []
         self._bpm_detect_running = False
+        # UI progress: -1 = queued, 0..100 = active job percent.
+        self._bpm_ui_progress: dict[str, int] = {}
+        self._bpm_active_song_id: str | None = None
         self._bpm_detected.connect(self._on_bpm_detected)
         self._bpm_job_finished.connect(self._pump_bpm_detect_queue)
+        self._bpm_progress_changed.connect(self._on_bpm_progress_changed)
         self._audio_load_timer = QTimer(self)
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
@@ -1906,7 +1911,13 @@ class MainWindow(QMainWindow):
             self.song_list.setItem(table_row, SetlistWidget.COL_EN, ma_item)
 
             bpm_text = ""
-            if song.bpm is not None and float(song.bpm) > 0:
+            progress = self._bpm_ui_progress.get(song.id)
+            if progress is not None:
+                if progress < 0:
+                    bpm_text = "…"
+                else:
+                    bpm_text = f"{min(100, int(progress))}%"
+            elif song.bpm is not None and float(song.bpm) > 0:
                 from cueplayer.media.bpm_analyzer import format_bpm_cell
 
                 bpm_text = format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto))
@@ -1918,7 +1929,15 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsEditable
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
-            if song.bpm is not None and song.bpm_auto:
+            if progress is not None:
+                from cueplayer.ui.theme import ACCENT
+
+                bpm_item.setForeground(QColor(ACCENT))
+                if progress < 0:
+                    bpm_item.setToolTip("排隊偵測 BPM 中…")
+                else:
+                    bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
+            elif song.bpm is not None and song.bpm_auto:
                 from cueplayer.ui.theme import TEXT_MUTED
 
                 bpm_item.setForeground(QColor(TEXT_MUTED))
@@ -4037,35 +4056,177 @@ class MainWindow(QMainWindow):
             self._bpm_force_ids.discard(song_id)
         self._bpm_detect_inflight.add(song_id)
         self._bpm_detect_queue.append((song_id, resolved, exclude, force))
+        self._bpm_ui_progress[song_id] = -1  # queued
+        self._refresh_bpm_progress_cell(song_id)
         self._pump_bpm_detect_queue()
         return True
 
     def _pump_bpm_detect_queue(self) -> None:
         if self._bpm_detect_running or not self._bpm_detect_queue:
+            if not self._bpm_detect_queue and not self._bpm_detect_running:
+                self._bpm_active_song_id = None
             return
         song_id, resolved, exclude, _force = self._bpm_detect_queue.pop(0)
         self._bpm_detect_running = True
+        self._bpm_active_song_id = song_id
+        self._bpm_ui_progress[song_id] = 0
+        self._refresh_bpm_progress_cell(song_id)
+        self._refresh_bpm_detect_status()
 
         def _run() -> tuple[str, float | None]:
             from cueplayer.media.bpm_analyzer import estimate_bpm_from_path
 
-            return song_id, estimate_bpm_from_path(resolved, exclude_channel=exclude)
+            def _progress(percent: int) -> None:
+                # Worker thread → queued to UI via Signal.
+                self._bpm_progress_changed.emit(song_id, int(percent))
+
+            return song_id, estimate_bpm_from_path(
+                resolved,
+                exclude_channel=exclude,
+                progress=_progress,
+            )
 
         future = self._bpm_detect_executor.submit(_run)
 
         def _done(fut) -> None:  # noqa: ANN001
             self._bpm_detect_running = False
             self._bpm_detect_inflight.discard(song_id)
+            if self._bpm_active_song_id == song_id:
+                self._bpm_active_song_id = None
             try:
                 sid, bpm = fut.result()
             except Exception:  # noqa: BLE001
                 self._bpm_force_ids.discard(song_id)
+                self._bpm_ui_progress.pop(song_id, None)
                 self._bpm_job_finished.emit()
                 return
             self._bpm_detected.emit(sid, bpm)
             self._bpm_job_finished.emit()
 
         future.add_done_callback(_done)
+
+    def _on_bpm_progress_changed(self, song_id: str, percent: int) -> None:
+        if song_id not in self._bpm_detect_inflight and song_id not in self._bpm_ui_progress:
+            return
+        # Queued marker is -1; never let worker reports clobber another song.
+        if self._bpm_active_song_id not in (None, song_id):
+            return
+        prev = self._bpm_ui_progress.get(song_id, 0)
+        value = max(int(prev) if prev >= 0 else 0, min(100, int(percent)))
+        if self._bpm_ui_progress.get(song_id) == value:
+            return
+        self._bpm_ui_progress[song_id] = value
+        self._refresh_bpm_progress_cell(song_id)
+        self._refresh_bpm_detect_status()
+
+    def _refresh_bpm_detect_status(self) -> None:
+        active_id = self._bpm_active_song_id
+        pending = len(self._bpm_detect_queue) + (1 if self._bpm_detect_running else 0)
+        if active_id is None and pending <= 0:
+            return
+        song = next((s for s in self.project.songs if s.id == active_id), None)
+        pct = self._bpm_ui_progress.get(active_id or "", 0)
+        if song is None:
+            if pending > 0:
+                self.status.showMessage(f"偵測 BPM 排隊中…（剩餘 {pending}）", 1500)
+            return
+        if pct < 0:
+            label = "排隊中"
+        else:
+            label = f"{min(100, int(pct))}%"
+        remaining = len(self._bpm_detect_queue)
+        extra = f"（尚有 {remaining} 首排隊）" if remaining else ""
+        self.status.showMessage(f'偵測 BPM：{song.name} {label}{extra}', 1500)
+
+    def _table_row_for_song_id(self, song_id: str) -> int | None:
+        for row in range(self.song_list.rowCount()):
+            item = self.song_list.item(row, SetlistWidget.COL_NUM)
+            if item is None:
+                continue
+            if item.data(SetlistWidget.ROLE_KIND) != "song":
+                continue
+            if str(item.data(Qt.ItemDataRole.UserRole) or "") == song_id:
+                return row
+            idx = item.data(SetlistWidget.ROLE_SONG_INDEX)
+            if idx is None:
+                continue
+            try:
+                song = self.project.songs[int(idx)]
+            except (IndexError, TypeError, ValueError):
+                continue
+            if song.id == song_id:
+                return row
+        return None
+
+    def _refresh_bpm_progress_cell(self, song_id: str) -> None:
+        """Update one setlist BPM cell without rebuilding the whole list."""
+        row = self._table_row_for_song_id(song_id)
+        if row is None:
+            return
+        item = self.song_list.item(row, SetlistWidget.COL_NUM)
+        idx = item.data(SetlistWidget.ROLE_SONG_INDEX) if item is not None else None
+        song = None
+        if idx is not None:
+            try:
+                song = self.project.songs[int(idx)]
+            except (IndexError, TypeError, ValueError):
+                song = None
+        if song is None:
+            song = next((s for s in self.project.songs if s.id == song_id), None)
+        if song is None:
+            return
+
+        from cueplayer.ui.theme import ACCENT, TEXT_MUTED
+
+        progress = self._bpm_ui_progress.get(song_id)
+        bpm_item = self.song_list.item(row, SetlistWidget.COL_BPM)
+        if bpm_item is None:
+            bpm_item = QTableWidgetItem("")
+            bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            bpm_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEditable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
+            self.song_list.setItem(row, SetlistWidget.COL_BPM, bpm_item)
+
+        if progress is not None:
+            if progress < 0:
+                bpm_item.setText("…")
+                bpm_item.setToolTip("排隊偵測 BPM 中…")
+            else:
+                bpm_item.setText(f"{min(100, int(progress))}%")
+                bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
+            bpm_item.setForeground(QColor(ACCENT))
+        elif song.bpm is not None and float(song.bpm) > 0:
+            from cueplayer.media.bpm_analyzer import format_bpm_cell
+
+            bpm_item.setText(format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto)))
+            if song.bpm_auto:
+                bpm_item.setForeground(QColor(TEXT_MUTED))
+                bpm_item.setToolTip(
+                    "Auto-detected BPM (gray <n>).\n"
+                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is still wrong.\n"
+                    "Or type the correct value to override."
+                )
+            else:
+                bpm_item.setForeground(QColor())
+                bpm_item.setToolTip(
+                    "Double-click to enter BPM (blank = not set).\n"
+                    "Right-click → BPM × 2 / ÷ 2 to fix octave."
+                )
+        else:
+            bpm_item.setText("")
+            bpm_item.setForeground(QColor())
+            bpm_item.setToolTip(
+                "Double-click to enter BPM (blank = not set).\n"
+                "Right-click → BPM × 2 / ÷ 2 to fix octave."
+            )
+
+        sheet = getattr(self, "setlist_sheet_page", None)
+        if sheet is not None and hasattr(sheet, "set_song_bpm_progress"):
+            sheet.set_song_bpm_progress(song_id, progress)
 
     def _schedule_bpm_detect_for_missing_songs(self, *, quiet: bool = False) -> int:
         """Queue detect for songs that have audio but no BPM yet."""
@@ -4134,10 +4295,12 @@ class MainWindow(QMainWindow):
         return queued
 
     def _on_bpm_detected(self, song_id: str, bpm: object) -> None:
+        self._bpm_ui_progress.pop(song_id, None)
         song = next((s for s in self.project.songs if s.id == song_id), None)
         forced = song_id in self._bpm_force_ids
         self._bpm_force_ids.discard(song_id)
         if song is None:
+            self._refresh_bpm_progress_cell(song_id)
             return
         # Without force, never overwrite a user-typed BPM (e.g. typed while detect ran).
         if (
@@ -4145,8 +4308,10 @@ class MainWindow(QMainWindow):
             and song.bpm is not None
             and not bool(getattr(song, "bpm_auto", False))
         ):
+            self._refresh_bpm_progress_cell(song_id)
             return
         if bpm is None:
+            self._refresh_bpm_progress_cell(song_id)
             self.status.showMessage(
                 f'Could not detect BPM for "{song.name}" (too quiet / talky?)',
                 4000,
@@ -4155,14 +4320,17 @@ class MainWindow(QMainWindow):
         try:
             value = float(bpm)  # type: ignore[arg-type]
         except (TypeError, ValueError):
+            self._refresh_bpm_progress_cell(song_id)
             return
         if value <= 0:
+            self._refresh_bpm_progress_cell(song_id)
             return
         if (
             song.bpm is not None
             and abs(float(song.bpm) - value) < 1e-9
             and bool(getattr(song, "bpm_auto", False))
         ):
+            self._refresh_bpm_progress_cell(song_id)
             return
         song.bpm = value
         song.bpm_auto = True

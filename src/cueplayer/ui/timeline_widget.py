@@ -2186,6 +2186,7 @@ class TimelineWidget(QWidget):
             self._view_pinned = True
             self._scroll_x -= dx * 0.9
             self._clamp_scroll()
+            self._invalidate_scrub_backdrop()
             self.update()
 
         # Windows touchpads often only send angleDelta (same as a mouse wheel),

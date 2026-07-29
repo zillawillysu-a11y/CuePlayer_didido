@@ -8,6 +8,7 @@ pick the pulse that best matches onset density + beat-grid contrast.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,8 @@ _BPM_READ_SECONDS = 90.0
 _BPM_ANALYZE_SECONDS = 60.0
 _DEFAULT_MIN_BPM = 60.0
 _DEFAULT_MAX_BPM = 200.0
+
+ProgressFn = Callable[[int], None]
 
 
 def format_bpm_value(bpm: float) -> str:
@@ -271,17 +274,30 @@ def _pick_tactus(
     return scored[0][1]
 
 
+def _report_progress(progress: ProgressFn | None, percent: int) -> None:
+    if progress is None:
+        return
+    try:
+        progress(max(0, min(100, int(percent))))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _estimate_with_librosa(
     mono: np.ndarray,
     sample_rate: int,
     *,
     min_bpm: float,
     max_bpm: float,
+    progress: ProgressFn | None = None,
 ) -> float | None:
     starts = _activity_starts(mono, sample_rate)
     win = int(sample_rate * 30.0)
     votes: dict[float, float] = {}
-    for start in starts:
+    total = max(1, len(starts))
+    for index, start in enumerate(starts):
+        # Analyze windows occupy roughly 30%→90% of the overall job.
+        _report_progress(progress, 30 + int(60 * index / total))
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate * 4:
             continue
@@ -301,6 +317,7 @@ def _estimate_with_librosa(
         weight = max(0.15, _density_fit(onset_rate, key))
         votes[key] = votes.get(key, 0.0) + weight
 
+    _report_progress(progress, 92)
     if not votes:
         return None
     return max(votes.items(), key=lambda kv: (kv[1], -abs(kv[0] - 110.0)))[0]
@@ -314,6 +331,7 @@ def estimate_bpm(
     max_bpm: float = _DEFAULT_MAX_BPM,
     max_seconds: float = _BPM_ANALYZE_SECONDS,
     exclude_channel: int | None = None,
+    progress: ProgressFn | None = None,
 ) -> float | None:
     """
     Estimate tempo by choosing the musical pulse (tactus), not only a period.
@@ -330,12 +348,14 @@ def estimate_bpm(
     mono = mono[:max_n]
     if mono.size < sample_rate:
         return None
+    _report_progress(progress, 20)
     try:
         return _estimate_with_librosa(
             mono,
             sample_rate,
             min_bpm=float(min_bpm),
             max_bpm=float(max_bpm),
+            progress=progress,
         )
     except ImportError:
         return None
@@ -345,6 +365,7 @@ def estimate_bpm_from_path(
     path: Path | str,
     *,
     exclude_channel: int | None = None,
+    progress: ProgressFn | None = None,
 ) -> float | None:
     """Read only the start of an audio file and estimate BPM (memory-light)."""
     import soundfile as sf
@@ -352,6 +373,7 @@ def estimate_bpm_from_path(
     file_path = Path(path)
     if not file_path.is_file():
         return None
+    _report_progress(progress, 5)
     try:
         info = sf.info(str(file_path))
         sr = int(info.samplerate)
@@ -365,6 +387,7 @@ def estimate_bpm_from_path(
         )
     except Exception:  # noqa: BLE001
         return None
+    _report_progress(progress, 18)
     sr = int(sample_rate)
     channel = exclude_channel
     if channel is None and data.ndim == 2 and data.shape[1] >= 2:
@@ -374,4 +397,7 @@ def estimate_bpm_from_path(
             channel = detect_ltc_channel(data, sr)
         except Exception:  # noqa: BLE001
             channel = None
-    return estimate_bpm(data, sr, exclude_channel=channel)
+    result = estimate_bpm(data, sr, exclude_channel=channel, progress=progress)
+    if result is not None:
+        _report_progress(progress, 100)
+    return result
