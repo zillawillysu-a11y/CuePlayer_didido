@@ -198,6 +198,8 @@ class SetlistWidget(QTableWidget):
 
     _TRIANGLE_HIT_MIN_PX = 28
     _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
+    # Wide enough for bold "LTC L R" badge; Fixed so Song/BPM never squeeze it.
+    _LTC_COLUMN_WIDTH = 78
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -255,16 +257,20 @@ class SetlistWidget(QTableWidget):
         self.horizontalHeader().setVisible(True)
         self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
         header = self.horizontalHeader()
-        # All columns draggable — Song is Interactive (not Stretch) so edges can be pulled.
+        # Song stretches; LTC stays Fixed so "LTC L R" is never squeezed away.
         header.setSectionsMovable(False)
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self.COL_NUM, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_BPM, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_NUM, 48)
         self.setColumnWidth(self.COL_TITLE, 160)
         self.setColumnWidth(self.COL_EN, 110)
         self.setColumnWidth(self.COL_BPM, 64)
-        self.setColumnWidth(self.COL_LTC, 68)
+        self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
             ltc_header.setToolTip(
@@ -301,20 +307,32 @@ class SetlistWidget(QTableWidget):
         if mode not in ("zh", "both", "en"):
             mode = "zh"
         self._name_mode = mode
+        header = self.horizontalHeader()
         if mode == "both":
             self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, False)
+            header.setSectionResizeMode(self.COL_EN, QHeaderView.ResizeMode.Interactive)
+            # Keep Song as the only stretch column when English is visible.
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         elif mode == "en":
             self.setHorizontalHeaderLabels(["No.", "English", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         else:
             self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
+        # Re-assert fixed LTC width after column show/hide (Qt can redistribute).
+        header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
 
     def set_show_bpm(self, visible: bool) -> None:
         self._show_bpm = bool(visible)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
 
     def set_ma_column_visible(self, visible: bool) -> None:
         # Back-compat for older callers.

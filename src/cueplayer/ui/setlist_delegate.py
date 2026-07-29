@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import QStyle, QStyleOptionViewItem
+from PySide6.QtWidgets import QStyleOptionViewItem
 
 from cueplayer.ui.row_color import RowColorDelegate
 from cueplayer.ui.theme import TEXT_DISABLED, WARNING
@@ -13,10 +13,18 @@ from cueplayer.ui.theme import TEXT_DISABLED, WARNING
 ROLE_LTC_CHANNEL = int(Qt.ItemDataRole.UserRole) + 12
 
 _COL_LTC = 4
+# Must stay in sync with SetlistWidget._LTC_COLUMN_WIDTH.
+_LTC_COLUMN_WIDTH = 78
 
 
 class SetlistRowDelegate(RowColorDelegate):
     """Paint ``ROLE_ROW_COLOR`` rows and an LTC/L/R badge in the LTC column."""
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: N802
+        hint = super().sizeHint(option, index)
+        if index.column() == _COL_LTC:
+            return QSize(max(hint.width(), _LTC_COLUMN_WIDTH), hint.height())
+        return hint
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # noqa: N802
         if index.column() != _COL_LTC:
@@ -54,6 +62,7 @@ class SetlistRowDelegate(RowColorDelegate):
         font.setPointSize(max(8, font.pointSize() - 1))
         font.setBold(True)
         painter.save()
+        painter.setClipRect(option.rect)
         painter.setFont(font)
         fm = painter.fontMetrics()
 
@@ -65,7 +74,8 @@ class SetlistRowDelegate(RowColorDelegate):
         gap = 3
         widths = [fm.horizontalAdvance(text) for text, _ in parts]
         total = sum(widths) + gap * (len(parts) - 1)
-        x = rect.right() - total
+        # Right-align when there is room; otherwise start at left so nothing is clipped off.
+        x = rect.right() - total if total <= rect.width() else rect.left()
         y = rect.center().y() + (fm.ascent() - fm.descent()) // 2 - 1
         for (text, color), w in zip(parts, widths, strict=True):
             painter.setPen(color)
