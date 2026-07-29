@@ -199,7 +199,7 @@ class SetlistWidget(QTableWidget):
     _TRIANGLE_HIT_MIN_PX = 28
     _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
     # Wide enough for bold "LTC L R" badge; Fixed so Song/BPM never squeeze it.
-    _LTC_COLUMN_WIDTH = 78
+    _LTC_COLUMN_WIDTH = 54
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -612,6 +612,24 @@ class SetlistWidget(QTableWidget):
             return drop_row
         return self.rowCount()
 
+    def _category_drop_target(self, pos) -> str | None:  # noqa: ANN001
+        """Folder id when the pointer is on (or just under) a folder title row.
+
+        Dropping selected songs onto a folder header must assign them to that
+        folder — never dump them into the main (uncategorized) list.
+        """
+        for row in range(self.rowCount()):
+            if self.row_kind(row) != "category":
+                continue
+            rect = self._row_visual_rect(row)
+            # Slightly extend below the header so a drop near the title counts.
+            if rect.adjusted(0, -1, 0, 8).contains(pos):
+                return self.row_category_id(row)
+        index = self.indexAt(pos)
+        if index.isValid() and self.row_kind(index.row()) == "category":
+            return self.row_category_id(index.row())
+        return None
+
     def _set_insert_indicator(self, row: int | None) -> None:
         if self._insert_indicator_row == row:
             return
@@ -810,12 +828,17 @@ class SetlistWidget(QTableWidget):
         # CopyAction: Qt must not delete source rows (MoveAction clears the list).
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
-        drop_index = self.indexAt(pos)
-        if drop_index.isValid() and self.row_kind(drop_index.row()) == "category":
-            cat_id = self.row_category_id(drop_index.row())
-            if cat_id:
-                self.songs_moved_to_category.emit(ids, cat_id)
-                return
+        cat_id = self._category_drop_target(pos)
+        if cat_id:
+            self.songs_moved_to_category.emit(ids, cat_id)
+            return
+        # Insert slot immediately under a folder header → into that folder.
+        if drop_row > 0 and drop_row - 1 < self.rowCount():
+            if self.row_kind(drop_row - 1) == "category":
+                under = self.row_category_id(drop_row - 1)
+                if under:
+                    self.songs_moved_to_category.emit(ids, under)
+                    return
         self.rows_reordered.emit(ids, drop_row)
 
 
@@ -824,6 +847,7 @@ class MainWindow(QMainWindow):
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
+    _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -859,6 +883,9 @@ class MainWindow(QMainWindow):
         self._ltc_detect_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ui-ltc-detect"
         )
+        # Waveform + LTC warm after setlist import / prefetch (status-bar %).
+        self._media_warm_active = False
+        self._media_warm_units: dict[tuple[str, int, int], dict[str, bool]] = {}
         # BPM is intentionally separate + single-threaded: each job reads PCM
         # and runs numpy corr — never stampede the machine on project open.
         self._bpm_detect_executor = ThreadPoolExecutor(
@@ -867,6 +894,7 @@ class MainWindow(QMainWindow):
         # JIT-warm librosa onset path so the first real detect is not a hitch.
         self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
         self._bpm_force_ids: set[str] = set()
@@ -2511,7 +2539,13 @@ class MainWindow(QMainWindow):
         edit_action = menu.addAction("Edit…")
         duplicate_action = menu.addAction("Duplicate")
         add_action = menu.addAction("Add Song…")
-        new_category_action = menu.addAction("New Folder…")
+        selected_songs = self._selected_songs()
+        if selected_songs:
+            new_category_action = menu.addAction(
+                f"New Folder with Selected ({len(selected_songs)})…"
+            )
+        else:
+            new_category_action = menu.addAction("New Folder…")
         move_menu = menu.addMenu("Move to Folder")
         remove_from_folder_action = move_menu.addAction("Main list (no folder)")
         remove_from_folder_action.setEnabled(False)
@@ -2547,7 +2581,6 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
         has_selection = bool(self._selected_song_indexes()) or self.song_list.currentRow() >= 0
-        selected_songs = self._selected_songs()
         edit_action.setEnabled(has_selection)
         duplicate_action.setEnabled(has_selection)
         remove_from_folder_action.setEnabled(
@@ -2836,16 +2869,38 @@ class MainWindow(QMainWindow):
         state = "collapsed" if category.collapsed else "expanded"
         self.status.showMessage(f'Folder "{category.name}" {state}', 1500)
 
-    def _add_setlist_category(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Setlist Folder", "Folder name:")
+    def _add_setlist_category(self, *, wrap_selected: bool | None = None) -> None:
+        selected = self._selected_songs()
+        if wrap_selected is None:
+            wrap_selected = bool(selected)
+        title = "New Folder with Selected" if wrap_selected and selected else "New Setlist Folder"
+        prompt = (
+            f"Folder name for {len(selected)} selected song(s):"
+            if wrap_selected and selected
+            else "Folder name:"
+        )
+        name, ok = QInputDialog.getText(self, title, prompt)
         if not ok:
             return
         category = SetlistCategory.create(name)
         with self._setlist_edit("New Folder"):
             self.project.setlist_categories.append(category)
-            self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
+            if wrap_selected and selected:
+                self._assign_songs_to_category(selected, category.id)
+            indexes = (
+                [self.project.songs.index(s) for s in selected]
+                if wrap_selected and selected
+                else (self._selected_song_indexes() or None)
+            )
+            self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
-        self.status.showMessage(f'Created folder "{category.name}"', 2500)
+        if wrap_selected and selected:
+            self.status.showMessage(
+                f'Created folder "{category.name}" with {len(selected)} song(s)',
+                2500,
+            )
+        else:
+            self.status.showMessage(f'Created folder "{category.name}"', 2500)
 
     def _rename_setlist_category(self, category_id: str) -> None:
         category = self.project.setlist_category_by_id(category_id)
@@ -2919,6 +2974,7 @@ class MainWindow(QMainWindow):
         if category is None:
             return
         menu = QMenu(self)
+        add_song_action = menu.addAction("Add Song…")
         rename_action = menu.addAction("Rename Folder…")
         toggle_action = menu.addAction(
             "Expand Folder" if category.collapsed else "Collapse Folder"
@@ -2933,7 +2989,9 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         delete_action = menu.addAction("Delete Folder")
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
-        if chosen is rename_action:
+        if chosen is add_song_action:
+            self._add_song(category_id)
+        elif chosen is rename_action:
             self._rename_setlist_category(category_id)
         elif chosen is toggle_action:
             self._toggle_setlist_category(category_id)
@@ -3330,10 +3388,10 @@ class MainWindow(QMainWindow):
             return float(self.project.songs[-1].fps or 30.0)
         return 30.0
 
-    def _add_song(self) -> None:
+    def _add_song(self, category_id: str | None = None) -> None:
         draft = SongDraft(
             name=self._next_song_default_name(),
-            setlist_number=self._next_setlist_number(),
+            setlist_number=self._next_setlist_number(category_id),
             ma_export_name="",
             start_timecode=self._default_start_timecode(),
             fps=self._default_fps(),
@@ -3345,14 +3403,18 @@ class MainWindow(QMainWindow):
         song = self.project.new_song(result.name)
         with self._setlist_edit("Add Song"):
             self._apply_draft_to_song(song, result)
+            if category_id is not None:
+                song.category_id = category_id
             self.project.songs.append(song)
             index = len(self.project.songs) - 1
             self._rebuild_song_list(select_indexes=[index])
             self._activate_song(index, stop_playback=True)
             self._mark_dirty()
+        folder = self.project.setlist_category_by_id(category_id) if category_id else None
+        where = f' in "{folder.name}"' if folder is not None else ""
         ma = f" · MA {song.ma_export_name}" if song.ma_export_name else ""
         self.status.showMessage(
-            f"Added song: #{format_setlist_number(song.setlist_number)} {song.name}{ma}",
+            f"Added song{where}: #{format_setlist_number(song.setlist_number)} {song.name}{ma}",
             3000,
         )
 
@@ -3412,7 +3474,10 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
         if last_index is None:
             return
-        if len(added_indexes) == 1:
+        # Prefetch already began warm progress; keep the % visible after "Added".
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+        elif len(added_indexes) == 1:
             song = self.project.songs[last_index]
             self.status.showMessage(
                 f"Added song: #{format_setlist_number(song.setlist_number)} {song.name}",
@@ -3773,11 +3838,17 @@ class MainWindow(QMainWindow):
             self._delete_marks(ids)
 
     def _on_marks_changed(self) -> None:
+        self.timeline.invalidate_static_layers()
+        self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
         self._refresh_status()
 
     def _refresh_marks_ui(self) -> None:
+        # CRITICAL: while playing, the timeline paints from a cached backdrop.
+        # Invalidate it so a new Mark appears on the very next paint — never
+        # wait for pause / auto-scroll to clear the cache.
+        self.timeline.invalidate_static_layers()
         self.timeline.update()
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
@@ -4144,7 +4215,8 @@ class MainWindow(QMainWindow):
             self._audio_load_token += 1
         token = self._audio_load_token
         self.timeline.set_audio_loading(True, path.name)
-        self.status.showMessage(f"Loading {path.name}…", 0)
+        if not self._media_warm_active:
+            self.status.showMessage(f"Loading {path.name}…", 0)
         future = self._start_audio_load(path, executor=self._audio_load_executor)
         self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
         if not self._audio_load_timer.isActive():
@@ -4177,6 +4249,8 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None:
             self._audio_buffer_cache[key] = buffer
+            self._note_media_warm_step(key, "audio")
+            self._media_warm_progress.emit()
         if write_disk:
             self._audio_prefetch_executor.submit(save_cached_audio, path, buffer)
         self._schedule_ltc_detect_for_buffer(path, buffer)
@@ -4222,7 +4296,9 @@ class MainWindow(QMainWindow):
             return
         if buffer.channels < 2:
             self._audio_ltc_cache[key] = None
+            self._note_media_warm_step(key, "ltc")
             self._setlist_ltc_cache_updated.emit()
+            self._media_warm_progress.emit()
             return
 
         samples = buffer.samples
@@ -4239,9 +4315,13 @@ class MainWindow(QMainWindow):
             try:
                 cache_key, channel = fut.result()
             except Exception:
+                self._note_media_warm_step(key, "ltc")
+                self._media_warm_progress.emit()
                 return
             self._audio_ltc_cache[cache_key] = channel
+            self._note_media_warm_step(cache_key, "ltc")
             self._setlist_ltc_cache_updated.emit()
+            self._media_warm_progress.emit()
 
         future.add_done_callback(_done)
 
@@ -4350,6 +4430,8 @@ class MainWindow(QMainWindow):
         self._refresh_bpm_detect_status()
 
     def _refresh_bpm_detect_status(self) -> None:
+        if self._media_warm_active:
+            return
         active_id = self._bpm_active_song_id
         pending = len(self._bpm_detect_queue) + (1 if self._bpm_detect_running else 0)
         if active_id is None and pending <= 0:
@@ -4656,11 +4738,74 @@ class MainWindow(QMainWindow):
                 try:
                     buffer = fut.result()
                 except Exception:
+                    self._note_media_warm_step(key, "audio")
+                    self._note_media_warm_step(key, "ltc")
+                    self._media_warm_progress.emit()
                     return
                 self._store_audio_cache(path, buffer, write_disk=False)
+                self._media_warm_progress.emit()
 
             future.add_done_callback(_done)
         return future
+
+    def _begin_media_warm_progress(self) -> None:
+        """Track pending waveform decode + LTC detect for status-bar %."""
+        units: dict[tuple[str, int, int], dict[str, bool]] = {}
+        for song in self.project.songs:
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is None:
+                continue
+            audio_done = key in self._audio_buffer_cache
+            ltc_done = key in self._audio_ltc_cache
+            if audio_done and ltc_done:
+                continue
+            units[key] = {"audio": audio_done, "ltc": ltc_done}
+        self._media_warm_units = units
+        self._media_warm_active = bool(units)
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+
+    def _note_media_warm_step(self, key: tuple[str, int, int] | None, step: str) -> None:
+        if key is None or not self._media_warm_active:
+            return
+        unit = self._media_warm_units.get(key)
+        if unit is None:
+            return
+        if step in unit:
+            unit[step] = True
+
+    def _media_warm_counts(self) -> tuple[int, int]:
+        total = 0
+        done = 0
+        for unit in self._media_warm_units.values():
+            for step in ("audio", "ltc"):
+                total += 1
+                if unit.get(step):
+                    done += 1
+        return done, total
+
+    def _refresh_media_warm_status(self) -> None:
+        if not self._media_warm_active:
+            return
+        done, total = self._media_warm_counts()
+        if total <= 0 or done >= total:
+            self._media_warm_active = False
+            self._media_warm_units.clear()
+            self.status.showMessage("Waveform / LTC ready", 2500)
+            return
+        pct = int(round(100.0 * done / total))
+        pending_files = sum(
+            1
+            for unit in self._media_warm_units.values()
+            if not (unit.get("audio") and unit.get("ltc"))
+        )
+        self.status.showMessage(
+            f"Loading waveform / LTC: {pct}%（{done}/{total} · {pending_files} file(s) left）",
+            0,
+        )
 
     def _main_audio_path_for_song(self, song: Song) -> Path | None:
         main_audio = next(
@@ -4679,6 +4824,7 @@ class MainWindow(QMainWindow):
                 skip_resolved = str(skip_path.resolve())
             except OSError:
                 skip_resolved = str(skip_path)
+        self._begin_media_warm_progress()
         for song in self.project.songs:
             path = self._main_audio_path_for_song(song)
             if path is None:
@@ -4695,6 +4841,7 @@ class MainWindow(QMainWindow):
             if key is not None and key in self._audio_inflight:
                 continue
             self._start_audio_load(path, executor=self._audio_prefetch_executor)
+        self._refresh_media_warm_status()
 
     def _poll_pending_audio_load(self) -> None:
         pending = self._pending_audio_load
@@ -5264,7 +5411,10 @@ class MainWindow(QMainWindow):
         lane = self.current_song.lane_by_index(lane_index)
         if lane is None or lane.locked:
             return
-        mark = self.current_song.add_mark(lane_index, self.engine.position)
+        # Use the visual playhead (timeline), not engine.position — mid-scrub
+        # the engine still sits at press/last-seek while the line follows the cursor.
+        mark_at = self.timeline.playhead_seconds()
+        mark = self.current_song.add_mark(lane_index, mark_at)
         self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
         self._refresh_marks_ui()
@@ -5277,6 +5427,9 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_status(self) -> None:
+        if self._media_warm_active:
+            self._refresh_media_warm_status()
+            return
         count = len(self.current_song.marks)
         lanes = len(self.current_song.mark_lanes)
         audio_name = self.current_song.audio_tracks[0].name if self.current_song.audio_tracks else "No audio"

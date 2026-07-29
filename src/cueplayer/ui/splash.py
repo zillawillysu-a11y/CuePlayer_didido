@@ -93,39 +93,34 @@ def create_splash_pixmap(
 
 
 class StartupSplash(QSplashScreen):
-    """Full-screen splash that can update loading progress while the app boots."""
+    """Centered splash that can update loading progress while the app boots."""
+
+    _WINDOW_WIDTH = 520
+    _WINDOW_HEIGHT = 300
 
     def __init__(self, app: QApplication, *, message: str = "Loading…") -> None:
+        self._width = self._WINDOW_WIDTH
+        self._height = self._WINDOW_HEIGHT
+        self._fullscreen = False
+        pixmap = create_splash_pixmap(
+            width=self._width,
+            height=self._height,
+            message=message,
+            progress=0.0,
+            fullscreen=False,
+        )
+        super().__init__(pixmap)
+
         screen = app.primaryScreen()
         geo = screen.availableGeometry() if screen is not None else None
         if geo is not None:
-            self._width = max(320, geo.width())
-            self._height = max(200, geo.height())
-            self._fullscreen = True
-            pixmap = create_splash_pixmap(
-                width=self._width,
-                height=self._height,
-                message=message,
-                progress=0.0,
-                fullscreen=True,
-            )
-            super().__init__(pixmap)
-            self.setGeometry(geo)
-        else:
-            self._width = 520
-            self._height = 300
-            self._fullscreen = False
-            pixmap = create_splash_pixmap(
-                message=message,
-                progress=0.0,
-                fullscreen=False,
-            )
-            super().__init__(pixmap)
+            x = geo.x() + max(0, (geo.width() - self._width) // 2)
+            y = geo.y() + max(0, (geo.height() - self._height) // 2)
+            self.setGeometry(x, y, self._width, self._height)
 
         self._message = message
         self._progress = 0.0
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
     def set_progress(self, progress: float, message: str | None = None) -> None:
         self._progress = max(0.0, min(1.0, float(progress)))
@@ -143,7 +138,7 @@ class StartupSplash(QSplashScreen):
 
 
 def show_startup_splash(app: QApplication, *, message: str = "Loading…") -> StartupSplash:
-    """Show a full-screen dark splash immediately and force a paint before heavy init."""
+    """Show a centered dark splash immediately and force a paint before heavy init."""
     splash = StartupSplash(app, message=message)
     splash.show()
     splash.set_progress(0.0, message)

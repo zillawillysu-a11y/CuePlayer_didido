@@ -269,11 +269,45 @@ def test_estimate_bpm_silence_returns_none() -> None:
     assert estimate_bpm(silence, sr) is None
 
 
+def test_prefer_show_tactus_halves_absurd_double() -> None:
+    from cueplayer.media.bpm_analyzer import _prefer_show_tactus
+
+    assert _prefer_show_tactus(204.0) == 102.0
+    assert _prefer_show_tactus(200.0) == 100.0
+    assert _prefer_show_tactus(192.0) == 96.0
+    # Legitimate fast show tempos stay put.
+    assert _prefer_show_tactus(170.0) == 170.0
+    assert _prefer_show_tactus(167.0) == 167.0
+    assert _prefer_show_tactus(135.0) == 135.0
+
+
+def test_snap_show_bpm_keeps_half_grid() -> None:
+    from cueplayer.media.bpm_analyzer import _snap_show_bpm
+
+    assert _snap_show_bpm(68.5) == 68.5
+    assert _snap_show_bpm(136.5) == 136.5
+    assert _snap_show_bpm(137.5) == 137.5
+    assert _snap_show_bpm(73.5) == 73.5
+    assert _snap_show_bpm(135.25) == 135.0
+    assert _snap_show_bpm(136.0) == 136.0
+
+
+def test_promote_show_pulse_half_to_mixmeister_integer() -> None:
+    from cueplayer.media.bpm_analyzer import _promote_show_pulse
+
+    # 敦化南路-style: half-pulse 68.5 → show 137
+    assert _promote_show_pulse(68.5, [4.5]) == 137.0
+    assert _promote_show_pulse(68.0, [4.5]) == 136.0
+    # Soft ballad halftime stays slow.
+    assert _promote_show_pulse(73.5, [1.2]) == 73.5
+
+
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
         ("04_daiwu.mp3", 135.0),  # 歹物仔 — was 136
         ("09_qianwo.mp3", 136.0),  # 牽我 — was 137
+        ("10_huiwei.mp3", 96.0),  # 彗尾 — was 64 (3:2)
     ],
 )
 def test_estimate_bpm_real_show_stems_mixmeister(filename: str, expected: float) -> None:

@@ -1137,6 +1137,17 @@ class TimelineWidget(QWidget):
         self.loop_changed.emit(self._loop_a, self._loop_b)
         self.update()
 
+    def playhead_seconds(self) -> float:
+        """Visual playhead time — authoritative while scrubbing mid-drag.
+
+        Mid-scrub updates ``_position`` locally; the audio engine only seeks on
+        press/release. Mark shortcuts must use this, not ``engine.position``.
+        """
+        return float(self._position)
+
+    def is_scrubbing(self) -> bool:
+        return bool(self._scrubbing)
+
     def set_position(self, seconds: float) -> None:
         if self._scrubbing:
             # Playhead is owned by the scrub gesture; ignore engine ticks so
@@ -1403,6 +1414,15 @@ class TimelineWidget(QWidget):
 
     def _invalidate_scrub_backdrop(self) -> None:
         self._scrub_backdrop = None
+
+    def invalidate_static_layers(self) -> None:
+        """Drop the play/scrub pixmap cache so marks/clips appear immediately.
+
+        While playing, paint blits ``_scrub_backdrop`` (static layers + marks)
+        and only redraws the playhead. Mark/clip mutations must clear that
+        cache — otherwise the new mark stays invisible until pause.
+        """
+        self._invalidate_scrub_backdrop()
 
     def _scrub_backdrop_valid(self) -> bool:
         pm = self._scrub_backdrop

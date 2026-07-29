@@ -14,7 +14,8 @@ ROLE_LTC_CHANNEL = int(Qt.ItemDataRole.UserRole) + 12
 
 _COL_LTC = 4
 # Must stay in sync with SetlistWidget._LTC_COLUMN_WIDTH.
-_LTC_COLUMN_WIDTH = 78
+# Tight fit for ``LTC L R`` (small bold font); Song column stretches the rest.
+_LTC_COLUMN_WIDTH = 54
 
 
 class SetlistRowDelegate(RowColorDelegate):
