@@ -887,9 +887,11 @@ class MainWindow(QMainWindow):
         self.timeline.scrub_started.connect(self.engine.begin_scrub)
         self.timeline.scrub_ended.connect(self.engine.end_scrub)
         # Throttle video decode while the playhead is actively being
-        # dragged — see VideoSyncController.set_scrubbing().
+        # dragged — see VideoSyncController.set_scrubbing(). Mid-drag
+        # preview uses scrub_preview_requested (not full engine seek).
         self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
         self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
+        self.timeline.scrub_preview_requested.connect(self.video_sync.update_position)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
         self.timeline.marks_changed.connect(self._on_marks_changed)

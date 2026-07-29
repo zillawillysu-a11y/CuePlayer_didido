@@ -25,14 +25,11 @@ from cueplayer.domain.models import (
 )
 from cueplayer.media.video_loader import MediaDecoder, open_media_decoder
 
-# While scrubbing the playhead, freeze video decode until mouse-up.
-# Mid-drag seeks jump around the file (expensive PyAV re-seek on the UI
-# thread); showing a stale Preview/Clean frame during the drag feels far
-# smoother than stuttering the timeline. set_scrubbing(False) flushes the
-# exact release-point frame via _flush_pending().
-_SCRUB_FREEZE_VIDEO = True
-# Kept for documentation / future "low-rate scrub preview" experiments.
-_MAX_SCRUB_DECODE_HZ = 10.0
+# While scrubbing, decode Preview/Clean at a capped rate so the frame
+# follows the playhead without starving timeline paint (PyAV re-seek is
+# expensive on the UI thread). set_scrubbing(False) flushes the exact
+# release-point frame via _flush_pending().
+_MAX_SCRUB_DECODE_HZ = 12.0
 _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 
 # AudioEngine's master clock ticks position_changed at ~60Hz (16ms poll —
@@ -126,9 +123,9 @@ class VideoSyncController(QObject):
     def set_scrubbing(self, active: bool) -> None:
         """Call from the timeline's scrub_started/scrub_ended signals.
 
-        While dragging, video decode is frozen (_SCRUB_FREEZE_VIDEO) so the
-        UI thread stays free for playhead motion; Preview/Clean keep the
-        last frame until mouse-up. On release, flush the exact land frame.
+        While dragging, decode is throttled to _MAX_SCRUB_DECODE_HZ so
+        Preview/Clean still follow the playhead without starving the
+        timeline. On release, flush the exact land frame.
         """
         active = bool(active)
         if active == self._scrubbing:
@@ -136,7 +133,7 @@ class VideoSyncController(QObject):
         self._scrubbing = active
         if not active:
             # Scrub just ended: make sure the exact release-point frame —
-            # not a mid-drag stand-in — is what's on screen.
+            # not a throttled mid-drag stand-in — is what's on screen.
             self._flush_timer.stop()
             self._flush_pending()
 
@@ -218,12 +215,6 @@ class VideoSyncController(QObject):
 
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
-
-        if self._scrubbing and _SCRUB_FREEZE_VIDEO:
-            # Defer decode to scrub end — keep timeline drag on the UI thread free.
-            self._pending_clip = primary
-            self._pending_seconds = seconds
-            return
 
         min_interval = self._current_min_decode_interval()
         if min_interval > 0.0:

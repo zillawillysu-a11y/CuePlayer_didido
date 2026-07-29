@@ -54,6 +54,9 @@ class TimelineWidget(QWidget):
     seek_requested = Signal(float)
     scrub_started = Signal()
     scrub_ended = Signal()
+    # Mid-scrub Preview/Clean update (local playhead time). Does not move
+    # the audio engine — that stays on seek_requested (press + release).
+    scrub_preview_requested = Signal(float)
     selection_changed = Signal(list)  # list[str] mark ids
     delete_requested = Signal(list)  # list[str] mark ids
     marks_changed = Signal()
@@ -146,7 +149,7 @@ class TimelineWidget(QWidget):
         self._view_pinned = False
         self._scrub_edge = 64.0
         self._wave_split_hit = 6
-        self._last_scrub_emit_ms = 0
+        self._last_scrub_preview_ms = 0
         self._selected_mark_ids: set[str] = set()
         self._box_selecting = False
         self._box_additive = False
@@ -1319,9 +1322,9 @@ class TimelineWidget(QWidget):
     def _scrub_at(self, x: float, *, force: bool = False) -> None:
         """Move playhead under cursor; pan view near left/right edges.
 
-        Mid-drag is visual-only (local playhead + cached backdrop). Engine
-        seek / LTC / MTC / MIDI only run on force (press + release) so the
-        drag stays silky even with video tracks.
+        Timeline paint stays on the cached backdrop. Engine seek / LTC /
+        MTC only run on force (press + release). Preview/Clean get a
+        throttled scrub_preview_requested so video still follows the drag.
         """
         prev_scroll = self._scroll_x
         view_w = self._view_width()
@@ -1334,6 +1337,11 @@ class TimelineWidget(QWidget):
         self._clamp_scroll()
 
         self._position = min(self._time_for_x(x), self._duration())
+        now_ms = monotonic_ns() // 1_000_000
+        # ~12 Hz — matches VideoSyncController scrub decode cap.
+        if force or now_ms - self._last_scrub_preview_ms >= 80:
+            self._last_scrub_preview_ms = now_ms
+            self.scrub_preview_requested.emit(self._position)
         if force:
             self._seek_from_x(x)
         if abs(self._scroll_x - prev_scroll) > 0.5:
