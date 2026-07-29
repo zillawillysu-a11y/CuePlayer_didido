@@ -89,6 +89,48 @@ def contrast_text_color(hex_color: str) -> str:
     return "#0b0b0d" if luminance > 150 else "#f4f4f5"
 
 
+def _row_luminance(hex_color: str) -> float:
+    color = QColor(hex_color)
+    if not color.isValid():
+        return 0.0
+    return 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+
+
+def secondary_text_on_background(row_hex: str | None) -> str:
+    """Muted BPM / secondary labels that stay readable on custom row colors."""
+    if not row_hex or not str(row_hex).strip():
+        return TEXT_MUTED
+    base = str(row_hex).strip()
+    if not QColor(base).isValid():
+        return TEXT_MUTED
+    return "#d4d4d8" if _row_luminance(base) < 140 else "#3f3f46"
+
+
+def badge_lit_on_background(row_hex: str | None, *, default: str = WARNING) -> str:
+    """Accent badge text (LTC active side, Video V) on optional row fill."""
+    if not row_hex or not str(row_hex).strip():
+        return default
+    base = str(row_hex).strip()
+    if not QColor(base).isValid():
+        return default
+    return contrast_text_color(base)
+
+
+def badge_dim_on_background(row_hex: str | None, *, default: str = TEXT_DISABLED) -> str:
+    """Inactive L/R side on optional row fill."""
+    if not row_hex or not str(row_hex).strip():
+        return default
+    base = QColor(str(row_hex).strip())
+    if not base.isValid():
+        return default
+    contrast = QColor(contrast_text_color(base.name()))
+    mix = 0.42
+    r = int(contrast.red() * mix + base.red() * (1.0 - mix))
+    g = int(contrast.green() * mix + base.green() * (1.0 - mix))
+    b = int(contrast.blue() * mix + base.blue() * (1.0 - mix))
+    return QColor(r, g, b).name()
+
+
 def build_stylesheet() -> str:
     check_icon = _CHECK_ICON
     return f"""

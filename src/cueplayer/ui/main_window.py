@@ -72,7 +72,7 @@ from cueplayer.persistence.backup import (
 from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
-from cueplayer.ui.setlist_delegate import ROLE_LTC_CHANNEL, SetlistRowDelegate
+from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -198,8 +198,8 @@ class SetlistWidget(QTableWidget):
 
     _TRIANGLE_HIT_MIN_PX = 28
     _MIME_FOLDER = "application/x-cueplayer-setlist-folder"
-    # Wide enough for bold "LTC L R" badge; Fixed so Song/BPM never squeeze it.
-    _LTC_COLUMN_WIDTH = 54
+    # Wide enough for bold "V LTC L R" badge; Fixed so Song/BPM never squeeze it.
+    _LTC_COLUMN_WIDTH = 68
 
     COL_NUM = 0
     COL_TITLE = 1
@@ -213,6 +213,7 @@ class SetlistWidget(QTableWidget):
     ROLE_KIND = Qt.ItemDataRole.UserRole + 10
     ROLE_SONG_INDEX = Qt.ItemDataRole.UserRole + 11
     ROLE_LTC_CHANNEL = ROLE_LTC_CHANNEL
+    ROLE_HAS_VIDEO = ROLE_HAS_VIDEO
 
     audio_files_dropped = Signal(list)
     audio_drop_rejected = Signal(str)
@@ -274,11 +275,14 @@ class SetlistWidget(QTableWidget):
         ltc_header = self.horizontalHeaderItem(self.COL_LTC)
         if ltc_header is not None:
             ltc_header.setToolTip(
-                "Striped LTC badge (L/R) when file timecode is detected or set in Edit → File LTC"
+                "Media badges: V = video clips; LTC L/R = striped timecode side"
             )
         self.setColumnHidden(2, True)
         self.setColumnHidden(3, False)
         self.verticalHeader().setDefaultSectionSize(28)
+        self._show_ltc_badge = True
+        self._show_video_badge = True
+        self._sync_media_column_visibility()
         self.setToolTip(
             "Double-click No./Name/BPM to edit; drag column edges to resize; "
             "right-click for categories and full editor; "
@@ -323,16 +327,28 @@ class SetlistWidget(QTableWidget):
             self.setColumnHidden(self.COL_EN, True)
             header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
-        # Re-assert fixed LTC width after column show/hide (Qt can redistribute).
+        self._sync_media_column_width()
+
+    def _sync_media_column_width(self) -> None:
+        header = self.horizontalHeader()
         header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
+
+    def _sync_media_column_visibility(self) -> None:
+        visible = self._show_ltc_badge or self._show_video_badge
+        self.setColumnHidden(self.COL_LTC, not visible)
+        self._sync_media_column_width()
+
+    def set_show_media_badges(self, *, show_ltc: bool, show_video: bool) -> None:
+        self._show_ltc_badge = bool(show_ltc)
+        self._show_video_badge = bool(show_video)
+        self._sync_media_column_visibility()
+        self.viewport().update()
 
     def set_show_bpm(self, visible: bool) -> None:
         self._show_bpm = bool(visible)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
-        header = self.horizontalHeader()
-        header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(self.COL_LTC, self._LTC_COLUMN_WIDTH)
+        self._sync_media_column_width()
 
     def set_ma_column_visible(self, visible: bool) -> None:
         # Back-compat for older callers.
@@ -971,7 +987,7 @@ class MainWindow(QMainWindow):
         self.song_list = SetlistWidget()
         self.song_list.setItemDelegate(SetlistRowDelegate(self.song_list))
         self.song_list.set_name_mode(self.project.setlist_name_mode)
-        self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self._sync_setlist_column_prefs()
         self._rebuild_song_list(select_indexes=[0])
         song_btns = QHBoxLayout()
         song_btns.setContentsMargins(0, 0, 0, 0)
@@ -1146,6 +1162,7 @@ class MainWindow(QMainWindow):
         self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
         self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
         self.timeline.scrub_preview_requested.connect(self.video_sync.update_position)
+        self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
         self.timeline.marks_changed.connect(self._on_marks_changed)
@@ -1971,7 +1988,14 @@ class MainWindow(QMainWindow):
             mode = "both"
             self.project.setlist_name_mode = "both"  # type: ignore[assignment]
         self.song_list.set_name_mode(mode)
+        self._sync_setlist_column_prefs()
+
+    def _sync_setlist_column_prefs(self) -> None:
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self.song_list.set_show_media_badges(
+            show_ltc=bool(self.project.setlist_show_ltc_badge),
+            show_video=bool(self.project.setlist_show_video_badge),
+        )
 
     def _setlist_display_rows(self) -> list[_SetlistDisplayRow]:
         rows: list[_SetlistDisplayRow] = []
@@ -2027,7 +2051,7 @@ class MainWindow(QMainWindow):
         if mode not in ("zh", "both", "en"):
             mode = "zh"
         self.song_list.set_name_mode(mode)
-        self.song_list.set_show_bpm(self.project.setlist_show_bpm)
+        self._sync_setlist_column_prefs()
         song_index_to_table_row: dict[int, int] = {}
         for table_row, entry in enumerate(display_rows):
             if entry.kind == "category":
@@ -2157,9 +2181,10 @@ class MainWindow(QMainWindow):
                 else:
                     bpm_item.setToolTip(f"正在偵測 BPM… {min(100, int(progress))}%")
             elif song.bpm is not None and song.bpm_auto:
-                from cueplayer.ui.theme import TEXT_MUTED
+                from cueplayer.ui.theme import secondary_text_on_background
 
-                bpm_item.setForeground(QColor(TEXT_MUTED))
+                row_color = (song.row_color or "").strip() or None
+                bpm_item.setForeground(QColor(secondary_text_on_background(row_color)))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
                     "Double-click to type the correct value if needed."
@@ -2171,6 +2196,7 @@ class MainWindow(QMainWindow):
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
             ltc_channel = self._ltc_channel_for_song(song)
+            has_video = bool(song.video_clips)
             ltc_item = QTableWidgetItem("")
             ltc_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
@@ -2178,10 +2204,16 @@ class MainWindow(QMainWindow):
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
             ltc_item.setData(SetlistWidget.ROLE_LTC_CHANNEL, ltc_channel)
+            ltc_item.setData(SetlistWidget.ROLE_HAS_VIDEO, has_video)
+            tip_parts_media: list[str] = []
+            if has_video:
+                tip_parts_media.append("Has video clip(s) on the timeline")
             if ltc_channel == 0:
-                ltc_item.setToolTip("Striped LTC detected on Left channel")
+                tip_parts_media.append("Striped LTC detected on Left channel")
             elif ltc_channel == 1:
-                ltc_item.setToolTip("Striped LTC detected on Right channel")
+                tip_parts_media.append("Striped LTC detected on Right channel")
+            if tip_parts_media:
+                ltc_item.setToolTip("\n".join(tip_parts_media))
             self.song_list.setItem(table_row, SetlistWidget.COL_LTC, ltc_item)
             self._ensure_ltc_detect_scheduled(song)
 
@@ -2462,7 +2494,9 @@ class MainWindow(QMainWindow):
                 indexes = [song_index]
         self._rebuild_song_list(select_indexes=indexes)
 
-    def _add_setlist_column_actions(self, menu: QMenu) -> tuple[QAction, QAction]:
+    def _add_setlist_column_actions(
+        self, menu: QMenu
+    ) -> tuple[QAction, QAction, QAction, QAction]:
         en_action = menu.addAction("Song English")
         en_action.setCheckable(True)
         en_action.setChecked(self.project.setlist_name_mode in ("both", "en"))
@@ -2471,7 +2505,15 @@ class MainWindow(QMainWindow):
         bpm_action.setCheckable(True)
         bpm_action.setChecked(bool(self.project.setlist_show_bpm))
         bpm_action.setToolTip("Show the BPM column")
-        return en_action, bpm_action
+        ltc_action = menu.addAction("LTC badge")
+        ltc_action.setCheckable(True)
+        ltc_action.setChecked(bool(self.project.setlist_show_ltc_badge))
+        ltc_action.setToolTip("Show striped LTC L/R in the media column")
+        video_action = menu.addAction("Video badge")
+        video_action.setCheckable(True)
+        video_action.setChecked(bool(self.project.setlist_show_video_badge))
+        video_action.setToolTip("Show V when the song has video clips")
+        return en_action, bpm_action, ltc_action, video_action
 
     def _apply_setlist_column_action(
         self,
@@ -2479,6 +2521,8 @@ class MainWindow(QMainWindow):
         *,
         en_action: QAction,
         bpm_action: QAction,
+        ltc_action: QAction,
+        video_action: QAction,
     ) -> bool:
         if chosen is en_action:
             self.project.setlist_name_mode = "both" if en_action.isChecked() else "zh"  # type: ignore[assignment]
@@ -2499,14 +2543,38 @@ class MainWindow(QMainWindow):
                 1500,
             )
             return True
+        if chosen is ltc_action:
+            self.project.setlist_show_ltc_badge = bool(ltc_action.isChecked())
+            self._sync_setlist_column_prefs()
+            self._mark_dirty()
+            self.song_list.viewport().update()
+            self.status.showMessage(
+                "LTC badge shown" if ltc_action.isChecked() else "LTC badge hidden",
+                1500,
+            )
+            return True
+        if chosen is video_action:
+            self.project.setlist_show_video_badge = bool(video_action.isChecked())
+            self._sync_setlist_column_prefs()
+            self._mark_dirty()
+            self.song_list.viewport().update()
+            self.status.showMessage(
+                "Video badge shown" if video_action.isChecked() else "Video badge hidden",
+                1500,
+            )
+            return True
         return False
 
     def _on_setlist_header_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        en_action, bpm_action = self._add_setlist_column_actions(menu)
+        en_action, bpm_action, ltc_action, video_action = self._add_setlist_column_actions(menu)
         chosen = menu.exec(self.song_list.horizontalHeader().mapToGlobal(pos))
         self._apply_setlist_column_action(
-            chosen, en_action=en_action, bpm_action=bpm_action
+            chosen,
+            en_action=en_action,
+            bpm_action=bpm_action,
+            ltc_action=ltc_action,
+            video_action=video_action,
         )
 
     def _on_setlist_context_menu(self, pos) -> None:  # noqa: ANN001
@@ -2542,7 +2610,7 @@ class MainWindow(QMainWindow):
         row_color_action = menu.addAction("Row Color…")
         clear_row_color_action = menu.addAction("Clear Row Color")
         menu.addSeparator()
-        en_action, bpm_action = self._add_setlist_column_actions(menu)
+        en_action, bpm_action, ltc_action, video_action = self._add_setlist_column_actions(menu)
         menu.addSeparator()
         detect_selected_bpm_action = menu.addAction("Detect BPM (selected)")
         detect_missing_bpm_action = menu.addAction("Detect BPM (all without BPM)")
@@ -2603,7 +2671,11 @@ class MainWindow(QMainWindow):
         down_action.setEnabled(has_selection)
         chosen = menu.exec(self.song_list.viewport().mapToGlobal(pos))
         if self._apply_setlist_column_action(
-            chosen, en_action=en_action, bpm_action=bpm_action
+            chosen,
+            en_action=en_action,
+            bpm_action=bpm_action,
+            ltc_action=ltc_action,
+            video_action=video_action,
         ):
             return
         if chosen is detect_selected_bpm_action:
@@ -3734,6 +3806,11 @@ class MainWindow(QMainWindow):
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
 
+    def _on_scrub_preview(self, seconds: float) -> None:
+        """Update transport + cue list while dragging the timeline playhead."""
+        self.transport.set_times(seconds, self.engine.duration)
+        self.monitor.set_position(seconds, self.engine.duration)
+
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
         dialog.preview_changed.connect(self.timeline.update)
@@ -4512,7 +4589,7 @@ class MainWindow(QMainWindow):
         if song is None:
             return
 
-        from cueplayer.ui.theme import ACCENT, TEXT_MUTED
+        from cueplayer.ui.theme import ACCENT, secondary_text_on_background
 
         bpm_item = self.song_list.item(row, SetlistWidget.COL_BPM)
         if bpm_item is None:
@@ -4544,7 +4621,8 @@ class MainWindow(QMainWindow):
             self.song_list._block_number_signal = True  # noqa: SLF001
             bpm_item.setText(format_bpm_cell(float(song.bpm), auto=bool(song.bpm_auto)))
             if song.bpm_auto:
-                bpm_item.setForeground(QColor(TEXT_MUTED))
+                row_color = (song.row_color or "").strip() or None
+                bpm_item.setForeground(QColor(secondary_text_on_background(row_color)))
                 bpm_item.setToolTip(
                     "Auto-detected BPM (gray <n>).\n"
                     "Double-click to type the correct value if needed."

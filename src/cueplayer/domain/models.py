@@ -934,6 +934,8 @@ class Project:
     setlist_name_mode: SetlistNameMode = "zh"
     # Optional setlist columns (right-click toggle).
     setlist_show_bpm: bool = True
+    setlist_show_ltc_badge: bool = True
+    setlist_show_video_badge: bool = True
     # Optional Mark Manager preset for new songs (and "apply to show").
     default_mark_lanes: list[MarkLane] = field(default_factory=list)
     # Global waveform mark-line look (all songs share; saved with the project).
