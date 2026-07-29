@@ -178,8 +178,15 @@ class AudioEngine(QObject):
         outputs: list[str] = []
         if self.ltc_enabled:
             outputs.append("LTC")
-        if self.mtc_enabled:
-            outputs.append("MTC")
+        s = self._audio_settings
+        translate_active = (
+            s.mtc_enabled
+            and not s.ltc_enabled
+            and s.ltc_to_mtc_translate
+            and s.ltc_source != "generator"
+        )
+        if s.mtc_enabled:
+            outputs.append("LTC → MTC" if translate_active else "MTC")
 
         tc_str = "—"
         if outputs:
