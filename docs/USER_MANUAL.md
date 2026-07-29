@@ -21,7 +21,8 @@
 | **Shift / Ctrl** | 多選 |
 | **Del / Backspace** | 刪除選取 |
 | 點 **Time** | 跳到該 Mark |
-| 右鍵標題列 | 欄位顯示、Cue List 顯示／隱藏等 |
+| 右鍵 Cue List | 欄位顯示、Cue ID 欄、Cue List 顯示／隱藏等 |
+| 右鍵 PRIMARY NOW | 顯示／隱藏主顯示上的 Cue ID、Primary／Secondary 顯示等 |
 
 ## 左側 Setlist
 
