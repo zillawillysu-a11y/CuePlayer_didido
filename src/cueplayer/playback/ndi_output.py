@@ -1,15 +1,7 @@
 """Optional NDI video sender for Clean Video Output frames.
 
-Uses ``cyndilib`` when installed (``pip install cyndilib`` or ``pip install -e ".[ndi]"``).
-Without the library or NDI Runtime, configure() returns a clear error and send is a no-op.
-
-Frame modes
------------
-``video``
-    NDI resolution follows the decoded video frame (source / decode-quality size).
-``output_window``
-    NDI canvas matches the Clean Output content size, composed with Fit/Fill
-    like the on-screen preview (what you see in the Output box).
+Uses ``cyndilib`` when installed. Frame compose + NDI write run on a
+background worker so the UI / audio clock thread stays responsive.
 """
 
 from __future__ import annotations
@@ -48,46 +40,33 @@ def ndi_status() -> str:
     )
 
 
-def _fit_rgb(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
-    """Letterbox (Fit): whole frame visible, black bars if needed."""
-    out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    h, w = int(rgb.shape[0]), int(rgb.shape[1])
-    if h <= 0 or w <= 0:
-        return out
-    scale = min(out_w / w, out_h / h)
-    nw = max(1, int(round(w * scale)))
-    nh = max(1, int(round(h * scale)))
-    y_idx = np.clip((np.arange(nh) * h / nh).astype(np.int32), 0, h - 1)
-    x_idx = np.clip((np.arange(nw) * w / nw).astype(np.int32), 0, w - 1)
-    scaled = rgb[y_idx][:, x_idx]
+def _even(n: int) -> int:
+    n = max(16, int(n))
+    return n - (n % 2)
+
+
+def _build_fit_maps(
+    src_h: int, src_w: int, out_w: int, out_h: int, *, fit_mode: str
+) -> tuple[np.ndarray, np.ndarray, int, int, int, int]:
+    """Return (y_idx, x_idx, dst_y0, dst_x0, nh, nw) for nearest-neighbor blit."""
+    if fit_mode == "fill":
+        scale = max(out_w / src_w, out_h / src_h)
+    else:
+        scale = min(out_w / src_w, out_h / src_h)
+    nw = max(1, int(round(src_w * scale)))
+    nh = max(1, int(round(src_h * scale)))
+    y_idx = np.clip((np.arange(nh) * src_h / nh).astype(np.int32), 0, src_h - 1)
+    x_idx = np.clip((np.arange(nw) * src_w / nw).astype(np.int32), 0, src_w - 1)
+    if fit_mode == "fill":
+        x0 = max(0, (nw - out_w) // 2)
+        y0 = max(0, (nh - out_h) // 2)
+        # Crop maps to canvas.
+        y_idx = y_idx[y0 : y0 + out_h]
+        x_idx = x_idx[x0 : x0 + out_w]
+        return y_idx, x_idx, 0, 0, out_h, out_w
     x0 = (out_w - nw) // 2
     y0 = (out_h - nh) // 2
-    out[y0 : y0 + nh, x0 : x0 + nw] = scaled
-    return out
-
-
-def _fill_rgb(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
-    """Cover (Fill): crop to fill the canvas, no black bars."""
-    h, w = int(rgb.shape[0]), int(rgb.shape[1])
-    if h <= 0 or w <= 0:
-        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    scale = max(out_w / w, out_h / h)
-    nw = max(1, int(round(w * scale)))
-    nh = max(1, int(round(h * scale)))
-    y_idx = np.clip((np.arange(nh) * h / nh).astype(np.int32), 0, h - 1)
-    x_idx = np.clip((np.arange(nw) * w / nw).astype(np.int32), 0, w - 1)
-    scaled = rgb[y_idx][:, x_idx]
-    x0 = max(0, (nw - out_w) // 2)
-    y0 = max(0, (nh - out_h) // 2)
-    return np.ascontiguousarray(scaled[y0 : y0 + out_h, x0 : x0 + out_w])
-
-
-def _compose_rgb(
-    rgb: np.ndarray, out_w: int, out_h: int, *, fit_mode: str
-) -> np.ndarray:
-    if fit_mode == "fill":
-        return _fill_rgb(rgb, out_w, out_h)
-    return _fit_rgb(rgb, out_w, out_h)
+    return y_idx, x_idx, y0, x0, nh, nw
 
 
 def _pack_rgbx_into(dst: np.ndarray, rgb: np.ndarray) -> None:
@@ -97,16 +76,11 @@ def _pack_rgbx_into(dst: np.ndarray, rgb: np.ndarray) -> None:
     view[:, :, 3] = 255
 
 
-def _even(n: int) -> int:
-    n = max(16, int(n))
-    return n - (n % 2)
-
-
 class NdiVideoOutput:
-    """Send RGB24 frames on the same path as Clean Video Output (no second decoder)."""
+    """Send RGB24 frames; heavy work runs off the UI thread."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._cfg_lock = threading.RLock()
         self._enabled = False
         self._name = "CuePlayer"
         self._frame_mode: NdiFrameMode = "output_window"
@@ -121,24 +95,43 @@ class NdiVideoOutput:
         self._use_a = True
         self._send_failures = 0
 
+        # Latest-frame slot (UI → worker). Drop intermediate frames.
+        self._pending_lock = threading.Lock()
+        self._pending_rgb: np.ndarray | None = None  # None = black / no clip
+        self._pending_has_black = False
+        self._pending_seq = 0
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._worker: threading.Thread | None = None
+
+        # Cached resize maps (worker only).
+        self._map_key: tuple | None = None
+        self._map_y: np.ndarray | None = None
+        self._map_x: np.ndarray | None = None
+        self._map_y0 = 0
+        self._map_x0 = 0
+        self._map_nh = 0
+        self._map_nw = 0
+        self._canvas_rgb: np.ndarray | None = None
+
     @property
     def enabled(self) -> bool:
-        with self._lock:
+        with self._cfg_lock:
             return self._enabled and self._sender is not None
 
     @property
     def name(self) -> str:
-        with self._lock:
+        with self._cfg_lock:
             return self._name
 
     @property
     def frame_mode(self) -> NdiFrameMode:
-        with self._lock:
+        with self._cfg_lock:
             return self._frame_mode
 
     @property
     def last_error(self) -> str:
-        with self._lock:
+        with self._cfg_lock:
             return self._last_error
 
     def configure(
@@ -151,7 +144,8 @@ class NdiVideoOutput:
         height: int = _DEFAULT_H,
         fit_mode: str = "fit",
     ) -> str | None:
-        with self._lock:
+        with self._cfg_lock:
+            self._stop_worker_locked()
             self._enabled = bool(enabled)
             self._name = (name or "CuePlayer").strip() or "CuePlayer"
             mode = str(frame_mode or "output_window")
@@ -159,7 +153,8 @@ class NdiVideoOutput:
             self._fit_mode = "fill" if fit_mode == "fill" else "fit"
             self._width = _even(width)
             self._height = _even(height)
-            self._close_locked()
+            self._close_sender_locked()
+            self._map_key = None
             if not self._enabled:
                 self._last_error = ""
                 return None
@@ -167,103 +162,207 @@ class NdiVideoOutput:
                 self._enabled = False
                 self._last_error = ndi_status()
                 return self._last_error
-            return self._open_locked()
+            err = self._open_sender_locked()
+            if err:
+                return err
+            self._start_worker_locked()
+            return None
 
     def set_presentation(
         self, *, width: int, height: int, fit_mode: str = "fit"
     ) -> None:
-        """Update Output-window canvas / Fit-Fill without toggling enable."""
-        with self._lock:
+        with self._cfg_lock:
             self._fit_mode = "fill" if fit_mode == "fill" else "fit"
             if self._frame_mode != "output_window" or not self._enabled:
+                self._map_key = None
                 return
             w, h = _even(width), _even(height)
             if (w, h) == (self._width, self._height):
+                self._map_key = None
                 return
+            was = self._enabled
+            self._stop_worker_locked()
             self._width = w
             self._height = h
-            if self._sender is None:
+            self._close_sender_locked()
+            self._map_key = None
+            self._enabled = was
+            if not self._enabled:
                 return
-            # Resolution change requires a fresh sender in cyndilib.
-            self._close_locked()
-            self._enabled = True
-            err = self._open_locked()
+            err = self._open_sender_locked()
             if err:
                 log.warning("NDI reopen after resize failed: %s", err)
+                return
+            self._start_worker_locked()
 
     def send_frame(self, frame: np.ndarray | None) -> None:
-        with self._lock:
-            if not self._enabled or self._sender is None:
-                return
-            try:
-                if frame is None:
-                    canvas = np.zeros((self._height, self._width, 3), dtype=np.uint8)
-                else:
-                    rgb = np.asarray(frame)
-                    if rgb.ndim != 3 or rgb.shape[2] < 3:
-                        return
-                    if rgb.dtype != np.uint8:
-                        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-                    rgb = rgb[:, :, :3]
-                    if self._frame_mode == "video":
-                        h, w = int(rgb.shape[0]), int(rgb.shape[1])
-                        w, h = _even(w), _even(h)
-                        if (w, h) != (self._width, self._height):
-                            self._width = w
-                            self._height = h
-                            self._close_locked()
-                            self._enabled = True
-                            err = self._open_locked()
-                            if err or self._sender is None:
-                                return
-                        # Crop/pad 1px if odd→even changed size slightly.
-                        canvas = np.zeros((self._height, self._width, 3), dtype=np.uint8)
-                        ch = min(self._height, rgb.shape[0])
-                        cw = min(self._width, rgb.shape[1])
-                        canvas[:ch, :cw] = rgb[:ch, :cw]
-                    else:
-                        if (
-                            rgb.shape[0] == self._height
-                            and rgb.shape[1] == self._width
-                        ):
-                            canvas = rgb
-                        else:
-                            canvas = _compose_rgb(
-                                rgb,
-                                self._width,
-                                self._height,
-                                fit_mode=self._fit_mode,
-                            )
-
-                dst = self._buf_a if self._use_a else self._buf_b
-                if dst is None or dst.size != self._width * self._height * 4:
+        """UI-thread entry: queue latest frame; worker does compose + NDI write."""
+        if not self._enabled:
+            return
+        with self._pending_lock:
+            if frame is None:
+                self._pending_rgb = None
+                self._pending_has_black = True
+            else:
+                rgb = np.asarray(frame)
+                if rgb.ndim != 3 or rgb.shape[2] < 3:
                     return
-                _pack_rgbx_into(dst, canvas)
-                self._use_a = not self._use_a
-
-                write = getattr(self._sender, "write_video", None)
-                if callable(write):
-                    write(dst)
-                    return
-                write_async = getattr(self._sender, "write_video_async", None)
-                if callable(write_async):
-                    write_async(dst)
-                    return
-                if self._frame is not None:
-                    self._frame.write_data(dst)
-                    self._sender.send_video()
-            except Exception as exc:  # noqa: BLE001
-                self._send_failures += 1
-                if self._send_failures <= 3 or self._send_failures % 120 == 0:
-                    log.warning("NDI send_frame failed: %s", exc)
-                    self._last_error = f"NDI send failed: {exc}"
+                # Contiguous copy so decoder can reuse its buffer immediately.
+                if rgb.dtype != np.uint8:
+                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+                self._pending_rgb = np.ascontiguousarray(rgb[:, :, :3])
+                self._pending_has_black = False
+            self._pending_seq += 1
+        self._wake.set()
 
     def close(self) -> None:
-        with self._lock:
+        with self._cfg_lock:
             self._enabled = False
-            self._close_locked()
+            self._stop_worker_locked()
+            self._close_sender_locked()
 
-    def _open_locked(self) -> str | None:
+    def _start_worker_locked(self) -> None:
+        self._stop.clear()
+        if self._worker is not None and self._worker.is_alive():
+            return
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="ndi-send",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _stop_worker_locked(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        worker = self._worker
+        self._worker = None
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=1.5)
+
+    def _worker_loop(self) -> None:
+        last_seq = -1
+        while not self._stop.is_set():
+            self._wake.wait(timeout=0.05)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            with self._pending_lock:
+                seq = self._pending_seq
+                if seq == last_seq:
+                    continue
+                rgb = self._pending_rgb
+                is_black = self._pending_has_black and rgb is None
+                # Take ownership of the array reference.
+                self._pending_rgb = None
+                last_seq = seq
+            try:
+                self._send_one(rgb, black=is_black)
+            except Exception as exc:  # noqa: BLE001
+                with self._cfg_lock:
+                    self._send_failures += 1
+                    if self._send_failures <= 3 or self._send_failures % 120 == 0:
+                        log.warning("NDI send_frame failed: %s", exc)
+                        self._last_error = f"NDI send failed: {exc}"
+
+    def _send_one(self, rgb: np.ndarray | None, *, black: bool) -> None:
+        with self._cfg_lock:
+            if not self._enabled or self._sender is None:
+                return
+            width = self._width
+            height = self._height
+            frame_mode = self._frame_mode
+            fit_mode = self._fit_mode
+            sender = self._sender
+            frame_obj = self._frame
+
+            if rgb is None or black:
+                if self._canvas_rgb is None or self._canvas_rgb.shape[:2] != (
+                    height,
+                    width,
+                ):
+                    self._canvas_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+                else:
+                    self._canvas_rgb.fill(0)
+                canvas = self._canvas_rgb
+            elif frame_mode == "video":
+                h, w = int(rgb.shape[0]), int(rgb.shape[1])
+                w, h = _even(w), _even(h)
+                if (w, h) != (width, height):
+                    self._width = w
+                    self._height = h
+                    self._close_sender_locked()
+                    err = self._open_sender_locked()
+                    if err or self._sender is None:
+                        return
+                    sender = self._sender
+                    frame_obj = self._frame
+                    width, height = w, h
+                if self._canvas_rgb is None or self._canvas_rgb.shape[:2] != (
+                    height,
+                    width,
+                ):
+                    self._canvas_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+                else:
+                    self._canvas_rgb.fill(0)
+                ch = min(height, rgb.shape[0])
+                cw = min(width, rgb.shape[1])
+                self._canvas_rgb[:ch, :cw] = rgb[:ch, :cw]
+                canvas = self._canvas_rgb
+            else:
+                if self._canvas_rgb is None or self._canvas_rgb.shape[:2] != (
+                    height,
+                    width,
+                ):
+                    self._canvas_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+                if rgb.shape[0] == height and rgb.shape[1] == width:
+                    np.copyto(self._canvas_rgb, rgb)
+                else:
+                    key = (rgb.shape[0], rgb.shape[1], width, height, fit_mode)
+                    if key != self._map_key:
+                        (
+                            self._map_y,
+                            self._map_x,
+                            self._map_y0,
+                            self._map_x0,
+                            self._map_nh,
+                            self._map_nw,
+                        ) = _build_fit_maps(
+                            rgb.shape[0],
+                            rgb.shape[1],
+                            width,
+                            height,
+                            fit_mode=fit_mode,
+                        )
+                        self._map_key = key
+                    self._canvas_rgb.fill(0)
+                    scaled = rgb[self._map_y][:, self._map_x]
+                    y0, x0 = self._map_y0, self._map_x0
+                    nh, nw = self._map_nh, self._map_nw
+                    self._canvas_rgb[y0 : y0 + nh, x0 : x0 + nw] = scaled
+                canvas = self._canvas_rgb
+
+            dst = self._buf_a if self._use_a else self._buf_b
+            if dst is None or dst.size != width * height * 4:
+                return
+            _pack_rgbx_into(dst, canvas)
+            self._use_a = not self._use_a
+
+            # Prefer async: NDI may keep the buffer until the next call; we
+            # alternate A/B so the previous buffer stays valid.
+            write_async = getattr(sender, "write_video_async", None)
+            if callable(write_async):
+                write_async(dst)
+                return
+            write = getattr(sender, "write_video", None)
+            if callable(write):
+                write(dst)
+                return
+            if frame_obj is not None:
+                frame_obj.write_data(dst)
+                sender.send_video_async()
+
+    def _open_sender_locked(self) -> str | None:
         try:
             from cyndilib.sender import Sender
             from cyndilib.video_frame import VideoSendFrame
@@ -280,6 +379,7 @@ class NdiVideoOutput:
             self._buf_a = np.zeros(nbytes, dtype=np.uint8)
             self._buf_b = np.zeros(nbytes, dtype=np.uint8)
             self._use_a = True
+            self._canvas_rgb = np.zeros((self._height, self._width, 3), dtype=np.uint8)
             self._sender = sender
             self._frame = frame
             self._last_error = ""
@@ -295,12 +395,13 @@ class NdiVideoOutput:
             log.warning("NDI configure failed: %s", exc)
             return self._last_error
 
-    def _close_locked(self) -> None:
+    def _close_sender_locked(self) -> None:
         sender = self._sender
         self._sender = None
         self._frame = None
         self._buf_a = None
         self._buf_b = None
+        self._canvas_rgb = None
         if sender is None:
             return
         try:
