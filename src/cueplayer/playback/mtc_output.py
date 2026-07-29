@@ -169,6 +169,11 @@ class MtcOutput:
             if parsed is not None:
                 self._start_tc = parsed
 
+    def timecode_at(self, position_seconds: float) -> Timecode:
+        """SMPTE value MTC would send at this playback position."""
+        with self._lock:
+            return absolute_timecode(self._start_tc, position_seconds, self._fps)
+
     def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
         """
         Align MTC so ``absolute`` is the timecode at ``position_seconds``.

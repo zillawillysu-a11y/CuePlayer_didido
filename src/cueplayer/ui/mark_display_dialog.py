@@ -142,6 +142,24 @@ class MarkDisplayDialog(QDialog):
         self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
         form2.addRow("Playhead Color (project)", self.playhead_color)
 
+        self.tc_clock_box = QCheckBox("Show output timecode clock")
+        self.tc_clock_box.setChecked(
+            bool(getattr(line_src, "show_output_timecode_clock", True))
+        )
+        self.tc_clock_box.setToolTip(
+            "LTC / MTC timecode under the seconds display on the right — "
+            "shows whether output is armed and the current HH:MM:SS:FF"
+        )
+        form2.addRow("Timecode Clock", self.tc_clock_box)
+
+        self.tc_clock_color = ColorSwatchButton(
+            getattr(line_src, "output_timecode_clock_color", None) or "#3dd68c"
+        )
+        self.tc_clock_color.setToolTip(
+            "Output timecode clock color (default green) — applies to the whole project"
+        )
+        form2.addRow("Timecode Clock Color", self.tc_clock_color)
+
         self.line_style = QComboBox()
         self.line_style.addItem("Solid", "solid")
         self.line_style.addItem("Dashed", "dash")
@@ -219,6 +237,8 @@ class MarkDisplayDialog(QDialog):
         self.secondary_clear_spin.valueChanged.connect(self._apply)
         self.wave_color.color_changed.connect(self._apply)
         self.playhead_color.color_changed.connect(self._apply)
+        self.tc_clock_box.toggled.connect(self._apply)
+        self.tc_clock_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
         self.dash_spacing.valueChanged.connect(self._apply)
@@ -331,6 +351,8 @@ class MarkDisplayDialog(QDialog):
         target.waveform_color = self.wave_color.color()
         if self._project is not None:
             self._project.playhead_color = self.playhead_color.color()
+            self._project.show_output_timecode_clock = self.tc_clock_box.isChecked()
+            self._project.output_timecode_clock_color = self.tc_clock_color.color()
         elif hasattr(target, "playhead_color"):
             target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
         primary, secondary = self._collect_now_lanes()

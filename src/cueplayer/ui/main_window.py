@@ -1228,6 +1228,9 @@ class MainWindow(QMainWindow):
         )
         self.monitor.now_visibility_changed.connect(self._mark_dirty)
         self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
+        self.monitor.output_timecode_clock_changed.connect(
+            self._on_output_timecode_clock_changed
+        )
         self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
         self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
@@ -1236,7 +1239,13 @@ class MainWindow(QMainWindow):
         self.engine.playing_changed.connect(self.timeline.set_playing)
         self.engine.timecode_status_changed.connect(self._refresh_timecode_status)
         self.engine.timecode_status_changed.connect(self._refresh_setlist_ltc_cells)
+        self.engine.timecode_status_changed.connect(self._refresh_output_timecode_clock)
+        self.engine.playing_changed.connect(
+            lambda _playing: self._refresh_output_timecode_clock()
+        )
         self._refresh_timecode_status()
+        self._sync_output_timecode_clock_ui()
+        self._refresh_output_timecode_clock()
 
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.engine.toggle)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self._nudge_frames(-1))
@@ -1971,6 +1980,8 @@ class MainWindow(QMainWindow):
         self._restore_clean_output_visibility()
         self._sync_video_output_active()
         self._refresh_timecode_status()
+        self._sync_output_timecode_clock_ui()
+        self._refresh_output_timecode_clock()
         self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
         song_index = 0
         if preferred_song_id:
@@ -3808,11 +3819,13 @@ class MainWindow(QMainWindow):
         self.timeline.set_position(seconds)
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
+        self._refresh_output_timecode_clock(seconds)
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
+        self._refresh_output_timecode_clock(seconds)
 
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
@@ -4181,6 +4194,26 @@ class MainWindow(QMainWindow):
             waveform_color=str(p.waveform_color or "#3dd68c"),
             playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
+        self._sync_output_timecode_clock_ui()
+
+    def _sync_output_timecode_clock_ui(self) -> None:
+        p = self.project
+        self.monitor.configure_output_timecode_clock(
+            visible=bool(getattr(p, "show_output_timecode_clock", True)),
+            color=str(getattr(p, "output_timecode_clock_color", None) or "#3dd68c"),
+        )
+
+    def _refresh_output_timecode_clock(self, position: float | None = None) -> None:
+        state = self.engine.output_timecode_state(position)
+        self.monitor.set_output_timecode(
+            timecode=state.timecode,
+            outputs=state.outputs,
+            sending=state.sending,
+        )
+
+    def _on_output_timecode_clock_changed(self) -> None:
+        self.project.show_output_timecode_clock = self.monitor.show_output_timecode_clock
+        self._mark_dirty()
 
     def _open_display_settings(self) -> None:
         latency_ms = int(round(self.engine.sync_offset_ms()))
@@ -4196,6 +4229,7 @@ class MainWindow(QMainWindow):
             self.timeline.apply_song_display_settings()
             self._apply_project_mark_line_settings()
             self.monitor.apply_now_display_settings()
+            self._refresh_output_timecode_clock()
 
         def _run_calib() -> None:
             from cueplayer.ui.sync_calib_dialog import SyncCalibrationDialog
@@ -4220,8 +4254,9 @@ class MainWindow(QMainWindow):
             return
         settings = dialog.result_settings()
         self.project.audio_output = settings
-        warning = self.engine.apply_audio_settings(settings)
+        warning =         self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
+        self._refresh_output_timecode_clock()
         self._mark_dirty()
         if warning:
             QMessageBox.warning(self, "Audio / Timecode", warning)

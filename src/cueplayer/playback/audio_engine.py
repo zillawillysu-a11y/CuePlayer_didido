@@ -10,6 +10,7 @@ if sys.platform == "win32":
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import numpy as np
 import sounddevice as sd
@@ -54,7 +55,16 @@ from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
-from cueplayer.timecode.smpte import Timecode
+from cueplayer.timecode.smpte import Timecode, parse_timecode
+
+
+@dataclass(frozen=True, slots=True)
+class OutputTimecodeState:
+    """LTC/MTC output status for the monitor timecode clock."""
+
+    timecode: str
+    outputs: tuple[str, ...]
+    sending: bool
 
 
 class AudioEngine(QObject):
@@ -157,6 +167,38 @@ class AudioEngine(QObject):
     @property
     def mtc_enabled(self) -> bool:
         return bool(self._audio_settings.mtc_enabled)
+
+    def output_timecode_state(
+        self, position_seconds: float | None = None
+    ) -> OutputTimecodeState:
+        """Timecode the engine would output at ``position_seconds`` (default: playhead)."""
+        from cueplayer.timecode.mtc import absolute_timecode
+
+        pos = self.position if position_seconds is None else float(position_seconds)
+        outputs: list[str] = []
+        if self.ltc_enabled:
+            outputs.append("LTC")
+        if self.mtc_enabled:
+            outputs.append("MTC")
+
+        tc_str = "—"
+        if outputs:
+            if self.mtc_enabled:
+                tc_str = self._mtc.timecode_at(pos).format()
+            else:
+                decoded = self._decode_file_ltc_timecode(pos)
+                if decoded is not None:
+                    tc_str = decoded.format()
+                else:
+                    start = parse_timecode(self._song_start_tc) or Timecode(1, 0, 0, 0)
+                    tc_str = absolute_timecode(start, pos, self._song_fps).format()
+
+        sending = bool(self._playing and outputs)
+        return OutputTimecodeState(
+            timecode=tc_str,
+            outputs=tuple(outputs),
+            sending=sending,
+        )
 
     @property
     def detected_ltc_channel(self) -> int | None:

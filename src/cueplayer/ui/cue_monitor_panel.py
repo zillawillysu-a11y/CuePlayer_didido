@@ -146,7 +146,8 @@ class CueMonitorPanel(QWidget):
     renumber_cue_ids_requested = Signal(object)  # lane_index: int | None (None = all)
     now_visibility_changed = Signal()
     cue_list_visibility_changed = Signal()
-    now_layout_changed = Signal()  # secondary right/below or splitter sizes
+    now_layout_changed = Signal()
+    output_timecode_clock_changed = Signal()  # secondary right/below or splitter sizes
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -178,6 +179,7 @@ class CueMonitorPanel(QWidget):
         layout.setSpacing(10)
 
         clock_frame = QFrame()
+        self._clock_frame = clock_frame
         clock_frame.setObjectName("clockFrame")
         clock_frame.setStyleSheet(
             "#clockFrame {"
@@ -214,6 +216,37 @@ class CueMonitorPanel(QWidget):
 
         clock_layout.addWidget(self.clock_label)
         clock_layout.addWidget(self.duration_label)
+
+        self._tc_output_block = QWidget()
+        tc_out_layout = QVBoxLayout(self._tc_output_block)
+        tc_out_layout.setContentsMargins(0, 4, 0, 0)
+        tc_out_layout.setSpacing(2)
+
+        self.tc_output_status = QLabel("TC off")
+        self.tc_output_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tc_output_status.setStyleSheet(
+            "color: #71717a; background: transparent; font-size: 11px; font-weight: 600;"
+            "letter-spacing: 0.5px;"
+        )
+
+        self.tc_output_value = QLabel("01:00:00:00")
+        self.tc_output_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tc_font = QFont("Consolas")
+        if not tc_font.exactMatch():
+            tc_font = QFont("Cascadia Mono")
+        tc_font.setPointSize(22)
+        tc_font.setBold(True)
+        self.tc_output_value.setFont(tc_font)
+        self._tc_clock_color = "#3dd68c"
+        self._show_output_tc_clock = True
+        self._apply_output_timecode_style()
+
+        tc_out_layout.addWidget(self.tc_output_status)
+        tc_out_layout.addWidget(self.tc_output_value)
+        clock_layout.addWidget(self._tc_output_block)
+
+        clock_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        clock_frame.customContextMenuRequested.connect(self._show_clock_context_menu)
 
         now_title = QLabel("NOW")
         now_title.setStyleSheet("color: #a1a1aa; font-size: 11px; letter-spacing: 1px;")
@@ -1125,6 +1158,67 @@ class CueMonitorPanel(QWidget):
         if duration is not None:
             self.duration_label.setText(f"/ {format_time(duration)}")
         self._sync_current()
+
+    @property
+    def show_output_timecode_clock(self) -> bool:
+        return self._show_output_tc_clock
+
+    def configure_output_timecode_clock(self, *, visible: bool, color: str) -> None:
+        self._show_output_tc_clock = bool(visible)
+        q = QColor(color or "#3dd68c")
+        self._tc_clock_color = q.name() if q.isValid() else "#3dd68c"
+        self._tc_output_block.setVisible(self._show_output_tc_clock)
+        self._apply_output_timecode_style()
+
+    def set_output_timecode(
+        self,
+        *,
+        timecode: str,
+        outputs: tuple[str, ...] | list[str],
+        sending: bool,
+    ) -> None:
+        if not self._show_output_tc_clock:
+            return
+        outs = tuple(outputs)
+        if outs:
+            self.tc_output_status.setText(" · ".join(outs))
+            active_color = self._tc_clock_color if sending else "#71717a"
+            self.tc_output_status.setStyleSheet(
+                f"color: {active_color}; background: transparent; font-size: 11px;"
+                "font-weight: 600; letter-spacing: 0.5px;"
+            )
+            self.tc_output_value.setText(timecode)
+            value_color = self._tc_clock_color if sending else "#a1a1aa"
+            self.tc_output_value.setStyleSheet(
+                f"color: {value_color}; background: transparent; font-size: 22px;"
+                "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
+            )
+        else:
+            self.tc_output_status.setText("TC off")
+            self.tc_output_status.setStyleSheet(
+                "color: #52525b; background: transparent; font-size: 11px;"
+                "font-weight: 600; letter-spacing: 0.5px;"
+            )
+            self.tc_output_value.setText("—")
+            self.tc_output_value.setStyleSheet(
+                "color: #52525b; background: transparent; font-size: 22px;"
+                "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
+            )
+
+    def _apply_output_timecode_style(self) -> None:
+        self._tc_output_block.setVisible(self._show_output_tc_clock)
+
+    def _show_clock_context_menu(self, pos) -> None:  # noqa: ANN001
+        menu = QMenu(self)
+        show_action = menu.addAction("Show output timecode clock")
+        show_action.setCheckable(True)
+        show_action.setChecked(self._show_output_tc_clock)
+        show_action.setToolTip("LTC / MTC timecode under the seconds display")
+        chosen = menu.exec(self._clock_frame.mapToGlobal(pos))
+        if chosen is show_action:
+            self._show_output_tc_clock = show_action.isChecked()
+            self._tc_output_block.setVisible(self._show_output_tc_clock)
+            self.output_timecode_clock_changed.emit()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
