@@ -183,6 +183,15 @@ def _song_list_has_keyboard_focus(song_list: QTableWidget) -> bool:
     )
 
 
+def _warmup_bpm_analyzer_safe() -> None:
+    try:
+        from cueplayer.media.bpm_analyzer import warmup_bpm_analyzer
+
+        warmup_bpm_analyzer()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class SetlistWidget(QTableWidget):
     """Setlist: click No. to edit, drag rows to reorder, drop audio/video to add songs."""
 
@@ -694,6 +703,8 @@ class MainWindow(QMainWindow):
         self._bpm_detect_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ui-bpm-detect"
         )
+        # JIT-warm librosa onset path so the first real detect is not a hitch.
+        self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
