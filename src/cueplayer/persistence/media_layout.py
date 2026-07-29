@@ -1,4 +1,4 @@
-"""Keep Media/ folders aligned with Setlist folders (Bundle + live sync)."""
+"""Keep Media/ folders aligned with Setlist folders (Save / Bundle)."""
 
 from __future__ import annotations
 

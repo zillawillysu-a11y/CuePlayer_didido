@@ -73,8 +73,6 @@ from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
     sync_all_songs_media_to_setlist_folders,
-    sync_rename_setlist_media_folder,
-    sync_song_media_to_setlist_folder,
 )
 from cueplayer.persistence.project_bundle import collect_project_bundle
 from cueplayer.domain.media_relink import scan_missing_media
@@ -1932,8 +1930,6 @@ class MainWindow(QMainWindow):
         ]
         if not select_indexes:
             select_indexes = [idx]
-        # Folder move/rename may have moved files on disk; reconcile Media/ paths.
-        self._sync_all_media_to_setlist_folders()
         self._rebuild_song_list(select_indexes=select_indexes)
         self._activate_song(idx, stop_playback=False)
         patch = getattr(self, "show_patch_page", None)
@@ -1942,35 +1938,27 @@ class MainWindow(QMainWindow):
         self._refresh_window_title()
         self._refresh_status()
 
-    def _sync_media_files_for_songs(self, songs: list) -> int:
-        """Move Media/ files to match each song's Setlist folder. No-op if unsaved."""
-        if self._project_path is None:
-            return 0
-        total = 0
-        for song in songs:
-            total += sync_song_media_to_setlist_folder(
-                self.project,
-                song,
-                project_file=self._project_path,
-            )
-        return total
+    def _sync_media_layout_for_save(
+        self,
+        project_file: Path,
+        *,
+        rearrange_disk: bool = True,
+    ) -> int:
+        """
+        Move Media/ files to match Setlist folders, then persist paths.
 
-    def _sync_all_media_to_setlist_folders(self) -> int:
-        if self._project_path is None:
+        Disk moves happen only here (Save / Save As / Auto-save) so an unsaved
+        session never leaves the on-disk project JSON pointing at stale paths.
+
+        When ``rearrange_disk`` is False (Save As beside the original file in the
+        same folder), leave the shared Media tree untouched so the old project
+        file can still open.
+        """
+        if not rearrange_disk:
             return 0
         return sync_all_songs_media_to_setlist_folders(
             self.project,
-            project_file=self._project_path,
-        )
-
-    def _sync_rename_media_folder(self, old_name: str, new_name: str) -> int:
-        if self._project_path is None:
-            return 0
-        return sync_rename_setlist_media_folder(
-            self.project,
-            project_file=self._project_path,
-            old_name=old_name,
-            new_name=new_name,
+            project_file=project_file,
         )
 
     def _set_clean(self) -> None:
@@ -2070,6 +2058,7 @@ class MainWindow(QMainWindow):
             return self._file_save_as()
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
+        n_media = self._sync_media_layout_for_save(self._project_path)
         self._backup_before_overwrite(self._project_path)
         try:
             save_project(self.project, self._project_path)
@@ -2081,7 +2070,8 @@ class MainWindow(QMainWindow):
             return False
         self._set_clean()
         label = "Auto-saved" if quiet else "Saved"
-        self.status.showMessage(f"{label}: {self._project_path.name}", 2500)
+        extra = f" · {n_media} media file(s) arranged" if n_media else ""
+        self.status.showMessage(f"{label}: {self._project_path.name}{extra}", 2500)
         return True
 
     def _file_save_as(self) -> bool:
@@ -2108,6 +2098,23 @@ class MainWindow(QMainWindow):
             path = path.with_name(f"{path.name}.cueplayer.json")
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
+        # Arrange Media/ under the *new* project folder only when files already
+        # live there. Save As into another directory leaves the original Media
+        # tree alone (paths become absolute). Save As beside the original file
+        # shares that Media tree — skip rearrange so the old JSON still opens.
+        shared_beside_original = False
+        if self._project_path is not None:
+            try:
+                shared_beside_original = (
+                    path.resolve() != self._project_path.resolve()
+                    and path.parent.resolve() == self._project_path.parent.resolve()
+                )
+            except OSError:
+                shared_beside_original = False
+        n_media = self._sync_media_layout_for_save(
+            path,
+            rearrange_disk=not shared_beside_original,
+        )
         # Overwriting an existing path (or re-Save-As to the same file) still
         # gets a backup of whatever was previously on disk.
         self._backup_before_overwrite(path)
@@ -2124,7 +2131,15 @@ class MainWindow(QMainWindow):
             self.project.name = path.stem or self.project.name
         self._set_clean()
         self._refresh_status()
-        self.status.showMessage(f"Saved: {path.name}", 2500)
+        if shared_beside_original:
+            self.status.showMessage(
+                f"Saved: {path.name} · shared Media with original "
+                "(layout unchanged; use Bundle for an independent copy)",
+                4500,
+            )
+        else:
+            extra = f" · {n_media} media file(s) arranged" if n_media else ""
+            self.status.showMessage(f"Saved: {path.name}{extra}", 2500)
         return True
 
     def _file_restore_backup(self) -> None:
@@ -2638,15 +2653,16 @@ class MainWindow(QMainWindow):
             return
         with self._setlist_edit("Rename Song"):
             song.name = name
-            n_files = self._sync_media_files_for_songs([song])
             self._mark_dirty()
             self._refresh_status()
             patch = getattr(self, "show_patch_page", None)
             if patch is not None:
                 patch.sync_songs()
             self.timeline.update()
-        extra = f" · {n_files} media path(s) updated" if n_files else ""
-        self.status.showMessage(f'Song name changed to "{name}"{extra}', 2000)
+        self.status.showMessage(
+            f'Song name changed to "{name}" (Media folder updates on Save)',
+            2000,
+        )
 
     def _on_song_ma_name_edited(self, row: int, text: str) -> None:
         song_index = self.song_list.row_song_index(row)
@@ -3111,13 +3127,6 @@ class MainWindow(QMainWindow):
 
             keep_id = self.current_song.id
             self.project.songs = ordered_songs
-            # Dragging into another folder goes through reorder — sync Media/.
-            folder_changed = [
-                song
-                for song in moving
-                if song.category_id != old_categories.get(song.id)
-            ]
-            n_files = self._sync_media_files_for_songs(folder_changed)
             new_indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
             if not new_indexes:
                 new_indexes = [min(insert_at, len(self.project.songs) - 1)]
@@ -3132,8 +3141,11 @@ class MainWindow(QMainWindow):
             self._undo_ctx.current_song_id = self.current_song.id
             self._mark_dirty()
             self._refresh_status()
-        extra = f" · {n_files} media file(s) synced" if n_files else ""
-        self.status.showMessage(f"Song order updated by drag{extra}", 2000)
+        folder_changed = any(
+            song.category_id != old_categories.get(song.id) for song in moving
+        )
+        tip = " · Media moves on Save" if folder_changed else ""
+        self.status.showMessage(f"Song order updated by drag{tip}", 2000)
 
     def _on_songs_moved_to_category(self, song_ids: list, category_id: str) -> None:
         category = self.project.setlist_category_by_id(str(category_id))
@@ -3145,13 +3157,11 @@ class MainWindow(QMainWindow):
             return
         with self._setlist_edit("Move to Folder"):
             self._assign_songs_to_category(moving, category.id)
-            n_files = self._sync_media_files_for_songs(moving)
             indexes = [i for i, song in enumerate(self.project.songs) if song.id in id_set]
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
-        extra = f" · {n_files} media file(s) synced" if n_files else ""
         self.status.showMessage(
-            f'Moved {len(moving)} song(s) into "{category.name}"{extra}',
+            f'Moved {len(moving)} song(s) into "{category.name}" · Media moves on Save',
             2500,
         )
 
@@ -3204,10 +3214,8 @@ class MainWindow(QMainWindow):
         category = SetlistCategory.create(name)
         with self._setlist_edit("New Folder"):
             self.project.setlist_categories.append(category)
-            n_files = 0
             if wrap_selected and selected:
                 self._assign_songs_to_category(selected, category.id)
-                n_files = self._sync_media_files_for_songs(selected)
             indexes = (
                 [self.project.songs.index(s) for s in selected]
                 if wrap_selected and selected
@@ -3216,9 +3224,9 @@ class MainWindow(QMainWindow):
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
         if wrap_selected and selected:
-            extra = f" · {n_files} media file(s) synced" if n_files else ""
             self.status.showMessage(
-                f'Created folder "{category.name}" with {len(selected)} song(s){extra}',
+                f'Created folder "{category.name}" with {len(selected)} song(s)'
+                f" · Media moves on Save",
                 2500,
             )
         else:
@@ -3236,14 +3244,14 @@ class MainWindow(QMainWindow):
         new_name = name.strip() or category.name
         if new_name == category.name:
             return
-        old_name = category.name
         with self._setlist_edit("Rename Folder"):
             category.name = new_name
-            n_files = self._sync_rename_media_folder(old_name, new_name)
             self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
             self._mark_dirty()
-        extra = f" · Media folder + {n_files} path(s) updated" if n_files else ""
-        self.status.showMessage(f'Renamed folder to "{category.name}"{extra}', 2500)
+        self.status.showMessage(
+            f'Renamed folder to "{category.name}" · Media folder renames on Save',
+            2500,
+        )
 
     def _delete_setlist_category(self, category_id: str) -> None:
         category = self.project.setlist_category_by_id(category_id)
@@ -3274,11 +3282,10 @@ class MainWindow(QMainWindow):
             self.project.setlist_categories = [
                 c for c in self.project.setlist_categories if c.id != category.id
             ]
-            n_files = self._sync_media_files_for_songs(released)
             self._rebuild_song_list(select_indexes=self._selected_song_indexes() or None)
             self._mark_dirty()
-        extra = f" · {n_files} media file(s) → _Unfiled" if n_files else ""
-        self.status.showMessage(f'Deleted folder "{category.name}"{extra}', 2500)
+        tip = " · Media moves on Save" if released else ""
+        self.status.showMessage(f'Deleted folder "{category.name}"{tip}', 2500)
 
     def _move_selected_songs_to_category(self, category_id: str | None) -> None:
         songs = self._selected_songs()
@@ -3287,16 +3294,17 @@ class MainWindow(QMainWindow):
         indexes = self._selected_song_indexes()
         with self._setlist_edit("Move to Folder"):
             self._assign_songs_to_category(songs, category_id)
-            n_files = self._sync_media_files_for_songs(songs)
             self._rebuild_song_list(select_indexes=indexes)
             self._mark_dirty()
-        extra = f" · {n_files} media file(s) synced" if n_files else ""
         if category_id is None:
-            self.status.showMessage(f"Moved song(s) out of folder{extra}", 2000)
+            self.status.showMessage("Moved song(s) out of folder · Media moves on Save", 2000)
             return
         category = self.project.setlist_category_by_id(category_id)
         label = category.name if category is not None else "folder"
-        self.status.showMessage(f'Moved song(s) into "{label}"{extra}', 2000)
+        self.status.showMessage(
+            f'Moved song(s) into "{label}" · Media moves on Save',
+            2000,
+        )
 
     def _on_setlist_category_context_menu(self, category_id: str, pos) -> None:  # noqa: ANN001
         category = self.project.setlist_category_by_id(category_id)
