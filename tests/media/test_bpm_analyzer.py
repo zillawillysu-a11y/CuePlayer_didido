@@ -95,3 +95,10 @@ def test_estimate_bpm_silence_returns_none() -> None:
     sr = 44100
     silence = np.zeros((sr * 5, 1), dtype=np.float32)
     assert estimate_bpm(silence, sr) is None
+
+
+def test_estimate_bpm_snaps_near_integer() -> None:
+    """Show tempos are usually whole BPM — avoid lingering *.5 drift."""
+    est = estimate_bpm(_click_track(120.0, seconds=14.0), 44100)
+    assert est is not None
+    assert abs(float(est) - 120.0) < 1e-9

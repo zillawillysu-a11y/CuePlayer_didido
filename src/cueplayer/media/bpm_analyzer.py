@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-# Bump when the estimator changes so the UI can re-run auto BPM once per session.
-BPM_DETECT_VERSION = 2
+# Bump when the estimator changes (manual re-detect still required for old <n>).
+BPM_DETECT_VERSION = 3
 
 
 def format_bpm_value(bpm: float) -> str:
@@ -64,20 +64,15 @@ def _to_mono(samples: np.ndarray, exclude_channel: int | None) -> np.ndarray:
 
 
 def _tempo_preference(bpm: float) -> float:
-    """Log-normal prior peaked near typical song tempo (~120).
-
-    Down-weights half-tempo guesses (e.g. 80 for a 160 track) when comb
-    scores are otherwise close, without forbidding legitimate ballads/DnB.
-    """
+    """Log-normal prior peaked near typical song tempo (~120)."""
     bpm = max(40.0, float(bpm))
     mu = math.log(120.0)
-    sigma = 0.38
+    sigma = 0.36
     return float(math.exp(-0.5 * ((math.log(bpm) - mu) / sigma) ** 2))
 
 
 def _onset_envelope(mono: np.ndarray, sample_rate: int, hop: int) -> np.ndarray | None:
     """Energy flux of a simple high-passed signal (emphasizes attacks)."""
-    # First-difference high-pass: reduces sustained pads / LTC bleed vs raw RMS.
     hp = np.diff(mono, prepend=mono[:1]).astype(np.float64)
     n = (hp.size // hop) * hop
     if n < hop * 32:
@@ -110,6 +105,48 @@ def _comb_score(corr: np.ndarray, env_rate: float, bpm: float) -> float:
     return score
 
 
+def _ioi_bpm_hint(
+    onset: np.ndarray,
+    env_rate: float,
+    *,
+    min_bpm: float,
+    max_bpm: float,
+) -> float | None:
+    """Median inter-onset interval → BPM hint (helps catch half-tempo misses)."""
+    if onset.size < 64:
+        return None
+    thr = float(np.percentile(onset, 90))
+    if thr <= 1e-12:
+        return None
+    peaks = np.where(
+        (onset[1:-1] > thr)
+        & (onset[1:-1] >= onset[:-2])
+        & (onset[1:-1] >= onset[2:])
+    )[0]
+    if peaks.size < 10:
+        return None
+    peaks = peaks + 1
+    intervals = np.diff(peaks.astype(np.float64))
+    lo = env_rate * 60.0 / max_bpm
+    hi = env_rate * 60.0 / min_bpm
+    valid = intervals[(intervals >= lo) & (intervals <= hi)]
+    if valid.size < 6:
+        return None
+    med = float(np.median(valid))
+    if med <= 1e-9:
+        return None
+    return 60.0 * env_rate / med
+
+
+def _snap_show_bpm(bpm: float) -> float:
+    """Show music is usually whole BPM; collapse near-integers (fixes *.5 drift)."""
+    bpm = float(bpm)
+    nearest_int = float(round(bpm))
+    if abs(bpm - nearest_int) <= 0.7:
+        return nearest_int
+    return round(bpm * 2.0) / 2.0
+
+
 def _pick_tempo_octave(
     corr: np.ndarray,
     env_rate: float,
@@ -117,17 +154,15 @@ def _pick_tempo_octave(
     *,
     min_bpm: float,
     max_bpm: float,
+    ioi_hint: float | None = None,
 ) -> float | None:
-    """Choose among a tempo and its octave partners.
-
-    Half-tempo bias is common with autocorrelation (every-other-beat lag
-    scores high). Prefer a competitive tempo inside the perceptual sweet
-    spot (~95–140); otherwise prefer the faster octave when it is close.
-    """
+    """Choose among a tempo and its octave partners."""
     if not scored:
         return None
     scored_sorted = sorted(scored, key=lambda kv: kv[1], reverse=True)
-    seeds = [bpm for bpm, _s in scored_sorted[:6]]
+    seeds = [bpm for bpm, _s in scored_sorted[:8]]
+    if ioi_hint is not None:
+        seeds = [ioi_hint, ioi_hint * 2.0, ioi_hint * 0.5, *seeds]
 
     pool: dict[float, float] = {}
     for seed in seeds:
@@ -136,8 +171,14 @@ def _pick_tempo_octave(
             if not (min_bpm <= key <= max_bpm):
                 continue
             score = _comb_score(corr, env_rate, key) * (
-                0.55 + 0.45 * _tempo_preference(key)
+                0.50 + 0.50 * _tempo_preference(key)
             )
+            # Soft pull toward the IOI hint / its octave.
+            if ioi_hint is not None and ioi_hint > 0:
+                for target in (ioi_hint, ioi_hint * 2.0, ioi_hint * 0.5):
+                    if min_bpm <= target <= max_bpm and abs(key - target) <= 3.0:
+                        score *= 1.12
+                        break
             pool[key] = max(pool.get(key, 0.0), score)
 
     if not pool:
@@ -145,20 +186,32 @@ def _pick_tempo_octave(
     max_s = max(pool.values())
     if max_s <= 0.0:
         return None
-    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.65]
+    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.60]
     if not viable:
         return max(pool.items(), key=lambda kv: kv[1])[0]
 
-    sweet = [(b, s) for b, s in viable if 95.0 <= b <= 140.0]
+    sweet = [(b, s) for b, s in viable if 92.0 <= b <= 145.0]
     if sweet:
         return max(sweet, key=lambda kv: kv[1])[0]
 
-    # Outside the sweet spot (ballad / DnB): prefer the faster competitive octave.
-    # Autocorr often scores the half-tempo lag higher; accept the double when
-    # its comb score is still in the same ballpark.
     viable.sort(key=lambda kv: kv[0])
+    slow_bpm, slow_s = viable[0]
     fastest_bpm, fastest_score = viable[-1]
-    if fastest_score >= max_s * 0.55:
+
+    def _near(hint: float | None, bpm: float, tol: float = 5.0) -> bool:
+        return hint is not None and abs(hint - bpm) <= tol
+
+    # Slow winners are often half-tempo — promote double only when IOI agrees
+    # or the double's comb score is nearly tied (avoid flipping true ~75 ballads).
+    if slow_bpm < 92.0 and fastest_bpm >= slow_bpm * 1.8:
+        if _near(ioi_hint, fastest_bpm) and not _near(ioi_hint, slow_bpm):
+            return fastest_bpm
+        if fastest_score >= max_s * 0.88:
+            return fastest_bpm
+        if _near(ioi_hint, slow_bpm):
+            return slow_bpm
+
+    if fastest_score >= max_s * 0.55 and fastest_bpm >= 100.0:
         return fastest_bpm
     return max(viable, key=lambda kv: kv[1])[0]
 
@@ -171,7 +224,8 @@ def _estimate_bpm_window(
     max_bpm: float,
 ) -> tuple[float, float] | None:
     """Return (bpm, score) for one mono window, or None if unreliable."""
-    hop = max(256, int(round(sample_rate / 86.0)))
+    # Finer hop → less *.5 quantization drift on mid tempos.
+    hop = max(192, int(round(sample_rate / 120.0)))
     onset = _onset_envelope(mono, sample_rate, hop)
     if onset is None:
         return None
@@ -185,29 +239,76 @@ def _estimate_bpm_window(
     if max_lag <= min_lag + 1 or max_lag >= len(corr):
         return None
 
-    # Relative prominence gate: reject windows with no clear periodic peak.
     window = corr[min_lag : max_lag + 1]
     peak = float(np.max(window))
     med = float(np.median(window))
     if peak <= 0.0 or peak < med * 1.35:
         return None
 
+    ioi_hint = _ioi_bpm_hint(onset, env_rate, min_bpm=min_bpm, max_bpm=max_bpm)
+
     scored: list[tuple[float, float]] = []
     for bpm_i in range(int(round(min_bpm * 2)), int(round(max_bpm * 2)) + 1):
         bpm = bpm_i / 2.0
-        score = _comb_score(corr, env_rate, bpm) * (0.55 + 0.45 * _tempo_preference(bpm))
+        score = _comb_score(corr, env_rate, bpm) * (0.50 + 0.50 * _tempo_preference(bpm))
         scored.append((bpm, score))
     best = _pick_tempo_octave(
-        corr, env_rate, scored, min_bpm=min_bpm, max_bpm=max_bpm
+        corr,
+        env_rate,
+        scored,
+        min_bpm=min_bpm,
+        max_bpm=max_bpm,
+        ioi_hint=ioi_hint,
     )
     if best is None:
         return None
     best_score = _comb_score(corr, env_rate, best) * (
-        0.55 + 0.45 * _tempo_preference(best)
+        0.50 + 0.50 * _tempo_preference(best)
     )
     if best_score <= 0.0:
         return None
-    return best, float(best_score)
+    return _snap_show_bpm(best), float(best_score)
+
+
+def _consolidate_octave_votes(
+    votes: dict[float, float],
+    *,
+    min_bpm: float,
+    max_bpm: float,
+) -> float | None:
+    """After multi-window voting, resolve half/double across the whole file."""
+    if not votes:
+        return None
+    ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+    pool: dict[float, float] = dict(votes)
+    for bpm, score in ranked[:5]:
+        for cand in (bpm * 2.0, bpm * 0.5):
+            key = _snap_show_bpm(cand)
+            if not (min_bpm <= key <= max_bpm):
+                continue
+            pool[key] = pool.get(key, 0.0) + score * 0.45
+
+    max_s = max(pool.values())
+    viable = [(b, s) for b, s in pool.items() if s >= max_s * 0.55]
+    if not viable:
+        return _snap_show_bpm(ranked[0][0])
+
+    sweet = [(b, s) for b, s in viable if 92.0 <= b <= 145.0]
+    if sweet:
+        return _snap_show_bpm(max(sweet, key=lambda kv: kv[1])[0])
+
+    viable.sort(key=lambda kv: kv[0])
+    slow_bpm, slow_s = viable[0]
+    fast_bpm, fast_s = viable[-1]
+    # Only promote slow→fast when the double is nearly as strong as the half.
+    if (
+        slow_bpm < 92.0
+        and fast_bpm >= slow_bpm * 1.8
+        and fast_s >= slow_s * 0.90
+        and fast_s >= max_s * 0.70
+    ):
+        return _snap_show_bpm(fast_bpm)
+    return _snap_show_bpm(max(viable, key=lambda kv: kv[1])[0])
 
 
 def estimate_bpm(
@@ -224,7 +325,7 @@ def estimate_bpm(
 
     Uses a ~120 BPM perceptual prior and harmonic comb scoring so half/double
     tempo mistakes are less common than a single raw peak pick. Returns a
-    value rounded to the nearest 0.5 BPM, or None if unreliable.
+    value rounded toward whole BPM when close (show music), else 0.5 BPM.
 
     Rehearsal / show files often have talk and silence: we scan up to
     ``max_seconds``, score candidate windows by onset activity, and only vote
@@ -242,7 +343,6 @@ def estimate_bpm(
 
     win = int(sample_rate * 30.0)
     hop = int(sample_rate * 15.0)
-    # Candidate starts across the scanned prefix (rehearsal talk may sit first).
     starts: list[int] = [0]
     if mono.size > win:
         t = hop
@@ -250,13 +350,12 @@ def estimate_bpm(
             starts.append(t)
             t += hop
 
-    # Rank windows by onset density so dialogue / silence lose to groove.
     ranked: list[tuple[float, int]] = []
+    hop_n = max(192, int(round(sample_rate / 120.0)))
     for start in starts:
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate * 2:
             continue
-        hop_n = max(256, int(round(sample_rate / 86.0)))
         onset = _onset_envelope(chunk, sample_rate, hop_n)
         if onset is None:
             continue
@@ -265,12 +364,12 @@ def estimate_bpm(
             continue
         ranked.append((activity, start))
     ranked.sort(key=lambda item: item[0], reverse=True)
-    # Keep the busiest few slices (typical song body), not every gap.
-    chosen_starts = [start for _act, start in ranked[:4]]
+    chosen_starts = [start for _act, start in ranked[:5]]
     if not chosen_starts:
         chosen_starts = starts[:3]
 
     votes: dict[float, float] = {}
+    top_act = ranked[0][0] if ranked else 1.0
     for start in chosen_starts:
         chunk = mono[start : start + win] if mono.size > win else mono
         if chunk.size < sample_rate:
@@ -279,15 +378,11 @@ def estimate_bpm(
         if result is None:
             continue
         bpm, score = result
-        key = round(bpm * 2.0) / 2.0
-        # Weight by window activity so a weak talk window can't outvote groove.
+        key = _snap_show_bpm(bpm)
         activity = next((a for a, s in ranked if s == start), 1.0)
-        votes[key] = votes.get(key, 0.0) + score * (0.5 + 0.5 * activity / (ranked[0][0] if ranked else 1.0))
+        votes[key] = votes.get(key, 0.0) + score * (0.5 + 0.5 * activity / top_act)
 
-    if not votes:
-        return None
-    best = max(votes.items(), key=lambda kv: kv[1])[0]
-    return float(best)
+    return _consolidate_octave_votes(votes, min_bpm=min_bpm, max_bpm=max_bpm)
 
 
 def estimate_bpm_from_path(
@@ -295,7 +390,7 @@ def estimate_bpm_from_path(
     *,
     exclude_channel: int | None = None,
 ) -> float | None:
-    """Read an audio file and estimate BPM (first ~90s).
+    """Read an audio file and estimate BPM (first ~3 minutes of audio).
 
     When ``exclude_channel`` is omitted on stereo files, tries LTC detection
     and strips that channel so striped show files don't poison the onset.
