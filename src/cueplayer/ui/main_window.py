@@ -90,7 +90,13 @@ from cueplayer.domain.undo import (
     UndoStack,
     VideoClipSnapshot,
 )
-from cueplayer.media.audio_disk_cache import load_audio_cached, load_cached_audio, save_cached_audio
+from cueplayer.media.audio_disk_cache import (
+    load_audio_cached,
+    load_cached_audio,
+    load_all_ltc_channels,
+    save_cached_audio,
+    save_ltc_channel,
+)
 from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
@@ -894,6 +900,10 @@ class MainWindow(QMainWindow):
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
         self._display_waveform_cache: dict[tuple[tuple[str, int, int] | None, int | None], AudioBuffer] = {}
         self._audio_ltc_cache: dict[tuple[str, int, int], int | None] = {}
+        self._ltc_idle_timer: QTimer = QTimer(self)
+        self._ltc_idle_timer.setSingleShot(True)
+        self._ltc_idle_timer.setInterval(2000)
+        self._ltc_idle_timer.timeout.connect(self._schedule_idle_ltc_detect)
         self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
         self._timeline_ltc_exclude: int | None = None
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
@@ -911,6 +921,7 @@ class MainWindow(QMainWindow):
         # JIT-warm librosa onset path so the first real detect is not a hitch.
         self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
         # Song ids whose in-flight detect was user-forced (may overwrite typed BPM).
@@ -1380,8 +1391,10 @@ class MainWindow(QMainWindow):
         self.engine.stop()
         self.project = project
         self._project_path = path
+        self._audio_ltc_cache.update(load_all_ltc_channels())
         self._apply_project(preferred_song_id=song_id)
         self._set_clean()
+        self._ltc_idle_timer.start()
         return True
 
     def _maybe_load_demo_fixture(self) -> None:
@@ -4378,6 +4391,19 @@ class MainWindow(QMainWindow):
         if buffer is not None:
             self._schedule_ltc_detect_for_buffer(path, buffer)
 
+    def _schedule_idle_ltc_detect(self) -> None:
+        """After 2 s of idle: run LTC detect for songs whose buffer is cached but LTC unknown."""
+        for song in self.project.songs:
+            path = self._main_audio_path_for_song(song)
+            if path is None:
+                continue
+            key = self._audio_cache_key(path)
+            if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
+                continue
+            buffer = self._audio_buffer_cache.get(key)
+            if buffer is not None:
+                self._schedule_ltc_detect_for_buffer(path, buffer)
+
     def _schedule_ltc_detect_for_buffer(self, path: Path, buffer: AudioBuffer) -> None:
         key = self._audio_cache_key(path)
         if key is None or key in self._audio_ltc_cache or key in self._audio_ltc_inflight:
@@ -4410,6 +4436,8 @@ class MainWindow(QMainWindow):
             self._note_media_warm_step(cache_key, "ltc")
             self._setlist_ltc_cache_updated.emit()
             self._media_warm_progress.emit()
+            self._audio_prefetch_executor.submit(save_ltc_channel, cache_key, channel)
+            self._ltc_idle_timer.start()
 
         future.add_done_callback(_done)
 
@@ -5004,7 +5032,7 @@ class MainWindow(QMainWindow):
         refresh_song_widgets: bool = True,
         reset_view: bool | None = None,
     ) -> None:
-        self._store_audio_cache(path, buffer)
+        self._store_audio_cache(path, buffer, schedule_ltc=True)
         self.timeline.set_audio_loading(False)
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
@@ -5019,12 +5047,6 @@ class MainWindow(QMainWindow):
         self.engine.set_buffer(buffer)
         if replace_track:
             self.engine.ensure_playback_ready()
-        key = self._audio_cache_key(path)
-        # Never copy engine.detected_ltc_channel here — it can still be the
-        # previous song's result until async detect finishes, which wrongly
-        # lit LTC L/R on pure-music tracks after playing a striped song.
-        if key is not None and key not in self._audio_ltc_cache:
-            self._schedule_ltc_detect_for_buffer(path, buffer)
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;

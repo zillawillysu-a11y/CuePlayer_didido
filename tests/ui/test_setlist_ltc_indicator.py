@@ -57,7 +57,7 @@ def test_ltc_detect_populates_setlist_badge(app: QApplication) -> None:
     song.audio_tracks = [
         AudioTrack(id="main", name="stripe", path=LTC_LEFT_FIXTURE, role="main")
     ]
-    window._store_audio_cache(LTC_LEFT_FIXTURE, buffer, write_disk=False)
+    window._store_audio_cache(LTC_LEFT_FIXTURE, buffer, write_disk=False, schedule_ltc=True)
 
     deadline = time.monotonic() + 5.0
     key = window._audio_cache_key(LTC_LEFT_FIXTURE)
