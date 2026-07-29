@@ -149,6 +149,18 @@ def _estimate_bpm_window(
             best_bpm = bpm
     if best_bpm is None or best_score <= 0.0:
         return None
+    # Sub-grid refine: parabolic peak around the winning lag (cuts ±1 BPM drift).
+    lag = env_rate * 60.0 / best_bpm
+    y0 = _corr_at(corr, lag - 1.0)
+    y1 = _corr_at(corr, lag)
+    y2 = _corr_at(corr, lag + 1.0)
+    denom = (y0 - 2.0 * y1 + y2)
+    if abs(denom) > 1e-12 and y1 >= y0 and y1 >= y2:
+        delta = 0.5 * (y0 - y2) / denom
+        if abs(delta) <= 1.0:
+            refined_lag = lag + delta
+            if refined_lag > 1e-6:
+                best_bpm = 60.0 * env_rate / refined_lag
     return _snap_show_bpm(best_bpm), float(best_score)
 
 

@@ -1232,6 +1232,14 @@ class MainWindow(QMainWindow):
         )
         act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
         tools_menu.addAction(act_bpm_all)
+        act_bpm_double = QAction("Selected BPM × 2", self)
+        act_bpm_double.setToolTip("Double BPM on selected songs (fix half-tempo).")
+        act_bpm_double.triggered.connect(lambda: self._scale_selected_bpm(2.0))
+        tools_menu.addAction(act_bpm_double)
+        act_bpm_halve = QAction("Selected BPM ÷ 2", self)
+        act_bpm_halve.setToolTip("Halve BPM on selected songs (fix double-tempo).")
+        act_bpm_halve.triggered.connect(lambda: self._scale_selected_bpm(0.5))
+        tools_menu.addAction(act_bpm_halve)
         tools_menu.addSeparator()
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
@@ -1909,10 +1917,15 @@ class MainWindow(QMainWindow):
 
                 bpm_item.setForeground(QColor(TEXT_MUTED))
                 bpm_item.setToolTip(
-                    "Auto-detected BPM (gray <n>). Type your value to override."
+                    "Auto-detected BPM (gray <n>) — starting guess only.\n"
+                    "Right-click → BPM × 2 / BPM ÷ 2 if the octave is wrong.\n"
+                    "Or type the correct value to override."
                 )
             else:
-                bpm_item.setToolTip("Double-click to enter BPM (blank = not set)")
+                bpm_item.setToolTip(
+                    "Double-click to enter BPM (blank = not set).\n"
+                    "Right-click → BPM × 2 / ÷ 2 to fix octave."
+                )
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
             ltc_channel = self._ltc_channel_for_song(song)
@@ -4154,9 +4167,14 @@ class MainWindow(QMainWindow):
             sheet.sync_songs()
         from cueplayer.media.bpm_analyzer import format_bpm_value
 
+        hint = ""
+        if value < 90.0:
+            hint = "  ·  if this feels half-tempo: right-click → BPM × 2"
+        elif value > 155.0:
+            hint = "  ·  if this feels double-tempo: right-click → BPM ÷ 2"
         self.status.showMessage(
-            f'Auto BPM for "{song.name}": <{format_bpm_value(value)}>',
-            3500,
+            f'Auto BPM for "{song.name}": <{format_bpm_value(value)}>{hint}',
+            5000,
         )
 
     def _refresh_setlist_ltc_cells(self) -> None:
