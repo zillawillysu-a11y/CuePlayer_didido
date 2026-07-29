@@ -42,9 +42,10 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # (see video_loader.py) which already skips the colorspace conversion when
 # the underlying source frame hasn't advanced. Together these are what keep
 # the timeline (scroll/zoom/mark edit/playhead) responsive while a video
-# clip is playing. Paused/stopped ticks (e.g. programmatic seeks) are left
-# unthrottled so they stay frame-accurate.
-_MAX_PLAY_DECODE_HZ = 30.0
+# clip is playing. MainWindow also queues video decode behind the playhead
+# update so PyAV work cannot stall timeline paint. Paused/stopped ticks
+# (e.g. programmatic seeks) are left unthrottled so they stay frame-accurate.
+_MAX_PLAY_DECODE_HZ = 24.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
 
 _UNSET = object()

@@ -547,6 +547,7 @@ class TimelineWidget(QWidget):
         self.music_volume_changed.emit(volume)
 
     def _on_video_waveform_ready(self) -> None:
+        self._invalidate_scrub_backdrop()
         QTimer.singleShot(0, self.update)
 
     def set_song(self, song: Song | None) -> None:
@@ -569,12 +570,14 @@ class TimelineWidget(QWidget):
             self._video_lane_base_height = self._clamp_video_lane_height(song.video_lane_height)
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
+        self._invalidate_scrub_backdrop()
         if song is not None and song.video_clips:
             clips = list(song.video_clips)
 
             def _preload_video_waveforms() -> None:
                 if self._song is song:
                     self._video_waveform_cache.preload(clips)
+                    self._invalidate_scrub_backdrop()
                     self.update()
 
             QTimer.singleShot(0, _preload_video_waveforms)
@@ -587,6 +590,7 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return
         self._video_waveform_cache.preload(list(self._song.video_clips))
+        self._invalidate_scrub_backdrop()
         self.update()
 
     def apply_mark_line_settings(
@@ -1016,9 +1020,13 @@ class TimelineWidget(QWidget):
         # view stuck until the user zooms with the mouse wheel.
         if self._playing and not was and self._auto_scroll and not self._scrubbing:
             self._view_pinned = False
-            self._follow_playhead()
+            self._center_on_playhead()
+            self._invalidate_scrub_backdrop()
         if was != self._playing:
+            # Play uses the same static-backdrop path as scrub; rebuild once.
+            self._invalidate_scrub_backdrop()
             self._update_video_lane()
+            self.update()
 
     def _begin_box_select(
         self,
@@ -1136,9 +1144,19 @@ class TimelineWidget(QWidget):
             else:
                 self._follow_playhead()
             scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
+            if scroll_moved:
+                # Auto-follow scrolled the view — static backdrop must rebuild.
+                self._invalidate_scrub_backdrop()
         if self._playing:
             now = monotonic_ns()
-            if scroll_moved or now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
+            # ~60 Hz playhead when we can blit the cached backdrop; keep the
+            # heavier full-layer rebuild cadence when the view actually scrolled.
+            interval = (
+                16_000_000
+                if self._scrub_backdrop_valid()
+                else self._play_repaint_interval_ns
+            )
+            if scroll_moved or now - self._last_play_repaint_ns >= interval:
                 self._last_play_repaint_ns = now
                 self.update()
         else:
@@ -1159,6 +1177,7 @@ class TimelineWidget(QWidget):
         else:
             self._pixels_per_second = new_pps
             self._center_on_playhead()
+        self._invalidate_scrub_backdrop()
         self.update()
 
     def zoom_by(self, factor: float, anchor_x: float | None = None) -> None:
@@ -1169,6 +1188,7 @@ class TimelineWidget(QWidget):
         self._view_pinned = False
         self._pixels_per_second = self._min_pixels_per_second()
         self._scroll_x = 0.0
+        self._invalidate_scrub_backdrop()
         self.update()
 
     def _release_view_pin(self, *, center_now: bool = True) -> None:
@@ -1300,7 +1320,29 @@ class TimelineWidget(QWidget):
         self._clamp_scroll()
 
     def _follow_playhead(self) -> None:
-        self._center_on_playhead()
+        """Keep the playhead on-screen without recentering every tick.
+
+        Continuous centering forces ``scroll_x`` to change every frame, which
+        invalidates the static timeline backdrop and makes playback with video
+        feel like the whole timeline is lagging. Edge-band follow only scrolls
+        when the playhead leaves ~25%–75% of the view, so most play ticks are
+        playhead-only blits (same path as scrub).
+        """
+        if not self._playing:
+            self._center_on_playhead()
+            return
+        view_w = self._view_width()
+        if view_w <= 1.0:
+            return
+        x = self._x_for_time(self._position)
+        left = float(self._header_width) + view_w * 0.25
+        right = float(self._header_width) + view_w * 0.75
+        if x < left:
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
+            self._clamp_scroll()
+        elif x > right:
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
+            self._clamp_scroll()
 
     def _playhead_outside_view(self, *, margin: float = 0.0) -> bool:
         """True when the playhead is outside the waveform viewport (+ margin)."""
@@ -1362,7 +1404,7 @@ class TimelineWidget(QWidget):
         )
 
     def _rebuild_scrub_backdrop(self) -> None:
-        """Rasterize static timeline layers once; scrub only redraws the playhead."""
+        """Rasterize static timeline layers once; scrub/play only redraw playhead."""
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
             return
@@ -1383,6 +1425,16 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_scroll = self._scroll_x
         self._scrub_backdrop_pps = self._pixels_per_second
         self._scrub_backdrop_size = QSize(self.size())
+
+    def _can_use_static_backdrop(self) -> bool:
+        """Playhead-only blit while scrubbing or playing (no live edit overlays)."""
+        if self._box_selecting or self._dragging_marks or self._dragging_clip is not None:
+            return False
+        if self._trimming_clip is not None:
+            return False
+        if self._resizing_wave or self._resizing_video_lane or self._panning:
+            return False
+        return self._scrubbing or self._playing
 
     def _paint_static_layers(self, painter: QPainter) -> None:
         self._paint_ruler(painter)
@@ -1846,6 +1898,7 @@ class TimelineWidget(QWidget):
             if self._pan_moved:
                 self._scroll_x = self._pan_origin_scroll - dx
                 self._clamp_scroll()
+                self._invalidate_scrub_backdrop()
                 self.update()
         elif self._dragging_loop is not None and event.buttons() & Qt.MouseButton.LeftButton:
             dx = x - self._loop_drag_origin_x
@@ -1964,6 +2017,7 @@ class TimelineWidget(QWidget):
             if click_seek is not None:
                 self.seek_requested.emit(click_seek)
                 self._position = click_seek
+            self._invalidate_scrub_backdrop()
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
             super().mouseReleaseEvent(event)
@@ -2178,9 +2232,10 @@ class TimelineWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-        # Scrub path: blit a cached static timeline and only redraw the playhead
-        # so dragging stays smooth even with video / dense waveforms.
-        if self._scrubbing:
+        # Scrub / play path: blit a cached static timeline and only redraw the
+        # playhead so the UI never does full waveform+video paints on the clock
+        # tick. Audio still advances on the PortAudio thread regardless.
+        if self._can_use_static_backdrop():
             if not self._scrub_backdrop_valid():
                 self._rebuild_scrub_backdrop()
             if self._scrub_backdrop_valid():
@@ -2292,9 +2347,9 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Per-pixel waveform sampling is expensive; skip while scrubbing so
-        # drag stays responsive (clip rect + label still paint).
-        if self._scrubbing:
+        # Per-pixel waveform sampling is expensive; skip while scrubbing/playing
+        # so the static backdrop rebuild stays cheap (clip rect + label still paint).
+        if self._scrubbing or self._playing:
             return
         x_left = int(rect.left())
         x_right = int(rect.right())
