@@ -62,6 +62,37 @@ def test_ui_session_saved_on_close(app: QApplication, settings: QSettings, tmp_p
     assert settings.value(_KEY_LAST_SONG_ID) == song_id
 
 
+def test_apply_restored_geometry_after_show(app: QApplication, settings: QSettings) -> None:
+    with patch("cueplayer.ui.main_window.QSettings", return_value=settings):
+        window = MainWindow(Project.create("Geo"))
+        window.show()
+        app.processEvents()  # finish startup restore first
+        window.resize(1111, 777)
+        saved = window.saveGeometry()
+        window._pending_restore_geometry = saved
+        called: list[object] = []
+        original = window.restoreGeometry
+
+        def _capture(geometry: object) -> bool:
+            called.append(geometry)
+            return bool(original(geometry))
+
+        window.restoreGeometry = _capture  # type: ignore[method-assign]
+        window.apply_restored_geometry_after_show()
+        assert window._pending_restore_geometry is None
+        assert called == [saved]
+
+
+def test_clamp_keeps_window_when_on_any_screen(app: QApplication, settings: QSettings) -> None:
+    with patch("cueplayer.ui.main_window.QSettings", return_value=settings):
+        window = MainWindow(Project.create("Geo"))
+        window.show()
+        app.processEvents()
+        before = window.pos()
+        window._clamp_window_to_available_screens()
+        assert window.pos() == before
+
+
 def test_last_project_and_song_restore_on_startup(
     app: QApplication, settings: QSettings, tmp_path: Path
 ) -> None:
