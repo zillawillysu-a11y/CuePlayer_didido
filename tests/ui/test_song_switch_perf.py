@@ -79,6 +79,14 @@ def test_activate_song_does_not_prefetch_neighbors(app: QApplication) -> None:
     prefetch.assert_not_called()
 
 
+def test_activate_song_quiesces_output(app: QApplication) -> None:
+    window = _make_window_with_songs(app, n=2)
+    with patch.object(window, "_cached_audio_buffer", return_value=MagicMock()):
+        with patch.object(window.engine, "quiesce_output") as quiesce:
+            window._activate_song(1, stop_playback=True)
+    quiesce.assert_called_once()
+
+
 def test_on_bpm_detected_updates_one_cell_not_full_rebuild(app: QApplication) -> None:
     window = _make_window_with_songs(app, n=3)
     window._rebuild_song_list(select_indexes=[0])

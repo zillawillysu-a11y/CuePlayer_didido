@@ -289,7 +289,11 @@ class NdiVideoOutput:
         worker = self._worker
         self._worker = None
         if worker is not None and worker.is_alive():
-            worker.join(timeout=1.5)
+            # Prefer waiting out a stuck write over closing the sender under it
+            # (native NDI teardown while write_video_async runs can hard-crash).
+            worker.join(timeout=5.0)
+            if worker.is_alive():
+                log.warning("NDI worker did not stop within 5s; closing sender anyway")
 
     def _worker_loop(self) -> None:
         last_seq = -1

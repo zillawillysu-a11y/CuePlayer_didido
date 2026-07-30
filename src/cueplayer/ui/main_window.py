@@ -3927,8 +3927,11 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.project.songs):
             return
         self._audio_load_token += 1
-        if stop_playback:
-            self.engine.stop()
+        # Tear down PortAudio + video decode before swapping song media.
+        # Leaving the stream open (pause/stop alone) races PyAV close with the
+        # audio callback and is a common mid-play / song-switch hard crash.
+        if stop_playback or bool(getattr(self.engine, "playing", False)):
+            self.engine.quiesce_output()
         self.current_song = self.project.songs[index]
         self._sync_undo_context()
         self.engine.clear_loop()

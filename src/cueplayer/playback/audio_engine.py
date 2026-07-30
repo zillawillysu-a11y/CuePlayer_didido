@@ -51,7 +51,7 @@ from cueplayer.playback.routing_parse import (
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.midi_cue_notes import MidiCueNotes
-from cueplayer.playback.resample import resample_hold_segment, resample_linear
+from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
@@ -743,7 +743,8 @@ class AudioEngine(QObject):
         if was_playing:
             self.stop()
         else:
-            self._position_frame = 0
+            with self._lock:
+                self._position_frame = 0
             self.clear_calibration_clicks()
         self._buffer = buffer
         # Always clear stripe detection — a new buffer must not inherit the
@@ -752,15 +753,21 @@ class AudioEngine(QObject):
         self._ltc_detect_ran = False
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
-        self._position_frame = 0
+        with self._lock:
+            self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
-        if buffer is not None and int(buffer.sample_rate) == int(self._playback_rate):
-            self._playback_samples = buffer.samples
-            self._playback_cache_key = (id(buffer), int(buffer.sample_rate), int(self._playback_rate))
-        else:
-            self._playback_samples = None
-            self._playback_cache_key = None
+        with self._lock:
+            if buffer is not None and int(buffer.sample_rate) == int(self._playback_rate):
+                self._playback_samples = buffer.samples
+                self._playback_cache_key = (
+                    id(buffer),
+                    int(buffer.sample_rate),
+                    int(self._playback_rate),
+                )
+            else:
+                self._playback_samples = None
+                self._playback_cache_key = None
         self.position_changed.emit(0.0)
         self._resume_play_after_buffer = was_playing and buffer is not None
         self._buffer_setup_token += 1
@@ -945,6 +952,17 @@ class AudioEngine(QObject):
         self.clear_calibration_clicks()
         self.pause()
         self.seek(0.0)
+
+    def quiesce_output(self) -> None:
+        """Stop transport and tear down PortAudio before swapping song media.
+
+        ``pause`` / ``stop`` leave the stream callback running so resume is
+        low-latency. Song switches must close it first — otherwise video
+        decoder teardown and buffer swaps race the audio thread and can
+        hard-crash mid-play or while changing songs.
+        """
+        self.stop()
+        self._stop_stream()
 
     def toggle(self) -> None:
         if self._playing or (self._scrubbing and self._resume_after_scrub):
@@ -1451,20 +1469,24 @@ class AudioEngine(QObject):
         """
         buf = self._buffer
         if buf is None:
-            self._playback_samples = None
-            self._playback_cache_key = None
+            with self._lock:
+                self._playback_samples = None
+                self._playback_cache_key = None
             self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
-        if self._playback_cache_key == key and self._playback_samples is not None:
-            return
+        with self._lock:
+            if self._playback_cache_key == key and self._playback_samples is not None:
+                return
         if int(buf.sample_rate) == int(self._playback_rate):
-            self._playback_samples = buf.samples
-            self._playback_cache_key = key
+            with self._lock:
+                self._playback_samples = buf.samples
+                self._playback_cache_key = key
             self._playback_resample_future = None
             return
-        self._playback_cache_key = key
-        self._playback_samples = None
+        with self._lock:
+            self._playback_cache_key = key
+            self._playback_samples = None
         native = buf.samples
         src_rate = float(buf.sample_rate)
         dst_rate = float(self._playback_rate)
@@ -1536,21 +1558,20 @@ class AudioEngine(QObject):
     def _source_channel_chunk(self, channel: int, start: int, frames: int) -> np.ndarray:
         out = np.zeros(frames, dtype=np.float32)
         buf = self._buffer
-        if self._is_ltc_file_channel(channel) and buf is not None:
+        # File-LTC at native rate can be sliced directly. Rate mismatches must
+        # use pre-resampled ``_playback_samples`` — never ``resample_hold_segment``
+        # inside the PortAudio callback (causes mid-play underruns / freezes).
+        if (
+            self._is_ltc_file_channel(channel)
+            and buf is not None
+            and int(buf.sample_rate) == int(self._playback_rate)
+        ):
             native = buf.samples
             if native.ndim == 1:
                 mono = native
             else:
                 idx = min(max(0, int(channel)), int(native.shape[1]) - 1)
                 mono = native[:, idx]
-            if int(buf.sample_rate) != int(self._playback_rate):
-                return resample_hold_segment(
-                    mono,
-                    float(buf.sample_rate),
-                    float(self._playback_rate),
-                    start,
-                    frames,
-                )
             end = min(start + frames, mono.shape[0])
             if end > start:
                 out[: end - start] = mono[start:end]

@@ -131,11 +131,24 @@ class VideoDecoder:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
-        try:
-            self._container.close()
-        except Exception:
-            pass
+        # Must serialize with open/seek/decode on the same path — closing a
+        # container while another thread demuxes the same file hard-crashes
+        # some FFmpeg builds (mid-play / song-switch freezes).
+        with av_path_lock(self._path):
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._container.close()
+            except Exception:
+                pass
+            self._iterator = iter(())
+            self._last_frame = None
+            self._last_pts_seconds = None
+            self._pending_frame = None
+            self._pending_pts_seconds = None
+            self._cached_ndarray = None
+            self._cached_ndarray_source = None
 
     def frame_at(self, seconds: float) -> np.ndarray | None:
         """RGB24 (H, W, 3) array for the frame active at `seconds`, or None."""
@@ -148,6 +161,8 @@ class VideoDecoder:
             needs_seek = seconds - self._last_pts_seconds > self._MAX_FORWARD_SKIP_SECONDS
 
         with av_path_lock(self._path):
+            if self._closed:
+                return None
             if needs_seek:
                 self._seek_unlocked(seconds)
 
@@ -160,6 +175,8 @@ class VideoDecoder:
                     self._pending_frame = None
                     self._pending_pts_seconds = None
                 else:
+                    # Convert under the path lock so close() cannot tear down
+                    # the container while we still hold an AVFrame.
                     return self._convert_cached(result)
 
             for frame in self._iterator:
@@ -175,7 +192,7 @@ class VideoDecoder:
                 self._pending_pts_seconds = pts
                 break
 
-        return self._convert_cached(result)
+            return self._convert_cached(result)
 
     def _seek(self, seconds: float) -> None:
         with av_path_lock(self._path):
