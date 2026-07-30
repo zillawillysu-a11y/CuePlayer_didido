@@ -6,16 +6,15 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from cueplayer.ui.theme import TEXT, TEXT_MUTED, with_alpha
+from cueplayer.ui.theme import TEXT_MUTED
 
 
 class TimelineOverviewBar(QWidget):
     """
-    Full-width navigator: whole song on one thin strip.
+    Short full-width time bar above Play / Pause / Stop.
 
-    Drag / click to seek. Soft window = main Timeline visible range.
-    Borderless dark bed — sits above Play / Pause / Stop.
-    Idle: near-black. Hover: lifted grey (no blue accent).
+    Drag / click to seek. Shows progress, optional A/B, and a short white
+    playhead — no zoom-window frame, no song-title chrome.
     """
 
     seek_requested = Signal(float)
@@ -31,8 +30,8 @@ class TimelineOverviewBar(QWidget):
         self._loop_b: float | None = None
         self._dragging = False
         self._hover = False
-        self._bar_height = 36
-        self.setFixedHeight(self._bar_height + 4)
+        self._bar_height = 18
+        self.setFixedHeight(self._bar_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Overview — drag to jump in the song")
@@ -40,11 +39,8 @@ class TimelineOverviewBar(QWidget):
         self.setMouseTracking(True)
 
     def set_title(self, title: str) -> None:
-        text = (title or "").strip()
-        if text == self._title:
-            return
-        self._title = text
-        self.update()
+        # Title kept for API compat; not drawn (user wants a plain time bar).
+        self._title = (title or "").strip()
 
     def set_state(
         self,
@@ -85,12 +81,12 @@ class TimelineOverviewBar(QWidget):
             margin_x,
             margin_y,
             max(1, self.width() - margin_x * 2),
-            self._bar_height,
+            max(1, self._bar_height - margin_y * 2),
         )
 
     def _time_for_x(self, x: float) -> float:
         left, _top, width, _h = self._track_rect()
-        inset = 12
+        inset = 10
         track_left = left + inset
         track_w = max(1, width - inset * 2)
         t = (x - track_left) / track_w * self._duration
@@ -134,56 +130,43 @@ class TimelineOverviewBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         left, top, width, height = self._track_rect()
 
-        # Borderless bed — black idle, soft grey on hover (no blue chrome).
-        bed = QColor("#222222") if (self._hover or self._dragging) else QColor("#121212")
+        bed = QColor("#1e1e1e") if (self._hover or self._dragging) else QColor("#141414")
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(bed)
-        painter.drawRoundedRect(left, top, width, height, 8, 8)
+        painter.drawRoundedRect(left, top, width, height, 5, 5)
 
-        # Title above the hairline (centered).
-        title_band = 14 if (self._title and width >= 200) else 0
-        mid_y = top + (title_band + 10 if title_band else height / 2.0)
-        inset = 12
+        mid_y = top + height / 2.0
+        inset = 10
         track_left = left + inset
         track_w = max(1, width - inset * 2)
-
-        if title_band:
-            painter.setPen(QColor(TEXT))
-            font = painter.font()
-            font.setPointSize(max(9, font.pointSize() - 1))
-            painter.setFont(font)
-            elided = painter.fontMetrics().elidedText(
-                self._title, Qt.TextElideMode.ElideMiddle, width - 100
-            )
-            painter.drawText(
-                left,
-                top + 1,
-                width,
-                title_band,
-                int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
-                elided,
-            )
 
         def x_on_track(t: float) -> float:
             return track_left + (t / self._duration) * track_w
 
-        # Progress hairline — unplayed dark, played white.
+        # Progress hairline only — no zoom-window frame.
         painter.setBrush(QColor("#2a2a2a"))
         painter.drawRoundedRect(track_left, int(mid_y - 1), track_w, 2, 1, 1)
         played_w = max(0.0, x_on_track(self._position) - track_left)
-        painter.setBrush(QColor("#f0f0f0"))
+        painter.setBrush(QColor("#c8c8c8"))
         painter.drawRoundedRect(
             track_left, int(mid_y - 1), int(min(played_w, track_w)), 2, 1, 1
         )
 
-        # Visible window on the main Timeline (subtle).
-        x0 = x_on_track(self._view_start)
-        x1 = x_on_track(self._view_end)
-        win_w = max(3.0, x1 - x0)
-        painter.setBrush(with_alpha("#ffffff", 16))
-        painter.drawRoundedRect(int(x0), top + 2, int(win_w), height - 4, 4, 4)
+        # Soft A–B span when both exist.
+        if (
+            self._loop_a is not None
+            and self._loop_b is not None
+            and abs(self._loop_b - self._loop_a) >= 0.01
+        ):
+            a, b = sorted((self._loop_a, self._loop_b))
+            x0 = x_on_track(a)
+            x1 = x_on_track(b)
+            painter.setBrush(QColor(61, 214, 140, 40))
+            painter.drawRoundedRect(
+                int(x0), int(mid_y - 3), max(2, int(x1 - x0)), 6, 2, 2
+            )
 
-        # A / B loop markers (always visible on the overview strip).
+        # A / B ticks (short, centered on the hairline).
         for label, t, col in (
             ("A", self._loop_a, QColor("#3dd68c")),
             ("B", self._loop_b, QColor("#f0c14a")),
@@ -192,30 +175,30 @@ class TimelineOverviewBar(QWidget):
                 continue
             ax = x_on_track(min(max(0.0, float(t)), self._duration))
             painter.setPen(QPen(col, 2))
-            painter.drawLine(QPointF(ax, top + 2), QPointF(ax, top + height - 2))
-            painter.setPen(col)
+            painter.drawLine(QPointF(ax, mid_y - 5), QPointF(ax, mid_y + 5))
             tiny = painter.font()
-            tiny.setPointSize(max(8, tiny.pointSize() - 2))
+            tiny.setPointSize(max(7, tiny.pointSize() - 3))
             tiny.setBold(True)
             painter.setFont(tiny)
-            painter.drawText(int(ax + 3), top + 12, label)
+            painter.setPen(col)
+            painter.drawText(int(ax + 2), int(mid_y - 6), label)
 
-        # Playhead tick
+        # Short, slightly thicker white playhead (not full-height red).
         px = x_on_track(self._position)
-        painter.setPen(QPen(QColor("#ff5a5f"), 1.5))
-        painter.drawLine(QPointF(px, top + 3), QPointF(px, top + height - 3))
+        painter.setPen(QPen(QColor("#ffffff"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(px, mid_y - 4), QPointF(px, mid_y + 4))
 
-        # End labels: 0:00 … duration
         if width >= 140:
             painter.setPen(QColor(TEXT_MUTED))
             font = painter.font()
-            font.setPointSize(max(8, font.pointSize() - 2))
+            font.setPointSize(max(7, font.pointSize() - 3))
+            font.setBold(False)
             painter.setFont(font)
             start = "0:00"
             end = self._format_time(self._duration)
-            painter.drawText(track_left, top + height - 3, start)
+            painter.drawText(track_left, top + height - 1, start)
             tw = painter.fontMetrics().horizontalAdvance(end)
-            painter.drawText(track_left + track_w - tw, top + height - 3, end)
+            painter.drawText(track_left + track_w - tw, top + height - 1, end)
 
         painter.end()
 
