@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -46,6 +45,22 @@ _FLAT_BIG = (
     "}"
     "QPushButton:hover { background: #222222; }"
     "QPushButton:pressed { background: #2a2a2a; }"
+    "QPushButton:disabled { color: #555555; background: transparent; }"
+)
+
+# Light chip when on — matches timeline Auto Scroll overlay toggles.
+_CHIP_TOGGLE = (
+    "QPushButton {"
+    "  background: rgba(24, 24, 24, 140); border: none; border-radius: 6px;"
+    "  color: #ededed; font-size: 14px; font-weight: 600; padding: 6px 12px;"
+    "}"
+    "QPushButton:hover { background: rgba(48, 48, 48, 200); }"
+    "QPushButton:pressed { background: rgba(40, 40, 40, 220); }"
+    "QPushButton:checked {"
+    "  background: rgba(232, 232, 232, 235); color: #111111;"
+    "}"
+    "QPushButton:checked:hover { background: rgba(245, 245, 245, 245); }"
+    "QPushButton:checked:pressed { background: rgba(200, 200, 200, 245); }"
     "QPushButton:disabled { color: #555555; background: transparent; }"
 )
 
@@ -167,11 +182,15 @@ class BottomTransportBar(QWidget):
         self.loop_a_button.setToolTip("Set point A")
         self.loop_b_button = QPushButton("B")
         self.loop_b_button.setToolTip("Set point B")
-        self.loop_box = QCheckBox("Loop")
-        self.loop_box.setToolTip("Loop playback between A and B")
-        self.loop_box.setStyleSheet(
-            f"QCheckBox {{ color: {TEXT}; font-size: 14px; spacing: 8px; border: none; }}"
-        )
+        self.loop_button = QPushButton("Loop")
+        self.loop_button.setCheckable(True)
+        self.loop_button.setToolTip("Loop playback between A and B (on when highlighted)")
+        self.loop_button.setStyleSheet(_CHIP_TOGGLE)
+        self.loop_button.setFlat(True)
+        self.loop_button.setAutoDefault(False)
+        self.loop_button.setDefault(False)
+        self.loop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.loop_button.setFixedHeight(44)
         self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(44, 44))
         self.loop_label = QLabel("A —  B —")
         self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
@@ -219,7 +238,7 @@ class BottomTransportBar(QWidget):
         ab_row.setSpacing(8)
         ab_row.addWidget(self.loop_a_button)
         ab_row.addWidget(self.loop_b_button)
-        ab_row.addWidget(self.loop_box)
+        ab_row.addWidget(self.loop_button)
         ab_row.addWidget(self.loop_clear_button)
 
         right = QHBoxLayout()
@@ -256,7 +275,7 @@ class BottomTransportBar(QWidget):
         self.loop_a_button.clicked.connect(self.set_loop_a_clicked.emit)
         self.loop_b_button.clicked.connect(self.set_loop_b_clicked.emit)
         self.loop_clear_button.clicked.connect(self.clear_loop_clicked.emit)
-        self.loop_box.toggled.connect(self.loop_toggled.emit)
+        self.loop_button.toggled.connect(self.loop_toggled.emit)
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
 
@@ -346,9 +365,9 @@ class BottomTransportBar(QWidget):
         *,
         enabled: bool,
     ) -> None:
-        self.loop_box.blockSignals(True)
-        self.loop_box.setChecked(enabled)
-        self.loop_box.blockSignals(False)
+        self.loop_button.blockSignals(True)
+        self.loop_button.setChecked(enabled)
+        self.loop_button.blockSignals(False)
         a_txt = format_time(a) if a is not None else "—"
         b_txt = format_time(b) if b is not None else "—"
         self.loop_label.setText(f"A {a_txt}  B {b_txt}")
