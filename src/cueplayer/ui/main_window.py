@@ -282,14 +282,14 @@ class SetlistWidget(QTableWidget):
         self.horizontalHeader().setVisible(True)
         self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
         header = self.horizontalHeader()
-        # Song/English are Interactive so the user can drag widths; when the
+        # No./Song/English are Interactive so the user can drag widths; when the
         # panel is narrow, ScrollBarAsNeeded shows a horizontal scrollbar
         # instead of crushing Song to a few letters. LTC stays Fixed.
         header.setSectionsMovable(False)
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(self.COL_NUM, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(self.COL_NUM, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_BPM, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
