@@ -1406,8 +1406,12 @@ class TimelineWidget(QWidget):
         Continuous centering forces ``scroll_x`` to change every frame, which
         invalidates the static timeline backdrop and makes playback with video
         feel like the whole timeline is lagging. Edge-band follow only scrolls
-        when the playhead leaves ~25%–75% of the view, so most play ticks are
-        playhead-only blits (same path as scrub).
+        when the playhead leaves ~25%–75% of the view.
+
+        Important: when crossing an edge, jump the playhead to the *opposite*
+        side of the band (right→25%, left→75%). Parking it on the same edge
+        re-triggers a scroll every audio tick and makes the waveform jitter
+        until the user zooms or clicks (which rebuilds a stable backdrop).
         """
         if not self._playing:
             self._center_on_playhead()
@@ -1419,10 +1423,12 @@ class TimelineWidget(QWidget):
         left = float(self._header_width) + view_w * 0.25
         right = float(self._header_width) + view_w * 0.75
         if x < left:
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
+            # Off the left edge → place playhead at 75% (room to travel left).
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
             self._clamp_scroll()
         elif x > right:
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
+            # Off the right edge → place playhead at 25% (room to travel right).
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
             self._clamp_scroll()
 
     def _playhead_outside_view(self, *, margin: float = 0.0) -> bool:
