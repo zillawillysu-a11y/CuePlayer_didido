@@ -35,15 +35,16 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 -SkipInno
 powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 -SkipZip -SkipInno
 ```
 
-## Icon (optional but recommended)
+## Icon
 
-Put either file here before building:
+Bundled (Dalmatian logo):
 
-- `src/cueplayer/ui/assets/app_icon.ico`  (best for Windows exe + taskbar)
-- `src/cueplayer/ui/assets/app_icon.png`
+- `src/cueplayer/ui/assets/app_icon.ico` — Windows exe / taskbar / window
+- `src/cueplayer/ui/assets/app_icon.png` — 512×512 PNG (transparent)
+- `packaging/cueplayer.ico` — Inno Setup installer icon
 
-The build script / PyInstaller will pick it up automatically. Without it, Windows
-shows a generic executable icon.
+PyInstaller and `app.py` pick these up automatically on the next Windows build.
+
 
 ## Notes
 
