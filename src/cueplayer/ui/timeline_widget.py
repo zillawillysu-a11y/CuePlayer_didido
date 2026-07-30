@@ -86,6 +86,7 @@ class TimelineWidget(QWidget):
     audio_gain_changed = Signal(float)  # per-file gain in dB (-12..+12)
     lane_name_changed = Signal(int, str)  # lane_index, new name
     mark_manager_requested = Signal()
+    mark_lane_height_changed = Signal(float)
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
 
@@ -107,6 +108,7 @@ class TimelineWidget(QWidget):
         self._ruler_height = 28
         self._wave_height = 220
         self._lane_height = 28
+        self._project_mark_lane_height = 28.0
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
         self._video_lane_split_hit = 6
@@ -618,8 +620,7 @@ class TimelineWidget(QWidget):
             self._show_mark_tracks = song.show_mark_tracks
             self._show_mark_stem = song.show_mark_stem
             self._video_lane_base_height = self._clamp_video_lane_height(song.video_lane_height)
-            self._lane_height = self._clamp_mark_lane_height(song.mark_lane_height)
-            song.mark_lane_height = float(self._lane_height)
+            self._lane_height = self._clamp_mark_lane_height(self._project_mark_lane_height)
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         self._invalidate_scrub_backdrop()
@@ -668,6 +669,16 @@ class TimelineWidget(QWidget):
         if playhead_color is not None:
             q = QColor(playhead_color)
             self._playhead_color = q.name() if q.isValid() else "#ff5a5f"
+        self.update()
+
+    def apply_mark_lane_height(self, height: float) -> None:
+        """Project-global mark lane row height (pixels)."""
+        clamped = self._clamp_mark_lane_height(height)
+        self._project_mark_lane_height = float(clamped)
+        if clamped == self._lane_height:
+            return
+        self._lane_height = clamped
+        self._apply_layout_heights()
         self.update()
 
     def selected_mark_ids(self) -> list[str]:
@@ -791,10 +802,10 @@ class TimelineWidget(QWidget):
         if clamped == self._lane_height:
             return
         self._lane_height = clamped
-        if self._song is not None:
-            self._song.mark_lane_height = float(clamped)
+        self._project_mark_lane_height = float(clamped)
         self._apply_layout_heights()
         self.update()
+        self.mark_lane_height_changed.emit(float(clamped))
 
     @staticmethod
     def _clamp_gain_db(db: float) -> float:
@@ -1539,13 +1550,7 @@ class TimelineWidget(QWidget):
         # Taller wave → thinner lane rows only when no song height is stored.
         max_h = max(80, self._max_wave_height())
         self._wave_height = max(80, min(max_h, self._wave_height))
-        if self._song is not None:
-            self._lane_height = self._clamp_mark_lane_height(self._song.mark_lane_height)
-            self._song.mark_lane_height = float(self._lane_height)
-        else:
-            t = (self._wave_height - 80) / max(1.0, float(max_h - 80))
-            t = min(1.0, max(0.0, t))
-            self._lane_height = int(round(32 - t * 14))  # 32 → 18
+        self._lane_height = self._clamp_mark_lane_height(self._project_mark_lane_height)
         visible = self._visible_lane_count()
         video_h = self._video_band_height()
         ltc_h = self._ltc_band_height()
@@ -3451,7 +3456,7 @@ class TimelineWidget(QWidget):
             y = lane_y.get(mark.lane_index)
             if y is None:
                 continue
-            if selected or dragging:
+            if dragging:
                 painter.fillRect(
                     int(x - 7),
                     int(y + 1),

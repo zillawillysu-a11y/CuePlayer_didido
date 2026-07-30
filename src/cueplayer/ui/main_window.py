@@ -1202,6 +1202,7 @@ class MainWindow(QMainWindow):
         self.timeline.audio_gain_changed.connect(self._on_audio_gain_changed)
         self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         self.timeline.mark_manager_requested.connect(self._open_mark_manager)
+        self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
         # Video decode must not run ahead of timeline/MIDI on the UI thread.
         # QueuedConnection lets playhead + cue-list update finish first; decode
         # follows on the next event-loop turn (still driven by the audio clock).
@@ -4677,6 +4678,7 @@ class MainWindow(QMainWindow):
             waveform_color=str(p.waveform_color or "#3dd68c"),
             playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
+        self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
         if hasattr(self, "monitor"):
             self._sync_output_timecode_clock_ui()
 
@@ -5955,6 +5957,10 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
         self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
         self._settings.setValue(_KEY_NOW_BODY_SPLITTER, layout_state.get("body"))
+
+    def _on_mark_lane_height_changed(self, height: float) -> None:
+        self.project.mark_lane_height = float(height)
+        self._mark_dirty()
 
     def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:
         del lane_index, new_name

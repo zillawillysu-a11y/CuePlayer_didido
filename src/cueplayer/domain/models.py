@@ -302,6 +302,7 @@ class Song:
     # Timeline Video clip-row height (waveform lane); persisted per song.
     video_lane_height: float = 40.0
     # Mark lane row height (pixels); drag splitter below mark tracks.
+    # Deprecated per-song copy; height is project-global (kept for migration).
     mark_lane_height: float = 28.0
     mark_lanes: list[MarkLane] = field(default_factory=list)
     marks: list[Mark] = field(default_factory=list)
@@ -977,6 +978,8 @@ class Project:
     waveform_color: str = "#3dd68c"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#ff5a5f"
+    # Mark lane row height (pixels) — one value for the whole show.
+    mark_lane_height: float = 28.0
     # Output timecode clock under the monitor seconds display.
     show_output_timecode_clock: bool = True
     output_timecode_clock_color: str = "#3dd68c"
