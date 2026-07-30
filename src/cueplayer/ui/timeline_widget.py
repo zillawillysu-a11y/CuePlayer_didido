@@ -119,9 +119,8 @@ class TimelineWidget(QWidget):
         self._video_lane_split_hit = 6
         # Show-eye sits on the waveform bottom edge in the header (no extra lane height).
         self._video_header_eye_row_height = 0.0
-        # Expanded Video chrome shows the per-clip volume fader only.
-        self._video_expand_extra = 42.0
-        self._video_track_expanded = False
+        # Always-visible Video header row for the selected-clip volume fader.
+        self._video_volume_row_height = 42.0
         self._video_track_muted = False
         self._show_video_track = True
         # Music header expand: Music bed % + waveform gain (dB) — no Video eye required.
@@ -362,21 +361,14 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _build_video_track_overlay(self) -> None:
-        """Video track header chrome: track Mute + an expand toggle that
-        reveals, together (同步顯示), the per-selected-clip Video volume
-        fader *and* a Music volume fader for Video/Music alignment balancing
-        (real QSliders, styled like Master Volume — see theme.SLIDER_QSS)."""
+        """Video track header chrome: Mute + always-visible per-clip volume fader.
+
+        Music bed % + Gain live under the Music-header chevron (separate expand).
+        """
         btn_size = QSize(22, 22)
         self.video_mute_button = IconButton(
             "speaker_mute",
             "Mute Video Track (silences every clip's own audio; picture keeps playing)",
-            self,
-            size=btn_size,
-            overlay=True,
-        )
-        self.video_expand_button = IconButton(
-            "chevron",
-            "Show Video Clip Volume + Music Volume faders (for Video/Music balancing)",
             self,
             size=btn_size,
             overlay=True,
@@ -398,7 +390,6 @@ class TimelineWidget(QWidget):
             overlay=True,
         )
         self.video_mute_button.clicked.connect(self._toggle_video_track_muted)
-        self.video_expand_button.clicked.connect(self._toggle_video_track_expanded)
         self.video_hide_button.clicked.connect(self._hide_video_track_clicked)
         self.video_show_button.clicked.connect(self._toggle_video_track_from_eye)
 
@@ -415,9 +406,8 @@ class TimelineWidget(QWidget):
         self.video_clip_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.video_clip_volume_label.hide()
 
-        # Music-bed volume — shown alongside Video Clip volume whenever the
-        # Video track chrome is expanded, so Music vs Video can be balanced
-        # by eye/ear in one place instead of hunting for Master Volume.
+        # Music-bed volume — shown when the Music header chevron is expanded
+        # (independent of Video Track visibility).
         self.music_volume_caption = QLabel("Music", self)
         self.music_volume_caption.setStyleSheet("color: #71717a; font-size: 10px; background: transparent;")
         self.music_volume_caption.hide()
@@ -465,7 +455,6 @@ class TimelineWidget(QWidget):
 
         for w in (
             self.video_mute_button,
-            self.video_expand_button,
             self.video_hide_button,
             self.video_show_button,
             self.music_expand_button,
@@ -560,7 +549,6 @@ class TimelineWidget(QWidget):
         visible = self._video_lane_visible()
         eye_header = self._video_eye_header_visible()
         self.video_mute_button.setVisible(visible)
-        self.video_expand_button.setVisible(visible)
         # Hide/show lives on the fixed Music-header eye — not on Video Track.
         self.video_hide_button.setVisible(False)
         self.video_show_button.setVisible(eye_header)
@@ -568,35 +556,28 @@ class TimelineWidget(QWidget):
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
+            self._layout_music_header_overlay()
             return
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
         btn_y = top + (row_h - self.video_mute_button.height()) // 2
         x = self._header_width - 6 - self.video_mute_button.width()
         self.video_mute_button.move(x, btn_y)
-        x -= self.video_expand_button.width() + 3
-        self.video_expand_button.move(x, btn_y)
         self.video_mute_button.raise_()
-        self.video_expand_button.raise_()
-        if self._video_track_expanded:
-            sub_y = top + row_h
-            label_w = 32
-            slider_x = 8
-            slider_w = max(40, self._header_width - 16 - label_w - 4)
-            # Row 1: selected clip's Video volume (clip name caption is
-            # painted separately in _paint_headers, just above this row).
-            slider_y = sub_y + 20
-            self.video_clip_volume_slider.setGeometry(slider_x, slider_y, slider_w, 16)
-            self.video_clip_volume_label.setGeometry(
-                slider_x + slider_w + 4, slider_y - 1, label_w, 18
-            )
-            self.video_clip_volume_slider.raise_()
-            self.video_clip_volume_label.raise_()
-            self.video_clip_volume_slider.show()
-            self.video_clip_volume_label.show()
-        else:
-            self.video_clip_volume_slider.hide()
-            self.video_clip_volume_label.hide()
+        # Volume row is always shown under the Video title (no expand toggle).
+        sub_y = top + row_h
+        label_w = 32
+        slider_x = 8
+        slider_w = max(40, self._header_width - 16 - label_w - 4)
+        slider_y = sub_y + 20
+        self.video_clip_volume_slider.setGeometry(slider_x, slider_y, slider_w, 16)
+        self.video_clip_volume_label.setGeometry(
+            slider_x + slider_w + 4, slider_y - 1, label_w, 18
+        )
+        self.video_clip_volume_slider.raise_()
+        self.video_clip_volume_label.raise_()
+        self.video_clip_volume_slider.show()
+        self.video_clip_volume_label.show()
         self._layout_music_header_overlay()
 
     def _toggle_video_track_muted(self) -> None:
@@ -617,15 +598,6 @@ class TimelineWidget(QWidget):
         self._layout_music_header_overlay()
         self._sync_music_volume_ui()
         self._sync_audio_gain_ui()
-        self.update()
-
-    def _toggle_video_track_expanded(self) -> None:
-        self._video_track_expanded = not self._video_track_expanded
-        if hasattr(self, "video_expand_button"):
-            self.video_expand_button.set_active(self._video_track_expanded)
-        self._apply_layout_heights()
-        self._layout_video_track_overlay()
-        self._sync_video_clip_volume_ui()
         self.update()
 
     def _sync_audio_gain_ui(self) -> None:
@@ -857,9 +829,6 @@ class TimelineWidget(QWidget):
             self._song.show_video_track = visible
             self._song.show_ltc_track = visible
         if not visible:
-            self._video_track_expanded = False
-            if hasattr(self, "video_expand_button"):
-                self.video_expand_button.set_active(False)
             self.set_selected_video_clip_ids([], emit=False)
         self._apply_layout_heights()
         self._layout_video_track_overlay()
@@ -905,9 +874,8 @@ class TimelineWidget(QWidget):
 
     @property
     def _video_lane_height(self) -> float:
-        """Total video lane height, including the expanded clip-volume row."""
-        extra = self._video_expand_extra if self._video_track_expanded else 0.0
-        return self._video_lane_base_height + extra
+        """Total video lane height, including the always-visible volume row."""
+        return self._video_lane_base_height + self._video_volume_row_height
 
     def _mark_lane_gap_px(self) -> int:
         """Black spacers between tinted mark rows (track colors on only)."""
@@ -3185,9 +3153,8 @@ class TimelineWidget(QWidget):
         painter.setPen(QColor("#27272a"))
         painter.drawLine(0, bottom - 1, right, bottom - 1)
         clip_row_height = min(height, int(self._video_lane_base_height))
-        if self._video_track_expanded:
-            divider_y = top + clip_row_height
-            painter.drawLine(self._header_width, divider_y, right, divider_y)
+        divider_y = top + clip_row_height
+        painter.drawLine(self._header_width, divider_y, right, divider_y)
         if self._song is None:
             return
         overlapping = self._song.overlapping_video_clip_ids()
@@ -3326,16 +3293,15 @@ class TimelineWidget(QWidget):
             row_h = int(self._video_lane_base_height)
             painter.setPen(QColor(COLOR_VIDEO))
             painter.drawText(8, video_top + int(row_h / 2) + 4, "Video")
-            if self._video_track_expanded:
-                clip = self._single_selected_video_clip()
-                sub_top = video_top + row_h
-                painter.setPen(QColor("#71717a"))
-                name_text = (
-                    fm.elidedText(clip.name, Qt.TextElideMode.ElideRight, text_w)
-                    if clip is not None
-                    else "No clip selected"
-                )
-                painter.drawText(8, sub_top + 13, name_text)
+            clip = self._single_selected_video_clip()
+            sub_top = video_top + row_h
+            painter.setPen(QColor("#71717a"))
+            name_text = (
+                fm.elidedText(clip.name, Qt.TextElideMode.ElideRight, text_w)
+                if clip is not None
+                else "No clip selected"
+            )
+            painter.drawText(8, sub_top + 13, name_text)
         if self._ltc_lane_visible():
             ltc_top = self._ltc_lane_top_y()
             ltc_h = self._ltc_band_height()
