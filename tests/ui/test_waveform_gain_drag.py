@@ -54,7 +54,7 @@ def test_scrub_backdrop_does_not_bake_gain_overlays(
 
 def test_gain_drag_after_zoom_uses_press_time_bounds(app: QApplication) -> None:
     widget, song = _widget_with_gain_line(app)
-    bounds = widget._wave_gain_bounds()
+    bounds = widget._wave_gain_travel_bounds()
     assert bounds is not None
     top, bottom = bounds
     zero_y = widget._y_for_gain_db(0.0, top, bottom)
@@ -72,3 +72,19 @@ def test_gain_drag_after_zoom_uses_press_time_bounds(app: QApplication) -> None:
     app.processEvents()
     widget._apply_gain_at_y(zero_y, "wave")
     assert song.audio_gain_db == pytest.approx(0.0, abs=0.05)
+
+
+def test_gain_travel_bounds_leave_vertical_margin(app: QApplication) -> None:
+    widget, _song = _widget_with_gain_line(app)
+    full = widget._wave_gain_bounds()
+    travel = widget._wave_gain_travel_bounds()
+    assert full is not None and travel is not None
+    top, bottom = full
+    travel_top, travel_bottom = travel
+    span = bottom - top
+    assert travel_top == pytest.approx(top + span * 0.05, abs=0.5)
+    assert travel_bottom == pytest.approx(bottom - span * 0.05, abs=0.5)
+    assert travel_bottom - travel_top == pytest.approx(span * 0.9, abs=1.0)
+
+    assert widget._y_for_gain_db(12.0, travel_top, travel_bottom) == pytest.approx(travel_top, abs=0.5)
+    assert widget._y_for_gain_db(-12.0, travel_top, travel_bottom) == pytest.approx(travel_bottom, abs=0.5)

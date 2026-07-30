@@ -169,6 +169,8 @@ class TimelineWidget(QWidget):
         self._audio_gain_zone: str | None = None  # "wave" | "ltc"
         self._audio_gain_drag_bounds: tuple[float, float] | None = None
         self._audio_gain_hit_px = 6
+        self._audio_gain_travel_span = 0.9
+        self._hover_audio_gain_zone: str | None = None
         self._hover_mark_id: str | None = None
         self._hover_mark_lane_header: int | None = None
         # After a click-seek, keep the view where you clicked until wheel or Auto Scroll.
@@ -863,6 +865,12 @@ class TimelineWidget(QWidget):
     def _gain_db_to_volume(db: float) -> float:
         return float(min(1.0, max(0.0, 10.0 ** (TimelineWidget._clamp_gain_db(db) / 20.0))))
 
+    def _gain_travel_bounds(self, top: float, bottom: float) -> tuple[float, float]:
+        """Inset vertical travel so +12/-12 dB stops short of the track edges."""
+        span = max(1.0, bottom - top)
+        inset = span * (1.0 - self._audio_gain_travel_span) * 0.5
+        return top + inset, bottom - inset
+
     def _wave_gain_bounds(self) -> tuple[float, float] | None:
         if self._audio is None and not self._audio_loading:
             return None
@@ -872,12 +880,24 @@ class TimelineWidget(QWidget):
             return None
         return top, bottom
 
+    def _wave_gain_travel_bounds(self) -> tuple[float, float] | None:
+        bounds = self._wave_gain_bounds()
+        if bounds is None:
+            return None
+        return self._gain_travel_bounds(*bounds)
+
     def _ltc_gain_bounds(self) -> tuple[float, float] | None:
         if not self._ltc_lane_visible() or self._ltc_audio is None:
             return None
         top = float(self._ltc_lane_top_y())
         bottom = top + float(self._ltc_band_height())
         return top, bottom
+
+    def _ltc_gain_travel_bounds(self) -> tuple[float, float] | None:
+        bounds = self._ltc_gain_bounds()
+        if bounds is None:
+            return None
+        return self._gain_travel_bounds(*bounds)
 
     def _y_for_gain_db(self, db: float, top: float, bottom: float) -> float:
         frac = (12.0 - self._clamp_gain_db(db)) / 24.0
@@ -901,14 +921,14 @@ class TimelineWidget(QWidget):
             return None
         hit = self._audio_gain_hit_px
         if self._show_wave_gain_line:
-            bounds = self._wave_gain_bounds()
+            bounds = self._wave_gain_travel_bounds()
             if bounds is not None:
                 top, bottom = bounds
                 line_y = self._y_for_gain_db(self._current_wave_gain_db(), top, bottom)
                 if abs(y - line_y) <= hit:
                     return "wave"
         if self._show_ltc_gain_line:
-            bounds = self._ltc_gain_bounds()
+            bounds = self._ltc_gain_travel_bounds()
             if bounds is not None:
                 top, bottom = bounds
                 line_y = self._y_for_gain_db(self._current_ltc_music_gain_db(), top, bottom)
@@ -920,7 +940,7 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return
         if zone == "wave":
-            bounds = self._audio_gain_drag_bounds or self._wave_gain_bounds()
+            bounds = self._audio_gain_drag_bounds or self._wave_gain_travel_bounds()
             if bounds is None:
                 return
             top, bottom = bounds
@@ -930,7 +950,7 @@ class TimelineWidget(QWidget):
             self._song.audio_gain_db = db
             self.audio_gain_changed.emit(db)
         elif zone == "ltc":
-            bounds = self._audio_gain_drag_bounds or self._ltc_gain_bounds()
+            bounds = self._audio_gain_drag_bounds or self._ltc_gain_travel_bounds()
             if bounds is None:
                 return
             top, bottom = bounds
@@ -964,7 +984,7 @@ class TimelineWidget(QWidget):
     def _paint_audio_gain_overlays(self, painter: QPainter) -> None:
         right = self._paint_right()
         if self._show_wave_gain_line:
-            bounds = self._wave_gain_bounds()
+            bounds = self._wave_gain_travel_bounds()
             if bounds is not None:
                 self._paint_gain_line(
                     painter,
@@ -972,9 +992,10 @@ class TimelineWidget(QWidget):
                     self._current_wave_gain_db(),
                     QColor("#f4f4f5"),
                     right,
+                    hovered=self._audio_gain_line_active("wave"),
                 )
         if self._show_ltc_gain_line:
-            bounds = self._ltc_gain_bounds()
+            bounds = self._ltc_gain_travel_bounds()
             if bounds is not None:
                 self._paint_gain_line(
                     painter,
@@ -983,7 +1004,13 @@ class TimelineWidget(QWidget):
                     QColor("#fbbf24"),
                     right,
                     label_prefix="Music ",
+                    hovered=self._audio_gain_line_active("ltc"),
                 )
+
+    def _audio_gain_line_active(self, zone: str) -> bool:
+        if self._dragging_audio_gain and self._audio_gain_zone == zone:
+            return True
+        return self._hover_audio_gain_zone == zone
 
     def _paint_gain_line(
         self,
@@ -994,14 +1021,34 @@ class TimelineWidget(QWidget):
         right: int,
         *,
         label_prefix: str = "",
+        hovered: bool = False,
     ) -> None:
         top, bottom = bounds
         line_y = self._y_for_gain_db(db, top, bottom)
-        painter.setPen(QPen(color, 2))
-        painter.drawLine(QPointF(self._header_width, line_y), QPointF(right, line_y))
-        painter.setPen(color)
+        line_left = float(self._header_width)
+        line_right = float(right)
+        line_w = max(1.0, line_right - line_left)
+
+        if hovered:
+            glow = QColor(color)
+            glow.setAlpha(56)
+            painter.fillRect(QRectF(line_left, line_y - 5.0, line_w, 10.0), glow)
+            line_color = QColor(color).lighter(135)
+            pen_w = 3
+            cap_r = 3.5
+            painter.setBrush(line_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(line_left, line_y), cap_r, cap_r)
+            painter.drawEllipse(QPointF(line_right, line_y), cap_r, cap_r)
+        else:
+            line_color = color
+            pen_w = 2
+
+        painter.setPen(QPen(line_color, pen_w))
+        painter.drawLine(QPointF(line_left, line_y), QPointF(line_right, line_y))
+        painter.setPen(line_color)
         text = f"{label_prefix}{db:+.1f} dB"
-        painter.drawText(int(self._header_width) + 8, int(line_y) - 4, text)
+        painter.drawText(int(line_left) + 8, int(line_y) - 4, text)
 
     def _video_lane_top_y(self) -> int:
         """Video sits directly under the Music waveform."""
@@ -2377,9 +2424,9 @@ class TimelineWidget(QWidget):
                 self._dragging_audio_gain = True
                 self._audio_gain_zone = gain_zone
                 if gain_zone == "wave":
-                    self._audio_gain_drag_bounds = self._wave_gain_bounds()
+                    self._audio_gain_drag_bounds = self._wave_gain_travel_bounds()
                 else:
-                    self._audio_gain_drag_bounds = self._ltc_gain_bounds()
+                    self._audio_gain_drag_bounds = self._ltc_gain_travel_bounds()
                 self._invalidate_scrub_backdrop()
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
@@ -2518,6 +2565,9 @@ class TimelineWidget(QWidget):
                 self.update()
             hover = hover_wave or hover_video or hover_mark
             gain_zone = None if hover else self._near_audio_gain_line(x, y)
+            if gain_zone != self._hover_audio_gain_zone:
+                self._hover_audio_gain_zone = gain_zone
+                self.update()
             hit = None if hover else self._hit_mark_at(x, y)
             if hit != self._hover_mark_id:
                 self._hover_mark_id = hit
@@ -2576,6 +2626,9 @@ class TimelineWidget(QWidget):
             changed = True
         if self._hover_mark_lane_header is not None:
             self._hover_mark_lane_header = None
+            changed = True
+        if self._hover_audio_gain_zone is not None:
+            self._hover_audio_gain_zone = None
             changed = True
         if changed:
             self.update()
