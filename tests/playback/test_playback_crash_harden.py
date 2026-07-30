@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QApplication
+
 from cueplayer.media.av_lock import av_path_lock
 from cueplayer.media.video_loader import VideoDecoder
 from cueplayer.playback.audio_engine import AudioEngine
@@ -69,6 +71,60 @@ def test_video_decoder_close_waits_for_path_lock(tmp_path: Path, monkeypatch) ->
     assert order.index("hold-enter") < order.index("hold-exit")
     assert order.index("hold-exit") < order.index("close")
     assert order.index("close") < order.index("closed")
+
+
+def test_autodetect_never_calls_sync_detect_ltc(monkeypatch) -> None:
+    """Pure-music / mid-play path must not scan LTC on the calling thread."""
+    from cueplayer.domain.models import AudioOutputSettings
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.playback import audio_engine as eng_mod
+    from cueplayer.playback.devices import OutputDeviceInfo
+
+    def _device() -> OutputDeviceInfo:
+        return OutputDeviceInfo(
+            index=0,
+            name="Test",
+            max_output_channels=2,
+            default_samplerate=48000.0,
+            hostapi_name="Test",
+        )
+
+    monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [_device()])
+    monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+
+    called = {"n": 0}
+
+    def _boom(*_a, **_k):  # noqa: ANN001
+        called["n"] += 1
+        raise AssertionError("sync detect_ltc_channel must not run")
+
+    monkeypatch.setattr(eng_mod, "detect_ltc_channel", _boom)
+
+    QApplication.instance() or QApplication([])
+    engine = eng_mod.AudioEngine()
+    engine.apply_audio_settings(AudioOutputSettings(ltc_enabled=False))
+    n = 4800
+    stereo = np.zeros((n, 2), dtype=np.float32)
+    mono, levels = build_peak_pyramid(stereo, 48000)
+    buf = AudioBuffer(
+        path="pure.wav",
+        sample_rate=48000,
+        samples=stereo,
+        mono=mono,
+        peak_levels=levels,
+    )
+    engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
+
+    # Hot paths that used to sync-detect:
+    assert engine._autodetect_ltc_channel() is None
+    assert engine._file_ltc_channel() is None
+    assert engine._song_file_ltc_channel() is None
+    engine._music_source_indices()
+    engine._is_ltc_file_channel(0)
+    engine._ltc_chunk(0, 128)
+    assert called["n"] == 0
+    engine.shutdown_midi_outputs()
 
 
 def test_source_channel_chunk_uses_pre_resampled_pcm_on_rate_mismatch() -> None:

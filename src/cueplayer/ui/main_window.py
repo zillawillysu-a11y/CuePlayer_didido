@@ -5226,7 +5226,11 @@ class MainWindow(QMainWindow):
             self._schedule_ltc_detect_for_buffer(path, buffer)
 
     def _schedule_idle_ltc_detect(self) -> None:
-        """After 2 s of idle: run LTC detect for songs whose buffer is cached but LTC unknown."""
+        """After idle: run LTC detect for songs whose buffer is cached but LTC unknown."""
+        if bool(getattr(self.engine, "playing", False)):
+            # Don't scan neighbor files for LTC while PortAudio needs the GIL.
+            self._ltc_idle_timer.start()
+            return
         for song in self.project.songs:
             path = self._main_audio_path_for_song(song)
             if path is None:
@@ -5237,6 +5241,7 @@ class MainWindow(QMainWindow):
             buffer = self._audio_buffer_cache.get(key)
             if buffer is not None:
                 self._schedule_ltc_detect_for_buffer(path, buffer)
+                return
 
     def _schedule_ltc_detect_for_buffer(self, path: Path, buffer: AudioBuffer) -> None:
         key = self._audio_cache_key(path)
@@ -5253,25 +5258,32 @@ class MainWindow(QMainWindow):
         sample_rate = int(buffer.sample_rate)
 
         def _run() -> tuple[tuple[str, int, int], int | None]:
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
             return key, detect_ltc_channel(samples, sample_rate)
 
         future = self._ltc_detect_executor.submit(_run)
         self._audio_ltc_inflight[key] = future
 
+        def _apply(cache_key: tuple[str, int, int], channel: int | None, *, ok: bool) -> None:
+            self._audio_ltc_inflight.pop(cache_key, None)
+            if ok:
+                self._audio_ltc_cache[cache_key] = channel
+                self._audio_prefetch_executor.submit(save_ltc_channel, cache_key, channel)
+            self._note_media_warm_step(cache_key, "ltc")
+            if ok:
+                self._setlist_ltc_cache_updated.emit()
+            self._media_warm_progress.emit()
+            self._ltc_idle_timer.start()
+
         def _done(fut) -> None:
-            self._audio_ltc_inflight.pop(key, None)
             try:
                 cache_key, channel = fut.result()
             except Exception:
-                self._note_media_warm_step(key, "ltc")
-                self._media_warm_progress.emit()
+                QTimer.singleShot(0, lambda: _apply(key, None, ok=False))
                 return
-            self._audio_ltc_cache[cache_key] = channel
-            self._note_media_warm_step(cache_key, "ltc")
-            self._setlist_ltc_cache_updated.emit()
-            self._media_warm_progress.emit()
-            self._audio_prefetch_executor.submit(save_ltc_channel, cache_key, channel)
-            self._ltc_idle_timer.start()
+            QTimer.singleShot(0, lambda: _apply(cache_key, channel, ok=True))
 
         future.add_done_callback(_done)
 
@@ -5694,16 +5706,19 @@ class MainWindow(QMainWindow):
             self._audio_inflight[key] = future
 
             def _done(fut) -> None:
-                self._audio_inflight.pop(key, None)
-                try:
-                    buffer = fut.result()
-                except Exception:
-                    self._note_media_warm_step(key, "audio")
-                    self._note_media_warm_step(key, "ltc")
+                def _apply() -> None:
+                    self._audio_inflight.pop(key, None)
+                    try:
+                        buffer = fut.result()
+                    except Exception:
+                        self._note_media_warm_step(key, "audio")
+                        self._note_media_warm_step(key, "ltc")
+                        self._media_warm_progress.emit()
+                        return
+                    self._store_audio_cache(path, buffer, write_disk=False, schedule_ltc=False)
                     self._media_warm_progress.emit()
-                    return
-                self._store_audio_cache(path, buffer, write_disk=False, schedule_ltc=False)
-                self._media_warm_progress.emit()
+
+                QTimer.singleShot(0, _apply)
 
             future.add_done_callback(_done)
         return future
