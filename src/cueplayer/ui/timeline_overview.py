@@ -11,13 +11,16 @@ from cueplayer.ui.theme import TEXT_MUTED
 
 class TimelineOverviewBar(QWidget):
     """
-    Short full-width time bar above Play / Pause / Stop.
+    Centered, horizontally shortened time bar above Play / Pause / Stop.
 
-    Drag / click to seek. Shows progress, optional A/B, and a short white
-    playhead — no zoom-window frame, no song-title chrome.
+    Drag / click to seek. Progress + A/B + short white playhead.
+    Time labels sit in side gutters so the white line never covers them.
     """
 
     seek_requested = Signal(float)
+
+    # Side gutters for "0:00" / duration — keep hairline clear of the text.
+    _LABEL_GUTTER = 44
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -32,6 +35,9 @@ class TimelineOverviewBar(QWidget):
         self._hover = False
         self._bar_height = 18
         self.setFixedHeight(self._bar_height)
+        # Prefer a shorter horizontal span; transport centers us with stretches.
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(720)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Overview — drag to jump in the song")
@@ -39,7 +45,6 @@ class TimelineOverviewBar(QWidget):
         self.setMouseTracking(True)
 
     def set_title(self, title: str) -> None:
-        # Title kept for API compat; not drawn (user wants a plain time bar).
         self._title = (title or "").strip()
 
     def set_state(
@@ -75,18 +80,19 @@ class TimelineOverviewBar(QWidget):
         self.update()
 
     def _track_rect(self):
-        margin_x = 4
+        """Inner bed between time-label gutters."""
+        gutter = self._LABEL_GUTTER
         margin_y = 2
         return (
-            margin_x,
+            gutter,
             margin_y,
-            max(1, self.width() - margin_x * 2),
+            max(1, self.width() - gutter * 2),
             max(1, self._bar_height - margin_y * 2),
         )
 
     def _time_for_x(self, x: float) -> float:
         left, _top, width, _h = self._track_rect()
-        inset = 10
+        inset = 6
         track_left = left + inset
         track_w = max(1, width - inset * 2)
         t = (x - track_left) / track_w * self._duration
@@ -136,23 +142,22 @@ class TimelineOverviewBar(QWidget):
         painter.drawRoundedRect(left, top, width, height, 5, 5)
 
         mid_y = top + height / 2.0
-        inset = 10
+        inset = 6
         track_left = left + inset
         track_w = max(1, width - inset * 2)
 
         def x_on_track(t: float) -> float:
             return track_left + (t / self._duration) * track_w
 
-        # Progress hairline only — no zoom-window frame.
+        # Progress hairline — stays inside the bed, clear of side time labels.
         painter.setBrush(QColor("#2a2a2a"))
         painter.drawRoundedRect(track_left, int(mid_y - 1), track_w, 2, 1, 1)
         played_w = max(0.0, x_on_track(self._position) - track_left)
-        painter.setBrush(QColor("#c8c8c8"))
+        painter.setBrush(QColor("#f0f0f0"))
         painter.drawRoundedRect(
             track_left, int(mid_y - 1), int(min(played_w, track_w)), 2, 1, 1
         )
 
-        # Soft A–B span when both exist.
         if (
             self._loop_a is not None
             and self._loop_b is not None
@@ -166,7 +171,6 @@ class TimelineOverviewBar(QWidget):
                 int(x0), int(mid_y - 3), max(2, int(x1 - x0)), 6, 2, 2
             )
 
-        # A / B ticks (short, centered on the hairline).
         for label, t, col in (
             ("A", self._loop_a, QColor("#3dd68c")),
             ("B", self._loop_b, QColor("#f0c14a")),
@@ -183,22 +187,38 @@ class TimelineOverviewBar(QWidget):
             painter.setPen(col)
             painter.drawText(int(ax + 2), int(mid_y - 6), label)
 
-        # Short, slightly thicker white playhead (not full-height red).
         px = x_on_track(self._position)
-        painter.setPen(QPen(QColor("#ffffff"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(
+            QPen(QColor("#ffffff"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        )
         painter.drawLine(QPointF(px, mid_y - 4), QPointF(px, mid_y + 4))
 
-        if width >= 140:
-            painter.setPen(QColor(TEXT_MUTED))
-            font = painter.font()
-            font.setPointSize(max(7, font.pointSize() - 3))
-            font.setBold(False)
-            painter.setFont(font)
-            start = "0:00"
-            end = self._format_time(self._duration)
-            painter.drawText(track_left, top + height - 1, start)
-            tw = painter.fontMetrics().horizontalAdvance(end)
-            painter.drawText(track_left + track_w - tw, top + height - 1, end)
+        # Time labels in gutters — never under the white progress line.
+        painter.setPen(QColor(TEXT_MUTED))
+        font = painter.font()
+        font.setPointSize(max(7, font.pointSize() - 3))
+        font.setBold(False)
+        painter.setFont(font)
+        start = "0:00"
+        end = self._format_time(self._duration)
+        fm = painter.fontMetrics()
+        painter.drawText(
+            4,
+            0,
+            self._LABEL_GUTTER - 6,
+            self.height(),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight),
+            start,
+        )
+        painter.drawText(
+            self.width() - self._LABEL_GUTTER + 2,
+            0,
+            self._LABEL_GUTTER - 6,
+            self.height(),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            end,
+        )
+        del fm
 
         painter.end()
 

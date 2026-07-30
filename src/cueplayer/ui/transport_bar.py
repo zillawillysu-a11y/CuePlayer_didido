@@ -142,8 +142,16 @@ class BottomTransportBar(QWidget):
         root.setContentsMargins(10, 4, 10, 8)
         root.setSpacing(2)
 
+        # Horizontally shortened + centered overview (not full-bleed).
+        overview_row = QHBoxLayout()
+        overview_row.setContentsMargins(0, 0, 0, 0)
+        overview_row.setSpacing(0)
+        overview_row.addStretch(1)
         self.overview = TimelineOverviewBar()
-        root.addWidget(self.overview)
+        # Grow up to maxWidth (720); side stretches keep it centered.
+        overview_row.addWidget(self.overview, stretch=2)
+        overview_row.addStretch(1)
+        root.addLayout(overview_row)
 
         row = QHBoxLayout()
         row.setContentsMargins(4, 0, 4, 0)

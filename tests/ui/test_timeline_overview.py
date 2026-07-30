@@ -28,9 +28,11 @@ def test_overview_seek_emits(app: QApplication) -> None:
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
-    # Track inset matches TimelineOverviewBar paint/seek geometry.
-    left, inset, width = 4, 10, 400 - 8
-    mid_x = left + inset + (width - inset * 2) * 0.5
+    # Track sits between label gutters; inset matches paint/seek geometry.
+    gutter, inset = 44, 6
+    track_left = gutter + inset
+    track_w = 400 - gutter * 2 - inset * 2
+    mid_x = track_left + track_w * 0.5
     press = QMouseEvent(
         QEvent.Type.MouseButtonPress,
         QPointF(mid_x, 9),
