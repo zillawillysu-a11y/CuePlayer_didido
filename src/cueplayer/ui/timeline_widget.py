@@ -111,7 +111,6 @@ class TimelineWidget(QWidget):
         self._wave_height = 220
         self._lane_height = 28
         self._project_mark_lane_height = 28.0
-        self._mark_lane_gap = 2
         self._show_mark_track_colors = True
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
@@ -168,6 +167,7 @@ class TimelineWidget(QWidget):
         self._audio_gain_zone: str | None = None  # "wave" | "ltc"
         self._audio_gain_hit_px = 6
         self._hover_mark_id: str | None = None
+        self._hover_mark_lane_header: int | None = None
         # After a click-seek, keep the view where you clicked until wheel or Auto Scroll.
         self._view_pinned = False
         self._scrub_edge = 64.0
@@ -784,10 +784,7 @@ class TimelineWidget(QWidget):
         return self._video_lane_base_height + extra
 
     def _marks_content_height(self) -> int:
-        n = self._visible_lane_count()
-        if n <= 0:
-            return 0
-        return n * self._lane_height + max(0, n - 1) * self._mark_lane_gap
+        return self._visible_lane_count() * self._lane_height
 
     def _marks_band_height(self) -> int:
         if not self._show_mark_tracks:
@@ -1080,11 +1077,9 @@ class TimelineWidget(QWidget):
         out: list[tuple[int, float, float]] = []
         y = float(self._tracks_top_y())
         visible = [lane for lane in self._song.mark_lanes if lane.visible]
-        for i, lane in enumerate(visible):
+        for lane in visible:
             out.append((lane.index, y, y + self._lane_height))
             y += self._lane_height
-            if i < len(visible) - 1:
-                y += self._mark_lane_gap
         return out
 
     def _lane_index_at(self, x: float, y: float) -> int | None:
@@ -1177,17 +1172,6 @@ class TimelineWidget(QWidget):
         lane.name = new_name
         self.lane_name_changed.emit(lane_index, new_name)
         self.update()
-
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
-        if event.button() == Qt.MouseButton.LeftButton:
-            x = event.position().x()
-            y = event.position().y()
-            lane_index = self._hit_mark_lane_header(x, y)
-            if lane_index is not None:
-                self._rename_mark_lane_at(lane_index)
-                event.accept()
-                return
-        super().mouseDoubleClickEvent(event)
 
     def _marks_in_box(self, rect: QRectF) -> set[str]:
         if self._song is None:
@@ -2436,8 +2420,7 @@ class TimelineWidget(QWidget):
         elif self._resizing_mark_lanes and event.buttons() & Qt.MouseButton.LeftButton:
             n = max(1, self._visible_lane_count())
             total = y - self._tracks_top_y() - self._mark_lane_split_h
-            gap_total = max(0, n - 1) * self._mark_lane_gap
-            self.set_mark_lane_height((total - gap_total) / n)
+            self.set_mark_lane_height(total / n)
         elif self._dragging_audio_gain and event.buttons() & Qt.MouseButton.LeftButton:
             zone = self._audio_gain_zone or "wave"
             self._apply_gain_at_y(y, zone)
@@ -2506,6 +2489,10 @@ class TimelineWidget(QWidget):
             if clip_hover_id != self._hover_clip_id:
                 self._hover_clip_id = clip_hover_id
                 self.update()
+            header_lane = None if hover else self._hit_mark_lane_header(x, y)
+            if header_lane != self._hover_mark_lane_header:
+                self._hover_mark_lane_header = header_lane
+                self.update()
             if hover:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif gain_zone is not None:
@@ -2535,8 +2522,14 @@ class TimelineWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: ANN001
+        changed = False
         if self._hover_mark_id is not None:
             self._hover_mark_id = None
+            changed = True
+        if self._hover_mark_lane_header is not None:
+            self._hover_mark_lane_header = None
+            changed = True
+        if changed:
             self.update()
         super().leaveEvent(event)
 
@@ -2716,10 +2709,11 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _show_mark_lane_context_menu(self, pos, lane_index: int) -> None:  # noqa: ANN001
-        del lane_index
         if self._song is None:
             return
         menu = QMenu(self)
+        rename_act = menu.addAction("Rename…")
+        menu.addSeparator()
         if self._show_mark_track_colors:
             color_act = menu.addAction("Hide track colors")
         else:
@@ -2728,7 +2722,9 @@ class TimelineWidget(QWidget):
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is color_act:
+        if chosen is rename_act:
+            self._rename_mark_lane_at(lane_index)
+        elif chosen is color_act:
             self._set_mark_track_colors(not self._show_mark_track_colors)
         elif chosen is manager_act:
             self.mark_manager_requested.emit()
@@ -3133,8 +3129,10 @@ class TimelineWidget(QWidget):
         if self._song is not None and self._show_mark_tracks:
             y = tracks_top
             visible = [lane for lane in self._song.mark_lanes if lane.visible]
-            for i, lane in enumerate(visible):
-                painter.fillRect(0, y, self._header_width, self._lane_height, QColor("#111113"))
+            for lane in visible:
+                hovered = lane.index == self._hover_mark_lane_header
+                header_bg = QColor("#26262c") if hovered else QColor("#111113")
+                painter.fillRect(0, y, self._header_width, self._lane_height, header_bg)
                 self._paint_mark_lane_header_label(
                     painter,
                     lane,
@@ -3143,9 +3141,6 @@ class TimelineWidget(QWidget):
                     fm=fm,
                 )
                 y += self._lane_height
-                if i < len(visible) - 1:
-                    painter.fillRect(0, int(y), self._header_width, self._mark_lane_gap, QColor("#000000"))
-                    y += self._mark_lane_gap
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:
