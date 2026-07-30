@@ -788,7 +788,7 @@ class TimelineWidget(QWidget):
         return self._video_lane_base_height + extra
 
     def _mark_lane_gap_px(self) -> int:
-        """Black separators between mark rows — only when track colors are shown."""
+        """Black spacers between tinted mark rows (track colors on only)."""
         return 2 if self._show_mark_track_colors else 0
 
     def _marks_content_height(self) -> int:
@@ -3505,25 +3505,34 @@ class TimelineWidget(QWidget):
     def _paint_lanes(self, painter: QPainter, *, start_y: int) -> None:
         if self._song is None or not self._show_mark_tracks:
             return
-        if not self._show_mark_track_colors:
-            # Pre–track-color look: app background shows through, no row tint or gaps.
-            return
         right = self._paint_right()
-        content_h = self._marks_content_height()
-        if content_h <= 0:
+        if self._show_mark_track_colors:
+            content_h = self._marks_content_height()
+            if content_h <= 0:
+                return
+            painter.fillRect(self._header_width, start_y, right, content_h, QColor("#000000"))
+            for lane_index, y0, y1 in self._lane_rects():
+                lane = self._song.lane_by_index(lane_index)
+                if lane is None:
+                    continue
+                painter.fillRect(
+                    self._header_width,
+                    int(y0),
+                    right,
+                    int(y1 - y0),
+                    self._lane_row_fill(lane, header=False),
+                )
             return
-        painter.fillRect(self._header_width, start_y, right, content_h, QColor("#000000"))
+
+        divider = QColor("#27272a")
         for lane_index, y0, y1 in self._lane_rects():
             lane = self._song.lane_by_index(lane_index)
             if lane is None:
                 continue
-            painter.fillRect(
-                self._header_width,
-                int(y0),
-                right,
-                int(y1 - y0),
-                self._lane_row_fill(lane, header=False),
-            )
+            bg = QColor("#141416") if lane.cue_id_enabled else QColor("#111113")
+            painter.fillRect(self._header_width, int(y0), right, int(y1 - y0), bg)
+            painter.setPen(divider)
+            painter.drawLine(0, int(y1) - 1, right, int(y1) - 1)
 
     def _mark_overlay_pen(self, color: QColor) -> QPen:
         pen = QPen(color, max(1.0, self._mark_line_width))

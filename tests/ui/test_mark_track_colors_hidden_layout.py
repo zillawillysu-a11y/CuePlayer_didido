@@ -1,4 +1,4 @@
-"""Hiding mark track colors restores pre-tint layout (no gaps, no black bed)."""
+"""Hiding mark track colors restores neutral beds and gray dividers."""
 
 from __future__ import annotations
 
