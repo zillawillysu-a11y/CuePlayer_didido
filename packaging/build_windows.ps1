@@ -9,7 +9,7 @@
 
   Output:
     dist\CuePlayer\CuePlayer.exe     — portable folder (zip this for quick share)
-    dist\CuePlayer-Setup-*.exe       — Inno Setup installer (if iscc is installed)
+    dist\CuePlayer-Setup-*.exe       — Inno Setup 7/6 installer (if ISCC is installed on the build PC)
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
@@ -74,22 +74,29 @@ if (-not $SkipZip) {
 }
 
 if (-not $SkipInno) {
+    # Prefer Inno Setup 7 (e.g. 7.0.2), fall back to 6. Build machine only — employees do not install this.
     $Iscc = $null
     foreach ($candidate in @(
-            "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "${env:LocalAppData}\Programs\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+            "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe"
         )) {
         if (Test-Path $candidate) { $Iscc = $candidate; break }
     }
     if ($null -eq $Iscc) {
-        Write-Host "Inno Setup 6 not found — skipping Setup.exe (zip is enough for internal test)."
-        Write-Host "Install from https://jrsoftware.org/isinfo.php then re-run without -SkipInno."
+        Write-Host "Inno Setup not found — skipping Setup.exe (zip is enough for internal test)."
+        Write-Host "Optional: install Inno Setup 7 from https://jrsoftware.org/isdl.php then re-run."
     }
     else {
         $Iss = Join-Path $Root "packaging\CuePlayer.iss"
         Write-Host "Building installer with $Iscc …"
         & $Iscc "/DMyAppVersion=$Version" $Iss
+        if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup compile failed (exit $LASTEXITCODE)"
+        }
         $Setup = Get-ChildItem $Dist -Filter "CuePlayer-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($Setup) {
             Write-Host "OK: $($Setup.FullName)"

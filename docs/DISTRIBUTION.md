@@ -23,7 +23,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 
 3. Share from `dist\`:
    - **Fast internal test:** the `.zip`
-   - **Proper install:** install [Inno Setup 6](https://jrsoftware.org/isinfo.php), re-run the script, send `CuePlayer-Setup-*.exe`
+   - **Proper install (optional):** on **your** PC install [Inno Setup 7](https://jrsoftware.org/isdl.php) (e.g. 7.0.2 x64), re-run the script, send `CuePlayer-Setup-*.exe`. Employees do **not** install Inno Setup.
 
 Optional flags:
 
