@@ -987,7 +987,7 @@ class Project:
     mark_line_width: float = 1.0
     waveform_color: str = "#616161"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
-    playhead_color: str = "#ff5a5f"
+    playhead_color: str = "#3dd68c"
     # Mark lane row height (pixels) — one value for the whole show.
     mark_lane_height: float = 28.0
     # Tinted mark-track rows on the timeline (all lanes share one eye).

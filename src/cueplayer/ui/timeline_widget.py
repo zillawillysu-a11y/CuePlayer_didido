@@ -145,7 +145,7 @@ class TimelineWidget(QWidget):
         self._mark_dash_off = 4.0
         self._mark_line_width = 1.0
         self._waveform_color = "#616161"
-        self._playhead_color = "#ff5a5f"
+        self._playhead_color = "#3dd68c"
         self._loop_a: float | None = None
         self._loop_b: float | None = None
         self._loop_enabled = False
@@ -748,7 +748,7 @@ class TimelineWidget(QWidget):
             self._waveform_color = q.name() if q.isValid() else "#616161"
         if playhead_color is not None:
             q = QColor(playhead_color)
-            self._playhead_color = q.name() if q.isValid() else "#ff5a5f"
+            self._playhead_color = q.name() if q.isValid() else "#3dd68c"
         self.update()
 
     def apply_mark_lane_height(self, height: float) -> None:
@@ -3957,8 +3957,8 @@ class TimelineWidget(QWidget):
         x = self._x_for_time(self._position)
         if x < self._header_width or x > self.width():
             return
-        color = QColor(self._playhead_color or "#ff5a5f")
+        color = QColor(self._playhead_color or "#3dd68c")
         if not color.isValid():
-            color = QColor("#ff5a5f")
+            color = QColor("#3dd68c")
         painter.setPen(QPen(color, 2))
         painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
