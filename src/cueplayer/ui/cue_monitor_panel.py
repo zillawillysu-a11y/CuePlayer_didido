@@ -1119,61 +1119,66 @@ class CueMonitorPanel(QWidget):
     def refresh_list(self) -> None:
         selected = set(self.selected_mark_ids())
         self._updating_table = True
-        self.cue_table.setRowCount(0)
-        cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
-        time_col = self._time_col()
-        type_col = self._col_for_field("type")
-        cue_id_col = self._col_for_field("cue_id")
-        note_col = self._col_for_field("note")
-        if self._song is not None:
-            for mark in self._song.marks:
-                lane = self._song.lane_by_index(mark.lane_index)
-                if lane is not None and not lane.visible:
-                    continue
-                if lane is not None and not lane.cue_list_enabled:
-                    continue
-                row = self.cue_table.rowCount()
-                self.cue_table.insertRow(row)
-                self.cue_table.setRowHeight(row, _ROW_HEIGHT)
+        self.cue_table.blockSignals(True)
+        try:
+            self.cue_table.setRowCount(0)
+            cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
+            time_col = self._time_col()
+            type_col = self._col_for_field("type")
+            cue_id_col = self._col_for_field("cue_id")
+            note_col = self._col_for_field("note")
+            if self._song is not None:
+                for mark in self._song.marks:
+                    lane = self._song.lane_by_index(mark.lane_index)
+                    if lane is None:
+                        continue
+                    if not lane.visible:
+                        continue
+                    if not lane.cue_list_enabled:
+                        continue
+                    row = self.cue_table.rowCount()
+                    self.cue_table.insertRow(row)
+                    self.cue_table.setRowHeight(row, _ROW_HEIGHT)
 
-                time_item = QTableWidgetItem(format_time(mark.time_seconds))
-                time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
-                self.cue_table.setItem(row, time_col, time_item)
+                    time_item = QTableWidgetItem(format_time(mark.time_seconds))
+                    time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
+                    self.cue_table.setItem(row, time_col, time_item)
 
-                cue_id_text = cue_ids.get(mark.id, "")
-                cue_id_item = QTableWidgetItem(cue_id_text)
-                lane_has_id = lane is not None and lane.cue_id_enabled
-                if lane_has_id:
-                    cue_id_item.setFlags(
-                        cue_id_item.flags()
+                    cue_id_text = cue_ids.get(mark.id, "")
+                    cue_id_item = QTableWidgetItem(cue_id_text)
+                    lane_has_id = lane.cue_id_enabled
+                    if lane_has_id:
+                        cue_id_item.setFlags(
+                            cue_id_item.flags()
+                            | Qt.ItemFlag.ItemIsEditable
+                            | Qt.ItemFlag.ItemIsSelectable
+                            | Qt.ItemFlag.ItemIsEnabled
+                        )
+                        cue_id_item.setToolTip("Click to edit Cue ID")
+                    else:
+                        cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.cue_table.setItem(row, cue_id_col, cue_id_item)
+
+                    lane_name = lane.name
+                    lane_item = QTableWidgetItem(lane_name)
+                    lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    lane_item.setForeground(QColor(lane.color))
+                    self.cue_table.setItem(row, type_col, lane_item)
+
+                    note_item = QTableWidgetItem(mark.display_name)
+                    note_item.setFlags(
+                        note_item.flags()
                         | Qt.ItemFlag.ItemIsEditable
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
-                    cue_id_item.setToolTip("Click to edit Cue ID")
-                else:
-                    cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.cue_table.setItem(row, cue_id_col, cue_id_item)
-
-                lane_name = lane.name if lane is not None else f"Type {mark.lane_index}"
-                lane_item = QTableWidgetItem(lane_name)
-                lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                if lane is not None:
-                    lane_item.setForeground(QColor(lane.color))
-                self.cue_table.setItem(row, type_col, lane_item)
-
-                note_item = QTableWidgetItem(mark.display_name)
-                note_item.setFlags(
-                    note_item.flags()
-                    | Qt.ItemFlag.ItemIsEditable
-                    | Qt.ItemFlag.ItemIsSelectable
-                    | Qt.ItemFlag.ItemIsEnabled
-                )
-                note_item.setToolTip("Click to type a Note directly (e.g. Verse / Chorus)")
-                self.cue_table.setItem(row, note_col, note_item)
-        self._updating_table = False
+                    note_item.setToolTip("Click to type a Note directly (e.g. Verse / Chorus)")
+                    self.cue_table.setItem(row, note_col, note_item)
+        finally:
+            self.cue_table.blockSignals(False)
+            self._updating_table = False
         self._apply_now_highlight()
         if selected:
             self.set_selected_mark_ids(selected)
@@ -1363,6 +1368,9 @@ class CueMonitorPanel(QWidget):
         self._sync_current(force_now=True)
 
     def _apply_cue_id_edit(self, item: QTableWidgetItem, mark: Mark) -> None:
+        lane = self._song.lane_by_index(mark.lane_index) if self._song is not None else None
+        if lane is None or not lane.cue_id_enabled:
+            return
         old_id = mark.main_cue_id
         raw = item.text().strip()
         if not is_valid_main_cue_id_text(raw):
