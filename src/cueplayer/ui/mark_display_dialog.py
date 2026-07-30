@@ -1,10 +1,9 @@
-﻿"""Display settings: tracks, NOW lane assignment, waveform lines, sync offset."""
+﻿"""Display settings: tracks, waveform lines, sync offset."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -13,8 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -40,10 +37,9 @@ class MarkDisplayDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Display Settings")
-        self.resize(520, 640)
+        self.resize(520, 560)
         self._song = song
         self._project = project
-        self._now_groups: dict[int, QButtonGroup] = {}
 
         layout = QVBoxLayout(self)
         hint = QLabel(
@@ -80,12 +76,9 @@ class MarkDisplayDialog(QDialog):
 
         layout.addLayout(form)
 
-        now_title = QLabel("NOW Display Assignment")
-        now_title.setStyleSheet("font-weight: 600; color: #c5cddb; margin-top: 6px;")
-        layout.addWidget(now_title)
         now_hint = QLabel(
-            "Choose which tracks go to the primary display and which go to the secondary display. "
-            "Each panel switches to the current Cue over time."
+            "NOW display assignment (Off / Primary / Secondary per Mark) is configured in Mark Manager "
+            "and saved with Mark Settings files."
         )
         now_hint.setWordWrap(True)
         now_hint.setStyleSheet("color: #8b949e;")
@@ -97,19 +90,6 @@ class MarkDisplayDialog(QDialog):
             "When off, the secondary display is hidden and its tracks merge into the primary display."
         )
         layout.addWidget(self.secondary_enabled_box)
-
-        now_scroll = QScrollArea()
-        now_scroll.setWidgetResizable(True)
-        now_scroll.setMinimumHeight(160)
-        now_scroll.setMaximumHeight(220)
-        now_host = QWidget()
-        self.now_list = QVBoxLayout(now_host)
-        self.now_list.setSpacing(4)
-        self.now_list.setContentsMargins(4, 4, 4, 4)
-        self._build_now_lane_rows()
-        self.now_list.addStretch(1)
-        now_scroll.setWidget(now_host)
-        layout.addWidget(now_scroll)
 
         clear_row = QHBoxLayout()
         self.secondary_clear_spin = NoWheelDoubleSpinBox()
@@ -259,84 +239,6 @@ class MarkDisplayDialog(QDialog):
         self._sync_spacing_enabled()
         self._sync_secondary_ui()
 
-    def _build_now_lane_rows(self) -> None:
-        # Use stored assignment so disabling the secondary display doesn't rewrite radio state.
-        primary, secondary = self._song.configured_now_groups()
-        primary_set = set(primary)
-        secondary_set = set(secondary)
-        header = QLabel("Track                Off Screen    Primary    Secondary")
-        header.setStyleSheet("color: #8b949e; font-size: 11px;")
-        self.now_list.addWidget(header)
-
-        for lane in sorted(self._song.mark_lanes, key=lambda item: item.index):
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 2, 0, 2)
-            name = QLabel(f"{lane.index}. {lane.name}")
-            name.setStyleSheet(f"color: {lane.color}; min-width: 160px;")
-            name.setToolTip(lane.name)
-
-            group = QButtonGroup(row)
-            none_btn = QRadioButton("Off")
-            primary_btn = QRadioButton("Primary")
-            secondary_btn = QRadioButton("Secondary")
-            group.addButton(none_btn, 0)
-            group.addButton(primary_btn, 1)
-            group.addButton(secondary_btn, 2)
-            if lane.index in primary_set:
-                primary_btn.setChecked(True)
-            elif lane.index in secondary_set:
-                secondary_btn.setChecked(True)
-            else:
-                none_btn.setChecked(True)
-            group.idClicked.connect(lambda _id: self._apply())
-            self._now_groups[lane.index] = group
-
-            row_layout.addWidget(name, stretch=1)
-            row_layout.addWidget(none_btn)
-            row_layout.addWidget(primary_btn)
-            row_layout.addWidget(secondary_btn)
-            self.now_list.addWidget(row)
-
-    def _collect_now_lanes(self) -> tuple[list[int], list[int]]:
-        primary: list[int] = []
-        secondary: list[int] = []
-        for index, group in sorted(self._now_groups.items()):
-            role = group.checkedId()
-            if role == 1:
-                primary.append(index)
-            elif role == 2:
-                secondary.append(index)
-        return primary, secondary
-
-    def latency_ms(self) -> int:
-        return int(self.latency_spin.value())
-
-    def set_latency_ms(self, ms: int) -> None:
-        self.latency_spin.blockSignals(True)
-        self.latency_spin.setValue(int(ms))
-        self.latency_spin.blockSignals(False)
-        self._apply()
-
-    def _nudge(self, delta: int) -> None:
-        self.latency_spin.setValue(self.latency_spin.value() + delta)
-
-    def _sync_spacing_enabled(self) -> None:
-        style = str(self.line_style.currentData() or "dash")
-        self.dash_spacing.setEnabled(style in ("dash", "dot"))
-
-    def _sync_secondary_ui(self) -> None:
-        enabled = self.secondary_enabled_box.isChecked()
-        self.secondary_clear_spin.setEnabled(enabled)
-        for group in self._now_groups.values():
-            secondary_btn = group.button(2)
-            if secondary_btn is not None:
-                secondary_btn.setEnabled(enabled)
-
-    def _on_secondary_enabled_toggled(self, _checked: bool) -> None:
-        self._sync_secondary_ui()
-        self._apply()
-
     def _apply(self) -> None:
         self._sync_spacing_enabled()
         self._song.show_mark_tracks = self.tracks_box.isChecked()
@@ -366,10 +268,30 @@ class MarkDisplayDialog(QDialog):
             self._project.show_output_quick_toggles = self.output_toggles_box.isChecked()
         elif hasattr(target, "playhead_color"):
             target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
-        primary, secondary = self._collect_now_lanes()
-        self._song.now_lanes_configured = True
-        self._song.now_primary_lanes = primary
-        self._song.now_secondary_lanes = secondary
         self._song.now_secondary_enabled = self.secondary_enabled_box.isChecked()
         self._song.now_secondary_clear_seconds = float(self.secondary_clear_spin.value())
         self.settings_changed.emit()
+
+    def latency_ms(self) -> int:
+        return int(self.latency_spin.value())
+
+    def set_latency_ms(self, ms: int) -> None:
+        self.latency_spin.blockSignals(True)
+        self.latency_spin.setValue(int(ms))
+        self.latency_spin.blockSignals(False)
+        self._apply()
+
+    def _nudge(self, delta: int) -> None:
+        self.latency_spin.setValue(self.latency_spin.value() + delta)
+
+    def _sync_spacing_enabled(self) -> None:
+        style = str(self.line_style.currentData() or "dash")
+        self.dash_spacing.setEnabled(style in ("dash", "dot"))
+
+    def _sync_secondary_ui(self) -> None:
+        enabled = self.secondary_enabled_box.isChecked()
+        self.secondary_clear_spin.setEnabled(enabled)
+
+    def _on_secondary_enabled_toggled(self, _checked: bool) -> None:
+        self._sync_secondary_ui()
+        self._apply()

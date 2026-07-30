@@ -57,7 +57,8 @@ _COL_CUE_ID = 6
 _COL_CUE_LIST = 7
 _COL_MIDI = 8
 _COL_MIDI_NOTE = 9
-_COL_COUNT = 10
+_COL_NOW = 10
+_COL_COUNT = 11
 
 _TABLE_COMBO_QSS = (
     "QComboBox {"
@@ -285,15 +286,20 @@ class MarkManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mark Manager")
         self.setMinimumWidth(920)
-        self.resize(1040, 560)
+        self.resize(1120, 560)
         self._song = song
         self._project = project
         self._suppress_key_prompt = False
         self._lane_snapshot = deepcopy(song.mark_lanes)
+        self._now_snapshot = (
+            list(song.now_primary_lanes),
+            list(song.now_secondary_lanes),
+            bool(song.now_lanes_configured),
+        )
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "Set the name, shortcut, shape, and color for each Mark. "
+            "Set the name, shortcut, shape, color, and NOW display (Off / Primary / Secondary) for each Mark. "
             "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
             'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
         )
@@ -306,7 +312,19 @@ class MarkManagerDialog(QDialog):
 
         self.table = QTableWidget(0, _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI On", "Note"]
+            [
+                "#",
+                "Name",
+                "Shortcut",
+                "Shape",
+                "Color",
+                "Visible",
+                "Cue ID",
+                "Cue List",
+                "MIDI On",
+                "Note",
+                "NOW",
+            ]
         )
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -322,6 +340,7 @@ class MarkManagerDialog(QDialog):
             _COL_CUE_LIST: 80,
             _COL_MIDI: 80,
             _COL_MIDI_NOTE: 116,
+            _COL_NOW: 108,
         }
         for col, width in default_widths.items():
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
@@ -477,8 +496,42 @@ class MarkManagerDialog(QDialog):
 
     def _reject_restore(self) -> None:
         self._song.mark_lanes = deepcopy(self._lane_snapshot)
+        primary, secondary, configured = self._now_snapshot
+        self._song.now_primary_lanes = list(primary)
+        self._song.now_secondary_lanes = list(secondary)
+        self._song.now_lanes_configured = bool(configured)
         self.preview_changed.emit()
         self.reject()
+
+    def _now_role_for_index(self, lane_index: int) -> int:
+        primary, secondary = self._song.configured_now_groups()
+        if lane_index in primary:
+            return 1
+        if lane_index in secondary:
+            return 2
+        return 0
+
+    def _collect_now_lanes(self) -> tuple[list[int], list[int]]:
+        primary: list[int] = []
+        secondary: list[int] = []
+        for row in range(self.table.rowCount()):
+            index_item = self.table.item(row, _COL_INDEX)
+            combo = self.table.cellWidget(row, _COL_NOW)
+            if index_item is None or not isinstance(combo, QComboBox):
+                continue
+            role = int(combo.currentData() or 0)
+            lane_index = int(index_item.text())
+            if role == 1:
+                primary.append(lane_index)
+            elif role == 2:
+                secondary.append(lane_index)
+        return primary, secondary
+
+    def _apply_now_lanes_to_song(self) -> None:
+        primary, secondary = self._collect_now_lanes()
+        self._song.now_lanes_configured = True
+        self._song.now_primary_lanes = primary
+        self._song.now_secondary_lanes = secondary
 
     def _load_from_song(self) -> None:
         self.table.setRowCount(0)
@@ -619,11 +672,12 @@ class MarkManagerDialog(QDialog):
             path = path.with_name(f"{path.name}.cueplayer-marks.json")
         elif not path.name.endswith(".cueplayer-marks.json") and path.suffix.lower() == ".json":
             path = path.with_name(f"{path.stem}.cueplayer-marks.json")
+        primary, secondary = self._collect_now_lanes()
         template = build_template(
             draft,
             name=path.stem.replace(".cueplayer-marks", ""),
-            now_primary_lanes=list(self._song.now_primary_lanes),
-            now_secondary_lanes=list(self._song.now_secondary_lanes),
+            now_primary_lanes=list(primary),
+            now_secondary_lanes=list(secondary),
         )
         try:
             save_mark_template(path, template)
@@ -835,8 +889,27 @@ class MarkManagerDialog(QDialog):
         note_combo = self._make_note_combo(lane, default_note)
         _style_table_combo(note_combo)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+
+        now_combo = NoWheelComboBox()
+        now_combo.addItem("Off", 0)
+        now_combo.addItem("Primary", 1)
+        now_combo.addItem("Secondary", 2)
+        role = self._now_role_for_index(lane.index)
+        role_idx = now_combo.findData(role)
+        now_combo.setCurrentIndex(role_idx if role_idx >= 0 else 0)
+        now_combo.setToolTip(
+            "NOW monitor assignment: Off screen, Primary display, or Secondary display"
+        )
+        _style_table_combo(now_combo)
+        now_combo.currentIndexChanged.connect(lambda _i: self._on_now_display_changed())
+        self.table.setCellWidget(row, _COL_NOW, now_combo)
+
         self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
         self._refresh_bulk_toggle_states()
+
+    def _on_now_display_changed(self) -> None:
+        self._apply_now_lanes_to_song()
+        self.preview_changed.emit()
 
     def _make_note_combo(self, lane: MarkLane, default_note: int) -> NoWheelComboBox:
         combo = NoWheelComboBox()
@@ -1073,6 +1146,7 @@ class MarkManagerDialog(QDialog):
         keep = {lane.index for lane in draft}
         self._song.marks = [m for m in self._song.marks if m.lane_index in keep]
         self._song.mark_lanes = draft
+        self._apply_now_lanes_to_song()
         from cueplayer.domain.main_cue_id import sync_lane_cue_ids
 
         sync_lane_cue_ids(self._song)

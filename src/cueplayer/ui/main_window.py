@@ -4332,6 +4332,7 @@ class MainWindow(QMainWindow):
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
         dialog.preview_changed.connect(self.timeline.update)
+        dialog.preview_changed.connect(lambda: self.monitor.set_song(self.current_song))
         dialog.project_defaults_changed.connect(self._on_mark_template_applied)
         if dialog.exec():
             self._undo.clear()
