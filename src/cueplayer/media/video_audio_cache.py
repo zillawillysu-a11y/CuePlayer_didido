@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,11 @@ from cueplayer.media.video_audio_loader import (
 
 _cache: dict[tuple, VideoAudioBuffer | None] = {}
 _mtime: dict[str, int] = {}
+# Cache dict + iterators must be guarded: waveform workers and the playback
+# mixer both call in (and PyAV releases the GIL during decode).
+_cache_lock = threading.RLock()
+# Serialize native demux — concurrent av.open on some builds hard-crashes.
+_decode_lock = threading.Lock()
 
 
 def _mtime_ns(path: Path) -> int:
@@ -56,14 +62,20 @@ def get_video_audio(
     dur_q = round(dur, 3)
     mtime = _mtime_ns(path)
     key = (str(path), mtime, start_q, dur_q)
-    if key in _cache:
-        return _cache[key]
-    try:
-        buf = load_video_audio(path, start_seconds=start_q, max_duration_seconds=dur_q)
-    except Exception:
-        buf = None
-    _cache[key] = buf
-    return buf
+    with _cache_lock:
+        if key in _cache:
+            return _cache[key]
+    with _decode_lock:
+        with _cache_lock:
+            if key in _cache:
+                return _cache[key]
+        try:
+            buf = load_video_audio(path, start_seconds=start_q, max_duration_seconds=dur_q)
+        except Exception:
+            buf = None
+        with _cache_lock:
+            _cache[key] = buf
+            return buf
 
 
 def get_video_audio_for_clip(clip: VideoClip) -> VideoAudioBuffer | None:
@@ -137,7 +149,9 @@ def peek_video_audio_mono(path: Path) -> tuple[np.ndarray | None, int]:
     path = Path(path)
     mtime = _mtime_ns(path)
     prefix = str(path)
-    for key, buf in _cache.items():
+    with _cache_lock:
+        items = list(_cache.items())
+    for key, buf in items:
         if key[0] == prefix and key[1] == mtime and buf is not None and buf.frames > 0:
             data = buf.samples
             if data.ndim == 2:
@@ -149,5 +163,6 @@ def peek_video_audio_mono(path: Path) -> tuple[np.ndarray | None, int]:
 
 
 def clear_video_audio_cache() -> None:
-    _cache.clear()
-    _mtime.clear()
+    with _cache_lock:
+        _cache.clear()
+        _mtime.clear()

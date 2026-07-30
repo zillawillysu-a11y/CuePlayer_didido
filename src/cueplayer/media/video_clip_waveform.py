@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,8 +194,10 @@ class VideoClipWaveformCache:
     """Per-clip pyramid cache with background decode/build."""
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._peaks: dict[ClipWaveformKey, ClipWaveformPeaks | None] = {}
         self._pending: set[ClipWaveformKey] = set()
+        self._generation = 0
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vid-wave")
         self._on_ready: Callable[[], None] | None = None
 
@@ -202,8 +205,10 @@ class VideoClipWaveformCache:
         self._on_ready = callback
 
     def clear(self) -> None:
-        self._peaks.clear()
-        self._pending.clear()
+        with self._lock:
+            self._generation += 1
+            self._peaks.clear()
+            self._pending.clear()
 
     @staticmethod
     def _mtime_ns(path: Path) -> int:
@@ -228,11 +233,14 @@ class VideoClipWaveformCache:
 
     def get_peaks(self, clip: VideoClip) -> ClipWaveformPeaks | None:
         key = self.key_for(clip)
-        if key in self._peaks:
-            return self._peaks[key]
-        if key not in self._pending:
+        with self._lock:
+            if key in self._peaks:
+                return self._peaks[key]
+            if key in self._pending:
+                return None
             self._pending.add(key)
-            self._executor.submit(self._build_async, key, clip)
+            generation = self._generation
+        self._executor.submit(self._build_async, generation, key, clip)
         return None
 
     def peaks_for_paint(self, clip: VideoClip) -> ClipWaveformPeaks | None:
@@ -244,13 +252,17 @@ class VideoClipWaveformCache:
                 continue
             self.get_peaks(clip)
 
-    def _build_async(self, key: ClipWaveformKey, clip: VideoClip) -> None:
+    def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
         try:
             peaks = build_clip_waveform_data_from_path(clip)
         except Exception:
             peaks = None
-        self._peaks[key] = peaks
-        self._pending.discard(key)
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._peaks[key] = peaks
+            self._pending.discard(key)
+        # Callback may touch Qt — callers must marshal to the GUI thread.
         cb = self._on_ready
         if cb is not None:
             cb()
