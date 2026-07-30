@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QFontMetrics,
+    QKeyEvent,
     QKeySequence,
     QPainter,
     QPen,
@@ -885,6 +886,8 @@ class MainWindow(QMainWindow):
         self._project_path: Path | None = None
         self._dirty = False
         self._digit_shortcuts: list[QShortcut] = []
+        # Latch digit keys between press and release so held keys add one mark.
+        self._mark_shortcut_latch: set[str] = set()
         self._syncing_selection = False
         self._switching_song = False
         self._undo = UndoStack()
@@ -1288,6 +1291,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Copy, self, activated=self._copy_video_clips)
         QShortcut(QKeySequence.StandardKey.Paste, self, activated=self._paste_video_clips)
         self._rebuild_digit_shortcuts()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
@@ -4228,6 +4234,11 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""
+        if event is not None and isinstance(event, QKeyEvent):
+            if event.type() == QEvent.Type.KeyRelease:
+                digit = event.key() - int(Qt.Key.Key_0)
+                if 1 <= digit <= 9:
+                    self._mark_shortcut_latch.discard(str(digit))
         scroll = getattr(self, "_timeline_scroll", None)
         if scroll is not None and watched is scroll.viewport():
             if event is not None and event.type() == QEvent.Type.Resize:
@@ -4280,6 +4291,9 @@ class MainWindow(QMainWindow):
         self.project.clean_video_output.was_open = was_open
         self._settings.setValue(_KEY_CLEAN_OUTPUT_WAS_OPEN, was_open)
         self._save_ui_session()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         # Clean Output normally only hides on its own X button (so re-opening
         # keeps the OBS capture target valid) — but that must not let it
         # survive the main window closing, or keep the app process alive.
@@ -4297,6 +4311,7 @@ class MainWindow(QMainWindow):
         for digit in range(1, 10):
             key = str(digit)
             sc = QShortcut(QKeySequence(key), self)
+            sc.setAutoRepeat(False)
             sc.activated.connect(lambda k=key: self._add_mark_by_shortcut(k))
             self._digit_shortcuts.append(sc)
 
@@ -6247,6 +6262,9 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"Pasted {len(new_clips)} video clips", 2500)
 
     def _add_mark_by_shortcut(self, shortcut: str) -> None:
+        if shortcut in self._mark_shortcut_latch:
+            return
+        self._mark_shortcut_latch.add(shortcut)
         lane = self.current_song.lane_by_shortcut(shortcut)
         if lane is None:
             self.status.showMessage(f"Shortcut {shortcut} is not assigned to any mark in Mark Manager", 2500)
