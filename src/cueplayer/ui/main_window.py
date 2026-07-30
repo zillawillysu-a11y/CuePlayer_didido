@@ -158,6 +158,9 @@ MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
 _KEY_AUTOSAVE_ENABLED = "autosave/enabled"
 _KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
 _KEY_BACKUP_KEEP = "autosave/backup_keep"
+_DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
+# User-facing Auto-Save cadence choices (minutes). Stored as seconds.
+_AUTOSAVE_INTERVAL_MINUTES = (1, 2, 5, 10, 15, 30)
 _KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
 _KEY_CLEAN_OUTPUT_GEOMETRY = "clean_output/geometry"
 _KEY_MAIN_GEOMETRY = "mainwindow/geometry"
@@ -173,7 +176,6 @@ _KEY_NOW_BODY_SPLITTER = "ui/now_body_splitter"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
-_DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
 
 
 @dataclass
@@ -1727,15 +1729,7 @@ class MainWindow(QMainWindow):
         menu.addAction(act_save)
         menu.addAction(act_save_as)
         menu.addSeparator()
-        self._autosave_action = QAction("Auto-&Save", self)
-        self._autosave_action.setCheckable(True)
-        self._autosave_action.setChecked(self._autosave_enabled())
-        self._autosave_action.setToolTip(
-            f"Automatically save dirty projects every "
-            f"{self._autosave_interval_seconds()}s (only after Save As)"
-        )
-        self._autosave_action.toggled.connect(self._set_autosave_enabled)
-        menu.addAction(self._autosave_action)
+        self._build_autosave_menu(menu)
         act_restore = QAction("&Restore from Backup…", self)
         act_restore.setToolTip(
             "Open a timestamped copy from .cueplayer_backups next to this project"
@@ -1848,7 +1842,14 @@ class MainWindow(QMainWindow):
             seconds = int(raw)
         except (TypeError, ValueError):
             seconds = _DEFAULT_AUTOSAVE_INTERVAL_SEC
-        return max(15, seconds)
+        return max(60, seconds)
+
+    def _autosave_interval_minutes(self) -> int:
+        minutes = int(round(self._autosave_interval_seconds() / 60.0))
+        if minutes in _AUTOSAVE_INTERVAL_MINUTES:
+            return minutes
+        # Snap legacy / custom values to the nearest offered choice.
+        return min(_AUTOSAVE_INTERVAL_MINUTES, key=lambda m: abs(m - minutes))
 
     def _backup_keep_count(self) -> int:
         raw = self._settings.value(_KEY_BACKUP_KEEP, DEFAULT_KEEP)
@@ -1858,9 +1859,70 @@ class MainWindow(QMainWindow):
             keep = DEFAULT_KEEP
         return max(1, keep)
 
+    def _build_autosave_menu(self, file_menu: QMenu) -> None:
+        """File → Auto-Save submenu: Off, or every N minutes."""
+        submenu = file_menu.addMenu("Auto-&Save")
+        submenu.setToolTip(
+            "Automatically overwrite the project file while dirty. "
+            "Requires Save / Save As first. Each save also writes a backup."
+        )
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self._autosave_off_action = QAction("Off", self)
+        self._autosave_off_action.setCheckable(True)
+        self._autosave_off_action.triggered.connect(lambda: self._set_autosave_choice(None))
+        group.addAction(self._autosave_off_action)
+        submenu.addAction(self._autosave_off_action)
+
+        self._autosave_interval_actions: dict[int, QAction] = {}
+        for minutes in _AUTOSAVE_INTERVAL_MINUTES:
+            label = "Every 1 minute" if minutes == 1 else f"Every {minutes} minutes"
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, m=minutes: self._set_autosave_choice(m)
+            )
+            group.addAction(action)
+            submenu.addAction(action)
+            self._autosave_interval_actions[minutes] = action
+        self._sync_autosave_menu_ui()
+
+    def _set_autosave_choice(self, minutes: int | None) -> None:
+        """``None`` = Off; otherwise enable Auto-Save every ``minutes``."""
+        if minutes is None:
+            self._settings.setValue(_KEY_AUTOSAVE_ENABLED, False)
+        else:
+            minutes = max(1, int(minutes))
+            self._settings.setValue(_KEY_AUTOSAVE_ENABLED, True)
+            self._settings.setValue(_KEY_AUTOSAVE_INTERVAL_SEC, minutes * 60)
+        self._setup_autosave()
+        self._sync_autosave_menu_ui()
+        if minutes is None:
+            self.status.showMessage("Auto-Save off", 2500)
+        else:
+            label = "1 minute" if minutes == 1 else f"{minutes} minutes"
+            self.status.showMessage(f"Auto-Save every {label}", 2500)
+
+    def _sync_autosave_menu_ui(self) -> None:
+        off = getattr(self, "_autosave_off_action", None)
+        actions = getattr(self, "_autosave_interval_actions", None)
+        if off is None or not actions:
+            return
+        if not self._autosave_enabled():
+            off.setChecked(True)
+            return
+        minutes = self._autosave_interval_minutes()
+        action = actions.get(minutes)
+        if action is not None:
+            action.setChecked(True)
+        else:
+            off.setChecked(True)
+
     def _set_autosave_enabled(self, enabled: bool) -> None:
+        # Kept for tests / callers that toggle on/off without picking minutes.
         self._settings.setValue(_KEY_AUTOSAVE_ENABLED, bool(enabled))
         self._setup_autosave()
+        self._sync_autosave_menu_ui()
 
     def _setup_autosave(self) -> None:
         timer = getattr(self, "_autosave_timer", None)
@@ -1871,6 +1933,9 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setInterval(interval_ms)
         if self._autosave_enabled():
             if not self._autosave_timer.isActive():
+                self._autosave_timer.start()
+            else:
+                # Restart so a shorter interval takes effect immediately.
                 self._autosave_timer.start()
         else:
             self._autosave_timer.stop()
