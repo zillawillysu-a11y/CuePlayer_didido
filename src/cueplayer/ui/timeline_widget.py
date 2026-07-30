@@ -2912,6 +2912,7 @@ class TimelineWidget(QWidget):
                 self._paint_playhead(painter)
                 # A/B on top of playhead so markers stay obvious while playing.
                 self._paint_loop_region(painter)
+                self._paint_live_mark_overlays(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
                 return
@@ -3126,21 +3127,66 @@ class TimelineWidget(QWidget):
             side = "L" if self._ltc_channel == 0 else "R" if self._ltc_channel == 1 else "?"
             painter.setPen(QColor(self._ltc_waveform_color))
             painter.drawText(8, ltc_top + int(ltc_h / 2) + 4, f"LTC {side}")
-        if self._song is not None and self._show_mark_tracks:
-            y = tracks_top
-            visible = [lane for lane in self._song.mark_lanes if lane.visible]
-            for lane in visible:
-                hovered = lane.index == self._hover_mark_lane_header
-                header_bg = QColor("#26262c") if hovered else QColor("#111113")
-                painter.fillRect(0, y, self._header_width, self._lane_height, header_bg)
-                self._paint_mark_lane_header_label(
-                    painter,
-                    lane,
-                    y=int(y),
-                    text_w=text_w,
-                    fm=fm,
-                )
-                y += self._lane_height
+        self._paint_mark_track_headers(painter, tracks_top)
+        painter.restore()
+
+    def _paint_mark_track_headers(self, painter: QPainter, tracks_top: int) -> None:
+        """Left-column Mark Type labels (hover + lane colors)."""
+        if self._song is None or not self._show_mark_tracks:
+            return
+        text_w = max(24, self._header_width - 16)
+        fm = painter.fontMetrics()
+        y = tracks_top
+        for lane in self._song.mark_lanes:
+            if not lane.visible:
+                continue
+            hovered = lane.index == self._hover_mark_lane_header
+            header_bg = QColor("#26262c") if hovered else QColor("#111113")
+            painter.fillRect(0, y, self._header_width, self._lane_height, header_bg)
+            self._paint_mark_lane_header_label(
+                painter,
+                lane,
+                y=int(y),
+                text_w=text_w,
+                fm=fm,
+            )
+            y += self._lane_height
+
+    def _marks_overlay_bottom_y(self) -> int:
+        if not self._show_mark_tracks or self._visible_lane_count() == 0:
+            return self._tracks_top_y()
+        bottom = self._mark_lane_split_y()
+        if self._show_mark_lane_resize_bar:
+            bottom += self._mark_lane_split_h
+        return bottom
+
+    def _paint_live_mark_overlays(self, painter: QPainter) -> None:
+        """Repaint mark headers + lanes on top of the play/scrub backdrop.
+
+        The cached backdrop is baked without interactive state (hover, cue
+        selection). Without this pass, mark shapes and header hover only update
+        after pause when the full paint path runs.
+        """
+        if self._song is None or not self._show_mark_tracks:
+            return
+        tracks_top = self._tracks_top_y()
+        bottom = self._marks_overlay_bottom_y()
+        if bottom <= tracks_top:
+            return
+        hw = int(self._header_width)
+        w = int(self.width())
+        band_h = bottom - tracks_top
+
+        painter.save()
+        painter.setClipRect(0, tracks_top, hw, band_h)
+        painter.fillRect(0, tracks_top, hw, band_h, QColor("#111113"))
+        self._paint_mark_track_headers(painter, tracks_top)
+        painter.restore()
+
+        painter.save()
+        painter.setClipRect(hw, tracks_top, max(0, w - hw), band_h)
+        self._paint_lanes(painter, start_y=tracks_top)
+        self._paint_marks(painter, start_y=tracks_top)
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:

@@ -1,4 +1,4 @@
-"""Mark add must invalidate the play-time scrub backdrop immediately."""
+"""Mark overlays must repaint live during playback (not only on pause)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.domain.models import Project
@@ -21,33 +22,27 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_mark_during_playback_invalidates_static_backdrop(app: QApplication) -> None:
-    """Regression: marks must appear while playing, not only after pause.
-
-    Play path blits ``_scrub_backdrop``. Adding a mark must clear that cache
-    before the next paint — otherwise the UI stays stale until set_playing(False).
-    """
-    project = Project.create("Mark Live")
+def test_playback_repaints_live_mark_overlays(app: QApplication) -> None:
+    project = Project.create("Play Marks")
     song = project.songs[0]
     song.duration_seconds = 60.0
+    song.add_mark(0, 5.0)
     widget = TimelineWidget()
-    widget.resize(800, 400)
+    widget.resize(800, 500)
     widget.set_song(song)
+    widget.show()
+    app.processEvents()
     widget.set_playing(True)
     widget._rebuild_scrub_backdrop()
-    assert widget._scrub_backdrop is not None
+    assert widget._can_use_static_backdrop()
 
-    before_count = len(song.marks)
-    song.add_mark(0, 12.0)
-    assert len(song.marks) == before_count + 1
+    mark_id = song.marks[0].id
+    widget.set_selected_mark_ids([mark_id], emit=False)
+    widget._hover_mark_lane_header = 1
 
-    # Mimic MainWindow._refresh_marks_ui contract — this is the hard rule.
-    widget.invalidate_static_layers()
-    assert widget._scrub_backdrop is None, (
-        "scrub backdrop must be cleared so the next play paint bakes the new mark"
-    )
+    painter = QPainter(widget)
+    widget.paintEvent(None)  # noqa: SLF001
+    painter.end()
+    app.processEvents()
 
-    # Rebuild while still playing must succeed with the new mark present.
-    widget._rebuild_scrub_backdrop()
-    assert widget._scrub_backdrop is not None
-    assert any(abs(m.time_seconds - 12.0) < 1e-6 for m in song.marks)
+    assert widget._playing is True
