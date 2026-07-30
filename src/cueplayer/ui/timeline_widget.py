@@ -2572,34 +2572,24 @@ class TimelineWidget(QWidget):
         top = self._ltc_lane_top_y()
         return top <= y < top + self._ltc_band_height()
 
-    def _toggle_wave_gain_line(self) -> None:
-        self._show_wave_gain_line = not self._show_wave_gain_line
-        self._invalidate_scrub_backdrop()
-        self.update()
-
-    def _toggle_ltc_gain_line(self) -> None:
-        self._show_ltc_gain_line = not self._show_ltc_gain_line
-        self._invalidate_scrub_backdrop()
-        self.update()
-
-    def _toggle_mark_lane_resize_bar(self) -> None:
-        self._show_mark_lane_resize_bar = not self._show_mark_lane_resize_bar
-        self._apply_layout_heights()
-        self._invalidate_scrub_backdrop()
-        self.update()
-
     def _show_wave_gain_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        hide = menu.addAction("Hide volume adjustment")
-        reset = menu.addAction("Reset to 0 dB")
+        if self._show_wave_gain_line:
+            toggle = menu.addAction("Hide volume adjustment")
+        else:
+            toggle = menu.addAction("Show volume adjustment")
+        reset = None
+        if self._show_wave_gain_line:
+            menu.addSeparator()
+            reset = menu.addAction("Reset to 0 dB")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is hide:
-            self._show_wave_gain_line = False
+        if chosen is toggle:
+            self._show_wave_gain_line = not self._show_wave_gain_line
             self._invalidate_scrub_backdrop()
             self.update()
-        elif chosen is reset and self._song is not None:
+        elif reset is not None and chosen is reset and self._song is not None:
             self._song.audio_gain_db = 0.0
             self.audio_gain_changed.emit(0.0)
             self._invalidate_scrub_backdrop()
@@ -2607,21 +2597,33 @@ class TimelineWidget(QWidget):
 
     def _show_ltc_gain_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        hide = menu.addAction("Hide Music volume adjustment")
-        reset = menu.addAction("Reset Music to 0 dB")
+        if self._show_ltc_gain_line:
+            toggle = menu.addAction("Hide Music volume adjustment")
+        else:
+            toggle = menu.addAction("Show Music volume adjustment")
+        reset = None
+        if self._show_ltc_gain_line:
+            menu.addSeparator()
+            reset = menu.addAction("Reset Music to 0 dB")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is hide:
-            self._show_ltc_gain_line = False
+        if chosen is toggle:
+            self._show_ltc_gain_line = not self._show_ltc_gain_line
             self._invalidate_scrub_backdrop()
             self.update()
-        elif chosen is reset and self._song is not None:
+        elif reset is not None and chosen is reset and self._song is not None:
             self._song.music_volume = 1.0
             self._sync_music_volume_ui()
             self.music_volume_changed.emit(1.0)
             self._invalidate_scrub_backdrop()
             self.update()
+
+    def _toggle_mark_lane_resize_bar(self) -> None:
+        self._show_mark_lane_resize_bar = not self._show_mark_lane_resize_bar
+        self._apply_layout_heights()
+        self._invalidate_scrub_backdrop()
+        self.update()
 
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
@@ -2634,16 +2636,10 @@ class TimelineWidget(QWidget):
             self._show_video_clip_context_menu(pos, x, y)
             return
         if self._in_waveform(x, y) and self._audio is not None:
-            if self._near_audio_gain_line(x, y) == "wave":
-                self._show_wave_gain_context_menu(pos)
-            else:
-                self._toggle_wave_gain_line()
+            self._show_wave_gain_context_menu(pos)
             return
         if self._in_ltc_waveform(x, y):
-            if self._near_audio_gain_line(x, y) == "ltc":
-                self._show_ltc_gain_context_menu(pos)
-            else:
-                self._toggle_ltc_gain_line()
+            self._show_ltc_gain_context_menu(pos)
             return
         if (
             (self._in_mark_tracks(x, y) or self._hit_mark_lane_header(x, y) is not None)
