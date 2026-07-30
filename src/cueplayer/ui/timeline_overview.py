@@ -35,9 +35,9 @@ class TimelineOverviewBar(QWidget):
         self._hover = False
         self._bar_height = 26
         self.setFixedHeight(self._bar_height)
-        # Prefer a shorter horizontal span; transport centers us with stretches.
-        self.setMinimumWidth(280)
-        self.setMaximumWidth(720)
+        # Prefer filling the Play…X cluster width (transport sets expanding).
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(16777215)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Overview — drag to jump in the song")
