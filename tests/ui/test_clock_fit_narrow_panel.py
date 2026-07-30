@@ -27,6 +27,7 @@ def app() -> QApplication:
 
 def test_clock_font_shrinks_when_panel_is_narrow(app: QApplication) -> None:
     panel = CueMonitorPanel()
+    panel.configure_output_timecode_clock(visible=False, color="#3dd68c")
     panel.show()
     panel.resize(400, 700)
     app.processEvents()
@@ -48,6 +49,7 @@ def test_clock_font_shrinks_when_panel_is_narrow(app: QApplication) -> None:
 
 def test_clock_font_grows_back_when_panel_widens(app: QApplication) -> None:
     panel = CueMonitorPanel()
+    panel.configure_output_timecode_clock(visible=False, color="#3dd68c")
     panel.show()
     panel.resize(160, 700)
     app.processEvents()

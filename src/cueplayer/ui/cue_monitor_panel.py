@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStyle,
@@ -126,12 +127,16 @@ _NOW_PRIMARY_COL_MIN = 56
 _NOW_SECONDARY_COL_MIN = 48
 _CUE_LIST_BODY_MIN = 56
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
+# Keep NOW + Cue List tall enough inside the scroll area so a short panel
+# scrolls between the display (clock/NOW) and the Cue List instead of crushing both.
+_MONITOR_BODY_SCROLL_MIN = 280
 _CLOCK_FONT_MAX_PX = 48
 _CLOCK_FONT_MIN_PX = 16
 _TC_FONT_MAX_PX = 22
 _TC_FONT_MIN_PX = 11
 _DURATION_FONT_MAX_PX = 16
 _DURATION_FONT_MIN_PX = 10
+_TC_STATUS_FONT_PX = 11
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
@@ -224,6 +229,10 @@ class CueMonitorPanel(QWidget):
         clock_frame = QFrame()
         self._clock_frame = clock_frame
         clock_frame.setObjectName("clockFrame")
+        # Never crush the clock block — short panels scroll instead.
+        clock_frame.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
         clock_frame.setStyleSheet(
             "#clockFrame {"
             "  background: #111113;"
@@ -246,7 +255,7 @@ class CueMonitorPanel(QWidget):
         self.clock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.clock_label.setMinimumWidth(0)
         self.clock_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         self._apply_clock_label_style()
 
@@ -254,7 +263,7 @@ class CueMonitorPanel(QWidget):
         self.duration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.duration_label.setMinimumWidth(0)
         self.duration_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         self._apply_duration_label_style()
 
@@ -264,12 +273,18 @@ class CueMonitorPanel(QWidget):
         self._tc_output_block = QWidget()
         self._tc_output_block.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tc_output_block.setStyleSheet("background: transparent;")
+        self._tc_output_block.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
         tc_out_layout = QVBoxLayout(self._tc_output_block)
         tc_out_layout.setContentsMargins(0, 8, 0, 4)
         tc_out_layout.setSpacing(2)
 
         self.tc_output_status = QLabel("TC off")
         self.tc_output_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tc_output_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+        )
         self.tc_output_status.setStyleSheet(
             "color: #71717a; background: transparent; font-size: 11px; font-weight: 600;"
             "letter-spacing: 0.5px;"
@@ -279,7 +294,7 @@ class CueMonitorPanel(QWidget):
         self.tc_output_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.tc_output_value.setMinimumWidth(0)
         self.tc_output_value.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         self._tc_clock_color = "#3dd68c"
         self._show_output_tc_clock = True
@@ -492,13 +507,38 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setStretchFactor(0, 0)
         self._body_splitter.setStretchFactor(1, 1)
         self._body_splitter.setSizes([240, 420])
+        self._body_splitter.setMinimumHeight(_MONITOR_BODY_SCROLL_MIN)
         self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         body_handle = self._body_splitter.handle(1)
         body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
         body_handle.setToolTip("Drag to resize Secondary vs Cue List")
 
-        layout.addWidget(clock_frame)
-        layout.addWidget(self._body_splitter, stretch=1)
+        # Short windows: scroll the right column between the display (clock/NOW)
+        # and Cue List instead of crushing both into illegible strips.
+        self._monitor_scroll_content = QWidget()
+        self._monitor_scroll_content.setObjectName("monitorScrollContent")
+        scroll_layout = QVBoxLayout(self._monitor_scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(10)
+        scroll_layout.addWidget(clock_frame)
+        scroll_layout.addWidget(self._body_splitter, stretch=1)
+
+        self._monitor_scroll = QScrollArea()
+        self._monitor_scroll.setObjectName("monitorScroll")
+        self._monitor_scroll.setWidgetResizable(True)
+        self._monitor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._monitor_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._monitor_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._monitor_scroll.setStyleSheet(
+            "#monitorScroll { background: transparent; border: none; }"
+            "#monitorScroll > QWidget > QWidget { background: transparent; }"
+        )
+        self._monitor_scroll.setWidget(self._monitor_scroll_content)
+        layout.addWidget(self._monitor_scroll, stretch=1)
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
 
     def set_song(self, song: Song | None) -> None:
@@ -881,12 +921,16 @@ class CueMonitorPanel(QWidget):
             f"color: #e4e4e7; background: transparent; font-size: {px}px; font-weight: 700;"
             "font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        self.clock_label.setMinimumHeight(QFontMetrics(font).height() + 4)
 
     def _apply_duration_label_style(self) -> None:
         px = self._duration_font_px
+        font = self._mono_clock_font(px, bold=False)
+        self.duration_label.setFont(font)
         self.duration_label.setStyleSheet(
             f"color: #a1a1aa; background: transparent; font-size: {px}px;"
         )
+        self.duration_label.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     def _apply_tc_value_style(self) -> None:
         px = self._tc_font_px
@@ -897,6 +941,9 @@ class CueMonitorPanel(QWidget):
             f"color: {color}; background: transparent; font-size: {px}px;"
             "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        self.tc_output_value.setMinimumHeight(QFontMetrics(font).height() + 2)
+        status_font = self._mono_clock_font(_TC_STATUS_FONT_PX, bold=True)
+        self.tc_output_status.setMinimumHeight(QFontMetrics(status_font).height() + 2)
 
     def _fit_clock_fonts(self) -> None:
         """Shrink clock digits to fit when the right panel is narrow."""
@@ -904,8 +951,11 @@ class CueMonitorPanel(QWidget):
         if frame_w <= 1:
             return
         layout = self._clock_frame.layout()
+        # With TC + toggles visible, use tighter padding so the block stays compact
+        # inside the scrollable column.
+        dense = self._tc_output_block.isVisible() or self.output_quick_toggles.isVisible()
         if layout is not None:
-            if frame_w < 220:
+            if frame_w < 220 or dense:
                 layout.setContentsMargins(6, 8, 6, 8)
             elif frame_w < 280:
                 layout.setContentsMargins(8, 12, 8, 12)
@@ -915,10 +965,11 @@ class CueMonitorPanel(QWidget):
         clock_text = self.clock_label.text() or "00:00.000"
         # Keep room for typical mm:ss.mmm even when current text is shorter.
         clock_sample = clock_text if len(clock_text) >= len("00:00.000") else "00:00.000"
+        clock_max = 36 if self._tc_output_block.isVisible() else _CLOCK_FONT_MAX_PX
         clock_px = self._font_px_for_text(
             clock_sample,
             available=budget,
-            max_px=_CLOCK_FONT_MAX_PX,
+            max_px=clock_max,
             min_px=_CLOCK_FONT_MIN_PX,
         )
         duration_text = self.duration_label.text() or "/ 00:00.000"
@@ -1389,10 +1440,12 @@ class CueMonitorPanel(QWidget):
         self._tc_output_block.setVisible(self._show_output_tc_clock)
         self.output_quick_toggles.set_accent_color(self._tc_clock_color)
         self._apply_output_timecode_style()
+        self._fit_clock_fonts()
 
     def configure_output_quick_toggles(self, *, visible: bool) -> None:
         self._show_output_quick_toggles = bool(visible)
         self.output_quick_toggles.setVisible(self._show_output_quick_toggles)
+        self._fit_clock_fonts()
 
     def sync_output_quick_toggles(self, settings: AudioOutputSettings) -> None:
         self.output_quick_toggles.apply_settings(settings)
@@ -1447,10 +1500,12 @@ class CueMonitorPanel(QWidget):
         if chosen is show_clock:
             self._show_output_tc_clock = show_clock.isChecked()
             self._tc_output_block.setVisible(self._show_output_tc_clock)
+            self._fit_clock_fonts()
             self.output_timecode_clock_changed.emit()
         elif chosen is show_toggles:
             self._show_output_quick_toggles = show_toggles.isChecked()
             self.output_quick_toggles.setVisible(self._show_output_quick_toggles)
+            self._fit_clock_fonts()
             self.output_quick_toggles_visibility_changed.emit()
         elif chosen is settings_action:
             self.audio_settings_requested.emit()
