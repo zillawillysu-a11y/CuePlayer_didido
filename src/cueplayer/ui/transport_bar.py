@@ -302,9 +302,8 @@ class BottomTransportBar(QWidget):
 
         base_rail = max(0, self._right_rail.sizeHint().width())
         delta = 0
-        anchor = self._center_anchor
-        if anchor is not None and anchor.isVisible() and anchor.width() >= 8:
-            anchor_c = anchor.mapTo(self, anchor.rect().center()).x()
+        anchor_c = self._anchor_center_x(self._center_anchor)
+        if anchor_c is not None:
             delta = int(round(anchor_c - self.width() / 2.0))
         left_w = max(0, base_rail + delta)
         right_w = max(0, base_rail - delta)
@@ -330,6 +329,13 @@ class BottomTransportBar(QWidget):
         ov_w = track_w + 2 * gutter
         ov_x = int(play_l - gutter - host_l)
         self.overview.setGeometry(ov_x, 0, ov_w, self._overview_host.height())
+
+    def _anchor_center_x(self, widget: QWidget | None) -> float | None:
+        if widget is None or widget.width() < 8:
+            return None
+        if not widget.isVisibleTo(self):
+            return None
+        return float(self.mapFromGlobal(widget.mapToGlobal(widget.rect().center())).x())
 
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")

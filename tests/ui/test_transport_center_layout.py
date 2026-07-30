@@ -50,11 +50,14 @@ def test_transport_follows_center_anchor(app: QApplication) -> None:
     host.show()
     anchor = QWidget(host)
     anchor.setGeometry(200, 0, 700, 120)
+    anchor.show()
     bar = BottomTransportBar(host)
     bar.setGeometry(0, 120, 1200, 80)
     bar.set_center_anchor(anchor)
     app.processEvents()
 
     play_c = bar.play_button.mapTo(bar, bar.play_button.rect().center()).x()
-    anchor_c = anchor.mapTo(bar, anchor.rect().center()).x()
-    assert abs(play_c - anchor_c) < 24
+    stop_c = bar.stop_button.mapTo(bar, bar.stop_button.rect().center()).x()
+    transport_c = (play_c + stop_c) / 2.0
+    anchor_c = bar.mapFromGlobal(anchor.mapToGlobal(anchor.rect().center())).x()
+    assert abs(transport_c - anchor_c) < 24

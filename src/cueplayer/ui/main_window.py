@@ -1106,16 +1106,22 @@ class MainWindow(QMainWindow):
         self.view_stack.setAcceptDrops(True)
         self.view_stack.installEventFilter(self)
 
+        self._main_content_column = QWidget()
+        main_content_layout = QVBoxLayout(self._main_content_column)
+        main_content_layout.setContentsMargins(0, 0, 0, 0)
+        main_content_layout.setSpacing(0)
+        main_content_layout.addWidget(self.view_stack, stretch=1)
+        main_content_layout.addWidget(self.transport)
+
         splitter.addWidget(left)
-        splitter.addWidget(self.view_stack)
+        splitter.addWidget(self._main_content_column)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([240, 1340])
 
         root_layout.addWidget(self.toolbar)
         root_layout.addWidget(splitter, stretch=1)
-        root_layout.addWidget(self.transport)
-        self.transport.set_center_anchor(self._timeline_preview_split)
+        self.transport.set_center_anchor(self._timeline_center)
         for split in (self._main_splitter, self._timeline_split, self._timeline_preview_split):
             split.splitterMoved.connect(self._sync_transport_layout)
         self.setCentralWidget(root)
