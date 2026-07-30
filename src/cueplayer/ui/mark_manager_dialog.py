@@ -1111,13 +1111,14 @@ class MarkManagerDialog(QDialog):
         self._append_row(
             MarkLane(
                 index=index,
-                name=f"Mark {index}",
+                name=f"Mark {index}" if index != 1 else "Main",
                 lane_type="main" if index == 1 else "top_button",
                 color=color,
                 shortcut=shortcut,
                 visible=True,
                 cue_id_enabled=(index == 1),
-                cue_list_enabled=(index == 1),
+                cue_list_enabled=True,
+                midi_note_enabled=(index != 1),
                 marker_shape="circle",
             )
         )

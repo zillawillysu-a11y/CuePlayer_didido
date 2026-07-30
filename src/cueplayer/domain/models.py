@@ -360,8 +360,10 @@ class Song:
                 lane_type="main",
                 shortcut="1",
                 color="#E74C3C",
+                visible=True,
                 cue_id_enabled=True,
                 cue_list_enabled=True,
+                midi_note_enabled=False,
             ),
         ]
         colors = [
@@ -382,7 +384,10 @@ class Song:
                     lane_type="top_button",
                     shortcut=str(i),
                     color=colors[i - 2],
-                    cue_list_enabled=False,
+                    visible=True,
+                    cue_id_enabled=False,
+                    cue_list_enabled=True,
+                    midi_note_enabled=True,
                 )
             )
         return cls(
