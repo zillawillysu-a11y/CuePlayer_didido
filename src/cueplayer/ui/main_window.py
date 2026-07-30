@@ -4845,7 +4845,7 @@ class MainWindow(QMainWindow):
             dash_on=float(p.mark_dash_on),
             dash_off=float(p.mark_dash_off),
             waveform_color=str(p.waveform_color or "#616161"),
-            playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
+            playhead_color=str(getattr(p, "playhead_color", None) or "#3dd68c"),
         )
         self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
         self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))

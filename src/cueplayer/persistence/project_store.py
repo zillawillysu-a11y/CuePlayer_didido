@@ -338,7 +338,7 @@ def _load_project_waveform_color(data: dict[str, Any], songs: list[Song]) -> str
 
 
 def _load_project_playhead_color(data: dict[str, Any]) -> str:
-    return _coerce_waveform_color(data.get("playhead_color"), default="#ff5a5f")
+    return _coerce_waveform_color(data.get("playhead_color"), default="#3dd68c")
 
 
 def _load_project_show_video_track(data: dict[str, Any], songs: list[Song]) -> bool:

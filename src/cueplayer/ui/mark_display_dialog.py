@@ -117,7 +117,7 @@ class MarkDisplayDialog(QDialog):
         form2.addRow("Waveform Color (project)", self.wave_color)
 
         self.playhead_color = ColorSwatchButton(
-            getattr(line_src, "playhead_color", None) or "#ff5a5f"
+            getattr(line_src, "playhead_color", None) or "#3dd68c"
         )
         self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
         form2.addRow("Playhead Color (project)", self.playhead_color)
