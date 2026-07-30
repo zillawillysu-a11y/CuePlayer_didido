@@ -282,13 +282,15 @@ class SetlistWidget(QTableWidget):
         self.horizontalHeader().setVisible(True)
         self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
         header = self.horizontalHeader()
-        # Song stretches; LTC stays Fixed so "LTC L R" is never squeezed away.
+        # Song/English are Interactive so the user can drag widths; when the
+        # panel is narrow, ScrollBarAsNeeded shows a horizontal scrollbar
+        # instead of crushing Song to a few letters. LTC stays Fixed.
         header.setSectionsMovable(False)
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_NUM, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_BPM, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(self.COL_LTC, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(self.COL_NUM, 48)
@@ -333,16 +335,15 @@ class SetlistWidget(QTableWidget):
             self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, False)
             header.setSectionResizeMode(self.COL_EN, QHeaderView.ResizeMode.Interactive)
-            # Keep Song as the only stretch column when English is visible.
-            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Interactive)
         elif mode == "en":
             self.setHorizontalHeaderLabels(["No.", "English", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
-            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Interactive)
         else:
             self.setHorizontalHeaderLabels(["No.", "Song", "English", "BPM", ""])
             self.setColumnHidden(self.COL_EN, True)
-            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Interactive)
         self.setColumnHidden(self.COL_BPM, not self._show_bpm)
         self._sync_media_column_width()
 
@@ -1142,9 +1143,13 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._main_content_column)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setChildrenCollapsible(True)
+        # Keep Setlist visible when the window is tiny — collapsing to zero
+        # made the panel disappear into the left edge on one drag.
+        splitter.setChildrenCollapsible(False)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
         splitter.setSizes([240, 1340])
-        left.setMinimumWidth(140)
+        left.setMinimumWidth(160)
 
         root_layout.addWidget(self.toolbar)
         root_layout.addWidget(splitter, stretch=1)
@@ -1360,6 +1365,18 @@ class MainWindow(QMainWindow):
         if transport is not None:
             transport.sync_geometry()
 
+    def _lock_main_splitter_panels(self) -> None:
+        """Prevent the Setlist / content panes from collapsing to zero width."""
+        main_split = getattr(self, "_main_splitter", None)
+        if main_split is None:
+            return
+        main_split.setChildrenCollapsible(False)
+        for index in range(main_split.count()):
+            main_split.setCollapsible(index, False)
+        left = main_split.widget(0)
+        if left is not None and left.minimumWidth() < 160:
+            left.setMinimumWidth(160)
+
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
         if geometry:
@@ -1377,6 +1394,9 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_MAIN_SPLITTER)
             if raw:
                 main_split.restoreState(raw)
+            # restoreState can re-enable collapse from an older session; keep
+            # Setlist from vanishing into the left edge when dragged narrow.
+            self._lock_main_splitter_panels()
         timeline_split = getattr(self, "_timeline_split", None)
         if timeline_split is not None:
             raw = self._settings.value(_KEY_TIMELINE_SPLITTER)

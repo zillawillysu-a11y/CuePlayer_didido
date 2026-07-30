@@ -178,7 +178,7 @@ def test_set_list_sheet_ui_columns() -> None:
     assert window.toolbar.setlist_mode_button.text() == "Set List Sheet"
 
     header = window.song_list.horizontalHeader()
-    assert header.sectionResizeMode(SetlistWidget.COL_NUM) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(SetlistWidget.COL_NUM) == QHeaderView.ResizeMode.Fixed
     assert header.sectionResizeMode(SetlistWidget.COL_TITLE) == QHeaderView.ResizeMode.Interactive
     assert window.song_list.horizontalHeaderItem(SetlistWidget.COL_NUM).text() == "No."
 

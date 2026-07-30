@@ -46,3 +46,10 @@ def test_main_window_minimum_size_is_compact(app: QApplication) -> None:
     assert window.minimumHeight() <= 420
     # Timeline content must not inflate the window floor.
     assert window.minimumHeight() < window.timeline._content_height
+    # Setlist must not collapse to zero when the splitter is dragged narrow.
+    assert not window._main_splitter.childrenCollapsible()
+    assert not window._main_splitter.isCollapsible(0)
+    assert not window._main_splitter.isCollapsible(1)
+    left = window._main_splitter.widget(0)
+    assert left is not None
+    assert left.minimumWidth() >= 160
