@@ -72,6 +72,7 @@ from cueplayer.persistence.backup import (
 from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
+    heal_stale_media_paths,
     ingest_external_media_into_project,
     scan_external_media,
     sync_all_songs_media_to_setlist_folders,
@@ -1451,12 +1452,35 @@ class MainWindow(QMainWindow):
 
     def _collect_project_bundle(self) -> None:
         """Save As into a Bundle folder (incremental — safe to re-use the same folder)."""
+        # Heal paths broken by earlier Media folder moves before claiming missing.
+        if self._project_path is not None:
+            healed = heal_stale_media_paths(
+                self.project, project_file=self._project_path
+            )
+            if healed:
+                self._mark_dirty()
+                self.status.showMessage(
+                    f"Relinked {healed} media path(s) under Media/",
+                    3500,
+                )
         missing = scan_missing_media(self.project)
         if missing:
+            names = []
+            seen: set[str] = set()
+            for ref in missing:
+                if ref.basename in seen:
+                    continue
+                seen.add(ref.basename)
+                names.append(f"  · {ref.song_name}: {ref.basename}")
+            preview = "\n".join(names[:8])
+            more = "" if len(names) <= 8 else f"\n  · …and {len(names) - 8} more"
             answer = QMessageBox.question(
                 self,
                 "Collect Project Bundle",
                 f"{len(missing)} media file(s) are missing and cannot be copied.\n\n"
+                f"{preview}{more}\n\n"
+                "Often this means a Setlist folder move left an old path behind — "
+                "try File → Relink Missing Media… if the file is still on disk.\n\n"
                 "Continue and bundle the files that are still available?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
@@ -1574,6 +1598,16 @@ class MainWindow(QMainWindow):
         )
 
     def _maybe_prompt_missing_media(self, *, quiet: bool = False) -> None:
+        if self._project_path is not None:
+            healed = heal_stale_media_paths(
+                self.project, project_file=self._project_path
+            )
+            if healed and not quiet:
+                self._mark_dirty()
+                self.status.showMessage(
+                    f"Relinked {healed} media path(s) under Media/",
+                    4000,
+                )
         missing = scan_missing_media(self.project)
         if not missing:
             return
