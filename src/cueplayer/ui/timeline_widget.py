@@ -780,7 +780,8 @@ class TimelineWidget(QWidget):
             return
         self._selected_mark_ids = new_ids
         if new_ids and self._selected_clip_ids:
-            self._selected_clip_ids = set()
+            # Clear clip selection through the setter so volume UI + live paint stay in sync.
+            self.set_selected_video_clip_ids([], emit=False)
         self.update()
         if emit:
             self.selection_changed.emit(list(self._selected_mark_ids))
@@ -1562,6 +1563,13 @@ class TimelineWidget(QWidget):
         clip_hit = self._hit_video_clip(x, y, allow_locked_edit=shift)
         if self._near_wave_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif clip_hit is not None:
+            # Prefer clip cursor over the Video lane splitter (same as press).
+            self.setCursor(
+                Qt.CursorShape.SizeHorCursor
+                if clip_hit[1] in ("left", "right")
+                else Qt.CursorShape.OpenHandCursor
+            )
         elif self._near_video_lane_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif self._near_mark_lane_split(y):
@@ -1575,12 +1583,6 @@ class TimelineWidget(QWidget):
             self.setCursor(self._cursor_for_loop_hover(x, y))
         elif self._hit_mark_at(x, y) is not None:
             self.setCursor(self._cursor_for_mark_hover(x, y))
-        elif clip_hit is not None:
-            self.setCursor(
-                Qt.CursorShape.SizeHorCursor
-                if clip_hit[1] in ("left", "right")
-                else Qt.CursorShape.OpenHandCursor
-            )
         elif self._box_select_mode and self._in_mark_tracks(x, y):
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif self._in_scrub_zone(x, y):
@@ -2486,6 +2488,13 @@ class TimelineWidget(QWidget):
                 self._resizing_wave = True
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
+                # Prefer clip select/drag over the Video lane splitter so clicks
+                # near the bottom of a clip still select during playback.
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self._begin_video_clip_interaction(
+                    clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
+                )
             elif self._near_video_lane_split(y):
                 self._resizing_video_lane = True
                 self.grabMouse()
@@ -2521,11 +2530,6 @@ class TimelineWidget(QWidget):
                 self.update()
             elif (hit_id := self._hit_mark_at(x, y)) is not None:
                 self._begin_mark_interaction(hit_id, x, y, shift=shift, ctrl=ctrl)
-            elif (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
-                self.setFocus(Qt.FocusReason.MouseFocusReason)
-                self._begin_video_clip_interaction(
-                    clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
-                )
             elif self._in_video_lane(x, y):
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 if not (shift or ctrl):
@@ -2626,7 +2630,19 @@ class TimelineWidget(QWidget):
             self._scrub_at(x)
         else:
             hover_wave = self._near_wave_split(y)
-            hover_video = False if hover_wave else self._near_video_lane_split(y)
+            shift_hover = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            # Resolve clip before the Video lane splitter so the bottom edge of
+            # a clip still shows clip hover (matches mousePress priority).
+            pre_clip = (
+                None
+                if hover_wave
+                else self._hit_video_clip(x, y, allow_locked_edit=shift_hover)
+            )
+            hover_video = (
+                False
+                if (hover_wave or pre_clip is not None)
+                else self._near_video_lane_split(y)
+            )
             hover_mark = False if (hover_wave or hover_video) else self._near_mark_lane_split(y)
             if hover_wave != self._wave_split_hover:
                 self._wave_split_hover = hover_wave
@@ -2650,13 +2666,7 @@ class TimelineWidget(QWidget):
             if loop_h != self._hover_loop:
                 self._hover_loop = loop_h
                 self.update()
-            clip_hit = None if (hover or hit is not None) else self._hit_video_clip(
-                x,
-                y,
-                allow_locked_edit=bool(
-                    event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-                ),
-            )
+            clip_hit = None if (hover or hit is not None) else pre_clip
             clip_hover_id = clip_hit[0] if clip_hit is not None else None
             if clip_hover_id != self._hover_clip_id:
                 self._hover_clip_id = clip_hover_id
@@ -3089,6 +3099,7 @@ class TimelineWidget(QWidget):
         if self._can_use_static_backdrop():
             if self._blit_scrub_backdrop(painter):
                 self._paint_marks_live(painter)
+                self._paint_video_selection_live(painter)
                 self._paint_loop_region(painter)
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
@@ -3141,6 +3152,65 @@ class TimelineWidget(QWidget):
             mid_x = self._header_width + (right - self._header_width) // 2
             painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, bottom, mid_x + 18, bottom)
+
+    def _paint_video_selection_live(self, painter: QPainter) -> None:
+        """Redraw Video clip selection chrome over the play/scrub backdrop.
+
+        Clip fills/borders and the header "No clip selected" caption are baked
+        into the static cache. Without a live pass, a click-select during
+        playback looks like it failed until the user drags (which leaves the
+        backdrop path) or stops playback.
+        """
+        if not self._video_lane_visible() or self._song is None:
+            return
+        top = self._video_lane_top_y()
+        row_h = int(self._video_lane_base_height)
+        right = self._paint_right()
+        fm = painter.fontMetrics()
+        text_w = max(24, self._header_width - 16)
+
+        # Header caption under "Video" — always refresh from live selection.
+        sub_top = top + row_h
+        painter.fillRect(0, sub_top, self._header_width, 18, QColor("#111113"))
+        clip = self._single_selected_video_clip()
+        painter.setPen(QColor("#71717a"))
+        name_text = (
+            fm.elidedText(clip.name, Qt.TextElideMode.ElideRight, text_w)
+            if clip is not None
+            else "No clip selected"
+        )
+        painter.drawText(8, sub_top + 13, name_text)
+
+        if not self._selected_clip_ids and self._hover_clip_id is None:
+            return
+
+        overlapping = self._song.overlapping_video_clip_ids()
+        for video_clip in self._song.video_clips:
+            selected = video_clip.id in self._selected_clip_ids
+            hovered = video_clip.id == self._hover_clip_id
+            if not selected and not hovered:
+                continue
+            x0 = self._x_for_time(video_clip.start_seconds)
+            x1 = self._x_for_time(video_clip.end_seconds)
+            if x1 < self._header_width - 2 or x0 > right + 2:
+                continue
+            rx0 = max(x0, float(self._header_width))
+            rx1 = min(x1, float(right))
+            rect = QRectF(rx0, top + 3, max(2.0, rx1 - rx0), row_h - 6)
+            if selected:
+                painter.fillRect(rect, with_alpha("#3b5bdb", 60))
+            is_overlap = video_clip.id in overlapping
+            if is_overlap:
+                border = QColor("#f4f4f5") if selected else QColor("#a78bfa")
+                pen = QPen(border, 2 if selected else 1, Qt.PenStyle.DashLine)
+            else:
+                border = QColor("#f4f4f5") if selected else QColor("#93c5fd")
+                pen = QPen(border, 2 if selected else 1)
+            if video_clip.locked:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
 
     def _paint_video_lane(self, painter: QPainter) -> None:
         if not self._video_lane_visible():
