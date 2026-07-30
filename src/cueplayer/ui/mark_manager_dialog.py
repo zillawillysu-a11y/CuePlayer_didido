@@ -69,8 +69,6 @@ _TABLE_COMBO_QSS = (
 
 def _style_table_combo(combo: QComboBox) -> None:
     combo.setStyleSheet(_TABLE_COMBO_QSS)
-    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-    combo.setMinimumContentsLength(6)
 
 
 class ShapePreview(QWidget):
@@ -311,17 +309,23 @@ class MarkManagerDialog(QDialog):
             ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI On", "Note"]
         )
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        header.setMinimumSectionSize(44)
-        self.table.setColumnWidth(_COL_INDEX, 44)
-        self.table.setColumnWidth(_COL_KEY, 72)
-        self.table.setColumnWidth(_COL_SHAPE, 132)
-        self.table.setColumnWidth(_COL_COLOR, 72)
-        self.table.setColumnWidth(_COL_VISIBLE, 60)
-        self.table.setColumnWidth(_COL_CUE_ID, 76)
-        self.table.setColumnWidth(_COL_CUE_LIST, 80)
-        self.table.setColumnWidth(_COL_MIDI, 80)
-        self.table.setColumnWidth(_COL_MIDI_NOTE, 116)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(36)
+        default_widths = {
+            _COL_INDEX: 44,
+            _COL_NAME: 140,
+            _COL_KEY: 72,
+            _COL_SHAPE: 132,
+            _COL_COLOR: 72,
+            _COL_VISIBLE: 60,
+            _COL_CUE_ID: 76,
+            _COL_CUE_LIST: 80,
+            _COL_MIDI: 80,
+            _COL_MIDI_NOTE: 116,
+        }
+        for col, width in default_widths.items():
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(col, width)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -769,7 +773,6 @@ class MarkManagerDialog(QDialog):
         shape.setCurrentIndex(shape_idx if shape_idx >= 0 else 0)
         shape.currentIndexChanged.connect(lambda _i, r=row: self._on_shape_or_color_changed(r))
         _style_table_combo(shape)
-        shape.setMinimumContentsLength(12)
         self.table.setCellWidget(row, _COL_SHAPE, shape)
 
         swatch = ColorSwatchButton(lane.color)
@@ -831,7 +834,6 @@ class MarkManagerDialog(QDialog):
         default_note = self._default_note_for_lane(lane)
         note_combo = self._make_note_combo(lane, default_note)
         _style_table_combo(note_combo)
-        note_combo.setMinimumContentsLength(10)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
         self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
         self._refresh_bulk_toggle_states()
@@ -882,26 +884,10 @@ class MarkManagerDialog(QDialog):
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
         self._sync_bulk_toggle_layout()
-        self._ensure_column_readability()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         self._sync_bulk_toggle_layout()
-        self._ensure_column_readability()
-
-    def _ensure_column_readability(self) -> None:
-        """Keep fixed columns wide enough for headers and combo labels."""
-        header = self.table.horizontalHeader()
-        mins = {
-            _COL_KEY: 72,
-            _COL_SHAPE: 132,
-            _COL_MIDI: 80,
-            _COL_MIDI_NOTE: 116,
-            _COL_CUE_LIST: 80,
-        }
-        for col, min_w in mins.items():
-            if header.sectionSize(col) < min_w:
-                self.table.setColumnWidth(col, min_w)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.
