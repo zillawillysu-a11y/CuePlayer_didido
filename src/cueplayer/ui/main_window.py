@@ -311,6 +311,11 @@ class SetlistWidget(QTableWidget):
         self._sync_media_column_visibility()
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Pixel scrolling — column-step mode felt like notches, and selectRow /
+        # setCurrentCell would yank the thumb to mid-range during playback.
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.horizontalScrollBar().setSingleStep(12)
         self._block_number_signal = False
         self._drag_song_ids: list[str] = []
         self._drag_category_id: str | None = None
@@ -324,6 +329,32 @@ class SetlistWidget(QTableWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.viewport().setAcceptDrops(True)
+
+    def scrollTo(  # noqa: N802
+        self,
+        index: QModelIndex,
+        hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
+    ) -> None:
+        """Scroll vertically as usual; never nudge the horizontal bar.
+
+        Selection / current-cell updates (rebuild, song switch, LTC refresh
+        paths that reselect) must not yank Song/BPM into view and leave the
+        thumb stuck mid-track while the user is playing.
+        """
+        bar = self.horizontalScrollBar()
+        x = bar.value() if bar is not None else 0
+        super().scrollTo(index, hint)
+        if bar is not None:
+            bar.setValue(x)
+
+    def horizontal_scroll_value(self) -> int:
+        bar = self.horizontalScrollBar()
+        return int(bar.value()) if bar is not None else 0
+
+    def set_horizontal_scroll_value(self, value: int) -> None:
+        bar = self.horizontalScrollBar()
+        if bar is not None:
+            bar.setValue(value)
 
     def set_name_mode(self, mode: str) -> None:
         """zh = Chinese · both = Chinese + English · en = English."""
@@ -2600,6 +2631,7 @@ class MainWindow(QMainWindow):
             select_indexes = [0]
         current_song_index = select_indexes[-1] if select_indexes else 0
         self._switching_song = True
+        keep_hscroll = self.song_list.horizontal_scroll_value()
         self.song_list.blockSignals(True)
         self.song_list._block_number_signal = True  # noqa: SLF001
         display_rows = self._setlist_display_rows()
@@ -2790,6 +2822,9 @@ class MainWindow(QMainWindow):
             )
             if current_table_row is not None:
                 self.song_list.setCurrentCell(current_table_row, SetlistWidget.COL_TITLE)
+        # setRowCount / selectRow can reset or yank the horizontal bar; keep
+        # the user's Song-column scroll position across rebuilds.
+        self.song_list.set_horizontal_scroll_value(keep_hscroll)
         self.song_list._block_number_signal = False  # noqa: SLF001
         self.song_list.blockSignals(False)
         self._switching_song = False
