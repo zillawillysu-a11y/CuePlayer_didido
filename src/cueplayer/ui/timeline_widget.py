@@ -1188,18 +1188,16 @@ class TimelineWidget(QWidget):
             else:
                 self._follow_playhead()
             scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
-            if scroll_moved:
-                # Auto-follow scrolled the view — static backdrop must rebuild.
+            # While playing/scrubbing, keep the static backdrop and blit it with
+            # a scroll offset (see paintEvent). Invalidating here forced a full
+            # waveform rebuild every tick at the follow edge → visible jitter.
+            if scroll_moved and not (self._playing or self._scrubbing):
                 self._invalidate_scrub_backdrop()
         if self._playing:
             now = monotonic_ns()
-            # ~60 Hz playhead when we can blit the cached backdrop; keep the
-            # heavier full-layer rebuild cadence when the view actually scrolled.
-            interval = (
-                16_000_000
-                if self._scrub_backdrop_valid()
-                else self._play_repaint_interval_ns
-            )
+            # Playhead-only blit stays ~60 Hz; backdrop rebuild is rare now that
+            # auto-scroll no longer invalidates every edge tick.
+            interval = 16_000_000
             if scroll_moved or now - self._last_play_repaint_ns >= interval:
                 self._last_play_repaint_ns = now
                 self.update()
@@ -1403,15 +1401,12 @@ class TimelineWidget(QWidget):
     def _follow_playhead(self) -> None:
         """Keep the playhead on-screen without recentering every tick.
 
-        Continuous centering forces ``scroll_x`` to change every frame, which
-        invalidates the static timeline backdrop and makes playback with video
-        feel like the whole timeline is lagging. Edge-band follow only scrolls
-        when the playhead leaves ~25%–75% of the view.
+        Continuous centering forces ``scroll_x`` to change every frame.
+        Edge-band follow only scrolls when the playhead leaves ~25%–75% of the
+        view, then parks it on that edge so follow feels continuous.
 
-        Important: when crossing an edge, jump the playhead to the *opposite*
-        side of the band (right→25%, left→75%). Parking it on the same edge
-        re-triggers a scroll every audio tick and makes the waveform jitter
-        until the user zooms or clicks (which rebuilds a stable backdrop).
+        Waveform jitter is avoided by *not* rebuilding the static backdrop on
+        every scroll tick — paint blits the cache with a horizontal offset.
         """
         if not self._playing:
             self._center_on_playhead()
@@ -1423,12 +1418,10 @@ class TimelineWidget(QWidget):
         left = float(self._header_width) + view_w * 0.25
         right = float(self._header_width) + view_w * 0.75
         if x < left:
-            # Off the left edge → place playhead at 75% (room to travel left).
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
             self._clamp_scroll()
         elif x > right:
-            # Off the right edge → place playhead at 25% (room to travel right).
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
+            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
             self._clamp_scroll()
 
     def _playhead_outside_view(self, *, margin: float = 0.0) -> bool:
@@ -1490,15 +1483,58 @@ class TimelineWidget(QWidget):
         """
         self._invalidate_scrub_backdrop()
 
-    def _scrub_backdrop_valid(self) -> bool:
+    def _scrub_backdrop_geometry_ok(self) -> bool:
+        """True when the cached backdrop matches zoom + widget size (scroll may drift)."""
         pm = self._scrub_backdrop
         if pm is None or pm.isNull():
             return False
         return (
-            abs(self._scroll_x - self._scrub_backdrop_scroll) < 0.5
-            and abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
+            abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
             and self._scrub_backdrop_size == self.size()
         )
+
+    def _scrub_backdrop_valid(self) -> bool:
+        """Exact match including scroll — used when a pixel-perfect cache is required."""
+        if not self._scrub_backdrop_geometry_ok():
+            return False
+        return abs(self._scroll_x - self._scrub_backdrop_scroll) < 0.5
+
+    def _blit_scrub_backdrop(self, painter: QPainter) -> bool:
+        """Draw the static cache, shifting content when auto-scroll moved.
+
+        Left header chrome stays pinned; the waveform/ruler content scrolls.
+        Rebuilds when drift grows large so newly exposed time is filled in.
+        """
+        if not self._scrub_backdrop_geometry_ok():
+            self._rebuild_scrub_backdrop()
+        if not self._scrub_backdrop_geometry_ok():
+            return False
+
+        dx = int(round(self._scrub_backdrop_scroll - self._scroll_x))
+        max_drift = max(48, int(self._view_width() * 0.45))
+        if abs(dx) >= max_drift:
+            self._rebuild_scrub_backdrop()
+            if not self._scrub_backdrop_geometry_ok():
+                return False
+            dx = 0
+
+        pm = self._scrub_backdrop
+        assert pm is not None
+        w = self.width()
+        h = self.height()
+        hw = int(self._header_width)
+        painter.fillRect(0, 0, w, h, QColor(BG_APP))
+        # Content region follows scroll.
+        painter.save()
+        painter.setClipRect(hw, 0, max(0, w - hw), h)
+        painter.drawPixmap(dx, 0, pm)
+        painter.restore()
+        # Header column stays fixed (baked at x=0 in the cache).
+        painter.save()
+        painter.setClipRect(0, 0, hw, h)
+        painter.drawPixmap(0, 0, pm)
+        painter.restore()
+        return True
 
     def _rebuild_scrub_backdrop(self) -> None:
         """Rasterize static timeline layers once; scrub/play only redraw playhead."""
@@ -2341,10 +2377,7 @@ class TimelineWidget(QWidget):
         # playhead so the UI never does full waveform+video paints on the clock
         # tick. Audio still advances on the PortAudio thread regardless.
         if self._can_use_static_backdrop():
-            if not self._scrub_backdrop_valid():
-                self._rebuild_scrub_backdrop()
-            if self._scrub_backdrop_valid():
-                painter.drawPixmap(0, 0, self._scrub_backdrop)
+            if self._blit_scrub_backdrop(painter):
                 self._paint_playhead(painter)
                 # A/B on top of playhead so markers stay obvious while playing.
                 self._paint_loop_region(painter)
