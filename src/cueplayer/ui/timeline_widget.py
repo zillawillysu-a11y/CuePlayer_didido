@@ -111,7 +111,6 @@ class TimelineWidget(QWidget):
         self._wave_height = 220
         self._lane_height = 28
         self._project_mark_lane_height = 28.0
-        self._mark_lane_gap = 2
         self._show_mark_track_colors = True
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
@@ -688,7 +687,11 @@ class TimelineWidget(QWidget):
 
     def apply_mark_track_colors(self, show: bool) -> None:
         """Project-global tint on all mark-track rows."""
-        self._show_mark_track_colors = bool(show)
+        show = bool(show)
+        if show == self._show_mark_track_colors:
+            return
+        self._show_mark_track_colors = show
+        self._apply_layout_heights()
         self._invalidate_scrub_backdrop()
         self.update()
 
@@ -784,11 +787,16 @@ class TimelineWidget(QWidget):
         extra = self._video_expand_extra if self._video_track_expanded else 0.0
         return self._video_lane_base_height + extra
 
+    def _mark_lane_gap_px(self) -> int:
+        """Black separators between mark rows — only when track colors are shown."""
+        return 2 if self._show_mark_track_colors else 0
+
     def _marks_content_height(self) -> int:
         n = self._visible_lane_count()
         if n <= 0:
             return 0
-        return n * self._lane_height + max(0, n - 1) * self._mark_lane_gap
+        gap = self._mark_lane_gap_px()
+        return n * self._lane_height + max(0, n - 1) * gap
 
     def _marks_band_height(self) -> int:
         if not self._show_mark_tracks:
@@ -1085,7 +1093,7 @@ class TimelineWidget(QWidget):
             out.append((lane.index, y, y + self._lane_height))
             y += self._lane_height
             if i < len(visible) - 1:
-                y += self._mark_lane_gap
+                y += self._mark_lane_gap_px()
         return out
 
     def _lane_index_at(self, x: float, y: float) -> int | None:
@@ -2426,7 +2434,7 @@ class TimelineWidget(QWidget):
         elif self._resizing_mark_lanes and event.buttons() & Qt.MouseButton.LeftButton:
             n = max(1, self._visible_lane_count())
             total = y - self._tracks_top_y() - self._mark_lane_split_h
-            gap_total = max(0, n - 1) * self._mark_lane_gap
+            gap_total = max(0, n - 1) * self._mark_lane_gap_px()
             self.set_mark_lane_height((total - gap_total) / n)
         elif self._dragging_audio_gain and event.buttons() & Qt.MouseButton.LeftButton:
             zone = self._audio_gain_zone or "wave"
@@ -2741,6 +2749,7 @@ class TimelineWidget(QWidget):
         if show == self._show_mark_track_colors:
             return
         self._show_mark_track_colors = show
+        self._apply_layout_heights()
         self._invalidate_scrub_backdrop()
         self.update()
         self.mark_track_colors_changed.emit(show)
@@ -3156,9 +3165,10 @@ class TimelineWidget(QWidget):
                 fm=fm,
             )
             y += self._lane_height
-            if i < len(visible) - 1:
-                painter.fillRect(0, int(y), self._header_width, self._mark_lane_gap, QColor("#111113"))
-                y += self._mark_lane_gap
+            gap = self._mark_lane_gap_px()
+            if gap > 0 and i < len(visible) - 1:
+                painter.fillRect(0, int(y), self._header_width, gap, QColor("#111113"))
+                y += gap
 
     def _marks_overlay_bottom_y(self) -> int:
         if not self._show_mark_tracks or self._visible_lane_count() == 0:
@@ -3495,13 +3505,14 @@ class TimelineWidget(QWidget):
     def _paint_lanes(self, painter: QPainter, *, start_y: int) -> None:
         if self._song is None or not self._show_mark_tracks:
             return
+        if not self._show_mark_track_colors:
+            # Pre–track-color look: app background shows through, no row tint or gaps.
+            return
         right = self._paint_right()
         content_h = self._marks_content_height()
         if content_h <= 0:
             return
         painter.fillRect(self._header_width, start_y, right, content_h, QColor("#000000"))
-        if not self._show_mark_track_colors:
-            return
         for lane_index, y0, y1 in self._lane_rects():
             lane = self._song.lane_by_index(lane_index)
             if lane is None:
