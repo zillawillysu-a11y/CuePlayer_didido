@@ -46,6 +46,14 @@ Bundled (Dalmatian logo):
 PyInstaller and `app.py` pick these up automatically on the next Windows build.
 
 
+## Employee handout
+
+Send staff `docs/EMPLOYEE_INSTALL.md` (Chinese) together with the zip/Setup.
+It tells them CuePlayer comes from **your** Drive/NAS (not GitHub), and NDI from:
+
+- https://ndi.video/tools/  (NDI Tools, recommended)
+- https://ndi.link/NDIRedistV6  (Runtime only)
+
 ## Notes
 
 - Build **must** be on Windows (WASAPI, winmm MIDI, PyAV wheels).
