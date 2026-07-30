@@ -16,10 +16,9 @@ from PySide6.QtWidgets import QApplication
 from cueplayer.domain.models import Song
 from cueplayer.ui.mark_manager_dialog import (
     MarkManagerDialog,
-    _COL_COUNT,
     _COL_CUE_ID,
+    _COL_CUE_LIST,
     _COL_MIDI,
-    _COL_MIDI_NOTE,
     _COL_VISIBLE,
 )
 
@@ -29,19 +28,23 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_bulk_visible_toggle_sets_all_rows(app: QApplication) -> None:
+def _bulk_columns() -> tuple[int, ...]:
+    return (_COL_VISIBLE, _COL_CUE_LIST, _COL_CUE_ID, _COL_MIDI)
+
+
+def test_bulk_visible_toggle_sets_all_lane_rows(app: QApplication) -> None:
     song = Song.create("Test")
     dialog = MarkManagerDialog(song)
     bulk = dialog._bulk_checks[_COL_VISIBLE]
     bulk.setCheckState(Qt.CheckState.Unchecked)
     dialog._on_bulk_toggle_changed(_COL_VISIBLE)
-    for row in range(dialog.table.rowCount()):
+    for row in range(dialog._lane_row_count()):
         box = dialog._checkbox_at(row, _COL_VISIBLE)
         assert box is not None
         assert box.isChecked() is False
     bulk.setCheckState(Qt.CheckState.Checked)
     dialog._on_bulk_toggle_changed(_COL_VISIBLE)
-    for row in range(dialog.table.rowCount()):
+    for row in range(dialog._lane_row_count()):
         box = dialog._checkbox_at(row, _COL_VISIBLE)
         assert box is not None
         assert box.isChecked() is True
@@ -54,7 +57,19 @@ def test_bulk_reflects_mixed_row_state(app: QApplication) -> None:
     assert dialog._bulk_checks[_COL_CUE_ID].checkState() == Qt.CheckState.PartiallyChecked
 
 
-def test_bulk_toggle_row_tracks_table_columns_on_resize(app: QApplication) -> None:
+def test_bulk_toggles_live_in_table_footer_row(app: QApplication) -> None:
+    song = Song.create("Align")
+    dialog = MarkManagerDialog(song)
+    footer = dialog._bulk_footer_row
+    assert footer is not None
+    assert footer == dialog.table.rowCount() - 1
+    for col in _bulk_columns():
+        wrap = dialog.table.cellWidget(footer, col)
+        assert wrap is not None
+        assert dialog._bulk_checks[col].parentWidget() is wrap
+
+
+def test_bulk_footer_stays_column_aligned_after_resize(app: QApplication) -> None:
     song = Song.create("Align")
     dialog = MarkManagerDialog(song)
     dialog.resize(920, 640)
@@ -62,12 +77,12 @@ def test_bulk_toggle_row_tracks_table_columns_on_resize(app: QApplication) -> No
     app.processEvents()
     dialog.resize(640, 640)
     app.processEvents()
-    dialog._sync_bulk_toggle_layout()
-    app.processEvents()
 
+    footer = dialog._bulk_footer_row
+    assert footer is not None
     header = dialog.table.horizontalHeader()
-    assert len(dialog._bulk_column_cells) == _COL_COUNT
-    for col, cell in enumerate(dialog._bulk_column_cells):
-        assert cell.width() == header.sectionSize(col)
-    assert dialog._bulk_checks[_COL_VISIBLE].parentWidget() is dialog._bulk_column_cells[_COL_VISIBLE]
-    assert dialog._bulk_column_cells[_COL_MIDI_NOTE].width() == header.sectionSize(_COL_MIDI_NOTE)
+    for col in _bulk_columns():
+        wrap = dialog.table.cellWidget(footer, col)
+        assert wrap is not None
+        assert dialog.table.columnWidth(col) == header.sectionSize(col)
+        assert dialog._bulk_checks[col].parentWidget() is wrap

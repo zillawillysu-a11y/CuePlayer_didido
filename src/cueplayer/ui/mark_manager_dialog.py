@@ -53,11 +53,12 @@ _COL_KEY = 2
 _COL_SHAPE = 3
 _COL_COLOR = 4
 _COL_VISIBLE = 5
-_COL_CUE_ID = 6
-_COL_CUE_LIST = 7
+_COL_CUE_LIST = 6
+_COL_CUE_ID = 7
 _COL_MIDI = 8
 _COL_MIDI_NOTE = 9
-_COL_COUNT = 10
+_COL_NOW = 10
+_COL_COUNT = 11
 
 _TABLE_COMBO_QSS = (
     "QComboBox {"
@@ -285,15 +286,20 @@ class MarkManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mark Manager")
         self.setMinimumWidth(920)
-        self.resize(1040, 560)
+        self.resize(1120, 560)
         self._song = song
         self._project = project
         self._suppress_key_prompt = False
         self._lane_snapshot = deepcopy(song.mark_lanes)
+        self._now_snapshot = (
+            list(song.now_primary_lanes),
+            list(song.now_secondary_lanes),
+            bool(song.now_lanes_configured),
+        )
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "Set the name, shortcut, shape, and color for each Mark. "
+            "Set the name, shortcut, shape, color, and NOW display (Off / Primary / Secondary) for each Mark. "
             "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
             'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
         )
@@ -306,7 +312,19 @@ class MarkManagerDialog(QDialog):
 
         self.table = QTableWidget(0, _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Name", "Shortcut", "Shape", "Color", "Visible", "Cue ID", "Cue List", "MIDI On", "Note"]
+            [
+                "#",
+                "Name",
+                "Shortcut",
+                "Shape",
+                "Color",
+                "Visible",
+                "Cue List",
+                "Cue ID",
+                "MIDI On",
+                "Note",
+                "NOW",
+            ]
         )
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -318,10 +336,11 @@ class MarkManagerDialog(QDialog):
             _COL_SHAPE: 132,
             _COL_COLOR: 72,
             _COL_VISIBLE: 60,
-            _COL_CUE_ID: 76,
             _COL_CUE_LIST: 80,
+            _COL_CUE_ID: 76,
             _COL_MIDI: 80,
             _COL_MIDI_NOTE: 116,
+            _COL_NOW: 108,
         }
         for col, width in default_widths.items():
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
@@ -334,10 +353,7 @@ class MarkManagerDialog(QDialog):
 
         self._syncing_bulk = False
         self._bulk_checks: dict[int, QCheckBox] = {}
-        self._bulk_column_cells: list[QWidget] = []
-        self._bulk_row = self._build_bulk_toggle_row()
-        layout.addWidget(self._bulk_row)
-        self.table.horizontalHeader().sectionResized.connect(self._sync_bulk_toggle_layout)
+        self._bulk_footer_row: int | None = None
 
         row_btns = QHBoxLayout()
         self.add_btn = QPushButton("Add Mark")
@@ -364,56 +380,67 @@ class MarkManagerDialog(QDialog):
         self.remove_btn.clicked.connect(self._remove_row)
         self.save_template_btn.clicked.connect(self._save_template)
         self.load_template_btn.clicked.connect(self._load_template)
-        self.table.itemSelectionChanged.connect(self._refresh_preview)
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self._load_from_song()
-        if self.table.rowCount() > 0:
+        if self._lane_row_count() > 0:
             self.table.selectRow(0)
         self._refresh_preview()
-        self._sync_bulk_toggle_layout()
         self._refresh_bulk_toggle_states()
 
-    def _build_bulk_toggle_row(self) -> QWidget:
-        row = QWidget()
-        row.setStyleSheet("background: #12151a; border-top: 1px solid #2a2f3a;")
-        self._bulk_layout = QHBoxLayout(row)
-        self._bulk_layout.setContentsMargins(0, 0, 0, 0)
-        self._bulk_layout.setSpacing(0)
+    def _lane_row_count(self) -> int:
+        count = self.table.rowCount()
+        if self._bulk_footer_row is not None and 0 <= self._bulk_footer_row < count:
+            return count - 1
+        return count
+
+    def _is_bulk_footer_row(self, row: int) -> bool:
+        return self._bulk_footer_row is not None and row == self._bulk_footer_row
+
+    def _ensure_bulk_footer_row(self) -> None:
+        """Bottom table row: all-on / all-off toggles aligned with their columns."""
         bulk_specs = {
             _COL_VISIBLE: "All on/off for Visible",
-            _COL_CUE_ID: "All on/off for Cue ID",
             _COL_CUE_LIST: "All on/off for Cue List",
+            _COL_CUE_ID: "All on/off for Cue ID",
             _COL_MIDI: "All on/off for MIDI On",
         }
-        self._bulk_column_cells.clear()
-        self._bulk_checks.clear()
+        row = self.table.rowCount()
+        if self._bulk_footer_row is None:
+            self.table.insertRow(row)
+            self._bulk_footer_row = row
+        else:
+            row = self._bulk_footer_row
+        self.table.setRowHeight(row, 32)
+        self.table.setRowHidden(row, False)
         for col in range(_COL_COUNT):
+            self.table.removeCellWidget(row, col)
             if col in bulk_specs:
-                box = QCheckBox()
-                box.setTristate(True)
-                box.setToolTip(bulk_specs[col])
-                box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
-                self._bulk_checks[col] = box
-                cell = QWidget()
-                cell_layout = QHBoxLayout(cell)
-                cell_layout.setContentsMargins(0, 0, 0, 0)
-                cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                cell_layout.addWidget(box)
-                self._bulk_column_cells.append(cell)
-                self._bulk_layout.addWidget(cell)
+                box = self._bulk_checks.get(col)
+                if box is None:
+                    box = QCheckBox()
+                    box.setTristate(True)
+                    box.setToolTip(bulk_specs[col])
+                    box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
+                    self._bulk_checks[col] = box
+                wrap = QWidget()
+                wrap_layout = QHBoxLayout(wrap)
+                wrap_layout.setContentsMargins(0, 0, 0, 0)
+                wrap_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                wrap_layout.addWidget(box)
+                self.table.setCellWidget(row, col, wrap)
             else:
-                spacer = QWidget()
-                self._bulk_column_cells.append(spacer)
-                self._bulk_layout.addWidget(spacer)
-        return row
+                filler = QTableWidgetItem("")
+                filler.setFlags(Qt.ItemFlag.NoItemFlags)
+                filler.setBackground(QColor("#12151a"))
+                self.table.setItem(row, col, filler)
 
-    def _sync_bulk_toggle_layout(self) -> None:
-        if not self._bulk_column_cells:
-            return
-        header = self.table.horizontalHeader()
-        inset = self.table.verticalHeader().width() + self.table.frameWidth()
-        self._bulk_layout.setContentsMargins(inset, 0, self.table.frameWidth(), 0)
-        for col, cell in enumerate(self._bulk_column_cells):
-            cell.setFixedWidth(header.sectionSize(col))
+    def _on_table_selection_changed(self) -> None:
+        row = self._selected_row()
+        if row < 0 and self.table.selectionModel().hasSelection():
+            self.table.blockSignals(True)
+            self.table.clearSelection()
+            self.table.blockSignals(False)
+        self._refresh_preview()
 
     def _checkbox_at(self, row: int, col: int) -> QCheckBox | None:
         wrap = self.table.cellWidget(row, col)
@@ -433,7 +460,7 @@ class MarkManagerDialog(QDialog):
             for col, bulk in self._bulk_checks.items():
                 boxes = [
                     box
-                    for row in range(self.table.rowCount())
+                    for row in range(self._lane_row_count())
                     if (box := self._checkbox_at(row, col)) is not None
                 ]
                 if not boxes:
@@ -461,7 +488,7 @@ class MarkManagerDialog(QDialog):
             target = True
         self._syncing_bulk = True
         try:
-            for row in range(self.table.rowCount()):
+            for row in range(self._lane_row_count()):
                 box = self._checkbox_at(row, col)
                 if box is not None:
                     box.setChecked(target)
@@ -477,26 +504,64 @@ class MarkManagerDialog(QDialog):
 
     def _reject_restore(self) -> None:
         self._song.mark_lanes = deepcopy(self._lane_snapshot)
+        primary, secondary, configured = self._now_snapshot
+        self._song.now_primary_lanes = list(primary)
+        self._song.now_secondary_lanes = list(secondary)
+        self._song.now_lanes_configured = bool(configured)
         self.preview_changed.emit()
         self.reject()
 
+    def _now_role_for_index(self, lane_index: int) -> int:
+        primary, secondary = self._song.configured_now_groups()
+        if lane_index in primary:
+            return 1
+        if lane_index in secondary:
+            return 2
+        return 0
+
+    def _collect_now_lanes(self) -> tuple[list[int], list[int]]:
+        primary: list[int] = []
+        secondary: list[int] = []
+        for row in range(self._lane_row_count()):
+            index_item = self.table.item(row, _COL_INDEX)
+            combo = self.table.cellWidget(row, _COL_NOW)
+            if index_item is None or not isinstance(combo, QComboBox):
+                continue
+            role = int(combo.currentData() or 0)
+            lane_index = int(index_item.text())
+            if role == 1:
+                primary.append(lane_index)
+            elif role == 2:
+                secondary.append(lane_index)
+        return primary, secondary
+
+    def _apply_now_lanes_to_song(self) -> None:
+        primary, secondary = self._collect_now_lanes()
+        self._song.now_lanes_configured = True
+        self._song.now_primary_lanes = primary
+        self._song.now_secondary_lanes = secondary
+
     def _load_from_song(self) -> None:
         self.table.setRowCount(0)
+        self._bulk_footer_row = None
         for lane in sorted(self._song.mark_lanes, key=lambda item: item.index):
             self._append_row(lane)
+        self._ensure_bulk_footer_row()
 
     def _load_from_lanes(self, lanes: list[MarkLane]) -> None:
         self.table.setRowCount(0)
+        self._bulk_footer_row = None
         for lane in sorted(lanes, key=lambda item: item.index):
             self._append_row(lane)
-        if self.table.rowCount() > 0:
+        self._ensure_bulk_footer_row()
+        if self._lane_row_count() > 0:
             self.table.selectRow(0)
         self._refresh_preview()
         self.preview_changed.emit()
 
     def _collect_draft_lanes(self) -> list[MarkLane] | None:
         """Build MarkLane list from the table; None if invalid."""
-        rows = self.table.rowCount()
+        rows = self._lane_row_count()
         if rows == 0:
             QMessageBox.warning(self, "Mark Manager", "At least one Mark is required.")
             return None
@@ -619,11 +684,12 @@ class MarkManagerDialog(QDialog):
             path = path.with_name(f"{path.name}.cueplayer-marks.json")
         elif not path.name.endswith(".cueplayer-marks.json") and path.suffix.lower() == ".json":
             path = path.with_name(f"{path.stem}.cueplayer-marks.json")
+        primary, secondary = self._collect_now_lanes()
         template = build_template(
             draft,
             name=path.stem.replace(".cueplayer-marks", ""),
-            now_primary_lanes=list(self._song.now_primary_lanes),
-            now_secondary_lanes=list(self._song.now_secondary_lanes),
+            now_primary_lanes=list(primary),
+            now_secondary_lanes=list(secondary),
         )
         try:
             save_mark_template(path, template)
@@ -723,7 +789,7 @@ class MarkManagerDialog(QDialog):
         return edit if isinstance(edit, QLineEdit) else None
 
     def _append_row(self, lane: MarkLane) -> None:
-        row = self.table.rowCount()
+        row = self._lane_row_count()
         self.table.insertRow(row)
 
         index_item = QTableWidgetItem(str(lane.index))
@@ -835,8 +901,27 @@ class MarkManagerDialog(QDialog):
         note_combo = self._make_note_combo(lane, default_note)
         _style_table_combo(note_combo)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+
+        now_combo = NoWheelComboBox()
+        now_combo.addItem("Off", 0)
+        now_combo.addItem("Primary", 1)
+        now_combo.addItem("Secondary", 2)
+        role = self._now_role_for_index(lane.index)
+        role_idx = now_combo.findData(role)
+        now_combo.setCurrentIndex(role_idx if role_idx >= 0 else 0)
+        now_combo.setToolTip(
+            "NOW monitor assignment: Off screen, Primary display, or Secondary display"
+        )
+        _style_table_combo(now_combo)
+        now_combo.currentIndexChanged.connect(lambda _i: self._on_now_display_changed())
+        self.table.setCellWidget(row, _COL_NOW, now_combo)
+
         self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
         self._refresh_bulk_toggle_states()
+
+    def _on_now_display_changed(self) -> None:
+        self._apply_now_lanes_to_song()
+        self.preview_changed.emit()
 
     def _make_note_combo(self, lane: MarkLane, default_note: int) -> NoWheelComboBox:
         combo = NoWheelComboBox()
@@ -883,16 +968,14 @@ class MarkManagerDialog(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
-        self._sync_bulk_toggle_layout()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
-        self._sync_bulk_toggle_layout()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.
         if isinstance(obj, QLineEdit) and event.type() == event.Type.MouseButtonPress:
-            for row in range(self.table.rowCount()):
+            for row in range(self._lane_row_count()):
                 if self.table.cellWidget(row, _COL_NAME) is obj:
                     self.table.selectRow(row)
                     break
@@ -906,7 +989,7 @@ class MarkManagerDialog(QDialog):
         edit = self.sender()
         if not isinstance(edit, QLineEdit):
             return
-        for row in range(self.table.rowCount()):
+        for row in range(self._lane_row_count()):
             if self.table.cellWidget(row, _COL_NAME) is edit:
                 self._on_name_changed(row)
                 return
@@ -935,7 +1018,7 @@ class MarkManagerDialog(QDialog):
     def _refresh_preview(self) -> None:
         row = self._selected_row()
         if row < 0:
-            row = 0 if self.table.rowCount() else -1
+            row = 0 if self._lane_row_count() else -1
         if row < 0:
             self.preview.set_preview(shape="circle", color="#888888", name="(None)")
             return
@@ -954,7 +1037,7 @@ class MarkManagerDialog(QDialog):
             combo.setProperty("last_data", combo.currentData())
             return
         row = -1
-        for r in range(self.table.rowCount()):
+        for r in range(self._lane_row_count()):
             if self.table.cellWidget(r, _COL_KEY) is combo:
                 row = r
                 break
@@ -966,7 +1049,7 @@ class MarkManagerDialog(QDialog):
             combo.setProperty("last_data", new_key)
             return
         conflict_row = -1
-        for r in range(self.table.rowCount()):
+        for r in range(self._lane_row_count()):
             if r == row:
                 continue
             other = self.table.cellWidget(r, _COL_KEY)
@@ -1002,12 +1085,17 @@ class MarkManagerDialog(QDialog):
 
     def _selected_row(self) -> int:
         rows = self.table.selectionModel().selectedRows()
-        return rows[0].row() if rows else -1
+        if not rows:
+            return -1
+        row = rows[0].row()
+        if self._is_bulk_footer_row(row):
+            return -1
+        return row
 
     def _add_row(self) -> None:
         used = {
             int(self.table.item(r, _COL_INDEX).text())
-            for r in range(self.table.rowCount())
+            for r in range(self._lane_row_count())
             if self.table.item(r, _COL_INDEX) is not None
         }
         index = 1
@@ -1015,7 +1103,7 @@ class MarkManagerDialog(QDialog):
             index += 1
         color = BUILTIN_PRESETS[(index - 1) % len(BUILTIN_PRESETS)]
         taken_keys = set()
-        for r in range(self.table.rowCount()):
+        for r in range(self._lane_row_count()):
             combo = self.table.cellWidget(r, _COL_KEY)
             if isinstance(combo, QComboBox) and combo.currentData():
                 taken_keys.add(str(combo.currentData()))
@@ -1033,13 +1121,14 @@ class MarkManagerDialog(QDialog):
                 marker_shape="circle",
             )
         )
-        self.table.selectRow(self.table.rowCount() - 1)
+        self._ensure_bulk_footer_row()
+        self.table.selectRow(self._lane_row_count() - 1)
 
     def _remove_row(self) -> None:
         row = self._selected_row()
         if row < 0:
             return
-        if self.table.rowCount() <= 1:
+        if self._lane_row_count() <= 1:
             QMessageBox.information(self, "Mark Manager", "At least one Mark must remain.")
             return
         index_item = self.table.item(row, _COL_INDEX)
@@ -1054,6 +1143,9 @@ class MarkManagerDialog(QDialog):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.table.removeRow(row)
+        if self._bulk_footer_row is not None and row < self._bulk_footer_row:
+            self._bulk_footer_row -= 1
+        self._ensure_bulk_footer_row()
         self._refresh_bulk_toggle_states()
 
     def _color_at(self, row: int) -> str:
@@ -1073,6 +1165,7 @@ class MarkManagerDialog(QDialog):
         keep = {lane.index for lane in draft}
         self._song.marks = [m for m in self._song.marks if m.lane_index in keep]
         self._song.mark_lanes = draft
+        self._apply_now_lanes_to_song()
         from cueplayer.domain.main_cue_id import sync_lane_cue_ids
 
         sync_lane_cue_ids(self._song)
