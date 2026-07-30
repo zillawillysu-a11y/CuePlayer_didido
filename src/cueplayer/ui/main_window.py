@@ -2701,9 +2701,20 @@ class MainWindow(QMainWindow):
         song.ma_export_name = (draft.ma_export_name or "").strip() or ma_export_name_from_display(
             draft.name
         )
+        old_bpm = song.bpm
+        old_bpm_auto = bool(getattr(song, "bpm_auto", False))
         song.bpm = draft.bpm
-        # Dialog value is always a user choice (including blank → clear auto).
-        song.bpm_auto = False
+        if draft.bpm is None:
+            song.bpm_auto = False
+        elif (
+            old_bpm_auto
+            and old_bpm is not None
+            and abs(float(old_bpm) - float(draft.bpm)) < 1e-9
+        ):
+            # Edit Song OK without changing BPM should keep gray auto-detected value.
+            song.bpm_auto = True
+        else:
+            song.bpm_auto = False
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
         from cueplayer.domain.models import coerce_file_ltc_side
