@@ -4322,12 +4322,14 @@ class MainWindow(QMainWindow):
             self._undo.clear()
             self._mark_dirty()
             self.timeline.set_song(self.current_song)
+            self._apply_project_mark_line_settings()
             self.monitor.set_song(self.current_song)
             self._rebuild_digit_shortcuts()
             self._refresh_status()
             self.status.showMessage("Mark Manager updated", 2500)
         else:
             self.timeline.set_song(self.current_song)
+            self._apply_project_mark_line_settings()
             self.timeline.update()
 
     def _on_mark_template_applied(self) -> None:
@@ -4335,6 +4337,7 @@ class MainWindow(QMainWindow):
         self._undo.clear()
         self._mark_dirty()
         self.timeline.set_song(self.current_song)
+        self._apply_project_mark_line_settings()
         self.monitor.set_song(self.current_song)
         self._rebuild_digit_shortcuts()
         self.timeline.update()
@@ -5747,6 +5750,7 @@ class MainWindow(QMainWindow):
         self._apply_timeline_ltc_lane(buffer, exclude)
         if refresh_song_widgets:
             self.timeline.set_song(self.current_song)
+            self._apply_project_mark_line_settings()
             self.monitor.set_song(self.current_song)
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)

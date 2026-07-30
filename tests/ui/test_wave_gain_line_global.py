@@ -21,6 +21,17 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def test_wave_gain_line_survives_set_song_and_reapply(app: QApplication) -> None:
+    project = Project.create("Gain Reload")
+    project.show_wave_gain_line = True
+    window = MainWindow(project)
+    window.show()
+    app.processEvents()
+    window.timeline.set_song(window.current_song)
+    window._apply_project_mark_line_settings()
+    assert window.timeline._show_wave_gain_line is True
+
+
 def test_wave_gain_line_visibility_survives_song_switch(app: QApplication) -> None:
     project = Project.create("Gain Global")
     project.show_wave_gain_line = True
