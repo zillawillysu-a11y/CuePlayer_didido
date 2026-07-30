@@ -64,7 +64,7 @@
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。
 
-**Save 時偵測外部媒體：** 若你從專案資料夾外（例如 Downloads）拖進音訊／影片，按 Save／另存時會問要不要拷貝進 `Media/<Setlist>/<歌名>/`。選 Yes＝拷貝後存檔（原檔不動）；No＝仍用絕對路徑存。Auto-save 不會跳出詢問。完整另存整包仍可用 **Collect Project Bundle**。已在 `Media/` 內的檔案可被多首歌共用（不會因 Save 被拆成複本）；搬 Folder 後空的舊資料夾會清掉。Bundle／搬移會沿用波形與 LTC 快取，避免重測。
+**Save 時偵測外部媒體：** 若你從專案資料夾外（例如 Downloads）拖進音訊／影片，按 Save／另存時會問要不要拷貝進 `Media/<Setlist>/<歌名>/`。選 Yes＝拷貝後存檔（原檔不動）；No＝仍用絕對路徑存。Auto-save 不會跳出詢問。完整另存整包仍可用 **Collect Project Bundle**。已在 `Media/` 內的檔案可被多首歌共用（不會因 Save 被拆成複本）；搬 Folder 後空的舊資料夾會清掉。Bundle／搬移會沿用波形與 LTC 快取，避免重測。開啟專案或 Bundle 前會自動嘗試用 `Media/` 內同名檔接回因搬 Folder 而斷掉的路徑；若仍缺檔會列出檔名，可用 **Relink Missing Media**。
 
 在程式裡搬歌曲到 Setlist Folder／改 Folder 名：只改專案記憶體；**磁碟上的 `Media/` 要等 Save／另存／Auto-save／Bundle 才會跟著排**。
 

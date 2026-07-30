@@ -136,6 +136,118 @@ def relocate_path_into_folder(path: Path, dest_folder: Path) -> tuple[Path | Non
         return dest, True
 
 
+def _path_key(path: Path) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(Path(path))
+
+
+def rewrite_media_path_refs(
+    project: Project,
+    old_path: Path,
+    new_path: Path,
+) -> int:
+    """
+    Point every audio/video ref that matched ``old_path`` at ``new_path``.
+
+    Needed when one Save relocate moves a file that several songs still listed
+    at the old location — otherwise Bundle reports those songs as missing.
+    """
+    old_key = _path_key(old_path)
+    # Also match the unresolved string form (relative JSON leftovers).
+    old_raw = str(Path(old_path))
+    try:
+        final = Path(new_path).resolve()
+    except OSError:
+        final = Path(new_path)
+    updated = 0
+    for song in project.songs:
+        for track in song.audio_tracks:
+            cur = Path(track.path)
+            if _path_key(cur) == old_key or str(cur) == old_raw:
+                if Path(track.path) != final:
+                    track.path = final
+                    updated += 1
+        for clip in song.video_clips:
+            cur = Path(clip.path)
+            if _path_key(cur) == old_key or str(cur) == old_raw:
+                if Path(clip.path) != final:
+                    clip.path = final
+                    updated += 1
+    return updated
+
+
+def heal_stale_media_paths(
+    project: Project,
+    *,
+    project_file: Path | None,
+    media_subdir: str = DEFAULT_MEDIA_SUBDIR,
+) -> int:
+    """
+    Repair broken paths when the file still lives uniquely under ``Media/``.
+
+    Typical cause: Setlist folder Save moved ``Media/A/Song/x.wav`` →
+    ``Media/B/Song/x.wav`` but another song (or an unsaved undo) still pointed
+    at the old path. Returns how many refs were rewritten.
+    """
+    media_dir = media_root(project_file, media_subdir=media_subdir)
+    if media_dir is None or not media_dir.is_dir():
+        return 0
+    updated = 0
+    # Snapshot missing holders first — rewrite may fix several at once.
+    missing: list[tuple[str, Path]] = []  # kind placeholder unused; just paths
+    seen_missing: set[str] = set()
+    for song in project.songs:
+        for track in song.audio_tracks:
+            former = Path(track.path)
+            if path_exists(former):
+                continue
+            key = str(former)
+            if key in seen_missing:
+                continue
+            seen_missing.add(key)
+            missing.append(("audio", former))
+        for clip in song.video_clips:
+            former = Path(clip.path)
+            if path_exists(former):
+                continue
+            key = str(former)
+            if key in seen_missing:
+                continue
+            seen_missing.add(key)
+            missing.append(("video", former))
+
+    for _kind, former in missing:
+        # May already have been healed via an earlier rewrite of the same basename.
+        if path_exists(former):
+            continue
+        # Re-check holders still pointing here — path_exists on former is enough
+        # only if something else restored the file; scan project for still-broken.
+        still_used = False
+        for song in project.songs:
+            for track in song.audio_tracks:
+                if str(Path(track.path)) == str(former) and not path_exists(Path(track.path)):
+                    still_used = True
+                    break
+            if still_used:
+                break
+            for clip in song.video_clips:
+                if str(Path(clip.path)) == str(former) and not path_exists(Path(clip.path)):
+                    still_used = True
+                    break
+            if still_used:
+                break
+        if not still_used:
+            continue
+        found = locate_under_media(former, media_dir)
+        if found is None:
+            continue
+        adopt_caches_for_path(found, former_path=former)
+        updated += rewrite_media_path_refs(project, former, found)
+    return updated
+
+
 def _apply_relocated_path(holder_path: Path, new_path: Path, *, did_move: bool) -> int:
     """Update a Path field; return 1 if the file moved or the stored path changed."""
     changed = did_move
@@ -223,6 +335,10 @@ def sync_song_media_to_setlist_folder(
         n = _apply_relocated_path(former, new_path, did_move=did_move)
         track.path = new_path
         updated += n
+        if did_move:
+            # Other songs may still list the old path — keep them in sync.
+            updated += rewrite_media_path_refs(project, src, new_path)
+            updated += rewrite_media_path_refs(project, former, new_path)
     for clip in song.video_clips:
         former = Path(clip.path)
         src = locate_project_media_file(former, media_dir=media_dir, project_root=root)
@@ -247,6 +363,9 @@ def sync_song_media_to_setlist_folder(
         n = _apply_relocated_path(former, new_path, did_move=did_move)
         clip.path = new_path
         updated += n
+        if did_move:
+            updated += rewrite_media_path_refs(project, src, new_path)
+            updated += rewrite_media_path_refs(project, former, new_path)
     return updated
 
 
@@ -326,6 +445,10 @@ def sync_all_songs_media_to_setlist_folders(
     media_subdir: str = DEFAULT_MEDIA_SUBDIR,
 ) -> int:
     """Reconcile every song's Media/ files with its current Setlist folder."""
+    # Fix stale absolute paths left behind by earlier moves before rearranging.
+    healed = heal_stale_media_paths(
+        project, project_file=project_file, media_subdir=media_subdir
+    )
     root = project_root_for(project_file)
     media_dir = (
         root / (media_subdir.strip() or DEFAULT_MEDIA_SUBDIR) if root is not None else None
@@ -333,7 +456,7 @@ def sync_all_songs_media_to_setlist_folders(
     shared: set[str] = set()
     if media_dir is not None:
         shared = _shared_media_keys(project, media_dir=media_dir)
-    total = 0
+    total = healed
     for song in project.songs:
         total += sync_song_media_to_setlist_folder(
             project,
