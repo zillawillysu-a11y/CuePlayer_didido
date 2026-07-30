@@ -55,7 +55,7 @@
 
 | 選單 | 說明 |
 |------|------|
-| **File → Collect Project Bundle…** | 複製用到的媒體到資料夾：`專案.cueplayer.json` 在根層、`Media/<Setlist 資料夾名>/` 放素材（未分類進 `_Unfiled`）；波形與 LTC L/R 快取一併沿用。建議選空資料夾。 |
+| **File → Collect Project Bundle…** | 複製用到的媒體到資料夾：`專案.cueplayer.json` 在根層、`Media/<Setlist 資料夾>/<歌名>/` 放素材（未分類進 `_Unfiled/<歌名>/`）；波形與 LTC L/R 快取一併沿用。建議選空資料夾。 |
 | **File → Relink Missing Media…** | 檔案搬走後單檔或整資料夾依檔名重新連結（遞迴掃媒體副檔名）；同名多份需手動指定。Relink 後請 Save。若檔案是搬移／拷貝且 mtime 相同，波形與 LTC 快取也會沿用。 |
 
 專案資料夾內的媒體存**相對路徑**，整包搬到任何磁碟／路徑仍可開啟。

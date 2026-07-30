@@ -1061,7 +1061,7 @@ class MainWindow(QMainWindow):
         self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
 
-        # Center column: Timeline (waveform + video lane + mark lanes) on top,
+        # Center column: Timeline (Music → Marks → Video → LTC) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
         self.video_preview_panel = QWidget()
         self.video_preview_panel.setObjectName("videoPreviewPanel")
@@ -1515,9 +1515,11 @@ class MainWindow(QMainWindow):
 
         lines = [
             f"Project: {result.project_path.name}",
-            f"Media folder: {result.media_dir.name}/",
+            f"Media folder: {result.media_dir.name}/<Setlist folder>/<Song>/",
             f"Copied: {len(result.copied)} file(s)",
         ]
+        if result.folders_used:
+            lines.append("Setlist folders: " + ", ".join(result.folders_used))
         if result.reused:
             lines.append(f"Shared refs (same file): {len(result.reused)}")
         if result.renamed:
@@ -3624,6 +3626,7 @@ class MainWindow(QMainWindow):
             action.blockSignals(False)
         # Keep timeline eye in sync with project-global preference across songs.
         self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
+        self._sync_timeline_geometry()
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -3963,7 +3966,36 @@ class MainWindow(QMainWindow):
         if tl.width() != w or tl.height() != h:
             tl.resize(w, h)
             tl._clamp_scroll()  # noqa: SLF001
-            tl.update()
+        tl.update()
+        self._ensure_mark_tracks_in_view()
+
+    def _ensure_mark_tracks_in_view(self) -> None:
+        """Keep Music + Mark tracks in the vertical viewport when possible.
+
+        Opening Video/LTC or switching songs can leave the scroll bar parked
+        over the Video lane so Marks look “gone” until the app is restarted
+        (scroll resets). Pull the view back up when Marks are above the fold.
+        """
+        scroll = getattr(self, "_timeline_scroll", None)
+        if scroll is None:
+            return
+        bar = scroll.verticalScrollBar()
+        if bar is None or bar.maximum() <= 0:
+            return
+        tl = self.timeline
+        marks_top = int(tl._tracks_top_y())  # noqa: SLF001
+        marks_bottom = int(tl._tracks_bottom_y())  # noqa: SLF001
+        vp_h = max(1, scroll.viewport().height())
+        value = int(bar.value())
+        # Marks scrolled away above the viewport → jump back so they show.
+        if marks_bottom <= value:
+            bar.setValue(max(0, marks_top - 8))
+            return
+        # Marks only partially below a tall Music wave: prefer showing the
+        # start of the mark band when the whole band still fits.
+        band = max(1, marks_bottom - marks_top)
+        if band <= vp_h and marks_top < value:
+            bar.setValue(max(0, marks_top - 8))
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""
@@ -5598,6 +5630,7 @@ class MainWindow(QMainWindow):
             action.blockSignals(True)
             action.setChecked(bool(visible))
             action.blockSignals(False)
+        self._sync_timeline_geometry()
         self._mark_dirty()
         self.status.showMessage(
             "Video / LTC Tracks shown"
@@ -5613,6 +5646,7 @@ class MainWindow(QMainWindow):
     def _on_show_video_track_toggled(self, checked: bool) -> None:
         self.project.set_show_video_track(bool(checked))
         self.timeline.set_show_video_track(bool(checked))
+        self._sync_timeline_geometry()
         self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:
