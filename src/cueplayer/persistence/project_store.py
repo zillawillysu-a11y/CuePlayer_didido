@@ -367,6 +367,16 @@ def _load_project_mark_lane_height(data: dict[str, Any], songs: list[Song]) -> f
     return 28.0
 
 
+def _load_project_show_mark_track_colors(data: dict[str, Any], songs: list[Song]) -> bool:
+    if "show_mark_track_colors" in data:
+        return bool(data.get("show_mark_track_colors"))
+    for song in songs:
+        for lane in song.mark_lanes:
+            if not getattr(lane, "show_row_color", True):
+                return False
+    return True
+
+
 def _load_now_config(song_data: dict[str, Any]) -> tuple[bool, list[int], list[int]]:
     """Return (configured, primary_lanes, secondary_lanes), with legacy migration."""
     if "now_primary_lanes" in song_data or "now_secondary_lanes" in song_data:
@@ -455,6 +465,7 @@ def project_to_dict(
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
         "mark_lane_height": float(project.mark_lane_height),
+        "show_mark_track_colors": bool(project.show_mark_track_colors),
         "show_output_timecode_clock": bool(project.show_output_timecode_clock),
         "output_timecode_clock_color": project.output_timecode_clock_color,
         "show_output_quick_toggles": bool(project.show_output_quick_toggles),
@@ -744,6 +755,7 @@ def project_from_dict(
     playhead_color = _load_project_playhead_color(data)
     show_video_track = _load_project_show_video_track(data, songs)
     mark_lane_height = _load_project_mark_lane_height(data, songs)
+    show_mark_track_colors = _load_project_show_mark_track_colors(data, songs)
     from cueplayer.domain.main_cue_id import migrate_main_cue_ids
 
     for song in songs:
@@ -780,6 +792,7 @@ def project_from_dict(
         waveform_color=wave_color,
         playhead_color=playhead_color,
         mark_lane_height=mark_lane_height,
+        show_mark_track_colors=show_mark_track_colors,
         show_output_timecode_clock=bool(data.get("show_output_timecode_clock", True)),
         output_timecode_clock_color=_coerce_waveform_color(
             data.get("output_timecode_clock_color"), default="#3dd68c"

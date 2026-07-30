@@ -106,6 +106,7 @@ class MarkLane:
     midi_note: int = 0
     marker_shape: MarkerShape = "circle"
     # Tinted row in the timeline (right of the header); header stays neutral.
+    # Deprecated — track tint is project-global (show_mark_track_colors).
     show_row_color: bool = True
 
 
@@ -980,6 +981,8 @@ class Project:
     playhead_color: str = "#ff5a5f"
     # Mark lane row height (pixels) — one value for the whole show.
     mark_lane_height: float = 28.0
+    # Tinted mark-track rows on the timeline (all lanes share one eye).
+    show_mark_track_colors: bool = True
     # Output timecode clock under the monitor seconds display.
     show_output_timecode_clock: bool = True
     output_timecode_clock_color: str = "#3dd68c"

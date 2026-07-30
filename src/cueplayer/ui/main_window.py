@@ -1203,6 +1203,7 @@ class MainWindow(QMainWindow):
         self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         self.timeline.mark_manager_requested.connect(self._open_mark_manager)
         self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
+        self.timeline.mark_track_colors_changed.connect(self._on_mark_track_colors_changed)
         self.timeline.add_mark_requested.connect(self._add_mark)
         # Video decode must not run ahead of timeline/MIDI on the UI thread.
         # QueuedConnection lets playhead + cue-list update finish first; decode
@@ -4680,6 +4681,7 @@ class MainWindow(QMainWindow):
             playhead_color=str(getattr(p, "playhead_color", None) or "#ff5a5f"),
         )
         self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
+        self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))
         if hasattr(self, "monitor"):
             self._sync_output_timecode_clock_ui()
 
@@ -5961,6 +5963,10 @@ class MainWindow(QMainWindow):
 
     def _on_mark_lane_height_changed(self, height: float) -> None:
         self.project.mark_lane_height = float(height)
+        self._mark_dirty()
+
+    def _on_mark_track_colors_changed(self, show: bool) -> None:
+        self.project.show_mark_track_colors = bool(show)
         self._mark_dirty()
 
     def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:

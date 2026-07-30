@@ -87,6 +87,7 @@ class TimelineWidget(QWidget):
     lane_name_changed = Signal(int, str)  # lane_index, new name
     mark_manager_requested = Signal()
     mark_lane_height_changed = Signal(float)
+    mark_track_colors_changed = Signal(bool)
     add_mark_requested = Signal(int)  # lane_index at current playhead
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
@@ -110,6 +111,8 @@ class TimelineWidget(QWidget):
         self._wave_height = 220
         self._lane_height = 28
         self._project_mark_lane_height = 28.0
+        self._mark_lane_gap = 2
+        self._show_mark_track_colors = True
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
         self._video_lane_split_hit = 6
@@ -682,6 +685,12 @@ class TimelineWidget(QWidget):
         self._apply_layout_heights()
         self.update()
 
+    def apply_mark_track_colors(self, show: bool) -> None:
+        """Project-global tint on all mark-track rows."""
+        self._show_mark_track_colors = bool(show)
+        self._invalidate_scrub_backdrop()
+        self.update()
+
     def selected_mark_ids(self) -> list[str]:
         return list(self._selected_mark_ids)
 
@@ -774,17 +783,22 @@ class TimelineWidget(QWidget):
         extra = self._video_expand_extra if self._video_track_expanded else 0.0
         return self._video_lane_base_height + extra
 
+    def _marks_content_height(self) -> int:
+        n = self._visible_lane_count()
+        if n <= 0:
+            return 0
+        return n * self._lane_height + max(0, n - 1) * self._mark_lane_gap
+
     def _marks_band_height(self) -> int:
         if not self._show_mark_tracks:
             return 0
-        n = self._visible_lane_count()
-        h = n * self._lane_height
-        if n > 0 and self._show_mark_lane_resize_bar:
+        h = self._marks_content_height()
+        if h > 0 and self._show_mark_lane_resize_bar:
             h += self._mark_lane_split_h
         return h
 
     def _mark_lane_split_y(self) -> int:
-        return self._tracks_top_y() + self._visible_lane_count() * self._lane_height
+        return self._tracks_top_y() + self._marks_content_height()
 
     def _near_mark_lane_split(self, y: float) -> bool:
         if (
@@ -1065,11 +1079,12 @@ class TimelineWidget(QWidget):
             return []
         out: list[tuple[int, float, float]] = []
         y = float(self._tracks_top_y())
-        for lane in self._song.mark_lanes:
-            if not lane.visible:
-                continue
+        visible = [lane for lane in self._song.mark_lanes if lane.visible]
+        for i, lane in enumerate(visible):
             out.append((lane.index, y, y + self._lane_height))
             y += self._lane_height
+            if i < len(visible) - 1:
+                y += self._mark_lane_gap
         return out
 
     def _lane_index_at(self, x: float, y: float) -> int | None:
@@ -1590,7 +1605,6 @@ class TimelineWidget(QWidget):
         max_h = max(80, self._max_wave_height())
         self._wave_height = max(80, min(max_h, self._wave_height))
         self._lane_height = self._clamp_mark_lane_height(self._project_mark_lane_height)
-        visible = self._visible_lane_count()
         video_h = self._video_band_height()
         ltc_h = self._ltc_band_height()
         needed = (
@@ -1598,7 +1612,7 @@ class TimelineWidget(QWidget):
             + self._wave_height
             + ltc_h
             + video_h
-            + visible * self._lane_height
+            + self._marks_band_height()
             + 8
         )
         changed = needed != self._content_height
@@ -2422,7 +2436,8 @@ class TimelineWidget(QWidget):
         elif self._resizing_mark_lanes and event.buttons() & Qt.MouseButton.LeftButton:
             n = max(1, self._visible_lane_count())
             total = y - self._tracks_top_y() - self._mark_lane_split_h
-            self.set_mark_lane_height(total / n)
+            gap_total = max(0, n - 1) * self._mark_lane_gap
+            self.set_mark_lane_height((total - gap_total) / n)
         elif self._dragging_audio_gain and event.buttons() & Qt.MouseButton.LeftButton:
             zone = self._audio_gain_zone or "wave"
             self._apply_gain_at_y(y, zone)
@@ -2701,35 +2716,31 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _show_mark_lane_context_menu(self, pos, lane_index: int) -> None:  # noqa: ANN001
+        del lane_index
         if self._song is None:
             return
-        lane = self._song.lane_by_index(lane_index)
-        if lane is None:
-            return
         menu = QMenu(self)
-        if lane.show_row_color:
-            color_act = menu.addAction("Hide track color")
+        if self._show_mark_track_colors:
+            color_act = menu.addAction("Hide track colors")
         else:
-            color_act = menu.addAction("Show track color")
+            color_act = menu.addAction("Show track colors")
         manager_act = menu.addAction("Mark Manager…")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
         if chosen is color_act:
-            self._set_lane_row_color(lane_index, not lane.show_row_color)
+            self._set_mark_track_colors(not self._show_mark_track_colors)
         elif chosen is manager_act:
             self.mark_manager_requested.emit()
 
-    def _set_lane_row_color(self, lane_index: int, show: bool) -> None:
-        if self._song is None:
+    def _set_mark_track_colors(self, show: bool) -> None:
+        show = bool(show)
+        if show == self._show_mark_track_colors:
             return
-        lane = self._song.lane_by_index(lane_index)
-        if lane is None or lane.show_row_color == show:
-            return
-        lane.show_row_color = show
+        self._show_mark_track_colors = show
         self._invalidate_scrub_backdrop()
         self.update()
-        self.marks_changed.emit()
+        self.mark_track_colors_changed.emit(show)
 
     def _show_mark_tracks_area_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
@@ -3121,9 +3132,8 @@ class TimelineWidget(QWidget):
             painter.drawText(8, ltc_top + int(ltc_h / 2) + 4, f"LTC {side}")
         if self._song is not None and self._show_mark_tracks:
             y = tracks_top
-            for lane in self._song.mark_lanes:
-                if not lane.visible:
-                    continue
+            visible = [lane for lane in self._song.mark_lanes if lane.visible]
+            for i, lane in enumerate(visible):
                 painter.fillRect(0, y, self._header_width, self._lane_height, QColor("#111113"))
                 self._paint_mark_lane_header_label(
                     painter,
@@ -3133,6 +3143,9 @@ class TimelineWidget(QWidget):
                     fm=fm,
                 )
                 y += self._lane_height
+                if i < len(visible) - 1:
+                    painter.fillRect(0, int(y), self._header_width, self._mark_lane_gap, QColor("#000000"))
+                    y += self._mark_lane_gap
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:
@@ -3431,20 +3444,24 @@ class TimelineWidget(QWidget):
     def _paint_lanes(self, painter: QPainter, *, start_y: int) -> None:
         if self._song is None or not self._show_mark_tracks:
             return
-        y = start_y
         right = self._paint_right()
-        for lane in self._song.mark_lanes:
-            if not lane.visible:
+        content_h = self._marks_content_height()
+        if content_h <= 0:
+            return
+        painter.fillRect(self._header_width, start_y, right, content_h, QColor("#000000"))
+        if not self._show_mark_track_colors:
+            return
+        for lane_index, y0, y1 in self._lane_rects():
+            lane = self._song.lane_by_index(lane_index)
+            if lane is None:
                 continue
-            if lane.show_row_color:
-                painter.fillRect(
-                    self._header_width,
-                    y,
-                    right,
-                    self._lane_height,
-                    self._lane_row_fill(lane, header=False),
-                )
-            y += self._lane_height
+            painter.fillRect(
+                self._header_width,
+                int(y0),
+                right,
+                int(y1 - y0),
+                self._lane_row_fill(lane, header=False),
+            )
 
     def _mark_overlay_pen(self, color: QColor) -> QPen:
         pen = QPen(color, max(1.0, self._mark_line_width))
@@ -3462,12 +3479,7 @@ class TimelineWidget(QWidget):
     def _paint_marks(self, painter: QPainter, *, start_y: int) -> None:
         if self._song is None:
             return
-        visible_lanes = (
-            [lane for lane in self._song.mark_lanes if lane.visible]
-            if self._show_mark_tracks
-            else []
-        )
-        lane_y = {lane.index: start_y + i * self._lane_height for i, lane in enumerate(visible_lanes)}
+        lane_y = {lane_index: y0 for lane_index, y0, _y1 in self._lane_rects()}
         right = self._paint_right()
 
         for mark in self._song.marks:
