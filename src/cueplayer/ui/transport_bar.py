@@ -145,9 +145,6 @@ class BottomTransportBar(QWidget):
     volume_changed = Signal(float)  # 0.0 … 1.0
     seek_requested = Signal(float)
 
-    # Matched side rails (volume) so Play/Pause/Stop stay on the true center.
-    _SIDE_RAIL_W = 260
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("bottomTransport")
@@ -224,6 +221,8 @@ class BottomTransportBar(QWidget):
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        self._center_anchor: QWidget | None = None
+
         # Balance spacer = A/B group width so Play/Pause/Stop sit on true center
         # while A/B remain immediately to the right of Stop.
         self._balance = QWidget()
@@ -246,13 +245,13 @@ class BottomTransportBar(QWidget):
         right.addWidget(self.volume_slider)
         right.addWidget(self.volume_value)
         right_host = QWidget()
-        right_host.setFixedWidth(self._SIDE_RAIL_W)
         right_host.setLayout(right)
+        self._right_rail = right_host
 
         left_spacer = QWidget()
-        left_spacer.setFixedWidth(self._SIDE_RAIL_W)
+        self._left_rail = left_spacer
 
-        row.addWidget(left_spacer)
+        row.addWidget(self._left_rail)
         row.addStretch(1)
         row.addWidget(self._balance)
         row.addWidget(self.play_button)
@@ -261,7 +260,7 @@ class BottomTransportBar(QWidget):
         row.addSpacing(14)
         row.addWidget(self._ab_group)
         row.addStretch(1)
-        row.addWidget(right_host)
+        row.addWidget(self._right_rail)
         root.addLayout(row)
 
         self.play_button.clicked.connect(self.play_clicked.emit)
@@ -274,6 +273,14 @@ class BottomTransportBar(QWidget):
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
 
+    def set_center_anchor(self, widget: QWidget | None) -> None:
+        """Optically center transport under this widget (e.g. timeline column)."""
+        self._center_anchor = widget
+        self.sync_geometry()
+
+    def sync_geometry(self) -> None:
+        self._sync_transport_geometry()
+
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
         self._sync_transport_geometry()
@@ -285,12 +292,26 @@ class BottomTransportBar(QWidget):
     def _sync_transport_geometry(self) -> None:
         """Center Play/Pause/Stop; align overview *track* (no time gutters) to Play…X."""
         self._ab_group.adjustSize()
+        self._right_rail.adjustSize()
         ab_w = max(0, self._ab_group.sizeHint().width())
         # Pad left of Play by everything that sits to the right of Stop before
         # the trailing stretch (spacing + A/B group).
         trail = 14 + ab_w
         if self._balance.width() != trail:
             self._balance.setFixedWidth(trail)
+
+        base_rail = max(0, self._right_rail.sizeHint().width())
+        delta = 0
+        anchor = self._center_anchor
+        if anchor is not None and anchor.isVisible() and anchor.width() >= 8:
+            anchor_c = anchor.mapTo(self, anchor.rect().center()).x()
+            delta = int(round(anchor_c - self.width() / 2.0))
+        left_w = max(0, base_rail + delta)
+        right_w = max(0, base_rail - delta)
+        if self._left_rail.width() != left_w:
+            self._left_rail.setFixedWidth(left_w)
+        if self._right_rail.width() != right_w:
+            self._right_rail.setFixedWidth(right_w)
 
         lay = self.layout()
         if lay is not None:
@@ -379,6 +400,7 @@ class BottomTransportBar(QWidget):
             self.tc_status.setStyleSheet(
                 f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;"
             )
+        self.sync_geometry()
 
 
 # Back-compat alias used by older imports / cue monitor time formatting.

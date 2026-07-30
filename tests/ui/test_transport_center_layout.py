@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from cueplayer.ui.timeline_overview import TimelineOverviewBar
 from cueplayer.ui.transport_bar import BottomTransportBar
@@ -22,7 +22,7 @@ def test_play_centered_ab_right_track_to_clear(app: QApplication) -> None:
     bar.resize(1200, 120)
     bar.show()
     app.processEvents()
-    bar._sync_transport_geometry()
+    bar.sync_geometry()
     app.processEvents()
 
     play_c = bar.play_button.mapTo(bar, bar.play_button.rect().center()).x()
@@ -42,3 +42,19 @@ def test_play_centered_ab_right_track_to_clear(app: QApplication) -> None:
     track_r = bar.overview.mapTo(bar, bar.overview.rect().topRight()).x() - gutter
     assert abs(track_l - play_l) <= 4
     assert abs(track_r - clear_r) <= 4
+
+
+def test_transport_follows_center_anchor(app: QApplication) -> None:
+    host = QWidget()
+    host.resize(1200, 200)
+    host.show()
+    anchor = QWidget(host)
+    anchor.setGeometry(200, 0, 700, 120)
+    bar = BottomTransportBar(host)
+    bar.setGeometry(0, 120, 1200, 80)
+    bar.set_center_anchor(anchor)
+    app.processEvents()
+
+    play_c = bar.play_button.mapTo(bar, bar.play_button.rect().center()).x()
+    anchor_c = anchor.mapTo(bar, anchor.rect().center()).x()
+    assert abs(play_c - anchor_c) < 24

@@ -1115,6 +1115,9 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.toolbar)
         root_layout.addWidget(splitter, stretch=1)
         root_layout.addWidget(self.transport)
+        self.transport.set_center_anchor(self._timeline_preview_split)
+        for split in (self._main_splitter, self._timeline_split, self._timeline_preview_split):
+            split.splitterMoved.connect(self._sync_transport_layout)
         self.setCentralWidget(root)
 
         self.status = QStatusBar(self)
@@ -1293,6 +1296,7 @@ class MainWindow(QMainWindow):
                 if not self._try_restore_last_project():
                     self._maybe_load_demo_fixture()
                 self._sync_timeline_geometry()
+                self._sync_transport_layout()
                 self.monitor.ensure_now_splitter_ready()
                 QTimer.singleShot(0, self.monitor.ensure_now_splitter_ready)
                 QTimer.singleShot(100, self.monitor.ensure_now_splitter_ready)
@@ -1308,6 +1312,15 @@ class MainWindow(QMainWindow):
                 self.startup_ready.emit()
 
             QTimer.singleShot(0, _emit_ready)
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self._sync_transport_layout()
+
+    def _sync_transport_layout(self) -> None:
+        transport = getattr(self, "transport", None)
+        if transport is not None:
+            transport.sync_geometry()
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
@@ -1333,6 +1346,7 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
+        self._sync_transport_layout()
         placement = str(self._settings.value(_KEY_NOW_SECONDARY_PLACEMENT, "right") or "right")
         payload = {
             "placement": placement,
