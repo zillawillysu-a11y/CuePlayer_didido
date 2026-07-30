@@ -34,7 +34,7 @@ def _set_now_role(dialog: MarkManagerDialog, row: int, role: int) -> None:
 def test_mark_manager_accept_saves_now_display_assignment(app: QApplication) -> None:
     song = Song.create("NOW")
     dialog = MarkManagerDialog(song)
-    for row in range(dialog.table.rowCount()):
+    for row in range(dialog._lane_row_count()):
         _set_now_role(dialog, row, 0)
     _set_now_role(dialog, 0, 1)
     _set_now_role(dialog, 1, 2)
@@ -57,7 +57,7 @@ def test_mark_manager_save_settings_includes_now_display(
 ) -> None:
     song = Song.create("NOW")
     dialog = MarkManagerDialog(song)
-    for row in range(dialog.table.rowCount()):
+    for row in range(dialog._lane_row_count()):
         _set_now_role(dialog, row, 0)
     _set_now_role(dialog, 0, 1)
     _set_now_role(dialog, 1, 2)
