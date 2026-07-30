@@ -234,7 +234,11 @@ class TimelineWidget(QWidget):
             "marquee", "Box-select mode (enable to drag-select Marks with left click)", self, size=btn_size, overlay=True
         )
         self.auto_scroll_button = IconButton(
-            "letter_a", "Auto Scroll (follow the playhead)", self, size=btn_size, overlay=True
+            "letter_a",
+            "Auto Scroll — follow the playhead (on when highlighted)",
+            self,
+            size=btn_size,
+            overlay=True,
         )
         self.zoom_out_button = IconButton(
             "zoom_out", "Zoom out (mouse wheel also works)", self, size=btn_size, overlay=True
@@ -247,7 +251,7 @@ class TimelineWidget(QWidget):
         )
         self.setup_button.set_active(self._setup_mode)
         self.box_select_button.set_active(self._box_select_mode)
-        self.auto_scroll_button.set_active(self._auto_scroll)
+        self._sync_auto_scroll_button()
         self.setup_button.clicked.connect(self._toggle_setup_mode)
         self.box_select_button.clicked.connect(self._toggle_box_select_mode)
         self.auto_scroll_button.clicked.connect(self._toggle_auto_scroll_button)
@@ -297,6 +301,18 @@ class TimelineWidget(QWidget):
     def _toggle_auto_scroll_button(self) -> None:
         self.set_auto_scroll(not self._auto_scroll)
         self.auto_scroll_changed.emit(self._auto_scroll)
+
+    def _sync_auto_scroll_button(self) -> None:
+        """Keep Auto Scroll chip + tooltip in sync with on/off state."""
+        if not hasattr(self, "auto_scroll_button"):
+            return
+        on = self._auto_scroll
+        self.auto_scroll_button.set_active(on)
+        self.auto_scroll_button.setToolTip(
+            "Auto Scroll ON — timeline follows the playhead (click to turn off)"
+            if on
+            else "Auto Scroll OFF — click to follow the playhead"
+        )
 
     def _toggle_setup_mode(self) -> None:
         self._setup_mode = not self._setup_mode
@@ -1029,8 +1045,7 @@ class TimelineWidget(QWidget):
 
     def set_auto_scroll(self, enabled: bool) -> None:
         self._auto_scroll = bool(enabled)
-        if hasattr(self, "auto_scroll_button"):
-            self.auto_scroll_button.set_active(self._auto_scroll)
+        self._sync_auto_scroll_button()
         if self._auto_scroll:
             self._view_pinned = False
             self._follow_playhead()
