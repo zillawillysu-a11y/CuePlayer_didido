@@ -155,9 +155,9 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         return AudioOutputSettings()
     gain = float(raw.get("ltc_gain", 0.8) or 0.8)
     gain = min(1.5, max(0.0, gain))
-    ltc_source = str(raw.get("ltc_source") or "generator")
+    ltc_source = str(raw.get("ltc_source") or "auto")
     if ltc_source not in ("generator", "auto", "source_left", "source_right"):
-        ltc_source = "generator"
+        ltc_source = "auto"
     left = _coerce_channel_list(raw.get("music_left_channels"), [0])
     right = _coerce_channel_list(raw.get("music_right_channels"), [1])
     music_l_route = str(raw.get("music_l_route") or "").strip()

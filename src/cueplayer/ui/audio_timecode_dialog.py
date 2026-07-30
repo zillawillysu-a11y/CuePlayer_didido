@@ -235,14 +235,16 @@ class AudioTimecodeDialog(QDialog):
         self.ltc_enable = TickCheckBox("Enable LTC on output")
         self.ltc_enable.setChecked(settings.ltc_enabled)
         self.ltc_source = NoWheelComboBox()
-        self.ltc_source.addItem("Internal generator", "generator")
         self.ltc_source.addItem("From file — auto-detect L/R", "auto")
         self.ltc_source.addItem("From file — Left channel", "source_left")
         self.ltc_source.addItem("From file — Right channel", "source_right")
+        self.ltc_source.addItem("Internal generator", "generator")
         for i in range(self.ltc_source.count()):
             if self.ltc_source.itemData(i) == settings.ltc_source:
                 self.ltc_source.setCurrentIndex(i)
                 break
+        else:
+            self.ltc_source.setCurrentIndex(0)
         self.ltc_generator_enable = TickCheckBox("Enable internal LTC generator")
         self.ltc_generator_enable.setChecked(settings.ltc_generator_enabled)
         self.ltc_generator_enable.setToolTip(
@@ -475,7 +477,7 @@ class AudioTimecodeDialog(QDialog):
             music_left_channels=left_ch if left_kind == "channels" else [],
             music_right_channels=right_ch if right_kind == "channels" else [],
             ltc_enabled=self.ltc_enable.isChecked(),
-            ltc_source=str(self.ltc_source.currentData() or "generator"),
+            ltc_source=str(self.ltc_source.currentData() or "auto"),
             ltc_generator_enabled=self.ltc_generator_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
             ltc_channels=ltc if self.ltc_enable.isChecked() else [],
