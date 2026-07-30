@@ -117,12 +117,13 @@ from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
-from cueplayer.playback.ndi_output import NdiVideoOutput
+from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
 from cueplayer.ui.mark_manager_dialog import MarkManagerDialog
+from cueplayer.ui.ndi_install_dialog import show_ndi_install_dialog
 from cueplayer.ui.setlist_sheet_page import SetlistSheetPage
 from cueplayer.ui.show_patch_page import ShowPatchPage
 from cueplayer.ui.song_edit_dialog import (
@@ -5983,7 +5984,10 @@ class MainWindow(QMainWindow):
             self._ndi_output_action.setChecked(bool(settings.ndi_enabled) and err is None)
         self._sync_video_output_active()
         if err and show_errors:
-            QMessageBox.warning(self, "NDI Video Output", err)
+            if ndi_install_required(err):
+                show_ndi_install_dialog(self, detail=err)
+            else:
+                QMessageBox.warning(self, "NDI Video Output", err)
         return err
 
     def _on_clean_output_settings_changed(self) -> None:
