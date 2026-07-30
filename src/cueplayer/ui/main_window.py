@@ -1,4 +1,4 @@
-"""Main application window with waveform timeline and marking."""
+﻿"""Main application window with waveform timeline and marking."""
 
 from __future__ import annotations
 
@@ -987,6 +987,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"{MAIN_WINDOW_TITLE_PREFIX} — {self.project.name}")
         self.resize(1600, 900)
+        # Compact enough to share a screen with grandMA / Depence; timeline
+        # content scrolls instead of forcing this floor upward.
+        self.setMinimumSize(720, 420)
 
         root = QWidget(self)
         root_layout = QVBoxLayout(root)
@@ -1078,6 +1081,7 @@ class MainWindow(QMainWindow):
         self._timeline_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        self._timeline_scroll.setMinimumHeight(120)
         self._timeline_scroll.setWidget(self.timeline)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_geometry)
         self._timeline_scroll.viewport().installEventFilter(self)
@@ -1138,7 +1142,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._main_content_column)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(True)
         splitter.setSizes([240, 1340])
+        left.setMinimumWidth(140)
 
         root_layout.addWidget(self.toolbar)
         root_layout.addWidget(splitter, stretch=1)

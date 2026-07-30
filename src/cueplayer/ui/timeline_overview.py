@@ -36,7 +36,7 @@ class TimelineOverviewBar(QWidget):
         self._bar_height = 26
         self.setFixedHeight(self._bar_height)
         # Prefer filling the Play…X cluster width (transport sets expanding).
-        self.setMinimumWidth(200)
+        self.setMinimumWidth(120)
         self.setMaximumWidth(16777215)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)

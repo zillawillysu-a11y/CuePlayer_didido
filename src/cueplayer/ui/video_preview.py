@@ -19,7 +19,7 @@ class VideoPreviewWidget(QWidget):
         self._fit_mode: FitMode = "fit"
         self._placeholder_text = placeholder_text
         self.setStyleSheet("background: black;")
-        self.setMinimumSize(160, 90)
+        self.setMinimumSize(120, 68)
 
     def fit_mode(self) -> FitMode:
         return self._fit_mode
