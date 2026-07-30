@@ -14,7 +14,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.domain.models import Song
-from cueplayer.ui.mark_manager_dialog import MarkManagerDialog, _COL_CUE_ID, _COL_VISIBLE
+from cueplayer.ui.mark_manager_dialog import (
+    MarkManagerDialog,
+    _COL_COUNT,
+    _COL_CUE_ID,
+    _COL_MIDI,
+    _COL_MIDI_NOTE,
+    _COL_VISIBLE,
+)
 
 
 @pytest.fixture
@@ -45,3 +52,22 @@ def test_bulk_reflects_mixed_row_state(app: QApplication) -> None:
     dialog = MarkManagerDialog(song)
     dialog._refresh_bulk_toggle_states()
     assert dialog._bulk_checks[_COL_CUE_ID].checkState() == Qt.CheckState.PartiallyChecked
+
+
+def test_bulk_toggle_row_tracks_table_columns_on_resize(app: QApplication) -> None:
+    song = Song.create("Align")
+    dialog = MarkManagerDialog(song)
+    dialog.resize(920, 640)
+    dialog.show()
+    app.processEvents()
+    dialog.resize(640, 640)
+    app.processEvents()
+    dialog._sync_bulk_toggle_layout()
+    app.processEvents()
+
+    header = dialog.table.horizontalHeader()
+    assert len(dialog._bulk_column_cells) == _COL_COUNT
+    for col, cell in enumerate(dialog._bulk_column_cells):
+        assert cell.width() == header.sectionSize(col)
+    assert dialog._bulk_checks[_COL_VISIBLE].parentWidget() is dialog._bulk_column_cells[_COL_VISIBLE]
+    assert dialog._bulk_column_cells[_COL_MIDI_NOTE].width() == header.sectionSize(_COL_MIDI_NOTE)

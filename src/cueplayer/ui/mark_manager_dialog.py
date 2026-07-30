@@ -313,7 +313,7 @@ class MarkManagerDialog(QDialog):
 
         self._syncing_bulk = False
         self._bulk_checks: dict[int, QCheckBox] = {}
-        self._bulk_spacers: list[QWidget] = []
+        self._bulk_column_cells: list[QWidget] = []
         self._bulk_row = self._build_bulk_toggle_row()
         layout.addWidget(self._bulk_row)
         self.table.horizontalHeader().sectionResized.connect(self._sync_bulk_toggle_layout)
@@ -357,41 +357,42 @@ class MarkManagerDialog(QDialog):
         self._bulk_layout = QHBoxLayout(row)
         self._bulk_layout.setContentsMargins(0, 0, 0, 0)
         self._bulk_layout.setSpacing(0)
-        for col in range(_COL_VISIBLE):
-            spacer = QWidget()
-            self._bulk_spacers.append(spacer)
-            self._bulk_layout.addWidget(spacer)
-        bulk_specs = (
-            (_COL_VISIBLE, "All on/off for Visible"),
-            (_COL_CUE_ID, "All on/off for Cue ID"),
-            (_COL_CUE_LIST, "All on/off for Cue List"),
-            (_COL_MIDI, "All on/off for MIDI On"),
-        )
-        for col, tip in bulk_specs:
-            box = QCheckBox()
-            box.setTristate(True)
-            box.setToolTip(tip)
-            box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
-            self._bulk_checks[col] = box
-            wrap = QWidget()
-            wrap_layout = QHBoxLayout(wrap)
-            wrap_layout.setContentsMargins(0, 0, 0, 0)
-            wrap_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            wrap_layout.addWidget(box)
-            self._bulk_layout.addWidget(wrap)
-        self._bulk_layout.addStretch(1)
+        bulk_specs = {
+            _COL_VISIBLE: "All on/off for Visible",
+            _COL_CUE_ID: "All on/off for Cue ID",
+            _COL_CUE_LIST: "All on/off for Cue List",
+            _COL_MIDI: "All on/off for MIDI On",
+        }
+        self._bulk_column_cells.clear()
+        self._bulk_checks.clear()
+        for col in range(_COL_COUNT):
+            if col in bulk_specs:
+                box = QCheckBox()
+                box.setTristate(True)
+                box.setToolTip(bulk_specs[col])
+                box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
+                self._bulk_checks[col] = box
+                cell = QWidget()
+                cell_layout = QHBoxLayout(cell)
+                cell_layout.setContentsMargins(0, 0, 0, 0)
+                cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell_layout.addWidget(box)
+                self._bulk_column_cells.append(cell)
+                self._bulk_layout.addWidget(cell)
+            else:
+                spacer = QWidget()
+                self._bulk_column_cells.append(spacer)
+                self._bulk_layout.addWidget(spacer)
         return row
 
     def _sync_bulk_toggle_layout(self) -> None:
-        for col, spacer in enumerate(self._bulk_spacers):
-            spacer.setFixedWidth(self.table.columnWidth(col))
-        for col, box in self._bulk_checks.items():
-            parent = box.parentWidget()
-            width = self.table.columnWidth(col)
-            if parent is not None:
-                parent.setFixedWidth(width)
-            else:
-                box.setFixedWidth(width)
+        if not self._bulk_column_cells:
+            return
+        header = self.table.horizontalHeader()
+        inset = self.table.verticalHeader().width() + self.table.frameWidth()
+        self._bulk_layout.setContentsMargins(inset, 0, self.table.frameWidth(), 0)
+        for col, cell in enumerate(self._bulk_column_cells):
+            cell.setFixedWidth(header.sectionSize(col))
 
     def _checkbox_at(self, row: int, col: int) -> QCheckBox | None:
         wrap = self.table.cellWidget(row, col)
@@ -855,6 +856,14 @@ class MarkManagerDialog(QDialog):
     def _default_note_for_lane(self, lane: MarkLane) -> int:
         main_base, button_base = self._midi_bases()
         return default_note_for_lane(lane, main_base=main_base, button_base=button_base)
+
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        self._sync_bulk_toggle_layout()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self._sync_bulk_toggle_layout()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         # Clicking a name field should also select that row for preview / delete.
