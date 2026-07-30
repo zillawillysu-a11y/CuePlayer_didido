@@ -1059,6 +1059,29 @@ class TimelineWidget(QWidget):
             y += self._lane_height
         return out
 
+    def _lane_index_at(self, x: float, y: float) -> int | None:
+        """Mark lane under the cursor (header or lane body), visible lanes only."""
+        if self._song is None or not self._show_mark_tracks:
+            return None
+        for lane_index, y0, y1 in self._lane_rects():
+            if y0 <= y < y1 and (
+                x < self._header_width or self._in_mark_tracks(x, y)
+            ):
+                return lane_index
+        return None
+
+    @staticmethod
+    def _lane_accent_color(lane) -> QColor:  # noqa: ANN001
+        color = QColor(lane.color or "#4C8BF5")
+        return color if color.isValid() else QColor("#4C8BF5")
+
+    def _lane_row_fill(self, lane, *, header: bool = False) -> QColor:  # noqa: ANN001
+        color = self._lane_accent_color(lane)
+        alpha = 44 if header else (36 if lane.cue_id_enabled else 28)
+        fill = QColor(color)
+        fill.setAlpha(alpha)
+        return fill
+
     def _hit_mark_lane_header(self, x: float, y: float) -> int | None:
         """Return lane index when clicking the left name header of a Mark track."""
         if x >= self._header_width or self._song is None or not self._show_mark_tracks:
@@ -1593,6 +1616,9 @@ class TimelineWidget(QWidget):
             return
         lane.visible = visible
         self._apply_layout_heights()
+        self._invalidate_scrub_backdrop()
+        self.marks_changed.emit()
+        self.content_geometry_changed.emit()
         self.update()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -2625,11 +2651,61 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop()
         self.update()
 
+    def _show_mark_lane_context_menu(self, pos, lane_index: int) -> None:  # noqa: ANN001
+        if self._song is None:
+            return
+        lane = self._song.lane_by_index(lane_index)
+        if lane is None:
+            return
+        menu = QMenu(self)
+        if lane.visible:
+            toggle = menu.addAction(f"Hide “{lane.name}” track")
+        else:
+            toggle = menu.addAction(f"Show “{lane.name}” track")
+        rename = menu.addAction("Rename track…")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is toggle:
+            self.set_lane_visible(lane_index, not lane.visible)
+        elif chosen is rename:
+            self._rename_mark_lane_at(lane_index)
+
+    def _show_mark_tracks_area_menu(self, pos) -> None:  # noqa: ANN001
+        if self._song is None:
+            return
+        menu = QMenu(self)
+        if self._show_mark_lane_resize_bar:
+            resize = menu.addAction("Hide resize bar")
+        else:
+            resize = menu.addAction("Show resize bar")
+        hidden = [lane for lane in self._song.mark_lanes if not lane.visible]
+        show_actions: list[tuple[object, int]] = []
+        if hidden:
+            menu.addSeparator()
+            for lane in sorted(hidden, key=lambda item: item.index):
+                act = menu.addAction(f"Show “{lane.name}” track")
+                show_actions.append((act, lane.index))
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is resize:
+            self._toggle_mark_lane_resize_bar()
+            return
+        for act, lane_index in show_actions:
+            if chosen is act:
+                self.set_lane_visible(lane_index, True)
+                return
+
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
             return
         x = float(pos.x())
         y = float(pos.y())
+        lane_idx = self._lane_index_at(x, y)
+        if lane_idx is not None and self._hit_mark_at(x, y) is None:
+            self._show_mark_lane_context_menu(pos, lane_idx)
+            return
         if x < self._header_width:
             return
         if self._in_video_lane(x, y):
@@ -2641,11 +2717,8 @@ class TimelineWidget(QWidget):
         if self._in_ltc_waveform(x, y):
             self._show_ltc_gain_context_menu(pos)
             return
-        if (
-            (self._in_mark_tracks(x, y) or self._hit_mark_lane_header(x, y) is not None)
-            and self._hit_mark_at(x, y) is None
-        ):
-            self._toggle_mark_lane_resize_bar()
+        if self._in_mark_tracks(x, y) and self._hit_mark_at(x, y) is None:
+            self._show_mark_tracks_area_menu(pos)
             return
         hit_id = self._hit_mark_at(x, y)
         if hit_id is not None and hit_id not in self._selected_mark_ids:
@@ -2991,10 +3064,12 @@ class TimelineWidget(QWidget):
             for lane in self._song.mark_lanes:
                 if not lane.visible:
                     continue
-                painter.fillRect(0, y, self._header_width, self._lane_height, QColor("#111113"))
+                accent = self._lane_accent_color(lane)
+                painter.fillRect(0, y, self._header_width, self._lane_height, self._lane_row_fill(lane, header=True))
+                painter.fillRect(0, y, 4, self._lane_height, accent)
                 label = f"{lane.shortcut}  {lane.name}".strip()
                 elided = fm.elidedText(label, Qt.TextElideMode.ElideRight, text_w)
-                painter.setPen(QColor(lane.color))
+                painter.setPen(accent)
                 painter.drawText(8, y + 18, elided)
                 y += self._lane_height
         painter.restore()
@@ -3300,8 +3375,15 @@ class TimelineWidget(QWidget):
         for lane in self._song.mark_lanes:
             if not lane.visible:
                 continue
-            bg = QColor("#141416") if lane.cue_id_enabled else QColor("#111113")
-            painter.fillRect(self._header_width, y, right, self._lane_height, bg)
+            accent = self._lane_accent_color(lane)
+            painter.fillRect(
+                self._header_width,
+                y,
+                right,
+                self._lane_height,
+                self._lane_row_fill(lane, header=False),
+            )
+            painter.fillRect(self._header_width, y, 3, self._lane_height, accent)
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y + self._lane_height - 1, right, y + self._lane_height - 1)
             y += self._lane_height
