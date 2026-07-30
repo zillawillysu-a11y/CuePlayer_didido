@@ -72,3 +72,27 @@ def test_gain_drag_after_zoom_uses_press_time_bounds(app: QApplication) -> None:
     app.processEvents()
     widget._apply_gain_at_y(zero_y, "wave")
     assert song.audio_gain_db == pytest.approx(0.0, abs=0.05)
+
+
+def test_gain_line_x_bounds_use_ninety_percent_span(app: QApplication) -> None:
+    widget, _song = _widget_with_gain_line(app)
+    left, right = widget._gain_line_x_bounds()
+    track_left = float(widget._header_width)
+    track_right = float(widget.width())
+    span = track_right - track_left
+    assert left == pytest.approx(track_left + span * 0.05, abs=0.5)
+    assert right == pytest.approx(track_right - span * 0.05, abs=0.5)
+    assert right - left == pytest.approx(span * 0.9, abs=1.0)
+
+
+def test_gain_line_hit_ignores_track_edge_margins(app: QApplication) -> None:
+    widget, _song = _widget_with_gain_line(app)
+    bounds = widget._wave_gain_bounds()
+    assert bounds is not None
+    top, bottom = bounds
+    line_y = widget._y_for_gain_db(0.0, top, bottom)
+    line_left, line_right = widget._gain_line_x_bounds()
+
+    assert widget._near_audio_gain_line(line_left + 20.0, line_y) == "wave"
+    assert widget._near_audio_gain_line(float(widget.width()) - 1.0, line_y) is None
+    assert widget._near_audio_gain_line(line_right - 1.0, line_y) == "wave"
