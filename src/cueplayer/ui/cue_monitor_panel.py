@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal, QEvent
-from PySide6.QtGui import QAction, QColor, QDrag, QFont, QKeyEvent, QMouseEvent, QPalette
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QKeyEvent,
+    QMouseEvent,
+    QPalette,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -117,6 +126,12 @@ _NOW_PRIMARY_COL_MIN = 56
 _NOW_SECONDARY_COL_MIN = 48
 _CUE_LIST_BODY_MIN = 56
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
+_CLOCK_FONT_MAX_PX = 48
+_CLOCK_FONT_MIN_PX = 16
+_TC_FONT_MAX_PX = 22
+_TC_FONT_MIN_PX = 11
+_DURATION_FONT_MAX_PX = 16
+_DURATION_FONT_MIN_PX = 10
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
@@ -223,24 +238,25 @@ class CueMonitorPanel(QWidget):
         clock_layout.setContentsMargins(12, 16, 12, 16)
         clock_layout.setSpacing(6)
 
+        self._clock_font_px = _CLOCK_FONT_MAX_PX
+        self._tc_font_px = _TC_FONT_MAX_PX
+        self._duration_font_px = _DURATION_FONT_MAX_PX
+
         self.clock_label = QLabel("00:00.000")
         self.clock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        clock_font = QFont("Consolas")
-        if not clock_font.exactMatch():
-            clock_font = QFont("Cascadia Mono")
-        clock_font.setPointSize(48)
-        clock_font.setBold(True)
-        self.clock_label.setFont(clock_font)
-        self.clock_label.setStyleSheet(
-            "color: #e4e4e7; background: transparent; font-size: 48px; font-weight: 700;"
-            "font-family: Consolas, 'Cascadia Mono', monospace;"
+        self.clock_label.setMinimumWidth(0)
+        self.clock_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
+        self._apply_clock_label_style()
 
         self.duration_label = QLabel("/ 00:00.000")
         self.duration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.duration_label.setStyleSheet(
-            "color: #a1a1aa; background: transparent; font-size: 16px;"
+        self.duration_label.setMinimumWidth(0)
+        self.duration_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
+        self._apply_duration_label_style()
 
         clock_layout.addWidget(self.clock_label)
         clock_layout.addWidget(self.duration_label)
@@ -261,15 +277,15 @@ class CueMonitorPanel(QWidget):
 
         self.tc_output_value = QLabel("01:00:00:00")
         self.tc_output_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tc_font = QFont("Consolas")
-        if not tc_font.exactMatch():
-            tc_font = QFont("Cascadia Mono")
-        tc_font.setPointSize(22)
-        tc_font.setBold(True)
-        self.tc_output_value.setFont(tc_font)
+        self.tc_output_value.setMinimumWidth(0)
+        self.tc_output_value.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._tc_clock_color = "#3dd68c"
         self._show_output_tc_clock = True
         self._show_output_quick_toggles = True
+        self._tc_value_color = "#a1a1aa"
+        self._apply_tc_value_style()
         self._apply_output_timecode_style()
 
         tc_out_layout.addWidget(self.tc_output_status)
@@ -815,6 +831,118 @@ class CueMonitorPanel(QWidget):
     def showEvent(self, event) -> None:  # noqa: ANN001, N802
         super().showEvent(event)
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
+        QTimer.singleShot(0, self._fit_clock_fonts)
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
+        super().resizeEvent(event)
+        self._fit_clock_fonts()
+
+    @staticmethod
+    def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
+        font = QFont("Consolas")
+        if not font.exactMatch():
+            font = QFont("Cascadia Mono")
+        font.setPixelSize(point_px)
+        font.setBold(bold)
+        return font
+
+    @classmethod
+    def _font_px_for_text(
+        cls,
+        text: str,
+        *,
+        available: int,
+        max_px: int,
+        min_px: int,
+        bold: bool = True,
+    ) -> int:
+        if available <= 0 or not text:
+            return max_px
+        px = max_px
+        while px > min_px:
+            metrics = QFontMetrics(cls._mono_clock_font(px, bold=bold))
+            if metrics.horizontalAdvance(text) <= available:
+                return px
+            px -= 1
+        return min_px
+
+    def _clock_text_budget(self) -> int:
+        layout = self._clock_frame.layout()
+        margins = layout.contentsMargins() if layout is not None else None
+        pad = (margins.left() + margins.right()) if margins is not None else 24
+        # Panel outer margins (12+12) are outside the frame; use frame width.
+        return max(40, self._clock_frame.width() - pad)
+
+    def _apply_clock_label_style(self) -> None:
+        px = self._clock_font_px
+        font = self._mono_clock_font(px, bold=True)
+        self.clock_label.setFont(font)
+        self.clock_label.setStyleSheet(
+            f"color: #e4e4e7; background: transparent; font-size: {px}px; font-weight: 700;"
+            "font-family: Consolas, 'Cascadia Mono', monospace;"
+        )
+
+    def _apply_duration_label_style(self) -> None:
+        px = self._duration_font_px
+        self.duration_label.setStyleSheet(
+            f"color: #a1a1aa; background: transparent; font-size: {px}px;"
+        )
+
+    def _apply_tc_value_style(self) -> None:
+        px = self._tc_font_px
+        color = self._tc_value_color
+        font = self._mono_clock_font(px, bold=True)
+        self.tc_output_value.setFont(font)
+        self.tc_output_value.setStyleSheet(
+            f"color: {color}; background: transparent; font-size: {px}px;"
+            "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
+        )
+
+    def _fit_clock_fonts(self) -> None:
+        """Shrink clock digits to fit when the right panel is narrow."""
+        frame_w = self._clock_frame.width()
+        if frame_w <= 1:
+            return
+        layout = self._clock_frame.layout()
+        if layout is not None:
+            if frame_w < 220:
+                layout.setContentsMargins(6, 8, 6, 8)
+            elif frame_w < 280:
+                layout.setContentsMargins(8, 12, 8, 12)
+            else:
+                layout.setContentsMargins(12, 16, 12, 16)
+        budget = self._clock_text_budget()
+        clock_text = self.clock_label.text() or "00:00.000"
+        # Keep room for typical mm:ss.mmm even when current text is shorter.
+        clock_sample = clock_text if len(clock_text) >= len("00:00.000") else "00:00.000"
+        clock_px = self._font_px_for_text(
+            clock_sample,
+            available=budget,
+            max_px=_CLOCK_FONT_MAX_PX,
+            min_px=_CLOCK_FONT_MIN_PX,
+        )
+        duration_text = self.duration_label.text() or "/ 00:00.000"
+        duration_px = self._font_px_for_text(
+            duration_text,
+            available=budget,
+            max_px=_DURATION_FONT_MAX_PX,
+            min_px=_DURATION_FONT_MIN_PX,
+            bold=False,
+        )
+        tc_text = self.tc_output_value.text() or "01:00:00:00"
+        tc_sample = tc_text if len(tc_text) >= len("01:00:00:00") else "01:00:00:00"
+        tc_px = self._font_px_for_text(
+            tc_sample,
+            available=budget,
+            max_px=_TC_FONT_MAX_PX,
+            min_px=_TC_FONT_MIN_PX,
+        )
+        self._clock_font_px = clock_px
+        self._duration_font_px = duration_px
+        self._tc_font_px = tc_px
+        self._apply_clock_label_style()
+        self._apply_duration_label_style()
+        self._apply_tc_value_style()
 
     def save_now_splitter_state(self):
         self._stash_current_splitter_state()
@@ -1237,9 +1365,13 @@ class CueMonitorPanel(QWidget):
 
     def set_position(self, seconds: float, duration: float | None = None) -> None:
         self._position = max(0.0, seconds)
+        prev = self.clock_label.text()
         self.clock_label.setText(format_time(self._position))
         if duration is not None:
             self.duration_label.setText(f"/ {format_time(duration)}")
+        # Re-fit when digit count grows (e.g. 99:59 → 100:00) or on first paint.
+        if len(self.clock_label.text()) != len(prev):
+            self._fit_clock_fonts()
         self._sync_current()
 
     @property
@@ -1283,11 +1415,7 @@ class CueMonitorPanel(QWidget):
                 "font-weight: 600; letter-spacing: 0.5px;"
             )
             self.tc_output_value.setText(timecode)
-            value_color = self._tc_clock_color if sending else "#a1a1aa"
-            self.tc_output_value.setStyleSheet(
-                f"color: {value_color}; background: transparent; font-size: 22px;"
-                "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
-            )
+            self._tc_value_color = self._tc_clock_color if sending else "#a1a1aa"
         else:
             self.tc_output_status.setText("TC off")
             self.tc_output_status.setStyleSheet(
@@ -1295,10 +1423,9 @@ class CueMonitorPanel(QWidget):
                 "font-weight: 600; letter-spacing: 0.5px;"
             )
             self.tc_output_value.setText("—")
-            self.tc_output_value.setStyleSheet(
-                "color: #52525b; background: transparent; font-size: 22px;"
-                "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
-            )
+            self._tc_value_color = "#52525b"
+        self._apply_tc_value_style()
+        self._fit_clock_fonts()
 
     def _apply_output_timecode_style(self) -> None:
         self._tc_output_block.setVisible(self._show_output_tc_clock)
