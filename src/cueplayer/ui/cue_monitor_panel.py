@@ -893,6 +893,44 @@ class CueMonitorPanel(QWidget):
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
 
+    def _lane_index_at_cue_list_pos(self, pos) -> int | None:  # noqa: ANN001
+        if self._song is None or self.sender() is not self.cue_table:
+            return None
+        index = self.cue_table.indexAt(pos)
+        if not index.isValid():
+            return None
+        mark_id = self._mark_id_at_row(index.row())
+        if not mark_id:
+            return None
+        mark = self._song.mark_by_id(mark_id)
+        return mark.lane_index if mark is not None else None
+
+    def _append_renumber_cue_id_actions(self, menu: QMenu, pos) -> None:  # noqa: ANN001
+        if self._song is None:
+            return
+        from cueplayer.domain.main_cue_id import renumberable_cue_list_lanes
+
+        lanes = renumberable_cue_list_lanes(self._song)
+        renumber = menu.addAction("Renumber")
+        renumber.setEnabled(bool(lanes))
+        renumber.setToolTip("Renumber Cue IDs to 1, 2, 3… in time order (all Cue List types)")
+        renumber.triggered.connect(lambda: self.renumber_cue_ids_requested.emit(None))
+
+        lane_index = self._lane_index_at_cue_list_pos(pos)
+        if lane_index is None:
+            return
+        allowed = {lane.index for lane in lanes}
+        if lane_index not in allowed:
+            return
+        lane = self._song.lane_by_index(lane_index)
+        if lane is None:
+            return
+        scoped = menu.addAction(f'Renumber "{lane.name}"')
+        scoped.setToolTip(f"Renumber only {lane.name} cues to 1, 2, 3… in time order")
+        scoped.triggered.connect(
+            lambda _checked=False, idx=lane_index: self.renumber_cue_ids_requested.emit(idx)
+        )
+
     def _set_cue_list_show_cue_id(self, visible: bool) -> None:
         if self._song is None:
             return
@@ -1057,6 +1095,8 @@ class CueMonitorPanel(QWidget):
             return
         menu = QMenu(self)
         self._append_cue_list_menu_action(menu)
+        menu.addSeparator()
+        self._append_renumber_cue_id_actions(menu, pos)
         sender = self.sender()
         if isinstance(sender, QWidget):
             menu.exec(sender.mapToGlobal(pos))
