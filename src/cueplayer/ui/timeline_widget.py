@@ -83,6 +83,8 @@ class TimelineWidget(QWidget):
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
     lane_name_changed = Signal(int, str)  # lane_index, new name
+    # Internal: video waveform decode finished (may be emitted from a worker).
+    _video_waveforms_ready = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -199,6 +201,11 @@ class TimelineWidget(QWidget):
         self._build_video_track_overlay()
         self._video_waveform_cache = VideoClipWaveformCache()
         self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready)
+        # Queued when the worker thread emits — never touch Qt from that thread.
+        self._video_waveforms_ready.connect(
+            self._apply_video_waveform_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.video_clips_changed.connect(self.refresh_video_clip_waveforms)
         self._register_drop_forwarding_children()
 
@@ -565,8 +572,13 @@ class TimelineWidget(QWidget):
         self.music_volume_changed.emit(volume)
 
     def _on_video_waveform_ready(self) -> None:
+        """Called from the waveform worker thread — must not touch Qt widgets."""
+        self._video_waveforms_ready.emit()
+
+    def _apply_video_waveform_ready(self) -> None:
+        """GUI-thread slot: refresh static backdrop once peaks land."""
         self._invalidate_scrub_backdrop()
-        QTimer.singleShot(0, self.update)
+        self.update()
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
@@ -1281,6 +1293,17 @@ class TimelineWidget(QWidget):
         return 0
 
     def _apply_layout_heights(self) -> None:
+        # setMinimumHeight can re-enter via resizeEvent; skip nested applies so
+        # eye-toggle / song-switch cannot recurse into a stack overflow.
+        if getattr(self, "_applying_layout_heights", False):
+            return
+        self._applying_layout_heights = True
+        try:
+            self._apply_layout_heights_inner()
+        finally:
+            self._applying_layout_heights = False
+
+    def _apply_layout_heights_inner(self) -> None:
         # Taller wave → thinner lane rows so button timelines stay compact.
         max_h = max(80, self._max_wave_height())
         self._wave_height = max(80, min(max_h, self._wave_height))
