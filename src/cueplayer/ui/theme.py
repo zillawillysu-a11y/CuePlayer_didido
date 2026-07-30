@@ -9,8 +9,9 @@ NOW cards, timeline painting) — see AGENTS.md / theme rollout notes.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 
 # Core palette -----------------------------------------------------------
 # Pitch-black chrome (Cursor-like): near-black surfaces, grey structure,
@@ -47,6 +48,29 @@ WARNING = "#d29922"
 # Domain label colors (not chrome) — keep Timeline readable.
 COLOR_VIDEO = "#8b9cff"
 COLOR_LTC = WARNING
+
+# UI type — modern geometric sans (Apple Music / SF Pro–adjacent) with CJK
+# fallbacks. Prefer system faces on Windows/macOS; Public Sans when present.
+UI_FONT_CANDIDATES = (
+    "Segoe UI Variable",
+    "Segoe UI",
+    "Microsoft JhengHei UI",
+    "Microsoft JhengHei",
+    "PingFang TC",
+    "PingFang HK",
+    "Hiragino Sans CNS",
+    "Public Sans",
+    "Noto Sans CJK TC",
+    "Noto Sans TC",
+    "Source Han Sans TC",
+    "WenQuanYi Micro Hei",
+    "Noto Sans",
+)
+FONT_FAMILY_CSS = (
+    "'Segoe UI Variable', 'Segoe UI', 'Microsoft JhengHei UI', "
+    "'PingFang TC', 'Public Sans', 'Noto Sans CJK TC', 'Noto Sans TC', "
+    "'WenQuanYi Micro Hei', 'Noto Sans', sans-serif"
+)
 
 # Shared QSlider look (Master Volume + LTC Gain, timeline faders).
 # Groove/handle stay greyscale — no blue fill.
@@ -149,6 +173,7 @@ QWidget {{
     selection-background-color: {BG_SELECTED};
     selection-color: {TEXT};
     font-size: 13px;
+    font-family: {FONT_FAMILY_CSS};
 }}
 
 QMainWindow, QDialog {{
@@ -478,6 +503,44 @@ QDialogButtonBox QPushButton {{
     min-width: 72px;
 }}
 """
+
+
+def apply_ui_font(app) -> None:  # noqa: ANN001
+    """Apply a modern UI sans with Traditional Chinese fallbacks.
+
+    CuePlayer previously relied on Qt Fusion's default face (often boxy /
+    Arial-like). Prefer Segoe UI + Microsoft JhengHei UI on Windows, PingFang
+    on macOS, and Public Sans when the OS has it installed.
+    """
+    extra_paths = (
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Medium.ttf"),
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Bold.ttf"),
+        Path.home() / "Library/Fonts/PublicSans-Regular.ttf",
+        Path("C:/Windows/Fonts/segoeui.ttf"),
+    )
+    for path in extra_paths:
+        try:
+            if path.is_file():
+                QFontDatabase.addApplicationFont(str(path))
+        except Exception:  # noqa: BLE001
+            pass
+
+    available = set(QFontDatabase.families())
+    chosen = [name for name in UI_FONT_CANDIDATES if name in available]
+    font = QFont()
+    if chosen:
+        font.setFamilies(chosen)
+    else:
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setStyleStrategy(
+        QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.PreferQuality
+    )
+    # 10pt ≈ previous 13px stylesheet size on 96 DPI; stylesheet still sets px.
+    if font.pointSize() <= 0:
+        font.setPointSize(10)
+    app.setFont(font)
 
 
 def apply_dark_palette(app) -> None:  # noqa: ANN001

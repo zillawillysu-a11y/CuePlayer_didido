@@ -4549,7 +4549,10 @@ class MainWindow(QMainWindow):
         )
 
     def _set_loop_a(self) -> None:
-        self.engine.loop_a = self.engine.position
+        # Use the visible Timeline playhead (same clock the user watches), not
+        # a possibly-stale engine read mid-click.
+        t = float(self.timeline.playhead_seconds())
+        self.engine.loop_a = t
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
@@ -4558,7 +4561,8 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"A = {self.engine.loop_a:.3f}s", 2000)
 
     def _set_loop_b(self) -> None:
-        self.engine.loop_b = self.engine.position
+        t = float(self.timeline.playhead_seconds())
+        self.engine.loop_b = t
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True

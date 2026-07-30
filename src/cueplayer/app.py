@@ -52,7 +52,7 @@ def main() -> int:
 
     from cueplayer.ui.main_window import MainWindow
     from cueplayer.ui.splash import show_startup_splash
-    from cueplayer.ui.theme import BG_APP, apply_dark_palette, build_stylesheet
+    from cueplayer.ui.theme import BG_APP, apply_dark_palette, apply_ui_font, build_stylesheet
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -69,6 +69,7 @@ def main() -> int:
 
     splash = show_startup_splash(app, message="Starting…")
     splash.set_progress(0.08, "Applying theme…")
+    apply_ui_font(app)
     apply_dark_palette(app)
     app.setStyleSheet(build_stylesheet())
 

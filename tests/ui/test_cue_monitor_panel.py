@@ -9,7 +9,7 @@ from cueplayer.ui.cue_monitor_panel import mark_now_body
 def test_mark_now_body_type_above_note() -> None:
     song = Song.create("Test")
     mark = Mark.create(lane_index=1, time_seconds=1.0, display_name="Verse")
-    assert mark_now_body(song, mark) == "Main\nVerse"
+    assert mark_now_body(song, mark) == "Main\n-\nVerse"
 
 
 def test_mark_now_body_shows_cue_id_on_primary() -> None:
@@ -30,7 +30,7 @@ def test_mark_now_body_hides_cue_id_when_disabled() -> None:
     song = Song.create("Test")
     mark = song.add_mark(1, 1.0, display_name="Verse")
     assert mark.main_cue_id == "1"
-    assert mark_now_body(song, mark, show_cue_id=False) == "Main\nVerse"
+    assert mark_now_body(song, mark, show_cue_id=False) == "Main\n-\nVerse"
 
 
 def test_mark_now_body_type_only_when_note_empty() -> None:

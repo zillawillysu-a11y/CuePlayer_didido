@@ -31,12 +31,32 @@ def create_splash_pixmap(
 
     title = "CuePlayer"
     title_font = QFont()
-    title_font.setFamilies(["Segoe UI", "Microsoft JhengHei UI", "Arial"])
+    title_font.setFamilies(
+        [
+            "Segoe UI Variable",
+            "Segoe UI",
+            "Microsoft JhengHei UI",
+            "PingFang TC",
+            "Public Sans",
+            "Noto Sans CJK TC",
+            "WenQuanYi Micro Hei",
+        ]
+    )
     title_font.setPixelSize(34)
     title_font.setWeight(QFont.Weight.DemiBold)
 
     msg_font = QFont()
-    msg_font.setFamilies(["Segoe UI", "Microsoft JhengHei UI", "Arial"])
+    msg_font.setFamilies(
+        [
+            "Segoe UI Variable",
+            "Segoe UI",
+            "Microsoft JhengHei UI",
+            "PingFang TC",
+            "Public Sans",
+            "Noto Sans CJK TC",
+            "WenQuanYi Micro Hei",
+        ]
+    )
     msg_font.setPixelSize(13)
 
     title_metrics = QFontMetrics(title_font)
