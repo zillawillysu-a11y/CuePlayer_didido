@@ -1725,6 +1725,15 @@ class TimelineWidget(QWidget):
     def _view_width(self) -> float:
         return max(1.0, self.width() - self._header_width)
 
+    def transport_anchor_global_point(self) -> QPointF | None:
+        """Horizontal center of the visible waveform pane (excludes Mark Type header)."""
+        view_w = self._view_width()
+        if view_w <= 8:
+            return None
+        x = float(self._header_width) + view_w / 2.0
+        y = self.height() / 2.0
+        return self.mapToGlobal(QPointF(x, y))
+
     def _center_on_playhead(self) -> None:
         """Keep playhead in the horizontal middle of the waveform view."""
         target = self._view_width() * 0.5

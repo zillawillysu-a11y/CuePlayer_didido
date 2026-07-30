@@ -53,11 +53,12 @@ def test_transport_follows_center_anchor(app: QApplication) -> None:
     anchor.show()
     bar = BottomTransportBar(host)
     bar.setGeometry(0, 120, 1200, 80)
+    bar.show()
     bar.set_center_anchor(anchor)
     app.processEvents()
 
-    play_c = bar.play_button.mapTo(bar, bar.play_button.rect().center()).x()
-    stop_c = bar.stop_button.mapTo(bar, bar.stop_button.rect().center()).x()
-    transport_c = (play_c + stop_c) / 2.0
+    play_l = bar.play_button.mapTo(bar, bar.play_button.rect().topLeft()).x()
+    clear_r = bar.loop_clear_button.mapTo(bar, bar.loop_clear_button.rect().topRight()).x()
+    transport_c = (play_l + clear_r) / 2.0
     anchor_c = bar.mapFromGlobal(anchor.mapToGlobal(anchor.rect().center())).x()
     assert abs(transport_c - anchor_c) < 24

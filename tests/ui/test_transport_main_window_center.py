@@ -29,11 +29,15 @@ def test_main_window_transport_centered_under_timeline(app: QApplication) -> Non
     app.processEvents()
 
     transport = window.transport
-    timeline = window._timeline_center
-    play_c = transport.play_button.mapTo(transport, transport.play_button.rect().center()).x()
-    stop_c = transport.stop_button.mapTo(transport, transport.stop_button.rect().center()).x()
-    transport_c = (play_c + stop_c) / 2.0
-    timeline_c = transport.mapFromGlobal(timeline.mapToGlobal(timeline.rect().center())).x()
+    timeline = window.timeline
+    play_l = transport.play_button.mapTo(transport, transport.play_button.rect().topLeft()).x()
+    clear_r = transport.loop_clear_button.mapTo(
+        transport, transport.loop_clear_button.rect().topRight()
+    ).x()
+    transport_c = (play_l + clear_r) / 2.0
+    anchor_pt = timeline.transport_anchor_global_point()
+    assert anchor_pt is not None
+    timeline_c = transport.mapFromGlobal(anchor_pt).x()
 
     assert abs(transport_c - timeline_c) < 28
     # Transport no longer spans under the setlist column.

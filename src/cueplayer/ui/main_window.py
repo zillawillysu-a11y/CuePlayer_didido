@@ -1121,7 +1121,7 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.toolbar)
         root_layout.addWidget(splitter, stretch=1)
-        self.transport.set_center_anchor(self._timeline_center)
+        self.transport.set_center_anchor(self.timeline)
         for split in (self._main_splitter, self._timeline_split, self._timeline_preview_split):
             split.splitterMoved.connect(self._sync_transport_layout)
         self.setCentralWidget(root)

@@ -290,7 +290,7 @@ class BottomTransportBar(QWidget):
         self._sync_transport_geometry()
 
     def _sync_transport_geometry(self) -> None:
-        """Center Play/Pause/Stop; align overview *track* (no time gutters) to Play…X."""
+        """Center overview track under anchor; align track (no time gutters) to Play…X."""
         self._ab_group.adjustSize()
         self._right_rail.adjustSize()
         ab_w = max(0, self._ab_group.sizeHint().width())
@@ -301,20 +301,50 @@ class BottomTransportBar(QWidget):
             self._balance.setFixedWidth(trail)
 
         base_rail = max(0, self._right_rail.sizeHint().width())
-        delta = 0
         anchor_c = self._anchor_center_x(self._center_anchor)
+
+        # Measure where the Play…Clear span sits with symmetric side rails.
+        if self._left_rail.width() != base_rail:
+            self._left_rail.setFixedWidth(base_rail)
+        if self._right_rail.width() != base_rail:
+            self._right_rail.setFixedWidth(base_rail)
+        lay = self.layout()
+        if lay is not None:
+            lay.activate()
+
+        play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
+        clear_r = self.loop_clear_button.mapTo(
+            self, self.loop_clear_button.rect().topRight()
+        ).x()
+        cluster_bias = (play_l + clear_r) / 2.0 - self.width() / 2.0
+
+        delta = 0
         if anchor_c is not None:
-            delta = int(round(anchor_c - self.width() / 2.0))
+            delta = int(round(anchor_c - self.width() / 2.0 - cluster_bias))
         left_w = max(0, base_rail + delta)
         right_w = max(0, base_rail - delta)
         if self._left_rail.width() != left_w:
             self._left_rail.setFixedWidth(left_w)
         if self._right_rail.width() != right_w:
             self._right_rail.setFixedWidth(right_w)
-
-        lay = self.layout()
         if lay is not None:
             lay.activate()
+
+        if anchor_c is not None:
+            play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
+            clear_r = self.loop_clear_button.mapTo(
+                self, self.loop_clear_button.rect().topRight()
+            ).x()
+            err = anchor_c - (play_l + clear_r) / 2.0
+            if abs(err) >= 1.0:
+                delta2 = int(round(err))
+                left_w = max(0, left_w + delta2)
+                right_w = max(0, right_w - delta2)
+                if self._left_rail.width() != left_w:
+                    self._left_rail.setFixedWidth(left_w)
+                if self._right_rail.width() != right_w:
+                    self._right_rail.setFixedWidth(right_w)
+                lay.activate()
 
         # mapTo requires an ancestor — project through this widget.
         play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
@@ -335,7 +365,13 @@ class BottomTransportBar(QWidget):
             return None
         if not widget.isVisibleTo(self):
             return None
-        return float(self.mapFromGlobal(widget.mapToGlobal(widget.rect().center())).x())
+        anchor_point = None
+        anchor_fn = getattr(widget, "transport_anchor_global_point", None)
+        if callable(anchor_fn):
+            anchor_point = anchor_fn()
+        if anchor_point is None:
+            anchor_point = widget.mapToGlobal(widget.rect().center())
+        return float(self.mapFromGlobal(anchor_point).x())
 
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")
