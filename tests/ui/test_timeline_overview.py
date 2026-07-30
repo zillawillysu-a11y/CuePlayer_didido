@@ -20,7 +20,7 @@ def app() -> QApplication:
 
 def test_overview_seek_emits(app: QApplication) -> None:
     bar = TimelineOverviewBar()
-    bar.resize(400, 18)
+    bar.resize(400, 22)
     bar.set_state(duration=100.0, position=10.0, view_start=0.0, view_end=20.0)
     got: list[float] = []
     bar.seek_requested.connect(got.append)
@@ -29,13 +29,13 @@ def test_overview_seek_emits(app: QApplication) -> None:
     from PySide6.QtGui import QMouseEvent
 
     # Track sits between label gutters; inset matches paint/seek geometry.
-    gutter, inset = 44, 6
+    gutter, inset = TimelineOverviewBar._LABEL_GUTTER, 6
     track_left = gutter + inset
     track_w = 400 - gutter * 2 - inset * 2
     mid_x = track_left + track_w * 0.5
     press = QMouseEvent(
         QEvent.Type.MouseButtonPress,
-        QPointF(mid_x, 9),
+        QPointF(mid_x, 11),
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
