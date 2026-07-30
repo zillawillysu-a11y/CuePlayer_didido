@@ -1,0 +1,104 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Build a Windows CuePlayer folder (+ optional Setup.exe) for employee installs.
+
+.DESCRIPTION
+  Run this on a Windows machine with the same Python you use for CuePlayer.
+  Cloud / Linux agents cannot produce a usable Windows audio/video build.
+
+  Output:
+    dist\CuePlayer\CuePlayer.exe     — portable folder (zip this for quick share)
+    dist\CuePlayer-Setup-*.exe       — Inno Setup installer (if iscc is installed)
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+#>
+[CmdletBinding()]
+param(
+    [switch]$SkipZip,
+    [switch]$SkipInno,
+    [string]$Python = ""
+)
+
+$ErrorActionPreference = "Stop"
+$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+Set-Location $Root
+
+function Find-Python {
+    param([string]$Preferred)
+    if ($Preferred -and (Test-Path $Preferred)) { return $Preferred }
+    $venv = Join-Path $Root ".venv\Scripts\python.exe"
+    if (Test-Path $venv) { return $venv }
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    throw "Python not found. Create .venv or pass -Python path."
+}
+
+$Py = Find-Python -Preferred $Python
+Write-Host "Using Python: $Py"
+& $Py -c "import sys; print(sys.version); assert sys.platform == 'win32', 'Build CuePlayer Windows packages on Windows only'"
+
+Write-Host "Installing / refreshing runtime + PyInstaller…"
+& $Py -m pip install -U pip setuptools wheel
+& $Py -m pip install -e ".[dev,midi]"
+& $Py -m pip install -U "pyinstaller>=6.3"
+
+$Spec = Join-Path $Root "packaging\cueplayer.spec"
+$Dist = Join-Path $Root "dist"
+$Build = Join-Path $Root "build"
+
+if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
+if (Test-Path $Build) { Remove-Item -Recurse -Force $Build }
+
+Write-Host "Running PyInstaller (onedir)…"
+& $Py -m PyInstaller --noconfirm --clean $Spec
+
+$AppDir = Join-Path $Dist "CuePlayer"
+$Exe = Join-Path $AppDir "CuePlayer.exe"
+if (-not (Test-Path $Exe)) {
+    throw "Build failed: missing $Exe"
+}
+Write-Host "OK: $Exe"
+
+$Version = & $Py -c "from cueplayer import __version__; print(__version__)"
+$Stamp = Get-Date -Format "yyyyMMdd"
+$ArtifactBase = "CuePlayer-$Version-$Stamp-win64"
+
+if (-not $SkipZip) {
+    $Zip = Join-Path $Dist "$ArtifactBase.zip"
+    if (Test-Path $Zip) { Remove-Item -Force $Zip }
+    Write-Host "Zipping portable folder → $Zip"
+    Compress-Archive -Path $AppDir -DestinationPath $Zip -CompressionLevel Optimal
+    Write-Host "OK: $Zip"
+}
+
+if (-not $SkipInno) {
+    $Iscc = $null
+    foreach ($candidate in @(
+            "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+        )) {
+        if (Test-Path $candidate) { $Iscc = $candidate; break }
+    }
+    if ($null -eq $Iscc) {
+        Write-Host "Inno Setup 6 not found — skipping Setup.exe (zip is enough for internal test)."
+        Write-Host "Install from https://jrsoftware.org/isinfo.php then re-run without -SkipInno."
+    }
+    else {
+        $Iss = Join-Path $Root "packaging\CuePlayer.iss"
+        Write-Host "Building installer with $Iscc …"
+        & $Iscc "/DMyAppVersion=$Version" $Iss
+        $Setup = Get-ChildItem $Dist -Filter "CuePlayer-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($Setup) {
+            Write-Host "OK: $($Setup.FullName)"
+        }
+    }
+}
+
+Write-Host ""
+Write-Host "=== Share with employees ==="
+Write-Host "Quick:   send dist\$ArtifactBase.zip  → unzip → run CuePlayer.exe"
+Write-Host "Install: send dist\CuePlayer-Setup-$Version.exe (if built)"
+Write-Host ""

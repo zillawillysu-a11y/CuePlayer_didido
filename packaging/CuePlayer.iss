@@ -1,0 +1,52 @@
+; Inno Setup 6 script — builds CuePlayer-Setup-<version>.exe
+; Requires: packaging\build_windows.ps1 already produced dist\CuePlayer\
+; Compile:  iscc /DMyAppVersion=0.1.0 packaging\CuePlayer.iss
+
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
+
+#define MyAppName "CuePlayer"
+#define MyAppPublisher "CuePlayer"
+#define MyAppExeName "CuePlayer.exe"
+#define MyAppURL "https://github.com/zillawillysu-a11y/CuePlayer_didido"
+
+[Setup]
+AppId={{A8F3C2E1-5B7D-4E9A-9C1F-2D6B8A0E4F31}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+OutputDir=..\dist
+OutputBaseFilename=CuePlayer-Setup-{#MyAppVersion}
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\{#MyAppExeName}
+; Optional: place packaging\cueplayer.ico next to this script
+; SetupIconFile=cueplayer.ico
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+; Entire PyInstaller onedir folder
+Source: "..\dist\CuePlayer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
