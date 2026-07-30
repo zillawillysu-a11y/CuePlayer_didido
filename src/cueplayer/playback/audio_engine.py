@@ -51,7 +51,7 @@ from cueplayer.playback.routing_parse import (
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.midi_cue_notes import MidiCueNotes
-from cueplayer.playback.resample import resample_hold_segment, resample_linear
+from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
@@ -121,6 +121,7 @@ class AudioEngine(QObject):
         self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
         self._detected_ltc_channel: int | None = None
         self._ltc_detect_ran = False
+        self._ltc_detect_inflight = False
         self._cached_music_indices: tuple[int, int] = (0, 1)
         self._cached_file_ltc_idx: int | None = None
         self._song_start_tc = "01:00:00:00"
@@ -235,7 +236,12 @@ class AudioEngine(QObject):
         return str(self._audio_settings.ltc_source)
 
     def _song_file_ltc_channel(self) -> int | None:
-        """Per-song override: which file channel feeds the project LTC bus."""
+        """Per-song override: which file channel feeds the project LTC bus.
+
+        ``auto`` uses only the *already finished* async detect result — never
+        runs ``detect_ltc_channel`` inline (that scan can stall PortAudio /
+        the UI for seconds even on pure stereo music with no LTC).
+        """
         song = self._song
         if song is None:
             return None
@@ -246,10 +252,10 @@ class AudioEngine(QObject):
             return 0
         if side == "right":
             return 1
-        # auto — prefer live detection, else run detect once
-        if self._detected_ltc_channel is not None:
+        # auto — cached detect only
+        if self._ltc_detect_ran and self._detected_ltc_channel is not None:
             return int(self._detected_ltc_channel)
-        return self._autodetect_ltc_channel()
+        return None
 
     def _song_uses_file_ltc(self) -> bool:
         return self._song_file_ltc_channel() is not None
@@ -264,33 +270,40 @@ class AudioEngine(QObject):
         )
 
     def _autodetect_ltc_channel(self) -> int | None:
+        """Return cached auto-detect result; kick async scan if not started.
+
+        Must never call ``detect_ltc_channel`` synchronously — that path used
+        to run from routing cache / PortAudio callback and freeze mid-play
+        (including songs with no LTC stripe).
+        """
         if self._ltc_detect_ran:
             return self._detected_ltc_channel
-        self._ltc_detect_ran = True
         buf = self._buffer
-        if buf is not None and buf.samples.ndim == 2 and buf.samples.shape[1] >= 2:
-            self._detected_ltc_channel = detect_ltc_channel(
-                buf.samples, int(buf.sample_rate)
-            )
-        else:
-            self._detected_ltc_channel = None
-        return self._detected_ltc_channel
+        if buf is not None and buf.channels >= 2:
+            self._refresh_ltc_detection()
+        return None
 
     def _is_ltc_file_channel(self, channel: int) -> bool:
-        ch = self._file_ltc_channel()
-        if ch is not None and ch == channel:
-            return True
-        eff = self._effective_ltc_source_channel()
-        return eff is not None and eff == channel
+        # Realtime-safe: only the precomputed cache (never live detect).
+        cached = self._cached_file_ltc_idx
+        return cached is not None and int(cached) == int(channel)
 
     def _file_ltc_channel(self) -> int | None:
         """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
-        song_ch = self._song_file_ltc_channel()
-        if song_ch is not None:
-            return song_ch if self._audio_settings.ltc_enabled else None
         s = self._audio_settings
         uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
         uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
+        song = self._song
+        side = coerce_file_ltc_side(
+            getattr(song, "file_ltc_side", "auto") if song is not None else "auto"
+        )
+        if side in ("left", "right"):
+            if not (s.ltc_enabled or uses_ltc_leg):
+                return None
+            return 0 if side == "left" else 1
+        if side == "off":
+            return None
+        # auto / unset: only when LTC output or an LTC leg is actually used
         if not uses_ltc_leg and not uses_file_bus:
             return None
         return self._resolved_file_ltc_channel(require_settings=True)
@@ -317,7 +330,7 @@ class AudioEngine(QObject):
         if mode == "source_right":
             return 1
         if mode == "auto":
-            if self._detected_ltc_channel is not None:
+            if self._ltc_detect_ran:
                 return self._detected_ltc_channel
             return self._autodetect_ltc_channel()
         return None
@@ -410,8 +423,7 @@ class AudioEngine(QObject):
         if not strip_ltc:
             return 0, 1
         ltc_ch = self._resolved_file_ltc_channel()
-        if ltc_ch is None and strip_ltc and self._audio_settings.ltc_source != "generator":
-            ltc_ch = self._autodetect_ltc_channel()
+        # Never sync-detect here — wait for async `_refresh_ltc_detection`.
         if ltc_ch is not None:
             music_chs = [i for i in range(ch_count) if i != ltc_ch]
             if len(music_chs) >= 2:
@@ -580,7 +592,9 @@ class AudioEngine(QObject):
         # When switching away from generator source, allow auto-detect to re-run.
         if self._audio_settings.ltc_source != "generator":
             self._ltc_detect_ran = False
+            self._ltc_detect_inflight = False
 
+        self._refresh_ltc_detection()
         self._refresh_source_routing_cache()
 
         mtc_err = self._mtc.configure(
@@ -740,27 +754,39 @@ class AudioEngine(QObject):
 
     def set_buffer(self, buffer: AudioBuffer | None) -> None:
         was_playing = self._playing
-        if was_playing:
+        # Always tear down PortAudio when replacing the PCM buffer — leaving
+        # a paused stream open races the callback with buffer identity swaps
+        # (audio-only song switch freezes / hard exits).
+        if was_playing or self._stream is not None:
             self.stop()
+            self._stop_stream()
         else:
-            self._position_frame = 0
+            with self._lock:
+                self._position_frame = 0
             self.clear_calibration_clicks()
         self._buffer = buffer
         # Always clear stripe detection — a new buffer must not inherit the
         # previous song's Left/Right LTC result (setlist badge + routing).
         self._detected_ltc_channel = None
         self._ltc_detect_ran = False
+        self._ltc_detect_inflight = False
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
-        self._position_frame = 0
+        with self._lock:
+            self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
-        if buffer is not None and int(buffer.sample_rate) == int(self._playback_rate):
-            self._playback_samples = buffer.samples
-            self._playback_cache_key = (id(buffer), int(buffer.sample_rate), int(self._playback_rate))
-        else:
-            self._playback_samples = None
-            self._playback_cache_key = None
+        with self._lock:
+            if buffer is not None and int(buffer.sample_rate) == int(self._playback_rate):
+                self._playback_samples = buffer.samples
+                self._playback_cache_key = (
+                    id(buffer),
+                    int(buffer.sample_rate),
+                    int(self._playback_rate),
+                )
+            else:
+                self._playback_samples = None
+                self._playback_cache_key = None
         self.position_changed.emit(0.0)
         self._resume_play_after_buffer = was_playing and buffer is not None
         self._buffer_setup_token += 1
@@ -945,6 +971,17 @@ class AudioEngine(QObject):
         self.clear_calibration_clicks()
         self.pause()
         self.seek(0.0)
+
+    def quiesce_output(self) -> None:
+        """Stop transport and tear down PortAudio before swapping song media.
+
+        ``pause`` / ``stop`` leave the stream callback running so resume is
+        low-latency. Song switches must close it first — otherwise video
+        decoder teardown and buffer swaps race the audio thread and can
+        hard-crash mid-play or while changing songs.
+        """
+        self.stop()
+        self._stop_stream()
 
     def toggle(self) -> None:
         if self._playing or (self._scrubbing and self._resume_after_scrub):
@@ -1396,23 +1433,55 @@ class AudioEngine(QObject):
         buf = self._buffer
         if buf is None or buf.channels < 2:
             self._detected_ltc_channel = None
-            self._ltc_detect_ran = False
+            self._ltc_detect_ran = True
+            self._ltc_detect_inflight = False
             self._refresh_source_routing_cache()
+            return
+        s = self._audio_settings
+        uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
+        uses_file_bus = bool(s.ltc_enabled and s.ltc_source in ("auto", "source_left", "source_right"))
+        song = self._song
+        side = coerce_file_ltc_side(
+            getattr(song, "file_ltc_side", "auto") if song is not None else "auto"
+        )
+        if side in ("left", "right"):
+            self._detected_ltc_channel = 0 if side == "left" else 1
+            self._ltc_detect_ran = True
+            self._ltc_detect_inflight = False
+            self._refresh_source_routing_cache()
+            return
+        if side == "off" or (not uses_ltc_leg and not uses_file_bus):
+            # Pure music playback — do not burn CPU scanning for a stripe that
+            # is not routed. Setlist badges still use MainWindow's idle detect.
+            self._detected_ltc_channel = None
+            self._ltc_detect_ran = True
+            self._ltc_detect_inflight = False
+            self._refresh_source_routing_cache()
+            return
+        if s.ltc_source in ("source_left", "source_right"):
+            # Explicit project setting — no scan needed.
+            self._detected_ltc_channel = 0 if s.ltc_source == "source_left" else 1
+            self._ltc_detect_ran = True
+            self._ltc_detect_inflight = False
+            self._refresh_source_routing_cache()
+            return
+        if self._ltc_detect_inflight or self._ltc_detect_ran:
             return
         samples = buf.samples
         sample_rate = int(buf.sample_rate)
         buf_id = id(buf)
+        self._ltc_detect_inflight = True
 
         def _run() -> tuple[int, int | None]:
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
             return buf_id, detect_ltc_channel(samples, sample_rate)
 
         future = self._ltc_detect_executor.submit(_run)
 
-        def _done(fut) -> None:
-            try:
-                loaded_id, detected = fut.result()
-            except Exception:
-                return
+        def _apply(loaded_id: int, detected: int | None) -> None:
+            self._ltc_detect_inflight = False
             if self._buffer is None or id(self._buffer) != loaded_id:
                 return
             self._detected_ltc_channel = detected
@@ -1420,12 +1489,24 @@ class AudioEngine(QObject):
             self._refresh_source_routing_cache()
             self.timecode_status_changed.emit()
 
+        def _done(fut) -> None:
+            try:
+                loaded_id, detected = fut.result()
+            except Exception:
+                QTimer.singleShot(0, lambda: _apply(buf_id, None))
+                return
+            # Marshal onto the Qt thread — executor callbacks are not UI-safe.
+            QTimer.singleShot(0, lambda: _apply(loaded_id, detected))
+
         future.add_done_callback(_done)
 
     def _refresh_source_routing_cache(self) -> None:
         """Precompute routing indices so the realtime callback stays O(chunk)."""
-        self._cached_music_indices = self._music_source_indices()
-        self._cached_file_ltc_idx = self._file_ltc_channel()
+        indices = self._music_source_indices()
+        ltc_idx = self._file_ltc_channel()
+        with self._lock:
+            self._cached_music_indices = indices
+            self._cached_file_ltc_idx = ltc_idx
 
     def _playback_end_frame(self) -> int:
         """Timeline length in playback-rate frames (resampled buffer when present)."""
@@ -1451,20 +1532,24 @@ class AudioEngine(QObject):
         """
         buf = self._buffer
         if buf is None:
-            self._playback_samples = None
-            self._playback_cache_key = None
+            with self._lock:
+                self._playback_samples = None
+                self._playback_cache_key = None
             self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
-        if self._playback_cache_key == key and self._playback_samples is not None:
-            return
+        with self._lock:
+            if self._playback_cache_key == key and self._playback_samples is not None:
+                return
         if int(buf.sample_rate) == int(self._playback_rate):
-            self._playback_samples = buf.samples
-            self._playback_cache_key = key
+            with self._lock:
+                self._playback_samples = buf.samples
+                self._playback_cache_key = key
             self._playback_resample_future = None
             return
-        self._playback_cache_key = key
-        self._playback_samples = None
+        with self._lock:
+            self._playback_cache_key = key
+            self._playback_samples = None
         native = buf.samples
         src_rate = float(buf.sample_rate)
         dst_rate = float(self._playback_rate)
@@ -1536,21 +1621,20 @@ class AudioEngine(QObject):
     def _source_channel_chunk(self, channel: int, start: int, frames: int) -> np.ndarray:
         out = np.zeros(frames, dtype=np.float32)
         buf = self._buffer
-        if self._is_ltc_file_channel(channel) and buf is not None:
+        # File-LTC at native rate can be sliced directly. Rate mismatches must
+        # use pre-resampled ``_playback_samples`` — never ``resample_hold_segment``
+        # inside the PortAudio callback (causes mid-play underruns / freezes).
+        if (
+            self._is_ltc_file_channel(channel)
+            and buf is not None
+            and int(buf.sample_rate) == int(self._playback_rate)
+        ):
             native = buf.samples
             if native.ndim == 1:
                 mono = native
             else:
                 idx = min(max(0, int(channel)), int(native.shape[1]) - 1)
                 mono = native[:, idx]
-            if int(buf.sample_rate) != int(self._playback_rate):
-                return resample_hold_segment(
-                    mono,
-                    float(buf.sample_rate),
-                    float(self._playback_rate),
-                    start,
-                    frames,
-                )
             end = min(start + frames, mono.shape[0])
             if end > start:
                 out[: end - start] = mono[start:end]
