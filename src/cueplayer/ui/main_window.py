@@ -907,6 +907,10 @@ class MainWindow(QMainWindow):
         self._ltc_idle_timer.setSingleShot(True)
         self._ltc_idle_timer.setInterval(2000)
         self._ltc_idle_timer.timeout.connect(self._schedule_idle_ltc_detect)
+        self._cue_list_refresh_timer = QTimer(self)
+        self._cue_list_refresh_timer.setSingleShot(True)
+        self._cue_list_refresh_timer.setInterval(150)
+        self._cue_list_refresh_timer.timeout.connect(self._flush_cue_list_refresh)
         self._audio_ltc_inflight: dict[tuple[str, int, int], object] = {}
         self._timeline_ltc_exclude: int | None = None
         self._audio_inflight: dict[tuple[str, int, int], object] = {}
@@ -1206,6 +1210,8 @@ class MainWindow(QMainWindow):
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
         self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
         self.timeline.ltc_track_visibility_changed.connect(self._on_ltc_track_visibility_changed)
+        self.timeline.wave_gain_line_visibility_changed.connect(self._on_wave_gain_line_visibility_changed)
+        self.timeline.ltc_gain_line_visibility_changed.connect(self._on_ltc_gain_line_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
         self.timeline.audio_gain_changed.connect(self._on_audio_gain_changed)
@@ -4397,20 +4403,21 @@ class MainWindow(QMainWindow):
             self._delete_marks(ids)
 
     def _on_marks_changed(self) -> None:
-        self.timeline.invalidate_static_layers()
         self.timeline.update()
-        self.monitor.refresh_list()
-        self.monitor.set_position(self.engine.position, self.engine.duration)
+        self._schedule_cue_list_refresh()
         self._refresh_status()
 
-    def _refresh_marks_ui(self) -> None:
-        # CRITICAL: while playing, the timeline paints from a cached backdrop.
-        # Invalidate it so a new Mark appears on the very next paint — never
-        # wait for pause / auto-scroll to clear the cache.
-        self.timeline.invalidate_static_layers()
-        self.timeline.update()
+    def _schedule_cue_list_refresh(self) -> None:
+        self._cue_list_refresh_timer.start()
+
+    def _flush_cue_list_refresh(self) -> None:
         self.monitor.refresh_list()
         self.monitor.set_position(self.engine.position, self.engine.duration)
+
+    def _refresh_marks_ui(self) -> None:
+        # Marks paint live — avoid invalidating the play/scrub backdrop per mark.
+        self.timeline.update()
+        self._schedule_cue_list_refresh()
         self._refresh_status()
 
     def _on_marks_moved(self, moved: object) -> None:
@@ -4702,6 +4709,8 @@ class MainWindow(QMainWindow):
         )
         self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
         self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))
+        self.timeline.set_show_wave_gain_line(bool(getattr(p, "show_wave_gain_line", False)), emit=False)
+        self.timeline.set_show_ltc_gain_line(bool(getattr(p, "show_ltc_gain_line", False)), emit=False)
         if hasattr(self, "monitor"):
             self._sync_output_timecode_clock_ui()
 
@@ -5947,6 +5956,14 @@ class MainWindow(QMainWindow):
     def _on_ltc_track_visibility_changed(self, visible: bool) -> None:
         # Bound to the Video eye — project-global sync.
         self.project.set_show_video_track(bool(visible))
+
+    def _on_wave_gain_line_visibility_changed(self, visible: bool) -> None:
+        self.project.show_wave_gain_line = bool(visible)
+        self._mark_dirty()
+
+    def _on_ltc_gain_line_visibility_changed(self, visible: bool) -> None:
+        self.project.show_ltc_gain_line = bool(visible)
+        self._mark_dirty()
 
     def _on_show_video_track_toggled(self, checked: bool) -> None:
         self.project.set_show_video_track(bool(checked))

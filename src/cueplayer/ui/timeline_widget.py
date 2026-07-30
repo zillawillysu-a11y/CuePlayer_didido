@@ -78,6 +78,8 @@ class TimelineWidget(QWidget):
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
     video_track_visibility_changed = Signal(bool)  # show_video_track
+    wave_gain_line_visibility_changed = Signal(bool)
+    ltc_gain_line_visibility_changed = Signal(bool)
     ltc_track_visibility_changed = Signal(bool)  # show_ltc_track
     content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
     view_changed = Signal()  # scroll / zoom / playhead — overview navigator should refresh
@@ -607,13 +609,11 @@ class TimelineWidget(QWidget):
         self._song = song
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
-        self._show_wave_gain_line = False
-        self._show_ltc_gain_line = False
         self._dragging_audio_gain = False
         self._audio_gain_zone = None
         self._audio_gain_drag_bounds = None
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
-        # Video + LTC eye is project-global — do not reset from per-song flags.
+        # Wave/LTC gain line visibility is project-global — do not reset per song.
         if song is not None:
             song.show_video_track = self._show_video_track
             song.show_ltc_track = self._show_video_track
@@ -769,6 +769,24 @@ class TimelineWidget(QWidget):
     def set_show_ltc_track(self, visible: bool, *, emit: bool = True) -> None:
         """Alias — LTC is bound to the Video eye."""
         self.set_show_video_track(visible, emit=emit)
+
+    def set_show_wave_gain_line(self, visible: bool, *, emit: bool = True) -> None:
+        visible = bool(visible)
+        if visible == self._show_wave_gain_line:
+            return
+        self._show_wave_gain_line = visible
+        self.update()
+        if emit:
+            self.wave_gain_line_visibility_changed.emit(visible)
+
+    def set_show_ltc_gain_line(self, visible: bool, *, emit: bool = True) -> None:
+        visible = bool(visible)
+        if visible == self._show_ltc_gain_line:
+            return
+        self._show_ltc_gain_line = visible
+        self.update()
+        if emit:
+            self.ltc_gain_line_visibility_changed.emit(visible)
 
     def set_ltc_audio(
         self,
@@ -1831,11 +1849,10 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_overscan = 0
 
     def invalidate_static_layers(self) -> None:
-        """Drop the play/scrub pixmap cache so marks/clips appear immediately.
+        """Drop the play/scrub pixmap cache (waveform/video/lanes).
 
-        While playing, paint blits ``_scrub_backdrop`` (static layers + marks)
-        and only redraws the playhead. Mark/clip mutations must clear that
-        cache — otherwise the new mark stays invisible until pause.
+        Marks and gain overlays paint live in ``paintEvent`` — they do not need
+        a backdrop rebuild when only marks change.
         """
         self._invalidate_scrub_backdrop()
 
@@ -1955,7 +1972,7 @@ class TimelineWidget(QWidget):
         self._paint_ltc_lane(painter)
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
-        self._paint_marks(painter, start_y=tracks_top)
+        # Marks paint live in paintEvent (play/scrub + edit paths).
         # Loop region is painted live in paintEvent (play/scrub path) so A/B
         # taps mid-playback stay visible without rebuilding the backdrop.
         self._paint_wave_splitter(painter, wave_bottom)
@@ -2702,7 +2719,7 @@ class TimelineWidget(QWidget):
         if chosen is None:
             return
         if chosen is toggle:
-            self._show_wave_gain_line = not self._show_wave_gain_line
+            self.set_show_wave_gain_line(not self._show_wave_gain_line)
             self._invalidate_scrub_backdrop()
             self.update()
         elif reset is not None and chosen is reset and self._song is not None:
@@ -2725,7 +2742,7 @@ class TimelineWidget(QWidget):
         if chosen is None:
             return
         if chosen is toggle:
-            self._show_ltc_gain_line = not self._show_ltc_gain_line
+            self.set_show_ltc_gain_line(not self._show_ltc_gain_line)
             self._invalidate_scrub_backdrop()
             self.update()
         elif reset is not None and chosen is reset and self._song is not None:
@@ -2943,7 +2960,7 @@ class TimelineWidget(QWidget):
         # tick. Audio still advances on the PortAudio thread regardless.
         if self._can_use_static_backdrop():
             if self._blit_scrub_backdrop(painter):
-                self._paint_live_mark_overlays(painter)
+                self._paint_marks_live(painter)
                 self._paint_loop_region(painter)
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
@@ -2952,6 +2969,7 @@ class TimelineWidget(QWidget):
 
         painter.fillRect(self.rect(), QColor(BG_APP))
         self._paint_static_layers(painter)
+        self._paint_marks_live(painter)
         self._paint_playhead(painter)
         self._paint_loop_region(painter)
         self._paint_audio_gain_overlays(painter)
@@ -3197,21 +3215,39 @@ class TimelineWidget(QWidget):
             bottom += self._mark_lane_split_h
         return bottom
 
-    def _paint_live_mark_overlays(self, painter: QPainter) -> None:
-        """Repaint mark headers + lanes on top of the play/scrub backdrop.
+    def _paint_marks_live(self, painter: QPainter) -> None:
+        """Repaint marks on top of the static backdrop (or full paint path).
 
-        The cached backdrop is baked without interactive state (hover, cue
-        selection). Without this pass, mark shapes and header hover only update
-        after pause when the full paint path runs.
+        Marks are never baked into the play/scrub cache — rebuilding that cache
+        on every shortcut mark was freezing playback on songs with many cues.
         """
-        if self._song is None or not self._show_mark_tracks:
+        if self._song is None:
             return
         tracks_top = self._tracks_top_y()
+        hw = int(self._header_width)
+        w = int(self.width())
+
+        if tracks_top > self._ruler_height:
+            painter.save()
+            painter.setClipRect(
+                hw,
+                self._ruler_height,
+                max(0, w - hw),
+                tracks_top - self._ruler_height,
+            )
+            self._paint_marks(
+                painter,
+                start_y=tracks_top,
+                waveform_lines=True,
+                lane_shapes=False,
+            )
+            painter.restore()
+
+        if not self._show_mark_tracks:
+            return
         bottom = self._marks_overlay_bottom_y()
         if bottom <= tracks_top:
             return
-        hw = int(self._header_width)
-        w = int(self.width())
         band_h = bottom - tracks_top
 
         painter.save()
@@ -3223,9 +3259,12 @@ class TimelineWidget(QWidget):
         painter.save()
         painter.setClipRect(hw, tracks_top, max(0, w - hw), band_h)
         self._paint_lanes(painter, start_y=tracks_top)
-        # Backdrop already baked ruler→waveform mark lines; redrawing them here
-        # clips to a 1px sliver at tracks_top during play.
-        self._paint_marks(painter, start_y=tracks_top, overlay_lines=False)
+        self._paint_marks(
+            painter,
+            start_y=tracks_top,
+            waveform_lines=False,
+            lane_shapes=True,
+        )
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:
@@ -3571,7 +3610,8 @@ class TimelineWidget(QWidget):
         painter: QPainter,
         *,
         start_y: int,
-        overlay_lines: bool = True,
+        waveform_lines: bool = True,
+        lane_shapes: bool = True,
     ) -> None:
         if self._song is None:
             return
@@ -3591,7 +3631,7 @@ class TimelineWidget(QWidget):
             # Waveform overlay line — use mark color (brighter when selected / dragging).
             dragging = self._dragging_marks and mark.id in self._drag_ids
             hovered = mark.id == self._hover_mark_id
-            if overlay_lines:
+            if waveform_lines:
                 if hovered and not dragging:
                     # Soft white halo so you know which mark the cursor is on.
                     painter.setPen(QPen(QColor(255, 255, 255, 120), max(3.0, self._mark_line_width + 2.5)))
@@ -3604,6 +3644,8 @@ class TimelineWidget(QWidget):
                     painter.setPen(self._mark_overlay_pen(color))
                 painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
 
+            if not lane_shapes:
+                continue
             y = lane_y.get(mark.lane_index)
             if y is None:
                 continue
