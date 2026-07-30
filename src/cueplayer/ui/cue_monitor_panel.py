@@ -130,8 +130,10 @@ def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
             return f"{lane_bit}\n-\n" + "\n".join(detail_lines)
         return lane_bit
 
+    # Cue ID hidden: keep the same Type / - / Note hierarchy so Note is not
+    # glued under the lane name.
     if note:
-        return f"{lane_bit}\n{note}"
+        return f"{lane_bit}\n-\n{note}"
     return lane_bit
 
 

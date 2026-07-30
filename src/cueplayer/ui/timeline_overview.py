@@ -27,6 +27,8 @@ class TimelineOverviewBar(QWidget):
         self._view_start = 0.0
         self._view_end = 1.0
         self._title = ""
+        self._loop_a: float | None = None
+        self._loop_b: float | None = None
         self._dragging = False
         self._hover = False
         self._bar_height = 36
@@ -68,6 +70,13 @@ class TimelineOverviewBar(QWidget):
         self._view_end = view_end
         if changed:
             self.update()
+
+    def set_loop(self, a: float | None, b: float | None) -> None:
+        if a == self._loop_a and b == self._loop_b:
+            return
+        self._loop_a = float(a) if a is not None else None
+        self._loop_b = float(b) if b is not None else None
+        self.update()
 
     def _track_rect(self):
         margin_x = 4
@@ -173,6 +182,23 @@ class TimelineOverviewBar(QWidget):
         win_w = max(3.0, x1 - x0)
         painter.setBrush(with_alpha("#ffffff", 16))
         painter.drawRoundedRect(int(x0), top + 2, int(win_w), height - 4, 4, 4)
+
+        # A / B loop markers (always visible on the overview strip).
+        for label, t, col in (
+            ("A", self._loop_a, QColor("#3dd68c")),
+            ("B", self._loop_b, QColor("#f0c14a")),
+        ):
+            if t is None:
+                continue
+            ax = x_on_track(min(max(0.0, float(t)), self._duration))
+            painter.setPen(QPen(col, 2))
+            painter.drawLine(QPointF(ax, top + 2), QPointF(ax, top + height - 2))
+            painter.setPen(col)
+            tiny = painter.font()
+            tiny.setPointSize(max(8, tiny.pointSize() - 2))
+            tiny.setBold(True)
+            painter.setFont(tiny)
+            painter.drawText(int(ax + 3), top + 12, label)
 
         # Playhead tick
         px = x_on_track(self._position)

@@ -283,6 +283,7 @@ class BottomTransportBar(QWidget):
         a_txt = format_time(a) if a is not None else "—"
         b_txt = format_time(b) if b is not None else "—"
         self.loop_label.setText(f"A {a_txt}  B {b_txt}")
+        self.overview.set_loop(a, b)
 
     def set_timecode_status(self, *, ltc: bool, mtc: bool) -> None:
         parts: list[str] = []

@@ -969,6 +969,9 @@ class TimelineWidget(QWidget):
         self._loop_a = a
         self._loop_b = b
         self._loop_enabled = enabled
+        # Loop markers are painted live on top of the play/scrub backdrop;
+        # still invalidate so a full rebuild picks them up when needed.
+        self._invalidate_scrub_backdrop()
         self.update()
 
     def apply_song_display_settings(self) -> None:
@@ -1525,7 +1528,8 @@ class TimelineWidget(QWidget):
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
         self._paint_marks(painter, start_y=tracks_top)
-        self._paint_loop_region(painter)
+        # Loop region is painted live in paintEvent (play/scrub path) so A/B
+        # taps mid-playback stay visible without rebuilding the backdrop.
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
         self._paint_selection_box(painter)
@@ -2328,12 +2332,16 @@ class TimelineWidget(QWidget):
                 self._rebuild_scrub_backdrop()
             if self._scrub_backdrop_valid():
                 painter.drawPixmap(0, 0, self._scrub_backdrop)
+                # A/B must redraw every frame during play — they are not on the
+                # static backdrop when the user taps A/B mid-playback.
+                self._paint_loop_region(painter)
                 self._paint_playhead(painter)
                 self._paint_drag_guides(painter)
                 return
 
         painter.fillRect(self.rect(), QColor(BG_APP))
         self._paint_static_layers(painter)
+        self._paint_loop_region(painter)
         self._paint_playhead(painter)
         self._paint_drag_guides(painter)
 
