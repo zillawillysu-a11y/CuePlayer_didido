@@ -2916,10 +2916,9 @@ class TimelineWidget(QWidget):
         # tick. Audio still advances on the PortAudio thread regardless.
         if self._can_use_static_backdrop():
             if self._blit_scrub_backdrop(painter):
-                self._paint_playhead(painter)
-                # A/B on top of playhead so markers stay obvious while playing.
-                self._paint_loop_region(painter)
                 self._paint_live_mark_overlays(painter)
+                self._paint_loop_region(painter)
+                self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
                 return
@@ -3195,7 +3194,9 @@ class TimelineWidget(QWidget):
         painter.save()
         painter.setClipRect(hw, tracks_top, max(0, w - hw), band_h)
         self._paint_lanes(painter, start_y=tracks_top)
-        self._paint_marks(painter, start_y=tracks_top)
+        # Backdrop already baked ruler→waveform mark lines; redrawing them here
+        # clips to a 1px sliver at tracks_top during play.
+        self._paint_marks(painter, start_y=tracks_top, overlay_lines=False)
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:
@@ -3526,7 +3527,13 @@ class TimelineWidget(QWidget):
             pen.setDashPattern([max(1.0, self._mark_dash_on), max(1.0, self._mark_dash_off)])
         return pen
 
-    def _paint_marks(self, painter: QPainter, *, start_y: int) -> None:
+    def _paint_marks(
+        self,
+        painter: QPainter,
+        *,
+        start_y: int,
+        overlay_lines: bool = True,
+    ) -> None:
         if self._song is None:
             return
         lane_y = {lane_index: y0 for lane_index, y0, _y1 in self._lane_rects()}
@@ -3545,17 +3552,18 @@ class TimelineWidget(QWidget):
             # Waveform overlay line — use mark color (brighter when selected / dragging).
             dragging = self._dragging_marks and mark.id in self._drag_ids
             hovered = mark.id == self._hover_mark_id
-            if hovered and not dragging:
-                # Soft white halo so you know which mark the cursor is on.
-                painter.setPen(QPen(QColor(255, 255, 255, 120), max(3.0, self._mark_line_width + 2.5)))
+            if overlay_lines:
+                if hovered and not dragging:
+                    # Soft white halo so you know which mark the cursor is on.
+                    painter.setPen(QPen(QColor(255, 255, 255, 120), max(3.0, self._mark_line_width + 2.5)))
+                    painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
+                if dragging:
+                    painter.setPen(QPen(color, max(2.0, self._mark_line_width + 1.5)))
+                elif selected:
+                    painter.setPen(QPen(color.lighter(130), max(2.0, self._mark_line_width + 1)))
+                else:
+                    painter.setPen(self._mark_overlay_pen(color))
                 painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
-            if dragging:
-                painter.setPen(QPen(color, max(2.0, self._mark_line_width + 1.5)))
-            elif selected:
-                painter.setPen(QPen(color.lighter(130), max(2.0, self._mark_line_width + 1)))
-            else:
-                painter.setPen(self._mark_overlay_pen(color))
-            painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
 
             y = lane_y.get(mark.lane_index)
             if y is None:
