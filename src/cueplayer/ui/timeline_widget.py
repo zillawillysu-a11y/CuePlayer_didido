@@ -85,6 +85,7 @@ class TimelineWidget(QWidget):
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
     audio_gain_changed = Signal(float)  # per-file gain in dB (-12..+12)
     lane_name_changed = Signal(int, str)  # lane_index, new name
+    mark_manager_requested = Signal()
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
 
@@ -2658,18 +2659,29 @@ class TimelineWidget(QWidget):
         if lane is None:
             return
         menu = QMenu(self)
-        if lane.visible:
-            toggle = menu.addAction(f"Hide “{lane.name}” track")
+        if lane.show_row_color:
+            color_act = menu.addAction("Hide track color")
         else:
-            toggle = menu.addAction(f"Show “{lane.name}” track")
-        rename = menu.addAction("Rename track…")
+            color_act = menu.addAction("Show track color")
+        manager_act = menu.addAction("Mark Manager…")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is toggle:
-            self.set_lane_visible(lane_index, not lane.visible)
-        elif chosen is rename:
-            self._rename_mark_lane_at(lane_index)
+        if chosen is color_act:
+            self._set_lane_row_color(lane_index, not lane.show_row_color)
+        elif chosen is manager_act:
+            self.mark_manager_requested.emit()
+
+    def _set_lane_row_color(self, lane_index: int, show: bool) -> None:
+        if self._song is None:
+            return
+        lane = self._song.lane_by_index(lane_index)
+        if lane is None or lane.show_row_color == show:
+            return
+        lane.show_row_color = show
+        self._invalidate_scrub_backdrop()
+        self.update()
+        self.marks_changed.emit()
 
     def _show_mark_tracks_area_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
@@ -3064,12 +3076,10 @@ class TimelineWidget(QWidget):
             for lane in self._song.mark_lanes:
                 if not lane.visible:
                     continue
-                accent = self._lane_accent_color(lane)
-                painter.fillRect(0, y, self._header_width, self._lane_height, self._lane_row_fill(lane, header=True))
-                painter.fillRect(0, y, 4, self._lane_height, accent)
+                painter.fillRect(0, y, self._header_width, self._lane_height, QColor("#111113"))
                 label = f"{lane.shortcut}  {lane.name}".strip()
                 elided = fm.elidedText(label, Qt.TextElideMode.ElideRight, text_w)
-                painter.setPen(accent)
+                painter.setPen(QColor("#a8a8b0"))
                 painter.drawText(
                     QRect(8, int(y), text_w, int(self._lane_height)),
                     int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
@@ -3379,17 +3389,14 @@ class TimelineWidget(QWidget):
         for lane in self._song.mark_lanes:
             if not lane.visible:
                 continue
-            accent = self._lane_accent_color(lane)
-            painter.fillRect(
-                self._header_width,
-                y,
-                right,
-                self._lane_height,
-                self._lane_row_fill(lane, header=False),
-            )
-            painter.fillRect(self._header_width, y, 3, self._lane_height, accent)
-            painter.setPen(QColor("#27272a"))
-            painter.drawLine(0, y + self._lane_height - 1, right, y + self._lane_height - 1)
+            if lane.show_row_color:
+                painter.fillRect(
+                    self._header_width,
+                    y,
+                    right,
+                    self._lane_height,
+                    self._lane_row_fill(lane, header=False),
+                )
             y += self._lane_height
 
     def _mark_overlay_pen(self, color: QColor) -> QPen:

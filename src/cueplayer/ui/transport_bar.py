@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from cueplayer.ui.icon_button import IconButton
-from cueplayer.ui.theme import BG_APP, SLIDER_QSS, TEXT, TEXT_MUTED
+from cueplayer.ui.theme import BG_APP, SLIDER_QSS, TEXT_MUTED
 from cueplayer.ui.timeline_overview import TimelineOverviewBar
 
 

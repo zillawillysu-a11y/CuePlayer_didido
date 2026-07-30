@@ -105,6 +105,8 @@ class MarkLane:
     # 1–127 overrides the default note; 0 = auto from Main/Button base + lane index.
     midi_note: int = 0
     marker_shape: MarkerShape = "circle"
+    # Tinted row in the timeline (right of the header); header stays neutral.
+    show_row_color: bool = True
 
 
 @dataclass

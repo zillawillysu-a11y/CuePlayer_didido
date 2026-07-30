@@ -526,6 +526,7 @@ def project_to_dict(
                         "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
                         "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                         "marker_shape": lane.marker_shape,
+                        "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
                     for lane in song.mark_lanes
                 ],
@@ -633,6 +634,7 @@ def project_from_dict(
                     midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
                     midi_note=int(lane.get("midi_note", 0) or 0),
                     marker_shape=shape,
+                    show_row_color=bool(lane.get("show_row_color", True)),
                 )
             )
         marks = [

@@ -460,6 +460,7 @@ class MarkManagerDialog(QDialog):
                     midi_note_enabled=midi_box.isChecked(),
                     midi_note=midi_note,
                     marker_shape=shape,  # type: ignore[arg-type]
+                    show_row_color=previous.show_row_color if previous else True,
                 )
             )
         return sorted(draft, key=lambda lane: lane.index)
