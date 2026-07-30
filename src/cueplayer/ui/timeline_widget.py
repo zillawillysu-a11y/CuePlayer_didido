@@ -154,6 +154,7 @@ class TimelineWidget(QWidget):
         self._wave_split_hover = False
         self._video_lane_split_hover = False
         self._mark_lane_split_hover = False
+        self._show_mark_lane_resize_bar = True
         self._show_wave_gain_line = False
         self._show_ltc_gain_line = False
         self._dragging_audio_gain = False
@@ -765,7 +766,7 @@ class TimelineWidget(QWidget):
             return 0
         n = self._visible_lane_count()
         h = n * self._lane_height
-        if n > 0:
+        if n > 0 and self._show_mark_lane_resize_bar:
             h += self._mark_lane_split_h
         return h
 
@@ -773,7 +774,11 @@ class TimelineWidget(QWidget):
         return self._tracks_top_y() + self._visible_lane_count() * self._lane_height
 
     def _near_mark_lane_split(self, y: float) -> bool:
-        if not self._show_mark_tracks or self._visible_lane_count() == 0:
+        if (
+            not self._show_mark_lane_resize_bar
+            or not self._show_mark_tracks
+            or self._visible_lane_count() == 0
+        ):
             return False
         return abs(y - self._mark_lane_split_y()) <= self._mark_lane_split_hit
 
@@ -884,7 +889,11 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _paint_mark_lane_splitter(self, painter: QPainter) -> None:
-        if not self._show_mark_tracks or self._visible_lane_count() == 0:
+        if (
+            not self._show_mark_lane_resize_bar
+            or not self._show_mark_tracks
+            or self._visible_lane_count() == 0
+        ):
             return
         bottom = self._mark_lane_split_y()
         active = self._resizing_mark_lanes or self._mark_lane_split_hover
@@ -2563,19 +2572,31 @@ class TimelineWidget(QWidget):
         top = self._ltc_lane_top_y()
         return top <= y < top + self._ltc_band_height()
 
+    def _toggle_wave_gain_line(self) -> None:
+        self._show_wave_gain_line = not self._show_wave_gain_line
+        self._invalidate_scrub_backdrop()
+        self.update()
+
+    def _toggle_ltc_gain_line(self) -> None:
+        self._show_ltc_gain_line = not self._show_ltc_gain_line
+        self._invalidate_scrub_backdrop()
+        self.update()
+
+    def _toggle_mark_lane_resize_bar(self) -> None:
+        self._show_mark_lane_resize_bar = not self._show_mark_lane_resize_bar
+        self._apply_layout_heights()
+        self._invalidate_scrub_backdrop()
+        self.update()
+
     def _show_wave_gain_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        if self._show_wave_gain_line:
-            toggle = menu.addAction("Hide volume adjustment")
-        else:
-            toggle = menu.addAction("Show volume adjustment")
-        menu.addSeparator()
+        hide = menu.addAction("Hide volume adjustment")
         reset = menu.addAction("Reset to 0 dB")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is toggle:
-            self._show_wave_gain_line = not self._show_wave_gain_line
+        if chosen is hide:
+            self._show_wave_gain_line = False
             self._invalidate_scrub_backdrop()
             self.update()
         elif chosen is reset and self._song is not None:
@@ -2586,17 +2607,13 @@ class TimelineWidget(QWidget):
 
     def _show_ltc_gain_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
-        if self._show_ltc_gain_line:
-            toggle = menu.addAction("Hide Music volume adjustment")
-        else:
-            toggle = menu.addAction("Show Music volume adjustment")
-        menu.addSeparator()
+        hide = menu.addAction("Hide Music volume adjustment")
         reset = menu.addAction("Reset Music to 0 dB")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is toggle:
-            self._show_ltc_gain_line = not self._show_ltc_gain_line
+        if chosen is hide:
+            self._show_ltc_gain_line = False
             self._invalidate_scrub_backdrop()
             self.update()
         elif chosen is reset and self._song is not None:
@@ -2617,10 +2634,22 @@ class TimelineWidget(QWidget):
             self._show_video_clip_context_menu(pos, x, y)
             return
         if self._in_waveform(x, y) and self._audio is not None:
-            self._show_wave_gain_context_menu(pos)
+            if self._near_audio_gain_line(x, y) == "wave":
+                self._show_wave_gain_context_menu(pos)
+            else:
+                self._toggle_wave_gain_line()
             return
         if self._in_ltc_waveform(x, y):
-            self._show_ltc_gain_context_menu(pos)
+            if self._near_audio_gain_line(x, y) == "ltc":
+                self._show_ltc_gain_context_menu(pos)
+            else:
+                self._toggle_ltc_gain_line()
+            return
+        if (
+            (self._in_mark_tracks(x, y) or self._hit_mark_lane_header(x, y) is not None)
+            and self._hit_mark_at(x, y) is None
+        ):
+            self._toggle_mark_lane_resize_bar()
             return
         hit_id = self._hit_mark_at(x, y)
         if hit_id is not None and hit_id not in self._selected_mark_ids:
