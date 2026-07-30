@@ -165,6 +165,7 @@ class TimelineWidget(QWidget):
         self._show_ltc_gain_line = False
         self._dragging_audio_gain = False
         self._audio_gain_zone: str | None = None  # "wave" | "ltc"
+        self._audio_gain_drag_bounds: tuple[float, float] | None = None
         self._audio_gain_hit_px = 6
         self._hover_mark_id: str | None = None
         self._hover_mark_lane_header: int | None = None
@@ -610,6 +611,7 @@ class TimelineWidget(QWidget):
         self._show_ltc_gain_line = False
         self._dragging_audio_gain = False
         self._audio_gain_zone = None
+        self._audio_gain_drag_bounds = None
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
         # Video + LTC eye is project-global — do not reset from per-song flags.
         if song is not None:
@@ -900,7 +902,7 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return
         if zone == "wave":
-            bounds = self._wave_gain_bounds()
+            bounds = self._audio_gain_drag_bounds or self._wave_gain_bounds()
             if bounds is None:
                 return
             top, bottom = bounds
@@ -910,7 +912,7 @@ class TimelineWidget(QWidget):
             self._song.audio_gain_db = db
             self.audio_gain_changed.emit(db)
         elif zone == "ltc":
-            bounds = self._ltc_gain_bounds()
+            bounds = self._audio_gain_drag_bounds or self._ltc_gain_bounds()
             if bounds is None:
                 return
             top, bottom = bounds
@@ -1959,7 +1961,7 @@ class TimelineWidget(QWidget):
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
         self._paint_mark_lane_splitter(painter)
-        self._paint_audio_gain_overlays(painter)
+        # Gain lines are interactive — paint live in paintEvent (not baked here).
         self._paint_selection_box(painter)
         painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
         self._paint_headers(painter, wave_bottom, tracks_top)
@@ -2357,6 +2359,11 @@ class TimelineWidget(QWidget):
             elif (gain_zone := self._near_audio_gain_line(x, y)) is not None:
                 self._dragging_audio_gain = True
                 self._audio_gain_zone = gain_zone
+                if gain_zone == "wave":
+                    self._audio_gain_drag_bounds = self._wave_gain_bounds()
+                else:
+                    self._audio_gain_drag_bounds = self._ltc_gain_bounds()
+                self._invalidate_scrub_backdrop()
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
                 self._apply_gain_at_y(y, gain_zone)
@@ -2596,6 +2603,8 @@ class TimelineWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging_audio_gain:
             self._dragging_audio_gain = False
             self._audio_gain_zone = None
+            self._audio_gain_drag_bounds = None
+            self._invalidate_scrub_backdrop()
             self.releaseMouse()
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
@@ -2945,6 +2954,7 @@ class TimelineWidget(QWidget):
         self._paint_static_layers(painter)
         self._paint_playhead(painter)
         self._paint_loop_region(painter)
+        self._paint_audio_gain_overlays(painter)
         self._paint_drag_guides(painter)
 
     def _paint_selection_box(self, painter: QPainter) -> None:
