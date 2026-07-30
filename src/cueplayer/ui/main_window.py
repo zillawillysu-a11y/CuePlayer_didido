@@ -4155,12 +4155,17 @@ class MainWindow(QMainWindow):
             if tl.width() != w or tl.height() != h:
                 # Mark busy so timeline.resizeEvent does not re-enter layout
                 # apply while we are syncing from the parent scroll area.
+                # (Overlay chrome still repositions — see TimelineWidget.resizeEvent.)
                 tl._layout_heights_busy = True  # noqa: SLF001
                 try:
                     tl.resize(w, h)
                     tl._clamp_scroll()  # noqa: SLF001
                 finally:
                     tl._layout_heights_busy = False  # noqa: SLF001
+                # Belt-and-suspenders: pin overlays even if resize was a no-op
+                # for Qt (same size) after a previous partial layout.
+                tl._layout_zoom_overlay()  # noqa: SLF001
+                tl._layout_video_track_overlay()  # noqa: SLF001
             tl.update()
             # Don't yank the scrollbar while the user is dragging a splitter.
             if not resizing:
