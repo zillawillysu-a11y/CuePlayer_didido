@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QVBoxLayout,
     QWidget,
 )
 
 from cueplayer.ui.icon_button import IconButton
-from cueplayer.ui.theme import SLIDER_QSS
+from cueplayer.ui.theme import BG_APP, SLIDER_QSS, TEXT, TEXT_MUTED
+from cueplayer.ui.timeline_overview import TimelineOverviewBar
 
 
 def format_time(seconds: float) -> str:
@@ -24,9 +26,27 @@ def format_time(seconds: float) -> str:
     return f"{mins:02d}:{secs:02d}.{ms:03d}"
 
 
-_TEXT_BTN = "QPushButton { height: 30px; padding: 0 10px; }"
+# Borderless text chips — glyph/label only, soft hover fill.
+_FLAT_BTN = (
+    "QPushButton {"
+    "  background: transparent; border: none; border-radius: 6px;"
+    "  color: #ededed; padding: 4px 10px;"
+    "}"
+    "QPushButton:hover { background: #222222; }"
+    "QPushButton:pressed { background: #2a2a2a; }"
+    "QPushButton:checked { background: #2a2a2a; color: #ffffff; }"
+    "QPushButton:disabled { color: #555555; background: transparent; }"
+)
 
-_BIG_TEXT_BTN = "QPushButton { height: 48px; padding: 0 14px; font-size: 16px; font-weight: 600; }"
+_FLAT_BIG = (
+    "QPushButton {"
+    "  background: transparent; border: none; border-radius: 8px;"
+    "  color: #ededed; font-size: 15px; font-weight: 600; padding: 6px 12px;"
+    "}"
+    "QPushButton:hover { background: #222222; }"
+    "QPushButton:pressed { background: #2a2a2a; }"
+    "QPushButton:disabled { color: #555555; background: transparent; }"
+)
 
 
 class TopToolBar(QWidget):
@@ -38,7 +58,7 @@ class TopToolBar(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
+        layout.setSpacing(4)
 
         self.timeline_mode_button = QPushButton("Timeline")
         self.timeline_mode_button.setCheckable(True)
@@ -64,7 +84,9 @@ class TopToolBar(QWidget):
             self.patch_mode_button,
         ):
             button.setFixedHeight(30)
-            button.setStyleSheet(_TEXT_BTN)
+            button.setStyleSheet(_FLAT_BTN)
+            button.setFlat(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout.addWidget(self.timeline_mode_button)
         layout.addWidget(self.setlist_mode_button)
@@ -95,7 +117,7 @@ class TopToolBar(QWidget):
 
 
 class BottomTransportBar(QWidget):
-    """Play / pause / stop + A-B loop, centered; volume on the right."""
+    """Full-width overview scrubber + Play / Pause / Stop + A-B loop."""
 
     play_clicked = Signal()
     pause_clicked = Signal()
@@ -105,21 +127,29 @@ class BottomTransportBar(QWidget):
     clear_loop_clicked = Signal()
     loop_toggled = Signal(bool)
     volume_changed = Signal(float)  # 0.0 … 1.0
+    seek_requested = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("bottomTransport")
         self.setStyleSheet(
-            "#bottomTransport {"
-            "  background: #09090b;"
-            "  border-top: 1px solid #27272a;"
+            f"#bottomTransport {{"
+            f"  background: {BG_APP};"
+            f"  border-top: none;"
             "}"
         )
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 6, 10, 8)
+        root.setSpacing(4)
 
-        big = QSize(56, 50)
+        self.overview = TimelineOverviewBar()
+        root.addWidget(self.overview)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(4, 0, 4, 0)
+        row.setSpacing(8)
+
+        big = QSize(52, 44)
         self.play_button = IconButton("play", "Play", size=big)
         self.pause_button = IconButton("pause", "Pause here", size=big)
         self.stop_button = IconButton("stop", "Stop and reset", size=big)
@@ -130,27 +160,31 @@ class BottomTransportBar(QWidget):
         self.loop_b_button.setToolTip("Set point B")
         self.loop_box = QCheckBox("Loop")
         self.loop_box.setToolTip("Loop playback between A and B")
-        self.loop_box.setStyleSheet("QCheckBox { font-size: 15px; spacing: 8px; }")
-        self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(48, 50))
-        self.loop_label = QLabel("AB —")
-        self.loop_label.setStyleSheet("color: #8b949e; min-width: 200px; font-size: 14px;")
+        self.loop_box.setStyleSheet(
+            f"QCheckBox {{ color: {TEXT}; font-size: 14px; spacing: 8px; border: none; }}"
+        )
+        self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(44, 44))
+        self.loop_label = QLabel("A —  B —")
+        self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; min-width: 180px; font-size: 13px;")
 
         self.time_label = QLabel("00:00.000 / 01:00.000")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet(
-            "color: #e6edf3; font-weight: 700; font-size: 20px; min-width: 220px;"
+            f"color: {TEXT}; font-weight: 600; font-size: 18px; min-width: 210px; border: none;"
         )
 
         for button in (self.loop_a_button, self.loop_b_button):
-            button.setFixedSize(48, 50)
-            button.setStyleSheet(_BIG_TEXT_BTN)
+            button.setFixedSize(44, 44)
+            button.setStyleSheet(_FLAT_BIG)
+            button.setFlat(True)
             button.setAutoDefault(False)
             button.setDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
-        self.volume_slider.setFixedWidth(140)
+        self.volume_slider.setFixedWidth(120)
         self.volume_slider.setToolTip(
             "Master volume (music + video clip audio; never LTC)\n"
             "For Video/Music balance while aligning, use the Music fader in the expanded Video track chrome."
@@ -159,32 +193,31 @@ class BottomTransportBar(QWidget):
         self.volume_value = QLabel("100%")
         self.volume_value.setFixedWidth(40)
         self.volume_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.volume_value.setStyleSheet("color: #a1a1aa; font-size: 12px;")
+        self.volume_value.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
 
         self.tc_status = QLabel("")
-        self.tc_status.setStyleSheet(
-            "color: #a1a1aa; font-size: 12px; min-width: 72px;"
-        )
+        self.tc_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;")
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        layout.addStretch(1)
-        layout.addWidget(self.time_label)
-        layout.addSpacing(20)
-        layout.addWidget(self.play_button)
-        layout.addWidget(self.pause_button)
-        layout.addWidget(self.stop_button)
-        layout.addSpacing(22)
-        layout.addWidget(self.loop_a_button)
-        layout.addWidget(self.loop_b_button)
-        layout.addWidget(self.loop_box)
-        layout.addWidget(self.loop_clear_button)
-        layout.addWidget(self.loop_label)
-        layout.addStretch(1)
-        layout.addWidget(self.tc_status)
-        layout.addSpacing(8)
-        layout.addWidget(self.volume_slider)
-        layout.addWidget(self.volume_value)
+        row.addStretch(1)
+        row.addWidget(self.time_label)
+        row.addSpacing(12)
+        row.addWidget(self.play_button)
+        row.addWidget(self.pause_button)
+        row.addWidget(self.stop_button)
+        row.addSpacing(14)
+        row.addWidget(self.loop_a_button)
+        row.addWidget(self.loop_b_button)
+        row.addWidget(self.loop_box)
+        row.addWidget(self.loop_clear_button)
+        row.addWidget(self.loop_label)
+        row.addStretch(1)
+        row.addWidget(self.tc_status)
+        row.addSpacing(6)
+        row.addWidget(self.volume_slider)
+        row.addWidget(self.volume_value)
+        root.addLayout(row)
 
         self.play_button.clicked.connect(self.play_clicked.emit)
         self.pause_button.clicked.connect(self.pause_clicked.emit)
@@ -194,6 +227,7 @@ class BottomTransportBar(QWidget):
         self.loop_clear_button.clicked.connect(self.clear_loop_clicked.emit)
         self.loop_box.toggled.connect(self.loop_toggled.emit)
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
+        self.overview.seek_requested.connect(self.seek_requested.emit)
 
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")
@@ -218,6 +252,24 @@ class BottomTransportBar(QWidget):
         if text != self.time_label.text():
             self.time_label.setText(text)
 
+    def set_overview_state(
+        self,
+        *,
+        duration: float,
+        position: float,
+        view_start: float,
+        view_end: float,
+        title: str = "",
+    ) -> None:
+        if title:
+            self.overview.set_title(title)
+        self.overview.set_state(
+            duration=duration,
+            position=position,
+            view_start=view_start,
+            view_end=view_end,
+        )
+
     def set_loop_status(
         self,
         a: float | None,
@@ -241,12 +293,12 @@ class BottomTransportBar(QWidget):
         if parts:
             self.tc_status.setText(" · ".join(parts))
             self.tc_status.setStyleSheet(
-                "color: #8a8a8a; font-size: 12px; font-weight: 600; min-width: 72px;"
+                f"color: {TEXT_MUTED}; font-size: 12px; font-weight: 600; min-width: 72px;"
             )
         else:
             self.tc_status.setText("")
             self.tc_status.setStyleSheet(
-                "color: #a1a1aa; font-size: 12px; min-width: 72px;"
+                f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;"
             )
 
 

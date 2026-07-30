@@ -271,8 +271,9 @@ class ShowPatchPage(QWidget):
         self.export_btn = QPushButton("Export Checked Songs…")
         self.export_btn.setStyleSheet(
             "QPushButton { height: 34px; padding: 0 16px; font-weight: 600;"
-            " background: #2a2a2a; border: 1px solid #5a5a5a; color: #ededed; }"
-            "QPushButton:hover { background: #3a3a3a; border-color: #8a8a8a; }"
+            " background: transparent; border: none; color: #ededed; }"
+            "QPushButton:hover { background: #222222; }"
+            "QPushButton:pressed { background: #2a2a2a; }"
         )
         action_row.addWidget(self.refresh_btn)
         action_row.addStretch(1)

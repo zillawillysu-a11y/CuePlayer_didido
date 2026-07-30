@@ -8,7 +8,6 @@ from PySide6.QtWidgets import QStyleOptionViewItem
 
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.theme import (
-    ACCENT,
     COLOR_VIDEO,
     badge_dim_on_background,
     badge_lit_on_background,

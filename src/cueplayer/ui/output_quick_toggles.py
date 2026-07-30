@@ -12,26 +12,26 @@ _CHIP_BASE = """
 QPushButton {
     min-height: 22px;
     max-height: 22px;
-    padding: 1px 7px;
-    border-radius: 11px;
-    border: 1px solid #3f3f46;
-    background: #18181b;
+    padding: 1px 8px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
     color: #71717a;
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.2px;
 }
 QPushButton:hover:enabled {
-    border-color: #52525b;
+    background: #222222;
     color: #a1a1aa;
 }
 QPushButton:checked {
-    border-color: %(accent)s;
+    border: none;
     background: %(bg)s;
     color: %(accent)s;
 }
 QPushButton:checked:hover:enabled {
-    border-color: %(accent_hover)s;
+    background: %(bg)s;
     color: %(accent_hover)s;
 }
 """

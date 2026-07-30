@@ -77,7 +77,7 @@ from cueplayer.persistence.media_layout import (
     scan_external_media,
     sync_all_songs_media_to_setlist_folders,
 )
-from cueplayer.persistence.project_bundle import collect_project_bundle
+from cueplayer.persistence.project_bundle import BundleResult, collect_project_bundle
 from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
@@ -141,7 +141,6 @@ from cueplayer.ui.drag_drop import (
 )
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
-from cueplayer.ui.timeline_overview import TimelineOverviewBar
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
@@ -1062,8 +1061,6 @@ class MainWindow(QMainWindow):
         self.timeline.content_geometry_changed.connect(self._sync_timeline_geometry)
         self._timeline_scroll.viewport().installEventFilter(self)
         center_layout.addWidget(self._timeline_scroll, stretch=1)
-        self.timeline_overview = TimelineOverviewBar()
-        center_layout.addWidget(self.timeline_overview)
 
         # Center column: Timeline (Music → Video → LTC → Marks) on top,
         # Video Preview directly underneath — not stacked under the Cue list.
@@ -1171,7 +1168,7 @@ class MainWindow(QMainWindow):
         self.transport.loop_toggled.connect(self._set_loop_enabled)
         self.transport.volume_changed.connect(self.engine.set_volume)
         self.timeline.seek_requested.connect(self.engine.seek)
-        self.timeline_overview.seek_requested.connect(self.engine.seek)
+        self.transport.seek_requested.connect(self.engine.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
         self.timeline.scrub_started.connect(self.engine.begin_scrub)
@@ -1589,8 +1586,13 @@ class MainWindow(QMainWindow):
         self.engine.stop()
         self.project = loaded
         self._project_path = result.project_path
+        # Bundle remapped media paths + cloned LTC disk cache — remount
+        # in-memory keys and reload disk so Setlist L/R badges stay lit
+        # (same as Open Project; without this lamps look "off until restart").
+        self._remount_caches_after_bundle(result)
         self._apply_project(preferred_song_id=preferred)
         self._set_clean()
+        self._ltc_idle_timer.start()
         self.status.showMessage(
             f"Working in Bundle: {result.project_path} "
             f"(+{len(result.copied)} new, {len(result.reused)} reused)",
@@ -3832,6 +3834,7 @@ class MainWindow(QMainWindow):
                 )
         self._refresh_window_title()
         self._refresh_status()
+        self._sync_timeline_overview()
 
     def _next_song_default_name(self) -> str:
         return f"Song {len(self.project.songs) + 1}"
@@ -4111,16 +4114,21 @@ class MainWindow(QMainWindow):
             widget.close()
 
     def _sync_timeline_overview(self) -> None:
-        overview = getattr(self, "timeline_overview", None)
+        transport = getattr(self, "transport", None)
         timeline = getattr(self, "timeline", None)
-        if overview is None or timeline is None:
+        if transport is None or timeline is None:
             return
         view_start, view_end = timeline.visible_time_window()
-        overview.set_state(
+        title = ""
+        song = getattr(self, "current_song", None)
+        if song is not None:
+            title = (song.name or "").strip()
+        transport.set_overview_state(
             duration=float(timeline._duration()),  # noqa: SLF001
             position=float(timeline.playhead_seconds()),
             view_start=view_start,
             view_end=view_end,
+            title=title,
         )
 
     def _sync_timeline_geometry(self) -> None:
@@ -4260,12 +4268,14 @@ class MainWindow(QMainWindow):
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
+        self._sync_timeline_overview()
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
+        self._sync_timeline_overview()
 
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
@@ -4851,6 +4861,59 @@ class MainWindow(QMainWindow):
             return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
         except OSError:
             return None
+
+    def _remount_caches_after_bundle(self, result: BundleResult) -> None:
+        """Keep LTC L/R badges + RAM waveforms after Bundle remaps paths.
+
+        Disk clone runs during collect; this remounts in-memory keys from the
+        pre-Bundle path → new Bundle path, then merges the full disk LTC map.
+        """
+        pairs: list[tuple[Path, Path]] = []
+        for src, dest in (*result.copied, *result.moved, *result.reused):
+            if src is None or dest is None:
+                continue
+            try:
+                if Path(src).resolve() == Path(dest).resolve():
+                    continue
+            except OSError:
+                if Path(src) == Path(dest):
+                    continue
+            pairs.append((Path(src), Path(dest)))
+
+        for src, dest in pairs:
+            new_key = self._audio_cache_key(dest)
+            if new_key is None:
+                continue
+            try:
+                old_path = str(Path(src).expanduser().resolve())
+            except OSError:
+                old_path = str(Path(src).expanduser())
+
+            donor: tuple[str, int, int] | None = None
+            for key in self._audio_ltc_cache:
+                if key[0] == old_path:
+                    donor = key
+                    break
+            if donor is None:
+                for key in self._audio_ltc_cache:
+                    if key[1] == new_key[1] and key[2] == new_key[2]:
+                        donor = key
+                        break
+            if donor is None:
+                for key in self._audio_buffer_cache:
+                    if key[0] == old_path or (
+                        key[1] == new_key[1] and key[2] == new_key[2]
+                    ):
+                        donor = key
+                        break
+            if donor is None:
+                continue
+            if donor in self._audio_ltc_cache:
+                self._audio_ltc_cache[new_key] = self._audio_ltc_cache[donor]
+            if donor in self._audio_buffer_cache:
+                self._audio_buffer_cache[new_key] = self._audio_buffer_cache[donor]
+
+        self._audio_ltc_cache.update(load_all_ltc_channels())
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
         """RAM first; on miss load the on-disk .npz (no re-decode) for instant song switch."""
