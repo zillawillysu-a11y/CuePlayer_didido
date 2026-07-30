@@ -53,8 +53,8 @@ _COL_KEY = 2
 _COL_SHAPE = 3
 _COL_COLOR = 4
 _COL_VISIBLE = 5
-_COL_CUE_ID = 6
-_COL_CUE_LIST = 7
+_COL_CUE_LIST = 6
+_COL_CUE_ID = 7
 _COL_MIDI = 8
 _COL_MIDI_NOTE = 9
 _COL_NOW = 10
@@ -319,8 +319,8 @@ class MarkManagerDialog(QDialog):
                 "Shape",
                 "Color",
                 "Visible",
-                "Cue ID",
                 "Cue List",
+                "Cue ID",
                 "MIDI On",
                 "Note",
                 "NOW",
@@ -336,8 +336,8 @@ class MarkManagerDialog(QDialog):
             _COL_SHAPE: 132,
             _COL_COLOR: 72,
             _COL_VISIBLE: 60,
-            _COL_CUE_ID: 76,
             _COL_CUE_LIST: 80,
+            _COL_CUE_ID: 76,
             _COL_MIDI: 80,
             _COL_MIDI_NOTE: 116,
             _COL_NOW: 108,
@@ -400,8 +400,8 @@ class MarkManagerDialog(QDialog):
         """Bottom table row: all-on / all-off toggles aligned with their columns."""
         bulk_specs = {
             _COL_VISIBLE: "All on/off for Visible",
-            _COL_CUE_ID: "All on/off for Cue ID",
             _COL_CUE_LIST: "All on/off for Cue List",
+            _COL_CUE_ID: "All on/off for Cue ID",
             _COL_MIDI: "All on/off for MIDI On",
         }
         row = self.table.rowCount()

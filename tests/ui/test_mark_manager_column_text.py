@@ -13,12 +13,19 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication, QComboBox
 
 from cueplayer.domain.models import Song
-from cueplayer.ui.mark_manager_dialog import MarkManagerDialog, _COL_KEY, _COL_SHAPE
+from cueplayer.ui.mark_manager_dialog import MarkManagerDialog, _COL_CUE_ID, _COL_CUE_LIST, _COL_KEY, _COL_SHAPE
 
 
 @pytest.fixture
 def app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_cue_list_column_before_cue_id(app: QApplication) -> None:
+    dialog = MarkManagerDialog(Song.create("Marks"))
+    assert dialog.table.horizontalHeaderItem(_COL_CUE_LIST).text() == "Cue List"
+    assert dialog.table.horizontalHeaderItem(_COL_CUE_ID).text() == "Cue ID"
+    assert _COL_CUE_LIST < _COL_CUE_ID
 
 
 def test_shortcut_combo_uses_compact_digit_labels(app: QApplication) -> None:

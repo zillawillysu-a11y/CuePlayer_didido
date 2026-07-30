@@ -29,7 +29,7 @@ def app() -> QApplication:
 
 
 def _bulk_columns() -> tuple[int, ...]:
-    return (_COL_VISIBLE, _COL_CUE_ID, _COL_CUE_LIST, _COL_MIDI)
+    return (_COL_VISIBLE, _COL_CUE_LIST, _COL_CUE_ID, _COL_MIDI)
 
 
 def test_bulk_visible_toggle_sets_all_lane_rows(app: QApplication) -> None:
