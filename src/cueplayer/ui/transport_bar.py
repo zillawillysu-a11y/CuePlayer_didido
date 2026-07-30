@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -117,7 +118,7 @@ class TopToolBar(QWidget):
 
 
 class BottomTransportBar(QWidget):
-    """Full-width overview scrubber + Play / Pause / Stop + A-B loop."""
+    """Overview scrubber + centered Play/Pause/Stop + A-B to the right of Stop."""
 
     play_clicked = Signal()
     pause_clicked = Signal()
@@ -129,8 +130,8 @@ class BottomTransportBar(QWidget):
     volume_changed = Signal(float)  # 0.0 … 1.0
     seek_requested = Signal(float)
 
-    # Matched side rails so Play/Pause/Stop sit on the true window center.
-    _SIDE_RAIL_W = 300
+    # Matched side rails (volume) so Play/Pause/Stop stay on the true center.
+    _SIDE_RAIL_W = 260
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -145,15 +146,13 @@ class BottomTransportBar(QWidget):
         root.setContentsMargins(10, 4, 10, 8)
         root.setSpacing(2)
 
-        # Overview — shortened + centered above the transport row.
-        overview_row = QHBoxLayout()
-        overview_row.setContentsMargins(0, 0, 0, 0)
-        overview_row.setSpacing(0)
-        overview_row.addStretch(1)
-        self.overview = TimelineOverviewBar()
-        overview_row.addWidget(self.overview, stretch=2)
-        overview_row.addStretch(1)
-        root.addLayout(overview_row)
+        # Overview host — child is positioned so the *track* (not time gutters)
+        # spans Play…Clear (X).
+        self._overview_host = QWidget()
+        self._overview_host.setFixedHeight(26)
+        self.overview = TimelineOverviewBar(self._overview_host)
+        self.overview.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        root.addWidget(self._overview_host)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -209,34 +208,19 @@ class BottomTransportBar(QWidget):
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Left rail: A / B / Loop — never share the centered Play cluster.
-        left = QHBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(6)
-        left.addWidget(self.loop_a_button)
-        left.addWidget(self.loop_b_button)
-        left.addWidget(self.loop_box)
-        left.addWidget(self.loop_clear_button)
-        left.addWidget(self.loop_label)
-        left.addStretch(1)
-        left_host = QWidget()
-        left_host.setFixedWidth(self._SIDE_RAIL_W)
-        left_host.setLayout(left)
+        # Balance spacer = A/B group width so Play/Pause/Stop sit on true center
+        # while A/B remain immediately to the right of Stop.
+        self._balance = QWidget()
+        self._balance.setFixedWidth(0)
 
-        transport = QHBoxLayout()
-        transport.setContentsMargins(0, 0, 0, 0)
-        transport.setSpacing(8)
-        transport.addWidget(self.play_button)
-        transport.addWidget(self.pause_button)
-        transport.addWidget(self.stop_button)
-        transport_host = QWidget()
-        transport_host.setLayout(transport)
-        transport_host.setFixedWidth(
-            self.play_button.width()
-            + self.pause_button.width()
-            + self.stop_button.width()
-            + 16
-        )
+        self._ab_group = QWidget()
+        ab_row = QHBoxLayout(self._ab_group)
+        ab_row.setContentsMargins(0, 0, 0, 0)
+        ab_row.setSpacing(8)
+        ab_row.addWidget(self.loop_a_button)
+        ab_row.addWidget(self.loop_b_button)
+        ab_row.addWidget(self.loop_box)
+        ab_row.addWidget(self.loop_clear_button)
 
         right = QHBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -249,9 +233,19 @@ class BottomTransportBar(QWidget):
         right_host.setFixedWidth(self._SIDE_RAIL_W)
         right_host.setLayout(right)
 
-        row.addWidget(left_host)
+        left_spacer = QWidget()
+        left_spacer.setFixedWidth(self._SIDE_RAIL_W)
+
+        row.addWidget(left_spacer)
         row.addStretch(1)
-        row.addWidget(transport_host)
+        row.addWidget(self._balance)
+        row.addWidget(self.play_button)
+        row.addWidget(self.pause_button)
+        row.addWidget(self.stop_button)
+        row.addSpacing(14)
+        row.addWidget(self._ab_group)
+        row.addSpacing(10)
+        row.addWidget(self.loop_label)
         row.addStretch(1)
         row.addWidget(right_host)
         root.addLayout(row)
@@ -265,6 +259,44 @@ class BottomTransportBar(QWidget):
         self.loop_box.toggled.connect(self.loop_toggled.emit)
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
+
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        self._sync_transport_geometry()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self._sync_transport_geometry()
+
+    def _sync_transport_geometry(self) -> None:
+        """Center Play/Pause/Stop; align overview *track* (no time gutters) to Play…X."""
+        self._ab_group.adjustSize()
+        self.loop_label.adjustSize()
+        ab_w = max(0, self._ab_group.sizeHint().width())
+        label_w = max(0, self.loop_label.sizeHint().width())
+        # Pad left of Play by everything that sits to the right of Stop before
+        # the trailing stretch (spacing + A/B group + spacing + times label).
+        trail = 14 + ab_w + 10 + label_w
+        if self._balance.width() != trail:
+            self._balance.setFixedWidth(trail)
+
+        lay = self.layout()
+        if lay is not None:
+            lay.activate()
+
+        # mapTo requires an ancestor — project through this widget.
+        play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
+        clear_r = self.loop_clear_button.mapTo(
+            self, self.loop_clear_button.rect().topRight()
+        ).x()
+        host_l = self._overview_host.mapTo(self, self._overview_host.rect().topLeft()).x()
+        gutter = int(TimelineOverviewBar._LABEL_GUTTER)
+        # Widget is wider than the track by gutters on each side; times sit outside
+        # the Play…X span, while the hairline track matches that span.
+        track_w = max(80, int(clear_r - play_l))
+        ov_w = track_w + 2 * gutter
+        ov_x = int(play_l - gutter - host_l)
+        self.overview.setGeometry(ov_x, 0, ov_w, self._overview_host.height())
 
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")
