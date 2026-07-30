@@ -192,9 +192,6 @@ class BottomTransportBar(QWidget):
         self.loop_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.loop_button.setFixedHeight(44)
         self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(44, 44))
-        self.loop_label = QLabel("A —  B —")
-        self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
-        self.loop_label.setMinimumWidth(160)
 
         # Kept for set_times() callers; not shown (overview ends replace it).
         self.time_label = QLabel("")
@@ -263,8 +260,6 @@ class BottomTransportBar(QWidget):
         row.addWidget(self.stop_button)
         row.addSpacing(14)
         row.addWidget(self._ab_group)
-        row.addSpacing(10)
-        row.addWidget(self.loop_label)
         row.addStretch(1)
         row.addWidget(right_host)
         root.addLayout(row)
@@ -290,12 +285,10 @@ class BottomTransportBar(QWidget):
     def _sync_transport_geometry(self) -> None:
         """Center Play/Pause/Stop; align overview *track* (no time gutters) to Play…X."""
         self._ab_group.adjustSize()
-        self.loop_label.adjustSize()
         ab_w = max(0, self._ab_group.sizeHint().width())
-        label_w = max(0, self.loop_label.sizeHint().width())
         # Pad left of Play by everything that sits to the right of Stop before
-        # the trailing stretch (spacing + A/B group + spacing + times label).
-        trail = 14 + ab_w + 10 + label_w
+        # the trailing stretch (spacing + A/B group).
+        trail = 14 + ab_w
         if self._balance.width() != trail:
             self._balance.setFixedWidth(trail)
 
@@ -368,9 +361,6 @@ class BottomTransportBar(QWidget):
         self.loop_button.blockSignals(True)
         self.loop_button.setChecked(enabled)
         self.loop_button.blockSignals(False)
-        a_txt = format_time(a) if a is not None else "—"
-        b_txt = format_time(b) if b is not None else "—"
-        self.loop_label.setText(f"A {a_txt}  B {b_txt}")
         self.overview.set_loop(a, b)
 
     def set_timecode_status(self, *, ltc: bool, mtc: bool) -> None:
