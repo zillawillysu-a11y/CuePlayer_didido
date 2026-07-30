@@ -129,6 +129,9 @@ class BottomTransportBar(QWidget):
     volume_changed = Signal(float)  # 0.0 … 1.0
     seek_requested = Signal(float)
 
+    # Matched side rails so Play/Pause/Stop sit on the true window center.
+    _SIDE_RAIL_W = 300
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("bottomTransport")
@@ -138,24 +141,23 @@ class BottomTransportBar(QWidget):
             f"  border-top: none;"
             "}"
         )
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(10, 4, 10, 8)
-        root.setSpacing(8)
+        root.setSpacing(2)
 
-        # Center block: overview scrubber + transport / A-B (no big clock).
-        center_host = QWidget()
-        center_host.setMinimumWidth(360)
-        center_host.setMaximumWidth(720)
-        center = QVBoxLayout(center_host)
-        center.setContentsMargins(0, 0, 0, 0)
-        center.setSpacing(2)
-
+        # Overview — shortened + centered above the transport row.
+        overview_row = QHBoxLayout()
+        overview_row.setContentsMargins(0, 0, 0, 0)
+        overview_row.setSpacing(0)
+        overview_row.addStretch(1)
         self.overview = TimelineOverviewBar()
-        center.addWidget(self.overview)
+        overview_row.addWidget(self.overview, stretch=2)
+        overview_row.addStretch(1)
+        root.addLayout(overview_row)
 
-        controls = QHBoxLayout()
-        controls.setContentsMargins(4, 0, 4, 0)
-        controls.setSpacing(8)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
 
         big = QSize(52, 44)
         self.play_button = IconButton("play", "Play", size=big)
@@ -173,7 +175,8 @@ class BottomTransportBar(QWidget):
         )
         self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(44, 44))
         self.loop_label = QLabel("A —  B —")
-        self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; min-width: 180px; font-size: 13px;")
+        self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
+        self.loop_label.setMinimumWidth(160)
 
         # Kept for set_times() callers; not shown (overview ends replace it).
         self.time_label = QLabel("")
@@ -186,19 +189,6 @@ class BottomTransportBar(QWidget):
             button.setAutoDefault(False)
             button.setDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        controls.addStretch(1)
-        controls.addWidget(self.play_button)
-        controls.addWidget(self.pause_button)
-        controls.addWidget(self.stop_button)
-        controls.addSpacing(14)
-        controls.addWidget(self.loop_a_button)
-        controls.addWidget(self.loop_b_button)
-        controls.addWidget(self.loop_box)
-        controls.addWidget(self.loop_clear_button)
-        controls.addWidget(self.loop_label)
-        controls.addStretch(1)
-        center.addLayout(controls)
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -219,7 +209,35 @@ class BottomTransportBar(QWidget):
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Matching left/right rails keep overview + transport optically centered.
+        # Left rail: A / B / Loop — never share the centered Play cluster.
+        left = QHBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(6)
+        left.addWidget(self.loop_a_button)
+        left.addWidget(self.loop_b_button)
+        left.addWidget(self.loop_box)
+        left.addWidget(self.loop_clear_button)
+        left.addWidget(self.loop_label)
+        left.addStretch(1)
+        left_host = QWidget()
+        left_host.setFixedWidth(self._SIDE_RAIL_W)
+        left_host.setLayout(left)
+
+        transport = QHBoxLayout()
+        transport.setContentsMargins(0, 0, 0, 0)
+        transport.setSpacing(8)
+        transport.addWidget(self.play_button)
+        transport.addWidget(self.pause_button)
+        transport.addWidget(self.stop_button)
+        transport_host = QWidget()
+        transport_host.setLayout(transport)
+        transport_host.setFixedWidth(
+            self.play_button.width()
+            + self.pause_button.width()
+            + self.stop_button.width()
+            + 16
+        )
+
         right = QHBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(6)
@@ -227,26 +245,16 @@ class BottomTransportBar(QWidget):
         right.addWidget(self.tc_status)
         right.addWidget(self.volume_slider)
         right.addWidget(self.volume_value)
-        right_wrap = QWidget()
-        right_wrap.setFixedWidth(240)
-        right_wrap.setLayout(right)
-        right_col = QVBoxLayout()
-        right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(0)
-        right_col.addStretch(1)
-        right_col.addWidget(right_wrap)
         right_host = QWidget()
-        right_host.setFixedWidth(240)
-        right_host.setLayout(right_col)
+        right_host.setFixedWidth(self._SIDE_RAIL_W)
+        right_host.setLayout(right)
 
-        left_spacer = QWidget()
-        left_spacer.setFixedWidth(240)
-
-        root.addWidget(left_spacer)
-        root.addStretch(1)
-        root.addWidget(center_host, stretch=0)
-        root.addStretch(1)
-        root.addWidget(right_host)
+        row.addWidget(left_host)
+        row.addStretch(1)
+        row.addWidget(transport_host)
+        row.addStretch(1)
+        row.addWidget(right_host)
+        root.addLayout(row)
 
         self.play_button.clicked.connect(self.play_clicked.emit)
         self.pause_button.clicked.connect(self.pause_clicked.emit)

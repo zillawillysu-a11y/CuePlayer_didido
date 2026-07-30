@@ -33,7 +33,7 @@ class TimelineOverviewBar(QWidget):
         self._loop_b: float | None = None
         self._dragging = False
         self._hover = False
-        self._bar_height = 22
+        self._bar_height = 26
         self.setFixedHeight(self._bar_height)
         # Prefer a shorter horizontal span; transport centers us with stretches.
         self.setMinimumWidth(280)
@@ -171,27 +171,11 @@ class TimelineOverviewBar(QWidget):
                 int(x0), int(mid_y - 3), max(2, int(x1 - x0)), 6, 2, 2
             )
 
-        for label, t, col in (
-            ("A", self._loop_a, QColor("#3dd68c")),
-            ("B", self._loop_b, QColor("#f0c14a")),
-        ):
-            if t is None:
-                continue
-            ax = x_on_track(min(max(0.0, float(t)), self._duration))
-            painter.setPen(QPen(col, 2))
-            painter.drawLine(QPointF(ax, mid_y - 5), QPointF(ax, mid_y + 5))
-            tiny = painter.font()
-            tiny.setPointSize(max(7, tiny.pointSize() - 3))
-            tiny.setBold(True)
-            painter.setFont(tiny)
-            painter.setPen(col)
-            painter.drawText(int(ax + 2), int(mid_y - 6), label)
-
         px = x_on_track(self._position)
         painter.setPen(
             QPen(QColor("#ffffff"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         )
-        painter.drawLine(QPointF(px, mid_y - 4), QPointF(px, mid_y + 4))
+        painter.drawLine(QPointF(px, mid_y - 5), QPointF(px, mid_y + 5))
 
         # Time labels in gutters — never under the white progress line.
         painter.setPen(QColor(TEXT_MUTED))
@@ -202,7 +186,6 @@ class TimelineOverviewBar(QWidget):
         painter.setFont(font)
         start = "0:00"
         end = self._format_time(self._duration)
-        fm = painter.fontMetrics()
         painter.drawText(
             4,
             0,
@@ -219,7 +202,30 @@ class TimelineOverviewBar(QWidget):
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
             end,
         )
-        del fm
+
+        # A/B last so ticks + letters stay above playhead / time gutters.
+        mark_font = painter.font()
+        mark_font.setPointSize(max(9, mark_font.pointSize() - 1))
+        mark_font.setBold(True)
+        painter.setFont(mark_font)
+        fm = painter.fontMetrics()
+        for label, t, col in (
+            ("A", self._loop_a, QColor("#3dd68c")),
+            ("B", self._loop_b, QColor("#f0c14a")),
+        ):
+            if t is None:
+                continue
+            ax = x_on_track(min(max(0.0, float(t)), self._duration))
+            painter.setPen(QPen(col, 2))
+            painter.drawLine(QPointF(ax, mid_y - 7), QPointF(ax, mid_y + 7))
+            painter.setPen(col)
+            text_w = fm.horizontalAdvance(label)
+            # Keep the letter inside the track bed, not under side time labels.
+            tx = int(ax + 3)
+            if tx + text_w > left + width - 2:
+                tx = int(ax - text_w - 3)
+            tx = max(left + 2, min(tx, left + width - text_w - 2))
+            painter.drawText(tx, int(mid_y - 2), label)
 
         painter.end()
 

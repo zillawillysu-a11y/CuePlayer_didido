@@ -20,7 +20,7 @@ def app() -> QApplication:
 
 def test_overview_seek_emits(app: QApplication) -> None:
     bar = TimelineOverviewBar()
-    bar.resize(400, 22)
+    bar.resize(400, 26)
     bar.set_state(duration=100.0, position=10.0, view_start=0.0, view_end=20.0)
     got: list[float] = []
     bar.seek_requested.connect(got.append)
@@ -35,7 +35,7 @@ def test_overview_seek_emits(app: QApplication) -> None:
     mid_x = track_left + track_w * 0.5
     press = QMouseEvent(
         QEvent.Type.MouseButtonPress,
-        QPointF(mid_x, 11),
+        QPointF(mid_x, 13),
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
