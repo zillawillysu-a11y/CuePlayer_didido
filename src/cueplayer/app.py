@@ -104,6 +104,12 @@ def main() -> int:
     shown = {"done": False}
 
     def _ensure_on_screen() -> None:
+        # Prefer MainWindow's multi-screen clamp (primary-only checks yank
+        # windows off a healthy secondary monitor).
+        clamp = getattr(window, "_clamp_window_to_available_screens", None)
+        if callable(clamp):
+            clamp()
+            return
         screen = app.primaryScreen()
         if screen is None:
             return
@@ -111,7 +117,6 @@ def main() -> int:
         frame = window.frameGeometry()
         if geo.intersects(frame):
             return
-        # Last session was on a disconnected monitor — pull back to primary.
         window.move(geo.x() + 40, geo.y() + 40)
         _boot_log(f"moved window onto primary screen {geo}")
 
@@ -122,6 +127,10 @@ def main() -> int:
         _boot_log("showing main window")
         splash.set_progress(1.0, "Ready")
         window.show()
+        try:
+            window.apply_restored_geometry_after_show()
+        except Exception:  # noqa: BLE001
+            _boot_log("apply_restored_geometry failed:\n" + traceback.format_exc())
         _ensure_on_screen()
         window.raise_()
         window.activateWindow()

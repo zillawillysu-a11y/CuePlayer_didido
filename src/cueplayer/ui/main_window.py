@@ -158,9 +158,9 @@ MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
 _KEY_AUTOSAVE_ENABLED = "autosave/enabled"
 _KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
 _KEY_BACKUP_KEEP = "autosave/backup_keep"
-_DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
+_DEFAULT_AUTOSAVE_INTERVAL_SEC = 300  # 5 minutes
 # User-facing Auto-Save cadence choices (minutes). Stored as seconds.
-_AUTOSAVE_INTERVAL_MINUTES = (1, 2, 5, 10, 15, 30)
+_AUTOSAVE_INTERVAL_MINUTES = (5, 15, 30, 60, 120)
 _KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
 _KEY_CLEAN_OUTPUT_GEOMETRY = "clean_output/geometry"
 _KEY_MAIN_GEOMETRY = "mainwindow/geometry"
@@ -950,6 +950,7 @@ class MainWindow(QMainWindow):
         self._audio_load_timer.setInterval(25)
         self._audio_load_timer.timeout.connect(self._poll_pending_audio_load)
         self._block_clean_output_visibility_persist = False
+        self._pending_restore_geometry = None
 
         self.engine = AudioEngine(self)
         self.engine.set_duration(self.current_song.duration_seconds)
@@ -1346,7 +1347,10 @@ class MainWindow(QMainWindow):
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
         if geometry:
             self.restoreGeometry(geometry)
+            # Keep a copy so we can re-apply after show() (multi-monitor / splash).
+            self._pending_restore_geometry = geometry
         else:
+            self._pending_restore_geometry = None
             self.resize(1600, 900)
         state = self._settings.value(_KEY_MAIN_STATE)
         if state:
@@ -1419,6 +1423,35 @@ class MainWindow(QMainWindow):
         self._settings.setValue(
             _KEY_CLEAN_OUTPUT_GEOMETRY, self.clean_output_window.saveGeometry()
         )
+        self._settings.sync()
+
+    def apply_restored_geometry_after_show(self) -> None:
+        """Re-apply saved geometry after the window is shown.
+
+        Splash / multi-monitor startup can ignore a pre-show ``restoreGeometry``.
+        Call this from the show path so size and screen stick.
+        """
+        geometry = getattr(self, "_pending_restore_geometry", None)
+        if not geometry:
+            return
+        self.restoreGeometry(geometry)
+        self._pending_restore_geometry = None
+        self._clamp_window_to_available_screens()
+
+    def _clamp_window_to_available_screens(self) -> None:
+        """If the frame sits on no connected screen, move it onto the primary."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        frame = self.frameGeometry()
+        screens = app.screens()
+        if any(screen.availableGeometry().intersects(frame) for screen in screens):
+            return
+        screen = app.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        self.move(geo.x() + 40, geo.y() + 40)
 
     def _try_restore_last_project(self) -> bool:
         if self._project_path is not None:
@@ -1774,6 +1807,8 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addSeparator()
+
+        bpm_menu = tools_menu.addMenu("&BPM")
         act_bpm_missing = QAction("Detect BPM (songs without BPM)", self)
         act_bpm_missing.setToolTip(
             "Run auto BPM only for songs with audio and an empty BPM cell."
@@ -1781,24 +1816,16 @@ class MainWindow(QMainWindow):
         act_bpm_missing.triggered.connect(
             lambda: self._schedule_bpm_detect_for_missing_songs(quiet=False)
         )
-        tools_menu.addAction(act_bpm_missing)
+        bpm_menu.addAction(act_bpm_missing)
         act_bpm_all = QAction("Re-detect BPM (auto / empty only)", self)
         act_bpm_all.setToolTip(
             "Re-detect songs with auto BPM (<n>) or no BPM (one at a time). "
             "Manual typed BPM is never overwritten — clear the cell first to re-detect."
         )
         act_bpm_all.triggered.connect(self._redetect_bpm_all_songs)
-        tools_menu.addAction(act_bpm_all)
+        bpm_menu.addAction(act_bpm_all)
+
         tools_menu.addSeparator()
-        act_add_video = QAction("Add &Video Clip…", self)
-        act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
-        tools_menu.addAction(act_add_video)
-        act_video_preview = QAction("Video &Preview Panel", self)
-        act_video_preview.setCheckable(True)
-        act_video_preview.setChecked(True)
-        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
-        tools_menu.addAction(act_video_preview)
-        self._act_video_preview = act_video_preview
         self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
         self._show_video_track_action.setCheckable(True)
         self._show_video_track_action.setChecked(True)
@@ -1810,10 +1837,21 @@ class MainWindow(QMainWindow):
         )
         self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
         tools_menu.addAction(self._show_video_track_action)
+
+        video_menu = tools_menu.addMenu("Vide&o")
+        act_add_video = QAction("Add &Video Clip…", self)
+        act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
+        video_menu.addAction(act_add_video)
+        act_video_preview = QAction("Video &Preview Panel", self)
+        act_video_preview.setCheckable(True)
+        act_video_preview.setChecked(True)
+        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
+        video_menu.addAction(act_video_preview)
+        self._act_video_preview = act_video_preview
         self._clean_output_action = QAction("&Clean Video Output", self)
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
-        tools_menu.addAction(self._clean_output_action)
+        video_menu.addAction(self._clean_output_action)
         self._ndi_output_action = QAction("&NDI Video Output", self)
         self._ndi_output_action.setCheckable(True)
         self._ndi_output_action.setChecked(
@@ -1824,12 +1862,12 @@ class MainWindow(QMainWindow):
             "Requires cyndilib + NDI Runtime. Right-click Clean Output to rename."
         )
         self._ndi_output_action.triggered.connect(self._toggle_ndi_output)
-        tools_menu.addAction(self._ndi_output_action)
+        video_menu.addAction(self._ndi_output_action)
         act_ndi_name = QAction("NDI Source &Name…", self)
         act_ndi_name.setToolTip("Custom NDI name so Depence does not pick the wrong feed")
         act_ndi_name.triggered.connect(self._prompt_ndi_name)
-        tools_menu.addAction(act_ndi_name)
-        self._build_video_decode_quality_menu(tools_menu)
+        video_menu.addAction(act_ndi_name)
+        self._build_video_decode_quality_menu(video_menu)
 
     def _autosave_enabled(self) -> bool:
         return bool(self._settings.value(_KEY_AUTOSAVE_ENABLED, True, type=bool))
@@ -1876,7 +1914,7 @@ class MainWindow(QMainWindow):
 
         self._autosave_interval_actions: dict[int, QAction] = {}
         for minutes in _AUTOSAVE_INTERVAL_MINUTES:
-            label = "Every 1 minute" if minutes == 1 else f"Every {minutes} minutes"
+            label = f"Every {minutes} minutes"
             action = QAction(label, self)
             action.setCheckable(True)
             action.triggered.connect(
@@ -1900,8 +1938,7 @@ class MainWindow(QMainWindow):
         if minutes is None:
             self.status.showMessage("Auto-Save off", 2500)
         else:
-            label = "1 minute" if minutes == 1 else f"{minutes} minutes"
-            self.status.showMessage(f"Auto-Save every {label}", 2500)
+            self.status.showMessage(f"Auto-Save every {minutes} minutes", 2500)
 
     def _sync_autosave_menu_ui(self) -> None:
         off = getattr(self, "_autosave_off_action", None)
