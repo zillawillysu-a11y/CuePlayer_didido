@@ -2551,32 +2551,36 @@ class TimelineWidget(QWidget):
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
 
-        for x in range(x_left, x_right):
-            t0 = self._time_for_x(x)
-            t1 = self._time_for_x(x + 1)
-            clip_t0 = timeline_to_clip_local(t0, clip)
-            clip_t1 = timeline_to_clip_local(t1, clip)
-            if clip_t0 is None and clip_t1 is None:
-                continue
-            if clip_t0 is None:
-                clip_t0 = 0.0
-            if clip_t1 is None:
-                clip_t1 = duration
-            clip_t0 = max(0.0, min(duration, clip_t0))
-            clip_t1 = max(clip_t0, min(duration, clip_t1))
-            if use_raw:
-                lo, hi = sample_source_raw_for_clip_times(
-                    peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
-                )
-            else:
-                lo, hi = sample_source_peaks_for_clip_times(
-                    peaks,
-                    clip,
-                    clip_t0=clip_t0,
-                    clip_t1=clip_t1,
-                    samples_per_pixel=samples_per_pixel,
-                )
-            painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
+        try:
+            for x in range(x_left, x_right):
+                t0 = self._time_for_x(x)
+                t1 = self._time_for_x(x + 1)
+                clip_t0 = timeline_to_clip_local(t0, clip)
+                clip_t1 = timeline_to_clip_local(t1, clip)
+                if clip_t0 is None and clip_t1 is None:
+                    continue
+                if clip_t0 is None:
+                    clip_t0 = 0.0
+                if clip_t1 is None:
+                    clip_t1 = duration
+                clip_t0 = max(0.0, min(duration, clip_t0))
+                clip_t1 = max(clip_t0, min(duration, clip_t1))
+                if use_raw:
+                    lo, hi = sample_source_raw_for_clip_times(
+                        peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
+                    )
+                else:
+                    lo, hi = sample_source_peaks_for_clip_times(
+                        peaks,
+                        clip,
+                        clip_t0=clip_t0,
+                        clip_t1=clip_t1,
+                        samples_per_pixel=samples_per_pixel,
+                    )
+                painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
+        except Exception:
+            # Corrupt / partially-built peaks must never take down the UI.
+            return
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
         painter.save()
