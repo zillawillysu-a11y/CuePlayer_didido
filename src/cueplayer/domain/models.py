@@ -104,7 +104,7 @@ class MarkLane:
     midi_note_enabled: bool = False
     # 1–127 overrides the default note; 0 = auto from Main/Button base + lane index.
     midi_note: int = 0
-    marker_shape: MarkerShape = "circle"
+    marker_shape: MarkerShape = "triangle_up"
     # Tinted row in the timeline (right of the header); header stays neutral.
     # Deprecated — track tint is project-global (show_mark_track_colors).
     show_row_color: bool = True

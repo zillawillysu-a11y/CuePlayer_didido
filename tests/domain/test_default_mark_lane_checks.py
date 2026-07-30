@@ -16,6 +16,7 @@ def test_default_mark_lane_checkbox_pattern() -> None:
     assert main.cue_list_enabled is True
     assert main.cue_id_enabled is True
     assert main.midi_note_enabled is False
+    assert main.marker_shape == "triangle_up"
     assert song.now_primary_lanes == [1]
     assert song.now_secondary_lanes == list(range(2, 10))
 
@@ -26,6 +27,7 @@ def test_default_mark_lane_checkbox_pattern() -> None:
         assert lane.cue_list_enabled is True
         assert lane.cue_id_enabled is False
         assert lane.midi_note_enabled is True
+        assert lane.marker_shape == "triangle_up"
 
 
 def test_project_create_uses_same_mark_defaults() -> None:
