@@ -21,6 +21,10 @@ NdiFrameMode = Literal["video", "output_window"]
 _DEFAULT_W = 1920
 _DEFAULT_H = 1080
 
+# Official downloads (employees install these; CuePlayer.exe already bundles cyndilib).
+NDI_TOOLS_URL = "https://ndi.video/tools/"
+NDI_RUNTIME_URL = "https://ndi.link/NDIRedistV6"
+
 
 def ndi_available() -> bool:
     try:
@@ -37,15 +41,54 @@ def ndi_status() -> str:
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
         return (
-            "NDI support missing from this build (cyndilib not bundled).\n"
-            "Ask the packager to rebuild with the ndi extra, then install\n"
-            "NDI Tools / Runtime from ndi.video on this PC and restart CuePlayer."
+            "NDI Tools / Runtime is not installed on this PC "
+            "(or this build is missing cyndilib).\n"
+            f"Install NDI Tools: {NDI_TOOLS_URL}\n"
+            f"Or Runtime only: {NDI_RUNTIME_URL}\n"
+            "Then restart CuePlayer."
         )
     return (
         "NDI library not installed. Install with:\n"
         "  py -m pip install cyndilib\n"
-        "Also install NDI Tools / Runtime from ndi.video, then restart CuePlayer."
+        f"Also install NDI Tools ({NDI_TOOLS_URL}) or Runtime "
+        f"({NDI_RUNTIME_URL}), then restart CuePlayer."
     )
+
+
+def ndi_install_required(error: str | None) -> bool:
+    """True when the user should install NDI Tools / Runtime (show install dialog)."""
+    if not error:
+        return False
+    if not ndi_available():
+        return True
+    low = error.lower()
+    needles = (
+        "runtime",
+        "ndi tools",
+        "processing.ndi",
+        "ndi.lib",
+        "processing.ndi.lib",
+        "cannot load",
+        "failed to load",
+        "dll",
+        "shared library",
+        "not found",
+        "no module named",
+        "cyndilib",
+        "ndi open failed",
+    )
+    return any(n in low for n in needles)
+
+
+def ndi_runtime_missing_message(detail: str = "") -> str:
+    detail = (detail or "").strip()
+    base = (
+        "NDI Tools / Runtime is not installed (or could not be loaded) on this PC.\n"
+        "Please install NDI, then restart CuePlayer and try NDI Output again."
+    )
+    if detail:
+        return f"{base}\n\nDetail: {detail}"
+    return base
 
 
 def _even(n: int) -> int:
@@ -399,7 +442,7 @@ class NdiVideoOutput:
             self._frame = None
             self._buf_a = None
             self._buf_b = None
-            self._last_error = f"NDI open failed: {exc}"
+            self._last_error = ndi_runtime_missing_message(str(exc))
             log.warning("NDI configure failed: %s", exc)
             return self._last_error
 

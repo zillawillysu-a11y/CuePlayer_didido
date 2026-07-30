@@ -23,6 +23,8 @@
 
 CuePlayer 本身已含 NDI 支援，但每台電腦還要裝官方 Runtime／Tools。
 
+若開啟 NDI Output 時跳出提示視窗，請點視窗內連結安裝，裝完後**重開 CuePlayer**再試。
+
 請到官網下載並安裝（擇一即可，建議裝完整 Tools）：
 
 - **NDI Tools（建議）**  
