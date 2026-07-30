@@ -1,4 +1,4 @@
-﻿"""Main application window with waveform timeline and marking."""
+"""Main application window with waveform timeline and marking."""
 
 from __future__ import annotations
 
@@ -877,6 +877,8 @@ class SetlistWidget(QTableWidget):
 
 class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
+    _ltc_detect_finished = Signal(object, object, bool)  # cache_key, channel, ok
+    _audio_prefetch_finished = Signal(object, object)  # path, buffer | Exception
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
@@ -938,6 +940,8 @@ class MainWindow(QMainWindow):
         # JIT-warm librosa onset path so the first real detect is not a hitch.
         self._bpm_detect_executor.submit(_warmup_bpm_analyzer_safe)
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
+        self._ltc_detect_finished.connect(self._on_ltc_detect_finished)
+        self._audio_prefetch_finished.connect(self._on_audio_prefetch_finished)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
@@ -5266,26 +5270,39 @@ class MainWindow(QMainWindow):
         future = self._ltc_detect_executor.submit(_run)
         self._audio_ltc_inflight[key] = future
 
-        def _apply(cache_key: tuple[str, int, int], channel: int | None, *, ok: bool) -> None:
-            self._audio_ltc_inflight.pop(cache_key, None)
-            if ok:
-                self._audio_ltc_cache[cache_key] = channel
-                self._audio_prefetch_executor.submit(save_ltc_channel, cache_key, channel)
-            self._note_media_warm_step(cache_key, "ltc")
-            if ok:
-                self._setlist_ltc_cache_updated.emit()
-            self._media_warm_progress.emit()
-            self._ltc_idle_timer.start()
-
         def _done(fut) -> None:
             try:
                 cache_key, channel = fut.result()
             except Exception:
-                QTimer.singleShot(0, lambda: _apply(key, None, ok=False))
+                self._ltc_detect_finished.emit(key, None, False)
                 return
-            QTimer.singleShot(0, lambda: _apply(cache_key, channel, ok=True))
+            self._ltc_detect_finished.emit(cache_key, channel, True)
 
         future.add_done_callback(_done)
+
+    def _on_ltc_detect_finished(
+        self, cache_key: object, channel: object, ok: bool
+    ) -> None:
+        if not isinstance(cache_key, tuple) or len(cache_key) != 3:
+            return
+        key = cache_key  # type: ignore[assignment]
+        self._audio_ltc_inflight.pop(key, None)
+        if ok:
+            ch = channel if isinstance(channel, int) else None
+            self._audio_ltc_cache[key] = ch
+            self._audio_prefetch_executor.submit(save_ltc_channel, key, ch)
+            self._setlist_ltc_cache_updated.emit()
+            # Keep the live engine's music-strip / Translate channel in sync.
+            current = self._main_audio_path_for_song(self.current_song)
+            if current is not None and self._audio_cache_key(current) == key:
+                self.engine._detected_ltc_channel = ch
+                self.engine._ltc_detect_ran = True
+                self.engine._refresh_source_routing_cache()
+                if self.project.audio_output.effective_ltc_to_mtc_translate():
+                    self.engine._sync_mtc_to_file_ltc(self.engine.raw_position, force=True)
+        self._note_media_warm_step(key, "ltc")
+        self._media_warm_progress.emit()
+        self._ltc_idle_timer.start()
 
     def _schedule_bpm_detect_for_song(
         self,
@@ -5706,22 +5723,34 @@ class MainWindow(QMainWindow):
             self._audio_inflight[key] = future
 
             def _done(fut) -> None:
-                def _apply() -> None:
-                    self._audio_inflight.pop(key, None)
-                    try:
-                        buffer = fut.result()
-                    except Exception:
-                        self._note_media_warm_step(key, "audio")
-                        self._note_media_warm_step(key, "ltc")
-                        self._media_warm_progress.emit()
-                        return
-                    self._store_audio_cache(path, buffer, write_disk=False, schedule_ltc=False)
-                    self._media_warm_progress.emit()
-
-                QTimer.singleShot(0, _apply)
+                try:
+                    buffer = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    self._audio_prefetch_finished.emit(path, exc)
+                    return
+                self._audio_prefetch_finished.emit(path, buffer)
 
             future.add_done_callback(_done)
         return future
+
+    def _on_audio_prefetch_finished(self, path: object, result: object) -> None:
+        if not isinstance(path, Path):
+            return
+        key = self._audio_cache_key(path)
+        if key is not None:
+            self._audio_inflight.pop(key, None)
+        if isinstance(result, Exception) or result is None:
+            if key is not None:
+                self._note_media_warm_step(key, "audio")
+                self._note_media_warm_step(key, "ltc")
+            self._media_warm_progress.emit()
+            return
+        from cueplayer.media.audio_loader import AudioBuffer as _AudioBuffer
+
+        if not isinstance(result, _AudioBuffer):
+            return
+        self._store_audio_cache(path, result, write_disk=False, schedule_ltc=False)
+        self._media_warm_progress.emit()
 
     def _begin_media_warm_progress(self) -> None:
         """Track pending waveform decode + LTC detect for status-bar %."""
