@@ -45,7 +45,12 @@ def test_overview_seek_emits(app: QApplication) -> None:
     assert 40.0 <= got[0] <= 60.0
 
 
-def test_timeline_visible_window(app: QApplication) -> None:
+def test_overview_left_gutter_shows_playhead_time(app: QApplication) -> None:
+    bar = TimelineOverviewBar()
+    bar.set_state(duration=205.0, position=65.0, view_start=0.0, view_end=205.0)
+    assert TimelineOverviewBar._format_time(bar._position) == "1:05"  # noqa: SLF001
+    assert TimelineOverviewBar._format_time(0.0) != TimelineOverviewBar._format_time(bar._position)  # noqa: SLF001
+
     widget = TimelineWidget()
     song = Song.create("Overview")
     widget.set_song(song)

@@ -19,8 +19,6 @@ from PySide6.QtWidgets import (
 
 from cueplayer.domain.models import (
     AudioOutputSettings,
-    clamp_output_channels,
-    default_channel_routing,
     default_ltc_channels_for_device,
 )
 from cueplayer.playback.devices import (
@@ -32,18 +30,13 @@ from cueplayer.playback.devices import (
     list_output_devices_for_picker,
     picker_hostapi_options,
     resolve_output_hostapi,
-    resolve_output_endpoint_for_channels,
-    upgrade_device_for_channels,
 )
 from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
 from cueplayer.playback.routing_parse import (
-    LTC_LABEL,
     MUSIC_SOURCE_LABEL,
-    is_ltc_route,
-    is_music_source_route,
-    parse_channel_ui,
-    parse_stereo_route,
+    derive_channel_modes,
     route_to_ui,
+    stereo_routes_from_channel_modes,
 )
 from cueplayer.ui.checkbox import TickCheckBox
 from cueplayer.ui.spinboxes import NoWheelComboBox
@@ -54,19 +47,6 @@ def _channels_to_ui(channels: list[int]) -> str:
     if not channels:
         return ""
     return "+".join(str(int(c) + 1) for c in channels)
-
-
-def _clamp_channel_ui_text(
-    text: str, *, max_ch: int, fallback: list[int] | None = None
-) -> str:
-    if is_music_source_route(text) or is_ltc_route(text):
-        return text.strip()
-    parsed = parse_channel_ui(text, max_ch=max_ch)
-    if parsed is None:
-        parsed = []
-    if not parsed and fallback is not None:
-        parsed = clamp_output_channels(list(fallback), max_ch)
-    return _channels_to_ui(parsed)
 
 
 class AudioTimecodeDialog(QDialog):
@@ -104,6 +84,7 @@ class AudioTimecodeDialog(QDialog):
             midi_cue_velocity=int(settings.midi_cue_velocity),
             midi_main_base_note=int(settings.midi_main_base_note),
             midi_button_base_note=int(settings.midi_button_base_note),
+            output_channel_modes=list(settings.output_channel_modes),
         )
 
         root = QVBoxLayout(self)
@@ -157,23 +138,21 @@ class AudioTimecodeDialog(QDialog):
         device_form.addRow(self.driver_hint)
         inner.addWidget(device_box)
 
-        stereo_box = QGroupBox("Stereo Output (L / R legs)")
-        stereo_form = QFormLayout(stereo_box)
-        self.music_l = NoWheelComboBox()
-        self.music_l.setEditable(True)
-        self.music_r = NoWheelComboBox()
-        self.music_r.setEditable(True)
-        stereo_form.addRow("L →", self.music_l)
-        stereo_form.addRow("R →", self.music_r)
+        stereo_box = QGroupBox("Output Channels")
+        self._channel_rows_host = QWidget()
+        self._channel_rows_layout = QFormLayout(self._channel_rows_host)
+        self._channel_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._channel_mode_combos: list[NoWheelComboBox] = []
+        stereo_form = QVBoxLayout(stereo_box)
+        stereo_form.addWidget(self._channel_rows_host)
         stereo_tip = QLabel(
-            "Music Source = music-only (striped LTC removed). "
-            "LTC = pass file timecode to that leg (e.g. 3.5mm split: L=Music Source, R=LTC). "
-            "Or use channel numbers 1 · 2 · 3 · 1+2. "
-            "Dedicated LTC → channel stays exclusive (music never shares that wire)."
+            "Assign each physical output channel to Music Source or LTC Source. "
+            "Stereo music routing is derived from your picks (e.g. CH1=Music, CH2=LTC). "
+            "Music Source = music-only (striped LTC removed from that leg)."
         )
         stereo_tip.setStyleSheet("color: #a1a1aa;")
         stereo_tip.setWordWrap(True)
-        stereo_form.addRow(stereo_tip)
+        stereo_form.addWidget(stereo_tip)
         inner.addWidget(stereo_box)
 
         mtc_box = QGroupBox("MIDI Output")
@@ -254,8 +233,6 @@ class AudioTimecodeDialog(QDialog):
         ltc_form = QFormLayout(ltc_box)
         self.ltc_enable = TickCheckBox("Enable LTC on output")
         self.ltc_enable.setChecked(settings.ltc_enabled)
-        self.ltc_channels = NoWheelComboBox()
-        self.ltc_channels.setEditable(True)
         self.ltc_source = NoWheelComboBox()
         self.ltc_source.addItem("Internal generator", "generator")
         self.ltc_source.addItem("From file — auto-detect L/R", "auto")
@@ -279,13 +256,12 @@ class AudioTimecodeDialog(QDialog):
         gain_row.addWidget(self.ltc_gain, stretch=1)
         gain_row.addWidget(self.ltc_gain_label)
         ltc_note = QLabel(
-            "Enable LTC on output + LTC→CH3 sends timecode to your interface. "
+            "Enable LTC on output, then pick LTC Source on an output channel above. "
             "Use file source for striped audio; use Internal generator only when needed."
         )
         ltc_note.setStyleSheet("color: #a1a1aa;")
         ltc_note.setWordWrap(True)
         ltc_form.addRow(self.ltc_enable)
-        ltc_form.addRow("LTC →", self.ltc_channels)
         ltc_form.addRow("LTC source", self.ltc_source)
         ltc_form.addRow(self.ltc_generator_enable)
         ltc_form.addRow("LTC Gain", gain_row)
@@ -309,20 +285,17 @@ class AudioTimecodeDialog(QDialog):
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         self.ltc_source.currentIndexChanged.connect(self._on_ltc_source_changed)
         self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
+        self.ltc_enable.toggled.connect(lambda _checked: self._on_device_changed())
         self.midi_on.toggled.connect(self._sync_midi_ui)
         self.midi_notes_enable.toggled.connect(self._sync_midi_ui)
         self.ltc_gain.valueChanged.connect(
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
+        self._saved_channel_modes = derive_channel_modes(
+            settings, max_ch=max(2, len(settings.output_channel_modes) or 2)
+        )
         self._reload_devices()
         self._on_ltc_source_changed()
-        self.music_l.setEditText(settings.music_l_route or "1")
-        self.music_r.setEditText(settings.music_r_route or "2")
-        max_ch = self._current_max_channels()
-        ltc = clamp_output_channels(settings.ltc_channels, max_ch)
-        if not ltc:
-            ltc = default_ltc_channels_for_device(max_ch)
-        self.ltc_channels.setEditText(_channels_to_ui(ltc) or ("3" if max_ch >= 3 else "1"))
         self._combo_hostapi = resolve_output_hostapi(str(settings.output_hostapi or ""))
         self._sync_midi_ui()
 
@@ -381,26 +354,11 @@ class AudioTimecodeDialog(QDialog):
         return find_output_device(self._devices, name=str(self.device_combo.currentData() or ""))
 
     def _current_max_channels(self) -> int:
+        """Channels on the device the user picked — not a higher sibling endpoint."""
         chosen = self._chosen_device()
         if chosen is None:
             return 2
-        api = self._current_hostapi()
-        need = 3 if self.ltc_enable.isChecked() else 1
-        endpoint = resolve_output_endpoint_for_channels(
-            preferred_name=chosen.name,
-            min_channels=need,
-            samplerate=48000.0,
-            raw_devices=self._all_devices,
-            hostapi=api,
-        )
-        if endpoint is not None:
-            return endpoint.max_output_channels
-        return upgrade_device_for_channels(
-            chosen,
-            min_channels=need,
-            raw_devices=self._all_devices,
-            hostapi=api,
-        ).max_output_channels
+        return max(1, int(chosen.max_output_channels))
 
     def _on_ltc_source_changed(self) -> None:
         is_generator = self.ltc_source.currentData() == "generator"
@@ -408,82 +366,85 @@ class AudioTimecodeDialog(QDialog):
         if is_generator:
             self.ltc_generator_enable.setEnabled(self.ltc_enable.isChecked())
 
-    def _stereo_suggestions(self, max_ch: int) -> list[str]:
-        items = [MUSIC_SOURCE_LABEL, LTC_LABEL]
-        items.extend(str(i) for i in range(1, max_ch + 1))
-        if max_ch >= 2:
-            items.append("1+2")
-        return items
+    def _channel_mode_items(self) -> list[tuple[str, str]]:
+        return [
+            ("Off", "off"),
+            (MUSIC_SOURCE_LABEL, "music_source"),
+            ("LTC Source", "ltc"),
+        ]
+
+    def _current_channel_modes(self) -> list[str]:
+        modes: list[str] = []
+        for combo in self._channel_mode_combos:
+            modes.append(str(combo.currentData() or "off"))
+        return modes
+
+    def _rebuild_channel_rows(self, *, preserve: bool = True) -> None:
+        max_ch = self._current_max_channels()
+        prev = self._current_channel_modes() if preserve and self._channel_mode_combos else []
+        if not prev:
+            prev = list(getattr(self, "_saved_channel_modes", []) or [])
+        if len(prev) < max_ch:
+            derived = derive_channel_modes(self._result, max_ch=max_ch)
+            for i in range(len(prev), max_ch):
+                prev.append(derived[i] if i < len(derived) else "off")
+        while len(prev) < max_ch:
+            prev.append("off")
+
+        while self._channel_rows_layout.count():
+            item = self._channel_rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._channel_mode_combos.clear()
+
+        items = self._channel_mode_items()
+        for ch in range(max_ch):
+            combo = NoWheelComboBox()
+            for label, mode in items:
+                combo.addItem(label, mode)
+            mode = prev[ch] if ch < len(prev) else "off"
+            idx = max(0, combo.findData(mode))
+            combo.setCurrentIndex(idx)
+            self._channel_mode_combos.append(combo)
+            self._channel_rows_layout.addRow(f"CH {ch + 1}", combo)
 
     def _on_device_changed(self) -> None:
         max_ch = self._current_max_channels()
-        left, right, _ = default_channel_routing(max_ch)
         ltc_default = default_ltc_channels_for_device(max_ch)
         chosen = self._chosen_device()
         api_txt = chosen.hostapi_name.replace("Windows ", "") if chosen else "—"
-        self.device_hint.setText(
-            f"{max_ch} output channel(s) via {api_txt}. "
-            f"Default LTC→{_channels_to_ui(ltc_default) or '—'}."
-        )
-        suggestions = self._stereo_suggestions(max_ch)
-        for combo, fallback, side in (
-            (self.music_l, left or [0], "l"),
-            (self.music_r, right or ([min(1, max_ch - 1)] if max_ch > 0 else [0]), "r"),
-        ):
-            current = combo.currentText()
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(suggestions)
-            if is_music_source_route(current) or is_ltc_route(current):
-                combo.setEditText(current)
-            else:
-                combo.setEditText(
-                    _clamp_channel_ui_text(current, max_ch=max_ch, fallback=fallback)
-                )
-            combo.blockSignals(False)
-        ltc_suggestions = [str(i) for i in range(1, max_ch + 1)]
-        combo = self.ltc_channels
-        current = combo.currentText()
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItems(ltc_suggestions)
-        combo.setEditText(
-            _clamp_channel_ui_text(current, max_ch=max_ch, fallback=ltc_default)
-        )
-        combo.blockSignals(False)
+        if max_ch >= 3:
+            wire = f"Typical LTC wire: CH {_channels_to_ui(ltc_default) or '—'}."
+        else:
+            wire = "Stereo — use Music Source on both channels; LTC needs a multi-out interface."
+        self.device_hint.setText(f"{max_ch} output channel(s) via {api_txt}. {wire}")
+        self._rebuild_channel_rows(preserve=True)
 
     def result_settings(self) -> AudioOutputSettings:
         return self._result
 
     def _accept(self) -> None:
         max_ch = self._current_max_channels()
-        left_parsed = parse_stereo_route(self.music_l.currentText(), side="l", max_ch=max_ch)
-        right_parsed = parse_stereo_route(self.music_r.currentText(), side="r", max_ch=max_ch)
-        ltc = parse_channel_ui(self.ltc_channels.currentText(), max_ch=max_ch)
-        if left_parsed is None or right_parsed is None or ltc is None:
-            QMessageBox.warning(
-                self,
-                "Invalid routing",
-                "Use Music Source, LTC, or channel numbers (1, 1+2, 3).",
-            )
-            return
-        left_kind, left_ch = left_parsed
-        right_kind, right_ch = right_parsed
-        self.music_l.setEditText(route_to_ui(left_kind, left_ch, legacy_text=self.music_l.currentText()))
-        self.music_r.setEditText(route_to_ui(right_kind, right_ch, legacy_text=self.music_r.currentText()))
+        modes = self._current_channel_modes()
+        while len(modes) < max_ch:
+            modes.append("off")
+        ltc_channels = [i for i, m in enumerate(modes[:max_ch]) if m == "ltc"]
+        left_kind, left_ch, right_kind, right_ch, bus_ltc = stereo_routes_from_channel_modes(
+            modes,
+            max_ch=max_ch,
+        )
+        ltc = bus_ltc or ltc_channels[:1]
         if self.ltc_enable.isChecked() and not ltc:
-            ltc = default_ltc_channels_for_device(max_ch)
-        if self.ltc_enable.isChecked() and ltc and len(ltc) > 1:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 "LTC routing",
-                "LTC is mono — route to one channel (e.g. 3 for Focusrite CH3).",
+                "LTC is enabled but no output channel is set to LTC Source — "
+                "timecode will not be sent to the speakers. "
+                "Assign LTC Source on a channel above when you need a wire.",
             )
-            return
-        self.ltc_channels.setEditText(_channels_to_ui(ltc))
-        if self.ltc_enable.isChecked() and not ltc:
-            QMessageBox.warning(self, "LTC routing", "LTC is enabled but no output channel is set.")
-            return
+        music_l_route = route_to_ui(left_kind, left_ch)
+        music_r_route = route_to_ui(right_kind, right_ch)
         midi_on = self.midi_on.isChecked()
         port = str(self.midi_port.currentData() or "")
         if midi_on and not port:
@@ -507,17 +468,15 @@ class AudioTimecodeDialog(QDialog):
             output_device_name=chosen.name if chosen is not None else "",
             output_device_index=chosen.index if chosen is not None else None,
             output_hostapi=resolve_output_hostapi(str(self.hostapi_combo.currentData() or "")),
-            music_l_route=self.music_l.currentText().strip() or "1",
-            music_r_route=self.music_r.currentText().strip() or "2",
+            music_l_route=music_l_route,
+            music_r_route=music_r_route,
             music_left_channels=left_ch if left_kind == "channels" else [],
             music_right_channels=right_ch if right_kind == "channels" else [],
             ltc_enabled=self.ltc_enable.isChecked(),
             ltc_source=str(self.ltc_source.currentData() or "generator"),
             ltc_generator_enabled=self.ltc_generator_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
-            ltc_channels=ltc if self.ltc_enable.isChecked() else (
-                ltc or default_ltc_channels_for_device(max_ch)
-            ),
+            ltc_channels=ltc if self.ltc_enable.isChecked() else [],
             ltc_to_mtc_translate=self.ltc_to_mtc_translate.isChecked(),
             midi_enabled=midi_on,
             mtc_enabled=self.mtc_enable.isChecked(),
@@ -527,5 +486,6 @@ class AudioTimecodeDialog(QDialog):
             midi_cue_velocity=100,
             midi_main_base_note=int(self.midi_main_base.currentData() or 36),
             midi_button_base_note=int(self.midi_button_base.currentData() or 48),
+            output_channel_modes=modes[:max_ch],
         )
         self.accept()

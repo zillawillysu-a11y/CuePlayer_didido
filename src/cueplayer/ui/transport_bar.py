@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -16,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from cueplayer.ui.icon_button import IconButton
-from cueplayer.ui.theme import BG_APP, SLIDER_QSS, TEXT, TEXT_MUTED
+from cueplayer.ui.theme import BG_APP, SLIDER_QSS, TEXT_MUTED
 from cueplayer.ui.timeline_overview import TimelineOverviewBar
 
 
@@ -46,6 +45,22 @@ _FLAT_BIG = (
     "}"
     "QPushButton:hover { background: #222222; }"
     "QPushButton:pressed { background: #2a2a2a; }"
+    "QPushButton:disabled { color: #555555; background: transparent; }"
+)
+
+# Light chip when on — matches timeline Auto Scroll overlay toggles.
+_CHIP_TOGGLE = (
+    "QPushButton {"
+    "  background: rgba(24, 24, 24, 140); border: none; border-radius: 6px;"
+    "  color: #ededed; font-size: 14px; font-weight: 600; padding: 6px 12px;"
+    "}"
+    "QPushButton:hover { background: rgba(48, 48, 48, 200); }"
+    "QPushButton:pressed { background: rgba(40, 40, 40, 220); }"
+    "QPushButton:checked {"
+    "  background: rgba(232, 232, 232, 235); color: #111111;"
+    "}"
+    "QPushButton:checked:hover { background: rgba(245, 245, 245, 245); }"
+    "QPushButton:checked:pressed { background: rgba(200, 200, 200, 245); }"
     "QPushButton:disabled { color: #555555; background: transparent; }"
 )
 
@@ -130,9 +145,6 @@ class BottomTransportBar(QWidget):
     volume_changed = Signal(float)  # 0.0 … 1.0
     seek_requested = Signal(float)
 
-    # Matched side rails (volume) so Play/Pause/Stop stay on the true center.
-    _SIDE_RAIL_W = 260
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("bottomTransport")
@@ -167,15 +179,16 @@ class BottomTransportBar(QWidget):
         self.loop_a_button.setToolTip("Set point A")
         self.loop_b_button = QPushButton("B")
         self.loop_b_button.setToolTip("Set point B")
-        self.loop_box = QCheckBox("Loop")
-        self.loop_box.setToolTip("Loop playback between A and B")
-        self.loop_box.setStyleSheet(
-            f"QCheckBox {{ color: {TEXT}; font-size: 14px; spacing: 8px; border: none; }}"
-        )
+        self.loop_button = QPushButton("Loop")
+        self.loop_button.setCheckable(True)
+        self.loop_button.setToolTip("Loop playback between A and B (on when highlighted)")
+        self.loop_button.setStyleSheet(_CHIP_TOGGLE)
+        self.loop_button.setFlat(True)
+        self.loop_button.setAutoDefault(False)
+        self.loop_button.setDefault(False)
+        self.loop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.loop_button.setFixedHeight(44)
         self.loop_clear_button = IconButton("clear", "Clear A / B", size=QSize(44, 44))
-        self.loop_label = QLabel("A —  B —")
-        self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px;")
-        self.loop_label.setMinimumWidth(160)
 
         # Kept for set_times() callers; not shown (overview ends replace it).
         self.time_label = QLabel("")
@@ -208,6 +221,8 @@ class BottomTransportBar(QWidget):
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        self._center_anchor: QWidget | None = None
+
         # Balance spacer = A/B group width so Play/Pause/Stop sit on true center
         # while A/B remain immediately to the right of Stop.
         self._balance = QWidget()
@@ -219,7 +234,7 @@ class BottomTransportBar(QWidget):
         ab_row.setSpacing(8)
         ab_row.addWidget(self.loop_a_button)
         ab_row.addWidget(self.loop_b_button)
-        ab_row.addWidget(self.loop_box)
+        ab_row.addWidget(self.loop_button)
         ab_row.addWidget(self.loop_clear_button)
 
         right = QHBoxLayout()
@@ -230,13 +245,13 @@ class BottomTransportBar(QWidget):
         right.addWidget(self.volume_slider)
         right.addWidget(self.volume_value)
         right_host = QWidget()
-        right_host.setFixedWidth(self._SIDE_RAIL_W)
         right_host.setLayout(right)
+        self._right_rail = right_host
 
         left_spacer = QWidget()
-        left_spacer.setFixedWidth(self._SIDE_RAIL_W)
+        self._left_rail = left_spacer
 
-        row.addWidget(left_spacer)
+        row.addWidget(self._left_rail)
         row.addStretch(1)
         row.addWidget(self._balance)
         row.addWidget(self.play_button)
@@ -244,10 +259,8 @@ class BottomTransportBar(QWidget):
         row.addWidget(self.stop_button)
         row.addSpacing(14)
         row.addWidget(self._ab_group)
-        row.addSpacing(10)
-        row.addWidget(self.loop_label)
         row.addStretch(1)
-        row.addWidget(right_host)
+        row.addWidget(self._right_rail)
         root.addLayout(row)
 
         self.play_button.clicked.connect(self.play_clicked.emit)
@@ -256,9 +269,17 @@ class BottomTransportBar(QWidget):
         self.loop_a_button.clicked.connect(self.set_loop_a_clicked.emit)
         self.loop_b_button.clicked.connect(self.set_loop_b_clicked.emit)
         self.loop_clear_button.clicked.connect(self.clear_loop_clicked.emit)
-        self.loop_box.toggled.connect(self.loop_toggled.emit)
+        self.loop_button.toggled.connect(self.loop_toggled.emit)
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
+
+    def set_center_anchor(self, widget: QWidget | None) -> None:
+        """Optically center transport under this widget (e.g. timeline column)."""
+        self._center_anchor = widget
+        self.sync_geometry()
+
+    def sync_geometry(self) -> None:
+        self._sync_transport_geometry()
 
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
@@ -269,20 +290,61 @@ class BottomTransportBar(QWidget):
         self._sync_transport_geometry()
 
     def _sync_transport_geometry(self) -> None:
-        """Center Play/Pause/Stop; align overview *track* (no time gutters) to Play…X."""
+        """Center overview track under anchor; align track (no time gutters) to Play…X."""
         self._ab_group.adjustSize()
-        self.loop_label.adjustSize()
+        self._right_rail.adjustSize()
         ab_w = max(0, self._ab_group.sizeHint().width())
-        label_w = max(0, self.loop_label.sizeHint().width())
         # Pad left of Play by everything that sits to the right of Stop before
-        # the trailing stretch (spacing + A/B group + spacing + times label).
-        trail = 14 + ab_w + 10 + label_w
+        # the trailing stretch (spacing + A/B group).
+        trail = 14 + ab_w
         if self._balance.width() != trail:
             self._balance.setFixedWidth(trail)
 
+        base_rail = max(0, self._right_rail.sizeHint().width())
+        anchor_c = self._anchor_center_x(self._center_anchor)
+
+        # Measure where the Play…Clear span sits with symmetric side rails.
+        if self._left_rail.width() != base_rail:
+            self._left_rail.setFixedWidth(base_rail)
+        if self._right_rail.width() != base_rail:
+            self._right_rail.setFixedWidth(base_rail)
         lay = self.layout()
         if lay is not None:
             lay.activate()
+
+        play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
+        clear_r = self.loop_clear_button.mapTo(
+            self, self.loop_clear_button.rect().topRight()
+        ).x()
+        cluster_bias = (play_l + clear_r) / 2.0 - self.width() / 2.0
+
+        delta = 0
+        if anchor_c is not None:
+            delta = int(round(anchor_c - self.width() / 2.0 - cluster_bias))
+        left_w = max(0, base_rail + delta)
+        right_w = max(0, base_rail - delta)
+        if self._left_rail.width() != left_w:
+            self._left_rail.setFixedWidth(left_w)
+        if self._right_rail.width() != right_w:
+            self._right_rail.setFixedWidth(right_w)
+        if lay is not None:
+            lay.activate()
+
+        if anchor_c is not None:
+            play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
+            clear_r = self.loop_clear_button.mapTo(
+                self, self.loop_clear_button.rect().topRight()
+            ).x()
+            err = anchor_c - (play_l + clear_r) / 2.0
+            if abs(err) >= 1.0:
+                delta2 = int(round(err))
+                left_w = max(0, left_w + delta2)
+                right_w = max(0, right_w - delta2)
+                if self._left_rail.width() != left_w:
+                    self._left_rail.setFixedWidth(left_w)
+                if self._right_rail.width() != right_w:
+                    self._right_rail.setFixedWidth(right_w)
+                lay.activate()
 
         # mapTo requires an ancestor — project through this widget.
         play_l = self.play_button.mapTo(self, self.play_button.rect().topLeft()).x()
@@ -297,6 +359,19 @@ class BottomTransportBar(QWidget):
         ov_w = track_w + 2 * gutter
         ov_x = int(play_l - gutter - host_l)
         self.overview.setGeometry(ov_x, 0, ov_w, self._overview_host.height())
+
+    def _anchor_center_x(self, widget: QWidget | None) -> float | None:
+        if widget is None or widget.width() < 8:
+            return None
+        if not widget.isVisibleTo(self):
+            return None
+        anchor_point = None
+        anchor_fn = getattr(widget, "transport_anchor_global_point", None)
+        if callable(anchor_fn):
+            anchor_point = anchor_fn()
+        if anchor_point is None:
+            anchor_point = widget.mapToGlobal(widget.rect().center())
+        return float(self.mapFromGlobal(anchor_point).x())
 
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")
@@ -346,12 +421,9 @@ class BottomTransportBar(QWidget):
         *,
         enabled: bool,
     ) -> None:
-        self.loop_box.blockSignals(True)
-        self.loop_box.setChecked(enabled)
-        self.loop_box.blockSignals(False)
-        a_txt = format_time(a) if a is not None else "—"
-        b_txt = format_time(b) if b is not None else "—"
-        self.loop_label.setText(f"A {a_txt}  B {b_txt}")
+        self.loop_button.blockSignals(True)
+        self.loop_button.setChecked(enabled)
+        self.loop_button.blockSignals(False)
         self.overview.set_loop(a, b)
 
     def set_timecode_status(self, *, ltc: bool, mtc: bool) -> None:
@@ -370,6 +442,7 @@ class BottomTransportBar(QWidget):
             self.tc_status.setStyleSheet(
                 f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;"
             )
+        self.sync_geometry()
 
 
 # Back-compat alias used by older imports / cue monitor time formatting.

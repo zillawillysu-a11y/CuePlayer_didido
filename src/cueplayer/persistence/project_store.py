@@ -146,6 +146,7 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "midi_cue_velocity": int(settings.midi_cue_velocity),
         "midi_main_base_note": int(settings.midi_main_base_note),
         "midi_button_base_note": int(settings.midi_button_base_note),
+        "output_channel_modes": list(settings.output_channel_modes),
     }
 
 
@@ -201,6 +202,9 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         midi_button_base_note=max(
             0, min(127, int(raw.get("midi_button_base_note", 48) or 48))
         ),
+        output_channel_modes=[
+            str(m) for m in (raw.get("output_channel_modes") or []) if str(m)
+        ],
     )
 
 
@@ -346,6 +350,33 @@ def _load_project_show_video_track(data: dict[str, Any], songs: list[Song]) -> b
     return True
 
 
+def _clamp_mark_lane_height(value: Any, *, default: float = 28.0) -> float:
+    try:
+        height = float(value)
+    except (TypeError, ValueError):
+        height = default
+    return float(min(80.0, max(24.0, height)))
+
+
+def _load_project_mark_lane_height(data: dict[str, Any], songs: list[Song]) -> float:
+    """Project-global mark lane height; migrate from first song when missing."""
+    if "mark_lane_height" in data:
+        return _clamp_mark_lane_height(data.get("mark_lane_height"))
+    for song in songs:
+        return _clamp_mark_lane_height(song.mark_lane_height)
+    return 28.0
+
+
+def _load_project_show_mark_track_colors(data: dict[str, Any], songs: list[Song]) -> bool:
+    if "show_mark_track_colors" in data:
+        return bool(data.get("show_mark_track_colors"))
+    for song in songs:
+        for lane in song.mark_lanes:
+            if not getattr(lane, "show_row_color", True):
+                return False
+    return True
+
+
 def _load_now_config(song_data: dict[str, Any]) -> tuple[bool, list[int], list[int]]:
     """Return (configured, primary_lanes, secondary_lanes), with legacy migration."""
     if "now_primary_lanes" in song_data or "now_secondary_lanes" in song_data:
@@ -433,6 +464,8 @@ def project_to_dict(
         "mark_line_width": project.mark_line_width,
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
+        "mark_lane_height": float(project.mark_lane_height),
+        "show_mark_track_colors": bool(project.show_mark_track_colors),
         "show_output_timecode_clock": bool(project.show_output_timecode_clock),
         "output_timecode_clock_color": project.output_timecode_clock_color,
         "show_output_quick_toggles": bool(project.show_output_quick_toggles),
@@ -504,6 +537,7 @@ def project_to_dict(
                 "show_ltc_track": bool(song.show_ltc_track),
                 "ltc_lane_height": song.ltc_lane_height,
                 "music_volume": song.music_volume,
+                "audio_gain_db": song.audio_gain_db,
                 "video_lane_height": song.video_lane_height,
                 "mark_lanes": [
                     {
@@ -520,6 +554,7 @@ def project_to_dict(
                         "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
                         "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                         "marker_shape": lane.marker_shape,
+                        "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
                     for lane in song.mark_lanes
                 ],
@@ -627,6 +662,7 @@ def project_from_dict(
                     midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
                     midi_note=int(lane.get("midi_note", 0) or 0),
                     marker_shape=shape,
+                    show_row_color=bool(lane.get("show_row_color", True)),
                 )
             )
         marks = [
@@ -676,6 +712,12 @@ def project_from_dict(
                     min(400.0, max(28.0, song_data.get("ltc_lane_height", 56.0)))
                 ),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
+                audio_gain_db=float(
+                    max(-12.0, min(12.0, float(song_data.get("audio_gain_db", 0.0))))
+                ),
+                mark_lane_height=float(
+                    min(80.0, max(24.0, float(song_data.get("mark_lane_height", 28.0))))
+                ),
                 video_lane_height=float(
                     min(4096.0, max(28.0, song_data.get("video_lane_height", 40.0)))
                 ),
@@ -712,6 +754,8 @@ def project_from_dict(
     wave_color = _load_project_waveform_color(data, songs)
     playhead_color = _load_project_playhead_color(data)
     show_video_track = _load_project_show_video_track(data, songs)
+    mark_lane_height = _load_project_mark_lane_height(data, songs)
+    show_mark_track_colors = _load_project_show_mark_track_colors(data, songs)
     from cueplayer.domain.main_cue_id import migrate_main_cue_ids
 
     for song in songs:
@@ -747,6 +791,8 @@ def project_from_dict(
         mark_dash_off=dash_off,
         waveform_color=wave_color,
         playhead_color=playhead_color,
+        mark_lane_height=mark_lane_height,
+        show_mark_track_colors=show_mark_track_colors,
         show_output_timecode_clock=bool(data.get("show_output_timecode_clock", True)),
         output_timecode_clock_color=_coerce_waveform_color(
             data.get("output_timecode_clock_color"), default="#3dd68c"

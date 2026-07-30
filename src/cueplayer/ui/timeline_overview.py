@@ -19,7 +19,7 @@ class TimelineOverviewBar(QWidget):
 
     seek_requested = Signal(float)
 
-    # Side gutters for "0:00" / duration — keep hairline clear of the text.
+    # Side gutters for current time / duration — keep hairline clear of the text.
     _LABEL_GUTTER = 56
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -136,11 +136,6 @@ class TimelineOverviewBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         left, top, width, height = self._track_rect()
 
-        bed = QColor("#1e1e1e") if (self._hover or self._dragging) else QColor("#141414")
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bed)
-        painter.drawRoundedRect(left, top, width, height, 5, 5)
-
         mid_y = top + height / 2.0
         inset = 6
         track_left = left + inset
@@ -149,14 +144,23 @@ class TimelineOverviewBar(QWidget):
         def x_on_track(t: float) -> float:
             return track_left + (t / self._duration) * track_w
 
-        # Progress hairline — stays inside the bed, clear of side time labels.
-        painter.setBrush(QColor("#2a2a2a"))
-        painter.drawRoundedRect(track_left, int(mid_y - 1), track_w, 2, 1, 1)
+        # Hairline only — no bed / track background (times sit in side gutters).
         played_w = max(0.0, x_on_track(self._position) - track_left)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#f0f0f0"))
         painter.drawRoundedRect(
             track_left, int(mid_y - 1), int(min(played_w, track_w)), 2, 1, 1
         )
+        if played_w < track_w:
+            painter.setBrush(QColor("#3a3a3a"))
+            painter.drawRoundedRect(
+                track_left + int(played_w),
+                int(mid_y - 1),
+                int(max(0, track_w - played_w)),
+                2,
+                1,
+                1,
+            )
 
         if (
             self._loop_a is not None
@@ -184,7 +188,7 @@ class TimelineOverviewBar(QWidget):
         font.setPointSize(max(11, font.pointSize() + 1))
         font.setBold(True)
         painter.setFont(font)
-        start = "0:00"
+        start = self._format_time(self._position)
         end = self._format_time(self._duration)
         painter.drawText(
             4,

@@ -311,6 +311,13 @@ class MarkManagerDialog(QDialog):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self.table, stretch=1)
 
+        self._syncing_bulk = False
+        self._bulk_checks: dict[int, QCheckBox] = {}
+        self._bulk_spacers: list[QWidget] = []
+        self._bulk_row = self._build_bulk_toggle_row()
+        layout.addWidget(self._bulk_row)
+        self.table.horizontalHeader().sectionResized.connect(self._sync_bulk_toggle_layout)
+
         row_btns = QHBoxLayout()
         self.add_btn = QPushButton("Add Mark")
         self.remove_btn = QPushButton("Delete Selected")
@@ -341,6 +348,110 @@ class MarkManagerDialog(QDialog):
         if self.table.rowCount() > 0:
             self.table.selectRow(0)
         self._refresh_preview()
+        self._sync_bulk_toggle_layout()
+        self._refresh_bulk_toggle_states()
+
+    def _build_bulk_toggle_row(self) -> QWidget:
+        row = QWidget()
+        row.setStyleSheet("background: #12151a; border-top: 1px solid #2a2f3a;")
+        self._bulk_layout = QHBoxLayout(row)
+        self._bulk_layout.setContentsMargins(0, 0, 0, 0)
+        self._bulk_layout.setSpacing(0)
+        for col in range(_COL_VISIBLE):
+            spacer = QWidget()
+            self._bulk_spacers.append(spacer)
+            self._bulk_layout.addWidget(spacer)
+        bulk_specs = (
+            (_COL_VISIBLE, "All on/off for Visible"),
+            (_COL_CUE_ID, "All on/off for Cue ID"),
+            (_COL_CUE_LIST, "All on/off for Cue List"),
+            (_COL_MIDI, "All on/off for MIDI On"),
+        )
+        for col, tip in bulk_specs:
+            box = QCheckBox()
+            box.setTristate(True)
+            box.setToolTip(tip)
+            box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
+            self._bulk_checks[col] = box
+            wrap = QWidget()
+            wrap_layout = QHBoxLayout(wrap)
+            wrap_layout.setContentsMargins(0, 0, 0, 0)
+            wrap_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            wrap_layout.addWidget(box)
+            self._bulk_layout.addWidget(wrap)
+        self._bulk_layout.addStretch(1)
+        return row
+
+    def _sync_bulk_toggle_layout(self) -> None:
+        for col, spacer in enumerate(self._bulk_spacers):
+            spacer.setFixedWidth(self.table.columnWidth(col))
+        for col, box in self._bulk_checks.items():
+            parent = box.parentWidget()
+            width = self.table.columnWidth(col)
+            if parent is not None:
+                parent.setFixedWidth(width)
+            else:
+                box.setFixedWidth(width)
+
+    def _checkbox_at(self, row: int, col: int) -> QCheckBox | None:
+        wrap = self.table.cellWidget(row, col)
+        if wrap is None:
+            return None
+        checkbox = wrap.property("checkbox")
+        if isinstance(checkbox, QCheckBox):
+            return checkbox
+        found = wrap.findChild(QCheckBox)
+        return found if isinstance(found, QCheckBox) else None
+
+    def _refresh_bulk_toggle_states(self) -> None:
+        if not self._bulk_checks:
+            return
+        self._syncing_bulk = True
+        try:
+            for col, bulk in self._bulk_checks.items():
+                boxes = [
+                    box
+                    for row in range(self.table.rowCount())
+                    if (box := self._checkbox_at(row, col)) is not None
+                ]
+                if not boxes:
+                    bulk.setCheckState(Qt.CheckState.Unchecked)
+                    continue
+                checked = sum(1 for box in boxes if box.isChecked())
+                if checked == len(boxes):
+                    bulk.setCheckState(Qt.CheckState.Checked)
+                elif checked == 0:
+                    bulk.setCheckState(Qt.CheckState.Unchecked)
+                else:
+                    bulk.setCheckState(Qt.CheckState.PartiallyChecked)
+        finally:
+            self._syncing_bulk = False
+
+    def _on_bulk_toggle_changed(self, col: int) -> None:
+        if self._syncing_bulk:
+            return
+        bulk = self._bulk_checks.get(col)
+        if bulk is None:
+            return
+        state = bulk.checkState()
+        target = state != Qt.CheckState.Unchecked
+        if state == Qt.CheckState.PartiallyChecked:
+            target = True
+        self._syncing_bulk = True
+        try:
+            for row in range(self.table.rowCount()):
+                box = self._checkbox_at(row, col)
+                if box is not None:
+                    box.setChecked(target)
+            bulk.setCheckState(
+                Qt.CheckState.Checked if target else Qt.CheckState.Unchecked
+            )
+        finally:
+            self._syncing_bulk = False
+
+    def _connect_row_bulk_sync(self, *checkboxes: QCheckBox) -> None:
+        for box in checkboxes:
+            box.stateChanged.connect(self._refresh_bulk_toggle_states)
 
     def _reject_restore(self) -> None:
         self._song.mark_lanes = deepcopy(self._lane_snapshot)
@@ -460,6 +571,7 @@ class MarkManagerDialog(QDialog):
                     midi_note_enabled=midi_box.isChecked(),
                     midi_note=midi_note,
                     marker_shape=shape,  # type: ignore[arg-type]
+                    show_row_color=previous.show_row_color if previous else True,
                 )
             )
         return sorted(draft, key=lambda lane: lane.index)
@@ -698,6 +810,8 @@ class MarkManagerDialog(QDialog):
         default_note = self._default_note_for_lane(lane)
         note_combo = self._make_note_combo(lane, default_note)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+        self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
+        self._refresh_bulk_toggle_states()
 
     def _make_note_combo(self, lane: MarkLane, default_note: int) -> NoWheelComboBox:
         combo = NoWheelComboBox()
@@ -907,6 +1021,7 @@ class MarkManagerDialog(QDialog):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.table.removeRow(row)
+        self._refresh_bulk_toggle_states()
 
     def _color_at(self, row: int) -> str:
         wrap = self.table.cellWidget(row, _COL_COLOR)

@@ -45,6 +45,7 @@ from cueplayer.playback.routing_parse import (
     exclusive_ltc_route,
     is_ltc_route,
     is_music_source_route,
+    ltc_output_channels_from_settings,
     parse_stereo_route,
     speaker_channels_without_ltc,
 )
@@ -107,6 +108,7 @@ class AudioEngine(QObject):
         # stacks with master volume but never touches video clip audio or
         # LTC (see Song.music_volume / _music_chunk / _video_chunk).
         self._music_volume = 1.0
+        self._audio_gain_db = 0.0
         self._song: Song | None = None
         self._video_mixer = VideoAudioMixer()
         self._ltc_mirror_last_pos = -1e9
@@ -489,6 +491,11 @@ class AudioEngine(QObject):
         with self._lock:
             self._music_volume = float(min(1.0, max(0.0, volume)))
 
+    def set_audio_gain_db(self, gain_db: float) -> None:
+        """Per-file waveform gain in dB (-12…+12); does not affect LTC."""
+        with self._lock:
+            self._audio_gain_db = float(max(-12.0, min(12.0, gain_db)))
+
     def music_volume(self) -> float:
         with self._lock:
             return float(self._music_volume)
@@ -503,6 +510,7 @@ class AudioEngine(QObject):
         self._video_mixer.set_song(song)
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
+        self.set_audio_gain_db(float(song.audio_gain_db) if song is not None else 0.0)
         self._midi_cues.set_song(song)
         self.refresh_video_clips()
         self._refresh_source_routing_cache()
@@ -555,6 +563,7 @@ class AudioEngine(QObject):
             midi_cue_velocity=int(getattr(settings, "midi_cue_velocity", 100) or 100),
             midi_main_base_note=int(getattr(settings, "midi_main_base_note", 36) or 36),
             midi_button_base_note=int(getattr(settings, "midi_button_base_note", 48) or 48),
+            output_channel_modes=list(getattr(settings, "output_channel_modes", []) or []),
         )
         self._resolve_device_and_route()
         if self._uses_generated_ltc():
@@ -1123,15 +1132,19 @@ class AudioEngine(QObject):
 
         future.add_done_callback(_done)
 
-    def _ltc_bus_active(self) -> bool:
+    def _ltc_bus_active(self, *, max_ch: int | None = None) -> bool:
         s = self._audio_settings
         if not s.ltc_enabled:
             return False
-        if self._song_uses_file_ltc():
+        ch = max_ch if max_ch is not None else max(1, int(self._output_channel_count or 2))
+        if ltc_output_channels_from_settings(s, max_ch=ch):
             return True
-        if s.ltc_source == "generator":
-            return bool(s.ltc_generator_enabled)
-        return self._file_ltc_channel() is not None or s.ltc_source != "generator"
+        # Legacy 3.5mm split: LTC on a stereo leg instead of the dedicated bus.
+        if is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route):
+            if s.ltc_source == "generator":
+                return bool(s.ltc_generator_enabled)
+            return self._file_ltc_channel() is not None
+        return False
 
     def refresh_song_ltc_routing(self) -> None:
         """Re-resolve LTC/music routing after per-song Left-LTC flag changes."""
@@ -1204,8 +1217,8 @@ class AudioEngine(QObject):
             left_kind, left_ch, right_kind, right_ch = parsed
 
         ltc = (
-            list(self._audio_settings.ltc_channels)
-            if self._ltc_bus_active()
+            ltc_output_channels_from_settings(self._audio_settings, max_ch=max_ch)
+            if self._ltc_bus_active(max_ch=max_ch)
             else []
         )
         if ltc and len(ltc) > 1:
@@ -1251,11 +1264,8 @@ class AudioEngine(QObject):
         else:
             left_kind, left_ch, right_kind, right_ch = parsed
 
-        if self._ltc_bus_active():
-            ltc = list(self._audio_settings.ltc_channels)
-            ltc = clamp_output_channels(ltc, max_ch)
-            if not ltc:
-                ltc = default_ltc_channels_for_device(max_ch)
+        if self._ltc_bus_active(max_ch=max_ch):
+            ltc = ltc_output_channels_from_settings(self._audio_settings, max_ch=max_ch)
         else:
             ltc = []
 
@@ -1501,11 +1511,11 @@ class AudioEngine(QObject):
         # Master (all-bus) gain, then the dedicated music-bed gain used for
         # Video/Music alignment balancing — video clip audio only gets the
         # former (see _video_chunk), so the two faders are independent.
-        vol = self._volume * self._music_volume
-        if vol < 1.0 - 1e-6:
-            out *= vol
-        elif vol <= 1e-6:
+        vol = self._volume * self._music_volume * (10.0 ** (self._audio_gain_db / 20.0))
+        if vol <= 1e-6:
             out[:] = 0.0
+        elif abs(vol - 1.0) > 1e-6:
+            out *= vol
         return out
 
     def _video_chunk(self, start: int, frames: int) -> np.ndarray:
