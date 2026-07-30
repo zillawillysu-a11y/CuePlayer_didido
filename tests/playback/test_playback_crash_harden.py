@@ -92,17 +92,19 @@ def test_autodetect_never_calls_sync_detect_ltc(monkeypatch) -> None:
     monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [_device()])
     monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
 
-    called = {"n": 0}
+    sync_calls = {"n": 0}
+    real_detect = eng_mod.detect_ltc_channel
 
-    def _boom(*_a, **_k):  # noqa: ANN001
-        called["n"] += 1
-        raise AssertionError("sync detect_ltc_channel must not run")
+    def _counting(*args, **kwargs):  # noqa: ANN001
+        # Only the background worker should call this — not music/LTC chunk paths.
+        sync_calls["n"] += 1
+        return real_detect(*args, **kwargs)
 
-    monkeypatch.setattr(eng_mod, "detect_ltc_channel", _boom)
+    monkeypatch.setattr(eng_mod, "detect_ltc_channel", _counting)
 
     QApplication.instance() or QApplication([])
     engine = eng_mod.AudioEngine()
-    engine.apply_audio_settings(AudioOutputSettings(ltc_enabled=False))
+    engine.apply_audio_settings(AudioOutputSettings(ltc_enabled=False, ltc_source="auto"))
     n = 4800
     stereo = np.zeros((n, 2), dtype=np.float32)
     mono, levels = build_peak_pyramid(stereo, 48000)
@@ -114,16 +116,19 @@ def test_autodetect_never_calls_sync_detect_ltc(monkeypatch) -> None:
         peak_levels=levels,
     )
     engine.set_buffer(buf)
-    engine.flush_deferred_buffer_setup()
-
-    # Hot paths that used to sync-detect:
+    # Simulate finished async detect (no stripe) without exercising the worker.
+    engine._ltc_detect_ran = True
+    engine._detected_ltc_channel = None
+    engine._ltc_detect_inflight = False
+    engine._refresh_source_routing_cache()
+    before = sync_calls["n"]
     assert engine._autodetect_ltc_channel() is None
     assert engine._file_ltc_channel() is None
     assert engine._song_file_ltc_channel() is None
     engine._music_source_indices()
     engine._is_ltc_file_channel(0)
     engine._ltc_chunk(0, 128)
-    assert called["n"] == 0
+    assert sync_calls["n"] == before
     engine.shutdown_midi_outputs()
 
 

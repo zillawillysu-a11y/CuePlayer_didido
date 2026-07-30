@@ -82,6 +82,8 @@ class AudioEngine(QObject):
     position_changed = Signal(float)
     playing_changed = Signal(bool)
     timecode_status_changed = Signal()  # LTC/MTC toggles / warnings
+    # Worker → UI: (detect generation token, detected channel or None)
+    _ltc_detect_finished = Signal(int, object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -122,6 +124,7 @@ class AudioEngine(QObject):
         self._detected_ltc_channel: int | None = None
         self._ltc_detect_ran = False
         self._ltc_detect_inflight = False
+        self._ltc_detect_token = 0
         self._cached_music_indices: tuple[int, int] = (0, 1)
         self._cached_file_ltc_idx: int | None = None
         self._song_start_tc = "01:00:00:00"
@@ -140,6 +143,7 @@ class AudioEngine(QObject):
         self._playback_resample_future = None
         self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
         self._ltc_detect_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-detect")
+        self._ltc_detect_finished.connect(self._on_ltc_detect_finished)
         self._buffer_setup_token = 0
         self._resume_play_after_buffer = False
         self._active_stream_token: tuple | None = None
@@ -349,17 +353,33 @@ class AudioEngine(QObject):
     def _decode_source_channel(self) -> int | None:
         """File channel to decode timecode from for MTC/display purposes.
 
-        Returns a channel only when translation is actually wanted:
-        - LTC output enabled with a from-file source, OR
-        - TRANS + MTC are both on (mirror file LTC into MTC without LTC output).
-        Generator source always returns None.
+        Returns a channel when:
+        - LTC output is enabled with a from-file source, OR
+        - Translate (file LTC → MTC) is on — even if LTC output is off / source
+          was left on Internal generator (Translate always means file stripe).
         """
         s = self._audio_settings
-        if s.ltc_source == "generator":
+        translating = s.effective_ltc_to_mtc_translate()
+        if not s.ltc_enabled and not translating:
             return None
-        if not s.ltc_enabled and not s.effective_ltc_to_mtc_translate():
-            return None
-        return self._resolved_file_ltc_channel(require_settings=False)
+        mode = str(s.ltc_source or "auto")
+        # Translate never mirrors Song Start / generator numbers — always file.
+        if mode == "generator":
+            if not translating:
+                return None
+            mode = "auto"
+        if mode == "source_left":
+            return 0
+        if mode == "source_right":
+            return 1
+        # auto — prefer finished detect / song override; kick async if needed.
+        song_ch = self._song_file_ltc_channel()
+        if song_ch is not None:
+            return song_ch
+        if self._ltc_detect_ran:
+            return self._detected_ltc_channel
+        self._refresh_ltc_detection()
+        return None
 
     def _decode_file_ltc_timecode(self, position_seconds: float) -> Timecode | None:
         """
@@ -368,8 +388,16 @@ class AudioEngine(QObject):
         Used so MTC can mirror the same numbers as the incoming LTC audio.
         Returns None for generator-only LTC or when decode fails.
         """
+        if self._buffer is None:
+            return None
         ch = self._decode_source_channel()
-        if ch is None or self._buffer is None:
+        # Before auto-detect finishes, probe both legs so Translate still works.
+        channels: list[int]
+        if ch is not None:
+            channels = [int(ch)]
+        elif self._audio_settings.effective_ltc_to_mtc_translate():
+            channels = [0, 1]
+        else:
             return None
         sr = int(self._sample_rate())
         fps = float(self._song_fps) if self._song_fps > 0 else 30.0
@@ -377,18 +405,26 @@ class AudioEngine(QObject):
         window = frame_len * 4
         center = max(0, int(round(max(0.0, float(position_seconds)) * sr)))
         start = max(0, center - frame_len // 2)
-        # Decode from the raw file channel (no LTC output gain).
-        pcm = self._source_channel_chunk(ch, start, window)
-        return decode_ltc_timecode(pcm, sr, fps)
+        for channel in channels:
+            if self._buffer.channels <= channel:
+                continue
+            # Decode from the raw file channel (no LTC output gain).
+            pcm = self._source_channel_chunk(channel, start, window)
+            decoded = decode_ltc_timecode(pcm, sr, fps)
+            if decoded is not None:
+                return decoded
+        return None
 
     def _sync_mtc_to_file_ltc(
         self, position_seconds: float, *, force: bool = False
     ) -> None:
-        """When file LTC is active, lock MTC origin to the decoded stripe TC."""
+        """When file LTC translate is active, lock MTC origin to the decoded stripe TC."""
         if not self._audio_settings.effective_mtc_output():
             return
-        if self._decode_source_channel() is None:
-            return
+        if not self._audio_settings.effective_ltc_to_mtc_translate():
+            # File LTC output alone can still mirror when a file source is selected.
+            if self._decode_source_channel() is None:
+                return
         # Re-decode about twice per second (or on play/seek). QF pacing still
         # runs every timer tick from the mirrored origin.
         if (
@@ -589,8 +625,12 @@ class AudioEngine(QObject):
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
 
-        # When switching away from generator source, allow auto-detect to re-run.
-        if self._audio_settings.ltc_source != "generator":
+        # Re-run auto-detect when using a file source, or when Translate needs a
+        # stripe even if LTC source is still Internal generator.
+        if (
+            self._audio_settings.ltc_source != "generator"
+            or self._audio_settings.effective_ltc_to_mtc_translate()
+        ):
             self._ltc_detect_ran = False
             self._ltc_detect_inflight = False
 
@@ -604,6 +644,10 @@ class AudioEngine(QObject):
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
+        if self._audio_settings.effective_ltc_to_mtc_translate():
+            self._sync_mtc_to_file_ltc(
+                pos if was_playing else self.raw_position, force=True
+            )
         # Share the MTC port for cue notes whenever MIDI is on.
         share_midi_port = bool(
             self._audio_settings.midi_enabled
@@ -770,6 +814,7 @@ class AudioEngine(QObject):
         self._detected_ltc_channel = None
         self._ltc_detect_ran = False
         self._ltc_detect_inflight = False
+        self._ltc_detect_token += 1
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
         with self._lock:
@@ -1429,7 +1474,12 @@ class AudioEngine(QObject):
         self._refresh_ltc_detection()
 
     def _refresh_ltc_detection(self) -> None:
-        """Re-run LTC auto-detect on the native file buffer (not resampled music)."""
+        """Re-run LTC auto-detect on the native file buffer (not resampled music).
+
+        Even when LTC *output* is off, auto-detect still runs so a striped
+        LTC channel can be stripped from the music bed (otherwise the LTC
+        buzz leaks to the speakers as "music"). Sync detect never runs here.
+        """
         buf = self._buffer
         if buf is None or buf.channels < 2:
             self._detected_ltc_channel = None
@@ -1438,8 +1488,6 @@ class AudioEngine(QObject):
             self._refresh_source_routing_cache()
             return
         s = self._audio_settings
-        uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
-        uses_file_bus = bool(s.ltc_enabled and s.ltc_source in ("auto", "source_left", "source_right"))
         song = self._song
         side = coerce_file_ltc_side(
             getattr(song, "file_ltc_side", "auto") if song is not None else "auto"
@@ -1450,16 +1498,14 @@ class AudioEngine(QObject):
             self._ltc_detect_inflight = False
             self._refresh_source_routing_cache()
             return
-        if side == "off" or (not uses_ltc_leg and not uses_file_bus):
-            # Pure music playback — do not burn CPU scanning for a stripe that
-            # is not routed. Setlist badges still use MainWindow's idle detect.
+        if side == "off":
             self._detected_ltc_channel = None
             self._ltc_detect_ran = True
             self._ltc_detect_inflight = False
             self._refresh_source_routing_cache()
             return
         if s.ltc_source in ("source_left", "source_right"):
-            # Explicit project setting — no scan needed.
+            # Explicit project setting — no scan; still strip that channel from music.
             self._detected_ltc_channel = 0 if s.ltc_source == "source_left" else 1
             self._ltc_detect_ran = True
             self._ltc_detect_inflight = False
@@ -1469,36 +1515,40 @@ class AudioEngine(QObject):
             return
         samples = buf.samples
         sample_rate = int(buf.sample_rate)
-        buf_id = id(buf)
+        self._ltc_detect_token += 1
+        token = int(self._ltc_detect_token)
         self._ltc_detect_inflight = True
 
         def _run() -> tuple[int, int | None]:
             from cueplayer.util.thread_priority import lower_background_thread_priority
 
             lower_background_thread_priority()
-            return buf_id, detect_ltc_channel(samples, sample_rate)
+            return token, detect_ltc_channel(samples, sample_rate)
 
         future = self._ltc_detect_executor.submit(_run)
 
-        def _apply(loaded_id: int, detected: int | None) -> None:
-            self._ltc_detect_inflight = False
-            if self._buffer is None or id(self._buffer) != loaded_id:
-                return
-            self._detected_ltc_channel = detected
-            self._ltc_detect_ran = True
-            self._refresh_source_routing_cache()
-            self.timecode_status_changed.emit()
-
         def _done(fut) -> None:
             try:
-                loaded_id, detected = fut.result()
+                done_token, detected = fut.result()
             except Exception:
-                QTimer.singleShot(0, lambda: _apply(buf_id, None))
-                return
-            # Marshal onto the Qt thread — executor callbacks are not UI-safe.
-            QTimer.singleShot(0, lambda: _apply(loaded_id, detected))
+                done_token, detected = token, None
+            # Queued to the engine's thread — never QTimer from a worker.
+            self._ltc_detect_finished.emit(int(done_token), detected)
 
         future.add_done_callback(_done)
+
+    def _on_ltc_detect_finished(self, token: int, detected: object) -> None:
+        if int(token) != int(self._ltc_detect_token):
+            return
+        self._ltc_detect_inflight = False
+        channel = detected if isinstance(detected, int) else None
+        self._detected_ltc_channel = channel
+        self._ltc_detect_ran = True
+        self._refresh_source_routing_cache()
+        self.timecode_status_changed.emit()
+        # If Translate is armed, re-lock MTC to the stripe now that we know L/R.
+        if self._audio_settings.effective_ltc_to_mtc_translate():
+            self._sync_mtc_to_file_ltc(self.raw_position, force=True)
 
     def _refresh_source_routing_cache(self) -> None:
         """Precompute routing indices so the realtime callback stays O(chunk)."""
