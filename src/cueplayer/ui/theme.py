@@ -199,33 +199,30 @@ QMenu::separator {{
     margin: 4px 6px;
 }}
 
-/* --- Buttons --------------------------------------------------------- */
+/* --- Buttons (borderless / flat) -------------------------------------- */
 QPushButton {{
-    background-color: {BG_RAISED};
+    background-color: transparent;
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: none;
     border-radius: 6px;
     padding: 5px 12px;
 }}
 QPushButton:hover {{
     background-color: {BG_HOVER};
-    border-color: {BORDER_STRONG};
 }}
 QPushButton:pressed {{
-    background-color: {BG_APP};
+    background-color: {BG_SELECTED};
 }}
 QPushButton:checked {{
     background-color: {BG_SELECTED};
-    border-color: {ACCENT};
     color: #ffffff;
 }}
 QPushButton:disabled {{
     color: {TEXT_DISABLED};
-    border-color: {BORDER};
-    background-color: {BG_PANEL};
+    background-color: transparent;
 }}
 QPushButton:default {{
-    border-color: {ACCENT};
+    background-color: {BG_RAISED};
 }}
 
 /* --- Setlist sidebar (slightly lighter than app chrome) ---------------- */
@@ -248,7 +245,14 @@ QPushButton:default {{
     color: {TEXT_MUTED};
 }}
 #setlistPanel QPushButton {{
-    background-color: {BG_RAISED};
+    background-color: transparent;
+    border: none;
+}}
+#setlistPanel QPushButton:hover {{
+    background-color: {BG_HOVER};
+}}
+#setlistPanel QPushButton:pressed {{
+    background-color: {BG_SELECTED};
 }}
 
 /* --- Inputs ------------------------------------------------------------ */
