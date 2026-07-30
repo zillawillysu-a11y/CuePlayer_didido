@@ -215,8 +215,9 @@ def test_picker_hostapi_options_lists_asio_first_without_default_bucket(monkeypa
     assert "Default" not in " ".join(labels)
     assert apis[0] == "ASIO"
     assert labels[0] == "ASIO"
-    assert devices_mod.default_picker_hostapi() == "ASIO"
-    assert devices_mod.resolve_output_hostapi("") == "ASIO"
+    # First-run / empty hostapi prefers DirectSound (System Default device).
+    assert devices_mod.default_picker_hostapi() == "Windows DirectSound"
+    assert devices_mod.resolve_output_hostapi("") == "Windows DirectSound"
     assert devices_mod.resolve_output_hostapi("Windows WASAPI") == "Windows WASAPI"
 
 
@@ -227,6 +228,24 @@ def test_resolve_output_hostapi_falls_back_when_saved_api_missing(monkeypatch) -
         lambda: ["Windows WASAPI", "MME"],
     )
     assert devices_mod.resolve_output_hostapi("ASIO") == "Windows WASAPI"
+
+
+def test_default_picker_hostapi_prefers_directsound(monkeypatch) -> None:
+    monkeypatch.setattr(
+        devices_mod,
+        "hostapi_names",
+        lambda: ["ASIO", "Windows WASAPI", "Windows DirectSound", "MME"],
+    )
+    assert devices_mod.default_picker_hostapi() == "Windows DirectSound"
+
+
+def test_default_picker_hostapi_falls_back_without_directsound(monkeypatch) -> None:
+    monkeypatch.setattr(
+        devices_mod,
+        "hostapi_names",
+        lambda: ["ASIO", "Windows WASAPI"],
+    )
+    assert devices_mod.default_picker_hostapi() == "Windows WASAPI"
 
 
 def test_list_output_devices_for_picker_keeps_asio_and_multichannel_ds(monkeypatch) -> None:

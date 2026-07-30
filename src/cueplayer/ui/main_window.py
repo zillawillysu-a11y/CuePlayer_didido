@@ -70,6 +70,10 @@ from cueplayer.persistence.backup import (
     create_backup_before_save,
     list_backups,
 )
+from cueplayer.persistence.audio_prefs import (
+    apply_global_audio_to_project,
+    save_global_audio_output,
+)
 from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
@@ -957,6 +961,8 @@ class MainWindow(QMainWindow):
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
         )
+        # Machine-global audio prefs (survive New / Load Project).
+        apply_global_audio_to_project(self.project)
         self.engine.apply_audio_settings(self.project.audio_output)
 
         # Video clips are driven by the audio sample clock (AudioEngine) —
@@ -2473,6 +2479,8 @@ class MainWindow(QMainWindow):
         self.show_patch_page.set_project(self.project)
         self.setlist_sheet_page.set_project(self.project)
         self._sync_setlist_name_mode_ui()
+        # Audio / MIDI / Timecode follow the machine, not the project file.
+        apply_global_audio_to_project(self.project)
         self.engine.apply_audio_settings(self.project.audio_output)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
         self._apply_ndi_from_project(show_errors=False)
@@ -4896,6 +4904,7 @@ class MainWindow(QMainWindow):
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
         self.monitor.sync_output_quick_toggles(ao)
+        save_global_audio_output(ao)
         self._mark_dirty()
         if warning:
             self.status.showMessage(warning, 5000)
@@ -4955,6 +4964,7 @@ class MainWindow(QMainWindow):
             return
         settings = dialog.result_settings()
         self.project.audio_output = settings
+        save_global_audio_output(settings)
         warning = self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
