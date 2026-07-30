@@ -816,8 +816,8 @@ class MaExportSettings:
 
 
 # How LTC reaches the output bus.
-# - generator: internal SMPTE generator (default)
-# - auto: detect striped LTC in the loaded stereo file
+# - auto: detect striped LTC in the loaded stereo file (default)
+# - generator: internal SMPTE generator
 # - source_left / source_right: pass that file channel through to ltc_channels
 LtcSourceMode = Literal["generator", "auto", "source_left", "source_right"]
 MusicRouteKind = Literal["mute", "music_source", "ltc", "channels"]
@@ -848,9 +848,9 @@ class AudioOutputSettings:
     # Legacy channel lists (derived from routes when loading old projects).
     music_left_channels: list[int] = field(default_factory=lambda: [0])
     music_right_channels: list[int] = field(default_factory=lambda: [1])
-    # Generated LTC (independent of MTC).
+    # LTC output (independent of MTC). Default source = file auto-detect L/R.
     ltc_enabled: bool = False
-    ltc_source: LtcSourceMode = "generator"
+    ltc_source: LtcSourceMode = "auto"
     # When ltc_source is "generator", actually run the internal SMPTE generator.
     ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
