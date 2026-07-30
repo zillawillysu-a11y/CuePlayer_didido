@@ -2448,10 +2448,10 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Per-pixel waveform sampling is expensive; skip while scrubbing/playing
-        # so the static backdrop rebuild stays cheap (clip rect + label still paint).
-        if self._scrubbing or self._playing:
-            return
+        # Always paint when peaks are cached. The play/scrub path rebuilds a
+        # static backdrop that is reused for many frames — skipping here left
+        # empty blue clip rects for the whole play session (waves only returned
+        # on pause). Decode stays async via VideoClipWaveformCache.
         x_left = int(rect.left())
         x_right = int(rect.right())
         if x_right - x_left < 4:
