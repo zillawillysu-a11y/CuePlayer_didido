@@ -44,8 +44,13 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Installing / refreshing runtime + PyInstaller..."
 & $Py -m pip install -U pip setuptools wheel
-# Single-quote extras so PowerShell does not parse [dev,midi] as an expression.
-& $Py -m pip install -e '.[dev,midi]'
+# Single-quote extras so PowerShell does not parse [dev,midi,ndi] as an expression.
+# ndi (cyndilib) is required in the employee build so NDI OUTPUT works from CuePlayer.exe.
+& $Py -m pip install -e '.[dev,midi,ndi]'
+& $Py -c "import cyndilib; print('cyndilib OK', getattr(cyndilib, '__version__', '?'))"
+if ($LASTEXITCODE -ne 0) {
+    throw "cyndilib import failed. Install NDI extra failed - cannot ship NDI OUTPUT."
+}
 & $Py -m pip install -U 'pyinstaller>=6.3'
 
 $Spec = Join-Path $Root "packaging\cueplayer.spec"

@@ -49,8 +49,11 @@ PyInstaller and `app.py` pick these up automatically on the next Windows build.
 ## Notes
 
 - Build **must** be on Windows (WASAPI, winmm MIDI, PyAV wheels).
-- First build is large (often 200–500 MB) because of Qt + FFmpeg + NumPy/librosa.
-- NDI (`cyndilib`) is **not** bundled by default; cue accuracy testing does not need it.
+- First build is large (often 200–500 MB) because of Qt + FFmpeg + NumPy/librosa + NDI.
+- **NDI OUTPUT** is bundled (`cyndilib`). Each employee PC still needs
+  **NDI Tools / Runtime** from [ndi.video](https://ndi.video) (same as your
+  development machine). Without that runtime, NDI toggles will fail to open.
 - After each feature merge, rebuild and send a new zip/Setup with a new date or version.
 - Smoke-test the built `CuePlayer.exe` on a clean PC (or a second user account) before
-  sending to the whole team: open project, play audio, show Video track, export MA once.
+  sending to the whole team: open project, play audio, show Video track, toggle NDI
+  OUTPUT, export MA once.

@@ -33,13 +33,17 @@ hiddenimports: list[str] = [
     "sounddevice",
     "av",
     "librosa",
+    "cyndilib",
+    "cyndilib.sender",
+    "cyndilib.video_frame",
+    "cyndilib.wrapper.ndi_structs",
 ]
 
 # Bundle UI assets (checkmark, optional app icon).
 if ASSETS.is_dir():
     datas += collect_data_files("cueplayer", includes=["ui/assets/*"])
 
-for pkg in ("PySide6", "av", "soundfile", "certifi"):
+for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
@@ -78,8 +82,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Optional NDI — install separately on machines that need it.
-        "cyndilib",
         # Dev / test only.
         "pytest",
         "IPython",

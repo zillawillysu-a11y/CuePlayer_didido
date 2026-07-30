@@ -7,6 +7,7 @@ background worker so the UI / audio clock thread stays responsive.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from fractions import Fraction
 from typing import Any, Literal
@@ -32,7 +33,14 @@ def ndi_available() -> bool:
 
 def ndi_status() -> str:
     if ndi_available():
-        return "NDI: cyndilib ready (requires NDI Runtime on this machine)"
+        return "NDI: cyndilib ready (requires NDI Tools / Runtime on this machine)"
+    frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        return (
+            "NDI support missing from this build (cyndilib not bundled).\n"
+            "Ask the packager to rebuild with the ndi extra, then install\n"
+            "NDI Tools / Runtime from ndi.video on this PC and restart CuePlayer."
+        )
     return (
         "NDI library not installed. Install with:\n"
         "  py -m pip install cyndilib\n"
