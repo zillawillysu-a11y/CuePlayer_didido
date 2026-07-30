@@ -139,8 +139,8 @@ class BottomTransportBar(QWidget):
             "}"
         )
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 6, 10, 8)
-        root.setSpacing(4)
+        root.setContentsMargins(10, 4, 10, 8)
+        root.setSpacing(2)
 
         self.overview = TimelineOverviewBar()
         root.addWidget(self.overview)

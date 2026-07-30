@@ -4555,19 +4555,39 @@ class MainWindow(QMainWindow):
         )
 
     def _set_loop_a(self) -> None:
-        # Visible Timeline playhead = what the user is watching.
+        """Mark A at the visible playhead.
+
+        If A+B already form a complete loop, tapping A again starts a *new*
+        loop (clears B) instead of stretching the old pair to the new point.
+        """
         t = float(self.timeline.playhead_seconds())
+        if (
+            self.engine.loop_a is not None
+            and self.engine.loop_b is not None
+            and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
+        ):
+            self.engine.loop_b = None
+            self.engine.loop_enabled = False
+            self.engine._loop_engage = False  # noqa: SLF001
         self.engine.loop_a = t
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
-                # Re-tapping A only re-marks — do not jump back to the old region.
                 self.engine.engage_ab_loop(seek_if_outside=False)
         self._sync_loop_ui()
         self.status.showMessage(f"A = {self.engine.loop_a:.3f}s", 2000)
 
     def _set_loop_b(self) -> None:
+        """Mark B at the visible playhead (same fresh-pair rule as A)."""
         t = float(self.timeline.playhead_seconds())
+        if (
+            self.engine.loop_a is not None
+            and self.engine.loop_b is not None
+            and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
+        ):
+            self.engine.loop_a = None
+            self.engine.loop_enabled = False
+            self.engine._loop_engage = False  # noqa: SLF001
         self.engine.loop_b = t
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
