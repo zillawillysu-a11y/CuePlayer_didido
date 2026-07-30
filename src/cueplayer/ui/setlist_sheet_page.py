@@ -41,9 +41,9 @@ _COL_NOTE = 7
 _COL_COUNT = 8
 
 _HEADERS = (
-    "曲序",
-    "曲名",
-    "英文名",
+    "No.",
+    "Song Name",
+    "English Song Name",
     "Seq",
     "Cue ID",
     "Timecode Generator",
@@ -573,7 +573,7 @@ class SetlistSheetPage(QWidget):
             if parsed is None:
                 QMessageBox.warning(
                     self,
-                    "Invalid 曲序",
+                    "Invalid No.",
                     "Enter a number such as 1, 01, or 0.5.",
                 )
                 self._suppress = True
