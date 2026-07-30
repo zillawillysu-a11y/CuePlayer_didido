@@ -25,6 +25,7 @@ def test_ltc_column_is_fixed_and_wide_enough(app: QApplication) -> None:
     widget = SetlistWidget()
     header = widget.horizontalHeader()
     assert header.sectionResizeMode(SetlistWidget.COL_LTC) == QHeaderView.ResizeMode.Fixed
+    assert header.sectionResizeMode(SetlistWidget.COL_NUM) == QHeaderView.ResizeMode.Interactive
     assert header.sectionResizeMode(SetlistWidget.COL_TITLE) == QHeaderView.ResizeMode.Interactive
     assert not header.stretchLastSection()
     assert widget.columnWidth(SetlistWidget.COL_LTC) >= SetlistWidget._LTC_COLUMN_WIDTH
