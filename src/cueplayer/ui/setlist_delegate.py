@@ -7,7 +7,12 @@ from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QStyleOptionViewItem
 
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
-from cueplayer.ui.theme import ACCENT, badge_dim_on_background, badge_lit_on_background
+from cueplayer.ui.theme import (
+    ACCENT,
+    COLOR_VIDEO,
+    badge_dim_on_background,
+    badge_lit_on_background,
+)
 
 # Item-data roles for the media badge column.
 ROLE_LTC_CHANNEL = int(Qt.ItemDataRole.UserRole) + 12
@@ -68,7 +73,7 @@ class SetlistRowDelegate(RowColorDelegate):
 
         parts: list[tuple[str, str]] = []
         if show_video and has_video:
-            parts.append(("V", badge_lit_on_background(row_hex, default=ACCENT)))
+            parts.append(("V", badge_lit_on_background(row_hex, default=COLOR_VIDEO)))
         if ltc_side is not None:
             lit = badge_lit_on_background(row_hex)
             dim = badge_dim_on_background(row_hex)

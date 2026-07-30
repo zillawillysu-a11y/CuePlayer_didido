@@ -1,4 +1,4 @@
-"""Cursor-inspired dark theme for the whole app.
+"""Pitch-black Cursor-like theme for the whole app.
 
 Applied once in ``app.py`` via ``QApplication.setStyle("Fusion")`` +
 ``QApplication.setStyleSheet(build_stylesheet())``. Per-widget stylesheets
@@ -13,50 +13,61 @@ import base64
 from PySide6.QtGui import QColor, QPalette
 
 # Core palette -----------------------------------------------------------
-# Cursor-like: near-black chrome, slightly lifted side panels.
-BG_APP = "#09090b"
-BG_SIDEBAR = "#141416"
-BG_PANEL = "#111113"
-BG_RAISED = "#18181b"
-BG_INPUT = "#0c0c0e"
-BG_HOVER = "#1c1c1f"
-BG_SELECTED = "#1a3a5c"
+# Pitch-black chrome (Cursor-like): near-black surfaces, grey structure,
+# almost invisible splitters until hover.
+BG_APP = "#0d0d0d"
+BG_SIDEBAR = "#141414"
+BG_PANEL = "#111111"
+BG_RAISED = "#1a1a1a"
+BG_INPUT = "#0a0a0a"
+BG_HOVER = "#222222"
+BG_SELECTED = "#2a2a2a"
 
-BORDER = "#27272a"
-BORDER_STRONG = "#3f3f46"
+BORDER = "#1f1f1f"
+BORDER_STRONG = "#333333"
 
-TEXT = "#e4e4e7"
-TEXT_MUTED = "#a1a1aa"
-TEXT_DISABLED = "#52525b"
+TEXT = "#ededed"
+TEXT_MUTED = "#8a8a8a"
+TEXT_DISABLED = "#555555"
 
-ACCENT = "#4a9eff"
-ACCENT_HOVER = "#79b8ff"
-ACCENT_PRESSED = "#3a82d6"
-ACCENT_TEXT = "#09090b"
+# Semantic accent (Video badge, BPM, checked controls) — keep readable, not chrome.
+ACCENT = "#6e6e6e"
+ACCENT_HOVER = "#9a9a9a"
+ACCENT_PRESSED = "#525252"
+ACCENT_TEXT = "#0d0d0d"
+
+# Splitter / scrollbar chrome — black idle, grey hover (never blue).
+SPLITTER_IDLE = "#0d0d0d"
+SPLITTER_HOVER = "#5a5a5a"
+SCROLL_HANDLE = "#1a1a1a"
+SCROLL_HANDLE_HOVER = "#5a5a5a"
 
 DANGER = "#e5534b"
 WARNING = "#d29922"
+# Domain label colors (not chrome) — keep Timeline readable.
+COLOR_VIDEO = "#8b9cff"
+COLOR_LTC = WARNING
 
-# Shared QSlider look (used by Master Volume + LTC Gain, and any other
-# horizontal slider that wants the same groove/handle/accent styling).
-# QSlider isn't covered by the global stylesheet below because a few
-# sliders need per-instance sizing, so we share this snippet instead of
-# duplicating the QSS.
+# Shared QSlider look (Master Volume + LTC Gain, timeline faders).
+# Groove/handle stay greyscale — no blue fill.
 SLIDER_QSS = f"""
 QSlider::groove:horizontal {{
-    height: 6px; background: {BORDER}; border-radius: 3px;
+    height: 4px; background: {BORDER_STRONG}; border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
-    width: 14px; margin: -5px 0; border-radius: 7px;
+    width: 12px; margin: -5px 0; border-radius: 6px;
+    background: {TEXT_MUTED};
+}}
+QSlider::handle:horizontal:hover {{
     background: {TEXT};
 }}
 QSlider::sub-page:horizontal {{
-    background: {TEXT}; border-radius: 3px;
+    background: {TEXT_MUTED}; border-radius: 2px;
 }}
 """
 
 
-# White tick on accent fill — Qt stylesheets need an image for a visible checkmark.
+# White tick on grey fill — Qt stylesheets need an image for a visible checkmark.
 _CHECK_SVG = (
     "<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 15 15'>"
     "<path d='M3.2 7.6 L6.2 10.6 L11.8 4.4' fill='none' stroke='#ffffff' "
@@ -68,9 +79,7 @@ _CHECK_ICON = "data:image/svg+xml;base64," + base64.b64encode(_CHECK_SVG.encode(
 
 # Selection-styling helpers ------------------------------------------------
 # Shared so any hand-painted "this is selected / this is a drop target"
-# overlay (setlist drag indicator, timeline box-select, custom-colored rows,
-# etc.) reads as the same accent-blue family as the rest of the app instead
-# of a one-off, mismatched color.
+# overlay reads as the same greyscale family as the rest of the chrome.
 
 
 def with_alpha(hex_color: str, alpha: int) -> QColor:
@@ -230,12 +239,12 @@ QPushButton:default {{
 }}
 #setlistPanel QTableWidget {{
     background-color: {BG_SIDEBAR};
-    alternate-background-color: #19191c;
+    alternate-background-color: #181818;
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
 #setlistPanel QHeaderView::section {{
-    background-color: #1a1a1d;
+    background-color: #161616;
     color: {TEXT_MUTED};
 }}
 #setlistPanel QPushButton {{
@@ -409,43 +418,49 @@ QWidget#setlistPanel QTableWidget::item:selected:!active {{
 /* --- Scrollbars ------------------------------------------------------- */
 QScrollBar:vertical {{
     background: transparent;
-    width: 12px;
+    width: 10px;
     margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: {BORDER_STRONG};
-    border-radius: 5px;
+    background: {SCROLL_HANDLE};
+    border-radius: 4px;
     min-height: 24px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {ACCENT};
+    background: {SCROLL_HANDLE_HOVER};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
 QScrollBar:horizontal {{
     background: transparent;
-    height: 12px;
+    height: 10px;
     margin: 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {BORDER_STRONG};
-    border-radius: 5px;
+    background: {SCROLL_HANDLE};
+    border-radius: 4px;
     min-width: 24px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {ACCENT};
+    background: {SCROLL_HANDLE_HOVER};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
 }}
 
-/* --- Misc ------------------------------------------------------------- */
+/* --- Splitters (pull bars) — black idle, grey hover -------------------- */
 QSplitter::handle {{
-    background: {BORDER};
+    background: {SPLITTER_IDLE};
 }}
 QSplitter::handle:hover {{
-    background: {ACCENT};
+    background: {SPLITTER_HOVER};
+}}
+QSplitter::handle:horizontal {{
+    width: 5px;
+}}
+QSplitter::handle:vertical {{
+    height: 5px;
 }}
 QStatusBar {{
     background-color: {BG_APP};

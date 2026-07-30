@@ -38,6 +38,7 @@ from cueplayer.ui.cue_list_columns import (
     normalize_cue_list_column_order,
 )
 from cueplayer.ui.output_quick_toggles import OutputQuickToggles
+from cueplayer.ui.theme import SPLITTER_HOVER, SPLITTER_IDLE
 from cueplayer.ui.transport_bar import format_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
@@ -331,14 +332,14 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setOpaqueResize(True)
         self._now_splitter.setAcceptDrops(True)
         self._now_splitter.setStyleSheet(
-            "#nowSplitter::handle {"
-            "  background: transparent;"
+            f"#nowSplitter::handle {{"
+            f"  background: {SPLITTER_IDLE};"
             "  border: none;"
             "  margin: 0;"
             "  padding: 0;"
             "}"
-            "#nowSplitter::handle:hover {"
-            "  background: rgba(74, 158, 255, 0.35);"
+            f"#nowSplitter::handle:hover {{"
+            f"  background: {SPLITTER_HOVER};"
             "}"
         )
         self._now_splitter.addWidget(self._primary_now_column)
@@ -429,14 +430,14 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setHandleWidth(8)
         self._body_splitter.setOpaqueResize(True)
         self._body_splitter.setStyleSheet(
-            "#nowBodySplitter::handle {"
-            "  background: transparent;"
+            f"#nowBodySplitter::handle {{"
+            f"  background: {SPLITTER_IDLE};"
             "  border: none;"
             "  margin: 0;"
             "  padding: 0;"
             "}"
-            "#nowBodySplitter::handle:hover {"
-            "  background: rgba(74, 158, 255, 0.35);"
+            f"#nowBodySplitter::handle:hover {{"
+            f"  background: {SPLITTER_HOVER};"
             "}"
         )
         self._body_splitter.addWidget(self._now_section)
