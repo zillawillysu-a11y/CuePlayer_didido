@@ -30,8 +30,6 @@ from cueplayer.playback.devices import (
     list_output_devices_for_picker,
     picker_hostapi_options,
     resolve_output_hostapi,
-    resolve_output_endpoint_for_channels,
-    upgrade_device_for_channels,
 )
 from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
 from cueplayer.playback.routing_parse import (
@@ -356,26 +354,11 @@ class AudioTimecodeDialog(QDialog):
         return find_output_device(self._devices, name=str(self.device_combo.currentData() or ""))
 
     def _current_max_channels(self) -> int:
+        """Channels on the device the user picked — not a higher sibling endpoint."""
         chosen = self._chosen_device()
         if chosen is None:
             return 2
-        api = self._current_hostapi()
-        need = 3 if self.ltc_enable.isChecked() else 1
-        endpoint = resolve_output_endpoint_for_channels(
-            preferred_name=chosen.name,
-            min_channels=need,
-            samplerate=48000.0,
-            raw_devices=self._all_devices,
-            hostapi=api,
-        )
-        if endpoint is not None:
-            return endpoint.max_output_channels
-        return upgrade_device_for_channels(
-            chosen,
-            min_channels=need,
-            raw_devices=self._all_devices,
-            hostapi=api,
-        ).max_output_channels
+        return max(1, int(chosen.max_output_channels))
 
     def _on_ltc_source_changed(self) -> None:
         is_generator = self.ltc_source.currentData() == "generator"
@@ -431,10 +414,11 @@ class AudioTimecodeDialog(QDialog):
         ltc_default = default_ltc_channels_for_device(max_ch)
         chosen = self._chosen_device()
         api_txt = chosen.hostapi_name.replace("Windows ", "") if chosen else "—"
-        self.device_hint.setText(
-            f"{max_ch} output channel(s) via {api_txt}. "
-            f"Typical LTC wire: CH {_channels_to_ui(ltc_default) or '—'}."
-        )
+        if max_ch >= 3:
+            wire = f"Typical LTC wire: CH {_channels_to_ui(ltc_default) or '—'}."
+        else:
+            wire = "Stereo — use Music Source on both channels; LTC needs a multi-out interface."
+        self.device_hint.setText(f"{max_ch} output channel(s) via {api_txt}. {wire}")
         self._rebuild_channel_rows(preserve=True)
 
     def result_settings(self) -> AudioOutputSettings:
