@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.domain.models import Song
@@ -71,3 +71,19 @@ def test_bulk_toggle_row_tracks_table_columns_on_resize(app: QApplication) -> No
         assert cell.width() == header.sectionSize(col)
     assert dialog._bulk_checks[_COL_VISIBLE].parentWidget() is dialog._bulk_column_cells[_COL_VISIBLE]
     assert dialog._bulk_column_cells[_COL_MIDI_NOTE].width() == header.sectionSize(_COL_MIDI_NOTE)
+
+
+def test_bulk_toggle_cells_track_header_section_positions(app: QApplication) -> None:
+    song = Song.create("Align")
+    dialog = MarkManagerDialog(song)
+    dialog.resize(1120, 640)
+    dialog.show()
+    app.processEvents()
+    dialog._sync_bulk_toggle_layout()
+    app.processEvents()
+
+    viewport = dialog.table.viewport()
+    origin_x = viewport.mapTo(dialog._bulk_row, QPoint(0, 0)).x()
+    expected_visible_x = origin_x + dialog.table.columnViewportPosition(_COL_VISIBLE)
+    assert dialog._bulk_column_cells[_COL_VISIBLE].x() == expected_visible_x
+    assert dialog._bulk_checks[_COL_VISIBLE].parentWidget() is dialog._bulk_column_cells[_COL_VISIBLE]

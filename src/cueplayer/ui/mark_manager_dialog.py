@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -357,6 +358,7 @@ class MarkManagerDialog(QDialog):
         self._bulk_row = self._build_bulk_toggle_row()
         layout.addWidget(self._bulk_row)
         self.table.horizontalHeader().sectionResized.connect(self._sync_bulk_toggle_layout)
+        self.table.horizontalScrollBar().valueChanged.connect(self._sync_bulk_toggle_layout)
 
         row_btns = QHBoxLayout()
         self.add_btn = QPushButton("Add Mark")
@@ -394,9 +396,8 @@ class MarkManagerDialog(QDialog):
     def _build_bulk_toggle_row(self) -> QWidget:
         row = QWidget()
         row.setStyleSheet("background: #12151a; border-top: 1px solid #2a2f3a;")
-        self._bulk_layout = QHBoxLayout(row)
-        self._bulk_layout.setContentsMargins(0, 0, 0, 0)
-        self._bulk_layout.setSpacing(0)
+        row.setFixedHeight(32)
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bulk_specs = {
             _COL_VISIBLE: "All on/off for Visible",
             _COL_CUE_ID: "All on/off for Cue ID",
@@ -407,32 +408,33 @@ class MarkManagerDialog(QDialog):
         self._bulk_checks.clear()
         for col in range(_COL_COUNT):
             if col in bulk_specs:
-                box = QCheckBox()
+                box = QCheckBox(row)
                 box.setTristate(True)
                 box.setToolTip(bulk_specs[col])
                 box.stateChanged.connect(lambda _state, c=col: self._on_bulk_toggle_changed(c))
                 self._bulk_checks[col] = box
-                cell = QWidget()
+                cell = QWidget(row)
                 cell_layout = QHBoxLayout(cell)
                 cell_layout.setContentsMargins(0, 0, 0, 0)
                 cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cell_layout.addWidget(box)
                 self._bulk_column_cells.append(cell)
-                self._bulk_layout.addWidget(cell)
             else:
-                spacer = QWidget()
+                spacer = QWidget(row)
                 self._bulk_column_cells.append(spacer)
-                self._bulk_layout.addWidget(spacer)
         return row
 
     def _sync_bulk_toggle_layout(self) -> None:
-        if not self._bulk_column_cells:
+        """Keep bulk all-on/all-off checkboxes under their table columns."""
+        if not self._bulk_column_cells or not hasattr(self, "_bulk_row"):
             return
-        header = self.table.horizontalHeader()
-        inset = self.table.verticalHeader().width() + self.table.frameWidth()
-        self._bulk_layout.setContentsMargins(inset, 0, self.table.frameWidth(), 0)
+        viewport = self.table.viewport()
+        origin = viewport.mapTo(self._bulk_row, QPoint(0, 0))
+        row_h = self._bulk_row.height()
         for col, cell in enumerate(self._bulk_column_cells):
-            cell.setFixedWidth(header.sectionSize(col))
+            x = origin.x() + self.table.columnViewportPosition(col)
+            w = self.table.columnWidth(col)
+            cell.setGeometry(int(x), 0, w, row_h)
 
     def _checkbox_at(self, row: int, col: int) -> QCheckBox | None:
         wrap = self.table.cellWidget(row, col)
