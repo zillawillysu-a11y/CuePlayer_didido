@@ -185,6 +185,9 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_scroll = 0.0
         self._scrub_backdrop_pps = 0.0
         self._scrub_backdrop_size = QSize()
+        self._scrub_backdrop_overscan = 0
+        # When rebuilding a wide play-cache, paint as if the widget were wider.
+        self._paint_width_override: int | None = None
         self._box_click_seek: float | None = None
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setInterval(33)
@@ -1443,8 +1446,9 @@ class TimelineWidget(QWidget):
         Edge-band follow only scrolls when the playhead leaves ~25%–75% of the
         view, then parks it on that edge so follow feels continuous.
 
-        Waveform jitter is avoided by *not* rebuilding the static backdrop on
-        every scroll tick — paint blits the cache with a horizontal offset.
+        Waveform stays filled via an overscanned play-cache (see
+        ``_blit_scrub_backdrop``); scroll is quantized to whole pixels so the
+        blit source does not shimmer by ±1 px each tick.
         """
         if not self._playing:
             self._center_on_playhead()
@@ -1456,10 +1460,14 @@ class TimelineWidget(QWidget):
         left = float(self._header_width) + view_w * 0.25
         right = float(self._header_width) + view_w * 0.75
         if x < left:
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.25
+            self._scroll_x = round(
+                self._position * self._pixels_per_second - view_w * 0.25
+            )
             self._clamp_scroll()
         elif x > right:
-            self._scroll_x = self._position * self._pixels_per_second - view_w * 0.75
+            self._scroll_x = round(
+                self._position * self._pixels_per_second - view_w * 0.75
+            )
             self._clamp_scroll()
 
     def _playhead_outside_view(self, *, margin: float = 0.0) -> bool:
@@ -1509,8 +1517,15 @@ class TimelineWidget(QWidget):
         self.update()
         self.view_changed.emit()
 
+    def _paint_right(self) -> int:
+        """Right edge used by static-layer painters (may be wider during overscan bake)."""
+        if self._paint_width_override is not None:
+            return int(self._paint_width_override)
+        return int(self.width())
+
     def _invalidate_scrub_backdrop(self) -> None:
         self._scrub_backdrop = None
+        self._scrub_backdrop_overscan = 0
 
     def invalidate_static_layers(self) -> None:
         """Drop the play/scrub pixmap cache so marks/clips appear immediately.
@@ -1526,6 +1541,8 @@ class TimelineWidget(QWidget):
         pm = self._scrub_backdrop
         if pm is None or pm.isNull():
             return False
+        if self._scrub_backdrop_overscan < 0:
+            return False
         return (
             abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
             and self._scrub_backdrop_size == self.size()
@@ -1538,39 +1555,46 @@ class TimelineWidget(QWidget):
         return abs(self._scroll_x - self._scrub_backdrop_scroll) < 0.5
 
     def _blit_scrub_backdrop(self, painter: QPainter) -> bool:
-        """Draw the static cache, shifting content when auto-scroll moved.
+        """Draw the static cache, shifting within an overscanned bake.
 
-        Left header chrome stays pinned; the waveform/ruler content scrolls.
-        Rebuilds when drift grows large so newly exposed time is filled in.
+        Auto-scroll used to offset a viewport-sized pixmap, which left a growing
+        black gap on the newly exposed side. The cache is now wider than the
+        view; we only rebuild when scroll leaves the overscan margin.
         """
         if not self._scrub_backdrop_geometry_ok():
             self._rebuild_scrub_backdrop()
         if not self._scrub_backdrop_geometry_ok():
             return False
 
-        dx = int(round(self._scrub_backdrop_scroll - self._scroll_x))
-        max_drift = max(48, int(self._view_width() * 0.45))
-        if abs(dx) >= max_drift:
+        overscan = int(self._scrub_backdrop_overscan)
+        delta = int(round(self._scroll_x - self._scrub_backdrop_scroll))
+        # Rebuild with a small margin so the gap never flashes black.
+        margin = 8
+        if delta < -overscan + margin or delta > overscan - margin:
             self._rebuild_scrub_backdrop()
             if not self._scrub_backdrop_geometry_ok():
                 return False
-            dx = 0
+            overscan = int(self._scrub_backdrop_overscan)
+            delta = 0
 
         pm = self._scrub_backdrop
         assert pm is not None
         w = self.width()
         h = self.height()
         hw = int(self._header_width)
+        content_w = max(0, w - hw)
+        src_x = hw + overscan + delta
+
         painter.fillRect(0, 0, w, h, QColor(BG_APP))
-        # Content region follows scroll.
+        # Content region — sample the matching strip from the wide cache.
         painter.save()
-        painter.setClipRect(hw, 0, max(0, w - hw), h)
-        painter.drawPixmap(dx, 0, pm)
+        painter.setClipRect(hw, 0, content_w, h)
+        painter.drawPixmap(hw, 0, pm, src_x, 0, content_w, h)
         painter.restore()
         # Header column stays fixed (baked at x=0 in the cache).
         painter.save()
         painter.setClipRect(0, 0, hw, h)
-        painter.drawPixmap(0, 0, pm)
+        painter.drawPixmap(0, 0, pm, 0, 0, hw, h)
         painter.restore()
         return True
 
@@ -1578,24 +1602,36 @@ class TimelineWidget(QWidget):
         """Rasterize static timeline layers once; scrub/play only redraw playhead."""
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
+            self._scrub_backdrop_overscan = 0
             return
         # Match paintEvent: QPainter(QPixmap) defaults to QApplication.font(),
         # not the stylesheet-resolved widget font (theme sets 13px on QWidget).
         # Without copying self.font(), ruler/lane/header text looks smaller for
         # the whole scrub gesture and snaps back on mouse-up.
-        dpr = max(1.0, float(self.devicePixelRatioF()))
-        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
-        pm.setDevicePixelRatio(dpr)
-        pm.fill(QColor(BG_APP))
-        painter = QPainter(pm)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.setFont(self.font())
-        self._paint_static_layers(painter)
-        painter.end()
+        overscan = max(64, int(self._view_width() * 0.75))
+        paint_w = int(self.width()) + 2 * overscan
+        saved_scroll = self._scroll_x
+        # Bake content for [scroll - overscan, scroll + view + overscan].
+        self._scroll_x = saved_scroll - float(overscan)
+        self._paint_width_override = paint_w
+        try:
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            pm = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(QColor(BG_APP))
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setFont(self.font())
+            self._paint_static_layers(painter)
+            painter.end()
+        finally:
+            self._scroll_x = saved_scroll
+            self._paint_width_override = None
         self._scrub_backdrop = pm
-        self._scrub_backdrop_scroll = self._scroll_x
+        self._scrub_backdrop_scroll = saved_scroll
         self._scrub_backdrop_pps = self._pixels_per_second
         self._scrub_backdrop_size = QSize(self.size())
+        self._scrub_backdrop_overscan = overscan
 
     def _can_use_static_backdrop(self) -> bool:
         """Playhead-only blit while scrubbing or playing (no live edit overlays)."""
@@ -2446,9 +2482,10 @@ class TimelineWidget(QWidget):
         # Splitter bar between waveform and mark lanes (drag to resize).
         active = self._resizing_wave or self._wave_split_hover
         color = QColor("#5a5a5a") if active else QColor("#0d0d0d")
-        painter.fillRect(0, wave_bottom - 2, self.width(), 4, color)
+        right = self._paint_right()
+        painter.fillRect(0, wave_bottom - 2, right, 4, color)
         if active:
-            mid_x = self._header_width + (self.width() - self._header_width) // 2
+            mid_x = self._header_width + (right - self._header_width) // 2
             painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, wave_bottom, mid_x + 18, wave_bottom)
 
@@ -2459,9 +2496,10 @@ class TimelineWidget(QWidget):
         bottom = self._video_lane_clip_bottom_y()
         active = self._resizing_video_lane or self._video_lane_split_hover
         color = QColor("#5a5a5a") if active else QColor("#0d0d0d")
-        painter.fillRect(0, bottom - 2, self.width(), 4, color)
+        right = self._paint_right()
+        painter.fillRect(0, bottom - 2, right, 4, color)
         if active:
-            mid_x = self._header_width + (self.width() - self._header_width) // 2
+            mid_x = self._header_width + (right - self._header_width) // 2
             painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, bottom, mid_x + 18, bottom)
 
@@ -2471,13 +2509,14 @@ class TimelineWidget(QWidget):
         top = self._video_lane_top_y()
         bottom = top + int(self._video_lane_height)
         height = bottom - top
-        painter.fillRect(self._header_width, top, self.width(), height, QColor("#0c0c10"))
+        right = self._paint_right()
+        painter.fillRect(self._header_width, top, right, height, QColor("#0c0c10"))
         painter.setPen(QColor("#27272a"))
-        painter.drawLine(0, bottom - 1, self.width(), bottom - 1)
+        painter.drawLine(0, bottom - 1, right, bottom - 1)
         clip_row_height = min(height, int(self._video_lane_base_height))
         if self._video_track_expanded:
             divider_y = top + clip_row_height
-            painter.drawLine(self._header_width, divider_y, self.width(), divider_y)
+            painter.drawLine(self._header_width, divider_y, right, divider_y)
         if self._song is None:
             return
         overlapping = self._song.overlapping_video_clip_ids()
@@ -2485,10 +2524,10 @@ class TimelineWidget(QWidget):
         for clip in self._song.video_clips:
             x0 = self._x_for_time(clip.start_seconds)
             x1 = self._x_for_time(clip.end_seconds)
-            if x1 < self._header_width - 2 or x0 > self.width() + 2:
+            if x1 < self._header_width - 2 or x0 > right + 2:
                 continue
             rx0 = max(x0, float(self._header_width))
-            rx1 = min(x1, float(self.width()))
+            rx1 = min(x1, float(right))
             rect = QRectF(rx0, top + 3, max(2.0, rx1 - rx0), clip_row_height - 6)
             selected = clip.id in self._selected_clip_ids
             hovered = clip.id == self._hover_clip_id
@@ -2643,12 +2682,13 @@ class TimelineWidget(QWidget):
         painter.restore()
 
     def _paint_ruler(self, painter: QPainter) -> None:
-        painter.fillRect(self._header_width, 0, self.width(), self._ruler_height, QColor("#09090b"))
+        right = self._paint_right()
+        painter.fillRect(self._header_width, 0, right, self._ruler_height, QColor("#09090b"))
         duration = self._duration()
         major, minor = self._ruler_steps()
 
         t0 = max(0.0, self._time_for_x(self._header_width) - major)
-        t1 = min(duration, self._time_for_x(self.width()) + major)
+        t1 = min(duration, self._time_for_x(right) + major)
 
         # Minor ticks (no labels) for fine alignment when zoomed in.
         if minor > 0:
@@ -2729,7 +2769,8 @@ class TimelineWidget(QWidget):
     def _paint_waveform(self, painter: QPainter) -> int:
         y0 = self._ruler_height
         y1 = y0 + self._wave_height
-        painter.fillRect(self._header_width, y0, self.width(), self._wave_height, QColor("#09090b"))
+        right = self._paint_right()
+        painter.fillRect(self._header_width, y0, right, self._wave_height, QColor("#09090b"))
 
         if self._audio_loading:
             painter.setPen(QColor("#a1a1aa"))
@@ -2740,7 +2781,7 @@ class TimelineWidget(QWidget):
             painter.setPen(QColor("#71717a"))
             painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
             painter.setPen(QColor("#27272a"))
-            painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
+            painter.drawLine(0, y1 - 1, right, y1 - 1)
             return y1
 
         if self._audio is None:
@@ -2751,7 +2792,7 @@ class TimelineWidget(QWidget):
                 "Open audio to see a detailed waveform here (zoom in a lot to line up beats)",
             )
             painter.setPen(QColor("#27272a"))
-            painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
+            painter.drawLine(0, y1 - 1, right, y1 - 1)
             return y1
 
         mid = y0 + self._wave_height / 2
@@ -2762,7 +2803,7 @@ class TimelineWidget(QWidget):
         painter.setPen(QPen(color, 1))
 
         view_left = self._header_width
-        view_right = self.width()
+        view_right = right
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
         if samples_per_pixel <= 1.5:
@@ -2781,8 +2822,8 @@ class TimelineWidget(QWidget):
             )
 
         painter.setPen(QColor("#27272a"))
-        painter.drawLine(QPointF(self._header_width, mid), QPointF(self.width(), mid))
-        painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
+        painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
+        painter.drawLine(0, y1 - 1, right, y1 - 1)
         return y1
 
     def _paint_ltc_lane(self, painter: QPainter) -> None:
@@ -2790,15 +2831,16 @@ class TimelineWidget(QWidget):
             return
         top = self._ltc_lane_top_y()
         height = self._ltc_band_height()
-        painter.fillRect(self._header_width, top, self.width(), height, QColor("#0c0c0e"))
+        right = self._paint_right()
+        painter.fillRect(self._header_width, top, right, height, QColor("#0c0c0e"))
         painter.setPen(QColor("#27272a"))
-        painter.drawLine(0, top + height - 1, self.width(), top + height - 1)
+        painter.drawLine(0, top + height - 1, right, top + height - 1)
 
         mid = top + height / 2
         amp = max(4.0, (height / 2) - 4)
         color = QColor(self._ltc_waveform_color)
         view_left = self._header_width
-        view_right = self.width()
+        view_right = right
         samples_per_pixel = self._ltc_audio.sample_rate / self._pixels_per_second
         # Reaper-style filled silhouette. Stroke-per-pixel peak lines make
         # bi-phase LTC look falsely "hairy" even when the stripe is clean —
@@ -2820,7 +2862,7 @@ class TimelineWidget(QWidget):
                 color,
             )
         painter.setPen(QColor("#3f3f46"))
-        painter.drawLine(QPointF(self._header_width, mid), QPointF(self.width(), mid))
+        painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
 
     def _paint_ltc_silhouette_peaks(
         self,
@@ -2936,13 +2978,14 @@ class TimelineWidget(QWidget):
         if self._song is None or not self._show_mark_tracks:
             return
         y = start_y
+        right = self._paint_right()
         for lane in self._song.mark_lanes:
             if not lane.visible:
                 continue
             bg = QColor("#141416") if lane.cue_id_enabled else QColor("#111113")
-            painter.fillRect(self._header_width, y, self.width(), self._lane_height, bg)
+            painter.fillRect(self._header_width, y, right, self._lane_height, bg)
             painter.setPen(QColor("#27272a"))
-            painter.drawLine(0, y + self._lane_height - 1, self.width(), y + self._lane_height - 1)
+            painter.drawLine(0, y + self._lane_height - 1, right, y + self._lane_height - 1)
             y += self._lane_height
 
     def _mark_overlay_pen(self, color: QColor) -> QPen:
@@ -2967,6 +3010,7 @@ class TimelineWidget(QWidget):
             else []
         )
         lane_y = {lane.index: start_y + i * self._lane_height for i, lane in enumerate(visible_lanes)}
+        right = self._paint_right()
 
         for mark in self._song.marks:
             lane = self._song.lane_by_index(mark.lane_index)
@@ -2976,7 +3020,7 @@ class TimelineWidget(QWidget):
             shape = lane.marker_shape if lane is not None else "circle"
             selected = mark.id in self._selected_mark_ids
             x = self._x_for_time(mark.time_seconds)
-            if x < self._header_width - 2 or x > self.width() + 2:
+            if x < self._header_width - 2 or x > right + 2:
                 continue
             # Waveform overlay line — use mark color (brighter when selected / dragging).
             dragging = self._dragging_marks and mark.id in self._drag_ids
