@@ -132,8 +132,7 @@ def test_expanding_grows_video_lane_height(app: QApplication) -> None:
 
 
 def test_expand_toggle_shows_music_volume_alongside_video_volume(app: QApplication) -> None:
-    """Expanding Video track chrome must reveal Music volume too (同步顯示),
-    not just the per-clip Video volume — see AGENTS.md alignment-balance note."""
+    """Music bed volume lives in the Music header expand; Video expand is clip-only."""
     widget = TimelineWidget()
     song, clip = _song_with_clip()
     widget.set_song(song)
@@ -141,13 +140,66 @@ def test_expand_toggle_shows_music_volume_alongside_video_volume(app: QApplicati
     widget.resize(900, 600)
 
     assert widget.music_volume_slider.isHidden() is True
+    widget.music_expand_button.click()
+    assert widget.music_volume_slider.isHidden() is False
+    assert widget.audio_gain_slider.isHidden() is False
+    assert widget.video_clip_volume_slider.isHidden() is True
+
     widget.video_expand_button.click()
     assert widget.video_clip_volume_slider.isHidden() is False
     assert widget.music_volume_slider.isHidden() is False
 
-    widget.video_expand_button.click()
-    assert widget.video_clip_volume_slider.isHidden() is True
+    widget.music_expand_button.click()
     assert widget.music_volume_slider.isHidden() is True
+    assert widget.video_clip_volume_slider.isHidden() is False
+
+
+def test_music_volume_available_without_video_eye(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song, _clip = _song_with_clip()
+    widget.set_song(song)
+    widget.resize(900, 600)
+    widget.set_show_video_track(False)
+
+    widget.music_expand_button.click()
+    assert widget._music_header_expanded is True
+    assert widget.music_volume_slider.isHidden() is False
+    assert widget.video_clip_volume_slider.isHidden() is True
+
+
+def test_music_header_expand_grows_layout_height(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song, _clip = _song_with_clip()
+    widget.set_song(song)
+    widget.resize(900, 600)
+
+    collapsed = widget._content_height
+    widget.music_expand_button.click()
+    assert widget._content_height == collapsed + int(widget._music_expand_extra)
+
+
+def test_dragging_audio_gain_slider_updates_song_and_emits_signal(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song, _clip = _song_with_clip()
+    widget.set_song(song)
+
+    changes: list[float] = []
+    widget.audio_gain_changed.connect(changes.append)
+
+    widget.audio_gain_slider.setValue(35)
+
+    assert song.audio_gain_db == pytest.approx(3.5, abs=0.05)
+    assert changes == [pytest.approx(3.5, abs=0.05)]
+
+
+def test_set_song_syncs_audio_gain_slider_from_song_state(app: QApplication) -> None:
+    widget = TimelineWidget()
+    song, _clip = _song_with_clip()
+    song.audio_gain_db = -4.5
+
+    widget.set_song(song)
+    assert widget.audio_gain_slider.value() == -45
+    assert widget.audio_gain_label.text() == "-4.5 dB"
 
 
 def test_set_song_syncs_music_volume_slider_from_song_state(app: QApplication) -> None:
@@ -163,6 +215,7 @@ def test_dragging_music_volume_slider_updates_song_and_emits_signal(app: QApplic
     widget = TimelineWidget()
     song, _clip = _song_with_clip()
     widget.set_song(song)
+    widget.music_expand_button.click()
 
     changes: list[float] = []
     widget.music_volume_changed.connect(changes.append)
