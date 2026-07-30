@@ -81,5 +81,6 @@
 
 ## 相關文件
 
+- 員工安裝／下載：`docs/EMPLOYEE_INSTALL.md`（給測試端，不含 Git）
 - 產品規格：`docs/PRODUCT_SPEC.md`
 - 架構：`docs/ARCHITECTURE.md`

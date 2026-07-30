@@ -48,11 +48,24 @@ def main() -> int:
         _boot_log(f"cueplayer import failed: {exc}")
 
     from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from cueplayer.ui.main_window import MainWindow
     from cueplayer.ui.splash import show_startup_splash
     from cueplayer.ui.theme import BG_APP, apply_dark_palette, apply_ui_font, build_stylesheet
+    from cueplayer.util.runtime import app_icon_path, is_frozen
+
+    # Windows taskbar grouping for frozen builds (and clearer process identity).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(  # type: ignore[attr-defined]
+                "CuePlayer.Desktop.1"
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -65,7 +78,11 @@ def main() -> int:
     # quit the app if something races during boot).
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
-    _boot_log("QApplication ready")
+    icon_path = app_icon_path()
+    if icon_path is not None:
+        app.setWindowIcon(QIcon(str(icon_path)))
+        _boot_log(f"window icon={icon_path}")
+    _boot_log(f"QApplication ready  frozen={is_frozen()}")
 
     splash = show_startup_splash(app, message="Starting…")
     splash.set_progress(0.08, "Applying theme…")
@@ -99,6 +116,8 @@ def main() -> int:
     _boot_log("MainWindow created")
 
     window.setStyleSheet(f"QMainWindow {{ background-color: {BG_APP}; }}")
+    if icon_path is not None:
+        window.setWindowIcon(QIcon(str(icon_path)))
     splash.set_progress(0.7, "Opening…")
 
     shown = {"done": False}

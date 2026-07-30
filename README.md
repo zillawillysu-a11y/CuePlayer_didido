@@ -20,8 +20,19 @@ Agent handoff: `AGENTS.md`
 ## Requirements
 
 - Windows 11
-- Python 3.13+ (3.14 OK)
-- Git
+- For **developers**: Python 3.13+, Git
+- For **employees / testers**: no Git — use the Windows zip or Setup.exe (see `docs/DISTRIBUTION.md`)
+
+## Employee install (no Git)
+
+On a Windows build PC:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+```
+
+Then send `dist\CuePlayer-*-win64.zip` (unzip → run `CuePlayer.exe`) or
+`dist\CuePlayer-Setup-*.exe` if Inno Setup is installed.
 
 ## Update + run (this laptop)
 

@@ -34,6 +34,7 @@ Playback Engine is the only playback clock source.
 - Remote: `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (`origin`).
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
+- **Employee installs (no Git):** build on Windows with `packaging/build_windows.ps1` — see `docs/DISTRIBUTION.md`.
 
 ## Recent handoff (2026-07-28)
 
