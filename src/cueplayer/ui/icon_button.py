@@ -49,10 +49,21 @@ class IconButton(QPushButton):
         rect = self.rect().adjusted(1, 1, -1, -1)
         radius = 8 if self.width() >= 44 else 6
 
-        # Borderless: soft fill only when hovered / pressed / active — no outline.
+        # Borderless soft fill. Overlay toggles (Auto Scroll / Setup / …) need a
+        # high-contrast "on" chip — greyscale UI makes #ededed→#ffffff invisible.
         bg: QColor | None = None
+        color = QColor("#ededed") if self.isEnabled() else QColor("#555555")
         if self._overlay:
-            if self.isDown():
+            if self._active and self.isEnabled():
+                # On: light chip + dark glyph (readable at a glance on dark timeline).
+                if self.isDown():
+                    bg = QColor(200, 200, 200, 245)
+                elif self.underMouse():
+                    bg = QColor(245, 245, 245, 245)
+                else:
+                    bg = QColor(232, 232, 232, 235)
+                color = QColor("#111111")
+            elif self.isDown():
                 bg = QColor(40, 40, 40, 220)
             elif self.underMouse() and self.isEnabled():
                 bg = QColor(48, 48, 48, 200)
@@ -61,7 +72,10 @@ class IconButton(QPushButton):
         elif self.isDown():
             bg = QColor("#2a2a2a")
         elif self._active:
-            bg = QColor("#262626")
+            # Transport pause etc. — brighter fill so active still reads in B&W.
+            bg = QColor("#3a3a3a")
+            if self.isEnabled():
+                color = QColor("#ffffff")
         elif self.underMouse() and self.isEnabled():
             bg = QColor("#222222")
 
@@ -69,10 +83,6 @@ class IconButton(QPushButton):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg)
             painter.drawRoundedRect(rect, radius, radius)
-
-        color = QColor("#ededed") if self.isEnabled() else QColor("#555555")
-        if self._active and self.isEnabled():
-            color = QColor("#ffffff")
 
         # Glyphs authored for ~34×30; scale for larger transport buttons.
         scale = min(self.width() / 34.0, self.height() / 30.0)
