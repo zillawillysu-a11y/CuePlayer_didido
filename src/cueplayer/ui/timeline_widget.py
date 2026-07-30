@@ -2101,8 +2101,7 @@ class TimelineWidget(QWidget):
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
         self._paint_mark_lane_splitter(painter)
-        # Gain lines are interactive — paint live in paintEvent (not baked here).
-        self._paint_selection_box(painter)
+        # Selection box paints live in paintEvent (after mark-track colors).
         painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
         self._paint_headers(painter, wave_bottom, tracks_top)
 
@@ -3101,6 +3100,7 @@ class TimelineWidget(QWidget):
                 self._paint_marks_live(painter)
                 self._paint_video_selection_live(painter)
                 self._paint_loop_region(painter)
+                self._paint_selection_box(painter)
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
@@ -3109,8 +3109,9 @@ class TimelineWidget(QWidget):
         painter.fillRect(self.rect(), QColor(BG_APP))
         self._paint_static_layers(painter)
         self._paint_marks_live(painter)
-        self._paint_playhead(painter)
         self._paint_loop_region(painter)
+        self._paint_selection_box(painter)
+        self._paint_playhead(painter)
         self._paint_audio_gain_overlays(painter)
         self._paint_drag_guides(painter)
 
