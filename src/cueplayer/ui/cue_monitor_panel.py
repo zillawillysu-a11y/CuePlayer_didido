@@ -111,12 +111,12 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 
 
 _MIME_NOW_SECONDARY = "application/x-cueplayer-now-secondary"
-_NOW_CARD_MIN_H = 72
-_NOW_CARD_MIN_H_BELOW = 52
-_NOW_PRIMARY_COL_MIN = 72
-_NOW_SECONDARY_COL_MIN = 64
-_CUE_LIST_BODY_MIN = 80
-_NOW_TITLE_CHROME = 30  # NOW label + layout spacing/margins
+_NOW_CARD_MIN_H = 56
+_NOW_CARD_MIN_H_BELOW = 44
+_NOW_PRIMARY_COL_MIN = 56
+_NOW_SECONDARY_COL_MIN = 48
+_CUE_LIST_BODY_MIN = 56
+_NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
 
 
 def _now_card_style(accent: str, *, secondary: bool = False) -> str:
@@ -198,7 +198,7 @@ class CueMonitorPanel(QWidget):
         self._body_splitter_state: QByteArray | None = None
         self._secondary_drag_origin: QPoint | None = None
 
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(200)
         self.setMaximumWidth(440)
         # Prefer shrinking children over forcing the main window taller.
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
@@ -330,7 +330,7 @@ class CueMonitorPanel(QWidget):
         now_layout.addWidget(now_title)
 
         self._primary_now_column = QWidget()
-        self._primary_now_column.setMinimumWidth(120)
+        self._primary_now_column.setMinimumWidth(96)
         self._primary_now_column.setMinimumHeight(_NOW_PRIMARY_COL_MIN)
         self._primary_now_column.setAcceptDrops(True)
         primary_col_layout = QVBoxLayout(self._primary_now_column)

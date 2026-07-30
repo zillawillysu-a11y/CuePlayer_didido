@@ -1722,6 +1722,25 @@ class TimelineWidget(QWidget):
     def _wave_bottom_y(self) -> int:
         return self._ruler_height + self._wave_height
 
+    def _viewport_min_height(self) -> int:
+        """Compact floor for the *visible* timeline viewport.
+
+        Full song height stays in ``_content_height`` and scrolls inside the
+        QScrollArea — do not push that onto the main window minimum size
+        (MA / Depence share one screen).
+        """
+        return int(self._ruler_height) + 80 + 8
+
+    def sizeHint(self):  # noqa: ANN201
+        from PySide6.QtCore import QSize
+
+        return QSize(800, self._viewport_min_height())
+
+    def minimumSizeHint(self):  # noqa: ANN201
+        from PySide6.QtCore import QSize
+
+        return QSize(240, self._viewport_min_height())
+
     def _video_band_height(self) -> int:
         """Canvas height for the Video lane (0 when hidden — eye stays in header only)."""
         if self._video_lane_visible():
@@ -1757,7 +1776,9 @@ class TimelineWidget(QWidget):
         )
         changed = needed != self._content_height
         self._content_height = needed
-        self.setMinimumHeight(needed)
+        # Keep a small widget minimum so the main window can shrink; the scroll
+        # area still sizes us to ``_content_height`` via MainWindow sync.
+        self.setMinimumHeight(self._viewport_min_height())
         self._layout_video_track_overlay()
         self._layout_music_header_overlay()
         # Only notify when height actually changes — otherwise drag-resize
