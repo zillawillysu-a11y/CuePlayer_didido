@@ -864,17 +864,17 @@ class AudioOutputSettings:
     output_channel_modes: list[str] = field(default_factory=list)
 
     def effective_mtc_output(self) -> bool:
-        """MTC quarter-frames (generator and/or file LTC translate)."""
-        return bool(
-            self.midi_enabled
-            and (self.mtc_enabled or self.ltc_to_mtc_translate)
-        )
+        """MTC quarter-frames — requires the MTC toggle (TRANS alone is not enough)."""
+        return bool(self.midi_enabled and self.mtc_enabled)
 
     def effective_midi_cue_notes(self) -> bool:
         return bool(self.midi_enabled and self.midi_cue_notes_enabled)
 
     def effective_ltc_to_mtc_translate(self) -> bool:
-        return bool(self.midi_enabled and self.ltc_to_mtc_translate)
+        """Mirror file LTC numbers into MTC when both MTC and TRANS are on."""
+        return bool(
+            self.midi_enabled and self.mtc_enabled and self.ltc_to_mtc_translate
+        )
 
 
 @dataclass

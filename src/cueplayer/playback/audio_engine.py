@@ -338,7 +338,7 @@ class AudioEngine(QObject):
 
         Returns a channel only when translation is actually wanted:
         - LTC output enabled with a from-file source, OR
-        - ltc_to_mtc_translate is on (MTC-only mode, no LTC output needed).
+        - TRANS + MTC are both on (mirror file LTC into MTC without LTC output).
         Generator source always returns None.
         """
         s = self._audio_settings

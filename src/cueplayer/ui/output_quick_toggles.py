@@ -65,7 +65,7 @@ class OutputQuickToggles(QWidget):
         self._translate = self._make_chip(
             "TRANS",
             "translate",
-            "Translate file LTC stripe → MTC (auto-enables MIDI)",
+            "When MTC is on, send file LTC stripe numbers instead of Song Start TC",
         )
         self._note = self._make_chip(
             "Note",
