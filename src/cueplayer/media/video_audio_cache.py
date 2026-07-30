@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from cueplayer.domain.models import VideoClip
+from cueplayer.media.av_lock import av_path_lock
 from cueplayer.media.video_audio_loader import (
     MAX_VIDEO_AUDIO_DECODE_SECONDS,
     VideoAudioBuffer,
@@ -20,8 +21,6 @@ _mtime: dict[str, int] = {}
 # Cache dict + iterators must be guarded: waveform workers and the playback
 # mixer both call in (and PyAV releases the GIL during decode).
 _cache_lock = threading.RLock()
-# Serialize native demux — concurrent av.open on some builds hard-crashes.
-_decode_lock = threading.Lock()
 
 
 def _mtime_ns(path: Path) -> int:
@@ -65,7 +64,7 @@ def get_video_audio(
     with _cache_lock:
         if key in _cache:
             return _cache[key]
-    with _decode_lock:
+    with av_path_lock(path):
         with _cache_lock:
             if key in _cache:
                 return _cache[key]

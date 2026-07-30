@@ -15,6 +15,8 @@ from pathlib import Path
 import av
 import numpy as np
 
+from cueplayer.media.av_lock import av_path_lock
+
 # Hard ceiling so a 2-hour concert file cannot allocate multi-GB of PCM and
 # freeze the UI. Typical song-length windows are far below this.
 MAX_VIDEO_AUDIO_DECODE_SECONDS = 15 * 60.0
@@ -61,64 +63,65 @@ def load_video_audio(
         max_dur = max(0.05, min(float(max_duration_seconds), MAX_VIDEO_AUDIO_DECODE_SECONDS))
     end_time = start + max_dur
 
-    container = av.open(str(path))
-    try:
-        stream = next((s for s in container.streams if s.type == "audio"), None)
-        if stream is None:
-            return None
-        sample_rate = int(stream.codec_context.sample_rate or 48000)
-        time_base = float(stream.time_base) if stream.time_base else (1.0 / sample_rate)
+    with av_path_lock(path):
+        container = av.open(str(path))
+        try:
+            stream = next((s for s in container.streams if s.type == "audio"), None)
+            if stream is None:
+                return None
+            sample_rate = int(stream.codec_context.sample_rate or 48000)
+            time_base = float(stream.time_base) if stream.time_base else (1.0 / sample_rate)
 
-        if start > 0.05:
-            try:
-                # Prefer stream seek; fall back to container seek.
-                offset = int(start / time_base) if time_base > 0 else 0
-                container.seek(offset, stream=stream, any_frame=False, backward=True)
-            except Exception:
+            if start > 0.05:
                 try:
-                    container.seek(int(start * av.time_base))
+                    # Prefer stream seek; fall back to container seek.
+                    offset = int(start / time_base) if time_base > 0 else 0
+                    container.seek(offset, stream=stream, any_frame=False, backward=True)
                 except Exception:
-                    pass
+                    try:
+                        container.seek(int(start * av.time_base))
+                    except Exception:
+                        pass
 
-        resampler = av.AudioResampler(format="fltp", layout="stereo", rate=sample_rate)
-        chunks: list[np.ndarray] = []
-        collected_start: float | None = None
-        for frame in container.decode(stream):
-            frame_t = float(frame.pts * stream.time_base) if frame.pts is not None and stream.time_base else None
-            if frame_t is not None:
-                if frame_t + 0.05 < start:
-                    # Seek landed early — skip until we reach the window.
-                    continue
-                if frame_t >= end_time:
-                    break
-                if collected_start is None:
-                    collected_start = max(start, frame_t)
-            for resampled in resampler.resample(frame):
-                arr = resampled.to_ndarray()  # planar fltp: (channels, samples)
+            resampler = av.AudioResampler(format="fltp", layout="stereo", rate=sample_rate)
+            chunks: list[np.ndarray] = []
+            collected_start: float | None = None
+            for frame in container.decode(stream):
+                frame_t = float(frame.pts * stream.time_base) if frame.pts is not None and stream.time_base else None
+                if frame_t is not None:
+                    if frame_t + 0.05 < start:
+                        # Seek landed early — skip until we reach the window.
+                        continue
+                    if frame_t >= end_time:
+                        break
+                    if collected_start is None:
+                        collected_start = max(start, frame_t)
+                for resampled in resampler.resample(frame):
+                    arr = resampled.to_ndarray()  # planar fltp: (channels, samples)
+                    if arr.size:
+                        chunks.append(arr.T.astype(np.float32, copy=False))
+                # Stop once we have enough samples even if pts is missing.
+                if chunks:
+                    got = sum(c.shape[0] for c in chunks) / float(sample_rate)
+                    if got >= max_dur:
+                        break
+            for resampled in resampler.resample(None):  # flush trailing buffered samples
+                arr = resampled.to_ndarray()
                 if arr.size:
                     chunks.append(arr.T.astype(np.float32, copy=False))
-            # Stop once we have enough samples even if pts is missing.
-            if chunks:
-                got = sum(c.shape[0] for c in chunks) / float(sample_rate)
-                if got >= max_dur:
-                    break
-        for resampled in resampler.resample(None):  # flush trailing buffered samples
-            arr = resampled.to_ndarray()
-            if arr.size:
-                chunks.append(arr.T.astype(np.float32, copy=False))
-        if not chunks:
-            return None
-        samples = np.concatenate(chunks, axis=0)
-        # Trim to exact max_dur frames.
-        max_frames = int(round(max_dur * sample_rate))
-        if samples.shape[0] > max_frames:
-            samples = samples[:max_frames]
-        origin = collected_start if collected_start is not None else start
-        return VideoAudioBuffer(
-            path=path,
-            sample_rate=sample_rate,
-            samples=samples,
-            origin_seconds=float(origin),
-        )
-    finally:
-        container.close()
+            if not chunks:
+                return None
+            samples = np.concatenate(chunks, axis=0)
+            # Trim to exact max_dur frames.
+            max_frames = int(round(max_dur * sample_rate))
+            if samples.shape[0] > max_frames:
+                samples = samples[:max_frames]
+            origin = collected_start if collected_start is not None else start
+            return VideoAudioBuffer(
+                path=path,
+                sample_rate=sample_rate,
+                samples=samples,
+                origin_seconds=float(origin),
+            )
+        finally:
+            container.close()
