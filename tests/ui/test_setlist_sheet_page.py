@@ -195,6 +195,9 @@ def test_set_list_sheet_ui_columns() -> None:
     window._set_view_mode("setlist")
     page = window.setlist_sheet_page
     assert page.table.columnCount() == 8
+    assert page.table.horizontalHeaderItem(0).text() == "No."
+    assert page.table.horizontalHeaderItem(1).text() == "Song Name"
+    assert page.table.horizontalHeaderItem(2).text() == "English Songe Name"
     assert page.table.horizontalHeaderItem(4).text() == "Cue ID"
     assert page.table.item(0, 3).text() == "1"
     assert page.table.item(0, 4).text() == "If_Only_Main"
