@@ -37,6 +37,32 @@ def test_hit_mark_lane_header(app: QApplication) -> None:
     assert widget._hit_mark_lane_header(200, mid_y) is None
 
 
+def test_header_click_requests_add_mark(app: QApplication) -> None:
+    song = Song.create("Test")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    lanes = widget._lane_rects()
+    assert lanes
+    lane_index, y0, y1 = lanes[1]
+    mid_y = (y0 + y1) / 2
+    fired: list[int] = []
+    widget.add_mark_requested.connect(fired.append)
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    pos = QPointF(20, mid_y)
+    press = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        pos,
+        pos,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    widget.mousePressEvent(press)
+    assert fired == [lane_index]
+
+
 def test_rename_mark_lane_updates_name(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     song = Song.create("Test")
     widget = TimelineWidget()

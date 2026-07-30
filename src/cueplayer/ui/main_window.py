@@ -1203,6 +1203,7 @@ class MainWindow(QMainWindow):
         self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         self.timeline.mark_manager_requested.connect(self._open_mark_manager)
         self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
+        self.timeline.add_mark_requested.connect(self._add_mark)
         # Video decode must not run ahead of timeline/MIDI on the UI thread.
         # QueuedConnection lets playhead + cue-list update finish first; decode
         # follows on the next event-loop turn (still driven by the audio clock).

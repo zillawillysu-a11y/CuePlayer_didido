@@ -87,6 +87,7 @@ class TimelineWidget(QWidget):
     lane_name_changed = Signal(int, str)  # lane_index, new name
     mark_manager_requested = Signal()
     mark_lane_height_changed = Signal(float)
+    add_mark_requested = Signal(int)  # lane_index at current playhead
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
 
@@ -1094,6 +1095,44 @@ class TimelineWidget(QWidget):
         fill.setAlpha(alpha)
         return fill
 
+    def _paint_mark_lane_header_label(
+        self,
+        painter: QPainter,
+        lane,
+        *,
+        y: int,
+        text_w: int,
+        fm,
+    ) -> None:  # noqa: ANN001
+        """Colored shortcut + name on neutral header — no row tint."""
+        accent = self._lane_accent_color(lane)
+        shortcut = (lane.shortcut or str(lane.index)).strip()
+        name = (lane.name or "").strip()
+        row_h = int(self._lane_height)
+        gap = "  "
+        shortcut_w = fm.horizontalAdvance(shortcut + gap) if shortcut else 0
+        name_w = max(0, text_w - shortcut_w)
+        elided_name = fm.elidedText(name, Qt.TextElideMode.ElideRight, name_w) if name else ""
+        base_font = painter.font()
+        bold = QFont(base_font)
+        bold.setWeight(QFont.Weight.Bold)
+        if shortcut:
+            painter.setFont(bold)
+            painter.setPen(accent)
+            painter.drawText(
+                QRect(8, y, min(text_w, shortcut_w), row_h),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                shortcut,
+            )
+        painter.setFont(base_font)
+        painter.setPen(accent)
+        painter.drawText(
+            QRect(8 + shortcut_w, y, name_w, row_h),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            elided_name,
+        )
+        painter.setFont(base_font)
+
     def _hit_mark_lane_header(self, x: float, y: float) -> int | None:
         """Return lane index when clicking the left name header of a Mark track."""
         if x >= self._header_width or self._song is None or not self._show_mark_tracks:
@@ -1379,7 +1418,7 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
             del gain_zone
         elif self._hit_mark_lane_header(x, y) is not None:
-            self.setCursor(Qt.CursorShape.IBeamCursor)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         elif self._hit_loop_handle(x, y) is not None:
             self.setCursor(self._cursor_for_loop_hover(x, y))
         elif self._hit_mark_at(x, y) is not None:
@@ -2300,6 +2339,10 @@ class TimelineWidget(QWidget):
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
                 self._apply_gain_at_y(y, gain_zone)
+            elif (lane_index := self._hit_mark_lane_header(x, y)) is not None:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.add_mark_requested.emit(lane_index)
+                return
             elif (loop_h := self._hit_loop_handle(x, y)) is not None:
                 # Click seeks to A/B; drag always moves the loop point.
                 self._dragging_loop = loop_h
@@ -2453,7 +2496,7 @@ class TimelineWidget(QWidget):
             elif gain_zone is not None:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif self._hit_mark_lane_header(x, y) is not None:
-                self.setCursor(Qt.CursorShape.IBeamCursor)
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
             elif loop_h is not None:
                 self.setCursor(self._cursor_for_loop_hover(x, y))
             elif hit is not None:
@@ -3082,13 +3125,12 @@ class TimelineWidget(QWidget):
                 if not lane.visible:
                     continue
                 painter.fillRect(0, y, self._header_width, self._lane_height, QColor("#111113"))
-                label = f"{lane.shortcut}  {lane.name}".strip()
-                elided = fm.elidedText(label, Qt.TextElideMode.ElideRight, text_w)
-                painter.setPen(QColor("#a8a8b0"))
-                painter.drawText(
-                    QRect(8, int(y), text_w, int(self._lane_height)),
-                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                    elided,
+                self._paint_mark_lane_header_label(
+                    painter,
+                    lane,
+                    y=int(y),
+                    text_w=text_w,
+                    fm=fm,
                 )
                 y += self._lane_height
         painter.restore()
