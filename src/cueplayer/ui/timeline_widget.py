@@ -205,6 +205,7 @@ class TimelineWidget(QWidget):
         self._box_select_mode = False
         self._setup_mode = False
         self._playing = False
+        self._video_waveform_pending_refresh = False
         self._last_play_repaint_ns = 0
         self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
         self._scrub_backdrop: QPixmap | None = None
@@ -695,6 +696,12 @@ class TimelineWidget(QWidget):
 
     def _apply_video_waveform_ready(self) -> None:
         """GUI-thread slot: refresh static backdrop once peaks land."""
+        if self._playing:
+            # Avoid rebuilding the wide play-cache mid-playback (heavy + races
+            # with background PyAV work on the same clip file).
+            self._video_waveform_pending_refresh = True
+            return
+        self._video_waveform_pending_refresh = False
         self._invalidate_scrub_backdrop()
         self.update()
 
@@ -723,6 +730,7 @@ class TimelineWidget(QWidget):
             self._lane_height = self._clamp_mark_lane_height(self._project_mark_lane_height)
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
+        self._video_waveform_pending_refresh = False
         self._invalidate_scrub_backdrop()
         if song is not None and song.video_clips:
             clips = list(song.video_clips)
@@ -1529,6 +1537,9 @@ class TimelineWidget(QWidget):
             # Play uses the same static-backdrop path as scrub; rebuild once.
             self._invalidate_scrub_backdrop()
             self._update_video_lane()
+            if not self._playing and self._video_waveform_pending_refresh:
+                self._video_waveform_pending_refresh = False
+                self._invalidate_scrub_backdrop()
             self.update()
 
     def _begin_box_select(
