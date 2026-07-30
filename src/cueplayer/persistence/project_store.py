@@ -278,7 +278,7 @@ def _coerce_mark_line_style(value: Any, *, default: str = "solid") -> str:
     return style
 
 
-def _coerce_waveform_color(value: Any, *, default: str = "#3dd68c") -> str:
+def _coerce_waveform_color(value: Any, *, default: str = "#616161") -> str:
     raw = str(value or "").strip()
     if not raw:
         return default
@@ -334,7 +334,7 @@ def _load_project_waveform_color(data: dict[str, Any], songs: list[Song]) -> str
         return _coerce_waveform_color(data.get("waveform_color"))
     for song in songs:
         return _coerce_waveform_color(song.waveform_color)
-    return "#3dd68c"
+    return "#616161"
 
 
 def _load_project_playhead_color(data: dict[str, Any]) -> str:
@@ -733,7 +733,7 @@ def project_from_dict(
                 mark_dash_on=float(song_data.get("mark_dash_on", 4.0)),
                 mark_dash_off=float(song_data.get("mark_dash_off", 4.0)),
                 mark_line_width=float(song_data.get("mark_line_width", 1.0)),
-                waveform_color=str(song_data.get("waveform_color") or "#3dd68c"),
+                waveform_color=str(song_data.get("waveform_color") or "#616161"),
                 now_lanes_configured=now_cfg[0],
                 now_primary_lanes=now_cfg[1],
                 now_secondary_lanes=now_cfg[2],
