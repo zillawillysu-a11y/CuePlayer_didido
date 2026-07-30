@@ -19,7 +19,7 @@ class TimelineOverviewBar(QWidget):
 
     seek_requested = Signal(float)
 
-    # Side gutters for "0:00" / duration — keep hairline clear of the text.
+    # Side gutters for current time / duration — keep hairline clear of the text.
     _LABEL_GUTTER = 56
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -188,7 +188,7 @@ class TimelineOverviewBar(QWidget):
         font.setPointSize(max(11, font.pointSize() + 1))
         font.setBold(True)
         painter.setFont(font)
-        start = "0:00"
+        start = self._format_time(self._position)
         end = self._format_time(self._duration)
         painter.drawText(
             4,
