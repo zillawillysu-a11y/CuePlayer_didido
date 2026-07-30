@@ -245,18 +245,42 @@ def stereo_routes_from_channel_modes(
     ltc_idxs = [i for i, m in enumerate(norm) if m == "ltc"]
 
     if len(music_idxs) >= 2:
-        left_kind, left_ch = "channels", [music_idxs[0]]
-        right_kind, right_ch = "channels", [music_idxs[1]]
+        left_kind, left_ch = "music_source", [music_idxs[0]]
+        right_kind, right_ch = "music_source", [music_idxs[1]]
     elif len(music_idxs) == 1 and ltc_idxs:
         left_kind, left_ch = "music_source", [music_idxs[0]]
         right_kind, right_ch = "ltc", [ltc_idxs[0]]
     elif len(music_idxs) == 1:
         ch = music_idxs[0]
-        left_kind, left_ch = "channels", [ch]
-        right_kind, right_ch = "channels", [ch]
+        left_kind, left_ch = "music_source", [ch]
+        right_kind, right_ch = "music_source", [ch]
     else:
         left_kind, left_ch = "music_source", default_dest_for_side("l", max_ch)
         right_kind, right_ch = "music_source", default_dest_for_side("r", max_ch)
 
     bus_ltc = ltc_idxs[:1]
     return left_kind, left_ch, right_kind, right_ch, bus_ltc
+
+
+def ltc_output_channels_from_settings(settings, *, max_ch: int) -> list[int]:  # noqa: ANN001
+    """
+    Physical output channel(s) for the dedicated LTC bus (mono).
+
+    When per-channel modes are saved, only channels marked ``ltc`` receive
+    timecode — never infer a default wire if the user picked Music on every ch.
+    """
+    from cueplayer.domain.models import AudioOutputSettings, clamp_output_channels
+
+    if not isinstance(settings, AudioOutputSettings):
+        raise TypeError("settings must be AudioOutputSettings")
+    max_ch = max(1, int(max_ch))
+    modes = derive_channel_modes(settings, max_ch=max_ch)
+    ltc_from_modes = [i for i, m in enumerate(modes) if m == "ltc"]
+    if ltc_from_modes:
+        return clamp_output_channels(ltc_from_modes[:1], max_ch)
+    if settings.output_channel_modes and len(settings.output_channel_modes) >= max_ch:
+        return []
+    if not settings.ltc_enabled:
+        return []
+    legacy = clamp_output_channels(list(settings.ltc_channels), max_ch)
+    return legacy[:1] if legacy else []

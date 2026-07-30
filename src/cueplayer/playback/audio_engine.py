@@ -45,6 +45,7 @@ from cueplayer.playback.routing_parse import (
     exclusive_ltc_route,
     is_ltc_route,
     is_music_source_route,
+    ltc_output_channels_from_settings,
     parse_stereo_route,
     speaker_channels_without_ltc,
 )
@@ -1131,15 +1132,19 @@ class AudioEngine(QObject):
 
         future.add_done_callback(_done)
 
-    def _ltc_bus_active(self) -> bool:
+    def _ltc_bus_active(self, *, max_ch: int | None = None) -> bool:
         s = self._audio_settings
         if not s.ltc_enabled:
             return False
-        if self._song_uses_file_ltc():
+        ch = max_ch if max_ch is not None else max(1, int(self._output_channel_count or 2))
+        if ltc_output_channels_from_settings(s, max_ch=ch):
             return True
-        if s.ltc_source == "generator":
-            return bool(s.ltc_generator_enabled)
-        return self._file_ltc_channel() is not None or s.ltc_source != "generator"
+        # Legacy 3.5mm split: LTC on a stereo leg instead of the dedicated bus.
+        if is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route):
+            if s.ltc_source == "generator":
+                return bool(s.ltc_generator_enabled)
+            return self._file_ltc_channel() is not None
+        return False
 
     def refresh_song_ltc_routing(self) -> None:
         """Re-resolve LTC/music routing after per-song Left-LTC flag changes."""
@@ -1212,8 +1217,8 @@ class AudioEngine(QObject):
             left_kind, left_ch, right_kind, right_ch = parsed
 
         ltc = (
-            list(self._audio_settings.ltc_channels)
-            if self._ltc_bus_active()
+            ltc_output_channels_from_settings(self._audio_settings, max_ch=max_ch)
+            if self._ltc_bus_active(max_ch=max_ch)
             else []
         )
         if ltc and len(ltc) > 1:
@@ -1259,11 +1264,8 @@ class AudioEngine(QObject):
         else:
             left_kind, left_ch, right_kind, right_ch = parsed
 
-        if self._ltc_bus_active():
-            ltc = list(self._audio_settings.ltc_channels)
-            ltc = clamp_output_channels(ltc, max_ch)
-            if not ltc:
-                ltc = default_ltc_channels_for_device(max_ch)
+        if self._ltc_bus_active(max_ch=max_ch):
+            ltc = ltc_output_channels_from_settings(self._audio_settings, max_ch=max_ch)
         else:
             ltc = []
 

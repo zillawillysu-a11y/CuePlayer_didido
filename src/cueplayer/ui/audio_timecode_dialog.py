@@ -452,11 +452,12 @@ class AudioTimecodeDialog(QDialog):
         )
         ltc = bus_ltc or ltc_channels[:1]
         if self.ltc_enable.isChecked() and not ltc:
-            ltc = default_ltc_channels_for_device(max_ch)
             QMessageBox.information(
                 self,
                 "LTC routing",
-                "No output channel was set to LTC Source — using the default wire.",
+                "LTC is enabled but no output channel is set to LTC Source — "
+                "timecode will not be sent to the speakers. "
+                "Assign LTC Source on a channel above when you need a wire.",
             )
         music_l_route = route_to_ui(left_kind, left_ch)
         music_r_route = route_to_ui(right_kind, right_ch)
@@ -491,9 +492,7 @@ class AudioTimecodeDialog(QDialog):
             ltc_source=str(self.ltc_source.currentData() or "generator"),
             ltc_generator_enabled=self.ltc_generator_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
-            ltc_channels=ltc if self.ltc_enable.isChecked() else (
-                ltc or default_ltc_channels_for_device(max_ch)
-            ),
+            ltc_channels=ltc if self.ltc_enable.isChecked() else [],
             ltc_to_mtc_translate=self.ltc_to_mtc_translate.isChecked(),
             midi_enabled=midi_on,
             mtc_enabled=self.mtc_enable.isChecked(),
