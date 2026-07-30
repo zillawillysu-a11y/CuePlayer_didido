@@ -138,24 +138,24 @@ class BottomTransportBar(QWidget):
             f"  border-top: none;"
             "}"
         )
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(10, 4, 10, 8)
-        root.setSpacing(2)
+        root.setSpacing(8)
 
-        # Horizontally shortened + centered overview (not full-bleed).
-        overview_row = QHBoxLayout()
-        overview_row.setContentsMargins(0, 0, 0, 0)
-        overview_row.setSpacing(0)
-        overview_row.addStretch(1)
+        # Center block: overview scrubber + transport / A-B (no big clock).
+        center_host = QWidget()
+        center_host.setMinimumWidth(360)
+        center_host.setMaximumWidth(720)
+        center = QVBoxLayout(center_host)
+        center.setContentsMargins(0, 0, 0, 0)
+        center.setSpacing(2)
+
         self.overview = TimelineOverviewBar()
-        # Grow up to maxWidth (720); side stretches keep it centered.
-        overview_row.addWidget(self.overview, stretch=2)
-        overview_row.addStretch(1)
-        root.addLayout(overview_row)
+        center.addWidget(self.overview)
 
-        row = QHBoxLayout()
-        row.setContentsMargins(4, 0, 4, 0)
-        row.setSpacing(8)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(4, 0, 4, 0)
+        controls.setSpacing(8)
 
         big = QSize(52, 44)
         self.play_button = IconButton("play", "Play", size=big)
@@ -175,11 +175,9 @@ class BottomTransportBar(QWidget):
         self.loop_label = QLabel("A —  B —")
         self.loop_label.setStyleSheet(f"color: {TEXT_MUTED}; min-width: 180px; font-size: 13px;")
 
-        self.time_label = QLabel("00:00.000 / 01:00.000")
-        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_label.setStyleSheet(
-            f"color: {TEXT}; font-weight: 600; font-size: 18px; min-width: 210px; border: none;"
-        )
+        # Kept for set_times() callers; not shown (overview ends replace it).
+        self.time_label = QLabel("")
+        self.time_label.hide()
 
         for button in (self.loop_a_button, self.loop_b_button):
             button.setFixedSize(44, 44)
@@ -188,6 +186,19 @@ class BottomTransportBar(QWidget):
             button.setAutoDefault(False)
             button.setDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        controls.addStretch(1)
+        controls.addWidget(self.play_button)
+        controls.addWidget(self.pause_button)
+        controls.addWidget(self.stop_button)
+        controls.addSpacing(14)
+        controls.addWidget(self.loop_a_button)
+        controls.addWidget(self.loop_b_button)
+        controls.addWidget(self.loop_box)
+        controls.addWidget(self.loop_clear_button)
+        controls.addWidget(self.loop_label)
+        controls.addStretch(1)
+        center.addLayout(controls)
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -208,24 +219,34 @@ class BottomTransportBar(QWidget):
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        row.addStretch(1)
-        row.addWidget(self.time_label)
-        row.addSpacing(12)
-        row.addWidget(self.play_button)
-        row.addWidget(self.pause_button)
-        row.addWidget(self.stop_button)
-        row.addSpacing(14)
-        row.addWidget(self.loop_a_button)
-        row.addWidget(self.loop_b_button)
-        row.addWidget(self.loop_box)
-        row.addWidget(self.loop_clear_button)
-        row.addWidget(self.loop_label)
-        row.addStretch(1)
-        row.addWidget(self.tc_status)
-        row.addSpacing(6)
-        row.addWidget(self.volume_slider)
-        row.addWidget(self.volume_value)
-        root.addLayout(row)
+        # Matching left/right rails keep overview + transport optically centered.
+        right = QHBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(6)
+        right.addStretch(1)
+        right.addWidget(self.tc_status)
+        right.addWidget(self.volume_slider)
+        right.addWidget(self.volume_value)
+        right_wrap = QWidget()
+        right_wrap.setFixedWidth(240)
+        right_wrap.setLayout(right)
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(0)
+        right_col.addStretch(1)
+        right_col.addWidget(right_wrap)
+        right_host = QWidget()
+        right_host.setFixedWidth(240)
+        right_host.setLayout(right_col)
+
+        left_spacer = QWidget()
+        left_spacer.setFixedWidth(240)
+
+        root.addWidget(left_spacer)
+        root.addStretch(1)
+        root.addWidget(center_host, stretch=0)
+        root.addStretch(1)
+        root.addWidget(right_host)
 
         self.play_button.clicked.connect(self.play_clicked.emit)
         self.pause_button.clicked.connect(self.pause_clicked.emit)

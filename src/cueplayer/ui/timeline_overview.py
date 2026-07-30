@@ -20,7 +20,7 @@ class TimelineOverviewBar(QWidget):
     seek_requested = Signal(float)
 
     # Side gutters for "0:00" / duration — keep hairline clear of the text.
-    _LABEL_GUTTER = 44
+    _LABEL_GUTTER = 56
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,7 +33,7 @@ class TimelineOverviewBar(QWidget):
         self._loop_b: float | None = None
         self._dragging = False
         self._hover = False
-        self._bar_height = 18
+        self._bar_height = 22
         self.setFixedHeight(self._bar_height)
         # Prefer a shorter horizontal span; transport centers us with stretches.
         self.setMinimumWidth(280)
@@ -196,8 +196,9 @@ class TimelineOverviewBar(QWidget):
         # Time labels in gutters — never under the white progress line.
         painter.setPen(QColor(TEXT_MUTED))
         font = painter.font()
-        font.setPointSize(max(7, font.pointSize() - 3))
-        font.setBold(False)
+        # Slightly larger than body muted text so ends stay readable at a glance.
+        font.setPointSize(max(11, font.pointSize() + 1))
+        font.setBold(True)
         painter.setFont(font)
         start = "0:00"
         end = self._format_time(self._duration)
