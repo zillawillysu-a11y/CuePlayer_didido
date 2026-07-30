@@ -1119,7 +1119,7 @@ class MarkManagerDialog(QDialog):
                 cue_id_enabled=(index == 1),
                 cue_list_enabled=True,
                 midi_note_enabled=(index != 1),
-                marker_shape="circle",
+                marker_shape="triangle_up",
             )
         )
         self._ensure_bulk_footer_row()
