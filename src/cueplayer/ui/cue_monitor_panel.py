@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal, QEvent
-from PySide6.QtGui import QAction, QColor, QDrag, QFont, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QAction, QColor, QDrag, QFont, QKeyEvent, QMouseEvent, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QSplitter,
+    QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
@@ -38,7 +39,7 @@ from cueplayer.ui.cue_list_columns import (
     normalize_cue_list_column_order,
 )
 from cueplayer.ui.output_quick_toggles import OutputQuickToggles
-from cueplayer.ui.theme import SPLITTER_HOVER, SPLITTER_IDLE
+from cueplayer.ui.theme import BG_SELECTED, SPLITTER_HOVER, SPLITTER_IDLE, TEXT
 from cueplayer.ui.transport_bar import format_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
@@ -65,11 +66,31 @@ class _RevealLabel(QLabel):
 
 
 class _PaddedItemDelegate(QStyledItemDelegate):
-    """Extra vertical padding so edited text is not clipped."""
+    """Extra vertical padding so edited text is not clipped.
+
+    Selection keeps each cell's own foreground (Mark Type lane colors) instead
+    of the global stylesheet forcing selected rows to pure white.
+    """
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
         opt.rect = opt.rect.adjusted(0, 2, 0, -2)
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor(BG_SELECTED))
+            # Drop Selected so Fusion/QSS cannot repaint HighlightedText white.
+            opt.state &= ~QStyle.StateFlag.State_Selected
+            fg = index.data(Qt.ItemDataRole.ForegroundRole)
+            color: QColor | None = None
+            if isinstance(fg, QColor) and fg.isValid():
+                color = QColor(fg)
+            elif fg is not None and hasattr(fg, "color"):
+                brush_color = fg.color()
+                if isinstance(brush_color, QColor) and brush_color.isValid():
+                    color = QColor(brush_color)
+            if color is None:
+                color = QColor(TEXT)
+            opt.palette.setColor(QPalette.ColorRole.Text, color)
+            opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
         super().paint(painter, opt, index)
 
     def createEditor(self, parent, option, index):  # noqa: ANN001
@@ -385,6 +406,7 @@ class CueMonitorPanel(QWidget):
         self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
         self.cue_table = QTableWidget(0, _COL_COUNT)
+        self.cue_table.setObjectName("cueListTable")
         self.cue_table.setHorizontalHeaderLabels(
             [CUE_LIST_FIELD_LABELS[field] for field in CUE_LIST_FIELDS]
         )
@@ -400,9 +422,16 @@ class CueMonitorPanel(QWidget):
         header.setFirstSectionMovable(True)
         header.sectionMoved.connect(self._on_header_section_moved)
         self._apply_column_resize_modes()
+        # Selection fill only — Type lane colors come from the item delegate
+        # (global QSS would force selected text to pure white).
         self.cue_table.setStyleSheet(
-            "QTableWidget::item { padding: 8px 8px; }"
-            "QTableWidget QLineEdit { padding: 4px 6px; min-height: 1.4em; }"
+            "QTableWidget#cueListTable::item { padding: 8px 8px; }"
+            "QTableWidget#cueListTable::item:selected,"
+            "QTableWidget#cueListTable::item:selected:active,"
+            "QTableWidget#cueListTable::item:selected:!active {"
+            f" background: {BG_SELECTED}; "
+            "}"
+            "QTableWidget#cueListTable QLineEdit { padding: 4px 6px; min-height: 1.4em; }"
         )
         self.cue_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.cue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
