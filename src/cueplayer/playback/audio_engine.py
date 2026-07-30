@@ -658,19 +658,21 @@ class AudioEngine(QObject):
             with self._lock:
                 self._loop_engage = False
 
-    def engage_ab_loop(self) -> None:
-        """Arm A–B loop and jump to A when the playhead is outside the region.
+    def engage_ab_loop(self, *, seek_if_outside: bool = True) -> None:
+        """Arm A–B loop.
 
-        Playhead exactly on B (common when tapping B while playing) must not
-        seek — only past B or before A jumps back to A.
+        When ``seek_if_outside`` is True (Loop checkbox / explicit engage), jump
+        to A if the playhead is outside the region. Point placement (tapping A/B)
+        must pass ``seek_if_outside=False`` so re-marking never yanks playback.
         """
         bounds = self._loop_bounds()
         if not self.loop_enabled or bounds is None:
             return
         a, b = bounds
-        pos = self._raw_seconds()
-        if pos > b + 1e-4 or pos < a - 1e-4:
-            self.seek(a)
+        if seek_if_outside:
+            pos = self._raw_seconds()
+            if pos > b + 1e-4 or pos < a - 1e-4:
+                self.seek(a)
         with self._lock:
             self._loop_engage = True
 

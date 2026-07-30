@@ -4546,7 +4546,8 @@ class MainWindow(QMainWindow):
             and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
         ):
             self.engine.loop_enabled = True
-            self.engine.engage_ab_loop()
+            # Dragging handles only repositions — never seek the playhead.
+            self.engine.engage_ab_loop(seek_if_outside=False)
         self.transport.set_loop_status(
             self.engine.loop_a,
             self.engine.loop_b,
@@ -4554,14 +4555,14 @@ class MainWindow(QMainWindow):
         )
 
     def _set_loop_a(self) -> None:
-        # Use the visible Timeline playhead (same clock the user watches), not
-        # a possibly-stale engine read mid-click.
+        # Visible Timeline playhead = what the user is watching.
         t = float(self.timeline.playhead_seconds())
         self.engine.loop_a = t
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
-                self.engine.engage_ab_loop()
+                # Re-tapping A only re-marks — do not jump back to the old region.
+                self.engine.engage_ab_loop(seek_if_outside=False)
         self._sync_loop_ui()
         self.status.showMessage(f"A = {self.engine.loop_a:.3f}s", 2000)
 
@@ -4571,7 +4572,7 @@ class MainWindow(QMainWindow):
         if self.engine.loop_a is not None and self.engine.loop_b is not None:
             if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
                 self.engine.loop_enabled = True
-                self.engine.engage_ab_loop()
+                self.engine.engage_ab_loop(seek_if_outside=False)
         self._sync_loop_ui()
         self.status.showMessage(f"B = {self.engine.loop_b:.3f}s", 2000)
 

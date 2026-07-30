@@ -2339,17 +2339,16 @@ class TimelineWidget(QWidget):
                 self._rebuild_scrub_backdrop()
             if self._scrub_backdrop_valid():
                 painter.drawPixmap(0, 0, self._scrub_backdrop)
-                # A/B must redraw every frame during play — they are not on the
-                # static backdrop when the user taps A/B mid-playback.
-                self._paint_loop_region(painter)
                 self._paint_playhead(painter)
+                # A/B on top of playhead so markers stay obvious while playing.
+                self._paint_loop_region(painter)
                 self._paint_drag_guides(painter)
                 return
 
         painter.fillRect(self.rect(), QColor(BG_APP))
         self._paint_static_layers(painter)
-        self._paint_loop_region(painter)
         self._paint_playhead(painter)
+        self._paint_loop_region(painter)
         self._paint_drag_guides(painter)
 
     def _paint_selection_box(self, painter: QPainter) -> None:
@@ -2970,6 +2969,23 @@ class TimelineWidget(QWidget):
     def _paint_loop_region(self, painter: QPainter) -> None:
         if self._loop_a is None and self._loop_b is None:
             return
+
+        # Shaded span whenever both points exist (placement feedback), brighter
+        # when Loop is armed. Previously the fill was nearly invisible (α≈28)
+        # and easy to miss next to red cue marks.
+        if (
+            self._loop_a is not None
+            and self._loop_b is not None
+            and abs(self._loop_b - self._loop_a) >= 0.01
+        ):
+            a, b = sorted((self._loop_a, self._loop_b))
+            x0 = max(self._header_width, self._x_for_time(a))
+            x1 = min(self.width(), self._x_for_time(b))
+            if x1 > x0:
+                alpha = 56 if self._loop_enabled else 36
+                tint = QColor(61, 214, 140, alpha)
+                painter.fillRect(int(x0), 0, int(x1 - x0), self.height(), tint)
+
         for label, t, col in (
             ("A", self._loop_a, QColor("#3dd68c")),
             ("B", self._loop_b, QColor("#f0c14a")),
@@ -2983,21 +2999,25 @@ class TimelineWidget(QWidget):
             thick = self._hover_loop == handle or self._dragging_loop == handle
             painter.setPen(QPen(col, 3 if thick else 2, Qt.PenStyle.SolidLine))
             painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
-            painter.setPen(col)
-            text = f"{label} {t:.3f}s" if self._dragging_loop == handle else label
-            painter.drawText(int(x + 4), 14, text)
-        if (
-            self._loop_enabled
-            and self._loop_a is not None
-            and self._loop_b is not None
-            and abs(self._loop_b - self._loop_a) >= 0.01
-        ):
-            a, b = sorted((self._loop_a, self._loop_b))
-            x0 = max(self._header_width, self._x_for_time(a))
-            x1 = min(self.width(), self._x_for_time(b))
-            if x1 > x0:
-                tint = QColor(61, 214, 140, 28)
-                painter.fillRect(int(x0), 0, int(x1 - x0), self.height(), tint)
+            # Flag label in the ruler band so it is not mistaken for a cue mark.
+            flag_w, flag_h = 16, 14
+            flag_rect = QRectF(x + 1, 2, flag_w, flag_h)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(col)
+            painter.drawRoundedRect(flag_rect, 2, 2)
+            painter.setPen(QColor("#0d0d0d"))
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(max(9, font.pointSize()))
+            painter.setFont(font)
+            painter.drawText(
+                flag_rect,
+                int(Qt.AlignmentFlag.AlignCenter),
+                label,
+            )
+            if self._dragging_loop == handle:
+                painter.setPen(col)
+                painter.drawText(int(x + flag_w + 4), 14, f"{t:.3f}s")
 
     def _paint_playhead(self, painter: QPainter) -> None:
         x = self._x_for_time(self._position)
