@@ -14,25 +14,25 @@ _CHECKBOX_QSS = f"""
 QCheckBox::indicator {{
     width: 16px;
     height: 16px;
-    border: 1px solid #3f3f46;
+    border: 1px solid #333333;
     border-radius: 3px;
-    background: #0c0c0e;
+    background: #0a0a0a;
 }}
 QCheckBox::indicator:checked {{
-    background: #4a9eff;
-    border-color: #4a9eff;
+    background: #5a5a5a;
+    border-color: #5a5a5a;
     image: url(data:image/png;base64,{_CHECKMARK_B64});
 }}
 QCheckBox::indicator:hover {{
-    border-color: #79b8ff;
+    border-color: #8a8a8a;
 }}
 QCheckBox::indicator:checked:hover {{
-    background: #79b8ff;
-    border-color: #79b8ff;
+    background: #8a8a8a;
+    border-color: #8a8a8a;
 }}
 QCheckBox::indicator:disabled {{
-    background: #18181b;
-    border-color: #27272a;
+    background: #1a1a1a;
+    border-color: #1f1f1f;
 }}
 """
 

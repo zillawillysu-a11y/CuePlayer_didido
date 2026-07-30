@@ -16,6 +16,7 @@
 | 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
 | Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
 | 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |
+| 分隔拉桿 | 平常接近黑色、滑鼠過去變灰色（主介面所有 QSplitter） |
 
 ## Cue List（右側）
 

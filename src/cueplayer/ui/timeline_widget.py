@@ -38,7 +38,7 @@ from cueplayer.ui.drag_drop import (
 )
 from cueplayer.ui.icon_button import IconButton
 from cueplayer.ui.marker_draw import draw_marker_shape
-from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, WARNING, with_alpha
+from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, COLOR_VIDEO, SLIDER_QSS, WARNING, with_alpha
 from cueplayer.ui.video_clip_edit import (
     clip_duration_after_right_trim,
     clip_start_after_body_drag,
@@ -2343,8 +2343,7 @@ class TimelineWidget(QWidget):
         rect = self._selection_box_rect()
         if rect.width() < 2 and rect.height() < 2:
             return
-        # Same accent-blue family as the setlist / transport selection (theme ACCENT),
-        # not a one-off color.
+        # Same greyscale family as setlist / transport selection (theme ACCENT).
         fill = with_alpha(ACCENT, 40)
         border = with_alpha(ACCENT_HOVER, 220)
         painter.fillRect(rect, fill)
@@ -2355,11 +2354,11 @@ class TimelineWidget(QWidget):
     def _paint_wave_splitter(self, painter: QPainter, wave_bottom: int) -> None:
         # Splitter bar between waveform and mark lanes (drag to resize).
         active = self._resizing_wave or self._wave_split_hover
-        color = QColor("#71717a") if active else QColor("#3f3f46")
+        color = QColor("#5a5a5a") if active else QColor("#0d0d0d")
         painter.fillRect(0, wave_bottom - 2, self.width(), 4, color)
         if active:
             mid_x = self._header_width + (self.width() - self._header_width) // 2
-            painter.setPen(QPen(QColor("#e4e4e7"), 1))
+            painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, wave_bottom, mid_x + 18, wave_bottom)
 
     def _paint_video_lane_splitter(self, painter: QPainter) -> None:
@@ -2368,11 +2367,11 @@ class TimelineWidget(QWidget):
             return
         bottom = self._video_lane_clip_bottom_y()
         active = self._resizing_video_lane or self._video_lane_split_hover
-        color = QColor("#71717a") if active else QColor("#3f3f46")
+        color = QColor("#5a5a5a") if active else QColor("#0d0d0d")
         painter.fillRect(0, bottom - 2, self.width(), 4, color)
         if active:
             mid_x = self._header_width + (self.width() - self._header_width) // 2
-            painter.setPen(QPen(QColor("#e4e4e7"), 1))
+            painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, bottom, mid_x + 18, bottom)
 
     def _paint_video_lane(self, painter: QPainter) -> None:
@@ -2516,7 +2515,7 @@ class TimelineWidget(QWidget):
             video_h = int(self._video_lane_height)
             painter.fillRect(0, video_top, self._header_width, video_h, QColor("#111113"))
             row_h = int(self._video_lane_base_height)
-            painter.setPen(QColor("#8b9cff"))
+            painter.setPen(QColor(COLOR_VIDEO))
             painter.drawText(8, video_top + int(row_h / 2) + 4, "Video")
             if self._video_track_expanded:
                 clip = self._single_selected_video_clip()

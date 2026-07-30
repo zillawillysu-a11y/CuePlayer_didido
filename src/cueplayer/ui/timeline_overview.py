@@ -6,7 +6,7 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from cueplayer.ui.theme import ACCENT, BORDER, TEXT_MUTED, with_alpha
+from cueplayer.ui.theme import BORDER, BORDER_STRONG, TEXT_MUTED, with_alpha
 
 
 class TimelineOverviewBar(QWidget):
@@ -119,9 +119,9 @@ class TimelineOverviewBar(QWidget):
         x1 = self._x_for_time(self._view_end)
         win_w = max(3.0, x1 - x0)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(with_alpha(ACCENT, 55))
+        painter.setBrush(with_alpha(BORDER_STRONG, 160))
         painter.drawRoundedRect(int(x0), top + 1, int(win_w), height - 2, 3, 3)
-        painter.setPen(QPen(with_alpha(ACCENT, 160), 1))
+        painter.setPen(QPen(with_alpha(TEXT_MUTED, 180), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(int(x0), top + 1, int(win_w), height - 2, 3, 3)
 

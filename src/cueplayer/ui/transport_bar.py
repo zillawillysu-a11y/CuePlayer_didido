@@ -241,7 +241,7 @@ class BottomTransportBar(QWidget):
         if parts:
             self.tc_status.setText(" · ".join(parts))
             self.tc_status.setStyleSheet(
-                "color: #4a9eff; font-size: 12px; font-weight: 600; min-width: 72px;"
+                "color: #8a8a8a; font-size: 12px; font-weight: 600; min-width: 72px;"
             )
         else:
             self.tc_status.setText("")
