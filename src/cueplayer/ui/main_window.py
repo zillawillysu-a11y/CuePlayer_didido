@@ -1199,6 +1199,7 @@ class MainWindow(QMainWindow):
         self.timeline.ltc_track_visibility_changed.connect(self._on_ltc_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
+        self.timeline.audio_gain_changed.connect(self._on_audio_gain_changed)
         self.timeline.lane_name_changed.connect(self._on_mark_lane_renamed)
         # Video decode must not run ahead of timeline/MIDI on the UI thread.
         # QueuedConnection lets playhead + cue-list update finish first; decode
@@ -4151,6 +4152,7 @@ class MainWindow(QMainWindow):
             resizing = bool(
                 getattr(tl, "_resizing_wave", False)
                 or getattr(tl, "_resizing_video_lane", False)
+                or getattr(tl, "_resizing_mark_lanes", False)
             )
             if tl.width() != w or tl.height() != h:
                 # Mark busy so timeline.resizeEvent does not re-enter layout
@@ -5937,6 +5939,10 @@ class MainWindow(QMainWindow):
         # applies it live to playback and persists it (no undo entry,
         # matching Master Volume / lock-hide toggles).
         self.engine.set_music_volume(volume)
+        self._mark_dirty()
+
+    def _on_audio_gain_changed(self, gain_db: float) -> None:
+        self.engine.set_audio_gain_db(gain_db)
         self._mark_dirty()
 
     def _on_now_layout_changed(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from time import monotonic_ns
 
@@ -82,6 +83,7 @@ class TimelineWidget(QWidget):
     view_changed = Signal()  # scroll / zoom / playhead — overview navigator should refresh
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
+    audio_gain_changed = Signal(float)  # per-file gain in dB (-12..+12)
     lane_name_changed = Signal(int, str)  # lane_index, new name
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
@@ -145,9 +147,18 @@ class TimelineWidget(QWidget):
         self._scrubbing = False
         self._resizing_wave = False
         self._resizing_video_lane = False
+        self._resizing_mark_lanes = False
+        self._mark_lane_split_h = 6
+        self._mark_lane_split_hit = 6
         self._geometry_sync_pending = False
         self._wave_split_hover = False
         self._video_lane_split_hover = False
+        self._mark_lane_split_hover = False
+        self._show_wave_gain_line = False
+        self._show_ltc_gain_line = False
+        self._dragging_audio_gain = False
+        self._audio_gain_zone: str | None = None  # "wave" | "ltc"
+        self._audio_gain_hit_px = 6
         self._hover_mark_id: str | None = None
         # After a click-seek, keep the view where you clicked until wheel or Auto Scroll.
         self._view_pinned = False
@@ -587,6 +598,10 @@ class TimelineWidget(QWidget):
         self._song = song
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
+        self._show_wave_gain_line = False
+        self._show_ltc_gain_line = False
+        self._dragging_audio_gain = False
+        self._audio_gain_zone = None
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
         # Video + LTC eye is project-global — do not reset from per-song flags.
         if song is not None:
@@ -601,6 +616,8 @@ class TimelineWidget(QWidget):
             self._show_mark_tracks = song.show_mark_tracks
             self._show_mark_stem = song.show_mark_stem
             self._video_lane_base_height = self._clamp_video_lane_height(song.video_lane_height)
+            self._lane_height = self._clamp_mark_lane_height(song.mark_lane_height)
+            song.mark_lane_height = float(self._lane_height)
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         self._invalidate_scrub_backdrop()
@@ -746,7 +763,180 @@ class TimelineWidget(QWidget):
     def _marks_band_height(self) -> int:
         if not self._show_mark_tracks:
             return 0
-        return self._visible_lane_count() * self._lane_height
+        n = self._visible_lane_count()
+        h = n * self._lane_height
+        if n > 0:
+            h += self._mark_lane_split_h
+        return h
+
+    def _mark_lane_split_y(self) -> int:
+        return self._tracks_top_y() + self._visible_lane_count() * self._lane_height
+
+    def _near_mark_lane_split(self, y: float) -> bool:
+        if not self._show_mark_tracks or self._visible_lane_count() == 0:
+            return False
+        return abs(y - self._mark_lane_split_y()) <= self._mark_lane_split_hit
+
+    def _clamp_mark_lane_height(self, height: float) -> int:
+        return int(max(24, min(80, round(float(height)))))
+
+    def set_mark_lane_height(self, height: float) -> None:
+        clamped = self._clamp_mark_lane_height(height)
+        if clamped == self._lane_height:
+            return
+        self._lane_height = clamped
+        if self._song is not None:
+            self._song.mark_lane_height = float(clamped)
+        self._apply_layout_heights()
+        self.update()
+
+    @staticmethod
+    def _clamp_gain_db(db: float) -> float:
+        return float(max(-12.0, min(12.0, db)))
+
+    @staticmethod
+    def _volume_to_gain_db(volume: float) -> float:
+        return TimelineWidget._clamp_gain_db(20.0 * math.log10(max(float(volume), 1e-6)))
+
+    @staticmethod
+    def _gain_db_to_volume(db: float) -> float:
+        return float(min(1.0, max(0.0, 10.0 ** (TimelineWidget._clamp_gain_db(db) / 20.0))))
+
+    def _wave_gain_bounds(self) -> tuple[float, float] | None:
+        if self._audio is None and not self._audio_loading:
+            return None
+        top = float(self._ruler_height)
+        bottom = float(self._wave_bottom_y() - self._wave_split_hit)
+        if bottom <= top:
+            return None
+        return top, bottom
+
+    def _ltc_gain_bounds(self) -> tuple[float, float] | None:
+        if not self._ltc_lane_visible() or self._ltc_audio is None:
+            return None
+        top = float(self._ltc_lane_top_y())
+        bottom = top + float(self._ltc_band_height())
+        return top, bottom
+
+    def _y_for_gain_db(self, db: float, top: float, bottom: float) -> float:
+        frac = (12.0 - self._clamp_gain_db(db)) / 24.0
+        return top + frac * max(1.0, bottom - top)
+
+    def _gain_db_for_y(self, y: float, top: float, bottom: float) -> float:
+        frac = (y - top) / max(1.0, bottom - top)
+        return self._clamp_gain_db(12.0 - frac * 24.0)
+
+    def _current_wave_gain_db(self) -> float:
+        if self._song is None:
+            return 0.0
+        return self._clamp_gain_db(float(self._song.audio_gain_db))
+
+    def _current_ltc_music_gain_db(self) -> float:
+        volume = self._song.music_volume if self._song is not None else 1.0
+        return self._volume_to_gain_db(volume)
+
+    def _near_audio_gain_line(self, x: float, y: float) -> str | None:
+        if x < self._header_width:
+            return None
+        hit = self._audio_gain_hit_px
+        if self._show_wave_gain_line:
+            bounds = self._wave_gain_bounds()
+            if bounds is not None:
+                top, bottom = bounds
+                line_y = self._y_for_gain_db(self._current_wave_gain_db(), top, bottom)
+                if abs(y - line_y) <= hit:
+                    return "wave"
+        if self._show_ltc_gain_line:
+            bounds = self._ltc_gain_bounds()
+            if bounds is not None:
+                top, bottom = bounds
+                line_y = self._y_for_gain_db(self._current_ltc_music_gain_db(), top, bottom)
+                if abs(y - line_y) <= hit:
+                    return "ltc"
+        return None
+
+    def _apply_gain_at_y(self, y: float, zone: str) -> None:
+        if self._song is None:
+            return
+        if zone == "wave":
+            bounds = self._wave_gain_bounds()
+            if bounds is None:
+                return
+            top, bottom = bounds
+            db = self._gain_db_for_y(y, top, bottom)
+            if abs(db - self._song.audio_gain_db) < 1e-4:
+                return
+            self._song.audio_gain_db = db
+            self.audio_gain_changed.emit(db)
+        elif zone == "ltc":
+            bounds = self._ltc_gain_bounds()
+            if bounds is None:
+                return
+            top, bottom = bounds
+            db = self._gain_db_for_y(y, top, bottom)
+            volume = self._gain_db_to_volume(db)
+            if abs(volume - self._song.music_volume) < 1e-4:
+                return
+            self._song.music_volume = volume
+            self._sync_music_volume_ui()
+            self.music_volume_changed.emit(volume)
+        self._invalidate_scrub_backdrop()
+        self.update()
+
+    def _paint_mark_lane_splitter(self, painter: QPainter) -> None:
+        if not self._show_mark_tracks or self._visible_lane_count() == 0:
+            return
+        bottom = self._mark_lane_split_y()
+        active = self._resizing_mark_lanes or self._mark_lane_split_hover
+        color = QColor("#5a5a5a") if active else QColor("#0d0d0d")
+        right = self._paint_right()
+        painter.fillRect(0, bottom - 2, right, 4, color)
+        if active:
+            mid_x = self._header_width + (right - self._header_width) // 2
+            painter.setPen(QPen(QColor("#a0a0a0"), 1))
+            painter.drawLine(mid_x - 18, bottom, mid_x + 18, bottom)
+
+    def _paint_audio_gain_overlays(self, painter: QPainter) -> None:
+        right = self._paint_right()
+        if self._show_wave_gain_line:
+            bounds = self._wave_gain_bounds()
+            if bounds is not None:
+                self._paint_gain_line(
+                    painter,
+                    bounds,
+                    self._current_wave_gain_db(),
+                    QColor("#f4f4f5"),
+                    right,
+                )
+        if self._show_ltc_gain_line:
+            bounds = self._ltc_gain_bounds()
+            if bounds is not None:
+                self._paint_gain_line(
+                    painter,
+                    bounds,
+                    self._current_ltc_music_gain_db(),
+                    QColor("#fbbf24"),
+                    right,
+                    label_prefix="Music ",
+                )
+
+    def _paint_gain_line(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float],
+        db: float,
+        color: QColor,
+        right: int,
+        *,
+        label_prefix: str = "",
+    ) -> None:
+        top, bottom = bounds
+        line_y = self._y_for_gain_db(db, top, bottom)
+        painter.setPen(QPen(color, 2))
+        painter.drawLine(QPointF(self._header_width, line_y), QPointF(right, line_y))
+        painter.setPen(color)
+        text = f"{label_prefix}{db:+.1f} dB"
+        painter.drawText(int(self._header_width) + 8, int(line_y) - 4, text)
 
     def _video_lane_top_y(self) -> int:
         """Video sits directly under the Music waveform."""
@@ -844,7 +1034,8 @@ class TimelineWidget(QWidget):
         if x < self._header_width:
             return False
         top = self._tracks_top_y()
-        return top <= y < self._tracks_bottom_y()
+        bottom = self._mark_lane_split_y() if self._visible_lane_count() > 0 else self._tracks_bottom_y()
+        return top <= y < bottom
 
     def _lane_rects(self) -> list[tuple[int, float, float]]:
         """Return (lane_index, y0, y1) for visible lanes."""
@@ -1138,6 +1329,11 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif self._near_video_lane_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif self._near_mark_lane_split(y):
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif (gain_zone := self._near_audio_gain_line(x, y)) is not None:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+            del gain_zone
         elif self._hit_mark_lane_header(x, y) is not None:
             self.setCursor(Qt.CursorShape.IBeamCursor)
         elif self._hit_loop_handle(x, y) is not None:
@@ -1307,12 +1503,16 @@ class TimelineWidget(QWidget):
             self._applying_layout_heights = False
 
     def _apply_layout_heights_inner(self) -> None:
-        # Taller wave → thinner lane rows so button timelines stay compact.
+        # Taller wave → thinner lane rows only when no song height is stored.
         max_h = max(80, self._max_wave_height())
         self._wave_height = max(80, min(max_h, self._wave_height))
-        t = (self._wave_height - 80) / max(1.0, float(max_h - 80))
-        t = min(1.0, max(0.0, t))
-        self._lane_height = int(round(32 - t * 14))  # 32 → 18
+        if self._song is not None:
+            self._lane_height = self._clamp_mark_lane_height(self._song.mark_lane_height)
+            self._song.mark_lane_height = float(self._lane_height)
+        else:
+            t = (self._wave_height - 80) / max(1.0, float(max_h - 80))
+            t = min(1.0, max(0.0, t))
+            self._lane_height = int(round(32 - t * 14))  # 32 → 18
         visible = self._visible_lane_count()
         video_h = self._video_band_height()
         ltc_h = self._ltc_band_height()
@@ -1335,7 +1535,7 @@ class TimelineWidget(QWidget):
         # While dragging a splitter, skip the parent scroll sync signal — the
         # mouse-move path already updated min/content height; emitting causes
         # viewport scrollbar churn that re-enters layout and can stack-overflow.
-        if self._resizing_wave or self._resizing_video_lane:
+        if self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes:
             self._geometry_sync_pending = True
             # Grow/shrink locally so the drag still feels live without going
             # through MainWindow → QScrollArea → resizeEvent feedback.
@@ -1639,7 +1839,9 @@ class TimelineWidget(QWidget):
             return False
         if self._trimming_clip is not None:
             return False
-        if self._resizing_wave or self._resizing_video_lane or self._panning:
+        if self._dragging_audio_gain:
+            return False
+        if self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes or self._panning:
             return False
         return self._scrubbing or self._playing
 
@@ -1655,6 +1857,8 @@ class TimelineWidget(QWidget):
         # taps mid-playback stay visible without rebuilding the backdrop.
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
+        self._paint_mark_lane_splitter(painter)
+        self._paint_audio_gain_overlays(painter)
         self._paint_selection_box(painter)
         painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
         self._paint_headers(painter, wave_bottom, tracks_top)
@@ -2045,6 +2249,16 @@ class TimelineWidget(QWidget):
                 self._resizing_video_lane = True
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif self._near_mark_lane_split(y):
+                self._resizing_mark_lanes = True
+                self.grabMouse()
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif (gain_zone := self._near_audio_gain_line(x, y)) is not None:
+                self._dragging_audio_gain = True
+                self._audio_gain_zone = gain_zone
+                self.grabMouse()
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+                self._apply_gain_at_y(y, gain_zone)
             elif (loop_h := self._hit_loop_handle(x, y)) is not None:
                 # Click seeks to A/B; drag always moves the loop point.
                 self._dragging_loop = loop_h
@@ -2121,6 +2335,13 @@ class TimelineWidget(QWidget):
         elif self._resizing_video_lane and event.buttons() & Qt.MouseButton.LeftButton:
             new_h = y - self._video_lane_top_y()
             self.set_video_lane_height(new_h)
+        elif self._resizing_mark_lanes and event.buttons() & Qt.MouseButton.LeftButton:
+            n = max(1, self._visible_lane_count())
+            total = y - self._tracks_top_y() - self._mark_lane_split_h
+            self.set_mark_lane_height(total / n)
+        elif self._dragging_audio_gain and event.buttons() & Qt.MouseButton.LeftButton:
+            zone = self._audio_gain_zone or "wave"
+            self._apply_gain_at_y(y, zone)
         elif self._dragging_marks and event.buttons() & Qt.MouseButton.LeftButton:
             dx = x - self._drag_origin_x
             if abs(dx) >= self._drag_slop and self._setup_mode:
@@ -2155,13 +2376,18 @@ class TimelineWidget(QWidget):
         else:
             hover_wave = self._near_wave_split(y)
             hover_video = False if hover_wave else self._near_video_lane_split(y)
+            hover_mark = False if (hover_wave or hover_video) else self._near_mark_lane_split(y)
             if hover_wave != self._wave_split_hover:
                 self._wave_split_hover = hover_wave
                 self.update()
             if hover_video != self._video_lane_split_hover:
                 self._video_lane_split_hover = hover_video
                 self.update()
-            hover = hover_wave or hover_video
+            if hover_mark != self._mark_lane_split_hover:
+                self._mark_lane_split_hover = hover_mark
+                self.update()
+            hover = hover_wave or hover_video or hover_mark
+            gain_zone = None if hover else self._near_audio_gain_line(x, y)
             hit = None if hover else self._hit_mark_at(x, y)
             if hit != self._hover_mark_id:
                 self._hover_mark_id = hit
@@ -2183,6 +2409,8 @@ class TimelineWidget(QWidget):
                 self.update()
             if hover:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif gain_zone is not None:
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif self._hit_mark_lane_header(x, y) is not None:
                 self.setCursor(Qt.CursorShape.IBeamCursor)
             elif loop_h is not None:
@@ -2203,7 +2431,7 @@ class TimelineWidget(QWidget):
                 )
             elif self._in_scrub_zone(x, y):
                 self.setCursor(Qt.CursorShape.ArrowCursor)
-            elif not self._scrubbing and not self._resizing_wave and not self._resizing_video_lane and not self._box_selecting and not self._panning:
+            elif not self._scrubbing and not self._resizing_wave and not self._resizing_video_lane and not self._resizing_mark_lanes and not self._box_selecting and not self._panning:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
@@ -2249,6 +2477,14 @@ class TimelineWidget(QWidget):
             self.update()
             super().mouseReleaseEvent(event)
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_audio_gain:
+            self._dragging_audio_gain = False
+            self._audio_gain_zone = None
+            self.releaseMouse()
+            self._restore_hover_cursor(event.position().x(), event.position().y())
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton and (
             self._dragging_clip is not None or self._trimming_clip is not None
         ):
@@ -2262,13 +2498,14 @@ class TimelineWidget(QWidget):
             was_scrub = self._scrubbing
             was_box = self._box_selecting
             was_drag = self._dragging_marks
-            was_resize = self._resizing_wave or self._resizing_video_lane
+            was_resize = self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes
             drag_moved = self._drag_moved
             click_seek = self._drag_click_seek
             box_click_seek = self._box_click_seek
             self._scrubbing = False
             self._resizing_wave = False
             self._resizing_video_lane = False
+            self._resizing_mark_lanes = False
             self._box_selecting = False
             self._dragging_marks = False
             self._drag_click_seek = None
@@ -2320,6 +2557,55 @@ class TimelineWidget(QWidget):
             self.update()
         super().mouseReleaseEvent(event)
 
+    def _in_ltc_waveform(self, x: float, y: float) -> bool:
+        if not self._ltc_lane_visible() or self._ltc_audio is None or x < self._header_width:
+            return False
+        top = self._ltc_lane_top_y()
+        return top <= y < top + self._ltc_band_height()
+
+    def _show_wave_gain_context_menu(self, pos) -> None:  # noqa: ANN001
+        menu = QMenu(self)
+        if self._show_wave_gain_line:
+            toggle = menu.addAction("Hide volume adjustment")
+        else:
+            toggle = menu.addAction("Show volume adjustment")
+        menu.addSeparator()
+        reset = menu.addAction("Reset to 0 dB")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is toggle:
+            self._show_wave_gain_line = not self._show_wave_gain_line
+            self._invalidate_scrub_backdrop()
+            self.update()
+        elif chosen is reset and self._song is not None:
+            self._song.audio_gain_db = 0.0
+            self.audio_gain_changed.emit(0.0)
+            self._invalidate_scrub_backdrop()
+            self.update()
+
+    def _show_ltc_gain_context_menu(self, pos) -> None:  # noqa: ANN001
+        menu = QMenu(self)
+        if self._show_ltc_gain_line:
+            toggle = menu.addAction("Hide Music volume adjustment")
+        else:
+            toggle = menu.addAction("Show Music volume adjustment")
+        menu.addSeparator()
+        reset = menu.addAction("Reset Music to 0 dB")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is toggle:
+            self._show_ltc_gain_line = not self._show_ltc_gain_line
+            self._invalidate_scrub_backdrop()
+            self.update()
+        elif chosen is reset and self._song is not None:
+            self._song.music_volume = 1.0
+            self._sync_music_volume_ui()
+            self.music_volume_changed.emit(1.0)
+            self._invalidate_scrub_backdrop()
+            self.update()
+
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         if self._song is None:
             return
@@ -2329,6 +2615,12 @@ class TimelineWidget(QWidget):
             return
         if self._in_video_lane(x, y):
             self._show_video_clip_context_menu(pos, x, y)
+            return
+        if self._in_waveform(x, y) and self._audio is not None:
+            self._show_wave_gain_context_menu(pos)
+            return
+        if self._in_ltc_waveform(x, y):
+            self._show_ltc_gain_context_menu(pos)
             return
         hit_id = self._hit_mark_at(x, y)
         if hit_id is not None and hit_id not in self._selected_mark_ids:
@@ -2455,6 +2747,7 @@ class TimelineWidget(QWidget):
                 self._paint_playhead(painter)
                 # A/B on top of playhead so markers stay obvious while playing.
                 self._paint_loop_region(painter)
+                self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
                 return
 

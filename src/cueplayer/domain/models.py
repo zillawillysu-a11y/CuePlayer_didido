@@ -295,8 +295,12 @@ class Song:
     # AGENTS.md). See AudioEngine.set_music_volume / TimelineWidget's
     # expanded Video track chrome.
     music_volume: float = 1.0
+    # Per-song waveform gain (dB) for the main audio file — right-click drag line.
+    audio_gain_db: float = 0.0
     # Timeline Video clip-row height (waveform lane); persisted per song.
     video_lane_height: float = 40.0
+    # Mark lane row height (pixels); drag splitter below mark tracks.
+    mark_lane_height: float = 28.0
     mark_lanes: list[MarkLane] = field(default_factory=list)
     marks: list[Mark] = field(default_factory=list)
     show_mark_tracks: bool = True
@@ -506,7 +510,9 @@ class Song:
             show_ltc_track=self.show_ltc_track,
             ltc_lane_height=self.ltc_lane_height,
             music_volume=self.music_volume,
+            audio_gain_db=self.audio_gain_db,
             video_lane_height=self.video_lane_height,
+            mark_lane_height=self.mark_lane_height,
             mark_lanes=deepcopy(self.mark_lanes),
             show_mark_tracks=self.show_mark_tracks,
             show_mark_stem=self.show_mark_stem,
@@ -850,6 +856,8 @@ class AudioOutputSettings:
     midi_cue_velocity: int = 100
     midi_main_base_note: int = 36  # C2 + (lane.index - 1)
     midi_button_base_note: int = 48  # C3 + (lane.index - 1)
+    # Per physical output channel: "music_source" | "ltc" | "off" (1-based UI).
+    output_channel_modes: list[str] = field(default_factory=list)
 
     def effective_mtc_output(self) -> bool:
         """MTC quarter-frames (generator and/or file LTC translate)."""

@@ -146,6 +146,7 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "midi_cue_velocity": int(settings.midi_cue_velocity),
         "midi_main_base_note": int(settings.midi_main_base_note),
         "midi_button_base_note": int(settings.midi_button_base_note),
+        "output_channel_modes": list(settings.output_channel_modes),
     }
 
 
@@ -201,6 +202,9 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         midi_button_base_note=max(
             0, min(127, int(raw.get("midi_button_base_note", 48) or 48))
         ),
+        output_channel_modes=[
+            str(m) for m in (raw.get("output_channel_modes") or []) if str(m)
+        ],
     )
 
 
@@ -504,7 +508,9 @@ def project_to_dict(
                 "show_ltc_track": bool(song.show_ltc_track),
                 "ltc_lane_height": song.ltc_lane_height,
                 "music_volume": song.music_volume,
+                "audio_gain_db": song.audio_gain_db,
                 "video_lane_height": song.video_lane_height,
+                "mark_lane_height": song.mark_lane_height,
                 "mark_lanes": [
                     {
                         "index": lane.index,
@@ -676,6 +682,12 @@ def project_from_dict(
                     min(400.0, max(28.0, song_data.get("ltc_lane_height", 56.0)))
                 ),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
+                audio_gain_db=float(
+                    max(-12.0, min(12.0, float(song_data.get("audio_gain_db", 0.0))))
+                ),
+                mark_lane_height=float(
+                    min(80.0, max(24.0, float(song_data.get("mark_lane_height", 28.0))))
+                ),
                 video_lane_height=float(
                     min(4096.0, max(28.0, song_data.get("video_lane_height", 40.0)))
                 ),

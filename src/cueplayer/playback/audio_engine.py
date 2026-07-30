@@ -107,6 +107,7 @@ class AudioEngine(QObject):
         # stacks with master volume but never touches video clip audio or
         # LTC (see Song.music_volume / _music_chunk / _video_chunk).
         self._music_volume = 1.0
+        self._audio_gain_db = 0.0
         self._song: Song | None = None
         self._video_mixer = VideoAudioMixer()
         self._ltc_mirror_last_pos = -1e9
@@ -489,6 +490,11 @@ class AudioEngine(QObject):
         with self._lock:
             self._music_volume = float(min(1.0, max(0.0, volume)))
 
+    def set_audio_gain_db(self, gain_db: float) -> None:
+        """Per-file waveform gain in dB (-12…+12); does not affect LTC."""
+        with self._lock:
+            self._audio_gain_db = float(max(-12.0, min(12.0, gain_db)))
+
     def music_volume(self) -> float:
         with self._lock:
             return float(self._music_volume)
@@ -503,6 +509,7 @@ class AudioEngine(QObject):
         self._video_mixer.set_song(song)
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
+        self.set_audio_gain_db(float(song.audio_gain_db) if song is not None else 0.0)
         self._midi_cues.set_song(song)
         self.refresh_video_clips()
         self._refresh_source_routing_cache()
@@ -555,6 +562,7 @@ class AudioEngine(QObject):
             midi_cue_velocity=int(getattr(settings, "midi_cue_velocity", 100) or 100),
             midi_main_base_note=int(getattr(settings, "midi_main_base_note", 36) or 36),
             midi_button_base_note=int(getattr(settings, "midi_button_base_note", 48) or 48),
+            output_channel_modes=list(getattr(settings, "output_channel_modes", []) or []),
         )
         self._resolve_device_and_route()
         if self._uses_generated_ltc():
@@ -1501,11 +1509,11 @@ class AudioEngine(QObject):
         # Master (all-bus) gain, then the dedicated music-bed gain used for
         # Video/Music alignment balancing — video clip audio only gets the
         # former (see _video_chunk), so the two faders are independent.
-        vol = self._volume * self._music_volume
-        if vol < 1.0 - 1e-6:
-            out *= vol
-        elif vol <= 1e-6:
+        vol = self._volume * self._music_volume * (10.0 ** (self._audio_gain_db / 20.0))
+        if vol <= 1e-6:
             out[:] = 0.0
+        elif abs(vol - 1.0) > 1e-6:
+            out *= vol
         return out
 
     def _video_chunk(self, start: int, frames: int) -> np.ndarray:

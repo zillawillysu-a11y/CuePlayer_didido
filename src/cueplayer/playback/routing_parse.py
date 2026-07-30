@@ -180,3 +180,83 @@ def speaker_channels_without_ltc(
     if speakers:
         return speakers
     return [c for c in range(max(0, max_ch)) if c not in blocked]
+
+
+ChannelMode = str  # "music_source" | "ltc" | "off"
+
+
+def derive_channel_modes(settings, *, max_ch: int) -> list[str]:  # noqa: ANN001
+    """Build per-output-channel modes from legacy stereo + LTC routes."""
+    from cueplayer.domain.models import AudioOutputSettings, clamp_output_channels, default_ltc_channels_for_device
+
+    if not isinstance(settings, AudioOutputSettings):
+        raise TypeError("settings must be AudioOutputSettings")
+    max_ch = max(1, int(max_ch))
+    if settings.output_channel_modes and len(settings.output_channel_modes) >= max_ch:
+        out = [str(m) for m in settings.output_channel_modes[:max_ch]]
+        while len(out) < max_ch:
+            out.append("off")
+        return out
+
+    modes: list[str] = ["off"] * max_ch
+    left_p = parse_stereo_route(settings.music_l_route, side="l", max_ch=max_ch)
+    right_p = parse_stereo_route(settings.music_r_route, side="r", max_ch=max_ch)
+    ltc_list = (
+        clamp_output_channels(list(settings.ltc_channels), max_ch)
+        if settings.ltc_enabled
+        else []
+    )
+    for ch in ltc_list:
+        if 0 <= ch < max_ch:
+            modes[ch] = "ltc"
+
+    def _apply(kind: str, chs: list[int]) -> None:
+        for ch in chs:
+            if 0 <= ch < max_ch and modes[ch] == "off":
+                if kind in ("music_source", "channels"):
+                    modes[ch] = "music_source"
+                elif kind == "ltc":
+                    modes[ch] = "ltc"
+
+    if left_p is not None:
+        _apply(left_p[0], left_p[1])
+    if right_p is not None:
+        _apply(right_p[0], right_p[1])
+
+    for i in range(min(2, max_ch)):
+        if modes[i] == "off":
+            modes[i] = "music_source"
+    if settings.ltc_enabled and not any(m == "ltc" for m in modes):
+        for ch in default_ltc_channels_for_device(max_ch):
+            if 0 <= ch < max_ch:
+                modes[ch] = "ltc"
+    return modes
+
+
+def stereo_routes_from_channel_modes(
+    modes: list[str],
+    *,
+    max_ch: int,
+) -> tuple[str, list[int], str, list[int], list[int]]:
+    """Map per-channel Music/LTC picks → stereo leg kinds + LTC bus channel(s)."""
+    max_ch = max(1, int(max_ch))
+    norm = [str(modes[i]) if i < len(modes) else "off" for i in range(max_ch)]
+    music_idxs = [i for i, m in enumerate(norm) if m == "music_source"]
+    ltc_idxs = [i for i, m in enumerate(norm) if m == "ltc"]
+
+    if len(music_idxs) >= 2:
+        left_kind, left_ch = "channels", [music_idxs[0]]
+        right_kind, right_ch = "channels", [music_idxs[1]]
+    elif len(music_idxs) == 1 and ltc_idxs:
+        left_kind, left_ch = "music_source", [music_idxs[0]]
+        right_kind, right_ch = "ltc", [ltc_idxs[0]]
+    elif len(music_idxs) == 1:
+        ch = music_idxs[0]
+        left_kind, left_ch = "channels", [ch]
+        right_kind, right_ch = "channels", [ch]
+    else:
+        left_kind, left_ch = "music_source", default_dest_for_side("l", max_ch)
+        right_kind, right_ch = "music_source", default_dest_for_side("r", max_ch)
+
+    bus_ltc = ltc_idxs[:1]
+    return left_kind, left_ch, right_kind, right_ch, bus_ltc
