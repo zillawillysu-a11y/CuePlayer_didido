@@ -989,6 +989,9 @@ class Project:
     show_output_quick_toggles: bool = True
     # Video + LTC timeline lanes — one eye for the whole show (not per song).
     show_video_track: bool = True
+    # Waveform / LTC Music volume adjustment lines (±12 dB UI) — show-wide.
+    show_wave_gain_line: bool = False
+    show_ltc_gain_line: bool = False
     ma_export: MaExportSettings = field(default_factory=MaExportSettings)
     audio_output: AudioOutputSettings = field(default_factory=AudioOutputSettings)
     clean_video_output: CleanVideoOutputSettings = field(
