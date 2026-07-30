@@ -3070,7 +3070,11 @@ class TimelineWidget(QWidget):
                 label = f"{lane.shortcut}  {lane.name}".strip()
                 elided = fm.elidedText(label, Qt.TextElideMode.ElideRight, text_w)
                 painter.setPen(accent)
-                painter.drawText(8, y + 18, elided)
+                painter.drawText(
+                    QRect(8, int(y), text_w, int(self._lane_height)),
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                    elided,
+                )
                 y += self._lane_height
         painter.restore()
 
