@@ -1349,7 +1349,14 @@ class TimelineWidget(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
+        # Floating zoom / video chrome must always track the widget width.
+        # MainWindow._sync_timeline_geometry sets ``_layout_heights_busy`` while
+        # calling ``resize()`` so height clamping does not re-enter — that used
+        # to skip overlay layout entirely, leaving A/zoom/fit stuck mid-widget
+        # until something else (e.g. Video eye toggle) re-laid them out.
         if getattr(self, "_layout_heights_busy", False):
+            self._layout_zoom_overlay()
+            self._layout_video_track_overlay()
             return
         self._layout_heights_busy = True
         try:
