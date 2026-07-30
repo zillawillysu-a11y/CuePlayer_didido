@@ -37,3 +37,5 @@ def test_project_create_uses_same_mark_defaults() -> None:
     assert song.lane_by_index(1).midi_note_enabled is False
     assert song.lane_by_index(2).cue_list_enabled is True
     assert song.lane_by_index(2).midi_note_enabled is True
+    assert project.waveform_color == "#616161"
+    assert song.waveform_color == "#616161"

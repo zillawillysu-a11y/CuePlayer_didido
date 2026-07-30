@@ -315,7 +315,7 @@ class Song:
     mark_dash_off: float = 4.0
     mark_line_width: float = 1.0
     # Deprecated per-song waveform color (kept for migration).
-    waveform_color: str = "#3dd68c"
+    waveform_color: str = "#616161"
     # NOW monitor: which lanes feed primary / secondary panels.
     now_lanes_configured: bool = False
     now_primary_lanes: list[int] = field(default_factory=list)
@@ -985,7 +985,7 @@ class Project:
     mark_dash_on: float = 4.0
     mark_dash_off: float = 4.0
     mark_line_width: float = 1.0
-    waveform_color: str = "#3dd68c"
+    waveform_color: str = "#616161"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#ff5a5f"
     # Mark lane row height (pixels) — one value for the whole show.

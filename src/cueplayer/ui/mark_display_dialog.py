@@ -112,7 +112,7 @@ class MarkDisplayDialog(QDialog):
         form2.setSpacing(10)
 
         line_src = project if project is not None else song
-        self.wave_color = ColorSwatchButton(line_src.waveform_color or "#3dd68c")
+        self.wave_color = ColorSwatchButton(line_src.waveform_color or "#616161")
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
 
