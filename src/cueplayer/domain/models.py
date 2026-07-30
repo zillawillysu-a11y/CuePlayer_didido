@@ -821,7 +821,11 @@ MusicRouteKind = Literal["mute", "music_source", "ltc", "channels"]
 @dataclass
 class AudioOutputSettings:
     """
-    Project-level output device, multi-channel routing, and generated timecode.
+    Output device, multi-channel routing, and generated timecode.
+
+    Live UI uses machine-global prefs (QSettings) so New / Load Project keep
+    the user's Driver / Device / MIDI choices. Project JSON still stores a
+    copy for older builds / round-trips.
 
     Channel indices are 0-based internally (UI shows 1-based).
     Master music volume must not affect LTC gain.

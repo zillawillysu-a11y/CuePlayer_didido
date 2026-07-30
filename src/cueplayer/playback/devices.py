@@ -253,12 +253,12 @@ def list_output_devices_for_picker(hostapi: str = "") -> list[OutputDeviceInfo]:
 
 
 def default_picker_hostapi() -> str:
-    """Preferred driver when none is saved — ASIO first (Reaper-style)."""
+    """Preferred driver when none is saved — DirectSound first for first-run UX."""
     names = hostapi_names()
     for preferred in (
-        "ASIO",
-        "Windows WASAPI",
         "Windows DirectSound",
+        "Windows WASAPI",
+        "ASIO",
         "MME",
         "Windows WDM-KS",
     ):
@@ -276,9 +276,9 @@ def resolve_output_hostapi(hostapi: str) -> str:
     if wanted in names:
         return wanted
     for fallback in (
-        "ASIO",
-        "Windows WASAPI",
         "Windows DirectSound",
+        "Windows WASAPI",
+        "ASIO",
         "MME",
         "Windows WDM-KS",
     ):

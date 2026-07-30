@@ -121,8 +121,8 @@ class AudioTimecodeDialog(QDialog):
         self.device_hint.setStyleSheet("color: #a1a1aa;")
         self.device_hint.setWordWrap(True)
         self.driver_hint = QLabel(
-            "Driver: choose ASIO, then pick your interface (e.g. Focusrite) under Device. "
-            "Use WASAPI or DirectSound only when ASIO is unavailable."
+            "Default is DirectSound + System default. For a multi-out interface "
+            "(e.g. Focusrite), switch Driver to ASIO and pick the device below."
         )
         self.driver_hint.setWordWrap(True)
         self.driver_hint.setStyleSheet("color: #8b949e;")
@@ -217,8 +217,9 @@ class AudioTimecodeDialog(QDialog):
         mtc_form.addRow("Main base note", self.midi_main_base)
         mtc_form.addRow("Button base note", self.midi_button_base)
         mtc_sync_hint = QLabel(
-            "MIDI On selects the port. Then choose what to send: MTC Generator "
-            "(Song Start TC), Translate (file LTC stripe), and/or Cue Notes."
+            "Pick MIDI Out anytime (even when MIDI On is off). MIDI On enables "
+            "sending: MTC Generator (Song Start TC), Translate (file LTC stripe), "
+            "and/or Cue Notes."
         )
         mtc_sync_hint.setWordWrap(True)
         mtc_sync_hint.setStyleSheet("color: #a1a1aa;")
@@ -301,8 +302,9 @@ class AudioTimecodeDialog(QDialog):
 
     def _sync_midi_ui(self) -> None:
         midi_on = self.midi_on.isChecked()
+        # Port can be chosen before MIDI On — so turning On later already has a device.
+        self.midi_port.setEnabled(True)
         for widget in (
-            self.midi_port,
             self.mtc_enable,
             self.ltc_to_mtc_translate,
             self.midi_notes_enable,
