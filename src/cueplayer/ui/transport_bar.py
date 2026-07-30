@@ -208,7 +208,7 @@ class BottomTransportBar(QWidget):
         self.volume_slider.setFixedWidth(120)
         self.volume_slider.setToolTip(
             "Master volume (music + video clip audio; never LTC)\n"
-            "For Video/Music balance while aligning, use the Music fader in the expanded Video track chrome."
+            "For Video/Music balance while aligning, expand the Music header chevron (next to the eye)."
         )
         self.volume_slider.setStyleSheet(SLIDER_QSS)
         self.volume_value = QLabel("100%")

@@ -119,12 +119,14 @@ class TimelineWidget(QWidget):
         self._video_lane_split_hit = 6
         # Show-eye sits on the waveform bottom edge in the header (no extra lane height).
         self._video_header_eye_row_height = 0.0
-        # Expanded chrome shows two faders stacked (Video Clip volume, then
-        # Music volume for alignment balancing) — see _build_video_track_overlay.
-        self._video_expand_extra = 78.0
+        # Expanded Video chrome shows the per-clip volume fader only.
+        self._video_expand_extra = 42.0
         self._video_track_expanded = False
         self._video_track_muted = False
         self._show_video_track = True
+        # Music header expand: Music bed % + waveform gain (dB) — no Video eye required.
+        self._music_expand_extra = 96.0
+        self._music_header_expanded = False
         self._ltc_lane_height = 56.0
         self._ltc_lane_min_height = 28.0
         self._ltc_waveform_color = WARNING
@@ -422,7 +424,9 @@ class TimelineWidget(QWidget):
         self.music_volume_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.music_volume_slider.setRange(0, 100)
         self.music_volume_slider.setValue(100)
-        self.music_volume_slider.setToolTip("Music volume (for balancing against Video Clip audio)")
+        self.music_volume_slider.setToolTip(
+            "Music bed volume for Video/Music balance (0–100%; independent of waveform gain)"
+        )
         self.music_volume_slider.setStyleSheet(SLIDER_QSS)
         self.music_volume_slider.valueChanged.connect(self._on_music_volume_slider)
         self.music_volume_slider.hide()
@@ -432,14 +436,45 @@ class TimelineWidget(QWidget):
         self.music_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.music_volume_label.hide()
 
+        self.music_expand_button = IconButton(
+            "chevron",
+            "Show Music bed volume + waveform gain faders",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
+        self.music_expand_button.clicked.connect(self._toggle_music_header_expanded)
+
+        self.audio_gain_caption = QLabel("Gain", self)
+        self.audio_gain_caption.setStyleSheet("color: #71717a; font-size: 10px; background: transparent;")
+        self.audio_gain_caption.hide()
+
+        self.audio_gain_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.audio_gain_slider.setRange(-120, 120)
+        self.audio_gain_slider.setValue(0)
+        self.audio_gain_slider.setToolTip("Music waveform gain (−12 to +12 dB; same as right-click volume line)")
+        self.audio_gain_slider.setStyleSheet(SLIDER_QSS)
+        self.audio_gain_slider.valueChanged.connect(self._on_audio_gain_slider)
+        self.audio_gain_slider.hide()
+
+        self.audio_gain_label = QLabel("0.0 dB", self)
+        self.audio_gain_label.setStyleSheet("color: #a1a1aa; font-size: 11px; background: transparent;")
+        self.audio_gain_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.audio_gain_label.hide()
+
         for w in (
             self.video_mute_button,
             self.video_expand_button,
             self.video_hide_button,
             self.video_show_button,
+            self.music_expand_button,
         ):
             w.raise_()
         self._layout_video_track_overlay()
+        self._layout_music_header_overlay()
+
+    def _music_chrome_extra(self) -> float:
+        return self._music_expand_extra if self._music_header_expanded else 0.0
 
     def _hide_video_track_clicked(self) -> None:
         self.set_show_video_track(False)
@@ -467,6 +502,57 @@ class TimelineWidget(QWidget):
             )
         self.video_show_button.set_active(visible)
 
+    def _layout_music_header_overlay(self) -> None:
+        if not hasattr(self, "music_expand_button"):
+            return
+        eye_header = self._video_eye_header_visible()
+        self.music_expand_button.setVisible(eye_header)
+        if eye_header:
+            top = self._wave_bottom_y()
+            btn_y = top - self.music_expand_button.height() - 2
+            x = self._header_width - 6 - self.video_show_button.width()
+            self.video_show_button.move(x, btn_y)
+            self.video_show_button.raise_()
+            x -= self.music_expand_button.width() + 3
+            self.music_expand_button.move(x, btn_y)
+            self.music_expand_button.raise_()
+        if self._music_header_expanded:
+            sub_y = self._wave_bottom_y() + 4
+            label_w = 44
+            slider_x = 8
+            slider_w = max(40, self._header_width - 16 - label_w - 4)
+            caption_y = sub_y + 2
+            slider_y = caption_y + 12
+            self.music_volume_caption.setGeometry(slider_x, caption_y, slider_w, 12)
+            self.music_volume_slider.setGeometry(slider_x, slider_y, slider_w, 16)
+            self.music_volume_label.setGeometry(
+                slider_x + slider_w + 4, slider_y - 1, label_w, 18
+            )
+            caption_y2 = slider_y + 16 + 6
+            slider_y2 = caption_y2 + 12
+            self.audio_gain_caption.setGeometry(slider_x, caption_y2, slider_w, 12)
+            self.audio_gain_slider.setGeometry(slider_x, slider_y2, slider_w, 16)
+            self.audio_gain_label.setGeometry(
+                slider_x + slider_w + 4, slider_y2 - 1, label_w, 18
+            )
+            for w in (
+                self.music_volume_caption,
+                self.music_volume_slider,
+                self.music_volume_label,
+                self.audio_gain_caption,
+                self.audio_gain_slider,
+                self.audio_gain_label,
+            ):
+                w.raise_()
+                w.show()
+        else:
+            self.music_volume_caption.hide()
+            self.music_volume_slider.hide()
+            self.music_volume_label.hide()
+            self.audio_gain_caption.hide()
+            self.audio_gain_slider.hide()
+            self.audio_gain_label.hide()
+
     def _layout_video_track_overlay(self) -> None:
         if not hasattr(self, "video_mute_button"):
             return
@@ -478,18 +564,9 @@ class TimelineWidget(QWidget):
         self.video_hide_button.setVisible(False)
         self.video_show_button.setVisible(eye_header)
         self._sync_video_eye_button()
-        if eye_header:
-            top = self._wave_bottom_y()
-            btn_y = top - self.video_show_button.height() - 2
-            x = self._header_width - 6 - self.video_show_button.width()
-            self.video_show_button.move(x, btn_y)
-            self.video_show_button.raise_()
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
-            self.music_volume_caption.hide()
-            self.music_volume_slider.hide()
-            self.music_volume_label.hide()
             return
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
@@ -516,27 +593,10 @@ class TimelineWidget(QWidget):
             self.video_clip_volume_label.raise_()
             self.video_clip_volume_slider.show()
             self.video_clip_volume_label.show()
-            # Row 2: Music volume — shown together with Video volume so
-            # Music vs Video can be balanced in one glance (同步顯示).
-            caption_y = slider_y + 16 + 6
-            slider_y2 = caption_y + 12
-            self.music_volume_caption.setGeometry(slider_x, caption_y, slider_w, 12)
-            self.music_volume_slider.setGeometry(slider_x, slider_y2, slider_w, 16)
-            self.music_volume_label.setGeometry(
-                slider_x + slider_w + 4, slider_y2 - 1, label_w, 18
-            )
-            self.music_volume_caption.raise_()
-            self.music_volume_slider.raise_()
-            self.music_volume_label.raise_()
-            self.music_volume_caption.show()
-            self.music_volume_slider.show()
-            self.music_volume_label.show()
         else:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
-            self.music_volume_caption.hide()
-            self.music_volume_slider.hide()
-            self.music_volume_label.hide()
+        self._layout_music_header_overlay()
 
     def _toggle_video_track_muted(self) -> None:
         self.set_video_track_muted(not self._video_track_muted)
@@ -548,6 +608,16 @@ class TimelineWidget(QWidget):
         if hasattr(self, "video_mute_button"):
             self.video_mute_button.set_active(self._video_track_muted)
 
+    def _toggle_music_header_expanded(self) -> None:
+        self._music_header_expanded = not self._music_header_expanded
+        if hasattr(self, "music_expand_button"):
+            self.music_expand_button.set_active(self._music_header_expanded)
+        self._apply_layout_heights()
+        self._layout_music_header_overlay()
+        self._sync_music_volume_ui()
+        self._sync_audio_gain_ui()
+        self.update()
+
     def _toggle_video_track_expanded(self) -> None:
         self._video_track_expanded = not self._video_track_expanded
         if hasattr(self, "video_expand_button"):
@@ -555,7 +625,28 @@ class TimelineWidget(QWidget):
         self._apply_layout_heights()
         self._layout_video_track_overlay()
         self._sync_video_clip_volume_ui()
-        self._sync_music_volume_ui()
+        self.update()
+
+    def _sync_audio_gain_ui(self) -> None:
+        if not hasattr(self, "audio_gain_slider"):
+            return
+        db = self._song.audio_gain_db if self._song is not None else 0.0
+        tenths = int(round(self._clamp_gain_db(db) * 10))
+        self.audio_gain_slider.blockSignals(True)
+        self.audio_gain_slider.setValue(tenths)
+        self.audio_gain_slider.blockSignals(False)
+        self.audio_gain_label.setText(f"{self._clamp_gain_db(db):+.1f} dB")
+
+    def _on_audio_gain_slider(self, value: int) -> None:
+        if self._song is None:
+            return
+        db = self._clamp_gain_db(value / 10.0)
+        self.audio_gain_label.setText(f"{db:+.1f} dB")
+        if abs(db - self._song.audio_gain_db) < 1e-4:
+            return
+        self._song.audio_gain_db = db
+        self.audio_gain_changed.emit(db)
+        self._invalidate_scrub_backdrop()
         self.update()
 
     def _sync_video_clip_volume_ui(self) -> None:
@@ -624,6 +715,7 @@ class TimelineWidget(QWidget):
             )
         self._sync_video_clip_volume_ui()
         self._sync_music_volume_ui()
+        self._sync_audio_gain_ui()
         if song is not None:
             self._show_mark_tracks = song.show_mark_tracks
             self._show_mark_stem = song.show_mark_stem
@@ -949,6 +1041,7 @@ class TimelineWidget(QWidget):
                 return
             self._song.audio_gain_db = db
             self.audio_gain_changed.emit(db)
+            self._sync_audio_gain_ui()
         elif zone == "ltc":
             bounds = self._audio_gain_drag_bounds or self._ltc_gain_travel_bounds()
             if bounds is None:
@@ -1051,8 +1144,8 @@ class TimelineWidget(QWidget):
         painter.drawText(int(line_left) + 8, int(line_y) - 4, text)
 
     def _video_lane_top_y(self) -> int:
-        """Video sits directly under the Music waveform."""
-        return self._wave_bottom_y()
+        """Video sits directly under the Music waveform (+ optional Music chrome)."""
+        return self._wave_bottom_y() + int(self._music_chrome_extra())
 
     def _ltc_band_height(self) -> int:
         return int(self._ltc_lane_height) if self._ltc_lane_visible() else 0
@@ -1675,6 +1768,7 @@ class TimelineWidget(QWidget):
         needed = (
             self._ruler_height
             + self._wave_height
+            + int(self._music_chrome_extra())
             + ltc_h
             + video_h
             + self._marks_band_height()
@@ -1684,6 +1778,7 @@ class TimelineWidget(QWidget):
         self._content_height = needed
         self.setMinimumHeight(needed)
         self._layout_video_track_overlay()
+        self._layout_music_header_overlay()
         # Only notify when height actually changes — otherwise drag-resize
         # (resizeEvent → apply → emit → parent resize → …) can recurse until crash.
         if not changed:
@@ -2778,6 +2873,7 @@ class TimelineWidget(QWidget):
         elif reset is not None and chosen is reset and self._song is not None:
             self._song.audio_gain_db = 0.0
             self.audio_gain_changed.emit(0.0)
+            self._sync_audio_gain_ui()
             self._invalidate_scrub_backdrop()
             self.update()
 
@@ -3208,6 +3304,10 @@ class TimelineWidget(QWidget):
         elif self._audio is not None:
             painter.setPen(QColor("#a1a1aa"))
             painter.drawText(8, self._ruler_height + 22, self._audio.path.name)
+        if self._music_header_expanded:
+            chrome_top = self._wave_bottom_y()
+            chrome_h = int(self._music_chrome_extra())
+            painter.fillRect(0, chrome_top, self._header_width, chrome_h, QColor("#111113"))
         if self._video_lane_visible():
             video_top = self._video_lane_top_y()
             video_h = int(self._video_lane_height)
