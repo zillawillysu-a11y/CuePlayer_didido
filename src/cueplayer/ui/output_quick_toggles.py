@@ -37,7 +37,7 @@ QPushButton:checked:hover:enabled {
 """
 
 # Below this inner width, four chips in one row clip (TRANS → "RAN").
-_WRAP_WIDTH_PX = 210
+_WRAP_WIDTH_PX = 200
 
 
 def _chip_style(
@@ -52,7 +52,7 @@ def _chip_style(
         "bg": bg,
         "accent_hover": accent_hover,
         "height": "20px" if compact else "22px",
-        "padding": "1px 4px" if compact else "1px 8px",
+        "padding": "1px 3px" if compact else "1px 8px",
         "font": "9px" if compact else "10px",
     }
 
