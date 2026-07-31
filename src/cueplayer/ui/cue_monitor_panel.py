@@ -218,7 +218,9 @@ class CueMonitorPanel(QWidget):
         self._body_splitter_state: QByteArray | None = None
         self._secondary_drag_origin: QPoint | None = None
 
-        self.setMinimumWidth(200)
+        # Compact floor so the main Setlist splitter can grow on narrow windows;
+        # clock / NOW already reflow and the body scrolls when short.
+        self.setMinimumWidth(140)
         self.setMaximumWidth(440)
         # Prefer shrinking children over forcing the main window taller.
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)

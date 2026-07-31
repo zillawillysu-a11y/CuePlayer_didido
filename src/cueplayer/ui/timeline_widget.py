@@ -1739,7 +1739,9 @@ class TimelineWidget(QWidget):
     def minimumSizeHint(self):  # noqa: ANN201
         from PySide6.QtCore import QSize
 
-        return QSize(240, self._viewport_min_height())
+        # Keep low so nested timeline|monitor split does not freeze Setlist
+        # expansion when the main window is compact.
+        return QSize(160, self._viewport_min_height())
 
     def _video_band_height(self) -> int:
         """Canvas height for the Video lane (0 when hidden — eye stays in header only)."""
