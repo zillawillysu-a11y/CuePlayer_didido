@@ -179,6 +179,13 @@ _KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
 _KEY_NOW_SPLITTER_RIGHT = "ui/now_splitter_right"
 _KEY_NOW_SPLITTER_BELOW = "ui/now_splitter_below"
 _KEY_NOW_BODY_SPLITTER = "ui/now_body_splitter"
+_KEY_NOW_PRIMARY_VISIBLE = "ui/now_primary_visible"
+_KEY_NOW_SECONDARY_VISIBLE = "ui/now_secondary_visible"
+_KEY_CUE_LIST_VISIBLE = "ui/cue_list_visible"
+_KEY_NOW_PRIMARY_SHOW_CUE_ID = "ui/now_primary_show_cue_id"
+_KEY_CUE_LIST_SHOW_CUE_ID = "ui/cue_list_show_cue_id"
+_KEY_CUE_LIST_COLUMN_ORDER = "ui/cue_list_column_order"
+_KEY_CUE_LIST_HEADER = "ui/cue_list_header"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
@@ -1316,8 +1323,8 @@ class MainWindow(QMainWindow):
         self.monitor.cue_id_edit_failed.connect(
             lambda msg: self.status.showMessage(msg, 3000)
         )
-        self.monitor.now_visibility_changed.connect(self._mark_dirty)
-        self.monitor.cue_list_visibility_changed.connect(self._mark_dirty)
+        self.monitor.now_visibility_changed.connect(self._on_monitor_ui_prefs_changed)
+        self.monitor.cue_list_visibility_changed.connect(self._on_monitor_ui_prefs_changed)
         self.monitor.output_timecode_clock_changed.connect(
             self._on_output_timecode_clock_changed
         )
@@ -1326,7 +1333,7 @@ class MainWindow(QMainWindow):
         )
         self.monitor.output_toggle_changed.connect(self._on_output_quick_toggle)
         self.monitor.audio_settings_requested.connect(self._open_audio_timecode)
-        self.monitor.cue_list_layout_changed.connect(self._mark_dirty)
+        self.monitor.cue_list_layout_changed.connect(self._on_monitor_ui_prefs_changed)
         self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
         self.engine.position_changed.connect(self._on_position_changed)
@@ -1502,6 +1509,7 @@ class MainWindow(QMainWindow):
             "body": self._settings.value(_KEY_NOW_BODY_SPLITTER),
         }
         self.monitor.restore_now_splitter_state(payload)
+        self._restore_monitor_ui_prefs()
         mode = str(self._settings.value(_KEY_VIEW_MODE, "timeline") or "timeline")
         if mode == "ma_patch":
             self.toolbar.set_view_mode("ma_patch")
@@ -1509,6 +1517,67 @@ class MainWindow(QMainWindow):
         elif mode == "setlist":
             self.toolbar.set_view_mode("setlist")
             self._set_view_mode("setlist")
+
+    def _restore_monitor_ui_prefs(self) -> None:
+        """Load global NOW / Cue List chrome (visibility, columns) from QSettings."""
+        settings = self._settings
+        prefs: dict = {}
+        if settings.contains(_KEY_NOW_PRIMARY_VISIBLE):
+            prefs["now_primary_visible"] = settings.value(_KEY_NOW_PRIMARY_VISIBLE, True, type=bool)
+        if settings.contains(_KEY_NOW_SECONDARY_VISIBLE):
+            prefs["now_secondary_visible"] = settings.value(
+                _KEY_NOW_SECONDARY_VISIBLE, True, type=bool
+            )
+        if settings.contains(_KEY_CUE_LIST_VISIBLE):
+            prefs["cue_list_visible"] = settings.value(_KEY_CUE_LIST_VISIBLE, True, type=bool)
+        if settings.contains(_KEY_NOW_PRIMARY_SHOW_CUE_ID):
+            prefs["now_primary_show_cue_id"] = settings.value(
+                _KEY_NOW_PRIMARY_SHOW_CUE_ID, True, type=bool
+            )
+        if settings.contains(_KEY_CUE_LIST_SHOW_CUE_ID):
+            prefs["cue_list_show_cue_id"] = settings.value(
+                _KEY_CUE_LIST_SHOW_CUE_ID, True, type=bool
+            )
+        order = settings.value(_KEY_CUE_LIST_COLUMN_ORDER)
+        if isinstance(order, list) and order:
+            prefs["cue_list_column_order"] = order
+        elif isinstance(order, str) and order.strip():
+            prefs["cue_list_column_order"] = [p.strip() for p in order.split(",") if p.strip()]
+        header = settings.value(_KEY_CUE_LIST_HEADER)
+        if header:
+            prefs["cue_list_header"] = header
+        if prefs:
+            self.monitor.apply_monitor_ui_prefs(prefs)
+            self._sync_monitor_ui_prefs_to_songs()
+
+    def _save_monitor_ui_prefs(self) -> None:
+        prefs = self.monitor.monitor_ui_prefs()
+        self._settings.setValue(_KEY_NOW_PRIMARY_VISIBLE, prefs["now_primary_visible"])
+        self._settings.setValue(_KEY_NOW_SECONDARY_VISIBLE, prefs["now_secondary_visible"])
+        self._settings.setValue(_KEY_CUE_LIST_VISIBLE, prefs["cue_list_visible"])
+        self._settings.setValue(_KEY_NOW_PRIMARY_SHOW_CUE_ID, prefs["now_primary_show_cue_id"])
+        self._settings.setValue(_KEY_CUE_LIST_SHOW_CUE_ID, prefs["cue_list_show_cue_id"])
+        self._settings.setValue(_KEY_CUE_LIST_COLUMN_ORDER, prefs["cue_list_column_order"])
+        self._settings.setValue(_KEY_CUE_LIST_HEADER, prefs["cue_list_header"])
+
+    def _sync_monitor_ui_prefs_to_songs(self) -> None:
+        """Mirror global chrome onto every song so project files stay consistent."""
+        prefs = self.monitor.monitor_ui_prefs()
+        order = list(prefs["cue_list_column_order"])
+        for song in self.project.songs:
+            song.now_primary_visible = bool(prefs["now_primary_visible"])
+            song.now_secondary_visible = bool(prefs["now_secondary_visible"])
+            song.cue_list_visible = bool(prefs["cue_list_visible"])
+            song.now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+            song.cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
+            song.cue_list_column_order = list(order)
+
+    def _on_monitor_ui_prefs_changed(self) -> None:
+        if self._restoring_session:
+            return
+        self._sync_monitor_ui_prefs_to_songs()
+        self._save_monitor_ui_prefs()
+        self._mark_dirty()
 
     def _save_ui_session(self) -> None:
         if self._restoring_session:
@@ -1535,6 +1604,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SPLITTER_RIGHT, layout_state["right"])
         self._settings.setValue(_KEY_NOW_SPLITTER_BELOW, layout_state["below"])
         self._settings.setValue(_KEY_NOW_BODY_SPLITTER, layout_state.get("body"))
+        self._save_monitor_ui_prefs()
         mode = "timeline"
         stack_index = self.view_stack.currentIndex()
         if stack_index == 1:

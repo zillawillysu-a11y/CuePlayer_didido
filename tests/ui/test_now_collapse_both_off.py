@@ -35,6 +35,8 @@ def test_now_section_collapses_when_both_displays_off(app: QApplication) -> None
 
     song.now_primary_visible = False
     song.now_secondary_visible = False
+    panel._now_primary_visible = False
+    panel._now_secondary_visible = False
     panel._apply_now_panel_visibility()
     app.processEvents()
 
@@ -55,12 +57,12 @@ def test_now_section_restores_when_a_display_returns(app: QApplication) -> None:
     panel._body_splitter.setSizes([220, 400])
     app.processEvents()
 
-    song.now_primary_visible = False
-    song.now_secondary_visible = False
+    panel._now_primary_visible = False
+    panel._now_secondary_visible = False
     panel._apply_now_panel_visibility()
     app.processEvents()
 
-    song.now_primary_visible = True
+    panel._now_primary_visible = True
     panel._apply_now_panel_visibility()
     app.processEvents()
 
