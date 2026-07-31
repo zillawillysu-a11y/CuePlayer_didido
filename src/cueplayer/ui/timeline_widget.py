@@ -2048,17 +2048,36 @@ class TimelineWidget(QWidget):
         hw = int(self._header_width)
         content_w = max(0, w - hw)
         src_x = hw + overscan + delta
+        # QPainter.drawPixmap(int sx/sy/sw/sh) treats the source rect as *device*
+        # pixels. Our cache is sized with setDevicePixelRatio(dpr) and painted in
+        # logical coords — so multiply source by dpr. Without this, 125%/150%
+        # Windows scaling shifts the waveform vs live marks/playhead (and the
+        # offset grows with overscan + scroll delta).
+        dpr = max(1.0, float(pm.devicePixelRatio()))
+
+        def _dev(logical: float) -> int:
+            return int(round(float(logical) * dpr))
 
         painter.fillRect(0, 0, w, h, QColor(BG_APP))
         # Content region — sample the matching strip from the wide cache.
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
-        painter.drawPixmap(hw, 0, pm, src_x, 0, content_w, h)
+        painter.drawPixmap(
+            hw,
+            0,
+            content_w,
+            h,
+            pm,
+            _dev(src_x),
+            0,
+            _dev(content_w),
+            _dev(h),
+        )
         painter.restore()
         # Header column stays fixed (baked at x=0 in the cache).
         painter.save()
         painter.setClipRect(0, 0, hw, h)
-        painter.drawPixmap(0, 0, pm, 0, 0, hw, h)
+        painter.drawPixmap(0, 0, hw, h, pm, 0, 0, _dev(hw), _dev(h))
         painter.restore()
         return True
 
