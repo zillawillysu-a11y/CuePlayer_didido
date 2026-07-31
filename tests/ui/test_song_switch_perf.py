@@ -44,7 +44,8 @@ def _make_window_with_songs(app: QApplication, n: int = 5) -> MainWindow:
     return window
 
 
-def test_cached_audio_buffer_loads_disk_npz(app: QApplication) -> None:
+def test_cached_audio_buffer_is_ram_only(app: QApplication) -> None:
+    """Song switch must not sync-load .npz on the UI thread."""
     window = _make_window_with_songs(app, n=1)
     path = Path("/fake/song0.wav")
     key = ("resolved", 1, 100)
@@ -57,12 +58,24 @@ def test_cached_audio_buffer_loads_disk_npz(app: QApplication) -> None:
     )
     with patch.object(window, "_audio_cache_key", return_value=key):
         with patch(
-            "cueplayer.ui.main_window.load_cached_audio", return_value=buffer
+            "cueplayer.media.audio_disk_cache.load_cached_audio", return_value=buffer
         ) as load_disk:
+            miss = window._cached_audio_buffer(path)
+            assert miss is None
+            load_disk.assert_not_called()
+            window._audio_buffer_cache[key] = buffer
             hit = window._cached_audio_buffer(path)
-    load_disk.assert_called_once_with(path)
     assert hit is buffer
-    assert window._audio_buffer_cache[key] is buffer
+
+
+def test_activate_song_defers_monitor_rebuild(app: QApplication) -> None:
+    window = _make_window_with_songs(app, n=2)
+    with patch.object(window, "_cached_audio_buffer", return_value=MagicMock()):
+        with patch.object(window.monitor, "set_song") as set_song:
+            window._activate_song(1, stop_playback=True)
+            set_song.assert_not_called()
+            app.processEvents()
+            set_song.assert_called_once_with(window.current_song)
 
 
 def test_activate_song_does_not_prefetch_neighbors(app: QApplication) -> None:

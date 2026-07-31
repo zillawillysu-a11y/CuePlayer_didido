@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import av
 import numpy as np
@@ -406,9 +407,63 @@ def test_video_output_reenable_uses_last_position(
     assert frame.mean(axis=(0, 1))[2] > frame.mean(axis=(0, 1))[0]
 
 
-def test_scrubbing_uses_preloaded_cache_without_live_decoder(
+def test_set_song_does_not_preload_scrub_cache(
     app: QApplication, red_clip_path: Path
 ) -> None:
+    """Opening/switching songs must not start scrub PyAV while Clean Output
+    may also be decoding — that contended on av_path_lock and stalled the UI."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_song(song)
+    preload.assert_not_called()
+    assert not controller._scrub_cache.ready(clip.id)
+
+
+def test_set_video_output_active_does_not_preload_scrub(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.update_position(0.5)
+    controller.set_video_output_active(False)
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_video_output_active(True)
+    preload.assert_not_called()
+
+
+def test_playing_decode_does_not_open_ui_thread_decoder(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """While playing, PyAV must run on the play worker — not on the UI thread."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_playing(True)
+    controller.update_position(0.5)
+    # Async: wait for worker → queued signal.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not frames:
+        app.processEvents()
+        time.sleep(0.01)
+    assert frames
+    assert isinstance(frames[-1], np.ndarray)
+    assert clip.id not in controller._decoders
+
+    controller.set_playing(False)
+    assert clip.id in controller._decoders
     """Once scrub posters are warm, mid-drag Preview must not open/seek the
     live UI-thread decoder (that hitch felt like 'loading video')."""
     song = Song.create("Song")
@@ -417,6 +472,7 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
 
     controller = VideoSyncController()
     controller.set_song(song)
+    controller._scrub_cache.preload(list(song.video_clips))
 
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not controller._scrub_cache.ready(clip.id):

@@ -109,7 +109,6 @@ from cueplayer.domain.undo import (
 )
 from cueplayer.media.audio_disk_cache import (
     load_audio_cached,
-    load_cached_audio,
     load_all_ltc_channels,
     save_cached_audio,
     save_ltc_channel,
@@ -152,7 +151,7 @@ from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
-from cueplayer.ui.video_preview import VideoPreviewWidget
+from cueplayer.ui.video_preview import VideoPreviewWidget, rgb_frame_to_qimage
 
 _AUDIO_SUFFIXES = AUDIO_SUFFIXES  # re-export for tests / callers
 _MEDIA_DIALOG_FILTER = (
@@ -953,6 +952,7 @@ class MainWindow(QMainWindow):
         self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
         self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
+        self._song_activate_gen = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
         self._display_waveform_cache: dict[tuple[tuple[str, int, int] | None, int | None], AudioBuffer] = {}
@@ -1310,9 +1310,9 @@ class MainWindow(QMainWindow):
         # audio clock's ~60Hz position ticks can't starve the UI thread the
         # timeline also lives on — see VideoSyncController.set_playing().
         self.engine.playing_changed.connect(self.video_sync.set_playing)
-        self.video_sync.frame_changed.connect(self.video_preview.set_frame)
-        self.video_sync.frame_changed.connect(self.clean_output_window.set_frame)
-        self.video_sync.frame_changed.connect(self._ndi_output.send_frame)
+        # One RGB→QImage conversion shared by Preview + Clean Output (avoids
+        # double memcpy when Clean Output is open with a video track).
+        self.video_sync.frame_changed.connect(self._on_video_frame)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
@@ -1980,6 +1980,35 @@ class MainWindow(QMainWindow):
 
     def _clean_output_visible(self) -> bool:
         return self.clean_output_window.isVisible()
+
+    def _on_video_frame(self, frame) -> None:  # noqa: ANN001
+        """Fan out one decoded RGB frame to Preview / Clean / NDI sinks.
+
+        Preview + Clean share a single QImage conversion. NDI keeps the
+        ndarray. Invisible sinks are skipped so opening Clean Output does not
+        pay for a hidden Preview panel copy.
+        """
+        preview_vis = self._video_preview_visible()
+        clean_vis = self._clean_output_visible()
+        ndi_on = bool(self.project.clean_video_output.ndi_enabled)
+
+        if frame is None:
+            if preview_vis:
+                self.video_preview.set_qimage(None)
+            if clean_vis:
+                self.clean_output_window.set_qimage(None)
+            if ndi_on:
+                self._ndi_output.send_frame(None)
+            return
+
+        if preview_vis or clean_vis:
+            image = rgb_frame_to_qimage(frame)
+            if preview_vis:
+                self.video_preview.set_qimage(image)
+            if clean_vis:
+                self.clean_output_window.set_qimage(image)
+        if ndi_on:
+            self._ndi_output.send_frame(frame)
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when neither Preview, Clean Output, nor NDI needs frames."""
@@ -4174,6 +4203,8 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.project.songs):
             return
         self._audio_load_token += 1
+        self._song_activate_gen += 1
+        activate_gen = self._song_activate_gen
         # Tear down PortAudio + video decode before swapping song media.
         # Leaving the stream open (pause/stop alone) races PyAV close with the
         # audio callback and is a common mid-play / song-switch hard crash.
@@ -4187,7 +4218,14 @@ class MainWindow(QMainWindow):
         self.monitor.set_selected_mark_ids([])
         self.timeline.set_song(self.current_song)
         self._apply_project_mark_line_settings()
-        self.monitor.set_song(self.current_song)
+        # Cue List rebuild is relatively heavy — defer so Setlist selection
+        # + timeline swap paint first (feels like an instant song switch).
+        QTimer.singleShot(
+            0,
+            lambda g=activate_gen, song=self.current_song: self._activate_song_monitor(
+                g, song
+            ),
+        )
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         action = getattr(self, "_show_video_track_action", None)
@@ -4209,6 +4247,8 @@ class MainWindow(QMainWindow):
         )
         if main_audio is not None and Path(main_audio.path).is_file():
             audio_path = Path(main_audio.path)
+            # RAM only — never sync-load .npz on the UI thread (that hitch
+            # was the main Setlist song-switch stall after warm).
             cached = self._cached_audio_buffer(audio_path)
             if cached is not None:
                 self.timeline.set_audio_loading(False)
@@ -4244,6 +4284,11 @@ class MainWindow(QMainWindow):
         self._refresh_window_title()
         self._refresh_status()
         self._sync_timeline_overview()
+
+    def _activate_song_monitor(self, gen: int, song) -> None:  # noqa: ANN001
+        if gen != self._song_activate_gen or song is not self.current_song:
+            return
+        self.monitor.set_song(song)
 
     def _next_song_default_name(self) -> str:
         return f"Song {len(self.project.songs) + 1}"
@@ -5379,18 +5424,16 @@ class MainWindow(QMainWindow):
         self._audio_ltc_cache.update(load_all_ltc_channels())
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
-        """RAM first; on miss load the on-disk .npz (no re-decode) for instant song switch."""
+        """Return a RAM-resident buffer only — never block the UI on disk I/O.
+
+        On-disk ``.npz`` hits go through ``_load_audio_path`` /
+        ``load_audio_cached`` on a worker thread so Setlist song switches stay
+        snappy after the first warm.
+        """
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        hit = self._audio_buffer_cache.get(key)
-        if hit is not None:
-            return hit
-        disk = load_cached_audio(path)
-        if disk is None:
-            return None
-        self._store_audio_cache(path, disk, write_disk=False, schedule_ltc=False)
-        return disk
+        return self._audio_buffer_cache.get(key)
 
     def _resolved_path_str(self, path: Path | None) -> str | None:
         if path is None:

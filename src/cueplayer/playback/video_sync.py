@@ -10,6 +10,9 @@ widgets to paint. No independent video clock, no second player.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
@@ -25,6 +28,7 @@ from cueplayer.domain.models import (
 )
 from cueplayer.media.scrub_frame_cache import ScrubFrameCache
 from cueplayer.media.video_loader import MediaDecoder, open_media_decoder
+from cueplayer.util.thread_priority import lower_background_thread_priority
 
 # While scrubbing with a warm ScrubFrameCache, lookups are cheap — allow a
 # higher emit rate so Preview tracks the drag. Cold cache / live decode still
@@ -36,25 +40,37 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # see AudioEngine._poll) so it can drive smooth timeline playhead motion,
 # but no display can show video faster than ~display refresh rate anyway.
 # During playback (see set_playing()), cap actual decode+emit work to this
-# rate so the (Preview + Clean Output) QImage copy / repaint cost — which
-# runs on the UI thread same as timeline paint/input — can't fire faster
-# than a real frame, on top of VideoDecoder's own duplicate-AVFrame cache
-# (see video_loader.py) which already skips the colorspace conversion when
-# the underlying source frame hasn't advanced. Together these are what keep
-# the timeline (scroll/zoom/mark edit/playhead) responsive while a video
-# clip is playing. MainWindow also queues video decode behind the playhead
-# update so PyAV work cannot stall timeline paint. Paused/stopped ticks
-# (e.g. programmatic seeks) are left unthrottled so they stay frame-accurate.
+# rate so Preview/Clean Output paint cannot fire faster than a real frame.
+# Live play decode runs on a worker thread (see _schedule_play_decode) so
+# PyAV seek/colorspace does not stall the UI thread that paints the timeline
+# and Clean Output. Paused/stopped ticks stay sync + unthrottled for
+# frame-accurate seeks.
 _MAX_PLAY_DECODE_HZ = 24.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
 
 _UNSET = object()
 
 
+@dataclass(frozen=True)
+class _PlayDecodeLayer:
+    clip_id: str
+    path: Path
+    source_seconds: float
+    weight: float
+
+
+@dataclass(frozen=True)
+class _PlayDecodeJob:
+    layers: tuple[_PlayDecodeLayer, ...]
+    max_height: int | None
+
+
 class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for black
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
+    # Worker → UI thread (QueuedConnection by default across threads).
+    _play_frame_ready = Signal(object, int)  # frame | None, generation
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +109,18 @@ class VideoSyncController(QObject):
         # Sparse RGB posters for scrub — filled off-thread so drag never
         # pays PyAV seek on the UI thread (see scrub_frame_cache.py).
         self._scrub_cache = ScrubFrameCache()
+        # Play-path decode worker: own MediaDecoder cache (never touch UI
+        # _decoders from this thread). Coalesce to latest pending job.
+        self._play_decode_gen = 0
+        self._play_lock = threading.Lock()
+        self._play_pending: tuple[_PlayDecodeJob, int] | None = None
+        self._play_running = False
+        self._worker_decoders: dict[str, MediaDecoder] = {}
+        self._worker_decoder_paths: dict[str, Path] = {}
+        self._play_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="vid-play"
+        )
+        self._play_frame_ready.connect(self._on_play_frame_ready)
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -105,13 +133,20 @@ class VideoSyncController(QObject):
 
         Audio playback and embedded clip audio are unaffected — only the RGB
         preview path is gated. When re-enabled, the frame at the last
-        `update_position()` is decoded immediately."""
+        `update_position()` is decoded immediately.
+
+        Scrub posters are *not* preloaded here: kicking the scrub worker
+        while opening Clean Output contended on ``av_path_lock`` with the
+        live frame decode and made the whole UI feel sluggish. Scrub ladders
+        build on ``set_scrubbing(True)`` instead.
+        """
         active = bool(active)
         if active == self._video_output_active:
             return
         self._video_output_active = active
         if not active:
             self._cancel_pending()
+            self._invalidate_play_decode()
             self._close_all_decoders()
             self._scrub_cache.clear()
             return
@@ -119,7 +154,6 @@ class VideoSyncController(QObject):
         seconds = self._last_position_seconds
         if song is None or seconds is None:
             return
-        self._scrub_cache.preload(list(song.video_clips))
         self._maybe_warn_overlap(song, seconds)
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
@@ -146,29 +180,33 @@ class VideoSyncController(QObject):
             # Scrub just ended: make sure the exact release-point frame —
             # not a sparse scrub poster — is what's on screen.
             self._flush_timer.stop()
-            self._flush_pending()
+            self._flush_pending(force_sync=True)
 
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.
 
-        While playing, decode work is throttled to _MAX_PLAY_DECODE_HZ (see
-        module constants) — this is the fix for the timeline becoming
-        unusable while a video clip plays: without it, every ~16ms
-        position_changed tick from AudioEngine's poll timer would reach all
-        the way into a PyAV decode + colorspace conversion on the same
-        thread that has to paint/scroll/zoom the timeline and handle mouse
-        input. Paused/stopped ticks stay unthrottled (frame-accurate for
-        programmatic seeks, mark navigation, etc).
+        While playing, decode work is throttled to _MAX_PLAY_DECODE_HZ and
+        runs on a background worker so PyAV does not stall the UI thread.
+        Paused/stopped ticks stay sync (frame-accurate for seeks).
         """
         active = bool(active)
         if active == self._playing:
             return
         self._playing = active
         if not active:
-            # Playback just stopped: land on the exact final position, not
-            # a throttled stand-in from the last active window.
+            # Drop in-flight play jobs; land the exact final position sync.
+            self._invalidate_play_decode()
             self._flush_timer.stop()
-            self._flush_pending()
+            if self._pending_seconds is not None:
+                self._flush_pending(force_sync=True)
+            elif (
+                self._video_output_active
+                and self._song is not None
+                and self._last_position_seconds is not None
+            ):
+                self._decode_and_emit(
+                    self._song, self._last_position_seconds, force_sync=True
+                )
 
     def set_decode_quality(self, quality: VideoDecodeQuality) -> None:
         """Cap decoded frame height (preview + Clean Output share one decode
@@ -187,14 +225,15 @@ class VideoSyncController(QObject):
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._cancel_pending()
+        self._invalidate_play_decode()
         self._close_all_decoders()
         self._scrub_cache.clear()
         self._warned_overlap_keys.clear()
         self._set_active(None)
         self._last_emitted_frame = _UNSET  # force this emit through even if unchanged
         self._emit_frame(None)
-        if song is not None and self._video_output_active:
-            self._scrub_cache.preload(list(song.video_clips))
+        # Do not preload scrub ladders here — song switch + Clean Output used
+        # to start a PyAV storm that blocked live decode via av_path_lock.
 
     def refresh(self) -> None:
         """Call after clips are added / removed / re-pathed."""
@@ -208,7 +247,9 @@ class VideoSyncController(QObject):
                 self._decoders.pop(clip_id).close()
                 self._decoder_paths.pop(clip_id, None)
                 self._scrub_cache.drop_clip(clip_id)
-        if self._video_output_active:
+        # Only refresh scrub posters if the user is mid-drag; otherwise wait
+        # for the next scrub_started to avoid contending with live decode.
+        if self._scrubbing and self._video_output_active:
             self._scrub_cache.preload(list(self._song.video_clips))
 
     def update_position(self, seconds: float) -> None:
@@ -313,34 +354,168 @@ class VideoSyncController(QObject):
             return None
         return np.clip(composite, 0, 255).astype(np.uint8)
 
-    def _decode_and_emit(self, song: Song, seconds: float) -> None:
+    def _decode_and_emit(
+        self, song: Song, seconds: float, *, force_sync: bool = False
+    ) -> None:
         self._last_decode_time = monotonic()
         self._pending_clip = None
         self._pending_seconds = None
+        # During play, keep PyAV off the UI thread (Clean Output + timeline).
+        # Seek / stop / scrub-end pass force_sync=True for frame-accurate land.
+        if self._playing and not self._scrubbing and not force_sync:
+            job = self._snapshot_play_job(song, seconds)
+            if job is None:
+                self._emit_frame(None)
+                return
+            self._schedule_play_decode(job)
+            return
+        frame = self._decode_frame_ui(song, seconds)
+        self._emit_frame(frame)
+
+    def _snapshot_play_job(self, song: Song, seconds: float) -> _PlayDecodeJob | None:
         clips = song.active_video_clips_at(seconds)
         if not clips:
-            self._emit_frame(None)
+            return None
+        layers: list[_PlayDecodeLayer] = []
+        for clip in clips:
+            weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
+            if weight <= 1e-6:
+                continue
+            layers.append(
+                _PlayDecodeLayer(
+                    clip_id=clip.id,
+                    path=Path(clip.path),
+                    source_seconds=float(clip.source_time_for(seconds)),
+                    weight=float(weight),
+                )
+            )
+        if not layers:
+            return None
+        return _PlayDecodeJob(
+            layers=tuple(layers),
+            max_height=self._decode_max_height,
+        )
+
+    def _schedule_play_decode(self, job: _PlayDecodeJob) -> None:
+        self._play_decode_gen += 1
+        gen = self._play_decode_gen
+        with self._play_lock:
+            self._play_pending = (job, gen)
+            if self._play_running:
+                return
+            self._play_running = True
+        self._play_executor.submit(self._drain_play_decode)
+
+    def _drain_play_decode(self) -> None:
+        lower_background_thread_priority()
+        while True:
+            with self._play_lock:
+                item = self._play_pending
+                self._play_pending = None
+                if item is None:
+                    self._play_running = False
+                    return
+            job, gen = item
+            try:
+                frame = self._worker_decode_job(job)
+            except Exception:
+                frame = None
+            self._play_frame_ready.emit(frame, gen)
+
+    def _on_play_frame_ready(self, frame: object, gen: int) -> None:
+        if gen != self._play_decode_gen:
             return
+        if not self._playing or not self._video_output_active:
+            return
+        self._last_decode_time = monotonic()
+        self._emit_frame(frame if isinstance(frame, np.ndarray) else None)
+
+    def _invalidate_play_decode(self) -> None:
+        self._play_decode_gen += 1
+        with self._play_lock:
+            self._play_pending = None
+        self._play_executor.submit(self._worker_close_all)
+
+    def _worker_close_all(self) -> None:
+        for decoder in self._worker_decoders.values():
+            try:
+                decoder.close()
+            except Exception:
+                pass
+        self._worker_decoders.clear()
+        self._worker_decoder_paths.clear()
+
+    def _worker_decoder_for(
+        self, clip_id: str, path: Path, max_height: int | None
+    ) -> MediaDecoder | None:
+        cached_path = self._worker_decoder_paths.get(clip_id)
+        if cached_path == path and clip_id in self._worker_decoders:
+            return self._worker_decoders[clip_id]
+        old = self._worker_decoders.pop(clip_id, None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        try:
+            decoder = open_media_decoder(path, max_decode_height=max_height)
+        except Exception:
+            self._worker_decoder_paths.pop(clip_id, None)
+            return None
+        self._worker_decoders[clip_id] = decoder
+        self._worker_decoder_paths[clip_id] = path
+        return decoder
+
+    def _worker_decode_job(self, job: _PlayDecodeJob) -> np.ndarray | None:
+        if not job.layers:
+            return None
+        if len(job.layers) == 1:
+            layer = job.layers[0]
+            decoder = self._worker_decoder_for(layer.clip_id, layer.path, job.max_height)
+            if decoder is None:
+                return None
+            try:
+                return decoder.frame_at(layer.source_seconds)
+            except Exception:
+                return None
+        total_weight = sum(layer.weight for layer in job.layers)
+        composite: np.ndarray | None = None
+        for layer in job.layers:
+            decoder = self._worker_decoder_for(layer.clip_id, layer.path, job.max_height)
+            if decoder is None:
+                continue
+            try:
+                frame = decoder.frame_at(layer.source_seconds)
+            except Exception:
+                frame = None
+            if frame is None:
+                continue
+            scaled = frame.astype(np.float32) * (layer.weight / total_weight)
+            composite = scaled if composite is None else composite + scaled
+        if composite is None:
+            return None
+        return np.clip(composite, 0, 255).astype(np.uint8)
+
+    def _decode_frame_ui(self, song: Song, seconds: float) -> np.ndarray | None:
+        clips = song.active_video_clips_at(seconds)
+        if not clips:
+            return None
         weighted: list[tuple[VideoClip, float]] = []
         for clip in clips:
             weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
             if weight > 1e-6:
                 weighted.append((clip, weight))
         if not weighted:
-            self._emit_frame(None)
-            return
+            return None
         if len(weighted) == 1:
             clip, _weight = weighted[0]
             decoder = self._decoder_for(clip)
             if decoder is None:
-                self._emit_frame(None)
-                return
+                return None
             try:
-                frame = decoder.frame_at(clip.source_time_for(seconds))
+                return decoder.frame_at(clip.source_time_for(seconds))
             except Exception:
-                frame = None
-            self._emit_frame(frame)
-            return
+                return None
         total_weight = sum(w for _clip, w in weighted)
         composite: np.ndarray | None = None
         for clip, weight in weighted:
@@ -356,9 +531,8 @@ class VideoSyncController(QObject):
             scaled = frame.astype(np.float32) * (weight / total_weight)
             composite = scaled if composite is None else composite + scaled
         if composite is None:
-            self._emit_frame(None)
-            return
-        self._emit_frame(np.clip(composite, 0, 255).astype(np.uint8))
+            return None
+        return np.clip(composite, 0, 255).astype(np.uint8)
 
     def _emit_frame(self, frame: np.ndarray | None) -> None:
         """Skip emitting (and the Preview/Clean Output QImage copy + repaint
@@ -373,7 +547,7 @@ class VideoSyncController(QObject):
         self._last_emitted_frame = frame
         self.frame_changed.emit(frame)
 
-    def _flush_pending(self) -> None:
+    def _flush_pending(self, *, force_sync: bool = False) -> None:
         clip, seconds = self._pending_clip, self._pending_seconds
         if clip is None or seconds is None or self._song is None:
             return
@@ -381,7 +555,7 @@ class VideoSyncController(QObject):
             self._pending_clip = None
             self._pending_seconds = None
             return
-        self._decode_and_emit(self._song, seconds)
+        self._decode_and_emit(self._song, seconds, force_sync=force_sync)
 
     def _cancel_pending(self) -> None:
         self._flush_timer.stop()
@@ -429,3 +603,4 @@ class VideoSyncController(QObject):
             decoder.close()
         self._decoders.clear()
         self._decoder_paths.clear()
+        self._play_executor.submit(self._worker_close_all)

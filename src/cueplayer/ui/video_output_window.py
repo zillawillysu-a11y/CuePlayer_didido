@@ -97,7 +97,11 @@ class CleanVideoOutputWindow(QWidget):
         layout.setSpacing(0)
         # No placeholder text here: unplayed regions must stay pure black
         # for the OBS capture, with no debug text baked into the frame.
-        self.preview = VideoPreviewWidget(self, placeholder_text="")
+        # Fast scale: 1080p smooth bilinear every frame makes the whole app feel
+        # sluggish while Clean Output is open (shared decode path stays accurate).
+        self.preview = VideoPreviewWidget(
+            self, placeholder_text="", smooth_scale=False
+        )
         layout.addWidget(self.preview)
         self.resize(1920, 1080)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -105,6 +109,9 @@ class CleanVideoOutputWindow(QWidget):
 
     def set_frame(self, frame) -> None:  # noqa: ANN001
         self.preview.set_frame(frame)
+
+    def set_qimage(self, image) -> None:  # noqa: ANN001
+        self.preview.set_qimage(image)
 
     # -- resolution / aspect lock --------------------------------------
 
