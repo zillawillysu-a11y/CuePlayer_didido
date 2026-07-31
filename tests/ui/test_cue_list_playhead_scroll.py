@@ -69,6 +69,31 @@ def test_playhead_cue_scrolls_into_view_with_bottom_margin(app: QApplication) ->
     assert rect.bottom() <= vp_h - max(8, _ROW_HEIGHT // 4)
 
 
+def test_cue_row_scroll_does_not_move_outer_monitor_scroll(app: QApplication) -> None:
+    """Playhead cue follow must not yank the outer scroller off the Timecode clock."""
+    panel = CueMonitorPanel()
+    song = _song_with_marks(40)
+    panel.set_song(song)
+    panel.show()
+    panel.resize(320, 360)
+    app.processEvents()
+    _prepare_short_cue_list(panel, app)
+
+    outer = panel._monitor_scroll.verticalScrollBar()  # noqa: SLF001
+    # Scroll up toward Timecode (top of the monitor column).
+    outer.setValue(0)
+    app.processEvents()
+    assert outer.value() == 0
+
+    target = song.marks[22]
+    panel.set_position(float(target.time_seconds) + 0.01)
+    app.processEvents()
+    panel._scroll_cue_row_into_view(target.id)  # noqa: SLF001
+    app.processEvents()
+
+    assert outer.value() == 0
+
+
 def test_layout_change_rescrolls_obscured_playhead_cue(app: QApplication) -> None:
     panel = CueMonitorPanel()
     song = _song_with_marks(40)
