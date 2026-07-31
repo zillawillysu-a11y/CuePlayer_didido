@@ -212,6 +212,14 @@ class CueMonitorPanel(QWidget):
         self._secondary_clear_timer.timeout.connect(self._on_secondary_auto_clear)
         self._column_order: list[str] = list(DEFAULT_CUE_LIST_COLUMN_ORDER)
         self._reordering_header = False
+        self._resizing_header = False
+        # Monitor chrome (Primary / Secondary / Cue List show + column layout) is
+        # machine-global — switching songs must not reset these toggles/sizes.
+        self._now_primary_visible = True
+        self._now_secondary_visible = True
+        self._cue_list_visible = True
+        self._now_primary_show_cue_id = True
+        self._cue_list_show_cue_id = True
         self._now_placement = "right"  # "right" | "below"
         self._splitter_state_right: QByteArray | None = None
         self._splitter_state_below: QByteArray | None = None
@@ -450,11 +458,22 @@ class CueMonitorPanel(QWidget):
         self.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Smooth scrubbing — no row/column “notches” while panning the list.
+        self.cue_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.cue_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         header = self.cue_table.horizontalHeader()
         header.setSectionsMovable(True)
         header.setFirstSectionMovable(True)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(36)
         header.sectionMoved.connect(self._on_header_section_moved)
+        header.sectionResized.connect(self._on_header_section_resized)
         self._apply_column_resize_modes()
+        # Default widths before session restore / Interactive drag.
+        self.cue_table.setColumnWidth(LOGICAL_INDEX_BY_FIELD["time"], 88)
+        self.cue_table.setColumnWidth(LOGICAL_INDEX_BY_FIELD["type"], 96)
+        self.cue_table.setColumnWidth(LOGICAL_INDEX_BY_FIELD["cue_id"], 72)
+        self.cue_table.setColumnWidth(LOGICAL_INDEX_BY_FIELD["note"], 140)
         # Selection fill only — Type lane colors come from the item delegate
         # (global QSS would force selected text to pure white).
         self.cue_table.setStyleSheet(
@@ -535,6 +554,8 @@ class CueMonitorPanel(QWidget):
         self._monitor_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        # Pixel steps feel smoother than page/row notches on a short panel.
+        self._monitor_scroll.verticalScrollBar().setSingleStep(16)
         self._monitor_scroll.setStyleSheet(
             "#monitorScroll { background: transparent; border: none; }"
             "#monitorScroll > QWidget > QWidget { background: transparent; }"
@@ -546,7 +567,9 @@ class CueMonitorPanel(QWidget):
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._playhead_list_mark_id = None
-        self._apply_column_order()
+        # Column order / NOW visibility come from global monitor UI prefs — do
+        # not reload them from the song (switching songs used to reset chrome).
+        self._apply_column_order(list(self._column_order))
         self._apply_cue_list_column_visibility()
         self.refresh_list()
         self._apply_now_panel_visibility()
@@ -565,19 +588,14 @@ class CueMonitorPanel(QWidget):
 
     def _apply_column_resize_modes(self) -> None:
         header = self.cue_table.horizontalHeader()
-        for field in self._column_order:
-            col = self._col_for_field(field)
-            if field == "note":
-                header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
-            else:
-                header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(False)
+        for field in CUE_LIST_FIELDS:
+            col = LOGICAL_INDEX_BY_FIELD[field]
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
     def _apply_column_order(self, order: list[str] | None = None) -> None:
         if order is None:
-            if self._song is not None:
-                order = normalize_cue_list_column_order(self._song.cue_list_column_order)
-            else:
-                order = list(DEFAULT_CUE_LIST_COLUMN_ORDER)
+            order = list(self._column_order)
         else:
             order = normalize_cue_list_column_order(order)
         self._column_order = order
@@ -594,7 +612,7 @@ class CueMonitorPanel(QWidget):
 
     def _on_header_section_moved(self, logical_index: int, old_visual: int, new_visual: int) -> None:
         del logical_index, old_visual, new_visual
-        if self._reordering_header or self._song is None:
+        if self._reordering_header:
             return
         header = self.cue_table.horizontalHeader()
         order: list[str] = []
@@ -602,9 +620,75 @@ class CueMonitorPanel(QWidget):
             logical = header.logicalIndex(visual)
             order.append(CUE_LIST_FIELDS[logical])
         self._column_order = order
-        self._song.cue_list_column_order = list(order)
         self._apply_column_resize_modes()
         self.cue_list_layout_changed.emit()
+
+    def _on_header_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        del logical_index, old_size, new_size
+        if self._reordering_header or self._resizing_header:
+            return
+        self.cue_list_layout_changed.emit()
+
+    def save_cue_list_header_state(self) -> QByteArray:
+        return QByteArray(self.cue_table.horizontalHeader().saveState())
+
+    def restore_cue_list_header_state(self, raw) -> None:
+        if not isinstance(raw, (bytes, bytearray, QByteArray)) or len(raw) == 0:
+            return
+        header = self.cue_table.horizontalHeader()
+        self._reordering_header = True
+        self._resizing_header = True
+        try:
+            header.restoreState(QByteArray(raw))
+            # Keep Interactive after restore (some Qt builds flip modes).
+            self._apply_column_resize_modes()
+            order: list[str] = []
+            for visual in range(_COL_COUNT):
+                logical = header.logicalIndex(visual)
+                if 0 <= logical < len(CUE_LIST_FIELDS):
+                    order.append(CUE_LIST_FIELDS[logical])
+            if order:
+                self._column_order = normalize_cue_list_column_order(order)
+        finally:
+            self._reordering_header = False
+            self._resizing_header = False
+        self._apply_cue_list_column_visibility()
+
+    def monitor_ui_prefs(self) -> dict:
+        """Global NOW / Cue List chrome (not per-song lane content)."""
+        return {
+            "now_primary_visible": bool(self._now_primary_visible),
+            "now_secondary_visible": bool(self._now_secondary_visible),
+            "cue_list_visible": bool(self._cue_list_visible),
+            "now_primary_show_cue_id": bool(self._now_primary_show_cue_id),
+            "cue_list_show_cue_id": bool(self._cue_list_show_cue_id),
+            "cue_list_column_order": list(self._column_order),
+            "cue_list_header": bytes(self.save_cue_list_header_state()),
+        }
+
+    def apply_monitor_ui_prefs(self, prefs: dict | None) -> None:
+        if not isinstance(prefs, dict):
+            return
+        if "now_primary_visible" in prefs:
+            self._now_primary_visible = bool(prefs["now_primary_visible"])
+        if "now_secondary_visible" in prefs:
+            self._now_secondary_visible = bool(prefs["now_secondary_visible"])
+        if "cue_list_visible" in prefs:
+            self._cue_list_visible = bool(prefs["cue_list_visible"])
+        if "now_primary_show_cue_id" in prefs:
+            self._now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+        if "cue_list_show_cue_id" in prefs:
+            self._cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
+        order = prefs.get("cue_list_column_order")
+        if isinstance(order, list):
+            self._apply_column_order(order)
+        header_state = prefs.get("cue_list_header")
+        if header_state:
+            self.restore_cue_list_header_state(header_state)
+        self._apply_now_panel_visibility()
+        self._apply_cue_list_visibility()
+        self._apply_cue_list_column_visibility()
+        self._sync_current(force_now=True)
 
     def _mark_id_at_row(self, row: int) -> str | None:
         time_item = self.cue_table.item(row, self._time_col())
@@ -622,12 +706,8 @@ class CueMonitorPanel(QWidget):
         self._sync_current(force_now=True)
 
     def _apply_now_panel_visibility(self) -> None:
-        if self._song is None:
-            show_primary = True
-            show_secondary = True
-        else:
-            show_primary = bool(self._song.now_primary_visible)
-            show_secondary = bool(self._song.now_secondary_visible)
+        show_primary = bool(self._now_primary_visible)
+        show_secondary = bool(self._now_secondary_visible)
         self.primary_track.setVisible(show_primary)
         self.primary_cue.setVisible(show_primary)
         self._primary_now_column.setVisible(show_primary)
@@ -1132,15 +1212,13 @@ class CueMonitorPanel(QWidget):
         return title_h + gaps + max(self._primary_col_min(), _NOW_CARD_MIN_H)
 
     def _apply_cue_list_visibility(self) -> None:
-        visible = self._song is None or bool(self._song.cue_list_visible)
+        visible = bool(self._cue_list_visible)
         self._list_title.setVisible(visible)
         self.cue_table.setVisible(visible)
         self._list_collapsed.setVisible(not visible)
 
     def _set_cue_list_visible(self, visible: bool) -> None:
-        if self._song is None:
-            return
-        self._song.cue_list_visible = bool(visible)
+        self._cue_list_visible = bool(visible)
         self._apply_cue_list_visibility()
         self.cue_list_visibility_changed.emit()
 
@@ -1148,11 +1226,9 @@ class CueMonitorPanel(QWidget):
         self._set_cue_list_visible(True)
 
     def _append_cue_list_menu_action(self, menu: QMenu) -> None:
-        if self._song is None:
-            return
         show_list = QAction("Show Cue List", self)
         show_list.setCheckable(True)
-        show_list.setChecked(bool(self._song.cue_list_visible))
+        show_list.setChecked(bool(self._cue_list_visible))
         show_list.toggled.connect(self._set_cue_list_visible)
         menu.addAction(show_list)
 
@@ -1195,17 +1271,14 @@ class CueMonitorPanel(QWidget):
         )
 
     def _set_cue_list_show_cue_id(self, visible: bool) -> None:
-        if self._song is None:
-            return
-        self._song.cue_list_show_cue_id = bool(visible)
+        self._cue_list_show_cue_id = bool(visible)
         self._apply_cue_list_column_visibility()
         self.cue_list_layout_changed.emit()
 
     def _apply_cue_list_column_visibility(self) -> None:
-        """Show/hide Cue List columns from song preferences."""
-        show_cue_id = True if self._song is None else bool(self._song.cue_list_show_cue_id)
+        """Show/hide Cue List columns from global monitor preferences."""
         cue_id_logical = LOGICAL_INDEX_BY_FIELD["cue_id"]
-        self.cue_table.setColumnHidden(cue_id_logical, not show_cue_id)
+        self.cue_table.setColumnHidden(cue_id_logical, not bool(self._cue_list_show_cue_id))
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001, N802
         if (
@@ -1289,21 +1362,19 @@ class CueMonitorPanel(QWidget):
         return "below"
 
     def _show_now_context_menu(self, pos) -> None:  # noqa: ANN001
-        if self._song is None:
-            return
         menu = QMenu(self)
 
         # Lead with the PRIMARY card Cue ID line (e.g. "Cue 2") — not the Cue List column.
         show_primary_cue_id = QAction("Show Cue ID", self)
         show_primary_cue_id.setCheckable(True)
-        show_primary_cue_id.setChecked(bool(self._song.now_primary_show_cue_id))
+        show_primary_cue_id.setChecked(bool(self._now_primary_show_cue_id))
         show_primary_cue_id.setToolTip(
             "Show or hide the Cue ID line on the PRIMARY card (e.g. “Cue 2”)"
         )
-        show_primary_cue_id.setEnabled(bool(self._song.now_primary_visible))
+        show_primary_cue_id.setEnabled(bool(self._now_primary_visible))
 
         def _toggle_primary_cue_id(checked: bool) -> None:
-            self._song.now_primary_show_cue_id = bool(checked)
+            self._now_primary_show_cue_id = bool(checked)
             self._sync_current(force_now=True)
             self.now_visibility_changed.emit()
 
@@ -1313,19 +1384,19 @@ class CueMonitorPanel(QWidget):
 
         show_primary = QAction("Show Primary display", self)
         show_primary.setCheckable(True)
-        show_primary.setChecked(bool(self._song.now_primary_visible))
+        show_primary.setChecked(bool(self._now_primary_visible))
         show_secondary = QAction("Show Secondary display", self)
         show_secondary.setCheckable(True)
-        show_secondary.setChecked(bool(self._song.now_secondary_visible))
+        show_secondary.setChecked(bool(self._now_secondary_visible))
 
         def _toggle_primary(checked: bool) -> None:
-            self._song.now_primary_visible = bool(checked)
+            self._now_primary_visible = bool(checked)
             self._apply_now_panel_visibility()
             self._sync_current(force_now=True)
             self.now_visibility_changed.emit()
 
         def _toggle_secondary(checked: bool) -> None:
-            self._song.now_secondary_visible = bool(checked)
+            self._now_secondary_visible = bool(checked)
             self._apply_now_panel_visibility()
             self._sync_current(force_now=True)
             self.now_visibility_changed.emit()
@@ -1354,10 +1425,13 @@ class CueMonitorPanel(QWidget):
             menu.exec(self._now_section.mapToGlobal(pos))
 
     def _show_cue_list_context_menu(self, pos) -> None:  # noqa: ANN001
-        if self._song is None:
-            return
         menu = QMenu(self)
         self._append_cue_list_menu_action(menu)
+        show_cue_id_col = QAction("Show Cue ID column", self)
+        show_cue_id_col.setCheckable(True)
+        show_cue_id_col.setChecked(bool(self._cue_list_show_cue_id))
+        show_cue_id_col.toggled.connect(self._set_cue_list_show_cue_id)
+        menu.addAction(show_cue_id_col)
         menu.addSeparator()
         self._append_renumber_cue_id_actions(menu, pos)
         sender = self.sender()
@@ -1707,11 +1781,11 @@ class CueMonitorPanel(QWidget):
                 self._secondary_hold_mark_id = None
                 self._secondary_cleared = False
             return None
-        if secondary and self._song is not None and not self._song.now_secondary_visible:
+        if secondary and not self._now_secondary_visible:
             track.hide()
             cue.hide()
             return None
-        if not secondary and self._song is not None and not self._song.now_primary_visible:
+        if not secondary and not self._now_primary_visible:
             track.hide()
             cue.hide()
             return None
@@ -1756,7 +1830,7 @@ class CueMonitorPanel(QWidget):
                 show_cue_id=(
                     False
                     if secondary
-                    else bool(self._song.now_primary_show_cue_id)
+                    else bool(self._now_primary_show_cue_id)
                 ),
             )
         )

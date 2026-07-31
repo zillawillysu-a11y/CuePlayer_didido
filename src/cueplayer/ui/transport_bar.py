@@ -205,6 +205,8 @@ class BottomTransportBar(QWidget):
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
+        self.volume_slider.setMinimumWidth(48)
+        self.volume_slider.setMaximumWidth(120)
         self.volume_slider.setFixedWidth(120)
         self.volume_slider.setToolTip(
             "Master volume (music + video clip audio; never LTC)\n"
@@ -220,6 +222,9 @@ class BottomTransportBar(QWidget):
         self.tc_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;")
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._volume_rail_min = 48 + 6 + 40  # slim slider + gap + "100%"
+        self._volume_rail_pref = 120 + 6 + 40
+        self._tc_rail_extra = 72 + 6
 
         self._center_anchor: QWidget | None = None
 
@@ -302,7 +307,6 @@ class BottomTransportBar(QWidget):
     def _sync_transport_geometry(self) -> None:
         """Center overview track under anchor; align track (no time gutters) to Play…X."""
         self._ab_group.adjustSize()
-        self._right_rail.adjustSize()
         ab_w = max(0, self._ab_group.sizeHint().width())
         # Pad left of Play by everything that sits to the right of Stop before
         # the trailing stretch (spacing + A/B group).
@@ -310,9 +314,6 @@ class BottomTransportBar(QWidget):
         if self._balance.width() != trail:
             self._balance.setFixedWidth(trail)
 
-        base_rail = max(0, self._right_rail.sizeHint().width())
-        # Cap rails so preferred transport width cannot exceed this bar — otherwise
-        # fixed rail mins inflate the content pane and Setlist cannot drag wider.
         cluster = (
             self.play_button.width()
             + self.pause_button.width()
@@ -323,7 +324,29 @@ class BottomTransportBar(QWidget):
         )
         margins = 20
         max_pair = max(0, self.width() - margins - cluster)
-        base_rail = min(base_rail, max_pair // 2)
+
+        # Right rail must keep the master volume visible on compact windows.
+        # Prefer: hide LTC/MTC chip → shrink slider → steal from left rail.
+        has_tc = bool(self.tc_status.text().strip())
+        vol_pref = self._volume_rail_pref + (self._tc_rail_extra if has_tc else 0)
+        vol_min = self._volume_rail_min
+        right_budget = max(vol_min, min(vol_pref, max_pair))
+        # Hide TC chip when it would push volume off-screen.
+        show_tc = has_tc and right_budget >= self._volume_rail_pref + self._tc_rail_extra
+        if self.tc_status.isVisible() != show_tc:
+            self.tc_status.setVisible(show_tc)
+        slider_w = 120
+        if right_budget < self._volume_rail_pref:
+            slider_w = max(48, right_budget - 6 - 40)
+        if self.volume_slider.width() != slider_w:
+            self.volume_slider.setFixedWidth(slider_w)
+
+        self._right_rail.adjustSize()
+        base_rail = max(vol_min, min(max(0, self._right_rail.sizeHint().width()), max_pair // 2))
+        # Never let the shared rail budget clip volume below its floor when there
+        # is room in the bar at all.
+        if max_pair >= vol_min:
+            base_rail = max(base_rail, min(vol_min, max_pair))
 
         anchor_c = self._anchor_center_x(self._center_anchor)
 
@@ -354,6 +377,15 @@ class BottomTransportBar(QWidget):
                 left_w = max(0, left_w - overflow)
             else:
                 right_w = max(0, right_w - overflow)
+        # Guarantee volume rail: steal from left spacer if needed.
+        if max_pair >= vol_min and right_w < vol_min:
+            need = vol_min - right_w
+            take = min(need, left_w)
+            left_w -= take
+            right_w += take
+            if right_w < vol_min and max_pair >= vol_min:
+                right_w = min(vol_min, max_pair)
+                left_w = max(0, max_pair - right_w)
         if self._left_rail.width() != left_w:
             self._left_rail.setFixedWidth(left_w)
         if self._right_rail.width() != right_w:
@@ -377,6 +409,11 @@ class BottomTransportBar(QWidget):
                         left_w = max(0, left_w - overflow)
                     else:
                         right_w = max(0, right_w - overflow)
+                if max_pair >= vol_min and right_w < vol_min:
+                    need = vol_min - right_w
+                    take = min(need, left_w)
+                    left_w -= take
+                    right_w += take
                 if self._left_rail.width() != left_w:
                     self._left_rail.setFixedWidth(left_w)
                 if self._right_rail.width() != right_w:
