@@ -116,6 +116,10 @@ from cueplayer.media.audio_disk_cache import (
 from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
+from cueplayer.media.video_limits import (
+    HEAVY_VIDEO_AUDIO_DECODE_SECONDS,
+    source_needs_long_video_warning,
+)
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
 from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
@@ -3169,6 +3173,12 @@ class MainWindow(QMainWindow):
         else:
             song.add_video_clip(clip)
         song.duration_seconds = max(float(song.duration_seconds), clip.end_seconds)
+        if not is_still and source_needs_long_video_warning(
+            duration_seconds=source_duration, path=path
+        ):
+            QTimer.singleShot(
+                0, lambda p=path, d=source_duration: self._warn_long_rehearsal_video(p, d)
+            )
         return clip
 
     def _next_setlist_number(self, category_id: str | None = None) -> float:
@@ -6555,10 +6565,29 @@ class MainWindow(QMainWindow):
         self.engine.refresh_video_clips()
         self.timeline.refresh_video_clip_waveforms()
         self.timeline.update()
+        # Preview follows the audio clock — without a position tick after add,
+        # the panel stays black until the user seeks/plays. Land the playhead
+        # inside the new clip when needed, then force one decode.
+        if not clip.contains(float(self.engine.position)):
+            self.engine.seek(float(clip.start_seconds))
+        else:
+            self.video_sync.update_position(float(self.engine.position))
         self._mark_dirty()
         kind_label = "still image" if is_still else "video clip"
         msg = f"Added {kind_label}: {clip.name} ({duration:.2f}s)"
-        if not is_still and source_duration > max(600.0, self.current_song.duration_seconds * 2):
+        if not is_still and source_needs_long_video_warning(
+            duration_seconds=source_duration, path=path
+        ):
+            mins = source_duration / 60.0
+            msg = (
+                f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
+                f"picture OK; no heavy waveform/scrub preload "
+                f"(embedded audio cap {HEAVY_VIDEO_AUDIO_DECODE_SECONDS:.0f}s)"
+            )
+            self._warn_long_rehearsal_video(path, source_duration)
+        elif not is_still and source_duration > max(
+            600.0, self.current_song.duration_seconds * 2
+        ):
             mins = source_duration / 60.0
             msg = (
                 f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
@@ -6567,6 +6596,21 @@ class MainWindow(QMainWindow):
             )
         self.status.showMessage(msg, 5000)
         return clip
+
+    def _warn_long_rehearsal_video(self, path: Path, source_duration: float) -> None:
+        mins = max(1.0, source_duration / 60.0)
+        QMessageBox.information(
+            self,
+            "Long video loaded",
+            (
+                f"\"{path.name}\" is about {mins:.0f} minutes.\n\n"
+                "CuePlayer will show picture for marking, but skips heavy "
+                "waveform / scrub preload on long rehearsal files so opening "
+                "Clean Output does not freeze the computer.\n\n"
+                "Tip: Save the project (and MA work) before opening Clean Output "
+                "on very large files. Prefer Decode Quality 720p or 540p."
+            ),
+        )
 
     def _add_video_clips_from_paths(self, paths: list, drop_seconds: object) -> None:
         t = float(drop_seconds)  # type: ignore[arg-type]

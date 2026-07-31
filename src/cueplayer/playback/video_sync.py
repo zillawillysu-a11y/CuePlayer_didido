@@ -141,7 +141,10 @@ class VideoSyncController(QObject):
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
         self._last_decode_time = 0.0
-        self._decode_and_emit(song, seconds)
+        # Defer the first frame so Clean Output can show/paint immediately
+        # instead of blocking the UI thread on a contended av_path_lock
+        # (waveform workers on long rehearsal files).
+        QTimer.singleShot(0, self._decode_last_position_if_active)
 
     def set_scrubbing(self, active: bool) -> None:
         """Call from the timeline's scrub_started/scrub_ended signals.
@@ -173,6 +176,15 @@ class VideoSyncController(QObject):
         if song is None:
             return
         self._scrub_cache.preload(list(song.video_clips))
+
+    def _decode_last_position_if_active(self) -> None:
+        if not self._video_output_active:
+            return
+        song = self._song
+        seconds = self._last_position_seconds
+        if song is None or seconds is None:
+            return
+        self._decode_and_emit(song, seconds)
 
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.

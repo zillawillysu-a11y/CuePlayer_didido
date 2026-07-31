@@ -17,6 +17,7 @@ import numpy as np
 
 from cueplayer.domain.models import Song, VideoClip, video_clip_crossfade_weights
 from cueplayer.media.video_audio_cache import get_video_audio_for_clip
+from cueplayer.media.video_limits import clip_is_heavy
 from cueplayer.playback.resample import resample_linear
 
 
@@ -65,6 +66,11 @@ class VideoAudioMixer:
                 self._cache.pop(stale_id, None)
                 self._cache_key.pop(stale_id, None)
         for clip in clips:
+            # Heavy rehearsal clips: do not background-decode large PCM windows
+            # that contend with Preview/Clean on av_path_lock. Playback still
+            # lazily fills via chunk_at → preload of lighter windows if needed.
+            if clip_is_heavy(clip):
+                continue
             key = self._key_for(clip)
             with self._lock:
                 if self._cache_key.get(clip.id) == key and clip.id in self._cache:

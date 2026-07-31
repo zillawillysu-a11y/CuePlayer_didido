@@ -377,6 +377,7 @@ def test_video_output_inactive_skips_decode(app: QApplication, red_clip_path: Pa
     assert clip.id not in controller._decoders
 
     controller.set_video_output_active(True)
+    app.processEvents()  # deferred first-frame decode after Clean Output show
     assert len(frames) == 1
     assert isinstance(frames[0], np.ndarray)
 
@@ -400,6 +401,7 @@ def test_video_output_reenable_uses_last_position(
     frames: list[object] = []
     controller.frame_changed.connect(frames.append)
     controller.set_video_output_active(True)
+    app.processEvents()  # deferred first-frame decode after Clean Output show
 
     assert len(frames) == 1
     frame = frames[0]
