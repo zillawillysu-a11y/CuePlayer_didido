@@ -34,6 +34,7 @@ class TimelineOverviewBar(QWidget):
         self._dragging = False
         self._hover = False
         self._bar_height = 26
+        self._label_gutter = self._LABEL_GUTTER
         self.setFixedHeight(self._bar_height)
         # Prefer filling the Play…X cluster width (transport sets expanding).
         self.setMinimumWidth(120)
@@ -79,9 +80,17 @@ class TimelineOverviewBar(QWidget):
         self._loop_b = float(b) if b is not None else None
         self.update()
 
+    def set_label_gutter(self, gutter: int) -> None:
+        """Transport may shrink gutters on a short overview so end times fit."""
+        gutter = max(20, min(int(self._LABEL_GUTTER), int(gutter)))
+        if gutter == self._label_gutter:
+            return
+        self._label_gutter = gutter
+        self.update()
+
     def _track_rect(self):
         """Inner bed between time-label gutters."""
-        gutter = self._LABEL_GUTTER
+        gutter = self._label_gutter
         margin_y = 2
         return (
             gutter,
@@ -193,15 +202,15 @@ class TimelineOverviewBar(QWidget):
         painter.drawText(
             4,
             0,
-            self._LABEL_GUTTER - 6,
+            self._label_gutter - 6,
             self.height(),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight),
             start,
         )
         painter.drawText(
-            self.width() - self._LABEL_GUTTER + 2,
+            self.width() - self._label_gutter + 2,
             0,
-            self._LABEL_GUTTER - 6,
+            self._label_gutter - 6,
             self.height(),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
             end,
