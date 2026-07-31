@@ -637,6 +637,50 @@ class CueMonitorPanel(QWidget):
             self.secondary_cue.setVisible(False)
             self._secondary_clear_timer.stop()
         self._sync_now_splitter_visibility()
+        # Both cards off → hide the whole NOW chrome (title + empty pane) so
+        # Cue List can use the body splitter space.
+        self._sync_now_section_collapsed(show_primary or show_secondary)
+
+    def _sync_now_section_collapsed(self, show_now: bool) -> None:
+        """Show or collapse the NOW half of the body splitter."""
+        if not hasattr(self, "_body_splitter") or not hasattr(self, "_now_section"):
+            return
+        handle = self._body_splitter.handle(1)
+        if show_now:
+            was_hidden = self._now_section.isHidden()
+            self._now_section.setVisible(True)
+            self._now_section.setMinimumHeight(_NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN)
+            self._body_splitter.setCollapsible(0, False)
+            handle.setEnabled(True)
+            handle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            if was_hidden:
+                restored = False
+                if (
+                    self._body_splitter_state is not None
+                    and len(self._body_splitter_state) > 0
+                ):
+                    restored = bool(self._body_splitter.restoreState(self._body_splitter_state))
+                if not restored:
+                    total = self._body_total_height()
+                    if total <= 0:
+                        total = max(sum(self._body_splitter.sizes()), 1)
+                    preferred = min(self._now_content_min_height(), max(80, total // 3))
+                    self._body_splitter.setSizes([preferred, max(0, total - preferred)])
+            self._fit_body_within_panel()
+            return
+
+        sizes = self._body_splitter.sizes()
+        if sizes and sizes[0] > 0:
+            # Remember the last open split so turning a display back on restores it.
+            self._body_splitter_state = QByteArray(self._body_splitter.saveState())
+        self._now_section.setMinimumHeight(0)
+        self._body_splitter.setCollapsible(0, True)
+        total = self._body_total_height()
+        if total <= 0:
+            total = max(sum(sizes) if sizes else 0, 1)
+        self._body_splitter.setSizes([0, total])
+        handle.setEnabled(False)
+        self._now_section.setVisible(False)
 
     def _on_now_splitter_moved(self, *_args) -> None:
         self._schedule_now_card_fit()
@@ -684,6 +728,12 @@ class CueMonitorPanel(QWidget):
     def _fit_body_within_panel(self) -> None:
         """Keep NOW/Cue List split inside the current panel height (no window grow)."""
         if not hasattr(self, "_body_splitter"):
+            return
+        if self._now_section.isHidden():
+            total = self._body_total_height()
+            if total > 0:
+                self._body_splitter.setSizes([0, total])
+            self._now_section.setMinimumHeight(0)
             return
         sizes = self._body_splitter.sizes()
         if len(sizes) != 2:
@@ -852,6 +902,9 @@ class CueMonitorPanel(QWidget):
         # Secondary-hidden: only the Primary↔Secondary handle should stay disabled.
         if not self._secondary_now_column.isVisible():
             self._now_splitter.handle(1).setEnabled(False)
+        # Both NOW cards off: body handle has nothing to resize above Cue List.
+        if hasattr(self, "_now_section") and self._now_section.isHidden():
+            self._body_splitter.handle(1).setEnabled(False)
 
     def ensure_now_splitter_ready(self) -> None:
         """Fix handles after startup layout restore (before first song switch)."""
