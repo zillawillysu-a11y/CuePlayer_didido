@@ -22,11 +22,18 @@ def app() -> QApplication:
 
 def test_main_window_transport_centered_under_timeline(app: QApplication) -> None:
     window = MainWindow()
-    window.resize(1600, 900)
     window.show()
+    app.processEvents()
+    # Startup session restore (QTimer) may re-apply a compact saved geometry.
+    window._pending_restore_geometry = None
+    window.setGeometry(0, 0, 1600, 900)
+    app.processEvents()
+    window._main_splitter.setSizes([240, 1360])
+    window._timeline_split.setSizes([1020, 320])
     app.processEvents()
     window._sync_transport_layout()
     app.processEvents()
+    assert window.width() >= 1200
 
     transport = window.transport
     timeline = window.timeline

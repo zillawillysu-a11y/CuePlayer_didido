@@ -1169,6 +1169,10 @@ class MainWindow(QMainWindow):
         main_content_layout.setSpacing(0)
         main_content_layout.addWidget(self.view_stack, stretch=1)
         main_content_layout.addWidget(self.transport)
+        # Explicit floor beats transport / Export-page sizeHints (~1000px+).
+        # Without this, QSplitter (non-collapsible) treats the hint as the
+        # pane minimum and Setlist cannot drag wider until the window grows.
+        self._main_content_column.setMinimumWidth(280)
 
         splitter.addWidget(left)
         splitter.addWidget(self._main_content_column)
@@ -1392,9 +1396,47 @@ class MainWindow(QMainWindow):
         self._sync_transport_layout()
 
     def _sync_transport_layout(self) -> None:
-        transport = getattr(self, "transport", None)
-        if transport is not None:
-            transport.sync_geometry()
+        if getattr(self, "_syncing_transport_layout", False):
+            return
+        self._syncing_transport_layout = True
+        try:
+            self._balance_timeline_monitor_split()
+            transport = getattr(self, "transport", None)
+            if transport is not None:
+                transport.sync_geometry()
+        finally:
+            self._syncing_transport_layout = False
+
+    def _balance_timeline_monitor_split(self) -> None:
+        """Prefer shrinking the Cue monitor before starving the timeline column.
+
+        ``timeline_split`` uses stretch (1, 0), so Qt shrinks the timeline first
+        when the content pane narrows (e.g. Setlist dragged wider). Reclaim width
+        from the monitor down to its minimum so waveform + Setlist stay usable.
+        """
+        split = getattr(self, "_timeline_split", None)
+        monitor = getattr(self, "monitor", None)
+        if split is None or monitor is None or split.count() < 2:
+            return
+        sizes = split.sizes()
+        total = int(sum(sizes))
+        if total <= 0:
+            return
+        timeline_floor = 200
+        mon_min = max(120, int(monitor.minimumWidth()))
+        mon_max = int(monitor.maximumWidth())
+        timeline_w, mon_w = int(sizes[0]), int(sizes[1])
+        if timeline_w >= timeline_floor:
+            return
+        if total < timeline_floor + mon_min:
+            mon_w = min(mon_w, max(mon_min, total - max(80, total // 4)))
+        else:
+            mon_w = max(mon_min, min(mon_max, total - timeline_floor))
+        mon_w = max(mon_min, min(mon_w, total))
+        new_timeline = max(0, total - mon_w)
+        if new_timeline == timeline_w and mon_w == int(sizes[1]):
+            return
+        split.setSizes([new_timeline, mon_w])
 
     def _lock_main_splitter_panels(self) -> None:
         """Prevent the Setlist / content panes from collapsing to zero width."""
@@ -1407,6 +1449,11 @@ class MainWindow(QMainWindow):
         left = main_split.widget(0)
         if left is not None and left.minimumWidth() < 160:
             left.setMinimumWidth(160)
+        right = main_split.widget(1)
+        # Keep an explicit content floor so transport sizeHints cannot freeze
+        # the Setlist splitter on narrow windows (see ctor comment).
+        if right is not None and right.minimumWidth() < 280:
+            right.setMinimumWidth(280)
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)

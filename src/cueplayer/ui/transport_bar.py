@@ -273,6 +273,16 @@ class BottomTransportBar(QWidget):
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
 
+    def minimumSizeHint(self) -> QSize:
+        # Side rails use setFixedWidth for optical centering; that would otherwise
+        # report ~1200px and freeze the main Setlist splitter on compact windows.
+        height = super().minimumSizeHint().height()
+        return QSize(320, height)
+
+    def sizeHint(self) -> QSize:
+        height = super().sizeHint().height()
+        return QSize(max(480, self.width()), height)
+
     def set_center_anchor(self, widget: QWidget | None) -> None:
         """Optically center transport under this widget (e.g. timeline column)."""
         self._center_anchor = widget
@@ -301,6 +311,20 @@ class BottomTransportBar(QWidget):
             self._balance.setFixedWidth(trail)
 
         base_rail = max(0, self._right_rail.sizeHint().width())
+        # Cap rails so preferred transport width cannot exceed this bar — otherwise
+        # fixed rail mins inflate the content pane and Setlist cannot drag wider.
+        cluster = (
+            self.play_button.width()
+            + self.pause_button.width()
+            + self.stop_button.width()
+            + 14
+            + ab_w
+            + 24  # row spacing / stretch slack
+        )
+        margins = 20
+        max_pair = max(0, self.width() - margins - cluster)
+        base_rail = min(base_rail, max_pair // 2)
+
         anchor_c = self._anchor_center_x(self._center_anchor)
 
         # Measure where the Play…Clear span sits with symmetric side rails.
@@ -323,6 +347,13 @@ class BottomTransportBar(QWidget):
             delta = int(round(anchor_c - self.width() / 2.0 - cluster_bias))
         left_w = max(0, base_rail + delta)
         right_w = max(0, base_rail - delta)
+        # Keep total rail budget inside the bar after anchor shift.
+        if left_w + right_w > max_pair:
+            overflow = left_w + right_w - max_pair
+            if delta >= 0:
+                left_w = max(0, left_w - overflow)
+            else:
+                right_w = max(0, right_w - overflow)
         if self._left_rail.width() != left_w:
             self._left_rail.setFixedWidth(left_w)
         if self._right_rail.width() != right_w:
@@ -340,6 +371,12 @@ class BottomTransportBar(QWidget):
                 delta2 = int(round(err))
                 left_w = max(0, left_w + delta2)
                 right_w = max(0, right_w - delta2)
+                if left_w + right_w > max_pair:
+                    overflow = left_w + right_w - max_pair
+                    if delta2 >= 0:
+                        left_w = max(0, left_w - overflow)
+                    else:
+                        right_w = max(0, right_w - overflow)
                 if self._left_rail.width() != left_w:
                     self._left_rail.setFixedWidth(left_w)
                 if self._right_rail.width() != right_w:

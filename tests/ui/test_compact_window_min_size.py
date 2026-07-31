@@ -53,3 +53,42 @@ def test_main_window_minimum_size_is_compact(app: QApplication) -> None:
     left = window._main_splitter.widget(0)
     assert left is not None
     assert left.minimumWidth() >= 160
+    right = window._main_splitter.widget(1)
+    assert right is not None
+    # Explicit content floor (not transport sizeHint) so Setlist can expand.
+    assert right.minimumWidth() == 280
+    assert right.minimumWidth() < 400
+
+
+def test_setlist_splitter_can_expand_on_narrow_window(app: QApplication) -> None:
+    """Narrow windows must still allow dragging Setlist wider (no snap-back)."""
+    window = MainWindow(Project.create("Narrow"))
+    window.show()
+    window.resize(800, 500)
+    app.processEvents()
+    window._sync_transport_layout()
+    app.processEvents()
+
+    main = window._main_splitter
+    total = sum(main.sizes())
+    assert total >= 700
+    # Start near the Setlist floor, then grow it — previously stuck at 160
+    # because transport minimumSizeHint was ~1200px.
+    main.setSizes([160, total - 160])
+    app.processEvents()
+    assert main.sizes()[0] <= 180
+
+    target_left = min(420, total - 300)
+    main.setSizes([target_left, total - target_left])
+    app.processEvents()
+    window._sync_transport_layout()
+    app.processEvents()
+    got_left = main.sizes()[0]
+    assert got_left >= target_left - 20, (
+        f"Setlist should expand toward {target_left}px on an 800px window; got {got_left}"
+    )
+    assert main.sizes()[1] >= 280
+    # Monitor should yield width so the timeline column is not crushed.
+    timeline_w, mon_w = window._timeline_split.sizes()
+    assert timeline_w >= 180
+    assert mon_w >= window.monitor.minimumWidth()
