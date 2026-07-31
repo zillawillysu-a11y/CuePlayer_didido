@@ -66,6 +66,10 @@ class _RevealLabel(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("color: #71717a; font-size: 11px; padding: 4px 0;")
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # Never force the monitor column wider than the splitter allows.
+        self.setMinimumWidth(0)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -136,7 +140,10 @@ _TC_FONT_MAX_PX = 22
 _TC_FONT_MIN_PX = 11
 _DURATION_FONT_MAX_PX = 16
 _DURATION_FONT_MIN_PX = 10
-_TC_STATUS_FONT_PX = 11
+_TC_STATUS_FONT_MAX_PX = 11
+_TC_STATUS_FONT_MIN_PX = 8
+# Back-compat alias for tests / callers that imported the old constant.
+_TC_STATUS_FONT_PX = _TC_STATUS_FONT_MAX_PX
 
 
 def _now_card_style(
@@ -247,7 +254,7 @@ class CueMonitorPanel(QWidget):
         clock_frame.setObjectName("clockFrame")
         # Never crush the clock block — short panels scroll instead.
         clock_frame.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         clock_frame.setStyleSheet(
             "#clockFrame {"
@@ -266,6 +273,9 @@ class CueMonitorPanel(QWidget):
         self._clock_font_px = _CLOCK_FONT_MAX_PX
         self._tc_font_px = _TC_FONT_MAX_PX
         self._duration_font_px = _DURATION_FONT_MAX_PX
+        self._tc_status_font_px = _TC_STATUS_FONT_MAX_PX
+        self._tc_status_outputs: tuple[str, ...] = ()
+        self._tc_status_sending = False
 
         self.clock_label = QLabel("00:00.000")
         self.clock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -290,7 +300,7 @@ class CueMonitorPanel(QWidget):
         self._tc_output_block.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tc_output_block.setStyleSheet("background: transparent;")
         self._tc_output_block.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         tc_out_layout = QVBoxLayout(self._tc_output_block)
         tc_out_layout.setContentsMargins(0, 8, 0, 4)
@@ -298,12 +308,9 @@ class CueMonitorPanel(QWidget):
 
         self.tc_output_status = QLabel("TC off")
         self.tc_output_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tc_output_status.setMinimumWidth(0)
         self.tc_output_status.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
-        )
-        self.tc_output_status.setStyleSheet(
-            "color: #71717a; background: transparent; font-size: 11px; font-weight: 600;"
-            "letter-spacing: 0.5px;"
         )
 
         self.tc_output_value = QLabel("01:00:00:00")
@@ -316,6 +323,7 @@ class CueMonitorPanel(QWidget):
         self._show_output_tc_clock = True
         self._show_output_quick_toggles = True
         self._tc_value_color = "#a1a1aa"
+        self._apply_tc_status_style()
         self._apply_tc_value_style()
         self._apply_output_timecode_style()
 
@@ -523,8 +531,9 @@ class CueMonitorPanel(QWidget):
         # height compresses Cue List instead of painting over it.
         self._cue_list_block = QWidget()
         self._cue_list_block.setMinimumHeight(_CUE_LIST_BODY_MIN)
+        self._cue_list_block.setMinimumWidth(0)
         self._cue_list_block.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
         cue_list_layout = QVBoxLayout(self._cue_list_block)
         cue_list_layout.setContentsMargins(0, 0, 0, 0)
@@ -564,6 +573,10 @@ class CueMonitorPanel(QWidget):
         # and Cue List instead of crushing both into illegible strips.
         self._monitor_scroll_content = QWidget()
         self._monitor_scroll_content.setObjectName("monitorScrollContent")
+        self._monitor_scroll_content.setMinimumWidth(0)
+        self._monitor_scroll_content.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         scroll_layout = QVBoxLayout(self._monitor_scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(10)
@@ -588,6 +601,10 @@ class CueMonitorPanel(QWidget):
         )
         self._monitor_scroll.setWidget(self._monitor_scroll_content)
         layout.addWidget(self._monitor_scroll, stretch=1)
+        # Hide collapse affordances that would otherwise inflate the column width
+        # before the first set_song / prefs restore.
+        self._apply_cue_list_visibility()
+        self._apply_now_panel_visibility()
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
 
     def set_song(self, song: Song | None) -> None:
@@ -1176,6 +1193,45 @@ class CueMonitorPanel(QWidget):
         )
         self.duration_label.setMinimumHeight(QFontMetrics(font).height() + 2)
 
+    @staticmethod
+    def _compact_tc_status_parts(outputs: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        """Shorter chips for a narrow status line (full text stays in the tooltip)."""
+        compact: list[str] = []
+        for part in outputs:
+            raw = str(part).strip()
+            key = raw.upper().replace(" ", "")
+            if key in {"LTC→MTC", "LTC->MTC"} or raw == "LTC → MTC":
+                compact.append("→MTC")
+            elif raw.lower() in {"notes", "note"}:
+                compact.append("Note")
+            else:
+                compact.append(raw)
+        return tuple(compact)
+
+    def _format_tc_status_text(self, *, compact: bool) -> str:
+        outs = self._tc_status_outputs
+        if not outs:
+            return "TC off"
+        parts = self._compact_tc_status_parts(outs) if compact else outs
+        return " · ".join(parts)
+
+    def _apply_tc_status_style(self) -> None:
+        px = int(getattr(self, "_tc_status_font_px", _TC_STATUS_FONT_MAX_PX))
+        sending = bool(getattr(self, "_tc_status_sending", False))
+        outs = getattr(self, "_tc_status_outputs", ())
+        if outs:
+            color = self._tc_clock_color if sending else "#71717a"
+        else:
+            color = "#52525b"
+        font = self._mono_clock_font(px, bold=True)
+        self.tc_output_status.setFont(font)
+        # No letter-spacing — tracking made narrow panels clip the last glyph.
+        self.tc_output_status.setStyleSheet(
+            f"color: {color}; background: transparent; font-size: {px}px;"
+            "font-weight: 600; letter-spacing: 0;"
+        )
+        self.tc_output_status.setMinimumHeight(QFontMetrics(font).height() + 2)
+
     def _apply_tc_value_style(self) -> None:
         px = self._tc_font_px
         color = self._tc_value_color
@@ -1186,8 +1242,6 @@ class CueMonitorPanel(QWidget):
             "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
         )
         self.tc_output_value.setMinimumHeight(QFontMetrics(font).height() + 2)
-        status_font = self._mono_clock_font(_TC_STATUS_FONT_PX, bold=True)
-        self.tc_output_status.setMinimumHeight(QFontMetrics(status_font).height() + 2)
 
     def _fit_clock_fonts(self) -> None:
         """Shrink clock digits to fit when the right panel is narrow."""
@@ -1232,12 +1286,42 @@ class CueMonitorPanel(QWidget):
             max_px=_TC_FONT_MAX_PX,
             min_px=_TC_FONT_MIN_PX,
         )
+        # Status line (LTC → MTC · Notes): shrink, then compact labels if needed.
+        full_status = self._format_tc_status_text(compact=False)
+        status_px = self._font_px_for_text(
+            full_status,
+            available=budget,
+            max_px=_TC_STATUS_FONT_MAX_PX,
+            min_px=_TC_STATUS_FONT_MIN_PX,
+        )
+        status_compact = False
+        metrics = QFontMetrics(self._mono_clock_font(status_px, bold=True))
+        if metrics.horizontalAdvance(full_status) > budget:
+            status_compact = True
+            compact_status = self._format_tc_status_text(compact=True)
+            status_px = self._font_px_for_text(
+                compact_status,
+                available=budget,
+                max_px=max(status_px, _TC_STATUS_FONT_MIN_PX),
+                min_px=_TC_STATUS_FONT_MIN_PX,
+            )
+            full_status = compact_status
+        self.tc_output_status.setText(full_status)
+        if self._tc_status_outputs:
+            self.tc_output_status.setToolTip(" · ".join(self._tc_status_outputs))
+        else:
+            self.tc_output_status.setToolTip("No LTC / MTC / Note output armed")
+
         self._clock_font_px = clock_px
         self._duration_font_px = duration_px
         self._tc_font_px = tc_px
+        self._tc_status_font_px = status_px
         self._apply_clock_label_style()
         self._apply_duration_label_style()
+        self._apply_tc_status_style()
         self._apply_tc_value_style()
+        if self.output_quick_toggles.isVisible():
+            self.output_quick_toggles._fit_to_width()  # noqa: SLF001
 
     def save_now_splitter_state(self):
         self._stash_current_splitter_state()
@@ -1401,7 +1485,9 @@ class CueMonitorPanel(QWidget):
                         self.delete_requested.emit(ids)
                         return True
 
-        if obj in (self.secondary_track, self._secondary_now_column):
+        secondary = getattr(self, "secondary_track", None)
+        secondary_col = getattr(self, "_secondary_now_column", None)
+        if secondary is not None and obj in (secondary, secondary_col):
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._secondary_drag_origin = event.position().toPoint()
             elif event.type() == QEvent.Type.MouseMove and self._secondary_drag_origin is not None:
@@ -1417,12 +1503,16 @@ class CueMonitorPanel(QWidget):
             ):
                 self._secondary_drag_origin = None
 
-        drop_targets = (
-            self._now_section,
-            self._now_splitter,
-            self._primary_now_column,
-            self.primary_track,
-            self.primary_cue,
+        drop_targets = tuple(
+            w
+            for w in (
+                getattr(self, "_now_section", None),
+                getattr(self, "_now_splitter", None),
+                getattr(self, "_primary_now_column", None),
+                getattr(self, "primary_track", None),
+                getattr(self, "primary_cue", None),
+            )
+            if w is not None
         )
         if obj in drop_targets:
             if event.type() == QEvent.Type.DragEnter:
@@ -1698,23 +1788,17 @@ class CueMonitorPanel(QWidget):
         if not self._show_output_tc_clock:
             return
         outs = tuple(outputs)
+        self._tc_status_outputs = outs
+        self._tc_status_sending = bool(sending)
         if outs:
-            self.tc_output_status.setText(" · ".join(outs))
-            active_color = self._tc_clock_color if sending else "#71717a"
-            self.tc_output_status.setStyleSheet(
-                f"color: {active_color}; background: transparent; font-size: 11px;"
-                "font-weight: 600; letter-spacing: 0.5px;"
-            )
+            self.tc_output_status.setText(self._format_tc_status_text(compact=False))
             self.tc_output_value.setText(timecode)
             self._tc_value_color = self._tc_clock_color if sending else "#a1a1aa"
         else:
             self.tc_output_status.setText("TC off")
-            self.tc_output_status.setStyleSheet(
-                "color: #52525b; background: transparent; font-size: 11px;"
-                "font-weight: 600; letter-spacing: 0.5px;"
-            )
             self.tc_output_value.setText("—")
             self._tc_value_color = "#52525b"
+        self._apply_tc_status_style()
         self._apply_tc_value_style()
         self._fit_clock_fonts()
 
