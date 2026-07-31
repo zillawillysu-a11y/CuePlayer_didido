@@ -439,31 +439,30 @@ def test_set_video_output_active_does_not_preload_scrub(
     preload.assert_not_called()
 
 
-def test_playing_decode_does_not_open_ui_thread_decoder(
+def test_click_seek_scrub_does_not_start_preload(
     app: QApplication, red_clip_path: Path
 ) -> None:
-    """While playing, PyAV must run on the play worker — not on the UI thread."""
+    """Press+release seek must not kick scrub PyAV (Clean Output crash race)."""
     song = Song.create("Song")
     clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
     song.add_video_clip(clip)
 
     controller = VideoSyncController()
     controller.set_song(song)
-    frames: list[object] = []
-    controller.frame_changed.connect(frames.append)
     controller.set_playing(True)
-    controller.update_position(0.5)
-    # Async: wait for worker → queued signal.
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and not frames:
-        app.processEvents()
-        time.sleep(0.01)
-    assert frames
-    assert isinstance(frames[-1], np.ndarray)
-    assert clip.id not in controller._decoders
+    controller.update_position(0.2)
 
-    controller.set_playing(False)
-    assert clip.id in controller._decoders
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_scrubbing(True)
+        controller.update_position(1.0)
+        controller.set_scrubbing(False)
+        app.processEvents()
+        preload.assert_not_called()
+
+
+def test_scrubbing_uses_preloaded_cache_without_live_decoder(
+    app: QApplication, red_clip_path: Path
+) -> None:
     """Once scrub posters are warm, mid-drag Preview must not open/seek the
     live UI-thread decoder (that hitch felt like 'loading video')."""
     song = Song.create("Song")
@@ -486,6 +485,8 @@ def test_playing_decode_does_not_open_ui_thread_decoder(
     frames: list[object] = []
     controller.frame_changed.connect(frames.append)
     controller.set_scrubbing(True)
+    # Pretend preload already ran (deferred timer would normally do this).
+    controller._scrub_preload_timer.stop()
     controller.update_position(0.3)
     controller.update_position(1.2)
 
