@@ -3707,7 +3707,7 @@ class TimelineWidget(QWidget):
             painter.drawText(
                 self._header_width + 16,
                 y0 + self._wave_height // 2,
-                "Open audio to see a detailed waveform here (zoom in a lot to line up beats)",
+                "Open audio — or drop a video — to see a waveform here",
             )
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y1 - 1, right, y1 - 1)

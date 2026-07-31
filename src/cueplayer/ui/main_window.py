@@ -120,6 +120,7 @@ from cueplayer.media.video_limits import (
     HEAVY_VIDEO_AUDIO_DECODE_SECONDS,
     source_needs_long_video_warning,
 )
+from cueplayer.media.video_music_standin import build_music_standin_from_video
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
 from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
@@ -928,6 +929,7 @@ class MainWindow(QMainWindow):
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
     _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
+    _video_standin_finished = Signal(int, object)  # token, AudioBuffer | None | Exception
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -956,6 +958,7 @@ class MainWindow(QMainWindow):
         self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
         self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
+        self._video_standin_token = 0
         self._song_activate_gen = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
@@ -988,6 +991,7 @@ class MainWindow(QMainWindow):
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._ltc_detect_finished.connect(self._on_ltc_detect_finished)
         self._audio_prefetch_finished.connect(self._on_audio_prefetch_finished)
+        self._video_standin_finished.connect(self._on_video_standin_finished)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
@@ -4279,18 +4283,21 @@ class MainWindow(QMainWindow):
         else:
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
-            self.timeline.set_audio(None)
             self.timeline.set_ltc_audio(None)
-            self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
             self.transport.set_times(0.0, self.engine.duration)
             self.monitor.set_position(0.0, self.engine.duration)
             if main_audio is not None:
+                self.timeline.set_audio(None)
+                self.timeline.set_audio_loading(False)
                 self.status.showMessage(
                     f"Audio file not found: {main_audio.path} "
                     "(File → Relink Missing Media…)",
                     5000,
                 )
+            else:
+                # No music file — show embedded video audio in the Music lane.
+                self._schedule_video_music_standin()
         self._refresh_window_title()
         self._refresh_status()
         self._sync_timeline_overview()
@@ -6120,6 +6127,84 @@ class MainWindow(QMainWindow):
         path = Path(main_audio.path)
         return path if path.is_file() else None
 
+    def _song_has_main_audio_file(self, song: Song | None = None) -> bool:
+        return self._main_audio_path_for_song(song or self.current_song) is not None
+
+    def _primary_video_clip_for_standin(self, song: Song | None = None) -> VideoClip | None:
+        song = song or self.current_song
+        for clip in song.video_clips:
+            if clip.hidden or clip.media_kind == "still":
+                continue
+            if Path(clip.path).is_file():
+                return clip
+        return None
+
+    def _schedule_video_music_standin(self) -> None:
+        """Fill the Music waveform from embedded video audio when no music file."""
+        if self._song_has_main_audio_file():
+            return
+        clip = self._primary_video_clip_for_standin()
+        if clip is None:
+            self._video_standin_token += 1
+            self.timeline.set_audio(None)
+            self.timeline.set_audio_loading(False)
+            return
+        self._video_standin_token += 1
+        token = self._video_standin_token
+        song_id = self.current_song.id
+        duration = float(self.current_song.duration_seconds)
+        self.timeline.set_audio_loading(True, f"{clip.name} (video)")
+        clip_snapshot = clip
+
+        def _job() -> None:
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
+            try:
+                buffer = build_music_standin_from_video(
+                    clip_snapshot, timeline_duration=duration
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._video_standin_finished.emit(token, exc)
+                return
+            # Ignore if song changed while decoding.
+            if song_id != self.current_song.id:
+                self._video_standin_finished.emit(token, None)
+                return
+            self._video_standin_finished.emit(token, buffer)
+
+        self._audio_load_executor.submit(_job)
+
+    def _on_video_standin_finished(self, token: int, result: object) -> None:
+        if token != self._video_standin_token:
+            return
+        if self._song_has_main_audio_file():
+            self.timeline.set_audio_loading(False)
+            return
+        self.timeline.set_audio_loading(False)
+        if isinstance(result, Exception):
+            self.timeline.set_audio(None)
+            self.status.showMessage(f"Video waveform failed: {result}", 4000)
+            return
+        if result is None:
+            self.timeline.set_audio(None)
+            if self._primary_video_clip_for_standin() is not None:
+                self.status.showMessage(
+                    "Video has no embedded audio — Music lane stays empty",
+                    4000,
+                )
+            return
+        if not isinstance(result, AudioBuffer):
+            self.timeline.set_audio(None)
+            return
+        # Display only — playback stays on VideoAudioMixer so we don't double.
+        self.timeline.set_audio(result, reset_view=True)
+        self._sync_timeline_overview()
+        self.status.showMessage(
+            f"Music waveform from video audio ({result.duration_seconds / 60.0:.0f} min)",
+            3500,
+        )
+
     def _prefetch_neighbor_audio(self, *, skip_path: Path | None = None) -> None:
         """Background-load the current song's neighbors (keeps song switch responsive)."""
         try:
@@ -6540,16 +6625,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Unable to Load Media", str(exc))
             return None
         is_still = info.media_kind == "still"
+        video_only = not self._song_has_main_audio_file()
         if is_still:
             duration = DEFAULT_STILL_CLIP_DURATION_SECONDS
             source_duration = 0.0
         else:
             source_duration = info.duration_seconds
-            duration = default_video_clip_duration(
-                source_duration,
-                self.current_song.duration_seconds,
-                start_seconds,
-            )
+            if video_only and source_duration > 0.05:
+                # No music bed — use the full take so rehearsal marking has
+                # the whole timeline (and Music-lane video waveform).
+                duration = max(0.02, float(source_duration))
+            else:
+                duration = default_video_clip_duration(
+                    source_duration,
+                    self.current_song.duration_seconds,
+                    start_seconds,
+                )
         start = clip_start_after_body_drag(start_seconds, 0.0)
         clip = VideoClip.create(
             name=path.stem,
@@ -6560,6 +6651,12 @@ class MainWindow(QMainWindow):
             source_duration_seconds=source_duration,
         )
         self.current_song.add_video_clip(clip)
+        # Video-only songs: song length follows the clip so the Music lane /
+        # transport cover the whole rehearsal take.
+        if video_only:
+            self.current_song.duration_seconds = max(
+                float(self.current_song.duration_seconds), float(clip.end_seconds)
+            )
         self._push_song_undo(AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(clip)]))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
@@ -6572,6 +6669,10 @@ class MainWindow(QMainWindow):
             self.engine.seek(float(clip.start_seconds))
         else:
             self.video_sync.update_position(float(self.engine.position))
+        if not self._song_has_main_audio_file():
+            self.engine.set_duration(self.current_song.duration_seconds)
+            self.transport.set_times(0.0, self.engine.duration)
+            self._schedule_video_music_standin()
         self._mark_dirty()
         kind_label = "still image" if is_still else "video clip"
         msg = f"Added {kind_label}: {clip.name} ({duration:.2f}s)"
@@ -6635,6 +6736,8 @@ class MainWindow(QMainWindow):
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.update()
+        if not self._song_has_main_audio_file():
+            self._schedule_video_music_standin()
         self._mark_dirty()
         self.status.showMessage(f"Deleted {removed} video clip(s)", 2500)
 
