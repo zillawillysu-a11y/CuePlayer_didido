@@ -53,14 +53,43 @@ for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib"):
         print(f"warning: collect_all({pkg!r}) failed: {exc}", file=sys.stderr)
 
 # librosa pulls scipy / numba / sklearn pieces — collect what is installed.
-for pkg in ("librosa", "scipy", "sklearn", "numba", "llvmlite", "resampy", "pooch", "lazy_loader"):
+# Fail the build if core scientific packs are missing (silent pass shipped
+# broken BPM detect that flash-quit at ~30% on employee PCs).
+_REQUIRED_BPM_PACKS = ("numpy", "scipy", "soundfile")
+_OPTIONAL_BPM_PACKS = (
+    "librosa",
+    "sklearn",
+    "numba",
+    "llvmlite",
+    "soxr",
+    "resampy",
+    "pooch",
+    "lazy_loader",
+    "msgpack",
+    "audioread",
+    "joblib",
+    "decorator",
+)
+for pkg in _REQUIRED_BPM_PACKS:
+    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hiddenimports += pkg_hidden
+for pkg in _OPTIONAL_BPM_PACKS:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
         binaries += pkg_binaries
         hiddenimports += pkg_hidden
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: collect_all({pkg!r}) failed: {exc}", file=sys.stderr)
+
+# Runtime hook: disable Numba JIT before any worker imports librosa.
+_HOOKS = ROOT / "packaging" / "hooks"
+if _HOOKS.is_dir():
+    hookspath = [str(_HOOKS)]
+else:
+    hookspath = []
 
 icon_file = None
 for candidate in (
@@ -78,9 +107,9 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=hookspath,
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(p) for p in sorted(_HOOKS.glob("pyi_rth_*.py"))] if _HOOKS.is_dir() else [],
     excludes=[
         # Dev / test only.
         "pytest",

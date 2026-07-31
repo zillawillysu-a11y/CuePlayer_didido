@@ -7,8 +7,8 @@ on **Windows**, then share that file (Google Drive / NAS / USB).
 
 | Artifact | How they use it |
 |----------|-----------------|
-| `CuePlayer-1.0.2-YYYYMMDD-win64.zip` | Unzip → double-click `CuePlayer\CuePlayer.exe` |
-| `CuePlayer-Setup-1.0.2.exe` | Run installer → Start Menu / Desktop shortcut |
+| `CuePlayer-1.0.3-YYYYMMDD-win64.zip` | Unzip → double-click `CuePlayer\CuePlayer.exe` |
+| `CuePlayer-Setup-1.0.3.exe` | Run installer → Start Menu / Desktop shortcut |
 
 Requirements on employee PCs: **Windows 10/11 64-bit**. No Python, no Git.
 
