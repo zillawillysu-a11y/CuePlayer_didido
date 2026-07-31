@@ -18,12 +18,21 @@ from cueplayer.domain.models import (
     MarkLane,
     MaExportSettings,
     Project,
+    SetlistCategory,
     SetlistNameMode,
     Song,
     VideoClip,
     VideoDecodeQuality,
+    coerce_file_ltc_side,
 )
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
+from cueplayer.persistence.media_paths import (
+    from_storage_path,
+    project_root_for,
+    to_storage_path,
+)
+from cueplayer.exporters.common import ma_export_name_from_display
+from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order
 
 
 def _coerce_setlist_name_mode(data: dict[str, Any]) -> SetlistNameMode:
@@ -117,13 +126,27 @@ def _coerce_channel_list(raw: Any, default: list[int]) -> list[int]:
 def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
     return {
         "output_device_name": settings.output_device_name,
+        "output_device_index": settings.output_device_index,
+        "output_hostapi": str(settings.output_hostapi or ""),
+        "music_l_route": str(settings.music_l_route or "1"),
+        "music_r_route": str(settings.music_r_route or "2"),
         "music_left_channels": list(settings.music_left_channels),
         "music_right_channels": list(settings.music_right_channels),
         "ltc_enabled": bool(settings.ltc_enabled),
+        "ltc_source": str(settings.ltc_source),
+        "ltc_generator_enabled": bool(settings.ltc_generator_enabled),
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
+        "ltc_to_mtc_translate": bool(settings.ltc_to_mtc_translate),
+        "midi_enabled": bool(settings.midi_enabled),
         "mtc_enabled": bool(settings.mtc_enabled),
         "midi_port_name": settings.midi_port_name,
+        "midi_cue_notes_enabled": bool(settings.midi_cue_notes_enabled),
+        "midi_cue_channel": int(settings.midi_cue_channel),
+        "midi_cue_velocity": int(settings.midi_cue_velocity),
+        "midi_main_base_note": int(settings.midi_main_base_note),
+        "midi_button_base_note": int(settings.midi_button_base_note),
+        "output_channel_modes": list(settings.output_channel_modes),
     }
 
 
@@ -132,23 +155,71 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         return AudioOutputSettings()
     gain = float(raw.get("ltc_gain", 0.8) or 0.8)
     gain = min(1.5, max(0.0, gain))
+    ltc_source = str(raw.get("ltc_source") or "auto")
+    if ltc_source not in ("generator", "auto", "source_left", "source_right"):
+        ltc_source = "auto"
+    left = _coerce_channel_list(raw.get("music_left_channels"), [0])
+    right = _coerce_channel_list(raw.get("music_right_channels"), [1])
+    music_l_route = str(raw.get("music_l_route") or "").strip()
+    music_r_route = str(raw.get("music_r_route") or "").strip()
+    if not music_l_route:
+        music_l_route = "+".join(str(int(c) + 1) for c in left) or "1"
+    if not music_r_route:
+        music_r_route = "+".join(str(int(c) + 1) for c in right) or "2"
+    dev_index = raw.get("output_device_index")
+    try:
+        dev_index = int(dev_index) if dev_index is not None else None
+    except (TypeError, ValueError):
+        dev_index = None
+    ltc_to_mtc = bool(raw.get("ltc_to_mtc_translate", False))
+    mtc_on = bool(raw.get("mtc_enabled", False))
+    notes_on = bool(raw.get("midi_cue_notes_enabled", False))
+    if "midi_enabled" in raw:
+        midi_on = bool(raw.get("midi_enabled"))
+    else:
+        midi_on = mtc_on or notes_on or ltc_to_mtc
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
-        music_left_channels=_coerce_channel_list(raw.get("music_left_channels"), [0]),
-        music_right_channels=_coerce_channel_list(raw.get("music_right_channels"), [1]),
+        output_device_index=dev_index,
+        output_hostapi=str(raw.get("output_hostapi") or ""),
+        music_l_route=music_l_route,
+        music_r_route=music_r_route,
+        music_left_channels=left,
+        music_right_channels=right,
         ltc_enabled=bool(raw.get("ltc_enabled", False)),
+        ltc_source=ltc_source,  # type: ignore[arg-type]
+        ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
-        mtc_enabled=bool(raw.get("mtc_enabled", False)),
+        ltc_to_mtc_translate=ltc_to_mtc,
+        midi_enabled=midi_on,
+        mtc_enabled=mtc_on,
         midi_port_name=str(raw.get("midi_port_name") or ""),
+        midi_cue_notes_enabled=notes_on,
+        midi_cue_channel=max(1, min(16, int(raw.get("midi_cue_channel", 1) or 1))),
+        midi_cue_velocity=max(1, min(127, int(raw.get("midi_cue_velocity", 100) or 100))),
+        midi_main_base_note=max(0, min(127, int(raw.get("midi_main_base_note", 36) or 36))),
+        midi_button_base_note=max(
+            0, min(127, int(raw.get("midi_button_base_note", 48) or 48))
+        ),
+        output_channel_modes=[
+            str(m) for m in (raw.get("output_channel_modes") or []) if str(m)
+        ],
     )
 
 
 def clean_video_output_to_dict(settings: CleanVideoOutputSettings) -> dict[str, Any]:
+    mode = str(getattr(settings, "ndi_frame_mode", "") or "output_window")
+    if mode not in ("video", "output_window"):
+        mode = "output_window"
     return {
         "width": int(settings.width),
         "height": int(settings.height),
         "aspect_locked": bool(settings.aspect_locked),
+        "was_open": bool(settings.was_open),
+        "ndi_enabled": bool(getattr(settings, "ndi_enabled", False)),
+        "ndi_name": str(getattr(settings, "ndi_name", "") or "CuePlayer"),
+        "ndi_frame_mode": mode,
     }
 
 
@@ -168,29 +239,36 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
         width = default.width
     if height <= 0:
         height = default.height
+    mode = str(raw.get("ndi_frame_mode") or "output_window")
+    if mode not in ("video", "output_window"):
+        mode = "output_window"
     return CleanVideoOutputSettings(
         width=width,
         height=height,
         aspect_locked=bool(raw.get("aspect_locked", default.aspect_locked)),
+        was_open=bool(raw.get("was_open", default.was_open)),
+        ndi_enabled=bool(raw.get("ndi_enabled", False)),
+        ndi_name=str(raw.get("ndi_name") or "CuePlayer"),
+        ndi_frame_mode=mode,
     )
 
 
 def _coerce_video_decode_quality(raw: Any) -> VideoDecodeQuality:
     if raw in VIDEO_DECODE_QUALITY_MAX_HEIGHT:
         return raw  # type: ignore[return-value]
-    return "full"
+    return "1080p"
 
 
 class SchemaError(ValueError):
     """Raised when a project file cannot be migrated or parsed."""
 
 
-def _path_to_str(path: Path) -> str:
-    return str(path)
+def _path_to_str(path: Path, project_dir: Path | None = None) -> str:
+    return to_storage_path(path, project_dir)
 
 
-def _str_to_path(value: str) -> Path:
-    return Path(value)
+def _str_to_path(value: str, project_dir: Path | None = None) -> Path:
+    return from_storage_path(value, project_dir)
 
 
 def _coerce_mark_line_style(value: Any, *, default: str = "solid") -> str:
@@ -200,7 +278,7 @@ def _coerce_mark_line_style(value: Any, *, default: str = "solid") -> str:
     return style
 
 
-def _coerce_waveform_color(value: Any, *, default: str = "#3dd68c") -> str:
+def _coerce_waveform_color(value: Any, *, default: str = "#616161") -> str:
     raw = str(value or "").strip()
     if not raw:
         return default
@@ -256,7 +334,47 @@ def _load_project_waveform_color(data: dict[str, Any], songs: list[Song]) -> str
         return _coerce_waveform_color(data.get("waveform_color"))
     for song in songs:
         return _coerce_waveform_color(song.waveform_color)
-    return "#3dd68c"
+    return "#616161"
+
+
+def _load_project_playhead_color(data: dict[str, Any]) -> str:
+    return _coerce_waveform_color(data.get("playhead_color"), default="#3dd68c")
+
+
+def _load_project_show_video_track(data: dict[str, Any], songs: list[Song]) -> bool:
+    """Project-global eye; legacy projects inherit from the first song."""
+    if "show_video_track" in data:
+        return bool(data.get("show_video_track"))
+    if songs:
+        return bool(songs[0].show_video_track)
+    return True
+
+
+def _clamp_mark_lane_height(value: Any, *, default: float = 28.0) -> float:
+    try:
+        height = float(value)
+    except (TypeError, ValueError):
+        height = default
+    return float(min(80.0, max(24.0, height)))
+
+
+def _load_project_mark_lane_height(data: dict[str, Any], songs: list[Song]) -> float:
+    """Project-global mark lane height; migrate from first song when missing."""
+    if "mark_lane_height" in data:
+        return _clamp_mark_lane_height(data.get("mark_lane_height"))
+    for song in songs:
+        return _clamp_mark_lane_height(song.mark_lane_height)
+    return 28.0
+
+
+def _load_project_show_mark_track_colors(data: dict[str, Any], songs: list[Song]) -> bool:
+    if "show_mark_track_colors" in data:
+        return bool(data.get("show_mark_track_colors"))
+    for song in songs:
+        for lane in song.mark_lanes:
+            if not getattr(lane, "show_row_color", True):
+                return False
+    return True
 
 
 def _load_now_config(song_data: dict[str, Any]) -> tuple[bool, list[int], list[int]]:
@@ -328,23 +446,46 @@ def _coerce_int_list(raw: Any) -> list[int]:
 
 
 
-def project_to_dict(project: Project) -> dict[str, Any]:
+def project_to_dict(
+    project: Project, *, project_dir: Path | None = None
+) -> dict[str, Any]:
     return {
         "schema_version": project.schema_version,
         "id": project.id,
         "name": project.name,
         "setlist_name_mode": project.setlist_name_mode,
         "setlist_show_bpm": bool(project.setlist_show_bpm),
+        "setlist_show_ltc_badge": bool(project.setlist_show_ltc_badge),
+        "setlist_show_video_badge": bool(project.setlist_show_video_badge),
         "default_mark_lanes": lanes_to_dicts(project.default_mark_lanes),
         "mark_line_style": project.mark_line_style,
         "mark_dash_on": project.mark_dash_on,
         "mark_dash_off": project.mark_dash_off,
         "mark_line_width": project.mark_line_width,
         "waveform_color": project.waveform_color,
+        "playhead_color": project.playhead_color,
+        "mark_lane_height": float(project.mark_lane_height),
+        "show_mark_track_colors": bool(project.show_mark_track_colors),
+        "show_output_timecode_clock": bool(project.show_output_timecode_clock),
+        "output_timecode_clock_color": project.output_timecode_clock_color,
+        "show_output_quick_toggles": bool(project.show_output_quick_toggles),
+        "show_video_track": bool(project.show_video_track),
+        "show_wave_gain_line": bool(project.show_wave_gain_line),
+        "show_ltc_gain_line": bool(project.show_ltc_gain_line),
         "ma_export": ma_export_to_dict(project.ma_export),
         "audio_output": audio_output_to_dict(project.audio_output),
         "clean_video_output": clean_video_output_to_dict(project.clean_video_output),
         "video_decode_quality": project.video_decode_quality,
+        "setlist_categories": [
+            {
+                "id": category.id,
+                "name": category.name,
+                "collapsed": bool(category.collapsed),
+                "sheet_collapsed": bool(category.sheet_collapsed),
+                "row_color": category.row_color,
+            }
+            for category in project.setlist_categories
+        ],
         "songs": [
             {
                 "id": song.id,
@@ -352,15 +493,20 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "setlist_number": song.setlist_number,
                 "ma_export_name": song.ma_export_name,
                 "bpm": song.bpm,
+                "bpm_auto": bool(getattr(song, "bpm_auto", False) and song.bpm is not None),
+                "note": song.note,
                 "row_color": song.row_color,
+                "category_id": song.category_id,
                 "start_timecode": song.start_timecode,
                 "fps": song.fps,
                 "duration_seconds": song.duration_seconds,
+                "use_left_ltc": bool(song.file_ltc_side == "left"),  # legacy mirror
+                "file_ltc_side": coerce_file_ltc_side(song.file_ltc_side),
                 "audio_tracks": [
                     {
                         "id": track.id,
                         "name": track.name,
-                        "path": _path_to_str(track.path),
+                        "path": _path_to_str(track.path, project_dir),
                         "role": track.role,
                         "color": track.color,
                         "muted": track.muted,
@@ -375,7 +521,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     {
                         "id": clip.id,
                         "name": clip.name,
-                        "path": _path_to_str(clip.path),
+                        "path": _path_to_str(clip.path, project_dir),
                         "start_seconds": clip.start_seconds,
                         "source_in_seconds": clip.source_in_seconds,
                         "source_out_seconds": clip.source_out_seconds,
@@ -389,7 +535,11 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     for clip in song.video_clips
                 ],
                 "video_track_muted": song.video_track_muted,
+                "show_video_track": bool(song.show_video_track),
+                "show_ltc_track": bool(song.show_ltc_track),
+                "ltc_lane_height": song.ltc_lane_height,
                 "music_volume": song.music_volume,
+                "audio_gain_db": song.audio_gain_db,
                 "video_lane_height": song.video_lane_height,
                 "mark_lanes": [
                     {
@@ -401,7 +551,12 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                         "visible": lane.visible,
                         "locked": lane.locked,
                         "export_enabled": lane.export_enabled,
+                        "cue_id_enabled": lane.cue_id_enabled,
+                        "cue_list_enabled": lane.cue_list_enabled,
+                        "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
+                        "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                         "marker_shape": lane.marker_shape,
+                        "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
                     for lane in song.mark_lanes
                 ],
@@ -412,6 +567,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                         "time_seconds": mark.time_seconds,
                         "display_name": mark.display_name,
                         "ma_export_name": mark.ma_export_name,
+                        "main_cue_id": mark.main_cue_id,
                     }
                     for mark in song.marks
                 ],
@@ -421,6 +577,12 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_primary_lanes": list(song.now_primary_lanes),
                 "now_secondary_lanes": list(song.now_secondary_lanes),
                 "now_secondary_enabled": song.now_secondary_enabled,
+                "now_primary_visible": song.now_primary_visible,
+                "now_secondary_visible": song.now_secondary_visible,
+                "cue_list_visible": song.cue_list_visible,
+                "cue_list_column_order": list(song.cue_list_column_order),
+                "cue_list_show_cue_id": bool(song.cue_list_show_cue_id),
+                "now_primary_show_cue_id": bool(song.now_primary_show_cue_id),
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -428,7 +590,9 @@ def project_to_dict(project: Project) -> dict[str, Any]:
     }
 
 
-def project_from_dict(data: dict[str, Any]) -> Project:
+def project_from_dict(
+    data: dict[str, Any], *, project_dir: Path | None = None
+) -> Project:
     version = int(data.get("schema_version", 0))
     data = migrate_project_dict(data, version)
 
@@ -438,7 +602,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
             AudioTrack(
                 id=track["id"],
                 name=track["name"],
-                path=_str_to_path(track["path"]),
+                path=_str_to_path(track["path"], project_dir),
                 role=track.get("role", "reference"),
                 color=track.get("color", "#2BB673"),
                 muted=bool(track.get("muted", False)),
@@ -453,7 +617,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
             VideoClip(
                 id=clip["id"],
                 name=clip["name"],
-                path=_str_to_path(clip["path"]),
+                path=_str_to_path(clip["path"], project_dir),
                 start_seconds=float(clip.get("start_seconds", 0.0)),
                 source_in_seconds=float(clip.get("source_in_seconds", 0.0)),
                 source_out_seconds=clip.get("source_out_seconds"),
@@ -485,7 +649,22 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                     visible=bool(lane.get("visible", True)),
                     locked=bool(lane.get("locked", False)),
                     export_enabled=bool(lane.get("export_enabled", True)),
+                    cue_id_enabled=bool(
+                        lane.get(
+                            "cue_id_enabled",
+                            lane.get("lane_type", "top_button") == "main",
+                        )
+                    ),
+                    cue_list_enabled=bool(
+                        lane.get(
+                            "cue_list_enabled",
+                            lane.get("lane_type", "top_button") == "main",
+                        )
+                    ),
+                    midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
+                    midi_note=int(lane.get("midi_note", 0) or 0),
                     marker_shape=shape,
+                    show_row_color=bool(lane.get("show_row_color", True)),
                 )
             )
         marks = [
@@ -495,6 +674,7 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 time_seconds=float(mark["time_seconds"]),
                 display_name=mark.get("display_name", ""),
                 ma_export_name=mark.get("ma_export_name"),
+                main_cue_id=str(mark.get("main_cue_id") or ""),
             )
             for mark in song_data.get("marks", [])
         ]
@@ -506,18 +686,42 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 setlist_number=float(
                     song_data.get("setlist_number", song_index + 1)
                 ),
-                ma_export_name=song_data.get("ma_export_name"),
+                ma_export_name=(
+                    (song_data.get("ma_export_name") or "").strip()
+                    or ma_export_name_from_display(song_data["name"])
+                ),
                 bpm=_coerce_optional_bpm(song_data.get("bpm")),
+                bpm_auto=bool(
+                    song_data.get("bpm_auto", False)
+                    and _coerce_optional_bpm(song_data.get("bpm")) is not None
+                ),
+                note=str(song_data.get("note") or ""),
                 row_color=_coerce_row_color(song_data.get("row_color")),
+                category_id=song_data.get("category_id"),
                 start_timecode=song_data.get("start_timecode", "01:00:00:00"),
                 fps=float(song_data.get("fps", 30.0)),
                 duration_seconds=float(song_data.get("duration_seconds", 60.0)),
+                file_ltc_side=coerce_file_ltc_side(
+                    song_data.get("file_ltc_side"),
+                    use_left_ltc=bool(song_data.get("use_left_ltc", False)),
+                ),
                 audio_tracks=audio_tracks,
                 video_clips=video_clips,
                 video_track_muted=bool(song_data.get("video_track_muted", False)),
+                show_video_track=bool(song_data.get("show_video_track", True)),
+                show_ltc_track=bool(song_data.get("show_ltc_track", False)),
+                ltc_lane_height=float(
+                    min(400.0, max(28.0, song_data.get("ltc_lane_height", 56.0)))
+                ),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
+                audio_gain_db=float(
+                    max(-12.0, min(12.0, float(song_data.get("audio_gain_db", 0.0))))
+                ),
+                mark_lane_height=float(
+                    min(80.0, max(24.0, float(song_data.get("mark_lane_height", 28.0))))
+                ),
                 video_lane_height=float(
-                    min(160.0, max(28.0, song_data.get("video_lane_height", 40.0)))
+                    min(4096.0, max(28.0, song_data.get("video_lane_height", 40.0)))
                 ),
                 mark_lanes=mark_lanes,
                 marks=marks,
@@ -529,11 +733,19 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 mark_dash_on=float(song_data.get("mark_dash_on", 4.0)),
                 mark_dash_off=float(song_data.get("mark_dash_off", 4.0)),
                 mark_line_width=float(song_data.get("mark_line_width", 1.0)),
-                waveform_color=str(song_data.get("waveform_color") or "#3dd68c"),
+                waveform_color=str(song_data.get("waveform_color") or "#616161"),
                 now_lanes_configured=now_cfg[0],
                 now_primary_lanes=now_cfg[1],
                 now_secondary_lanes=now_cfg[2],
                 now_secondary_enabled=bool(song_data.get("now_secondary_enabled", True)),
+                now_primary_visible=bool(song_data.get("now_primary_visible", True)),
+                now_secondary_visible=bool(song_data.get("now_secondary_visible", True)),
+                cue_list_visible=bool(song_data.get("cue_list_visible", True)),
+                cue_list_column_order=normalize_cue_list_column_order(
+                    song_data.get("cue_list_column_order")
+                ),
+                cue_list_show_cue_id=bool(song_data.get("cue_list_show_cue_id", True)),
+                now_primary_show_cue_id=bool(song_data.get("now_primary_show_cue_id", True)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),
@@ -542,20 +754,55 @@ def project_from_dict(data: dict[str, Any]) -> Project:
 
     line_style, line_width, dash_on, dash_off = _load_project_mark_line_settings(data, songs)
     wave_color = _load_project_waveform_color(data, songs)
+    playhead_color = _load_project_playhead_color(data)
+    show_video_track = _load_project_show_video_track(data, songs)
+    mark_lane_height = _load_project_mark_lane_height(data, songs)
+    show_mark_track_colors = _load_project_show_mark_track_colors(data, songs)
+    from cueplayer.domain.main_cue_id import migrate_main_cue_ids
+
+    for song in songs:
+        song.show_video_track = show_video_track
+        song.show_ltc_track = show_video_track
+        migrate_main_cue_ids(song)
+    categories = [
+        SetlistCategory(
+            id=str(item["id"]),
+            name=str(item.get("name") or "Category"),
+            collapsed=bool(item.get("collapsed", False)),
+            sheet_collapsed=bool(item.get("sheet_collapsed", False)),
+            row_color=_coerce_row_color(item.get("row_color")),
+        )
+        for item in data.get("setlist_categories") or []
+        if isinstance(item, dict) and item.get("id")
+    ]
 
     return Project(
         id=data["id"],
         name=data["name"],
         schema_version=int(data["schema_version"]),
         songs=songs,
+        setlist_categories=categories,
         setlist_name_mode=_coerce_setlist_name_mode(data),
         setlist_show_bpm=bool(data.get("setlist_show_bpm", True)),
+        setlist_show_ltc_badge=bool(data.get("setlist_show_ltc_badge", True)),
+        setlist_show_video_badge=bool(data.get("setlist_show_video_badge", True)),
         default_mark_lanes=dicts_to_lanes(data.get("default_mark_lanes") or []),
         mark_line_style=line_style,  # type: ignore[arg-type]
         mark_line_width=line_width,
         mark_dash_on=dash_on,
         mark_dash_off=dash_off,
         waveform_color=wave_color,
+        playhead_color=playhead_color,
+        mark_lane_height=mark_lane_height,
+        show_mark_track_colors=show_mark_track_colors,
+        show_output_timecode_clock=bool(data.get("show_output_timecode_clock", True)),
+        output_timecode_clock_color=_coerce_waveform_color(
+            data.get("output_timecode_clock_color"), default="#3dd68c"
+        ),
+        show_output_quick_toggles=bool(data.get("show_output_quick_toggles", True)),
+        show_video_track=show_video_track,
+        show_wave_gain_line=bool(data.get("show_wave_gain_line", False)),
+        show_ltc_gain_line=bool(data.get("show_ltc_gain_line", False)),
         ma_export=dict_to_ma_export(data.get("ma_export")),
         audio_output=dict_to_audio_output(data.get("audio_output")),
         clean_video_output=dict_to_clean_video_output(data.get("clean_video_output")),
@@ -587,7 +834,7 @@ def migrate_project_dict(data: dict[str, Any], from_version: int) -> dict[str, A
 def save_project(project: Project, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = project_to_dict(project)
+    payload = project_to_dict(project, project_dir=project_root_for(path))
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     path.write_text(text + "\n", encoding="utf-8")
 
@@ -598,4 +845,4 @@ def load_project(path: Path) -> Project:
     data = json.loads(text)
     if not isinstance(data, dict):
         raise SchemaError("Project file root must be a JSON object.")
-    return project_from_dict(data)
+    return project_from_dict(data, project_dir=project_root_for(path))

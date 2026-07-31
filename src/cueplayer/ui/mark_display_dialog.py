@@ -1,10 +1,9 @@
-﻿"""Display settings: tracks, NOW lane assignment, waveform lines, sync offset."""
+﻿"""Display settings: tracks, waveform lines, sync offset."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -13,8 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -40,10 +37,9 @@ class MarkDisplayDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Display Settings")
-        self.resize(520, 640)
+        self.resize(520, 560)
         self._song = song
         self._project = project
-        self._now_groups: dict[int, QButtonGroup] = {}
 
         layout = QVBoxLayout(self)
         hint = QLabel(
@@ -60,6 +56,19 @@ class MarkDisplayDialog(QDialog):
         self.tracks_box.setChecked(song.show_mark_tracks)
         form.addRow("Tracks", self.tracks_box)
 
+        self.video_track_box = QCheckBox("Show Video / LTC Tracks")
+        initial_video = (
+            project.show_video_track if project is not None else song.show_video_track
+        )
+        self.video_track_box.setChecked(bool(initial_video))
+        self.video_track_box.setToolTip(
+            "Hide Video + LTC after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
+            "Preview / Clean Output keep playing either way. "
+            "LTC lane appears under Video when a file stripe is known."
+        )
+        form.addRow("Video", self.video_track_box)
+
         self.stem_box = QCheckBox("Stem line through mark shapes")
         self.stem_box.setChecked(song.show_mark_stem)
         self.stem_box.setToolTip("Draws a vertical line above/below each Mark shape; turn off to show just the shape")
@@ -67,12 +76,9 @@ class MarkDisplayDialog(QDialog):
 
         layout.addLayout(form)
 
-        now_title = QLabel("NOW Display Assignment")
-        now_title.setStyleSheet("font-weight: 600; color: #c5cddb; margin-top: 6px;")
-        layout.addWidget(now_title)
         now_hint = QLabel(
-            "Choose which tracks go to the primary display and which go to the secondary display. "
-            "Each panel switches to the current Cue over time."
+            "NOW display assignment (Off / Primary / Secondary per Mark) is configured in Mark Manager "
+            "and saved with Mark Settings files."
         )
         now_hint.setWordWrap(True)
         now_hint.setStyleSheet("color: #8b949e;")
@@ -84,19 +90,6 @@ class MarkDisplayDialog(QDialog):
             "When off, the secondary display is hidden and its tracks merge into the primary display."
         )
         layout.addWidget(self.secondary_enabled_box)
-
-        now_scroll = QScrollArea()
-        now_scroll.setWidgetResizable(True)
-        now_scroll.setMinimumHeight(160)
-        now_scroll.setMaximumHeight(220)
-        now_host = QWidget()
-        self.now_list = QVBoxLayout(now_host)
-        self.now_list.setSpacing(4)
-        self.now_list.setContentsMargins(4, 4, 4, 4)
-        self._build_now_lane_rows()
-        self.now_list.addStretch(1)
-        now_scroll.setWidget(now_host)
-        layout.addWidget(now_scroll)
 
         clear_row = QHBoxLayout()
         self.secondary_clear_spin = NoWheelDoubleSpinBox()
@@ -119,9 +112,42 @@ class MarkDisplayDialog(QDialog):
         form2.setSpacing(10)
 
         line_src = project if project is not None else song
-        self.wave_color = ColorSwatchButton(line_src.waveform_color or "#3dd68c")
+        self.wave_color = ColorSwatchButton(line_src.waveform_color or "#616161")
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
+
+        self.playhead_color = ColorSwatchButton(
+            getattr(line_src, "playhead_color", None) or "#3dd68c"
+        )
+        self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
+        form2.addRow("Playhead Color (project)", self.playhead_color)
+
+        self.tc_clock_box = QCheckBox("Show output timecode clock")
+        self.tc_clock_box.setChecked(
+            bool(getattr(line_src, "show_output_timecode_clock", True))
+        )
+        self.tc_clock_box.setToolTip(
+            "LTC / MTC timecode under the seconds display on the right — "
+            "shows whether output is armed and the current HH:MM:SS:FF"
+        )
+        form2.addRow("Timecode Clock", self.tc_clock_box)
+
+        self.output_toggles_box = QCheckBox("Show output toggles (TRANS · Note · MTC · LTC)")
+        self.output_toggles_box.setChecked(
+            bool(getattr(line_src, "show_output_quick_toggles", True))
+        )
+        self.output_toggles_box.setToolTip(
+            "Quick output switches under the clock — right-click the clock to toggle too"
+        )
+        form2.addRow("Output Toggles", self.output_toggles_box)
+
+        self.tc_clock_color = ColorSwatchButton(
+            getattr(line_src, "output_timecode_clock_color", None) or "#3dd68c"
+        )
+        self.tc_clock_color.setToolTip(
+            "Output timecode clock color (default green) — applies to the whole project"
+        )
+        form2.addRow("Timecode Clock Color", self.tc_clock_color)
 
         self.line_style = QComboBox()
         self.line_style.addItem("Solid", "solid")
@@ -194,10 +220,15 @@ class MarkDisplayDialog(QDialog):
         layout.addWidget(buttons)
 
         self.tracks_box.toggled.connect(self._apply)
+        self.video_track_box.toggled.connect(self._apply)
         self.stem_box.toggled.connect(self._apply)
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
         self.wave_color.color_changed.connect(self._apply)
+        self.playhead_color.color_changed.connect(self._apply)
+        self.tc_clock_box.toggled.connect(self._apply)
+        self.output_toggles_box.toggled.connect(self._apply)
+        self.tc_clock_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
         self.dash_spacing.valueChanged.connect(self._apply)
@@ -208,56 +239,38 @@ class MarkDisplayDialog(QDialog):
         self._sync_spacing_enabled()
         self._sync_secondary_ui()
 
-    def _build_now_lane_rows(self) -> None:
-        # Use stored assignment so disabling the secondary display doesn't rewrite radio state.
-        primary, secondary = self._song.configured_now_groups()
-        primary_set = set(primary)
-        secondary_set = set(secondary)
-        header = QLabel("Track                Off Screen    Primary    Secondary")
-        header.setStyleSheet("color: #8b949e; font-size: 11px;")
-        self.now_list.addWidget(header)
-
-        for lane in sorted(self._song.mark_lanes, key=lambda item: item.index):
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 2, 0, 2)
-            tag = "Main" if lane.lane_type == "main" else "Button"
-            name = QLabel(f"{lane.index}. {lane.name} ({tag})")
-            name.setStyleSheet(f"color: {lane.color}; min-width: 160px;")
-            name.setToolTip(lane.name)
-
-            group = QButtonGroup(row)
-            none_btn = QRadioButton("Off")
-            primary_btn = QRadioButton("Primary")
-            secondary_btn = QRadioButton("Secondary")
-            group.addButton(none_btn, 0)
-            group.addButton(primary_btn, 1)
-            group.addButton(secondary_btn, 2)
-            if lane.index in primary_set:
-                primary_btn.setChecked(True)
-            elif lane.index in secondary_set:
-                secondary_btn.setChecked(True)
-            else:
-                none_btn.setChecked(True)
-            group.idClicked.connect(lambda _id: self._apply())
-            self._now_groups[lane.index] = group
-
-            row_layout.addWidget(name, stretch=1)
-            row_layout.addWidget(none_btn)
-            row_layout.addWidget(primary_btn)
-            row_layout.addWidget(secondary_btn)
-            self.now_list.addWidget(row)
-
-    def _collect_now_lanes(self) -> tuple[list[int], list[int]]:
-        primary: list[int] = []
-        secondary: list[int] = []
-        for index, group in sorted(self._now_groups.items()):
-            role = group.checkedId()
-            if role == 1:
-                primary.append(index)
-            elif role == 2:
-                secondary.append(index)
-        return primary, secondary
+    def _apply(self) -> None:
+        self._sync_spacing_enabled()
+        self._song.show_mark_tracks = self.tracks_box.isChecked()
+        show_video = self.video_track_box.isChecked()
+        if self._project is not None:
+            self._project.set_show_video_track(show_video)
+        else:
+            self._song.show_video_track = show_video
+            self._song.show_ltc_track = show_video
+        self._song.show_mark_stem = self.stem_box.isChecked()
+        style = str(self.line_style.currentData() or "solid")
+        if style not in ("solid", "dash", "dot"):
+            style = "solid"
+        spacing = float(self.dash_spacing.value())
+        width = float(self.line_width.value())
+        # Mark line look + waveform color are project-global (not per song).
+        target = self._project if self._project is not None else self._song
+        target.mark_line_style = style  # type: ignore[assignment]
+        target.mark_line_width = width
+        target.mark_dash_on = spacing
+        target.mark_dash_off = spacing
+        target.waveform_color = self.wave_color.color()
+        if self._project is not None:
+            self._project.playhead_color = self.playhead_color.color()
+            self._project.show_output_timecode_clock = self.tc_clock_box.isChecked()
+            self._project.output_timecode_clock_color = self.tc_clock_color.color()
+            self._project.show_output_quick_toggles = self.output_toggles_box.isChecked()
+        elif hasattr(target, "playhead_color"):
+            target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
+        self._song.now_secondary_enabled = self.secondary_enabled_box.isChecked()
+        self._song.now_secondary_clear_seconds = float(self.secondary_clear_spin.value())
+        self.settings_changed.emit()
 
     def latency_ms(self) -> int:
         return int(self.latency_spin.value())
@@ -278,35 +291,7 @@ class MarkDisplayDialog(QDialog):
     def _sync_secondary_ui(self) -> None:
         enabled = self.secondary_enabled_box.isChecked()
         self.secondary_clear_spin.setEnabled(enabled)
-        for group in self._now_groups.values():
-            secondary_btn = group.button(2)
-            if secondary_btn is not None:
-                secondary_btn.setEnabled(enabled)
 
     def _on_secondary_enabled_toggled(self, _checked: bool) -> None:
         self._sync_secondary_ui()
         self._apply()
-
-    def _apply(self) -> None:
-        self._sync_spacing_enabled()
-        self._song.show_mark_tracks = self.tracks_box.isChecked()
-        self._song.show_mark_stem = self.stem_box.isChecked()
-        style = str(self.line_style.currentData() or "solid")
-        if style not in ("solid", "dash", "dot"):
-            style = "solid"
-        spacing = float(self.dash_spacing.value())
-        width = float(self.line_width.value())
-        # Mark line look + waveform color are project-global (not per song).
-        target = self._project if self._project is not None else self._song
-        target.mark_line_style = style  # type: ignore[assignment]
-        target.mark_line_width = width
-        target.mark_dash_on = spacing
-        target.mark_dash_off = spacing
-        target.waveform_color = self.wave_color.color()
-        primary, secondary = self._collect_now_lanes()
-        self._song.now_lanes_configured = True
-        self._song.now_primary_lanes = primary
-        self._song.now_secondary_lanes = secondary
-        self._song.now_secondary_enabled = self.secondary_enabled_box.isChecked()
-        self._song.now_secondary_clear_seconds = float(self.secondary_clear_spin.value())
-        self.settings_changed.emit()

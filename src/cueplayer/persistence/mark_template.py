@@ -30,7 +30,12 @@ def lanes_to_dicts(lanes: list[MarkLane]) -> list[dict[str, Any]]:
                 "visible": bool(lane.visible),
                 "locked": bool(lane.locked),
                 "export_enabled": bool(lane.export_enabled),
+                "cue_id_enabled": bool(lane.cue_id_enabled),
+                "cue_list_enabled": bool(lane.cue_list_enabled),
+                "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
+                "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                 "marker_shape": lane.marker_shape,
+                "show_row_color": bool(getattr(lane, "show_row_color", True)),
             }
         )
     return out
@@ -57,7 +62,22 @@ def dicts_to_lanes(raw: list[Any]) -> list[MarkLane]:
                 visible=bool(item.get("visible", True)),
                 locked=bool(item.get("locked", False)),
                 export_enabled=bool(item.get("export_enabled", True)),
+                cue_id_enabled=bool(
+                    item.get(
+                        "cue_id_enabled",
+                        lane_type == "main",
+                    )
+                ),
+                cue_list_enabled=bool(
+                    item.get(
+                        "cue_list_enabled",
+                        lane_type == "main",
+                    )
+                ),
+                midi_note_enabled=bool(item.get("midi_note_enabled", False)),
+                midi_note=int(item.get("midi_note", 0) or 0),
                 marker_shape=shape,  # type: ignore[arg-type]
+                show_row_color=bool(item.get("show_row_color", True)),
             )
         )
     lanes.sort(key=lambda lane: lane.index)

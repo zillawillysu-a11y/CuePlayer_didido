@@ -6,57 +6,75 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-Milestone 1 in progress: project skeleton, Unicode persistence, blank main window.
+**1.0.4 — first milestone usable** (timeline, marks, video, LTC/MTC, Clean Output + NDI, MA2/MA3 export).
 
-Product requirements: `docs/PRODUCT_SPEC.md`
+Ship tip / integrate to `master`: `cursor/release-1-0-4-028d`
+
+Product requirements: `docs/PRODUCT_SPEC.md`  
+User tips (shortcuts / Bundle / Relink): `docs/USER_MANUAL.md`  
+Agent handoff: `AGENTS.md`
 
 ## Requirements
 
 - Windows 11
-- Python 3.13+
-- Git
+- For **developers**: Python 3.13+, Git
+- For **employees / testers**: no Git — use the Windows zip or Setup.exe (see `docs/DISTRIBUTION.md`)
 
-## Setup
+## Employee install (no Git)
 
-```powershell
-cd C:\Users\willy\Projects\CuePlayer
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-pip install -e ".[dev]"
-```
-
-## Run
+On a Windows build PC:
 
 ```powershell
-cueplayer
-# or
-python -m cueplayer.app
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 ```
 
-操作：
-- `Space` Play / Pause（有音訊時會真的出聲）
-- `1`–`9` 在目前 playhead 打點
-- 左／右鍵微移 0.1 秒
-- 點擊／拖曳時間軸 Seek
-- 滾輪縮放時間軸
-- **開啟音訊…** 載入 WAV/FLAC/OGG/MP3 等，主畫面顯示波形
+Then send `dist\CuePlayer-*-win64.zip` (unzip → run `CuePlayer.exe`) or
+`dist\CuePlayer-Setup-*.exe` if Inno Setup is installed.
+
+## Update + run (this laptop)
+
+```powershell
+cd C:\Users\User\Projects\CuePlayer_didido
+git fetch origin
+git checkout cursor/laptop-ux-pack-028d
+git pull
+
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# Do NOT install pygame on 3.14 (no wheel / build fails).
+# Windows MTC uses winmm.dll with no extra package.
+# Optional mido pygame backend: pip install pygame-ce
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+If `.venv` is missing, create it first:
+
+```powershell
+py -3.14 -m venv .venv
+```
+
+## Setup (fresh)
+
+```powershell
+cd C:\Users\User\Projects\CuePlayer_didido
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# MIDI: winmm works out of the box on Windows. Optional: pip install pygame-ce
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
 
 ## Test
 
 ```powershell
-pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 
-## Priority pain points (vs CuePoints)
+## Next after 1.0.4
 
-1. Multi-channel audio routing on Windows (not 2CH-only)
-2. Full Chinese / Unicode path and filename support
-3. Multiple VJ clips / loops with audio-master sync
-4. Better multi-version media replace / relink for rehearsals
-5. Optional native NDI later; cue accuracy and MA export come first
+1. Multi-audio version comparison + Align Anchors
+2. Missing Media Relink for rehearsals
+3. MA Export Preview / Cue ID English–pinyin naming UI
+4. LTC waveform display polish (when the file is clean)
 
-## MA export next step
-
-At the company machine, export golden XML from grandMA2 3.9.61.5 and grandMA3 2.3.2.
-Follow `docs/spikes/MA_GOLDEN_XML.md`, then place files under `fixtures/ma2/` and `fixtures/ma3/`.
+NDI OUTPUT is already shipped (needs NDI Tools/Runtime on each PC).
