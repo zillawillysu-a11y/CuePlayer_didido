@@ -1,10 +1,10 @@
 ; Inno Setup 7 (recommended, e.g. 7.0.2) or 6 — builds CuePlayer-Setup-<version>.exe
 ; Requires: packaging\build_windows.ps1 already produced dist\CuePlayer\
-; Compile:  iscc /DMyAppVersion=1.0.3 packaging\CuePlayer.iss
+; Compile:  iscc /DMyAppVersion=1.0.4 packaging\CuePlayer.iss
 ; Download: https://jrsoftware.org/isdl.php  (you build; employees only get Setup.exe)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.3"
+  #define MyAppVersion "1.0.4"
 #endif
 
 #define MyAppName "CuePlayer"

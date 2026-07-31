@@ -6,12 +6,9 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-Core P0 timeline / marks / video / MA2·MA3 export are on `master`.
+**1.0.4 — first milestone usable** (timeline, marks, video, LTC/MTC, Clean Output + NDI, MA2/MA3 export).
 
-Laptop all-in-one branch: `cursor/laptop-ux-pack-028d`
-(Auto Save, LTC 2ch clamp, setlist audio drop, hide Video track, Add Song Browse, New Project confirm, MIDI via Windows winmm / optional pygame-ce).
-
-Latest UX fixes (video drag, Explorer drop, decode perf, Video Preview under timeline): `cursor/video-drag-drop-perf-028d`
+Ship tip / integrate to `master`: `cursor/release-1-0-4-028d`
 
 Product requirements: `docs/PRODUCT_SPEC.md`  
 User tips (shortcuts / Bundle / Relink): `docs/USER_MANUAL.md`  
@@ -73,15 +70,11 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## Priority pain points (vs CuePoints)
+## Next after 1.0.4
 
-1. Multi-channel audio routing on Windows (not 2CH-only)
-2. Full Chinese / Unicode path and filename support
-3. Multiple VJ clips / loops with audio-master sync
-4. Better multi-version media replace / relink for rehearsals
-5. Optional native NDI later; cue accuracy and MA export come first
+1. Multi-audio version comparison + Align Anchors
+2. Missing Media Relink for rehearsals
+3. MA Export Preview / Cue ID English–pinyin naming UI
+4. LTC waveform display polish (when the file is clean)
 
-## MA export next step
-
-At the company machine, export golden XML from grandMA2 3.9.61.5 and grandMA3 2.3.2.
-Follow `docs/spikes/MA_GOLDEN_XML.md`, then place files under `fixtures/ma2/` and `fixtures/ma3/`.
+NDI OUTPUT is already shipped (needs NDI Tools/Runtime on each PC).

@@ -18,11 +18,11 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 
 ## Milestone order
 
-1. Skeleton + Unicode persistence tests + blank window
-2. Audio / media routing spike (Focusrite / sounddevice)
-3. MA2 / MA3 golden XML fixtures + exporters
-4. Timeline UI, marks, video clips
-5. Optional NDI (only after cue accuracy is solid)
+1. Skeleton + Unicode persistence tests + blank window — **done**
+2. Audio / media routing spike (Focusrite / sounddevice) — **done**
+3. MA2 / MA3 golden XML fixtures + exporters — **done**
+4. Timeline UI, marks, video clips — **done (usable 1.0.4)**
+5. Follow-ups (not required to start using 1.0.4): multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview / naming polish
 
 ## Architecture
 
@@ -36,29 +36,29 @@ Playback Engine is the only playback clock source.
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 - **Employee installs (no Git):** build on Windows with `packaging/build_windows.ps1` — see `docs/DISTRIBUTION.md`.
 
-## Recent handoff (2026-07-28)
+## Recent handoff (2026-07-31) — **1.0.4 / first milestone usable**
 
-**Laptop tip branch (latest):** `cursor/setlist-sheet-cue-id-028d`
+**Ship tip:** `cursor/release-1-0-4-028d` (integrate into `master` when ready)
 
 ```powershell
 git fetch origin
-git checkout cursor/setlist-sheet-cue-id-028d
+git checkout cursor/release-1-0-4-028d
 git pull
-pip install -e ".[dev,midi]"
-python -m cueplayer.app
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 ```
 
-**Shipped today (PR stack, not all merged to master yet):**
-- Set List Sheet: 曲序/曲名/英文名/**Seq/Cue ID**/TC/BPM/Note、Folder 分隔、欄寬可拖、曲序可改
-- 左邊 Setlist 欄寬可拖
-- Video+LTC 眼睛固定在 Music、整場全域開/關
-- 時間軸順序：**Music → Video → LTC → Marks**（拉開高度可把 Marks 往下擠）
-- 深色啟動 Splash（避免大白）
+**Version:** `1.0.4` (`pyproject.toml` / `cueplayer.__version__` / Inno default).
 
-**Asked today but NOT done yet:**
-1. LTC 畫波形：有些歌 Reaper 乾淨、CuePlayer 仍毛（檔案本身髒的除外）— 尚未對齊 Reaper 顯示
-2. MA Export Preview／命名策略 UI（規格裡的 Cue ID 自動翻譯／拼音選項）— 尚未做
-3. 上述 PR 尚未全部 merge 進 `master`（筆電請先 checkout tip 分支）
+**Milestone 1 status:** Core show workflow is usable — setlist, timeline (Music → Video → LTC → Marks), marks 1–9, sample-locked video, Clean Output + NDI, LTC/MTC, MA2/MA3 export, compact UI polish.
 
-Older still-open: multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview/Validation; NDI only after cue accuracy is solid.
+**Included since 1.0.3 (high level):**
+- Narrow-window clipping fixes (transport A/B, NOW cards, TC status, Setlist footer, splitters)
+- NOW collapse when both displays off; restore via Cue List / clock context menu
+- Cue List playhead follow without locking outer Timecode scroll
+- Hidden Mark tracks ignore digit shortcuts (4–9 off when tracks hidden)
 
+**Still open after 1.0.4 (next priorities when you ask):**
+1. Multi-audio version comparison + Align Anchors
+2. Missing Media Relink
+3. MA Export Preview / Cue ID English-pinyin naming UI
+4. LTC waveform display polish vs Reaper (when file is clean)
