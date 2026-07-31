@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -45,6 +46,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QScrollArea,
     QSplitter,
@@ -1067,9 +1069,6 @@ class MainWindow(QMainWindow):
         self.song_list.set_name_mode(self.project.setlist_name_mode)
         self._sync_setlist_column_prefs()
         self._rebuild_song_list(select_indexes=[0])
-        song_btns = QHBoxLayout()
-        song_btns.setContentsMargins(0, 0, 0, 0)
-        song_btns.setSpacing(4)
         self.add_song_button = QPushButton("Add")
         self.edit_song_button = QPushButton("Edit")
         self.delete_song_button = QPushButton("Delete")
@@ -1078,19 +1077,10 @@ class MainWindow(QMainWindow):
             "Full edit: number / name / English MA / BPM / Timecode / FPS (or right-click → Edit)"
         )
         self.delete_song_button.setToolTip("Delete selected song(s)")
-        song_btns.addWidget(self.add_song_button)
-        song_btns.addWidget(self.edit_song_button)
-        song_btns.addWidget(self.delete_song_button)
-
-        order_btns = QHBoxLayout()
-        order_btns.setContentsMargins(0, 0, 0, 0)
-        order_btns.setSpacing(4)
         self.move_up_button = QPushButton("↑")
         self.move_down_button = QPushButton("↓")
         self.sort_by_number_button = QPushButton("Sort by Number")
         self.renumber_button = QPushButton("Renumber")
-        self.move_up_button.setFixedWidth(32)
-        self.move_down_button.setFixedWidth(32)
         self.move_up_button.setToolTip("Move selected song(s) up")
         self.move_down_button.setToolTip("Move selected song(s) down")
         self.sort_by_number_button.setToolTip(
@@ -1099,15 +1089,33 @@ class MainWindow(QMainWindow):
         self.renumber_button.setToolTip(
             "Renumber to 1, 2, 3… within Main list, a folder, or All"
         )
-        order_btns.addWidget(self.move_up_button)
-        order_btns.addWidget(self.move_down_button)
-        order_btns.addWidget(self.sort_by_number_button)
-        order_btns.addWidget(self.renumber_button)
+        # Footer reflows / shortens labels when Setlist is narrow so Add/Edit/Delete
+        # and Sort/Renumber are not clipped (e.g. "elet", "un").
+        self._setlist_footer = QWidget()
+        self._setlist_footer.setObjectName("setlistFooter")
+        self._setlist_footer_layout = QGridLayout(self._setlist_footer)
+        self._setlist_footer_layout.setContentsMargins(0, 0, 0, 0)
+        self._setlist_footer_layout.setHorizontalSpacing(4)
+        self._setlist_footer_layout.setVerticalSpacing(4)
+        for button in (
+            self.add_song_button,
+            self.edit_song_button,
+            self.delete_song_button,
+            self.sort_by_number_button,
+            self.renumber_button,
+        ):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(
+                QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
+            )
+        self.move_up_button.setFixedWidth(32)
+        self.move_down_button.setFixedWidth(32)
+        self._setlist_footer_compact: bool | None = None
+        self._layout_setlist_footer(compact=False)
 
         left_layout.addLayout(title_row)
         left_layout.addWidget(self.song_list, stretch=1)
-        left_layout.addLayout(song_btns)
-        left_layout.addLayout(order_btns)
+        left_layout.addWidget(self._setlist_footer)
 
         center = QWidget()
         center.setAcceptDrops(True)
@@ -1409,11 +1417,58 @@ class MainWindow(QMainWindow):
         self._syncing_transport_layout = True
         try:
             self._balance_timeline_monitor_split()
+            self._fit_setlist_footer()
             transport = getattr(self, "transport", None)
             if transport is not None:
                 transport.sync_geometry()
         finally:
             self._syncing_transport_layout = False
+
+    def _layout_setlist_footer(self, *, compact: bool) -> None:
+        """Place Setlist action buttons; compact = short labels + tighter grid."""
+        layout = getattr(self, "_setlist_footer_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item is not None:
+                item.widget()  # keep ownership on buttons; only detach from grid
+        if compact:
+            self.delete_song_button.setText("Del")
+            self.sort_by_number_button.setText("Sort #")
+            self.renumber_button.setText("Re#")
+            # 3×2-ish: actions wrap so nothing is clipped at ~160px.
+            layout.addWidget(self.add_song_button, 0, 0)
+            layout.addWidget(self.edit_song_button, 0, 1)
+            layout.addWidget(self.delete_song_button, 0, 2)
+            layout.addWidget(self.move_up_button, 1, 0)
+            layout.addWidget(self.move_down_button, 1, 1)
+            layout.addWidget(self.sort_by_number_button, 1, 2)
+            layout.addWidget(self.renumber_button, 2, 0, 1, 3)
+        else:
+            self.delete_song_button.setText("Delete")
+            self.sort_by_number_button.setText("Sort by Number")
+            self.renumber_button.setText("Renumber")
+            layout.addWidget(self.add_song_button, 0, 0)
+            layout.addWidget(self.edit_song_button, 0, 1)
+            layout.addWidget(self.delete_song_button, 0, 2)
+            layout.addWidget(self.move_up_button, 1, 0)
+            layout.addWidget(self.move_down_button, 1, 1)
+            layout.addWidget(self.sort_by_number_button, 1, 2)
+            layout.addWidget(self.renumber_button, 1, 3)
+        for col in range(4):
+            layout.setColumnStretch(col, 1 if col < 3 else (0 if compact else 1))
+        self._setlist_footer_compact = compact
+
+    def _fit_setlist_footer(self) -> None:
+        panel = getattr(self, "_setlist_panel", None)
+        if panel is None or not hasattr(self, "_setlist_footer"):
+            return
+        # Margins 8+8; use inner width so labels match the visible chrome.
+        inner = max(0, panel.width() - 16)
+        compact = inner < 240
+        if compact != self._setlist_footer_compact:
+            self._layout_setlist_footer(compact=compact)
 
     def _balance_timeline_monitor_split(self) -> None:
         """Prefer shrinking the Cue monitor before starving the timeline column.
@@ -4561,6 +4616,9 @@ class MainWindow(QMainWindow):
             if event is not None and event.type() == QEvent.Type.Resize:
                 self._sync_timeline_geometry()
         panel = getattr(self, "_setlist_panel", None)
+        if panel is not None and watched is panel and event is not None:
+            if event.type() == QEvent.Type.Resize:
+                self._fit_setlist_footer()
         view_stack = getattr(self, "view_stack", None)
         timeline_center = getattr(self, "_timeline_center", None)
         drop_targets = {panel, view_stack, timeline_center}
