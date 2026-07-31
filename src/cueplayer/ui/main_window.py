@@ -6690,11 +6690,26 @@ class MainWindow(QMainWindow):
         if lane is None:
             self.status.showMessage(f"Shortcut {shortcut} is not assigned to any mark in Mark Manager", 2500)
             return
+        # Hidden Mark tracks (eye off / only 1–3 shown) must not accept shortcuts.
+        if not lane.visible:
+            self.status.showMessage(
+                f"Mark track {shortcut} ({lane.name}) is hidden — show it to mark",
+                2000,
+            )
+            return
+        if not getattr(self.current_song, "show_mark_tracks", True):
+            self.status.showMessage("Mark tracks are hidden — show them to mark", 2000)
+            return
         self._add_mark(lane.index)
 
     def _add_mark(self, lane_index: int) -> None:
         lane = self.current_song.lane_by_index(lane_index)
         if lane is None or lane.locked:
+            return
+        # Belt-and-suspenders: never place on a hidden track (shortcut or click).
+        if not lane.visible:
+            return
+        if not getattr(self.current_song, "show_mark_tracks", True):
             return
         # Use the visual playhead (timeline), not engine.position — mid-scrub
         # the engine still sits at press/last-seek while the line follows the cursor.
