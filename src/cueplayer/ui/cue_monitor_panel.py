@@ -139,13 +139,19 @@ _DURATION_FONT_MIN_PX = 10
 _TC_STATUS_FONT_PX = 11
 
 
-def _now_card_style(accent: str, *, secondary: bool = False) -> str:
+def _now_card_style(
+    accent: str,
+    *,
+    secondary: bool = False,
+    font_px: int | None = None,
+    pad: str | None = None,
+) -> str:
     """Card chrome. Full border + radius so top *and* bottom corners round cleanly."""
-    size = "16px" if secondary else "20px"
-    pad = "10px 10px" if secondary else "12px 12px"
+    size = font_px if font_px is not None else (16 if secondary else 20)
+    padding = pad if pad is not None else ("10px 10px" if secondary else "12px 12px")
     return (
-        f"color: #e4e4e7; font-size: {size}; font-weight: 600;"
-        f"padding: {pad}; line-height: 1.3;"
+        f"color: #e4e4e7; font-size: {size}px; font-weight: 600;"
+        f"padding: {padding}; line-height: 1.3;"
         f"background-color: #141416;"
         # Qt only rounds reliably when all sides are set (not border-left alone).
         f"border: 1px solid #1f1f22;"
@@ -330,20 +336,29 @@ class CueMonitorPanel(QWidget):
 
         self.primary_track = QLabel("PRIMARY")
         self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
+        self.primary_track.setMinimumWidth(0)
+        self.primary_track.setWordWrap(True)
         self.primary_cue = QLabel("—")
         self.primary_cue.setWordWrap(True)
         self.primary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.primary_cue.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.primary_cue.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
+        self.primary_cue.setMinimumWidth(0)
         self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
         self.primary_cue.setStyleSheet(_now_card_style("#ff5a5f"))
+        self._primary_card_accent = "#ff5a5f"
+        self._now_primary_font_px = 20
+        self._now_secondary_font_px = 16
+        self._now_card_pad = "12px 12px"
 
         self.secondary_track = QLabel("SECONDARY")
         self.secondary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
         self.secondary_track.setToolTip("Drag to place Secondary on the right or below Primary")
         self.secondary_track.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.secondary_track.setMinimumWidth(0)
+        self.secondary_track.setWordWrap(True)
         self.secondary_cue = QLabel("—")
         self.secondary_cue.setWordWrap(True)
         # Secondary copy sits vertically centered in the card.
@@ -352,18 +367,21 @@ class CueMonitorPanel(QWidget):
         )
         self.secondary_cue.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.secondary_cue.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
+        self.secondary_cue.setMinimumWidth(0)
         self.secondary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
         self.secondary_cue.setStyleSheet(_now_card_style("#52525b", secondary=True))
+        self._secondary_card_accent = "#52525b"
 
         self._now_section = QWidget()
         self._now_section.setAcceptDrops(True)
         self._now_section.setMinimumHeight(
             _NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN
         )
+        self._now_section.setMinimumWidth(0)
         self._now_section.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         now_layout = QVBoxLayout(self._now_section)
         now_layout.setContentsMargins(0, 0, 0, 4)
@@ -371,9 +389,12 @@ class CueMonitorPanel(QWidget):
         now_layout.addWidget(now_title)
 
         self._primary_now_column = QWidget()
-        self._primary_now_column.setMinimumWidth(96)
+        self._primary_now_column.setMinimumWidth(0)
         self._primary_now_column.setMinimumHeight(_NOW_PRIMARY_COL_MIN)
         self._primary_now_column.setAcceptDrops(True)
+        self._primary_now_column.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         primary_col_layout = QVBoxLayout(self._primary_now_column)
         primary_col_layout.setContentsMargins(0, 0, 0, 0)
         primary_col_layout.setSpacing(4)
@@ -381,8 +402,11 @@ class CueMonitorPanel(QWidget):
         primary_col_layout.addWidget(self.primary_cue, stretch=1)
 
         self._secondary_now_column = QWidget()
-        self._secondary_now_column.setMinimumWidth(72)
+        self._secondary_now_column.setMinimumWidth(0)
         self._secondary_now_column.setMinimumHeight(_NOW_SECONDARY_COL_MIN)
+        self._secondary_now_column.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         secondary_col_layout = QVBoxLayout(self._secondary_now_column)
         secondary_col_layout.setContentsMargins(0, 0, 0, 0)
         secondary_col_layout.setSpacing(4)
@@ -391,10 +415,12 @@ class CueMonitorPanel(QWidget):
 
         self._now_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._now_splitter.setObjectName("nowSplitter")
-        self._now_splitter.setChildrenCollapsible(False)
+        # Allow shrinking below preferred card widths on compact panels.
+        self._now_splitter.setChildrenCollapsible(True)
         self._now_splitter.setHandleWidth(8)
         self._now_splitter.setOpaqueResize(True)
         self._now_splitter.setAcceptDrops(True)
+        self._now_splitter.setMinimumWidth(0)
         self._now_splitter.setStyleSheet(
             f"#nowSplitter::handle {{"
             f"  background: {SPLITTER_IDLE};"
@@ -953,13 +979,16 @@ class CueMonitorPanel(QWidget):
             handle.setEnabled(True)
             sizes = self._now_splitter.sizes()
             if below:
-                total = max(sum(sizes), self._now_splitter.height(), 220)
+                # Never invent a taller total than the splitter actually has —
+                # that overflow was clipped by the parent panel.
+                total = max(1, self._now_splitter.height() or sum(sizes) or 1)
                 if len(sizes) != 2 or sizes[1] < 36:
                     self._now_splitter.setSizes([int(total * 0.68), int(total * 0.32)])
             else:
-                total = max(sum(sizes), self._now_splitter.width(), 320)
+                total = max(1, self._now_splitter.width() or sum(sizes) or 1)
                 if len(sizes) != 2 or sizes[1] < 40:
                     self._now_splitter.setSizes([int(total * 0.72), int(total * 0.28)])
+                self._clamp_now_splitter_to_bounds()
         else:
             handle.setEnabled(False)
             if below:
@@ -967,6 +996,84 @@ class CueMonitorPanel(QWidget):
             else:
                 total = max(self._now_splitter.width(), sum(self._now_splitter.sizes()), 1)
             self._now_splitter.setSizes([total, 0])
+
+    def _clamp_now_splitter_to_bounds(self) -> None:
+        """Keep Primary|Secondary sizes inside the actual splitter geometry."""
+        if not hasattr(self, "_now_splitter"):
+            return
+        sizes = self._now_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        below = self._now_placement == "below"
+        total = max(
+            1,
+            self._now_splitter.height() if below else self._now_splitter.width(),
+        )
+        current = max(1, sum(sizes))
+        if current <= total:
+            return
+        a = max(24, int(round(sizes[0] * total / current)))
+        b = max(20, total - a)
+        if a + b > total:
+            a = max(20, total - b)
+        self._now_splitter.setSizes([a, b])
+
+    def _fit_now_chrome(self) -> None:
+        """Shrink NOW card fonts/padding when the monitor is narrow (no clip)."""
+        if not hasattr(self, "primary_cue"):
+            return
+        lay = self.layout()
+        # Outer margins: keep 12 when roomy, tighten when the panel is skinny.
+        if lay is not None:
+            if self.width() < 180:
+                lay.setContentsMargins(6, 6, 6, 6)
+            else:
+                lay.setContentsMargins(12, 8, 12, 8)
+        margin_x = 12 if self.width() >= 180 else 6
+        avail = max(40, self.width() - margin_x * 2)
+        if self._now_placement != "below" and self._secondary_now_column.isVisible():
+            # Side-by-side: each card gets a share of the width.
+            avail = max(32, (avail - self._now_splitter.handleWidth()) // 2)
+        compact = avail < 160
+        primary_px = 14 if compact else 20
+        secondary_px = 12 if compact else 16
+        if avail < 110:
+            primary_px = 12
+            secondary_px = 11
+        pad = "6px 8px" if compact else "12px 12px"
+        if compact and avail < 110:
+            pad = "4px 6px"
+        self._now_primary_font_px = primary_px
+        self._now_secondary_font_px = secondary_px
+        self._now_card_pad = pad
+        self._apply_card_style(
+            self.primary_cue,
+            getattr(self, "_primary_card_accent", "#ff5a5f"),
+        )
+        self._apply_card_style(
+            self.secondary_cue,
+            getattr(self, "_secondary_card_accent", "#52525b"),
+            secondary=True,
+        )
+        self._clamp_now_splitter_to_bounds()
+        self.primary_cue.setMinimumWidth(0)
+        self.secondary_cue.setMinimumWidth(0)
+
+    def _apply_card_style(self, cue: QLabel, accent: str, *, secondary: bool = False) -> None:
+        """Paint a NOW card using the current compact/full font + padding."""
+        if secondary:
+            self._secondary_card_accent = accent
+            font_px = int(getattr(self, "_now_secondary_font_px", 16))
+            pad = getattr(self, "_now_card_pad", "10px 10px")
+            if pad == "12px 12px":
+                pad = "10px 10px"
+        else:
+            self._primary_card_accent = accent
+            font_px = int(getattr(self, "_now_primary_font_px", 20))
+            pad = getattr(self, "_now_card_pad", "12px 12px")
+        cue.setStyleSheet(
+            _now_card_style(accent, secondary=secondary, font_px=font_px, pad=pad)
+        )
 
     def _refresh_splitter_handles(self) -> None:
         """Re-enable drag handles after first layout / session restore."""
@@ -1007,10 +1114,12 @@ class CueMonitorPanel(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
         QTimer.singleShot(0, self._fit_clock_fonts)
+        QTimer.singleShot(0, self._fit_now_chrome)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
         super().resizeEvent(event)
         self._fit_clock_fonts()
+        self._fit_now_chrome()
 
     @staticmethod
     def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
@@ -1451,7 +1560,7 @@ class CueMonitorPanel(QWidget):
         self.secondary_track.setText("SECONDARY")
         self.secondary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
         self.secondary_cue.setText("—")
-        self.secondary_cue.setStyleSheet(_now_card_style("#3f3f46", secondary=True))
+        self._apply_card_style(self.secondary_cue, "#3f3f46", secondary=True)
 
     def refresh_list(self) -> None:
         selected = set(self.selected_mark_ids())
@@ -1815,7 +1924,7 @@ class CueMonitorPanel(QWidget):
             track.setText(title)
             track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             cue.setText("—")
-            cue.setStyleSheet(_now_card_style("#3f3f46", secondary=secondary))
+            self._apply_card_style(cue, "#3f3f46", secondary=secondary)
             return None
 
         lane = self._song.lane_by_index(active.lane_index)
@@ -1834,7 +1943,7 @@ class CueMonitorPanel(QWidget):
                 ),
             )
         )
-        cue.setStyleSheet(_now_card_style(accent, secondary=secondary))
+        self._apply_card_style(cue, accent, secondary=secondary)
         active_ids.add(active.id)
         return active.id
 
@@ -1845,7 +1954,7 @@ class CueMonitorPanel(QWidget):
             self.primary_track.setText("PRIMARY")
             self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             self.primary_cue.setText("—")
-            self.primary_cue.setStyleSheet(_now_card_style("#ff5a5f"))
+            self._apply_card_style(self.primary_cue, "#ff5a5f")
             self._primary_now_column.show()
             self.secondary_track.hide()
             self.secondary_cue.hide()
