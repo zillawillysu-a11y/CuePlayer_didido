@@ -237,10 +237,14 @@ class BottomTransportBar(QWidget):
         ab_row = QHBoxLayout(self._ab_group)
         ab_row.setContentsMargins(0, 0, 0, 0)
         ab_row.setSpacing(8)
+        self._ab_row = ab_row
         ab_row.addWidget(self.loop_a_button)
         ab_row.addWidget(self.loop_b_button)
         ab_row.addWidget(self.loop_button)
         ab_row.addWidget(self.loop_clear_button)
+        self._transport_density = "full"  # full | compact | minimal
+        self._row_layout = row
+        self._cluster_gap = 14  # spacing between Stop and A/B group
 
         right = QHBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -263,6 +267,7 @@ class BottomTransportBar(QWidget):
         row.addWidget(self.pause_button)
         row.addWidget(self.stop_button)
         row.addSpacing(14)
+        self._cluster_gap_item = row.itemAt(row.count() - 1)
         row.addWidget(self._ab_group)
         row.addStretch(1)
         row.addWidget(self._right_rail)
@@ -304,49 +309,185 @@ class BottomTransportBar(QWidget):
         super().resizeEvent(event)
         self._sync_transport_geometry()
 
-    def _sync_transport_geometry(self) -> None:
-        """Center overview track under anchor; align track (no time gutters) to Play…X."""
+    def _ab_width(self) -> int:
         self._ab_group.adjustSize()
-        ab_w = max(0, self._ab_group.sizeHint().width())
-        # Pad left of Play by everything that sits to the right of Stop before
-        # the trailing stretch (spacing + A/B group).
-        trail = 14 + ab_w
-        if self._balance.width() != trail:
-            self._balance.setFixedWidth(trail)
+        return max(1, self._ab_group.sizeHint().width())
 
-        cluster = (
+    def _play_buttons_width(self) -> int:
+        return (
             self.play_button.width()
             + self.pause_button.width()
             + self.stop_button.width()
-            + 14
-            + ab_w
-            + 24  # row spacing / stretch slack
         )
+
+    def _row_spacing_total(self) -> int:
+        """All QHBoxLayout spacings between the 10 row items (incl. stretches)."""
+        spacing = int(self._row_layout.spacing()) if self._row_layout is not None else 8
+        return 9 * spacing
+
+    def _cluster_width(self) -> int:
+        """Visible Play…Clear span (buttons + Stop→A gap + A/B group, no rails)."""
+        gap = int(getattr(self, "_cluster_gap", 14))
+        # Play/Pause/Stop contribute 2 of the 9 row spacings; counted in spacing total.
+        return self._play_buttons_width() + gap + self._ab_width()
+
+    def _centered_footprint(self, ab_w: int | None = None) -> int:
+        """
+        Non-stretch row width for optically-centered transport.
+
+        `_balance` mirrors (gap + A/B) so Play/Pause/Stop sit on center while
+        A/B stay to the right of Stop — that duplicate must be budgeted or the
+        layout crushes A/B/Loop into each other on narrow windows.
+        """
+        gap = int(getattr(self, "_cluster_gap", 14))
+        ab = self._ab_width() if ab_w is None else max(1, int(ab_w))
+        return self._play_buttons_width() + 2 * (gap + ab) + self._row_spacing_total()
+
+    def _apply_transport_density(self, density: str) -> None:
+        """Shrink Play/A-B controls so the cluster fits on compact windows."""
+        if density == getattr(self, "_transport_density", None):
+            return
+        self._transport_density = density
+        if density == "full":
+            play_sz, ab_sz, clear_sz = QSize(52, 44), QSize(44, 44), QSize(44, 44)
+            loop_text, ab_spacing, gap = "Loop", 8, 14
+            row_spacing = 8
+        elif density == "compact":
+            play_sz, ab_sz, clear_sz = QSize(44, 40), QSize(36, 40), QSize(36, 40)
+            loop_text, ab_spacing, gap = "Loop", 4, 8
+            row_spacing = 4
+        else:
+            play_sz, ab_sz, clear_sz = QSize(40, 36), QSize(32, 36), QSize(32, 36)
+            loop_text, ab_spacing, gap = "L", 2, 4
+            row_spacing = 2
+        for btn in (self.play_button, self.pause_button, self.stop_button):
+            btn.setFixedSize(play_sz)
+        for btn in (self.loop_a_button, self.loop_b_button):
+            btn.setFixedSize(ab_sz)
+        self.loop_clear_button.setFixedSize(clear_sz)
+        self.loop_button.setText(loop_text)
+        self.loop_button.setFixedHeight(ab_sz.height())
+        if density == "minimal":
+            self.loop_button.setFixedWidth(max(28, ab_sz.width() + 4))
+        else:
+            # Undo any prior setFixedWidth from minimal mode.
+            self.loop_button.setMinimumWidth(0)
+            self.loop_button.setMaximumWidth(16777215)
+        self._ab_row.setSpacing(ab_spacing)
+        if getattr(self, "_row_layout", None) is not None:
+            self._row_layout.setSpacing(row_spacing)
+        self._cluster_gap = gap
+        gap_item = getattr(self, "_cluster_gap_item", None)
+        if gap_item is not None and gap_item.spacerItem() is not None:
+            gap_item.spacerItem().changeSize(gap, 0)
+        self._ab_group.adjustSize()
+
+    def _pick_transport_density(self) -> str:
+        """Choose the densest control size that still fits centered Play…Clear + volume."""
+        width = max(0, self.width())
         margins = 20
-        max_pair = max(0, self.width() - margins - cluster)
+        # Try fullest first. Budget includes the optical-centering balance spacer.
+        for density, vol_floor in (
+            ("full", self._volume_rail_min),
+            ("compact", self._volume_rail_min),
+            ("minimal", 0),
+        ):
+            self._apply_transport_density(density)
+            need = margins + self._centered_footprint() + vol_floor
+            if need <= width:
+                return density
+        self._apply_transport_density("minimal")
+        return "minimal"
+
+    def _sync_transport_geometry(self) -> None:
+        """Center overview track under anchor; align track (no time gutters) to Play…X."""
+        self._pick_transport_density()
+        ab_w = self._ab_width()
+        # Keep A/B/Loop/Clear from being crushed when the row runs out of space.
+        if self._ab_group.minimumWidth() != ab_w:
+            self._ab_group.setMinimumWidth(ab_w)
+        gap = int(getattr(self, "_cluster_gap", 14))
+        ideal_trail = gap + ab_w
+        margins = 20
+        spacing_budget = self._row_spacing_total()
+        play_w = self._play_buttons_width()
+        # Prefer full optical centering; shrink balance before crushing controls.
+        vol_reserve = self._volume_rail_min
+        room_for_trail = max(
+            0,
+            self.width()
+            - margins
+            - play_w
+            - gap
+            - ab_w
+            - spacing_budget
+            - vol_reserve,
+        )
+        # If even volume floor does not fit, drop volume reserve and shrink trail.
+        if (
+            room_for_trail == 0
+            and self.width() - margins - play_w - gap - ab_w - spacing_budget
+            < vol_reserve
+        ):
+            vol_reserve = 0
+            room_for_trail = max(
+                0,
+                self.width() - margins - play_w - gap - ab_w - spacing_budget,
+            )
+        trail = min(ideal_trail, room_for_trail)
+        if self._balance.width() != trail:
+            self._balance.setFixedWidth(trail)
+
+        footprint = play_w + gap + ab_w + trail + spacing_budget
+        max_pair = max(0, self.width() - margins - footprint)
 
         # Right rail must keep the master volume visible on compact windows.
         # Prefer: hide LTC/MTC chip → shrink slider → steal from left rail.
+        # In minimal density, volume may yield entirely if cluster still barely fits.
         has_tc = bool(self.tc_status.text().strip())
         vol_pref = self._volume_rail_pref + (self._tc_rail_extra if has_tc else 0)
-        vol_min = self._volume_rail_min
-        right_budget = max(vol_min, min(vol_pref, max_pair))
+        vol_min = (
+            0
+            if (
+                self._transport_density == "minimal"
+                and max_pair < self._volume_rail_min
+            )
+            or vol_reserve == 0
+            else self._volume_rail_min
+        )
+        show_volume = max_pair >= max(40, vol_min) if vol_min else max_pair >= 40
+        if self.volume_slider.isVisible() != show_volume:
+            self.volume_slider.setVisible(show_volume)
+            self.volume_value.setVisible(show_volume)
+        if not show_volume:
+            vol_min = 0
+
+        right_budget = max(vol_min, min(vol_pref, max_pair)) if show_volume else 0
         # Hide TC chip when it would push volume off-screen.
-        show_tc = has_tc and right_budget >= self._volume_rail_pref + self._tc_rail_extra
+        show_tc = (
+            has_tc
+            and show_volume
+            and right_budget >= self._volume_rail_pref + self._tc_rail_extra
+        )
         if self.tc_status.isVisible() != show_tc:
             self.tc_status.setVisible(show_tc)
-        slider_w = 120
-        if right_budget < self._volume_rail_pref:
-            slider_w = max(48, right_budget - 6 - 40)
-        if self.volume_slider.width() != slider_w:
-            self.volume_slider.setFixedWidth(slider_w)
+        if show_volume:
+            slider_w = 120
+            if right_budget < self._volume_rail_pref:
+                slider_w = max(48, right_budget - 6 - 40)
+            if self.volume_slider.width() != slider_w:
+                self.volume_slider.setFixedWidth(slider_w)
 
         self._right_rail.adjustSize()
-        base_rail = max(vol_min, min(max(0, self._right_rail.sizeHint().width()), max_pair // 2))
-        # Never let the shared rail budget clip volume below its floor when there
-        # is room in the bar at all.
-        if max_pair >= vol_min:
-            base_rail = max(base_rail, min(vol_min, max_pair))
+        if show_volume:
+            base_rail = max(
+                vol_min,
+                min(max(0, self._right_rail.sizeHint().width()), max_pair // 2),
+            )
+            if max_pair >= vol_min:
+                base_rail = max(base_rail, min(vol_min, max_pair))
+        else:
+            base_rail = 0
 
         anchor_c = self._anchor_center_x(self._center_anchor)
 
@@ -378,7 +519,7 @@ class BottomTransportBar(QWidget):
             else:
                 right_w = max(0, right_w - overflow)
         # Guarantee volume rail: steal from left spacer if needed.
-        if max_pair >= vol_min and right_w < vol_min:
+        if show_volume and max_pair >= vol_min and right_w < vol_min:
             need = vol_min - right_w
             take = min(need, left_w)
             left_w -= take
@@ -409,11 +550,33 @@ class BottomTransportBar(QWidget):
                         left_w = max(0, left_w - overflow)
                     else:
                         right_w = max(0, right_w - overflow)
-                if max_pair >= vol_min and right_w < vol_min:
+                if show_volume and max_pair >= vol_min and right_w < vol_min:
                     need = vol_min - right_w
                     take = min(need, left_w)
                     left_w -= take
                     right_w += take
+                if self._left_rail.width() != left_w:
+                    self._left_rail.setFixedWidth(left_w)
+                if self._right_rail.width() != right_w:
+                    self._right_rail.setFixedWidth(right_w)
+                lay.activate()
+
+        # Final guard: never let the volume rail paint over A/B/Loop/Clear.
+        if show_volume and lay is not None:
+            clear_r = self.loop_clear_button.mapTo(
+                self, self.loop_clear_button.rect().topRight()
+            ).x()
+            rail_l = self._right_rail.mapTo(self, self._right_rail.rect().topLeft()).x()
+            if rail_l < clear_r - 1:
+                overflow = clear_r - rail_l
+                right_w = max(0, right_w - overflow)
+                left_w = max(0, max_pair - right_w)
+                if right_w < max(40, vol_min if vol_min else 40):
+                    right_w = 0
+                    left_w = 0
+                    if self.volume_slider.isVisible():
+                        self.volume_slider.setVisible(False)
+                        self.volume_value.setVisible(False)
                 if self._left_rail.width() != left_w:
                     self._left_rail.setFixedWidth(left_w)
                 if self._right_rail.width() != right_w:
@@ -426,13 +589,25 @@ class BottomTransportBar(QWidget):
             self, self.loop_clear_button.rect().topRight()
         ).x()
         host_l = self._overview_host.mapTo(self, self._overview_host.rect().topLeft()).x()
-        gutter = int(TimelineOverviewBar._LABEL_GUTTER)
-        # Widget is wider than the track by gutters on each side; times sit outside
-        # the Play…X span, while the hairline track matches that span.
-        track_w = max(80, int(clear_r - play_l))
+        host_w = max(1, self._overview_host.width())
+        track_w = max(40, int(clear_r - play_l))
+        # Shrink time gutters on a short overview so end times are not clipped.
+        gutter = min(
+            int(TimelineOverviewBar._LABEL_GUTTER),
+            max(24, (host_w - track_w) // 2),
+        )
         ov_w = track_w + 2 * gutter
         ov_x = int(play_l - gutter - host_l)
+        # Keep the overview fully inside the host (no left/right crop).
+        if ov_x < 0:
+            ov_w += ov_x
+            ov_x = 0
+        if ov_x + ov_w > host_w:
+            ov_w = max(40, host_w - ov_x)
+        # After clamping, gutters must still fit inside the widget width.
+        gutter = min(gutter, max(24, (ov_w - 40) // 2))
         self.overview.setGeometry(ov_x, 0, ov_w, self._overview_host.height())
+        self.overview.set_label_gutter(gutter)
 
     def _anchor_center_x(self, widget: QWidget | None) -> float | None:
         if widget is None or widget.width() < 8:
