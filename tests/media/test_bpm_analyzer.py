@@ -315,8 +315,11 @@ def test_estimate_bpm_real_show_stems_mixmeister(filename: str, expected: float)
     path = Path(__file__).resolve().parents[2] / "fixtures" / "media" / "bpm_real" / filename
     if not path.is_file():
         pytest.skip(f"missing fixture {path}")
-    y, sr = librosa.load(str(path), sr=None, mono=True)
-    est = estimate_bpm(y.reshape(-1, 1).astype(np.float32), int(sr))
+    # soundfile — avoid librosa.load (Numba guvectorize can abort on some Pythons).
+    import soundfile as sf
+
+    data, sr = sf.read(str(path), always_2d=True, dtype="float32")
+    est = estimate_bpm(data, int(sr))
     assert est is not None
     assert abs(float(est) - expected) <= 1.0, f"{filename}: expected ~{expected}, got {est}"
 
@@ -336,7 +339,9 @@ def test_estimate_bpm_jinhuang_locks_to_acoustic_pulse() -> None:
     )
     if not path.is_file():
         pytest.skip(f"missing fixture {path}")
-    y, sr = librosa.load(str(path), sr=None, mono=True)
-    est = estimate_bpm(y.reshape(-1, 1).astype(np.float32), int(sr))
+    import soundfile as sf
+
+    data, sr = sf.read(str(path), always_2d=True, dtype="float32")
+    est = estimate_bpm(data, int(sr))
     assert est is not None
     assert float(est) in {152.0, 155.0, 156.0, 157.0, 78.0} or abs(float(est) - 156.0) <= 4.0

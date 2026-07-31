@@ -14,19 +14,30 @@ pulse. We follow that shape, but:
 - resolve 3:2 locks (彗尾 64↔96) via sesqui soft votes toward show prior
 - refine ±2 BPM on a 0.25 comb grid, then snap to show integers
 
-``librosa`` is used for onset strength / STFT (+ optional resample). Numba
-JIT is warmed once in the background so the first real detect is not a hitch.
+Onset / STFT prefer ``scipy`` / NumPy (no Numba). ``librosa`` is optional.
+Frozen Windows builds also isolate detect in a child process so a native
+abort cannot flash-quit the main UI.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 
-BPM_DETECT_VERSION = 14
+from cueplayer.media.bpm_native import configure_bpm_native_runtime
+
+configure_bpm_native_runtime()
+
+BPM_DETECT_VERSION = 15
 
 _BPM_READ_SECONDS = 75.0
 _BPM_ANALYZE_SECONDS = 75.0
@@ -103,12 +114,13 @@ def parse_bpm_cell(text: str) -> float | None | bool:
 
 
 def warmup_bpm_analyzer() -> None:
-    """JIT-compile librosa onset path once (call from a background worker)."""
+    """Pre-touch the detect path once (call from a background worker)."""
+    configure_bpm_native_runtime()
     try:
-        import librosa
-
         y = np.zeros(_ANALYZE_SR, dtype=np.float32)
-        librosa.onset.onset_strength(y=y, sr=_ANALYZE_SR, hop_length=_HOP)
+        # Prefer the same NumPy/scipy path used at detect time (no Numba).
+        _ = _onset_envelope(y, _ANALYZE_SR)
+        _ = _kick_band_seed(y, _ANALYZE_SR, min_bpm=60.0, max_bpm=200.0)
     except Exception:  # noqa: BLE001
         pass
 
@@ -150,22 +162,116 @@ def _snap_show_bpm(bpm: float) -> float:
 def _resample_mono(mono: np.ndarray, sample_rate: int, target_sr: int) -> np.ndarray:
     if sample_rate == target_sr:
         return mono.astype(np.float32, copy=False)
+    # Prefer scipy (no Numba). Never import librosa here — its guvectorize
+    # kernels still compile even with NUMBA_DISABLE_JIT=1 and can abort.
     try:
-        import librosa
+        from math import gcd
 
-        return librosa.resample(
-            mono.astype(np.float32, copy=False),
-            orig_sr=sample_rate,
-            target_sr=target_sr,
-            res_type="kaiser_fast",
-        ).astype(np.float32)
+        from scipy.signal import resample_poly
+
+        g = gcd(int(sample_rate), int(target_sr))
+        up = int(target_sr) // g
+        down = int(sample_rate) // g
+        out = resample_poly(mono.astype(np.float32, copy=False), up, down)
+        return np.asarray(out, dtype=np.float32)
     except Exception:  # noqa: BLE001
-        # Cheap fallback: linear interpolate.
-        duration = mono.size / float(sample_rate)
-        n = max(1, int(round(duration * target_sr)))
-        x_old = np.linspace(0.0, 1.0, num=mono.size, endpoint=False)
-        x_new = np.linspace(0.0, 1.0, num=n, endpoint=False)
-        return np.interp(x_new, x_old, mono).astype(np.float32)
+        pass
+    # Cheap fallback: linear interpolate.
+    duration = mono.size / float(sample_rate)
+    n = max(1, int(round(duration * target_sr)))
+    x_old = np.linspace(0.0, 1.0, num=mono.size, endpoint=False)
+    x_new = np.linspace(0.0, 1.0, num=n, endpoint=False)
+    return np.interp(x_new, x_old, mono).astype(np.float32)
+
+
+def _stft_magnitude(mono: np.ndarray, *, n_fft: int, hop_length: int) -> np.ndarray:
+    """Magnitude STFT via scipy (preferred) or a NumPy fallback."""
+    y = np.asarray(mono, dtype=np.float32)
+    try:
+        from scipy.signal import stft
+
+        _f, _t, z = stft(
+            y,
+            nperseg=n_fft,
+            noverlap=max(0, n_fft - hop_length),
+            window="hann",
+            padded=False,
+            boundary=None,
+        )
+        return np.abs(z).astype(np.float64)
+    except Exception:  # noqa: BLE001
+        pass
+    # Minimal framed rFFT fallback (no scipy).
+    if y.size < n_fft:
+        return np.zeros((n_fft // 2 + 1, 1), dtype=np.float64)
+    window = np.hanning(n_fft).astype(np.float32)
+    frames = 1 + (y.size - n_fft) // hop_length
+    out = np.empty((n_fft // 2 + 1, frames), dtype=np.float64)
+    for i in range(frames):
+        start = i * hop_length
+        frame = y[start : start + n_fft] * window
+        out[:, i] = np.abs(np.fft.rfft(frame))
+    return out
+
+
+def _onset_envelope(mono: np.ndarray, sample_rate: int) -> np.ndarray | None:
+    """Onset strength without librosa/Numba (safe in frozen Windows builds).
+
+    Uses short-frame RMS flux — punchy enough for clicks and show stems, and
+    never touches Numba guvectorize (``NUMBA_DISABLE_JIT`` does not disable it).
+    """
+    peak = float(np.max(np.abs(mono)))
+    if peak < 1e-6:
+        return None
+    y = (mono / peak).astype(np.float32)
+    frame = max(32, int(_HOP))
+    n = (y.size // frame) * frame
+    if n < frame * 32:
+        return None
+    frames = y[:n].reshape(-1, frame)
+    energy = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+    onset = np.maximum(0.0, np.diff(energy, prepend=energy[:1])).astype(np.float64)
+    onset = onset - float(onset.mean())
+    if onset.size < 32 or float(np.max(np.abs(onset))) < 1e-9:
+        return None
+    return onset
+
+
+def _onset_rate_from_envelope(onset: np.ndarray, sample_rate: int) -> float:
+    """Onsets/sec via peak-picking the envelope (no librosa.onset_detect)."""
+    if onset.size < 8:
+        return 0.0
+    # Envelope hop equals the frame size used in ``_onset_envelope``.
+    env_rate = float(sample_rate) / float(max(32, int(_HOP)))
+    thr = float(np.percentile(onset, 80))
+    thr = max(thr * 0.35, float(np.std(onset)) * 0.5)
+    peaks: list[int] = []
+    for i in range(2, onset.size - 2):
+        v = float(onset[i])
+        if v < thr:
+            continue
+        if v >= float(onset[i - 1]) and v >= float(onset[i + 1]):
+            if not peaks or (i - peaks[-1]) >= 2:
+                peaks.append(i)
+    if len(peaks) < 4:
+        return 0.0
+    times = np.asarray(peaks, dtype=np.float64) / env_rate
+    dur = float(onset.size) / env_rate
+    t0, t1 = dur * 0.1, dur * 0.9
+    times = times[(times >= t0) & (times <= t1)]
+    if len(times) < 4:
+        return 0.0
+    span = float(times[-1] - times[0])
+    if span < 1.0:
+        return 0.0
+    return float(len(times) / span)
+
+
+def _onset_rate_per_sec(mono: np.ndarray, sample_rate: int) -> float:
+    onset = _onset_envelope(mono, sample_rate)
+    if onset is None:
+        return 0.0
+    return _onset_rate_from_envelope(onset, sample_rate)
 
 
 def _densest_window(mono: np.ndarray, sample_rate: int, seconds: float) -> np.ndarray:
@@ -192,43 +298,6 @@ def _densest_window(mono: np.ndarray, sample_rate: int, seconds: float) -> np.nd
                 best_start = t
         t += hop
     return mono[best_start : best_start + win]
-
-
-def _onset_envelope(mono: np.ndarray, sample_rate: int) -> np.ndarray | None:
-    import librosa
-
-    peak = float(np.max(np.abs(mono)))
-    if peak < 1e-6:
-        return None
-    y = (mono / peak).astype(np.float32)
-    onset = librosa.onset.onset_strength(y=y, sr=sample_rate, hop_length=_HOP)
-    onset = np.asarray(onset, dtype=np.float64)
-    if onset.size < 32:
-        return None
-    onset = onset - float(onset.mean())
-    if float(np.max(np.abs(onset))) < 1e-9:
-        return None
-    return onset
-
-
-def _onset_rate_per_sec(mono: np.ndarray, sample_rate: int) -> float:
-    import librosa
-
-    times = librosa.onset.onset_detect(
-        y=mono, sr=sample_rate, hop_length=_HOP, units="time"
-    )
-    if times is None or len(times) < 4:
-        return 0.0
-    times = np.asarray(times, dtype=float)
-    dur = float(mono.size) / float(sample_rate)
-    t0, t1 = dur * 0.1, dur * 0.9
-    times = times[(times >= t0) & (times <= t1)]
-    if len(times) < 4:
-        return 0.0
-    span = float(times[-1] - times[0])
-    if span < 1.0:
-        return 0.0
-    return float(len(times) / span)
 
 
 def _corr_at(corr: np.ndarray, lag: float) -> float:
@@ -371,14 +440,12 @@ def _kick_band_seed(
     max_bpm: float,
 ) -> float | None:
     """Dominant tempo from low-band energy flux (kick / bass pulse)."""
-    import librosa
-
     peak = float(np.max(np.abs(mono)))
     if peak < 1e-6:
         return None
     y = (mono / peak).astype(np.float32)
-    stft = np.abs(librosa.stft(y, n_fft=2048, hop_length=_HOP))
-    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=2048)
+    stft = _stft_magnitude(y, n_fft=2048, hop_length=_HOP)
+    freqs = np.fft.rfftfreq(2048, d=1.0 / float(sample_rate))
     low_bins = freqs <= _KICK_MAX_HZ
     if not np.any(low_bins):
         return None
@@ -418,6 +485,13 @@ def _merge_full_and_kick(
     # Near agreement — stay with full (already refined).
     if abs(full - kick) / max(full, 1e-6) <= 0.06:
         return full
+    # Busy full-band lock (hats) with a clear kick pulse — prefer 2×kick when
+    # that lands in the common show mid-tempo (牽我 68→136 vs odd 178/118).
+    if 66.0 <= kick <= 75.0:
+        doubled = _snap_show_bpm(kick * 2.0)
+        if 130.0 <= doubled <= 145.0 and dens_full >= 1.5:
+            if not (1.85 <= ratio <= 2.15):
+                return doubled
     # Unrelated mid-tempo kick (金黃色-style): trust kick in show ballad range
     # when full looks like an odd non-octave lock.
     if 70.0 <= kick <= 110.0 and not (1.85 <= ratio <= 2.15) and dens_full < 1.35:
@@ -649,8 +723,6 @@ def _promote_show_pulse(bpm: float, onset_rates: list[float]) -> float:
     if not (60.0 <= half <= 100.0):
         return half
     show = _snap_show_bpm(half * 2.0)
-    if not (118.0 <= show <= 158.0):
-        return half
     med_or = (
         float(np.median(np.asarray(onset_rates, dtype=np.float64)))
         if onset_rates
@@ -658,6 +730,15 @@ def _promote_show_pulse(bpm: float, onset_rates: list[float]) -> float:
     )
     dens_half = _density_fit(med_or, half) if onset_rates else 0.0
     dens_show = _density_fit(med_or, show) if onset_rates else 0.0
+    # Fast click / show pulses (167, 170): ~2 onsets/beat at half, ~1 at show.
+    # Checked before the mid-tempo show gate (118–158) which would reject 170.
+    if onset_rates and 155.0 <= show <= 185.0:
+        raw_half = med_or / max(1e-6, half / 60.0)
+        raw_show = med_or / max(1e-6, show / 60.0)
+        if 1.6 <= raw_half <= 2.5 and 0.7 <= raw_show <= 1.4:
+            return show
+    if not (118.0 <= show <= 158.0):
+        return half
     # Integer grid in ballad range (73, 83) — never auto-double unless
     # the fast pulse is overwhelmingly denser (not true on soft kicks).
     if not fractional and half >= 71.0:
@@ -743,8 +824,113 @@ def estimate_bpm(
             max_bpm=float(max_bpm),
             progress=progress,
         )
-    except ImportError:
+    except Exception:  # noqa: BLE001 — soft-fail; never kill the UI worker
         return None
+
+
+def _bpm_worker_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["CUEPLAYER_BPM_INNER"] = "1"
+    env.setdefault("NUMBA_DISABLE_JIT", "1")
+    return env
+
+
+def _estimate_bpm_via_subprocess(
+    path: Path,
+    *,
+    exclude_channel: int | None,
+    progress: ProgressFn | None,
+) -> float | None:
+    """Run detect in a child process so a native abort cannot flash-quit the UI."""
+    configure_bpm_native_runtime()
+    with tempfile.TemporaryDirectory(prefix="cueplayer_bpm_") as tmp:
+        tmp_path = Path(tmp)
+        out_file = tmp_path / "result.json"
+        progress_file = tmp_path / "progress.txt"
+        cmd = [
+            sys.executable,
+            "--bpm-detect",
+            str(path),
+            str(out_file),
+            str(progress_file),
+            "" if exclude_channel is None else str(int(exclude_channel)),
+        ]
+        _report_progress(progress, 5)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=_bpm_worker_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        last_pct = 5
+        while proc.poll() is None:
+            try:
+                if progress_file.is_file():
+                    raw = progress_file.read_text(encoding="utf-8").strip()
+                    if raw:
+                        last_pct = max(last_pct, int(float(raw)))
+                        _report_progress(progress, last_pct)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.08)
+        if proc.returncode != 0:
+            return None
+        try:
+            payload = json.loads(out_file.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+        bpm = payload.get("bpm")
+        if bpm is None:
+            return None
+        try:
+            value = float(bpm)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        _report_progress(progress, 100)
+        return value
+
+
+def run_bpm_detect_cli(argv: list[str] | None = None) -> int:
+    """Entry for ``CuePlayer.exe --bpm-detect <audio> <out.json> <progress> [ch]``."""
+    configure_bpm_native_runtime()
+    args = list(sys.argv[1:] if argv is None else argv)
+    # Accept either full argv or args after ``--bpm-detect``.
+    if args and args[0] == "--bpm-detect":
+        args = args[1:]
+    if len(args) < 3:
+        return 2
+    audio = Path(args[0])
+    out_file = Path(args[1])
+    progress_file = Path(args[2])
+    exclude: int | None = None
+    if len(args) >= 4 and args[3].strip() != "":
+        try:
+            exclude = int(args[3])
+        except ValueError:
+            exclude = None
+
+    def _progress(pct: int) -> None:
+        try:
+            progress_file.write_text(str(int(pct)), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Inner path — never recurse into another subprocess.
+    os.environ["CUEPLAYER_BPM_INNER"] = "1"
+    bpm = estimate_bpm_from_path(audio, exclude_channel=exclude, progress=_progress)
+    try:
+        out_file.write_text(
+            json.dumps({"bpm": bpm}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        return 1
+    return 0 if bpm is not None else 0
 
 
 def estimate_bpm_from_path(
@@ -754,14 +940,25 @@ def estimate_bpm_from_path(
     progress: ProgressFn | None = None,
 ) -> float | None:
     """Read only the start of an audio file and estimate BPM (memory-light)."""
+    from cueplayer.util.runtime import is_frozen
     from cueplayer.util.thread_priority import lower_background_thread_priority
 
+    configure_bpm_native_runtime()
     lower_background_thread_priority()
-    import soundfile as sf
-
     file_path = Path(path)
     if not file_path.is_file():
         return None
+
+    # Packaged builds: isolate native crashes from the UI process.
+    if is_frozen() and os.environ.get("CUEPLAYER_BPM_INNER") != "1":
+        return _estimate_bpm_via_subprocess(
+            file_path,
+            exclude_channel=exclude_channel,
+            progress=progress,
+        )
+
+    import soundfile as sf
+
     _report_progress(progress, 3)
     try:
         info = sf.info(str(file_path))

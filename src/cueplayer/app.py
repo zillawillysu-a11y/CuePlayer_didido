@@ -13,6 +13,14 @@ from pathlib import Path
 if sys.platform == "win32":
     os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
+# Freeze-safe Numba env before any BPM / librosa import path can load.
+try:
+    from cueplayer.media.bpm_native import configure_bpm_native_runtime
+
+    configure_bpm_native_runtime()
+except Exception:  # noqa: BLE001
+    pass
+
 
 def _boot_log_path() -> Path:
     # Always writable on Windows; also copy hint into cwd when possible.
@@ -40,6 +48,13 @@ def _boot_log(message: str) -> None:
 def main() -> int:
     _boot_log(f"CuePlayer boot start  python={sys.executable}  cwd={Path.cwd()}")
     _boot_log(f"argv={sys.argv!r}")
+
+    # Headless BPM worker for frozen builds (parent UI stays alive if this aborts).
+    if len(sys.argv) >= 2 and sys.argv[1] == "--bpm-detect":
+        from cueplayer.media.bpm_analyzer import run_bpm_detect_cli
+
+        return int(run_bpm_detect_cli(sys.argv[1:]))
+
     try:
         import cueplayer
 
