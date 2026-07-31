@@ -74,7 +74,8 @@ def test_waveform_preload_skips_heavy_clips() -> None:
         get_peaks.assert_not_called()
 
 
-def test_mixer_preload_skips_heavy_clips() -> None:
+def test_mixer_preload_still_loads_heavy_clips() -> None:
+    """Heavy clips skip waveform/scrub, but must still get embedded audio."""
     clip = VideoClip.create(
         name="rehearsal",
         path=Path("r.mp4"),
@@ -85,4 +86,4 @@ def test_mixer_preload_skips_heavy_clips() -> None:
     mixer.set_song(MagicMock(video_clips=[clip]))
     with patch.object(mixer, "_executor") as executor:
         mixer.preload([clip])
-        executor.submit.assert_not_called()
+        executor.submit.assert_called()

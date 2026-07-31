@@ -12,7 +12,9 @@ from pathlib import Path
 from cueplayer.domain.models import VideoClip
 
 # Source or clip span at/above this is treated as "heavy": skip background
-# waveform + scrub preload; keep embedded-audio windows tiny.
+# waveform + scrub preload (those fight Preview/Clean for av_path_lock).
+# Embedded clip *audio* still loads via sliding windows — silence is worse
+# than a short background decode.
 HEAVY_VIDEO_SECONDS = 10 * 60.0
 
 # Absolute ceiling for any embedded-video PCM decode (mixer + waveforms).
@@ -20,8 +22,9 @@ HEAVY_VIDEO_SECONDS = 10 * 60.0
 # allocate ~300MB+ float32 while the UI needs the same path for Preview.
 MAX_VIDEO_AUDIO_DECODE_SECONDS = 5 * 60.0
 
-# Even smaller window when the clip/source is already classified heavy.
-HEAVY_VIDEO_AUDIO_DECODE_SECONDS = 60.0
+# Sliding-window size for heavy rehearsal clips (mixer advances this as the
+# playhead moves so audio is not limited to the first minute).
+HEAVY_VIDEO_AUDIO_DECODE_SECONDS = 120.0
 
 # Warn (and prefer safer preview) when the file itself is this long.
 LONG_SOURCE_WARN_SECONDS = 30 * 60.0

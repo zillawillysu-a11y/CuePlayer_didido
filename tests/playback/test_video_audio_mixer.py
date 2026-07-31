@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from cueplayer.domain.models import Song, VideoClip
-from cueplayer.playback.video_audio_mixer import VideoAudioMixer
+from cueplayer.playback.video_audio_mixer import VideoAudioMixer, _CachedPcm
 
 SR = 48000
 
@@ -20,12 +20,16 @@ def _inject(mixer: VideoAudioMixer, clip: VideoClip, samples: np.ndarray) -> Non
 
     Buffer index 0 == clip.source_in (windowed decode contract).
     """
-    mixer._cache[clip.id] = samples
-    mixer._cache_key[clip.id] = (
+    origin = float(clip.source_in_seconds)
+    dur = samples.shape[0] / float(mixer._playback_rate)
+    key = (
         str(clip.path),
         mixer._playback_rate,
-        round(float(clip.source_in_seconds), 3),
-        round(float(clip.source_span_seconds or clip.duration_seconds), 3),
+        round(origin, 2),
+        round(dur, 2),
+    )
+    mixer._cache[clip.id] = _CachedPcm(
+        samples=samples, origin_seconds=origin, key=key
     )
 
 
@@ -185,7 +189,6 @@ def test_preload_prunes_cache_for_removed_clips() -> None:
 
     mixer.preload([])  # clip removed from the song
     assert clip.id not in mixer._cache
-    assert clip.id not in mixer._cache_key
 
 
 def test_set_playback_rate_change_clears_cache() -> None:
@@ -196,4 +199,3 @@ def test_set_playback_rate_change_clears_cache() -> None:
 
     mixer.set_playback_rate(44100)
     assert mixer._cache == {}
-    assert mixer._cache_key == {}

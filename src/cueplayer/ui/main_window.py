@@ -6581,8 +6581,8 @@ class MainWindow(QMainWindow):
             mins = source_duration / 60.0
             msg = (
                 f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
-                f"picture OK; no heavy waveform/scrub preload "
-                f"(embedded audio cap {HEAVY_VIDEO_AUDIO_DECODE_SECONDS:.0f}s)"
+                f"picture OK; waveform/scrub preload skipped; "
+                f"embedded audio uses {HEAVY_VIDEO_AUDIO_DECODE_SECONDS:.0f}s windows"
             )
             self._warn_long_rehearsal_video(path, source_duration)
         elif not is_still and source_duration > max(
@@ -6604,11 +6604,12 @@ class MainWindow(QMainWindow):
             "Long video loaded",
             (
                 f"\"{path.name}\" is about {mins:.0f} minutes.\n\n"
-                "CuePlayer will show picture for marking, but skips heavy "
-                "waveform / scrub preload on long rehearsal files so opening "
-                "Clean Output does not freeze the computer.\n\n"
+                "CuePlayer will show picture + embedded audio for marking.\n"
+                "Heavy waveform / scrub preload is skipped on long rehearsal "
+                "files so opening Clean Output does not freeze the computer.\n\n"
                 "Tip: Save the project (and MA work) before opening Clean Output "
-                "on very large files. Prefer Decode Quality 720p or 540p."
+                "on very large files. If picture looks soft, try Decode Quality "
+                "Full; if the app feels heavy, use 720p."
             ),
         )
 

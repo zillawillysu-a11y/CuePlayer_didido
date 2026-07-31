@@ -97,10 +97,11 @@ class CleanVideoOutputWindow(QWidget):
         layout.setSpacing(0)
         # No placeholder text here: unplayed regions must stay pure black
         # for the OBS capture, with no debug text baked into the frame.
-        # Fast scale: 1080p smooth bilinear every frame makes the whole app feel
-        # sluggish while Clean Output is open (shared decode path stays accurate).
+        # Keep smooth scaling — nearest-neighbor made 1080p Clean Output look
+        # far softer/blockier than the Decode Quality setting. Decode caps +
+        # long-video preload skips are the primary jank controls now.
         self.preview = VideoPreviewWidget(
-            self, placeholder_text="", smooth_scale=False
+            self, placeholder_text="", smooth_scale=True
         )
         layout.addWidget(self.preview)
         self.resize(1920, 1080)

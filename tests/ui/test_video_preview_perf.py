@@ -43,6 +43,6 @@ def test_set_qimage_shares_without_recopy(app: QApplication) -> None:
     assert widget._image is image
 
 
-def test_clean_output_uses_fast_scale(app: QApplication) -> None:
+def test_clean_output_uses_smooth_scale(app: QApplication) -> None:
     window = CleanVideoOutputWindow()
-    assert window.preview._smooth_scale is False
+    assert window.preview._smooth_scale is True

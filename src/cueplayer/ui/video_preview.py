@@ -90,8 +90,6 @@ class VideoPreviewWidget(QWidget):
         x = target.x() + (target.width() - draw_w) / 2.0
         y = target.y() + (target.height() - draw_h) / 2.0
 
-        # Clean Output is often 1080p — bilinear smooth scale every frame
-        # stalls the UI thread; nearest/fast is fine for OBS capture monitors.
         painter.setRenderHint(
             QPainter.RenderHint.SmoothPixmapTransform, self._smooth_scale
         )
