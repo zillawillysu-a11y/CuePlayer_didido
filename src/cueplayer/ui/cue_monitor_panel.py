@@ -847,6 +847,7 @@ class CueMonitorPanel(QWidget):
         else:
             self._fit_body_within_panel()
         self.now_layout_changed.emit()
+        # Only nudge the Cue List table — never the outer monitor scroller.
         QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
     def _primary_col_min(self) -> int:
@@ -1167,7 +1168,7 @@ class CueMonitorPanel(QWidget):
         super().resizeEvent(event)
         self._fit_clock_fonts()
         self._fit_now_chrome()
-        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
+
     @staticmethod
     def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
         font = QFont("Consolas")
@@ -2157,18 +2158,8 @@ class CueMonitorPanel(QWidget):
             bar = self.cue_table.verticalScrollBar()
             if bar is not None:
                 bar.setValue(int(bar.value() + (rect.bottom() - (vp_h - margin))))
-                rect = self.cue_table.visualRect(index)
-        # Outer monitor scroll: if the Cue List block sits below the viewport,
-        # bring the selected row into the visible window.
-        if hasattr(self, "_monitor_scroll") and hasattr(self, "_monitor_scroll_content"):
-            row_global = self.cue_table.viewport().mapToGlobal(rect.center())
-            content_pt = self._monitor_scroll_content.mapFromGlobal(row_global)
-            self._monitor_scroll.ensureVisible(
-                content_pt.x(),
-                content_pt.y(),
-                8,
-                max(margin, _ROW_HEIGHT),
-            )
+        # Do NOT touch `_monitor_scroll` here — yanking the outer scroller would
+        # lock the user on Cue List when they scrolled up to the Timecode clock.
 
     def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> None:
         self._syncing_selection = True
