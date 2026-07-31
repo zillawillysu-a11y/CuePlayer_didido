@@ -480,6 +480,20 @@ class CueMonitorPanel(QWidget):
         self._list_collapsed.clicked.connect(self._show_cue_list)
         self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
+        # Shown between Timecode and Cue List when both NOW displays are off.
+        self._now_collapsed = _RevealLabel(
+            "▸ NOW displays hidden — right-click to show Primary / Secondary"
+        )
+        self._now_collapsed.setToolTip(
+            "Primary and Secondary are both off. Right-click to restore a display, "
+            "or click to show Primary."
+        )
+        self._now_collapsed.clicked.connect(self._restore_now_primary_display)
+        self._now_collapsed.customContextMenuRequested.connect(
+            self._show_now_collapsed_context_menu
+        )
+        self._now_collapsed.hide()
+
         self.cue_table = QTableWidget(0, _COL_COUNT)
         self.cue_table.setObjectName("cueListTable")
         self.cue_table.setHorizontalHeaderLabels(
@@ -581,6 +595,7 @@ class CueMonitorPanel(QWidget):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(10)
         scroll_layout.addWidget(clock_frame)
+        scroll_layout.addWidget(self._now_collapsed)
         scroll_layout.addWidget(self._body_splitter, stretch=1)
 
         self._monitor_scroll = QScrollArea()
@@ -769,6 +784,8 @@ class CueMonitorPanel(QWidget):
         if not hasattr(self, "_body_splitter") or not hasattr(self, "_now_section"):
             return
         handle = self._body_splitter.handle(1)
+        if hasattr(self, "_now_collapsed"):
+            self._now_collapsed.setVisible(not show_now)
         if show_now:
             was_hidden = self._now_section.isHidden()
             self._now_section.setVisible(True)
@@ -804,6 +821,39 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setSizes([0, total])
         handle.setEnabled(False)
         self._now_section.setVisible(False)
+
+    def _restore_now_primary_display(self) -> None:
+        """Click affordance when NOW is fully collapsed — bring Primary back."""
+        self._now_primary_visible = True
+        self._apply_now_panel_visibility()
+        self._sync_current(force_now=True)
+        self.now_visibility_changed.emit()
+
+    def _append_now_display_actions(self, menu: QMenu) -> None:
+        """Primary / Secondary visibility toggles (also used when NOW is collapsed)."""
+        show_primary = QAction("Show Primary display", self)
+        show_primary.setCheckable(True)
+        show_primary.setChecked(bool(self._now_primary_visible))
+        show_secondary = QAction("Show Secondary display", self)
+        show_secondary.setCheckable(True)
+        show_secondary.setChecked(bool(self._now_secondary_visible))
+
+        def _toggle_primary(checked: bool) -> None:
+            self._now_primary_visible = bool(checked)
+            self._apply_now_panel_visibility()
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        def _toggle_secondary(checked: bool) -> None:
+            self._now_secondary_visible = bool(checked)
+            self._apply_now_panel_visibility()
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        show_primary.toggled.connect(_toggle_primary)
+        show_secondary.toggled.connect(_toggle_secondary)
+        menu.addAction(show_primary)
+        menu.addAction(show_secondary)
 
     def _on_now_splitter_moved(self, *_args) -> None:
         self._schedule_now_card_fit()
@@ -1581,29 +1631,7 @@ class CueMonitorPanel(QWidget):
         menu.addAction(show_primary_cue_id)
         menu.addSeparator()
 
-        show_primary = QAction("Show Primary display", self)
-        show_primary.setCheckable(True)
-        show_primary.setChecked(bool(self._now_primary_visible))
-        show_secondary = QAction("Show Secondary display", self)
-        show_secondary.setCheckable(True)
-        show_secondary.setChecked(bool(self._now_secondary_visible))
-
-        def _toggle_primary(checked: bool) -> None:
-            self._now_primary_visible = bool(checked)
-            self._apply_now_panel_visibility()
-            self._sync_current(force_now=True)
-            self.now_visibility_changed.emit()
-
-        def _toggle_secondary(checked: bool) -> None:
-            self._now_secondary_visible = bool(checked)
-            self._apply_now_panel_visibility()
-            self._sync_current(force_now=True)
-            self.now_visibility_changed.emit()
-
-        show_primary.toggled.connect(_toggle_primary)
-        show_secondary.toggled.connect(_toggle_secondary)
-        menu.addAction(show_primary)
-        menu.addAction(show_secondary)
+        self._append_now_display_actions(menu)
         menu.addSeparator()
         place_right = QAction("Secondary on the right", self)
         place_right.setCheckable(True)
@@ -1623,6 +1651,18 @@ class CueMonitorPanel(QWidget):
         else:
             menu.exec(self._now_section.mapToGlobal(pos))
 
+    def _show_now_collapsed_context_menu(self, pos) -> None:  # noqa: ANN001
+        """Right-click between Timecode and Cue List when NOW displays are off."""
+        menu = QMenu(self)
+        self._append_now_display_actions(menu)
+        menu.addSeparator()
+        self._append_cue_list_menu_action(menu)
+        sender = self.sender()
+        if isinstance(sender, QWidget):
+            menu.exec(sender.mapToGlobal(pos))
+        else:
+            menu.exec(self._now_collapsed.mapToGlobal(pos))
+
     def _show_cue_list_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
         self._append_cue_list_menu_action(menu)
@@ -1631,6 +1671,9 @@ class CueMonitorPanel(QWidget):
         show_cue_id_col.setChecked(bool(self._cue_list_show_cue_id))
         show_cue_id_col.toggled.connect(self._set_cue_list_show_cue_id)
         menu.addAction(show_cue_id_col)
+        menu.addSeparator()
+        # When NOW is collapsed, Cue List is the nearest place to restore displays.
+        self._append_now_display_actions(menu)
         menu.addSeparator()
         self._append_renumber_cue_id_actions(menu, pos)
         sender = self.sender()
@@ -1815,6 +1858,8 @@ class CueMonitorPanel(QWidget):
         show_toggles.setCheckable(True)
         show_toggles.setChecked(self._show_output_quick_toggles)
         show_toggles.setToolTip("TRANS · Note · MTC · LTC quick switches under the clock")
+        menu.addSeparator()
+        self._append_now_display_actions(menu)
         menu.addSeparator()
         settings_action = menu.addAction("Audio / Midi / Timecode settings…")
         settings_action.setToolTip("MIDI port, routing, LTC source, and advanced options")
