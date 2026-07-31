@@ -173,6 +173,7 @@ _KEY_MAIN_STATE = "mainwindow/state"
 _KEY_MAIN_SPLITTER = "ui/main_splitter"
 _KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
 _KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
+_KEY_TIMELINE_HEADER_WIDTH = "ui/timeline_header_width"
 _KEY_NOW_SPLITTER = "ui/now_splitter"
 _KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
 _KEY_NOW_SPLITTER_RIGHT = "ui/now_splitter_right"
@@ -1485,6 +1486,12 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
+        raw_hw = self._settings.value(_KEY_TIMELINE_HEADER_WIDTH)
+        if raw_hw is not None:
+            try:
+                self.timeline.set_header_width(int(raw_hw), emit=False)
+            except (TypeError, ValueError):
+                pass
         self._sync_transport_layout()
         placement = str(self._settings.value(_KEY_NOW_SECONDARY_PLACEMENT, "right") or "right")
         payload = {
@@ -1519,6 +1526,9 @@ class MainWindow(QMainWindow):
             self._settings.setValue(
                 _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
             )
+        self._settings.setValue(
+            _KEY_TIMELINE_HEADER_WIDTH, int(self.timeline.header_width())
+        )
         layout_state = self.monitor.save_now_splitter_state()
         self._settings.setValue(_KEY_NOW_SECONDARY_PLACEMENT, layout_state["placement"])
         self._settings.setValue(_KEY_NOW_SPLITTER, layout_state["current"])

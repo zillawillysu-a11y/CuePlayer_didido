@@ -91,6 +91,7 @@ class TimelineWidget(QWidget):
     mark_lane_height_changed = Signal(float)
     mark_track_colors_changed = Signal(bool)
     add_mark_requested = Signal(int)  # lane_index at current playhead
+    header_width_changed = Signal(int)  # Mark Type / lane label column width
     # Internal: video waveform decode finished (may be emitted from a worker).
     _video_waveforms_ready = Signal()
 
@@ -109,6 +110,11 @@ class TimelineWidget(QWidget):
         self._content_height = 0
         self._auto_scroll = True
         self._header_width = 140
+        self._header_width_min = 72
+        self._header_width_max = 320
+        self._header_split_hit = 5
+        self._resizing_header = False
+        self._header_split_hover = False
         self._ruler_height = 28
         self._wave_height = 220
         self._lane_height = 28
@@ -1296,7 +1302,12 @@ class TimelineWidget(QWidget):
 
     def _hit_mark_lane_header(self, x: float, y: float) -> int | None:
         """Return lane index when clicking the left name header of a Mark track."""
-        if x >= self._header_width or self._song is None or not self._show_mark_tracks:
+        # Leave the right edge for the header-width drag handle.
+        if (
+            x >= self._header_width - self._header_split_hit
+            or self._song is None
+            or not self._show_mark_tracks
+        ):
             return None
         for lane_index, y0, y1 in self._lane_rects():
             if y0 <= y < y1:
@@ -1561,7 +1572,9 @@ class TimelineWidget(QWidget):
             QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
         )
         clip_hit = self._hit_video_clip(x, y, allow_locked_edit=shift)
-        if self._near_wave_split(y):
+        if self._near_header_split(x):
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif self._near_wave_split(y):
             self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif clip_hit is not None:
             # Prefer clip cursor over the Video lane splitter (same as press).
@@ -1719,6 +1732,32 @@ class TimelineWidget(QWidget):
         self._apply_layout_heights()
         self.update()
 
+    def header_width(self) -> int:
+        return int(self._header_width)
+
+    def set_header_width(self, width: int | float, *, emit: bool = True) -> None:
+        """Resize the Mark Type / lane label column (drag the right edge)."""
+        new_w = self._clamp_header_width(width)
+        if new_w == int(self._header_width):
+            return
+        self._header_width = new_w
+        self._invalidate_scrub_backdrop()
+        self._layout_music_header_overlay()
+        self._layout_video_track_overlay()
+        self.update()
+        self.view_changed.emit()
+        if emit:
+            self.header_width_changed.emit(new_w)
+
+    def _clamp_header_width(self, width: int | float) -> int:
+        # Leave room for the waveform scrub zone when the timeline is narrow.
+        room = max(self._header_width_min, int(self.width()) - 120) if self.width() > 0 else self._header_width_max
+        hi = min(self._header_width_max, room)
+        return max(self._header_width_min, min(hi, int(round(float(width)))))
+
+    def _near_header_split(self, x: float) -> bool:
+        return abs(float(x) - float(self._header_width)) <= self._header_split_hit
+
     def _wave_bottom_y(self) -> int:
         return self._ruler_height + self._wave_height
 
@@ -1865,6 +1904,10 @@ class TimelineWidget(QWidget):
                 self._video_lane_base_height = lane_clamped
                 if self._song is not None:
                     self._song.video_lane_height = lane_clamped
+            hw_clamped = self._clamp_header_width(self._header_width)
+            if hw_clamped != int(self._header_width):
+                self._header_width = hw_clamped
+                self._invalidate_scrub_backdrop()
             self._apply_layout_heights()
             self._layout_zoom_overlay()
             self._layout_video_track_overlay()
@@ -2126,7 +2169,7 @@ class TimelineWidget(QWidget):
             return False
         if self._dragging_audio_gain:
             return False
-        if self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes or self._panning:
+        if self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes or self._resizing_header or self._panning:
             return False
         return self._scrubbing or self._playing
 
@@ -2146,6 +2189,7 @@ class TimelineWidget(QWidget):
         # Selection box paints live in paintEvent (after mark-track colors).
         painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
         self._paint_headers(painter, wave_bottom, tracks_top)
+        self._paint_header_splitter(painter)
 
     def _scrub_tick(self) -> None:
         if not self._scrubbing:
@@ -2525,7 +2569,11 @@ class TimelineWidget(QWidget):
             if alt and x >= self._header_width:
                 self._begin_pan(x)
                 return
-            if self._near_wave_split(y):
+            if self._near_header_split(x):
+                self._resizing_header = True
+                self.grabMouse()
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif self._near_wave_split(y):
                 self._resizing_wave = True
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
@@ -2624,6 +2672,8 @@ class TimelineWidget(QWidget):
                 self._loop_drag_moved = True
             if self._loop_drag_moved:
                 self._set_loop_handle_time(self._dragging_loop, self._time_for_x(x))
+        elif self._resizing_header and event.buttons() & Qt.MouseButton.LeftButton:
+            self.set_header_width(x)
         elif self._resizing_wave and event.buttons() & Qt.MouseButton.LeftButton:
             new_h = y - self._ruler_height
             self.set_wave_height(new_h)
@@ -2670,21 +2720,29 @@ class TimelineWidget(QWidget):
         elif self._scrubbing and event.buttons() & Qt.MouseButton.LeftButton:
             self._scrub_at(x)
         else:
-            hover_wave = self._near_wave_split(y)
+            hover_header = self._near_header_split(x)
+            hover_wave = False if hover_header else self._near_wave_split(y)
             shift_hover = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             # Resolve clip before the Video lane splitter so the bottom edge of
             # a clip still shows clip hover (matches mousePress priority).
             pre_clip = (
                 None
-                if hover_wave
+                if (hover_header or hover_wave)
                 else self._hit_video_clip(x, y, allow_locked_edit=shift_hover)
             )
             hover_video = (
                 False
-                if (hover_wave or pre_clip is not None)
+                if (hover_header or hover_wave or pre_clip is not None)
                 else self._near_video_lane_split(y)
             )
-            hover_mark = False if (hover_wave or hover_video) else self._near_mark_lane_split(y)
+            hover_mark = (
+                False
+                if (hover_header or hover_wave or hover_video)
+                else self._near_mark_lane_split(y)
+            )
+            if hover_header != self._header_split_hover:
+                self._header_split_hover = hover_header
+                self.update()
             if hover_wave != self._wave_split_hover:
                 self._wave_split_hover = hover_wave
                 self.update()
@@ -2694,7 +2752,7 @@ class TimelineWidget(QWidget):
             if hover_mark != self._mark_lane_split_hover:
                 self._mark_lane_split_hover = hover_mark
                 self.update()
-            hover = hover_wave or hover_video or hover_mark
+            hover = hover_header or hover_wave or hover_video or hover_mark
             gain_zone = None if hover else self._near_audio_gain_line(x, y)
             if gain_zone != self._hover_audio_gain_zone:
                 self._hover_audio_gain_zone = gain_zone
@@ -2716,7 +2774,9 @@ class TimelineWidget(QWidget):
             if header_lane != self._hover_mark_lane_header:
                 self._hover_mark_lane_header = header_lane
                 self.update()
-            if hover:
+            if hover_header:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif hover:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif gain_zone is not None:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
@@ -2740,7 +2800,15 @@ class TimelineWidget(QWidget):
                 )
             elif self._in_scrub_zone(x, y):
                 self.setCursor(Qt.CursorShape.ArrowCursor)
-            elif not self._scrubbing and not self._resizing_wave and not self._resizing_video_lane and not self._resizing_mark_lanes and not self._box_selecting and not self._panning:
+            elif (
+                not self._scrubbing
+                and not self._resizing_wave
+                and not self._resizing_video_lane
+                and not self._resizing_mark_lanes
+                and not self._resizing_header
+                and not self._box_selecting
+                and not self._panning
+            ):
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
@@ -2754,6 +2822,9 @@ class TimelineWidget(QWidget):
             changed = True
         if self._hover_audio_gain_zone is not None:
             self._hover_audio_gain_zone = None
+            changed = True
+        if self._header_split_hover:
+            self._header_split_hover = False
             changed = True
         if changed:
             self.update()
@@ -2818,7 +2889,12 @@ class TimelineWidget(QWidget):
             was_scrub = self._scrubbing
             was_box = self._box_selecting
             was_drag = self._dragging_marks
-            was_resize = self._resizing_wave or self._resizing_video_lane or self._resizing_mark_lanes
+            was_resize = (
+                self._resizing_wave
+                or self._resizing_video_lane
+                or self._resizing_mark_lanes
+                or self._resizing_header
+            )
             drag_moved = self._drag_moved
             click_seek = self._drag_click_seek
             box_click_seek = self._box_click_seek
@@ -2826,6 +2902,7 @@ class TimelineWidget(QWidget):
             self._resizing_wave = False
             self._resizing_video_lane = False
             self._resizing_mark_lanes = False
+            self._resizing_header = False
             self._box_selecting = False
             self._dragging_marks = False
             self._drag_click_seek = None
@@ -3146,6 +3223,7 @@ class TimelineWidget(QWidget):
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
+                self._paint_header_splitter(painter)
                 return
 
         painter.fillRect(self.rect(), QColor(BG_APP))
@@ -3181,6 +3259,17 @@ class TimelineWidget(QWidget):
             mid_x = self._header_width + (right - self._header_width) // 2
             painter.setPen(QPen(QColor("#a0a0a0"), 1))
             painter.drawLine(mid_x - 18, wave_bottom, mid_x + 18, wave_bottom)
+
+    def _paint_header_splitter(self, painter: QPainter) -> None:
+        """Vertical drag handle between Mark Type labels and the waveform."""
+        active = self._resizing_header or self._header_split_hover
+        x = int(self._header_width)
+        color = QColor("#5a5a5a") if active else QColor("#27272a")
+        painter.fillRect(x - 1, 0, 2, self.height(), color)
+        if active:
+            mid_y = self.height() // 2
+            painter.setPen(QPen(QColor("#a0a0a0"), 1))
+            painter.drawLine(x, mid_y - 18, x, mid_y + 18)
 
     def _paint_video_lane_splitter(self, painter: QPainter) -> None:
         """Splitter at the bottom of the Video clip row (drag to resize waveforms)."""
