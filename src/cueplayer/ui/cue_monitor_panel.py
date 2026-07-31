@@ -480,20 +480,6 @@ class CueMonitorPanel(QWidget):
         self._list_collapsed.clicked.connect(self._show_cue_list)
         self._list_collapsed.customContextMenuRequested.connect(self._show_cue_list_context_menu)
 
-        # Shown between Timecode and Cue List when both NOW displays are off.
-        self._now_collapsed = _RevealLabel(
-            "▸ NOW displays hidden — right-click to show Primary / Secondary"
-        )
-        self._now_collapsed.setToolTip(
-            "Primary and Secondary are both off. Right-click to restore a display, "
-            "or click to show Primary."
-        )
-        self._now_collapsed.clicked.connect(self._restore_now_primary_display)
-        self._now_collapsed.customContextMenuRequested.connect(
-            self._show_now_collapsed_context_menu
-        )
-        self._now_collapsed.hide()
-
         self.cue_table = QTableWidget(0, _COL_COUNT)
         self.cue_table.setObjectName("cueListTable")
         self.cue_table.setHorizontalHeaderLabels(
@@ -595,7 +581,6 @@ class CueMonitorPanel(QWidget):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(10)
         scroll_layout.addWidget(clock_frame)
-        scroll_layout.addWidget(self._now_collapsed)
         scroll_layout.addWidget(self._body_splitter, stretch=1)
 
         self._monitor_scroll = QScrollArea()
@@ -784,8 +769,6 @@ class CueMonitorPanel(QWidget):
         if not hasattr(self, "_body_splitter") or not hasattr(self, "_now_section"):
             return
         handle = self._body_splitter.handle(1)
-        if hasattr(self, "_now_collapsed"):
-            self._now_collapsed.setVisible(not show_now)
         if show_now:
             was_hidden = self._now_section.isHidden()
             self._now_section.setVisible(True)
@@ -807,6 +790,8 @@ class CueMonitorPanel(QWidget):
                     preferred = min(self._now_content_min_height(), max(80, total // 3))
                     self._body_splitter.setSizes([preferred, max(0, total - preferred)])
             self._fit_body_within_panel()
+            # Cue List viewport changed — keep the playhead row in view.
+            QTimer.singleShot(0, self._ensure_playhead_cue_visible)
             return
 
         sizes = self._body_splitter.sizes()
@@ -821,13 +806,7 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setSizes([0, total])
         handle.setEnabled(False)
         self._now_section.setVisible(False)
-
-    def _restore_now_primary_display(self) -> None:
-        """Click affordance when NOW is fully collapsed — bring Primary back."""
-        self._now_primary_visible = True
-        self._apply_now_panel_visibility()
-        self._sync_current(force_now=True)
-        self.now_visibility_changed.emit()
+        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
     def _append_now_display_actions(self, menu: QMenu) -> None:
         """Primary / Secondary visibility toggles (also used when NOW is collapsed)."""
@@ -868,6 +847,7 @@ class CueMonitorPanel(QWidget):
         else:
             self._fit_body_within_panel()
         self.now_layout_changed.emit()
+        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
     def _primary_col_min(self) -> int:
         # Constant floor only — do not follow card minimumHeight (that feedback
@@ -1187,7 +1167,7 @@ class CueMonitorPanel(QWidget):
         super().resizeEvent(event)
         self._fit_clock_fonts()
         self._fit_now_chrome()
-
+        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
     @staticmethod
     def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
         font = QFont("Consolas")
@@ -1650,18 +1630,6 @@ class CueMonitorPanel(QWidget):
             menu.exec(sender.mapToGlobal(pos))
         else:
             menu.exec(self._now_section.mapToGlobal(pos))
-
-    def _show_now_collapsed_context_menu(self, pos) -> None:  # noqa: ANN001
-        """Right-click between Timecode and Cue List when NOW displays are off."""
-        menu = QMenu(self)
-        self._append_now_display_actions(menu)
-        menu.addSeparator()
-        self._append_cue_list_menu_action(menu)
-        sender = self.sender()
-        if isinstance(sender, QWidget):
-            menu.exec(sender.mapToGlobal(pos))
-        else:
-            menu.exec(self._now_collapsed.mapToGlobal(pos))
 
     def _show_cue_list_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
@@ -2133,11 +2101,79 @@ class CueMonitorPanel(QWidget):
         self._playhead_list_mark_id = mark.id
         self._select_mark_row(mark.id, scroll=True, emit_selection=True)
 
+    def _ensure_playhead_cue_visible(self) -> None:
+        """Re-scroll the playhead cue after layout changes (NOW collapse, resize)."""
+        mark_id = self._playhead_list_mark_id
+        if mark_id:
+            self._scroll_cue_row_into_view(mark_id, only_if_obscured=True)
+            return
+        # No cached row yet — resolve from playhead once.
+        if self._song is None:
+            return
+        mark = self._song.last_mark_at_or_before(self._position)
+        if mark is None:
+            return
+        self._playhead_list_mark_id = mark.id
+        self._select_mark_row(mark.id, scroll=True, emit_selection=False)
+
+    def _scroll_cue_row_into_view(
+        self,
+        mark_id: str,
+        *,
+        only_if_obscured: bool = False,
+    ) -> None:
+        """Center the cue row in the Cue List, with a bottom margin so it is not buried."""
+        if not self.cue_table.isVisible():
+            return
+        row = -1
+        for candidate in range(self.cue_table.rowCount()):
+            if self._mark_id_at_row(candidate) == mark_id:
+                row = candidate
+                break
+        if row < 0:
+            return
+        item = self.cue_table.item(row, 0)
+        if item is None:
+            item = self.cue_table.item(row, self._time_col())
+        if item is None:
+            return
+        index = self.cue_table.model().index(row, 0)
+        vp_h = self.cue_table.viewport().height()
+        if vp_h <= 0:
+            return
+        margin = max(12, _ROW_HEIGHT // 2)
+        rect = self.cue_table.visualRect(index)
+        if only_if_obscured and rect.height() > 0:
+            fully_visible = rect.top() >= 0 and rect.bottom() <= vp_h - margin
+            if fully_visible:
+                return
+        self.cue_table.scrollToItem(
+            item,
+            QAbstractItemView.ScrollHint.PositionAtCenter,
+        )
+        rect = self.cue_table.visualRect(index)
+        # Keep at least ~½ row clear of the bottom edge (avoids “buried” selection).
+        if rect.bottom() > vp_h - margin:
+            bar = self.cue_table.verticalScrollBar()
+            if bar is not None:
+                bar.setValue(int(bar.value() + (rect.bottom() - (vp_h - margin))))
+                rect = self.cue_table.visualRect(index)
+        # Outer monitor scroll: if the Cue List block sits below the viewport,
+        # bring the selected row into the visible window.
+        if hasattr(self, "_monitor_scroll") and hasattr(self, "_monitor_scroll_content"):
+            row_global = self.cue_table.viewport().mapToGlobal(rect.center())
+            content_pt = self._monitor_scroll_content.mapFromGlobal(row_global)
+            self._monitor_scroll.ensureVisible(
+                content_pt.x(),
+                content_pt.y(),
+                8,
+                max(margin, _ROW_HEIGHT),
+            )
+
     def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> None:
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
-        time_col = self._time_col()
         for row in range(self.cue_table.rowCount()):
             if self._mark_id_at_row(row) != mark_id:
                 continue
@@ -2146,12 +2182,10 @@ class CueMonitorPanel(QWidget):
                 model.SelectionFlag.Select | model.SelectionFlag.Rows,
             )
             if scroll:
-                time_item = self.cue_table.item(row, time_col)
-                if time_item is not None:
-                    self.cue_table.scrollToItem(
-                        time_item,
-                        QAbstractItemView.ScrollHint.PositionAtCenter,
-                    )
+                # Defer until after layout so PositionAtCenter uses the real viewport.
+                QTimer.singleShot(
+                    0, lambda mid=mark_id: self._scroll_cue_row_into_view(mid)
+                )
             break
         self._syncing_selection = False
         if emit_selection:
