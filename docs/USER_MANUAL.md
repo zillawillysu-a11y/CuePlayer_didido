@@ -40,7 +40,7 @@
 | **Shift / Ctrl** | 多選 |
 | **Del / Backspace** | 刪除選取 |
 | 點 **Time** | 跳到該 Mark |
-| 右鍵 Cue List | 顯示／隱藏 Cue List |
+| 右鍵 Cue List | 顯示／隱藏 Cue List；**Renumber**＝依時間重編 Cue ID（會先確認） |
 | 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID；**Single-line NOW**＝Primary／Secondary 的 Type / Cue / Note 同一行（並排時兩邊一致）；**Secondary on the right / below**＝Secondary 在右或下方；也可顯示／隱藏 Primary／Secondary |
 
 ## 左側 Setlist
@@ -49,7 +49,8 @@
 |------|------|
 | 雙擊 **No. / Name / BPM** | 編輯 |
 | 拖欄寬 | 調整欄位寬度 |
-| 右鍵 | 資料夾、完整編輯、欄位顯示（Song English / BPM / LTC·Video Output Status） |
+| 右鍵 | 資料夾、完整編輯、欄位顯示（Song English / BPM / LTC·Video Output Status）；選取後可 Renumber（會先確認） |
+| **Renumber** 按鈕 | 依區段／全部重編 No.（會先確認） |
 | 拖歌曲 | 排序，或拖到 Folder |
 | 拖 Folder 標題 | 整夾（含歌曲）上下移動 |
 | 拖入音訊／影片 | 新增多首歌 |

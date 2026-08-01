@@ -5166,6 +5166,16 @@ class MainWindow(QMainWindow):
         if not before:
             self.status.showMessage("No Main cues to renumber", 2500)
             return
+        answer = QMessageBox.question(
+            self,
+            "Renumber Cue IDs",
+            f'Renumber Cue IDs for {scope_label} to 1, 2, 3… in time order?\n'
+            f"({len(before)} cue(s) — existing Cue IDs will be overwritten.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         after = renumber_main_cue_ids_sequential(self.current_song, lane_indices=scope)
         if before == after:
             self.status.showMessage("Cue IDs already 1, 2, 3…", 2000)
