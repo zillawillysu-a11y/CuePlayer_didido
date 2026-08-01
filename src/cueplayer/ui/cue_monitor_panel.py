@@ -53,6 +53,16 @@ from cueplayer.ui.theme import BG_SELECTED, SPLITTER_HOVER, SPLITTER_IDLE, TEXT
 from cueplayer.ui.transport_bar import format_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
+# Cue List QSS: ``padding: 8px 8px`` on items. Keep height/paint in sync so the
+# last wrapped Note line is never clipped into an ellipsis.
+_NOTE_PAD_X = 8
+_NOTE_PAD_Y = 8
+_NOTE_WRAP_FLAGS = int(
+    Qt.TextFlag.TextWordWrap
+    | Qt.TextFlag.TextWrapAnywhere
+    | Qt.AlignmentFlag.AlignLeft
+    | Qt.AlignmentFlag.AlignTop
+)
 _ROW_HEIGHT = 34
 
 
@@ -79,20 +89,34 @@ class _RevealLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
+def _note_inner_width(column_width: int) -> int:
+    return max(24, int(column_width) - (2 * _NOTE_PAD_X))
+
+
+def _note_text_height(fm: QFontMetrics, text: str, column_width: int) -> int:
+    """Full wrapped Note height including cell padding (no elide)."""
+    inner = _note_inner_width(column_width)
+    br = fm.boundingRect(0, 0, inner, 100000, _NOTE_WRAP_FLAGS, text or "")
+    # +1 line of slack: Fusion/style rounding can otherwise clip the last glyph
+    # into "…" even when ElideNone is set on the view.
+    return max(_ROW_HEIGHT, int(br.height()) + (2 * _NOTE_PAD_Y) + fm.lineSpacing())
+
+
 class _PaddedItemDelegate(QStyledItemDelegate):
     """Extra vertical padding so edited text is not clipped.
 
     Selection keeps each cell's own foreground (Mark Type lane colors) instead
     of the global stylesheet forcing selected rows to pure white.
+    Note column paints with the same wrap metrics used for row height so the
+    last CJK characters are never replaced by an ellipsis.
     """
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
-        # Note wraps; keep wrap flags even when the style option is rebuilt.
         if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
-            opt.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
-            opt.textElideMode = Qt.TextElideMode.ElideNone
+            self._paint_note(painter, opt, index)
+            return
         opt.rect = opt.rect.adjusted(0, 2, 0, -2)
         if opt.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(opt.rect, QColor(BG_SELECTED))
@@ -112,16 +136,24 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
         super().paint(painter, opt, index)
 
+    def _paint_note(self, painter, opt: QStyleOptionViewItem, index) -> None:  # noqa: ANN001
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor(BG_SELECTED))
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        if not text:
+            return
+        text_rect = opt.rect.adjusted(_NOTE_PAD_X, _NOTE_PAD_Y, -_NOTE_PAD_X, -_NOTE_PAD_Y)
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setPen(QColor(TEXT))
+        painter.drawText(text_rect, _NOTE_WRAP_FLAGS, text)
+        painter.restore()
+
     def sizeHint(self, option, index):  # noqa: ANN001
         if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
             text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
             width = option.rect.width() if option.rect.width() > 0 else 140
-            # Match item padding in the Cue List stylesheet (~8px each side).
-            inner = max(24, int(width) - 20)
-            fm = option.fontMetrics
-            flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
-            br = fm.boundingRect(0, 0, inner, 10000, flags, text)
-            height = max(_ROW_HEIGHT, int(br.height()) + 18)
+            height = _note_text_height(option.fontMetrics, text, width)
             return QSize(width, height)
         return super().sizeHint(option, index)
 
@@ -702,10 +734,7 @@ class CueMonitorPanel(QWidget):
     def _note_row_height_for_text(self, text: str, column_width: int) -> int:
         """Height so the full Note is visible (wrap + CJK without spaces)."""
         fm = QFontMetrics(self.cue_table.font())
-        inner = max(24, int(column_width) - 20)
-        flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
-        br = fm.boundingRect(0, 0, inner, 10000, flags, text or "")
-        return max(_ROW_HEIGHT, int(br.height()) + 18)
+        return _note_text_height(fm, text, column_width)
 
     def _reflow_note_row_heights(self) -> None:
         note_col = self._col_for_field("note")
@@ -1774,8 +1803,10 @@ class CueMonitorPanel(QWidget):
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
+                    # Top-align wrapped Note so the last line is never clipped
+                    # by vertical centering inside a barely-tall-enough row.
                     note_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
                     )
                     note_item.setToolTip(
                         "Click to edit Note — long text wraps and grows the row"
