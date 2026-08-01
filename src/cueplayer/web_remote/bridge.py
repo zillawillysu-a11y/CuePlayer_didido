@@ -186,7 +186,7 @@ class WebRemoteBridge(QObject):
                 buf,
                 song_id=song_id,
                 duration=duration,
-                buckets=int(buckets) if buckets else 2400,
+                buckets=int(buckets) if buckets else 3200,
             )
             self._wave_cache_key = key
             self._wave_cache = payload
@@ -194,10 +194,10 @@ class WebRemoteBridge(QObject):
 
         t0 = float(start if start is not None else 0.0)
         t1 = float(end if end is not None else duration)
-        n = int(buckets) if buckets else 1600
+        n = int(buckets) if buckets else 4000
         # Quantize cache key so tiny pan deltas reuse the last detail slice.
-        q0 = round(t0 * 20) / 20.0
-        q1 = round(t1 * 20) / 20.0
+        q0 = round(t0 * 40) / 40.0
+        q1 = round(t1 * 40) / 40.0
         dkey = (song_id, frames, q0, q1, n)
         if self._wave_detail_cache is not None and self._wave_detail_key == dkey:
             return self._wave_detail_cache

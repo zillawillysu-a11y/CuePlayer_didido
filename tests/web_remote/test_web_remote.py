@@ -99,15 +99,16 @@ def test_build_waveform_overview_from_peaks() -> None:
 
 
 def test_build_waveform_window_zoomed() -> None:
-    # Fine pyramid: 1 bucket per sample (synthetic).
+    # Fine pyramid + mono for raw path.
     n = 4800
     mins = np.linspace(-0.8, -0.1, n, dtype=np.float32)
     maxs = np.linspace(0.1, 0.9, n, dtype=np.float32)
+    mono = np.sin(np.linspace(0, 40 * np.pi, 48000)).astype(np.float32) * 0.5
     buf = AudioBuffer(
         path=__import__("pathlib").Path("x.wav"),
         sample_rate=48000,
-        samples=np.zeros((48000, 1), dtype=np.float32),
-        mono=np.zeros(48000, dtype=np.float32),
+        samples=mono.reshape(-1, 1),
+        mono=mono,
         peak_levels=[
             PeakLevel(samples_per_bucket=10, mins=mins, maxs=maxs),
             PeakLevel(samples_per_bucket=100, mins=mins[::10], maxs=maxs[::10]),
@@ -119,16 +120,27 @@ def test_build_waveform_window_zoomed() -> None:
         duration=1.0,
         start=0.2,
         end=0.4,
-        buckets=200,
+        buckets=2000,
     )
     assert window["ready"] is True
     assert window["detail"] is True
-    assert window["buckets"] == 200
+    assert window["buckets"] == 2000
     assert abs(window["start"] - 0.2) < 1e-6
     assert abs(window["end"] - 0.4) < 1e-6
-    assert len(window["mins"]) == 200
-    # Zoomed window should not be flat zeros.
+    assert len(window["mins"]) == 2000
     assert max(abs(v) for v in window["maxs"]) > 0.05
+    # Tight zoom should prefer mono when samples/pixel is low enough.
+    tight = build_waveform_window(
+        buf,
+        song_id="s1",
+        duration=1.0,
+        start=0.25,
+        end=0.28,
+        buckets=3000,
+    )
+    assert tight["ready"] is True
+    assert tight["source"] == "mono"
+    assert max(abs(v) for v in tight["maxs"]) > 0.05
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:

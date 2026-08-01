@@ -824,7 +824,7 @@
 
   function zoomAt(factor, anchorSec) {
     const span = viewSpan();
-    const next = Math.min(syncDur, Math.max(0.5, span * factor));
+    const next = Math.min(syncDur, Math.max(0.12, span * factor));
     const anchor = anchorSec == null ? (viewStart + viewEnd) / 2 : anchorSec;
     const ratio = span > 1e-6 ? (anchor - viewStart) / span : 0.5;
     viewStart = anchor - next * ratio;
@@ -984,7 +984,7 @@
     if (waveLoading) return;
     waveLoading = true;
     try {
-      const data = await api("/api/waveform?buckets=2400");
+      const data = await api("/api/waveform?buckets=3200");
       waveOverview = data;
       wave = data;
       if (!data.ready) {
@@ -1015,24 +1015,27 @@
       waveDetail = null;
       return;
     }
-    const pad = Math.max(0.05, span * 0.35);
+    // Modest pad so panning doesn't constantly refetch, but keep density high.
+    const pad = Math.max(0.02, span * 0.2);
     const a = Math.max(0, viewStart - pad);
     const b = Math.min(syncDur, viewEnd + pad);
-    if (
+    const paddedSpan = Math.max(0.05, b - a);
+    const cssW = Math.max(1, (els.waveWrap && els.waveWrap.clientWidth) || 800);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const px = Math.max(800, Math.round(cssW * dpr));
+    // Request enough columns so the *visible* span has ~3 samples/pixel after pad.
+    const need = Math.round(px * (paddedSpan / span) * 3);
+    const buckets = Math.max(1200, Math.min(10000, need));
+    const densityOk = (
       waveDetail
       && waveDetail.ready
       && waveDetail.song_id === songId
-      && a >= Number(waveDetail.start)
-      && b <= Number(waveDetail.end)
-      && Number(waveDetail.buckets) >= 900
-    ) {
-      return;
-    }
-    if (waveDetailLoading) {
-      // Still allow a newer request id to supersede when this finishes.
-    }
-    const px = Math.max(600, Math.min(2400, Math.round((els.waveCanvas && els.waveCanvas.width) || 1200)));
-    const buckets = px;
+      && a >= Number(waveDetail.start) - 1e-4
+      && b <= Number(waveDetail.end) + 1e-4
+      && Number(waveDetail.buckets) >= buckets * 0.85
+    );
+    if (densityOk) return;
+
     const req = ++waveDetailReq;
     waveDetailLoading = true;
     try {
