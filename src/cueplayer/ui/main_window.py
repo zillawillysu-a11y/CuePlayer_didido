@@ -197,6 +197,7 @@ _KEY_NOW_PRIMARY_VISIBLE = "ui/now_primary_visible"
 _KEY_NOW_SECONDARY_VISIBLE = "ui/now_secondary_visible"
 _KEY_CUE_LIST_VISIBLE = "ui/cue_list_visible"
 _KEY_NOW_PRIMARY_SHOW_CUE_ID = "ui/now_primary_show_cue_id"
+_KEY_NOW_PRIMARY_SINGLE_LINE = "ui/now_primary_single_line"
 _KEY_CUE_LIST_SHOW_CUE_ID = "ui/cue_list_show_cue_id"
 _KEY_CUE_LIST_COLUMN_ORDER = "ui/cue_list_column_order"
 _KEY_CUE_LIST_HEADER = "ui/cue_list_header"
@@ -1616,6 +1617,10 @@ class MainWindow(QMainWindow):
             prefs["now_primary_show_cue_id"] = settings.value(
                 _KEY_NOW_PRIMARY_SHOW_CUE_ID, True, type=bool
             )
+        if settings.contains(_KEY_NOW_PRIMARY_SINGLE_LINE):
+            prefs["now_primary_single_line"] = settings.value(
+                _KEY_NOW_PRIMARY_SINGLE_LINE, False, type=bool
+            )
         if settings.contains(_KEY_CUE_LIST_SHOW_CUE_ID):
             prefs["cue_list_show_cue_id"] = settings.value(
                 _KEY_CUE_LIST_SHOW_CUE_ID, True, type=bool
@@ -1638,6 +1643,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SECONDARY_VISIBLE, prefs["now_secondary_visible"])
         self._settings.setValue(_KEY_CUE_LIST_VISIBLE, prefs["cue_list_visible"])
         self._settings.setValue(_KEY_NOW_PRIMARY_SHOW_CUE_ID, prefs["now_primary_show_cue_id"])
+        self._settings.setValue(_KEY_NOW_PRIMARY_SINGLE_LINE, prefs["now_primary_single_line"])
         self._settings.setValue(_KEY_CUE_LIST_SHOW_CUE_ID, prefs["cue_list_show_cue_id"])
         self._settings.setValue(_KEY_CUE_LIST_COLUMN_ORDER, prefs["cue_list_column_order"])
         self._settings.setValue(_KEY_CUE_LIST_HEADER, prefs["cue_list_header"])
@@ -1651,6 +1657,7 @@ class MainWindow(QMainWindow):
             song.now_secondary_visible = bool(prefs["now_secondary_visible"])
             song.cue_list_visible = bool(prefs["cue_list_visible"])
             song.now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+            song.now_primary_single_line = bool(prefs["now_primary_single_line"])
             song.cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
             song.cue_list_column_order = list(order)
 

@@ -231,17 +231,37 @@ def _now_card_style(
     )
 
 
-def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
+def mark_now_body(
+    song: Song,
+    mark: Mark,
+    *,
+    show_cue_id: bool = False,
+    single_line: bool = False,
+) -> str:
     lane = song.lane_by_index(mark.lane_index)
     lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
+    cue_bit = ""
+    if show_cue_id and lane is not None and lane.cue_id_enabled:
+        cue_id = mark.main_cue_id.strip()
+        if cue_id:
+            cue_bit = f"Cue {cue_id}"
+
+    if single_line:
+        # Compact: "Main - Cue 1 · NOTE" so PRIMARY can stay short.
+        tail: list[str] = []
+        if cue_bit:
+            tail.append(cue_bit)
+        if note:
+            tail.append(note)
+        if not tail:
+            return lane_bit
+        return f"{lane_bit} - " + " · ".join(tail)
 
     if show_cue_id:
         detail_lines: list[str] = []
-        if lane is not None and lane.cue_id_enabled:
-            cue_id = mark.main_cue_id.strip()
-            if cue_id:
-                detail_lines.append(f"Cue {cue_id}")
+        if cue_bit:
+            detail_lines.append(cue_bit)
         if note:
             detail_lines.append(note)
         if detail_lines:
@@ -296,6 +316,7 @@ class CueMonitorPanel(QWidget):
         self._now_secondary_visible = True
         self._cue_list_visible = True
         self._now_primary_show_cue_id = True
+        self._now_primary_single_line = False
         self._cue_list_show_cue_id = True
         self._now_placement = "right"  # "right" | "below"
         self._splitter_state_right: QByteArray | None = None
@@ -796,6 +817,7 @@ class CueMonitorPanel(QWidget):
             "now_secondary_visible": bool(self._now_secondary_visible),
             "cue_list_visible": bool(self._cue_list_visible),
             "now_primary_show_cue_id": bool(self._now_primary_show_cue_id),
+            "now_primary_single_line": bool(self._now_primary_single_line),
             "cue_list_show_cue_id": bool(self._cue_list_show_cue_id),
             "cue_list_column_order": list(self._column_order),
             "cue_list_header": bytes(self.save_cue_list_header_state()),
@@ -812,6 +834,8 @@ class CueMonitorPanel(QWidget):
             self._cue_list_visible = bool(prefs["cue_list_visible"])
         if "now_primary_show_cue_id" in prefs:
             self._now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+        if "now_primary_single_line" in prefs:
+            self._now_primary_single_line = bool(prefs["now_primary_single_line"])
         if "cue_list_show_cue_id" in prefs:
             self._cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
         order = prefs.get("cue_list_column_order")
@@ -823,6 +847,7 @@ class CueMonitorPanel(QWidget):
         self._apply_now_panel_visibility()
         self._apply_cue_list_visibility()
         self._apply_cue_list_column_visibility()
+        self._sync_primary_card_alignment()
         self._sync_current(force_now=True)
 
     def _mark_id_at_row(self, row: int) -> str | None:
@@ -1776,6 +1801,24 @@ class CueMonitorPanel(QWidget):
 
         show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
         menu.addAction(show_primary_cue_id)
+
+        single_line = QAction("Single-line Primary (Main - Cue · Note)", self)
+        single_line.setCheckable(True)
+        single_line.setChecked(bool(self._now_primary_single_line))
+        single_line.setToolTip(
+            "Put Type, Cue ID, and Note on one line so PRIMARY stays shorter"
+        )
+        single_line.setEnabled(bool(self._now_primary_visible))
+
+        def _toggle_single_line(checked: bool) -> None:
+            self._now_primary_single_line = bool(checked)
+            self._sync_primary_card_alignment()
+            self._sync_current(force_now=True)
+            self._schedule_now_card_fit()
+            self.now_visibility_changed.emit()
+
+        single_line.toggled.connect(_toggle_single_line)
+        menu.addAction(single_line)
         menu.addSeparator()
 
         self._append_now_display_actions(menu)
@@ -2225,11 +2268,28 @@ class CueMonitorPanel(QWidget):
                     if secondary
                     else bool(self._now_primary_show_cue_id)
                 ),
+                single_line=(
+                    False
+                    if secondary
+                    else bool(self._now_primary_single_line)
+                ),
             )
         )
         self._apply_card_style(cue, accent, secondary=secondary)
         active_ids.add(active.id)
         return active.id
+
+    def _sync_primary_card_alignment(self) -> None:
+        if not hasattr(self, "primary_cue"):
+            return
+        if self._now_primary_single_line:
+            self.primary_cue.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+        else:
+            self.primary_cue.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+            )
 
     def _sync_current(self, *, force_now: bool = False) -> None:
         del force_now

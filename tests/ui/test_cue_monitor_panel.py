@@ -37,3 +37,25 @@ def test_mark_now_body_type_only_when_note_empty() -> None:
     song = Song.create("Test")
     mark = Mark.create(lane_index=1, time_seconds=1.0, display_name="")
     assert mark_now_body(song, mark) == "Main"
+
+
+def test_mark_now_body_single_line_with_cue_and_note() -> None:
+    song = Song.create("Test")
+    mark = song.add_mark(1, 1.0, display_name="NOTE")
+    mark.main_cue_id = "1"
+    assert (
+        mark_now_body(song, mark, show_cue_id=True, single_line=True)
+        == "Main - Cue 1 · NOTE"
+    )
+
+
+def test_mark_now_body_single_line_note_only() -> None:
+    song = Song.create("Test")
+    mark = song.add_mark(1, 1.0, display_name="Verse")
+    assert mark_now_body(song, mark, show_cue_id=False, single_line=True) == "Main - Verse"
+
+
+def test_mark_now_body_single_line_type_only() -> None:
+    song = Song.create("Test")
+    mark = Mark.create(lane_index=1, time_seconds=1.0, display_name="")
+    assert mark_now_body(song, mark, single_line=True) == "Main"

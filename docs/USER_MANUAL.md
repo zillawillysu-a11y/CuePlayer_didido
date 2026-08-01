@@ -26,7 +26,7 @@
 | **Del / Backspace** | 刪除選取 |
 | 點 **Time** | 跳到該 Mark |
 | 右鍵 Cue List | 顯示／隱藏 Cue List |
-| 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID 行（如 Cue 2）；也可顯示／隱藏 Primary／Secondary |
+| 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID；**Single-line Primary**＝Type / Cue / Note 同一行以省高度；也可顯示／隱藏 Primary／Secondary |
 
 ## 左側 Setlist
 

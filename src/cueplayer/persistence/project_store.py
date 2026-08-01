@@ -583,6 +583,7 @@ def project_to_dict(
                 "cue_list_column_order": list(song.cue_list_column_order),
                 "cue_list_show_cue_id": bool(song.cue_list_show_cue_id),
                 "now_primary_show_cue_id": bool(song.now_primary_show_cue_id),
+                "now_primary_single_line": bool(song.now_primary_single_line),
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -746,6 +747,7 @@ def project_from_dict(
                 ),
                 cue_list_show_cue_id=bool(song_data.get("cue_list_show_cue_id", True)),
                 now_primary_show_cue_id=bool(song_data.get("now_primary_show_cue_id", True)),
+                now_primary_single_line=bool(song_data.get("now_primary_single_line", False)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),

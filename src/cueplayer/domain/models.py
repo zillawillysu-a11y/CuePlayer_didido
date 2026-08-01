@@ -335,6 +335,8 @@ class Song:
     cue_list_show_cue_id: bool = True
     # When False, PRIMARY NOW card hides Cue ID lines (right-click NOW to toggle).
     now_primary_show_cue_id: bool = True
+    # When True, PRIMARY NOW puts Type / Cue / Note on one line (saves height).
+    now_primary_single_line: bool = False
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -540,6 +542,7 @@ class Song:
             cue_list_column_order=list(self.cue_list_column_order),
             cue_list_show_cue_id=self.cue_list_show_cue_id,
             now_primary_show_cue_id=self.now_primary_show_cue_id,
+            now_primary_single_line=self.now_primary_single_line,
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
         dup.audio_tracks = [
