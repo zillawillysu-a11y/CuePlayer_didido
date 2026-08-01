@@ -39,6 +39,9 @@ def lanes_to_dicts(lanes: list[MarkLane]) -> list[dict[str, Any]]:
                     getattr(lane, "prompt_note_on_mark", False)
                 ),
                 "show_note_on_wave": bool(getattr(lane, "show_note_on_wave", False)),
+                "show_cue_id_on_wave": bool(
+                    getattr(lane, "show_cue_id_on_wave", False)
+                ),
                 "marker_shape": lane.marker_shape,
                 "show_row_color": bool(getattr(lane, "show_row_color", True)),
             }
@@ -84,6 +87,7 @@ def dicts_to_lanes(raw: list[Any]) -> list[MarkLane]:
                 pause_on_mark=bool(item.get("pause_on_mark", False)),
                 prompt_note_on_mark=bool(item.get("prompt_note_on_mark", False)),
                 show_note_on_wave=bool(item.get("show_note_on_wave", False)),
+                show_cue_id_on_wave=bool(item.get("show_cue_id_on_wave", False)),
                 marker_shape=shape,  # type: ignore[arg-type]
                 show_row_color=bool(item.get("show_row_color", True)),
             )

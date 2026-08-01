@@ -34,6 +34,7 @@ def test_ask_and_wave_note_defaults_false() -> None:
     song = Song.create("Notes")
     assert all(lane.prompt_note_on_mark is False for lane in song.mark_lanes)
     assert all(lane.show_note_on_wave is False for lane in song.mark_lanes)
+    assert all(lane.show_cue_id_on_wave is False for lane in song.mark_lanes)
 
 
 def test_ask_and_wave_note_project_roundtrip() -> None:
@@ -41,20 +42,24 @@ def test_ask_and_wave_note_project_roundtrip() -> None:
     lane = project.songs[0].mark_lanes[0]
     lane.prompt_note_on_mark = True
     lane.show_note_on_wave = True
+    lane.show_cue_id_on_wave = True
     restored = project_from_dict(project_to_dict(project))
     got = restored.songs[0].mark_lanes[0]
     assert got.prompt_note_on_mark is True
     assert got.show_note_on_wave is True
+    assert got.show_cue_id_on_wave is True
 
 
 def test_ask_and_wave_note_template_roundtrip() -> None:
     song = Song.create("Tpl")
     song.mark_lanes[0].prompt_note_on_mark = True
     song.mark_lanes[0].show_note_on_wave = True
+    song.mark_lanes[0].show_cue_id_on_wave = True
     lanes = dicts_to_lanes(lanes_to_dicts(song.mark_lanes))
     main = next(lane for lane in lanes if lane.index == 1)
     assert main.prompt_note_on_mark is True
     assert main.show_note_on_wave is True
+    assert main.show_cue_id_on_wave is True
 
 
 def test_mark_manager_has_ask_and_wave_columns(app: QApplication) -> None:
@@ -63,8 +68,11 @@ def test_mark_manager_has_ask_and_wave_columns(app: QApplication) -> None:
         dialog.table.horizontalHeaderItem(c).text()
         for c in range(dialog.table.columnCount())
     ]
+    from cueplayer.ui.mark_manager_dialog import _COL_WAVE_CUE
+
     assert headers[_COL_ASK_NOTE] == "Ask Note"
     assert headers[_COL_WAVE_NOTE] == "Wave Note"
+    assert headers[_COL_WAVE_CUE] == "Wave Cue"
 
 
 def test_add_mark_prompts_for_note(app: QApplication) -> None:

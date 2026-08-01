@@ -22,6 +22,7 @@ from cueplayer.ui.mark_manager_dialog import (
     _COL_MIDI,
     _COL_PAUSE,
     _COL_VISIBLE,
+    _COL_WAVE_CUE,
     _COL_WAVE_NOTE,
 )
 
@@ -40,6 +41,7 @@ def _bulk_columns() -> tuple[int, ...]:
         _COL_PAUSE,
         _COL_ASK_NOTE,
         _COL_WAVE_NOTE,
+        _COL_WAVE_CUE,
     )
 
 

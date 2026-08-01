@@ -13,10 +13,11 @@
 | **Space** | Play / Pause |
 | **← / →** | 微調 playhead（配合修飾鍵可改秒數／Frame） |
 | **1–9** | 在 playhead 打對應 Mark |
-| 波形上 Mark **右鍵** | 刪除、Rename Note、換成其他 Type；也可 Offset Time |
+| 波形上 Mark **右鍵** | 刪除、Rename Note、Edit Cue ID、換成其他 Type；也可 Offset Time |
 | Mark Manager **Pause** | 勾選後，打該 Type（快捷鍵或點軌道）會暫停播放 |
 | Mark Manager **Ask Note** | 勾選後，打標（常搭配 Pause）會跳出 Note 輸入框 |
 | Mark Manager **Wave Note** | 勾選後，波形上標記線頂端右側顯示該標的 Note |
+| Mark Manager **Wave Cue** | 勾選後，波形上標記線頂端右側顯示 Cue ID（需該 Type 開 Cue ID） |
 | 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
 | Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
 | 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |

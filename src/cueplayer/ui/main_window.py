@@ -1304,6 +1304,7 @@ class MainWindow(QMainWindow):
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
         self.timeline.note_rename_requested.connect(self._on_note_changed)
+        self.timeline.cue_id_edit_requested.connect(self._on_cue_id_changed)
         self.timeline.change_type_requested.connect(self._change_mark_types)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)

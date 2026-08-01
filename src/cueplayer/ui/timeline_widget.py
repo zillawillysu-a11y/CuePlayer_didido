@@ -64,6 +64,7 @@ class TimelineWidget(QWidget):
     marks_moved = Signal(object)  # dict[str, tuple[float, float]]
     offset_requested = Signal(list, float)  # mark ids, delta seconds
     note_rename_requested = Signal(str, str, str)  # mark_id, old_name, new_name
+    cue_id_edit_requested = Signal(str, str, str)  # mark_id, old_id, new_id
     change_type_requested = Signal(list, int)  # mark ids, new lane_index
     loop_changed = Signal(object, object)  # loop_a, loop_b
     auto_scroll_changed = Signal(bool)
@@ -3151,6 +3152,22 @@ class TimelineWidget(QWidget):
             if n == 1
             else "Select a single mark to rename its Note"
         )
+        edit_cue_action = menu.addAction("Edit Cue ID…")
+        edit_cue_action.setEnabled(False)
+        if n == 1:
+            only = self._song.mark_by_id(ids[0])
+            only_lane = (
+                self._song.lane_by_index(only.lane_index) if only is not None else None
+            )
+            if only_lane is not None and only_lane.cue_id_enabled:
+                edit_cue_action.setEnabled(True)
+                edit_cue_action.setToolTip("Edit the Cue ID for this mark")
+            else:
+                edit_cue_action.setToolTip(
+                    "Cue ID is only available on types with Cue ID enabled"
+                )
+        else:
+            edit_cue_action.setToolTip("Select a single mark to edit its Cue ID")
 
         type_menu = menu.addMenu("Change Type")
         type_actions: list[tuple[object, int]] = []
@@ -3210,6 +3227,9 @@ class TimelineWidget(QWidget):
             self.note_rename_requested.emit(mark.id, old_name, new_name)
             self.update()
             return
+        if chosen is edit_cue_action and n == 1:
+            self._prompt_edit_cue_id(ids[0])
+            return
         if chosen is offset_action:
             seconds, ok = QInputDialog.getDouble(
                 self,
@@ -3231,6 +3251,59 @@ class TimelineWidget(QWidget):
             if chosen is act:
                 self.offset_requested.emit(ids, float(delta))
                 return
+
+    def _prompt_edit_cue_id(self, mark_id: str) -> None:
+        if self._song is None:
+            return
+        mark = self._song.mark_by_id(mark_id)
+        if mark is None:
+            return
+        lane = self._song.lane_by_index(mark.lane_index)
+        if lane is None or not lane.cue_id_enabled:
+            return
+        from cueplayer.domain.main_cue_id import (
+            is_valid_main_cue_id_text,
+            main_cue_id_fits_order,
+            main_cue_id_order_hint,
+            main_cue_id_taken,
+            normalize_main_cue_id_text,
+        )
+
+        text, ok = QInputDialog.getText(
+            self,
+            "Edit Cue ID",
+            "Cue ID:",
+            text=mark.main_cue_id,
+        )
+        if not ok:
+            return
+        raw = text.strip()
+        if not is_valid_main_cue_id_text(raw):
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Edit Cue ID", "Cue ID must be a positive number.")
+            return
+        new_id = normalize_main_cue_id_text(raw)
+        if new_id == mark.main_cue_id:
+            return
+        if not main_cue_id_fits_order(self._song, mark.id, new_id):
+            from PySide6.QtWidgets import QMessageBox
+
+            if main_cue_id_taken(
+                self._song,
+                new_id,
+                exclude_mark_id=mark.id,
+                lane_index=mark.lane_index,
+            ):
+                msg = f"Cue ID {new_id!r} is already used"
+            else:
+                msg = main_cue_id_order_hint(self._song, mark.id)
+            QMessageBox.warning(self, "Edit Cue ID", msg)
+            return
+        old_id = mark.main_cue_id
+        mark.main_cue_id = new_id
+        self.cue_id_edit_requested.emit(mark.id, old_id, new_id)
+        self.update()
 
     def wheelEvent(self, event) -> None:  # noqa: ANN001
         pixel = event.pixelDelta()
@@ -4122,21 +4195,37 @@ class TimelineWidget(QWidget):
                 else:
                     painter.setPen(self._mark_overlay_pen(color))
                 painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
-                # Optional Note label at the top of the stem (right of the line).
-                if lane is not None and bool(getattr(lane, "show_note_on_wave", False)):
-                    note = (mark.display_name or "").strip()
-                    if note:
-                        label_color = color.lighter(140) if (selected or hovered) else color
+                # Optional Cue ID / Note labels at the top of the stem (right of the line).
+                if lane is not None:
+                    show_cue = bool(getattr(lane, "show_cue_id_on_wave", False))
+                    show_note = bool(getattr(lane, "show_note_on_wave", False))
+                    cue_text = ""
+                    if show_cue and bool(getattr(lane, "cue_id_enabled", False)):
+                        cue_text = (mark.main_cue_id or "").strip()
+                    note_text = (mark.display_name or "").strip() if show_note else ""
+                    if cue_text or note_text:
+                        label_color = (
+                            color.lighter(140) if (selected or hovered) else color
+                        )
                         painter.setPen(label_color)
                         font = painter.font()
                         font.setBold(True)
                         font.setPointSize(max(8, min(11, font.pointSize() or 9)))
                         painter.setFont(font)
                         fm = painter.fontMetrics()
-                        # Cap width so dense marks stay readable.
-                        elided = fm.elidedText(note, Qt.TextElideMode.ElideRight, 140)
                         text_y = self._ruler_height + fm.ascent() + 2
-                        painter.drawText(QPointF(x + 5, text_y), elided)
+                        if cue_text:
+                            cue_label = f"Cue {cue_text}"
+                            elided = fm.elidedText(
+                                cue_label, Qt.TextElideMode.ElideRight, 100
+                            )
+                            painter.drawText(QPointF(x + 5, text_y), elided)
+                            text_y += fm.height()
+                        if note_text:
+                            elided = fm.elidedText(
+                                note_text, Qt.TextElideMode.ElideRight, 140
+                            )
+                            painter.drawText(QPointF(x + 5, text_y), elided)
 
             if not lane_shapes:
                 continue

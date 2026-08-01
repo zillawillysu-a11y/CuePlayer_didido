@@ -60,9 +60,43 @@ def test_mark_context_menu_actions_exist(app: QApplication) -> None:
     titles = captured["titles"]
     assert any(t.startswith("Delete Mark") for t in titles)
     assert "Rename Note…" in titles
+    assert "Edit Cue ID…" in titles
     assert any("Change Type" in t for t in titles)
     assert "Offset Time…" in titles
     assert any("Main" in t for t in captured["type_titles"])
+
+
+def test_edit_cue_id_from_mark_menu(app: QApplication) -> None:
+    window = MainWindow(Project.create("CueEdit"))
+    song = window.current_song
+    mark = song.add_mark(1, 1.0, display_name="X")
+    assert mark.main_cue_id
+    window.timeline.set_song(song)
+    window.timeline.set_selected_mark_ids([mark.id])
+    app.processEvents()
+
+    class FakeMenu(QMenu):
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            super().__init__(*args, **kwargs)
+            self._edit = None
+
+        def addAction(self, *args, **kwargs):  # noqa: ANN002, ANN003, N802
+            act = super().addAction(*args, **kwargs)
+            if act.text() == "Edit Cue ID…":
+                self._edit = act
+            return act
+
+        def exec(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            return self._edit
+
+    # Pick a valid neighboring-friendly id — for a lone mark, "2" is fine.
+    with (
+        patch("cueplayer.ui.timeline_widget.QMenu", FakeMenu),
+        patch.object(QInputDialog, "getText", return_value=("2", True)),
+    ):
+        window.timeline._show_mark_item_context_menu(QPoint(10, 10), [mark.id])
+    app.processEvents()
+    assert mark.main_cue_id == "2"
 
 
 def test_rename_note_from_mark_menu(app: QApplication) -> None:

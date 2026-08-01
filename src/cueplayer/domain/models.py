@@ -110,6 +110,8 @@ class MarkLane:
     prompt_note_on_mark: bool = False
     # When True, draw the Note text next to the mark line on the waveform.
     show_note_on_wave: bool = False
+    # When True, draw the Cue ID next to the mark line on the waveform.
+    show_cue_id_on_wave: bool = False
     marker_shape: MarkerShape = "triangle_up"
     # Tinted row in the timeline (right of the header); header stays neutral.
     # Deprecated — track tint is project-global (show_mark_track_colors).

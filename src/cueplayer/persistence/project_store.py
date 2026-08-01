@@ -562,6 +562,9 @@ def project_to_dict(
                         "show_note_on_wave": bool(
                             getattr(lane, "show_note_on_wave", False)
                         ),
+                        "show_cue_id_on_wave": bool(
+                            getattr(lane, "show_cue_id_on_wave", False)
+                        ),
                         "marker_shape": lane.marker_shape,
                         "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
@@ -674,6 +677,7 @@ def project_from_dict(
                     pause_on_mark=bool(lane.get("pause_on_mark", False)),
                     prompt_note_on_mark=bool(lane.get("prompt_note_on_mark", False)),
                     show_note_on_wave=bool(lane.get("show_note_on_wave", False)),
+                    show_cue_id_on_wave=bool(lane.get("show_cue_id_on_wave", False)),
                     marker_shape=shape,
                     show_row_color=bool(lane.get("show_row_color", True)),
                 )
