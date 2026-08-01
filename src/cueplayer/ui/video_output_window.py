@@ -101,7 +101,7 @@ class CleanVideoOutputWindow(QWidget):
         # far softer/blockier than the Decode Quality setting. Decode caps +
         # long-video preload skips are the primary jank controls now.
         self.preview = VideoPreviewWidget(
-            self, placeholder_text="", smooth_scale=True
+            self, placeholder_text="", smooth_scale=False
         )
         layout.addWidget(self.preview)
         self.resize(1920, 1080)

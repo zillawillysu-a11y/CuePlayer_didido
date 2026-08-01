@@ -1041,6 +1041,7 @@ class MainWindow(QMainWindow):
         # no independent video timer (AGENTS.md non-negotiable).
         self.video_sync = VideoSyncController(self)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
+        self.video_sync.set_timeline_video_heavy(bool(self.project.show_video_track))
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         self.video_preview = VideoPreviewWidget(context_menu=True, smooth_scale=False)
@@ -3268,27 +3269,39 @@ class MainWindow(QMainWindow):
         from cueplayer.domain.models import coerce_file_ltc_side
 
         song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
-        if draft.audio_path is not None and Path(draft.audio_path).is_file():
-            audio_path = Path(draft.audio_path)
-            song.audio_tracks = [
-                AudioTrack(
-                    id="main_audio",
-                    name=audio_path.stem,
-                    path=audio_path,
-                    role="main",
-                )
-            ]
-            # Metadata duration now — do not wait for full waveform decode
-            # (empty project used to show 1:00 until load finished).
-            self._apply_probed_audio_duration(audio_path, song=song)
-            if song.bpm is None:
-                self._schedule_bpm_detect_for_song(song, audio_path)
-        else:
+
+        current_audio = Path(song.audio_tracks[0].path) if song.audio_tracks else None
+        current_video = Path(song.video_clips[0].path) if song.video_clips else None
+        draft_audio = Path(draft.audio_path) if draft.audio_path is not None else None
+        draft_video = Path(draft.video_path) if draft.video_path is not None else None
+
+        if bool(getattr(draft, "media_cleared", False)):
             song.audio_tracks = []
-        if draft.video_path is not None and Path(draft.video_path).is_file():
-            self._attach_video_source_to_song(song, Path(draft.video_path), replace_clips=True)
-        else:
             song.video_clips = []
+        else:
+            if draft_audio is not None and draft_audio.is_file():
+                if not self._same_media_path(current_audio, draft_audio):
+                    song.audio_tracks = [
+                        AudioTrack(
+                            id="main_audio",
+                            name=draft_audio.stem,
+                            path=draft_audio,
+                            role="main",
+                        )
+                    ]
+                    # Metadata duration now — do not wait for full waveform decode
+                    # (empty project used to show 1:00 until load finished).
+                    self._apply_probed_audio_duration(draft_audio, song=song)
+                    if song.bpm is None:
+                        self._schedule_bpm_detect_for_song(song, draft_audio)
+            # Never wipe audio_tracks on rename / metadata-only Edit Song.
+
+            if draft_video is not None and draft_video.is_file():
+                if not self._same_media_path(current_video, draft_video):
+                    self._attach_video_source_to_song(song, draft_video, replace_clips=True)
+            # Never wipe video_clips when draft.video_path is None (rename used to
+            # drop VJ clips because the file cell only showed the .wav).
+
         if song is self.current_song:
             self.engine.set_song_timebase(song.start_timecode, song.fps)
             self.engine.set_song(song)
@@ -3296,7 +3309,39 @@ class MainWindow(QMainWindow):
             self._refresh_setlist_ltc_cells()
             self._refresh_timeline_waveform_for_ltc()
             self._refresh_timecode_status()
+    @staticmethod
+    def _same_media_path(a: Path | None, b: Path | None) -> bool:
+        if a is None or b is None:
+            return False
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except OSError:
+            return Path(a) == Path(b)
 
+    def _song_media_paths(self, song: Song) -> tuple[Path | None, Path | None]:
+        audio = Path(song.audio_tracks[0].path) if song.audio_tracks else None
+        video = Path(song.video_clips[0].path) if song.video_clips else None
+        return audio, video
+
+    def _draft_changes_media(self, song: Song, draft: SongDraft) -> bool:
+        if bool(getattr(draft, "media_cleared", False)):
+            return bool(song.audio_tracks or song.video_clips)
+        cur_audio, cur_video = self._song_media_paths(song)
+        draft_audio = Path(draft.audio_path) if draft.audio_path is not None else None
+        draft_video = Path(draft.video_path) if draft.video_path is not None else None
+        # Unchanged / preserved media → no activate needed.
+        audio_same = (
+            (cur_audio is None and draft_audio is None)
+            or self._same_media_path(cur_audio, draft_audio)
+            or (draft_audio is None and cur_audio is not None)
+        )
+        video_same = (
+            (cur_video is None and draft_video is None)
+            or self._same_media_path(cur_video, draft_video)
+            # Draft omitted video but live song still has clips (legacy drafts).
+            or (draft_video is None and cur_video is not None)
+        )
+        return not (audio_same and video_same)
     def _attach_video_source_to_song(
         self,
         song: Song,
@@ -4608,17 +4653,29 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         by_id = {song.id: song for song in self.project.songs}
+        media_changed = False
         with self._setlist_edit("Edit Song"):
             for draft in dialog.result_drafts():
                 if draft.song_id and draft.song_id in by_id:
-                    self._apply_draft_to_song(by_id[draft.song_id], draft)
+                    song = by_id[draft.song_id]
+                    if self._draft_changes_media(song, draft):
+                        media_changed = True
+                    self._apply_draft_to_song(song, draft)
             self._rebuild_song_list(select_indexes=indexes)
             if self.current_song.id in {d.song_id for d in dialog.result_drafts() if d.song_id}:
                 try:
                     cur = self.project.songs.index(self.current_song)
                 except ValueError:
                     cur = indexes[0]
-                self._activate_song(cur, stop_playback=False)
+                if media_changed:
+                    self._activate_song(cur, stop_playback=False)
+                else:
+                    # Rename / metadata only — keep waveform + video clips warm.
+                    self.engine.set_song_timebase(
+                        self.current_song.start_timecode, self.current_song.fps
+                    )
+                    self.timeline.update()
+                    self._refresh_timecode_status()
             self._mark_dirty()
             self._refresh_status()
         if len(indexes) == 1:
@@ -6924,6 +6981,7 @@ class MainWindow(QMainWindow):
 
     def _on_video_track_visibility_changed(self, visible: bool) -> None:
         self.project.set_show_video_track(bool(visible))
+        self.video_sync.set_timeline_video_heavy(bool(visible))
         action = getattr(self, "_show_video_track_action", None)
         if action is not None:
             action.blockSignals(True)
@@ -6953,6 +7011,7 @@ class MainWindow(QMainWindow):
     def _on_show_video_track_toggled(self, checked: bool) -> None:
         self.project.set_show_video_track(bool(checked))
         self.timeline.set_show_video_track(bool(checked))
+        self.video_sync.set_timeline_video_heavy(bool(checked))
         self._sync_timeline_geometry()
         self._mark_dirty()
 

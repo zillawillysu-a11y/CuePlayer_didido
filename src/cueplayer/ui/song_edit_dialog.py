@@ -63,6 +63,17 @@ class SongDraft:
     song_id: str | None = None
     # off | left | right | auto — send that file channel to Settings LTC Ch.
     file_ltc_side: str = "auto"
+    # True when the Edit Song file cell Clear button wiped media.
+    media_cleared: bool = False
+
+
+def _same_media_path(a: Path | None, b: Path | None) -> bool:
+    if a is None or b is None:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return Path(a) == Path(b)
 
 
 def format_bpm(value: float | None) -> str:
@@ -477,14 +488,31 @@ class SongEditDialog(QDialog):
                 if isinstance(file_widget, _AudioFileCell)
                 else (self._drafts[row].audio_path or self._drafts[row].video_path)
             )
+            prior = self._drafts[row]
+            prior_audio = prior.audio_path
+            prior_video = prior.video_path
+            # One file cell shows audio OR video. Renaming the song must not
+            # drop the other media — keep both when the cell is unchanged.
             audio_path = None
             video_path = None
-            if media_path is not None:
+            media_cleared = False
+            if media_path is None:
+                if prior_audio is not None or prior_video is not None:
+                    media_cleared = True
+            elif _same_media_path(media_path, prior_audio) or _same_media_path(
+                media_path, prior_video
+            ):
+                audio_path = prior_audio
+                video_path = prior_video
+            else:
                 suf = media_path.suffix.lower()
                 if suf in VIDEO_SUFFIXES:
+                    # New video still keeps an existing music file.
+                    audio_path = prior_audio
                     video_path = media_path
                 elif suf in AUDIO_SUFFIXES:
                     audio_path = media_path
+                    video_path = prior_video
             updated.append(
                 SongDraft(
                     name=name,
@@ -497,6 +525,7 @@ class SongEditDialog(QDialog):
                     video_path=video_path,
                     song_id=self._drafts[row].song_id,
                     file_ltc_side=self._file_ltc_side_at_row(row),
+                    media_cleared=media_cleared,
                 )
             )
         self._drafts = updated

@@ -52,11 +52,13 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # a second PyAV container on the same path (hourglass → hard crash).
 # Cap Preview/Clean emit rate for UI-thread budget. Frame *selection* still
 # follows the file's own timestamps (source FPS); this only limits how often
-# we convert+paint. 18 Hz leaves headroom for timeline playhead/marks (~60 Hz
-# blit) on the same UI thread — 30 Hz was smooth for video but starved
-# playhead motion whenever a Video Track clip was decoding.
-_MAX_PLAY_DECODE_HZ = 18.0
+# we convert+paint. 30 Hz is the target for smooth Clean Output; when the
+# Video Track lane is open (timeline paint + clip waveforms share the UI
+# thread) we drop to the heavy budget so playhead motion stays usable.
+_MAX_PLAY_DECODE_HZ = 30.0
+_MAX_PLAY_DECODE_HZ_HEAVY = 24.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
+_MIN_PLAY_DECODE_INTERVAL_HEAVY = 1.0 / _MAX_PLAY_DECODE_HZ_HEAVY
 
 # Rapid click-seeks while paused used to decode every land frame on the UI
 # thread immediately. When ``av_path_lock`` was already held by mixer/standin
@@ -89,6 +91,9 @@ class VideoSyncController(QObject):
         self._last_position_seconds: float | None = None
         self._scrubbing = False
         self._playing = False
+        # When True (Video Track visible), use the heavier play-decode budget.
+        self._timeline_video_heavy = False
+        self._min_play_decode_interval = _MIN_PLAY_DECODE_INTERVAL
         # Trailing-edge throttle state, active while scrubbing or playing
         # (see _MIN_SCRUB_DECODE_INTERVAL / _MIN_PLAY_DECODE_INTERVAL above):
         # a skipped request is remembered and flushed shortly after, so the
@@ -158,6 +163,20 @@ class VideoSyncController(QObject):
         # instead of blocking the UI thread on a contended av_path_lock
         # (waveform workers on long rehearsal files).
         QTimer.singleShot(0, self._decode_last_position_if_active)
+
+    def set_timeline_video_heavy(self, heavy: bool) -> None:
+        """Lower play-decode Hz when the Video Track lane is open.
+
+        Timeline playhead + clip waveforms share the UI thread with Preview /
+        Clean paint. Keep 30 Hz when the lane is hidden; use 24 Hz when open.
+        """
+        heavy = bool(heavy)
+        if heavy == self._timeline_video_heavy:
+            return
+        self._timeline_video_heavy = heavy
+        self._min_play_decode_interval = (
+            _MIN_PLAY_DECODE_INTERVAL_HEAVY if heavy else _MIN_PLAY_DECODE_INTERVAL
+        )
 
     def set_scrubbing(self, active: bool) -> None:
         """Call from the timeline's scrub_started/scrub_ended signals.
@@ -347,7 +366,7 @@ class VideoSyncController(QObject):
         if self._scrubbing:
             return _MIN_SCRUB_DECODE_INTERVAL
         if self._playing:
-            return _MIN_PLAY_DECODE_INTERVAL
+            return float(self._min_play_decode_interval)
         return _MIN_SEEK_DECODE_INTERVAL
 
     def _scrub_composite(self, song: Song, seconds: float) -> np.ndarray | None:
@@ -410,6 +429,20 @@ class VideoSyncController(QObject):
             return
         if len(weighted) == 1:
             clip, _weight = weighted[0]
+            decoder = self._decoder_for(clip)
+            if decoder is None:
+                self._emit_frame(None)
+                return
+            try:
+                frame = decoder.frame_at(clip.source_time_for(seconds))
+            except Exception:
+                frame = None
+            self._emit_frame(frame)
+            return
+        # Near 0/1 weights: skip float32 composite (common outside crossfade).
+        dominant = max(weighted, key=lambda item: item[1])
+        if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
+            clip = dominant[0]
             decoder = self._decoder_for(clip)
             if decoder is None:
                 self._emit_frame(None)
