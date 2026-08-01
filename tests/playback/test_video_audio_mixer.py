@@ -4,21 +4,36 @@ injected directly so these stay fast and independent of media/test_video_audio_l
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from cueplayer.domain.models import Song, VideoClip
-from cueplayer.playback.video_audio_mixer import VideoAudioMixer
+from cueplayer.media.video_audio_loader import VideoAudioBuffer
+from cueplayer.playback.video_audio_mixer import VideoAudioMixer, _CachedPcm
 
 SR = 48000
 
 
 def _inject(mixer: VideoAudioMixer, clip: VideoClip, samples: np.ndarray) -> None:
-    """Bypass real decoding: pretend `clip` was already decoded + resampled."""
-    mixer._cache[clip.id] = samples
-    mixer._cache_key[clip.id] = (str(clip.path), mixer._playback_rate)
+    """Bypass real decoding: pretend `clip` was already decoded + resampled.
+
+    Buffer index 0 == clip.source_in (windowed decode contract).
+    """
+    origin = float(clip.source_in_seconds)
+    dur = samples.shape[0] / float(mixer._playback_rate)
+    key = (
+        str(clip.path),
+        mixer._playback_rate,
+        round(origin, 2),
+        round(dur, 2),
+    )
+    mixer._cache[clip.id] = _CachedPcm(
+        samples=samples, origin_seconds=origin, key=key
+    )
 
 
 def _constant(seconds: float, value: float) -> np.ndarray:
@@ -61,7 +76,7 @@ def test_chunk_at_returns_clip_audio_scaled_by_volume() -> None:
 
 
 def test_chunk_at_respects_source_in_offset() -> None:
-    """Mid-clip trims must read from the right point in the decoded buffer."""
+    """Windowed buffer: samples[0] is source_in; timeline offset 0 maps to index 0."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c", path=Path("c.mp4"), start_seconds=1.0, source_in_seconds=3.0, duration_seconds=2.0
@@ -71,15 +86,15 @@ def test_chunk_at_respects_source_in_offset() -> None:
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # Small-amplitude ramp (indices scaled down so nothing hits the output's
-    # safety clip) so we can tell exactly which source sample landed where.
-    ramp = np.arange(10 * SR, dtype=np.float32) * 1e-6
+    # Window covering source 3.0s..5.0s — value encodes absolute source frame.
+    source_in_frame = int(3.0 * SR)
+    ramp = (np.arange(2 * SR, dtype=np.float32) + source_in_frame) * 1e-6
     samples = np.stack([ramp, ramp], axis=1)
     _inject(mixer, clip, samples)
 
     start_frame = int(1.0 * SR)  # song-timeline frame at clip.start_seconds
     out = mixer.chunk_at(start_frame, 5)
-    expected_src0 = int(3.0 * SR) * 1e-6  # clip.source_in_seconds
+    expected_src0 = source_in_frame * 1e-6
     assert out[0, 0] == pytest.approx(expected_src0, abs=1e-6)
     assert out[4, 0] == pytest.approx(expected_src0 + 4e-6, abs=1e-6)
 
@@ -177,7 +192,6 @@ def test_preload_prunes_cache_for_removed_clips() -> None:
 
     mixer.preload([])  # clip removed from the song
     assert clip.id not in mixer._cache
-    assert clip.id not in mixer._cache_key
 
 
 def test_set_playback_rate_change_clears_cache() -> None:
@@ -188,4 +202,60 @@ def test_set_playback_rate_change_clears_cache() -> None:
 
     mixer.set_playback_rate(44100)
     assert mixer._cache == {}
-    assert mixer._cache_key == {}
+
+
+def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.MonkeyPatch) -> None:
+    """While a decode job is running, later seeks only stash the latest need —
+    they must not queue N full-window decodes under av_path_lock."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+
+    started = threading.Event()
+    release = threading.Event()
+    decode_calls: list[float] = []
+
+    def _fake_get(path, *, start_seconds=0.0, max_duration_seconds=None):  # noqa: ANN001
+        del path, max_duration_seconds
+        decode_calls.append(float(start_seconds))
+        started.set()
+        assert release.wait(timeout=2.0)
+        n = int(0.5 * SR)
+        samples = np.zeros((n, 2), dtype=np.float32)
+        return VideoAudioBuffer(
+            path=Path("c.mp4"),
+            sample_rate=SR,
+            samples=samples,
+            origin_seconds=float(start_seconds),
+        )
+
+    monkeypatch.setattr(
+        "cueplayer.playback.video_audio_mixer.get_video_audio", _fake_get
+    )
+
+    mixer._request_window(clip, 10.0)
+    assert started.wait(timeout=2.0)
+    # Thrash seeks while first job holds the worker.
+    mixer._request_window(clip, 100.0)
+    mixer._request_window(clip, 200.0)
+    mixer._request_window(clip, 300.0)
+    assert mixer._pending_need[clip.id] == pytest.approx(300.0)
+    assert len(decode_calls) == 1
+
+    release.set()
+    # Allow follow-up job for the latest pending need.
+    deadline = time.monotonic() + 2.0
+    while len(decode_calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(decode_calls) == 2
+    # Follow-up window starts near the latest need (lookback 2s).
+    assert decode_calls[1] == pytest.approx(298.0, abs=0.05)

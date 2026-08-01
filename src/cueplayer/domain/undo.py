@@ -1,12 +1,13 @@
-"""In-memory undo/redo for Cue mark and video clip edits."""
+"""In-memory undo/redo for Cue mark, video clip, and setlist edits."""
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from cueplayer.domain.models import Mark, Song, VideoClip
+from cueplayer.domain.models import Mark, Project, SetlistCategory, Song, VideoClip
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class MarkSnapshot:
     time_seconds: float
     display_name: str = ""
     ma_export_name: str | None = None
+    main_cue_id: str = ""
 
     @classmethod
     def from_mark(cls, mark: Mark) -> MarkSnapshot:
@@ -25,6 +27,7 @@ class MarkSnapshot:
             time_seconds=mark.time_seconds,
             display_name=mark.display_name,
             ma_export_name=mark.ma_export_name,
+            main_cue_id=mark.main_cue_id,
         )
 
     def to_mark(self) -> Mark:
@@ -34,6 +37,7 @@ class MarkSnapshot:
             time_seconds=self.time_seconds,
             display_name=self.display_name,
             ma_export_name=self.ma_export_name,
+            main_cue_id=self.main_cue_id,
         )
 
 
@@ -117,6 +121,67 @@ class RenameMarkCommand:
         mark = song.mark_by_id(self.mark_id)
         if mark is not None:
             mark.display_name = self.new_name
+
+
+@dataclass
+class ChangeMarkLanesCommand:
+    """id → (old_lane, new_lane, old_cue_id, new_cue_id)."""
+
+    changes: dict[str, tuple[int, int, str, str]]
+    label: str = "Change Mark Type"
+
+    def undo(self, song: Song) -> None:
+        for mark_id, (old_lane, _new_lane, old_cue_id, _new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(old_lane)
+            mark.main_cue_id = str(old_cue_id)
+        song.sort_marks()
+
+    def redo(self, song: Song) -> None:
+        for mark_id, (_old_lane, new_lane, _old_cue_id, new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(new_lane)
+            mark.main_cue_id = str(new_cue_id)
+        song.sort_marks()
+
+
+@dataclass
+class EditMainCueIdCommand:
+    mark_id: str
+    old_id: str
+    new_id: str
+    label: str = "Edit Cue ID"
+
+    def undo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.old_id
+
+    def redo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.new_id
+
+
+@dataclass
+class RenumberMainCueIdsCommand:
+    before: dict[str, str]
+    after: dict[str, str]
+    label: str = "Renumber Cue IDs"
+
+    def undo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.before)
+
+    def redo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.after)
 
 
 @dataclass(frozen=True)
@@ -231,18 +296,169 @@ class EditVideoClipsCommand:
         self._apply(song, 1)
 
 
+@dataclass
+class UndoContext:
+    """Project + current song for unified undo/redo."""
+
+    project: Project
+    current_song_id: str
+
+    @property
+    def song(self) -> Song:
+        for s in self.project.songs:
+            if s.id == self.current_song_id:
+                return s
+        return self.project.songs[0]
+
+
+def _merge_setlist_state(live: Song, snap: Song) -> None:
+    """Restore setlist-editable fields; keep marks / lanes on the live song."""
+    live.setlist_number = snap.setlist_number
+    live.category_id = snap.category_id
+    live.name = snap.name
+    live.ma_export_name = snap.ma_export_name
+    live.bpm = snap.bpm
+    live.bpm_auto = bool(getattr(snap, "bpm_auto", False))
+    live.row_color = snap.row_color
+    live.start_timecode = snap.start_timecode
+    live.fps = snap.fps
+    live.duration_seconds = snap.duration_seconds
+    live.audio_tracks = copy.deepcopy(snap.audio_tracks)
+    live.video_clips = copy.deepcopy(snap.video_clips)
+
+
+@dataclass(frozen=True)
+class SetlistStateSnapshot:
+    songs: tuple[Song, ...]
+    categories: tuple[SetlistCategory, ...]
+
+    @classmethod
+    def capture(cls, project: Project) -> SetlistStateSnapshot:
+        return cls(
+            songs=tuple(copy.deepcopy(project.songs)),
+            categories=tuple(copy.deepcopy(project.setlist_categories)),
+        )
+
+    def _fingerprint(self) -> tuple:
+        song_fp = tuple(
+            (
+                s.id,
+                float(s.setlist_number),
+                s.category_id,
+                s.name,
+                s.ma_export_name,
+                s.bpm,
+                bool(getattr(s, "bpm_auto", False)),
+                s.row_color or "",
+                s.start_timecode,
+                float(s.fps),
+                len(s.audio_tracks),
+                len(s.video_clips),
+            )
+            for s in self.songs
+        )
+        cat_fp = tuple(
+            (
+                c.id,
+                c.name,
+                bool(c.collapsed),
+                bool(c.sheet_collapsed),
+                c.row_color or "",
+            )
+            for c in self.categories
+        )
+        return (song_fp, cat_fp)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SetlistStateSnapshot):
+            return False
+        return self._fingerprint() == other._fingerprint()
+
+    def apply(self, project: Project) -> None:
+        current_by_id = {s.id: s for s in project.songs}
+        merged: list[Song] = []
+        for snap in self.songs:
+            live = current_by_id.get(snap.id)
+            if live is None:
+                merged.append(copy.deepcopy(snap))
+            else:
+                _merge_setlist_state(live, snap)
+                merged.append(live)
+        project.songs = merged
+        project.setlist_categories = [copy.deepcopy(c) for c in self.categories]
+
+
+@dataclass
+class SetlistEditCommand:
+    before: SetlistStateSnapshot
+    after: SetlistStateSnapshot
+    label: str
+    current_song_id: str
+    selected_song_ids: tuple[str, ...]
+
+    def undo(self, ctx: UndoContext) -> None:
+        self.before.apply(ctx.project)
+        ctx.current_song_id = self.current_song_id
+
+    def redo(self, ctx: UndoContext) -> None:
+        self.after.apply(ctx.project)
+        ctx.current_song_id = self.current_song_id
+
+
+@dataclass
+class SongScopedCommand:
+    """Adapter: mark/clip commands that operate on one song by id."""
+
+    command: Any
+    song_id: str = ""
+
+    @property
+    def label(self) -> str:
+        return str(self.command.label)
+
+    def _song(self, ctx: UndoContext) -> Song | None:
+        if self.song_id:
+            for song in ctx.project.songs:
+                if song.id == self.song_id:
+                    return song
+            return None
+        return ctx.song
+
+    def undo(self, ctx: UndoContext) -> None:
+        song = self._song(ctx)
+        if song is not None:
+            self.command.undo(song)
+
+    def redo(self, ctx: UndoContext) -> None:
+        song = self._song(ctx)
+        if song is not None:
+            self.command.redo(song)
+
+
+_ContextCommand = SetlistEditCommand | SongScopedCommand
+UndoStepResult = tuple[str, SetlistEditCommand | None, str | None]
+
+
 class UndoStack:
     def __init__(self, *, limit: int = 100) -> None:
         self._limit = max(1, limit)
-        self._undo: list[UndoCommand] = []
-        self._redo: list[UndoCommand] = []
+        self._undo: list[_ContextCommand] = []
+        self._redo: list[_ContextCommand] = []
 
     def clear(self) -> None:
         self._undo.clear()
         self._redo.clear()
 
-    def push(self, command: UndoCommand) -> None:
-        self._undo.append(command)
+    def clear_song_scoped(self) -> None:
+        self._undo = [c for c in self._undo if isinstance(c, SetlistEditCommand)]
+        self._redo.clear()
+
+    def push(self, command: Any, *, song_id: str | None = None) -> None:
+        if isinstance(command, SetlistEditCommand):
+            wrapped: _ContextCommand = command
+        else:
+            wrapped = SongScopedCommand(command=command, song_id=str(song_id or ""))
+        self._undo.append(wrapped)
         if len(self._undo) > self._limit:
             self._undo.pop(0)
         self._redo.clear()
@@ -253,18 +469,43 @@ class UndoStack:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def undo(self, song: Song) -> str | None:
+    def undo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
+        """Undo one step. Pass UndoContext for UI; pass Song for legacy domain tests."""
+        if isinstance(ctx, Song):
+            song = ctx
+            project = Project.create("_undo")
+            project.songs = [song]
+            uctx = UndoContext(project=project, current_song_id=song.id)
+            result = self._undo_one(uctx)
+            return result[0] if result is not None else None
+        return self._undo_one(ctx)
+
+    def redo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
+        if isinstance(ctx, Song):
+            song = ctx
+            project = Project.create("_undo")
+            project.songs = [song]
+            uctx = UndoContext(project=project, current_song_id=song.id)
+            result = self._redo_one(uctx)
+            return result[0] if result is not None else None
+        return self._redo_one(ctx)
+
+    def _undo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._undo:
             return None
         command = self._undo.pop()
-        command.undo(song)
+        command.undo(ctx)
         self._redo.append(command)
-        return command.label
+        setlist = command if isinstance(command, SetlistEditCommand) else None
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id
 
-    def redo(self, song: Song) -> str | None:
+    def _redo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._redo:
             return None
         command = self._redo.pop()
-        command.redo(song)
+        command.redo(ctx)
         self._undo.append(command)
-        return command.label
+        setlist = command if isinstance(command, SetlistEditCommand) else None
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from typing import Any
 
@@ -11,17 +12,26 @@ from cueplayer.timecode.mtc import (
     full_frame_sysex,
     quarter_frame_payload,
 )
-from cueplayer.timecode.smpte import Timecode, parse_timecode
+from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
 
 log = logging.getLogger(__name__)
 
 _BACKEND_READY = False
+_BACKEND_KIND = ""  # "winmm" | "rtmidi" | "pygame" | ""
+
+
+def _use_winmm() -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    from cueplayer.playback.winmm_midi import winmm_available
+
+    return winmm_available()
 
 
 def _ensure_mido_backend() -> None:
-    """Prefer rtmidi; fall back to pygame (reliable on Windows without a compiler)."""
-    global _BACKEND_READY
-    if _BACKEND_READY:
+    """Prefer rtmidi; fall back to pygame / pygame-ce (no compiler on Windows)."""
+    global _BACKEND_READY, _BACKEND_KIND
+    if _BACKEND_READY and _BACKEND_KIND in {"rtmidi", "pygame"}:
         return
     import os
 
@@ -32,23 +42,68 @@ def _ensure_mido_backend() -> None:
         import rtmidi  # noqa: F401
 
         _BACKEND_READY = True
+        _BACKEND_KIND = "rtmidi"
         return
     except ImportError:
         pass
     try:
+        import pygame  # noqa: F401
+
         mido.set_backend("mido.backends.pygame")
         _BACKEND_READY = True
+        _BACKEND_KIND = "pygame"
+        return
     except Exception as exc:  # noqa: BLE001
-        log.warning("Could not configure mido MIDI backend: %s", exc)
+        log.warning(
+            "mido MIDI backend unavailable (%s). "
+            "On Windows CuePlayer uses winmm.dll without pygame. "
+            "Otherwise install: pip install pygame-ce",
+            exc,
+        )
+
+
+def midi_backend_status() -> str:
+    """Human-readable MIDI backend readiness for UI status / dialogs."""
+    if _use_winmm():
+        from cueplayer.playback.winmm_midi import list_winmm_output_names
+
+        n = len(list_winmm_output_names())
+        return f"MIDI backend: Windows winmm ({n} output{'s' if n != 1 else ''})"
+    try:
+        import mido  # noqa: F401
+    except ImportError:
+        return "mido is not installed"
+    _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return (
+            "No MIDI backend. On Python 3.14 use pygame-ce (not pygame):\n"
+            "  .\\.venv\\Scripts\\python.exe -m pip install pygame-ce\n"
+            "Or: pip install -e \".[midi]\""
+        )
+    if _BACKEND_KIND == "rtmidi":
+        return "MIDI backend: python-rtmidi"
+    if _BACKEND_KIND == "pygame":
+        return "MIDI backend: pygame / pygame-ce"
+    return "MIDI backend: ready"
 
 
 def list_midi_output_names() -> list[str]:
-    """Return available MIDI output port names (empty if mido backend missing)."""
+    """Return available MIDI output port names (empty if no backend)."""
+    if _use_winmm():
+        from cueplayer.playback.winmm_midi import list_winmm_output_names
+
+        try:
+            return list_winmm_output_names()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not list winmm MIDI outputs: %s", exc)
+            # Fall through to mido backends.
     try:
         import mido
     except ImportError:
         return []
     _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return []
     try:
         return list(mido.get_output_names())
     except Exception as exc:  # noqa: BLE001
@@ -88,6 +143,7 @@ class MtcOutput:
     def configure(
         self,
         *,
+        midi_master: bool,
         enabled: bool,
         port_name: str,
         start_timecode: str,
@@ -95,17 +151,33 @@ class MtcOutput:
     ) -> str | None:
         """
         Apply settings. Returns an error message if the port cannot be opened
-        while enabled; otherwise None.
+        while MIDI is on; otherwise None.
+
+        ``midi_master`` opens/closes the port. ``enabled`` controls whether MTC
+        quarter-frames are sent (generator and/or file-LTC translate).
         """
         with self._lock:
+            new_port_name = (port_name or "").strip()
+            port_changed = new_port_name != self._port_name
+            if not midi_master:
+                self._enabled = False
+                self._close_port_locked()
+                return None
             self._enabled = bool(enabled)
-            self._port_name = (port_name or "").strip()
+            self._port_name = new_port_name
             self._fps = float(fps) if fps > 0 else 30.0
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
-            err = self._reopen_port_locked()
-            return err
+            if port_changed and self._port is not None:
+                self._close_port_locked()
+            if self._port is not None and not port_changed:
+                return None
+            if self._port_name:
+                err = self._reopen_port_locked()
+                if err:
+                    return err
+            return None
 
     def set_timebase(self, start_timecode: str, fps: float) -> None:
         with self._lock:
@@ -113,6 +185,22 @@ class MtcOutput:
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
+
+    def timecode_at(self, position_seconds: float) -> Timecode:
+        """SMPTE value MTC would send at this playback position."""
+        with self._lock:
+            return absolute_timecode(self._start_tc, position_seconds, self._fps)
+
+    def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
+        """
+        Align MTC so ``absolute`` is the timecode at ``position_seconds``.
+
+        Used when mirroring decoded file LTC: MTC numbers match the LTC stripe
+        even if Song Start TC differs.
+        """
+        with self._lock:
+            delta = -int(round(max(0.0, float(position_seconds)) * self._fps))
+            self._start_tc = add_frames(absolute, delta, self._fps)
 
     def on_play(self, position_seconds: float) -> None:
         with self._lock:
@@ -134,6 +222,16 @@ class MtcOutput:
     def on_pause(self) -> None:
         with self._lock:
             self._playing = False
+
+    def send_message(self, message: Any) -> None:
+        """Send an arbitrary short MIDI message on the open MTC port (shared with cue notes)."""
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(message)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("MIDI send_message failed: %s", exc)
 
     def tick(self, position_seconds: float) -> None:
         """Send any quarter frames due for the current sample-clock position."""
@@ -189,15 +287,48 @@ class MtcOutput:
 
     def _reopen_port_locked(self) -> str | None:
         self._close_port_locked()
-        if not self._enabled:
-            return None
         if not self._port_name:
-            return "MTC is enabled but no MIDI output port is selected."
+            if self._enabled:
+                return "MTC is enabled but no MIDI output port is selected."
+            return None
+
+        if _use_winmm():
+            import time
+            last_exc: Exception | None = None
+            for attempt in range(20):
+                try:
+                    from cueplayer.playback.winmm_midi import WinmmMidiOut
+                    self._port = WinmmMidiOut.open_by_name(self._port_name)
+                    self._port_name = self._port.name
+                    return None
+                except LookupError:
+                    # Port listed but can't open — wait and retry (virtual ports
+                    # like Bome need time after the previous handle is closed).
+                    last_exc = LookupError(f"MIDI port not found: {self._port_name}")
+                    log.warning("winmm MIDI port not found attempt %d, retrying…", attempt + 1)
+                    time.sleep(0.15)
+                except OSError as exc:
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.15)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.15)
+            # All attempts failed — report without falling through to mido.
+            return f"MIDI port not found after retries: {self._port_name}"
+
         try:
             import mido
         except ImportError:
             return "MTC requires the mido package."
         _ensure_mido_backend()
+        if not _BACKEND_READY:
+            return (
+                "No MIDI backend available. "
+                "On Windows, winmm should work without extra packages; "
+                "otherwise install pygame-ce: pip install pygame-ce"
+            )
         try:
             names = list(mido.get_output_names())
             if self._port_name not in names:

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from cueplayer.media.av_lock import av_path_lock
+
 import av
 import numpy as np
 
@@ -51,28 +53,29 @@ def probe_media(path: Path) -> VideoInfo:
 
 def _probe_container(path: Path, *, media_kind: str) -> VideoInfo:
     path = Path(path)
-    container = av.open(str(path))
-    try:
-        stream = next((s for s in container.streams if s.type == "video"), None)
-        if stream is None:
-            raise ValueError(f"No video stream found in {path.name}")
-        duration = 0.0
-        if stream.duration is not None and stream.time_base is not None:
-            duration = float(stream.duration * stream.time_base)
-        elif container.duration is not None:
-            duration = float(container.duration) / 1_000_000.0
-        fps = float(stream.average_rate) if stream.average_rate else 25.0
-        width = int(stream.codec_context.width)
-        height = int(stream.codec_context.height)
-        return VideoInfo(
-            duration_seconds=max(0.0, duration),
-            width=max(1, width),
-            height=max(1, height),
-            fps=fps if fps > 0 else 25.0,
-            media_kind=media_kind,
-        )
-    finally:
-        container.close()
+    with av_path_lock(path):
+        container = av.open(str(path))
+        try:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream is None:
+                raise ValueError(f"No video stream found in {path.name}")
+            duration = 0.0
+            if stream.duration is not None and stream.time_base is not None:
+                duration = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                duration = float(container.duration) / 1_000_000.0
+            fps = float(stream.average_rate) if stream.average_rate else 25.0
+            width = int(stream.codec_context.width)
+            height = int(stream.codec_context.height)
+            return VideoInfo(
+                duration_seconds=max(0.0, duration),
+                width=max(1, width),
+                height=max(1, height),
+                fps=fps if fps > 0 else 25.0,
+                media_kind=media_kind,
+            )
+        finally:
+            container.close()
 
 
 class VideoDecoder:
@@ -94,14 +97,18 @@ class VideoDecoder:
         # VideoSyncController.set_decode_quality). Never upscales; a frame
         # already at or below this height is returned untouched.
         self._max_decode_height = int(max_decode_height) if max_decode_height else None
-        self._container = av.open(str(self._path))
-        self._stream = next((s for s in self._container.streams if s.type == "video"), None)
-        if self._stream is None:
-            self._container.close()
-            raise ValueError(f"No video stream found in {self._path.name}")
-        self._stream.thread_type = "AUTO"
-        self._time_base = float(self._stream.time_base) if self._stream.time_base else 0.0
-        self._iterator = self._container.decode(self._stream)
+        with av_path_lock(self._path):
+            self._container = av.open(str(self._path))
+            self._stream = next((s for s in self._container.streams if s.type == "video"), None)
+            if self._stream is None:
+                self._container.close()
+                raise ValueError(f"No video stream found in {self._path.name}")
+            # FRAME (not AUTO): fewer internal FFmpeg worker threads. AUTO
+            # plus a second open on the same path (waveform/Clean) has
+            # hard-crashed / frozen machines on long rehearsal files.
+            self._stream.thread_type = "FRAME"
+            self._time_base = float(self._stream.time_base) if self._stream.time_base else 0.0
+            self._iterator = self._container.decode(self._stream)
         self._last_frame = None
         self._last_pts_seconds: float | None = None
         self._pending_frame = None
@@ -127,11 +134,24 @@ class VideoDecoder:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
-        try:
-            self._container.close()
-        except Exception:
-            pass
+        # Must serialize with open/seek/decode on the same path — closing a
+        # container while another thread demuxes the same file hard-crashes
+        # some FFmpeg builds (mid-play / song-switch freezes).
+        with av_path_lock(self._path):
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._container.close()
+            except Exception:
+                pass
+            self._iterator = iter(())
+            self._last_frame = None
+            self._last_pts_seconds = None
+            self._pending_frame = None
+            self._pending_pts_seconds = None
+            self._cached_ndarray = None
+            self._cached_ndarray_source = None
 
     def frame_at(self, seconds: float) -> np.ndarray | None:
         """RGB24 (H, W, 3) array for the frame active at `seconds`, or None."""
@@ -142,36 +162,46 @@ class VideoDecoder:
         needs_seek = self._last_pts_seconds is None or seconds < self._last_pts_seconds - 1e-6
         if not needs_seek and self._last_pts_seconds is not None:
             needs_seek = seconds - self._last_pts_seconds > self._MAX_FORWARD_SKIP_SECONDS
-        if needs_seek:
-            self._seek(seconds)
 
-        result = self._last_frame
-        if self._pending_frame is not None and self._pending_pts_seconds is not None:
-            if self._pending_pts_seconds <= seconds + 1e-4:
-                result = self._pending_frame
-                self._last_frame = result
-                self._last_pts_seconds = self._pending_pts_seconds
-                self._pending_frame = None
-                self._pending_pts_seconds = None
-            else:
-                return self._convert_cached(result)
+        with av_path_lock(self._path):
+            if self._closed:
+                return None
+            if needs_seek:
+                self._seek_unlocked(seconds)
 
-        for frame in self._iterator:
-            if frame.pts is None:
-                continue
-            pts = float(frame.pts * self._time_base)
-            if pts <= seconds + 1e-4:
-                result = frame
-                self._last_frame = frame
-                self._last_pts_seconds = pts
-                continue
-            self._pending_frame = frame
-            self._pending_pts_seconds = pts
-            break
+            result = self._last_frame
+            if self._pending_frame is not None and self._pending_pts_seconds is not None:
+                if self._pending_pts_seconds <= seconds + 1e-4:
+                    result = self._pending_frame
+                    self._last_frame = result
+                    self._last_pts_seconds = self._pending_pts_seconds
+                    self._pending_frame = None
+                    self._pending_pts_seconds = None
+                else:
+                    # Convert under the path lock so close() cannot tear down
+                    # the container while we still hold an AVFrame.
+                    return self._convert_cached(result)
 
-        return self._convert_cached(result)
+            for frame in self._iterator:
+                if frame.pts is None:
+                    continue
+                pts = float(frame.pts * self._time_base)
+                if pts <= seconds + 1e-4:
+                    result = frame
+                    self._last_frame = frame
+                    self._last_pts_seconds = pts
+                    continue
+                self._pending_frame = frame
+                self._pending_pts_seconds = pts
+                break
+
+            return self._convert_cached(result)
 
     def _seek(self, seconds: float) -> None:
+        with av_path_lock(self._path):
+            self._seek_unlocked(seconds)
+
+    def _seek_unlocked(self, seconds: float) -> None:
         offset = int(seconds / self._time_base) if self._time_base else 0
         try:
             self._container.seek(offset, stream=self._stream, any_frame=False, backward=True)
@@ -224,16 +254,17 @@ class StillImageDecoder:
         self._max_decode_height = int(max_decode_height) if max_decode_height else None
         self._closed = False
         self._frame: np.ndarray | None = None
-        container = av.open(str(self._path))
-        try:
-            stream = next((s for s in container.streams if s.type == "video"), None)
-            if stream is None:
-                raise ValueError(f"No image stream found in {self._path.name}")
-            for frame in container.decode(stream):
-                self._frame = self._to_ndarray(frame)
-                break
-        finally:
-            container.close()
+        with av_path_lock(self._path):
+            container = av.open(str(self._path))
+            try:
+                stream = next((s for s in container.streams if s.type == "video"), None)
+                if stream is None:
+                    raise ValueError(f"No image stream found in {self._path.name}")
+                for frame in container.decode(stream):
+                    self._frame = self._to_ndarray(frame)
+                    break
+            finally:
+                container.close()
         if self._frame is None:
             raise ValueError(f"Could not decode still image {self._path.name}")
 

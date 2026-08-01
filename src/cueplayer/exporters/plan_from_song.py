@@ -69,11 +69,10 @@ def build_export_plan(
     base = _song_ascii_base(song)
     file_base = base.replace(" ", "_")
 
-    main_lane = next((lane for lane in song.mark_lanes if lane.lane_type == "main"), None)
-    main_index = main_lane.index if main_lane is not None else 1
+    id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}
     main_marks = sorted(
-        (m for m in song.marks if m.lane_index == main_index),
-        key=lambda m: m.time_seconds,
+        (m for m in song.marks if m.lane_index in id_lanes),
+        key=lambda m: (m.time_seconds, m.lane_index),
     )
     main_cues: list[ExportCue] = []
     for i, mark in enumerate(main_marks, start=1):
@@ -96,7 +95,7 @@ def build_export_plan(
     button_lanes: list[ExportButtonLane] = []
     button_i = 0
     for lane in sorted(song.mark_lanes, key=lambda item: item.index):
-        if lane.lane_type != "top_button" or not lane.export_enabled:
+        if lane.cue_id_enabled or not lane.export_enabled:
             continue
         times = sorted(
             m.time_seconds for m in song.marks if m.lane_index == lane.index
