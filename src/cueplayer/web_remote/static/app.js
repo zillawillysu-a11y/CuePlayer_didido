@@ -85,6 +85,12 @@
     timecode: true,
     toggles: true,
   };
+  let tcSyncCode = "00:00:00:00";
+  let tcSyncPos = 0;
+  let tcFps = 30;
+  let lastDrawnTc = "";
+  let waveLabelFontPx = 11;
+  let lastMgrLanesSig = "";
 
   // Wave view window (seconds).
   let viewStart = 0;
@@ -136,6 +142,47 @@
     const secs = Math.floor(rem / 1000);
     const ms = rem % 1000;
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+  }
+
+  function tcFrameRate(fps) {
+    const f = Number(fps) || 30;
+    if (Math.abs(f - 29.97) < 0.02) return 30;
+    return Math.max(1, Math.round(f));
+  }
+
+  function parseTimecodeSeconds(tc, fps) {
+    const parts = String(tc || "").trim().replace(/;/g, ":").split(":");
+    if (parts.length !== 4) return 0;
+    const nums = parts.map((p) => Number(p));
+    if (nums.some((n) => !Number.isFinite(n))) return 0;
+    const [h, m, s, fr] = nums;
+    const rate = Number(fps) > 0 ? Number(fps) : 30;
+    return h * 3600 + m * 60 + s + fr / rate;
+  }
+
+  function formatSmpte(seconds, fps) {
+    const rate = tcFrameRate(fps);
+    const real = Number(fps) > 0 ? Number(fps) : 30;
+    let total = Math.max(0, Math.round(Math.max(0, Number(seconds) || 0) * real));
+    const frames = total % rate;
+    total = Math.floor(total / rate);
+    const secs = total % 60;
+    total = Math.floor(total / 60);
+    const mins = total % 60;
+    const hours = Math.floor(total / 60) % 24;
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(hours)}:${p(mins)}:${p(secs)}:${p(frames)}`;
+  }
+
+  function syncTimecode(timecode, position, fps) {
+    if (timecode && timecode !== "—") tcSyncCode = String(timecode);
+    if (position != null && Number.isFinite(Number(position))) tcSyncPos = Number(position);
+    if (fps != null && Number(fps) > 0) tcFps = Number(fps);
+  }
+
+  function liveTimecode() {
+    const base = parseTimecodeSeconds(tcSyncCode, tcFps);
+    return formatSmpte(base + (livePosition() - tcSyncPos), tcFps);
   }
 
   function livePosition() {
@@ -352,7 +399,7 @@
       els.cueList.appendChild(btn);
     }
     lastPlayheadCueId = "";
-    updateCueFollow(livePosition(), true);
+    requestAnimationFrame(() => updateCueFollow(livePosition(), true));
   }
 
   function cueRowVisible(el) {
@@ -375,25 +422,37 @@
   function scrollCueListTo(el, { force = false } = {}) {
     const list = els.cueList;
     if (!list || !el) return;
-    const margin = Math.min(28, Math.max(8, list.clientHeight * 0.18));
+    const rowH = Math.max(1, el.offsetHeight || 36);
+    const viewH = list.clientHeight;
+    if (viewH <= 0) return;
+    const margin = Math.min(Math.max(4, Math.floor(rowH * 0.5)), Math.max(0, viewH - rowH));
     const top = el.offsetTop;
-    const bottom = top + el.offsetHeight;
+    const bottom = top + rowH;
     const viewTop = list.scrollTop;
-    const viewBottom = viewTop + list.clientHeight;
+    const viewBottom = viewTop + viewH;
     let target = null;
-    if (force || top < viewTop + margin) {
+    if (force) {
+      // Match desktop: center when viewport is tall enough, else pin near top.
+      if (viewH < rowH + margin + 8) {
+        target = Math.max(0, top - margin);
+      } else {
+        target = Math.max(0, top - (viewH - rowH) / 2);
+      }
+    } else if (top < viewTop + margin) {
       target = Math.max(0, top - margin);
     } else if (bottom > viewBottom - margin) {
-      target = Math.max(0, bottom - list.clientHeight + margin);
+      target = Math.max(0, bottom - viewH + margin);
     }
     if (target == null) return;
-    const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+    const maxScroll = Math.max(0, list.scrollHeight - viewH);
+    const next = Math.min(maxScroll, target);
+    if (Math.abs(next - list.scrollTop) < 1) return;
     ignoreCueScroll = true;
-    list.scrollTop = Math.min(maxScroll, target);
+    list.scrollTop = next;
     clearTimeout(scrollCueListTo._clearIgnore);
     scrollCueListTo._clearIgnore = setTimeout(() => {
       ignoreCueScroll = false;
-    }, 150);
+    }, 180);
   }
 
   function updateCueFollow(position, forceScroll) {
@@ -543,8 +602,15 @@
   }
 
   function renderMarkManager(lanes) {
+    const list = lanes || [];
+    const sig = JSON.stringify(list.map((l) => [
+      l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled,
+      l.pause_on_mark, l.prompt_note_on_mark, l.show_note_on_wave, l.show_cue_id_on_wave, l.color,
+    ]));
+    if (sig === lastMgrLanesSig && els.markMgrBody.children.length) return;
+    lastMgrLanesSig = sig;
     els.markMgrBody.innerHTML = "";
-    for (const lane of lanes || []) {
+    for (const lane of list) {
       const row = document.createElement("div");
       row.className = "mgr-row";
       row.innerHTML =
@@ -554,6 +620,7 @@
         `<select class="mgr-now"><option value="off">Off</option><option value="primary">Primary</option><option value="secondary">Secondary</option></select>` +
         `<select class="mgr-key"><option value="">—</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>` +
         `<div class="mgr-flags">` +
+          `<label class="mgr-flag">Cue ID<input type="checkbox" class="mgr-cueid" /></label>` +
           `<label class="mgr-flag">Pause<input type="checkbox" class="mgr-pause" /></label>` +
           `<label class="mgr-flag">Ask Note<input type="checkbox" class="mgr-ask" /></label>` +
           `<label class="mgr-flag">Wave Note<input type="checkbox" class="mgr-wnote" /></label>` +
@@ -568,6 +635,8 @@
       now.value = lane.now || "off";
       const key = row.querySelector(".mgr-key");
       key.value = lane.shortcut || "";
+      const cueId = row.querySelector(".mgr-cueid");
+      cueId.checked = Boolean(lane.cue_id_enabled);
       const pause = row.querySelector(".mgr-pause");
       pause.checked = Boolean(lane.pause_on_mark);
       const ask = row.querySelector(".mgr-ask");
@@ -578,23 +647,39 @@
       wcue.checked = Boolean(lane.show_cue_id_on_wave);
 
       const save = () => {
-        command({
+        const payload = {
           op: "update_lane",
           lane_index: lane.index,
           name: name.value,
           visible: vis.checked,
           now: now.value,
           shortcut: key.value,
+          cue_id_enabled: cueId.checked,
           pause_on_mark: pause.checked,
           prompt_note_on_mark: ask.checked,
           show_note_on_wave: wnote.checked,
           show_cue_id_on_wave: wcue.checked,
-        }).catch((e) => showToast(String(e.message || e)));
+        };
+        lane.name = name.value;
+        lane.visible = vis.checked;
+        lane.now = now.value;
+        lane.shortcut = key.value;
+        lane.cue_id_enabled = cueId.checked;
+        lane.pause_on_mark = pause.checked;
+        lane.prompt_note_on_mark = ask.checked;
+        lane.show_note_on_wave = wnote.checked;
+        lane.show_cue_id_on_wave = wcue.checked;
+        lastMgrLanesSig = JSON.stringify((stateCache && stateCache.lanes || list).map((l) => [
+          l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled,
+          l.pause_on_mark, l.prompt_note_on_mark, l.show_note_on_wave, l.show_cue_id_on_wave, l.color,
+        ]));
+        command(payload).catch((e) => showToast(String(e.message || e)));
       };
       name.addEventListener("change", save);
       vis.addEventListener("change", save);
       now.addEventListener("change", save);
       key.addEventListener("change", save);
+      cueId.addEventListener("change", save);
       pause.addEventListener("change", save);
       ask.addEventListener("change", save);
       wnote.addEventListener("change", save);
@@ -693,6 +778,10 @@
     ctx.fill();
 
     const marks = (stateCache && stateCache.marks) || [];
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const labelPx = Math.max(9, Math.round((waveLabelFontPx || 11) * dpr));
+    ctx.textBaseline = "top";
+    ctx.font = `700 ${labelPx}px "Segoe UI", "Helvetica Neue", sans-serif`;
     for (const m of marks) {
       const t = Number(m.time_seconds);
       if (t < v0 || t > v1) continue;
@@ -705,6 +794,22 @@
       ctx.lineTo(x, h);
       ctx.stroke();
       ctx.globalAlpha = 1;
+
+      const showNote = Boolean(m.show_note_on_wave);
+      const showCue = Boolean(m.show_cue_id_on_wave) && Boolean(m.cue_id_enabled);
+      const cueLabel = showCue ? String(m.main_cue_id || "").trim() : "";
+      const noteText = showNote ? String(m.display_name || "").trim() : "";
+      if (!cueLabel && !noteText) continue;
+      ctx.fillStyle = m.color || "#ccc";
+      let textY = 4 * dpr;
+      const maxW = Math.max(40 * dpr, Math.min(160 * dpr, w - x - 8 * dpr));
+      if (cueLabel) {
+        ctx.fillText(`Cue ${cueLabel}`, x + 5 * dpr, textY, maxW);
+        textY += labelPx + 2 * dpr;
+      }
+      if (noteText) {
+        ctx.fillText(noteText, x + 5 * dpr, textY, maxW);
+      }
     }
 
     let pos = livePosition();
@@ -726,6 +831,13 @@
     if (clock !== lastDrawnClock) {
       lastDrawnClock = clock;
       els.clock.textContent = clock;
+    }
+    if (displayPrefs.timecode !== false) {
+      const tc = liveTimecode();
+      if (tc !== lastDrawnTc) {
+        lastDrawnTc = tc;
+        els.timecode.textContent = tc;
+      }
     }
     updateNowCards(pos);
     updateCueFollow(pos, false);
@@ -766,14 +878,17 @@
     const song = state.song || {};
     els.songTitle.textContent = song.in_setlist === false || song.index < 0 ? "(no song)" : (song.name || "—");
     syncFromServer(state.position, state.duration, state.playing, song.id || "");
+    syncTimecode(state.timecode, state.position, song.fps);
     els.duration.textContent = `/ ${state.duration_clock || formatClock(state.duration)}`;
     els.tcStatus.textContent = state.tc_status || "TC off";
-    els.timecode.textContent = state.timecode || "—";
+    els.timecode.textContent = liveTimecode();
+    lastDrawnTc = els.timecode.textContent;
     tcAccent = state.tc_accent || state.playhead_color || "#3dd68c";
     document.documentElement.style.setProperty("--ok", tcAccent);
     els.timecode.style.color = tcAccent;
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
+    waveLabelFontPx = Number(state.wave_label_font_px) || 11;
     applyDisplayPrefs(state.display || state.now || displayPrefs);
     updateNowCards(livePosition());
 
@@ -795,7 +910,8 @@
     renderSetlist(state.setlist || []);
     renderCues(cueListMarks(state));
     renderMarkButtons(state.lanes || []);
-    if (els.markMgrDialog.open) renderMarkManager(state.lanes || []);
+    // Never rebuild Mark Manager while open — native <select> pickers close on DOM replace.
+    if (!els.markMgrDialog.open) lastMgrLanesSig = "";
     drawWave(true);
   }
 
@@ -871,6 +987,12 @@
       const clock = await api("/api/clock");
       if (clock && clock.ok !== false) {
         syncFromServer(clock.position, clock.duration, clock.playing, clock.song_id || syncSongId);
+        syncTimecode(clock.timecode, clock.position, clock.fps);
+        if (clock.tc_status) els.tcStatus.textContent = clock.tc_status;
+        if (clock.tc_accent) {
+          tcAccent = clock.tc_accent;
+          els.timecode.style.color = tcAccent;
+        }
         const playing = Boolean(clock.playing);
         els.playBtn.disabled = playing;
         els.pauseBtn.disabled = !playing;
@@ -879,7 +1001,7 @@
     } catch (_) {
       /* ignore */
     } finally {
-      setTimeout(pollClock, syncPlaying ? 100 : 400);
+      setTimeout(pollClock, syncPlaying ? 80 : 350);
     }
   }
 
@@ -1010,10 +1132,14 @@
   }
 
   els.markMgrBtn.addEventListener("click", () => {
+    lastMgrLanesSig = "";
     renderMarkManager((stateCache && stateCache.lanes) || []);
     if (els.markMgrDialog.showModal) els.markMgrDialog.showModal();
   });
-  els.markMgrClose.addEventListener("click", () => els.markMgrDialog.close());
+  els.markMgrClose.addEventListener("click", () => {
+    els.markMgrDialog.close();
+    lastMgrLanesSig = "";
+  });
 
   els.authBtn.addEventListener("click", openAuth);
   els.savePassword.addEventListener("click", (ev) => {

@@ -47,6 +47,13 @@ def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
         "shortcut": lane.shortcut if lane is not None else "",
         "cue_list_enabled": bool(lane.cue_list_enabled) if lane is not None else True,
         "lane_visible": bool(lane.visible) if lane is not None else True,
+        "cue_id_enabled": bool(lane.cue_id_enabled) if lane is not None else False,
+        "show_note_on_wave": (
+            bool(getattr(lane, "show_note_on_wave", False)) if lane is not None else False
+        ),
+        "show_cue_id_on_wave": (
+            bool(getattr(lane, "show_cue_id_on_wave", False)) if lane is not None else False
+        ),
     }
 
 
@@ -253,6 +260,7 @@ def build_state(
         "output_toggles": output["toggles"],
         "playhead_color": playhead,
         "waveform_color": waveform_color,
+        "wave_label_font_px": int(getattr(project, "wave_label_font_px", 11) or 11),
         "playhead_cue_id": playhead_cue_id,
         "song": {
             "id": song.id,

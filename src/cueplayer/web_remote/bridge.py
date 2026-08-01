@@ -10,7 +10,12 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer
-from cueplayer.web_remote.state import build_state, build_waveform_overview
+from cueplayer.web_remote.state import (
+    build_state,
+    build_waveform_overview,
+    seconds_to_timecode,
+    timecode_to_abs_seconds,
+)
 
 
 class WebRemoteBridge(QObject):
@@ -121,13 +126,39 @@ class WebRemoteBridge(QObject):
         host = self._host
         song = host.current_song
         engine = host.engine
+        project = host.project
+        position = float(engine.position)
+        fps = float(getattr(song, "fps", None) or 30.0) or 30.0
+        if fps <= 0:
+            fps = 30.0
+        timecode = ""
+        outputs: list[str] = []
+        try:
+            tc_state = engine.output_timecode_state(position)
+            timecode = str(getattr(tc_state, "timecode", "") or "")
+            outputs = list(getattr(tc_state, "outputs", ()) or ())
+        except Exception:  # noqa: BLE001
+            timecode = ""
+            outputs = []
+        if not timecode or timecode in ("—",):
+            timecode = seconds_to_timecode(
+                timecode_to_abs_seconds(song.start_timecode, fps) + position,
+                fps,
+            ).format()
         return {
             "ok": True,
             "song_id": str(song.id),
             "playing": bool(engine.playing),
-            "position": float(engine.position),
+            "position": position,
             "duration": float(engine.duration),
             "server_ms": int(time.time() * 1000),
+            "timecode": timecode,
+            "fps": fps,
+            "start_timecode": str(song.start_timecode or "00:00:00:00"),
+            "tc_status": " · ".join(outputs) if outputs else "",
+            "tc_accent": str(
+                getattr(project, "output_timecode_clock_color", "") or "#3dd68c"
+            ),
         }
 
     def _safe_waveform(self) -> dict[str, Any]:
@@ -407,6 +438,8 @@ class WebRemoteBridge(QObject):
             lane.show_note_on_wave = bool(command.get("show_note_on_wave"))
         if "show_cue_id_on_wave" in command:
             lane.show_cue_id_on_wave = bool(command.get("show_cue_id_on_wave"))
+        if "cue_id_enabled" in command:
+            lane.cue_id_enabled = bool(command.get("cue_id_enabled"))
 
         host._rebuild_digit_shortcuts()
         host.timeline.apply_song_display_settings()

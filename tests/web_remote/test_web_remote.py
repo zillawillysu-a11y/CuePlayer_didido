@@ -47,8 +47,14 @@ def test_static_dir_has_index() -> None:
     assert "show_note_on_wave" in js
     assert "show_cue_id_on_wave" in js
     assert "set_mark_note" in js
+    assert "liveTimecode" in js
+    assert "scrollCueListTo" in js
+    assert "Cue ID" in js or "mgr-cueid" in js
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
+    css = (root / "app.css").read_text(encoding="utf-8")
+    assert ".now-card.primary .now-body" in css
+    assert "position: relative" in css
 
 
 def test_format_clock() -> None:
@@ -122,6 +128,10 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert row["prompt_note_on_mark"] is True
     assert row["show_note_on_wave"] is True
     assert row["show_cue_id_on_wave"] is True
+    mark_row = flagged["marks"][0]
+    assert "show_note_on_wave" in mark_row
+    assert "show_cue_id_on_wave" in mark_row
+    assert "cue_id_enabled" in mark_row
 
 
 def test_setlist_includes_collapsible_folders() -> None:
