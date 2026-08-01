@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,17 +120,59 @@ def choose_peak_level(levels: list[PeakLevel], samples_per_pixel: float) -> Peak
     return levels[0]
 
 
-def load_audio(path: Path) -> AudioBuffer:
+def probe_audio_duration(path: Path) -> float | None:
+    """Return file duration in seconds from metadata (no full decode), or None."""
+    path = Path(path)
+    try:
+        info = sf.info(str(path))
+    except Exception:
+        return None
+    sr = int(getattr(info, "samplerate", 0) or 0)
+    frames = int(getattr(info, "frames", 0) or 0)
+    if sr > 0 and frames > 0:
+        return float(frames) / float(sr)
+    duration = float(getattr(info, "duration", 0.0) or 0.0)
+    return duration if duration > 0.05 else None
+
+
+def _quick_display_mono(samples: np.ndarray) -> np.ndarray:
+    """Cheap normalized mono for interim paint before the peak pyramid is ready."""
+    if samples.ndim == 2:
+        mono = samples.mean(axis=1).astype(np.float32)
+    else:
+        mono = np.asarray(samples, dtype=np.float32)
+    peak = float(np.max(np.abs(mono))) if mono.size else 1.0
+    return mono / peak if peak > 0 else mono
+
+
+def load_audio(
+    path: Path,
+    *,
+    on_pcm_ready: Callable[[AudioBuffer], None] | None = None,
+) -> AudioBuffer:
+    """
+    Decode the file to PCM, then build the display peak pyramid.
+
+    ``on_pcm_ready`` (optional) is called on the *same* AudioBuffer instance
+    after PCM is in memory but before peaks are built — callers can hand that
+    buffer to the playback engine so Play works while the waveform finishes.
+    """
     path = Path(path)
     data, sample_rate = sf.read(str(path), always_2d=True, dtype="float32")
-    mono, levels = build_peak_pyramid(data, int(sample_rate))
-    return AudioBuffer(
+    sample_rate = int(sample_rate)
+    buffer = AudioBuffer(
         path=path,
-        sample_rate=int(sample_rate),
+        sample_rate=sample_rate,
         samples=data,
-        mono=mono,
-        peak_levels=levels,
+        mono=_quick_display_mono(data),
+        peak_levels=[],
     )
+    if on_pcm_ready is not None:
+        on_pcm_ready(buffer)
+    mono, levels = build_peak_pyramid(data, sample_rate)
+    buffer.mono = mono
+    buffer.peak_levels = levels
+    return buffer
 
 
 def waveform_display_buffer(

@@ -113,7 +113,12 @@ from cueplayer.media.audio_disk_cache import (
     save_cached_audio,
     save_ltc_channel,
 )
-from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
+from cueplayer.media.audio_loader import (
+    AudioBuffer,
+    ltc_waveform_display_buffer,
+    probe_audio_duration,
+    waveform_display_buffer,
+)
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.media.video_limits import (
@@ -925,6 +930,8 @@ class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
     _ltc_detect_finished = Signal(object, object, bool)  # cache_key, channel, ok
     _audio_prefetch_finished = Signal(object, object)  # path, buffer | Exception
+    # Cold decode: PCM ready before peak pyramid — Play can start early.
+    _audio_pcm_ready = Signal(object, object)  # path, AudioBuffer
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
@@ -991,6 +998,7 @@ class MainWindow(QMainWindow):
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._ltc_detect_finished.connect(self._on_ltc_detect_finished)
         self._audio_prefetch_finished.connect(self._on_audio_prefetch_finished)
+        self._audio_pcm_ready.connect(self._on_audio_pcm_ready)
         self._video_standin_finished.connect(self._on_video_standin_finished)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
@@ -3120,16 +3128,20 @@ class MainWindow(QMainWindow):
 
         song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
         if draft.audio_path is not None and Path(draft.audio_path).is_file():
+            audio_path = Path(draft.audio_path)
             song.audio_tracks = [
                 AudioTrack(
                     id="main_audio",
-                    name=Path(draft.audio_path).stem,
-                    path=Path(draft.audio_path),
+                    name=audio_path.stem,
+                    path=audio_path,
                     role="main",
                 )
             ]
+            # Metadata duration now — do not wait for full waveform decode
+            # (empty project used to show 1:00 until load finished).
+            self._apply_probed_audio_duration(audio_path, song=song)
             if song.bpm is None:
-                self._schedule_bpm_detect_for_song(song, Path(draft.audio_path))
+                self._schedule_bpm_detect_for_song(song, audio_path)
         else:
             song.audio_tracks = []
         if draft.video_path is not None and Path(draft.video_path).is_file():
@@ -4280,6 +4292,7 @@ class MainWindow(QMainWindow):
             else:
                 self.engine.set_buffer(None)
                 self._timeline_ltc_exclude = None
+                self._apply_probed_audio_duration(audio_path, song=self.current_song)
                 self.timeline.set_audio_loading(True, audio_path.name)
                 self._load_audio_path(
                     audio_path, mark_dirty=False, replace_track=False, bump_token=False
@@ -5375,9 +5388,12 @@ class MainWindow(QMainWindow):
         if bump_token:
             self._audio_load_token += 1
         token = self._audio_load_token
+        self._apply_probed_audio_duration(path, song=self.current_song)
         self.timeline.set_audio_loading(True, path.name)
         if not self._media_warm_active:
             self.status.showMessage(f"Loading {path.name}…", 0)
+        # Reserve pending *before* submit so a fast PCM-ready signal can match.
+        self._pending_audio_load = (token, None, path, mark_dirty, replace_track)
         future = self._start_audio_load(path, executor=self._audio_load_executor)
         self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
         if not self._audio_load_timer.isActive():
@@ -6022,11 +6038,17 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None and key in self._audio_inflight:
             return self._audio_inflight[key]
+
         def _load() -> AudioBuffer:
             from cueplayer.util.thread_priority import lower_background_thread_priority
 
             lower_background_thread_priority()
-            return load_audio_cached(path)
+
+            def _on_pcm(buffer: AudioBuffer) -> None:
+                # Handler ignores non-pending / already-peaked (cache) buffers.
+                self._audio_pcm_ready.emit(path, buffer)
+
+            return load_audio_cached(path, on_pcm_ready=_on_pcm)
 
         future = executor.submit(_load)
         if key is not None:
@@ -6042,6 +6064,69 @@ class MainWindow(QMainWindow):
 
             future.add_done_callback(_done)
         return future
+
+    def _apply_probed_audio_duration(
+        self, path: Path, *, song: Song | None = None
+    ) -> None:
+        """Set song/engine/transport duration from file metadata (no decode)."""
+        dur = probe_audio_duration(path)
+        if dur is None:
+            return
+        target = song if song is not None else self.current_song
+        target.duration_seconds = float(dur)
+        if target is not self.current_song:
+            return
+        self.engine.set_duration(float(dur))
+        pos = float(self.engine.position)
+        self.transport.set_times(pos, self.engine.duration)
+        self.monitor.set_position(pos, self.engine.duration)
+        self.timeline.update()
+        self._sync_timeline_overview()
+
+    def _on_audio_pcm_ready(self, path: object, buffer: object) -> None:
+        """PCM decoded — arm playback before the waveform pyramid finishes."""
+        if not isinstance(path, Path) or not isinstance(buffer, AudioBuffer):
+            return
+        # Disk-cache hits already have peaks; final apply will run immediately.
+        if buffer.peak_levels:
+            return
+        pending = self._pending_audio_load
+        if pending is None:
+            return
+        token, _future, pending_path, mark_dirty, replace_track = pending
+        del mark_dirty
+        if token != self._audio_load_token:
+            return
+        try:
+            same_path = Path(pending_path).resolve() == path.resolve()
+        except OSError:
+            same_path = Path(pending_path) == path
+        if not same_path:
+            return
+        if not self._audio_path_matches_current_song(path, replace_track=replace_track):
+            return
+        if self.engine.buffer is buffer:
+            return
+        self.current_song.duration_seconds = buffer.duration_seconds
+        if replace_track:
+            self.current_song.audio_tracks = [
+                AudioTrack(
+                    id="main_audio",
+                    name=path.stem,
+                    path=path,
+                    role="main",
+                )
+            ]
+        self.engine.set_buffer(buffer)
+        self.engine.ensure_playback_ready()
+        self.transport.set_times(0.0, self.engine.duration)
+        self.monitor.set_position(0.0, self.engine.duration)
+        # Keep the loading placeholder until peaks land.
+        self.timeline.set_audio_loading(True, path.name)
+        if not self._media_warm_active:
+            self.status.showMessage(
+                f"Audio ready — building waveform… ({path.name})", 0
+            )
 
     def _on_audio_prefetch_finished(self, path: object, result: object) -> None:
         if not isinstance(path, Path):
@@ -6263,7 +6348,7 @@ class MainWindow(QMainWindow):
             self._audio_load_timer.stop()
             self.timeline.set_audio_loading(False)
             return
-        if not future.done():
+        if future is None or not future.done():
             return
         self._audio_load_timer.stop()
         self._pending_audio_load = None
@@ -6316,9 +6401,14 @@ class MainWindow(QMainWindow):
                     role="main",
                 )
             ]
-        self.engine.set_buffer(buffer)
-        if replace_track:
-            self.engine.ensure_playback_ready()
+        # Same buffer object may already be playing from _on_audio_pcm_ready
+        # (peaks filled in place). Do not set_buffer again — that seeks to 0
+        # and cuts playback mid-stream.
+        already_armed = self.engine.buffer is buffer
+        if not already_armed:
+            self.engine.set_buffer(buffer)
+            if replace_track:
+                self.engine.ensure_playback_ready()
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;
@@ -6333,9 +6423,14 @@ class MainWindow(QMainWindow):
             self.timeline.set_song(self.current_song)
             self._apply_project_mark_line_settings()
             self.monitor.set_song(self.current_song)
-        self.transport.set_times(0.0, self.engine.duration)
-        self.monitor.set_position(0.0, self.engine.duration)
-        self._refresh_output_timecode_clock(0.0)
+        if already_armed:
+            pos = float(self.engine.position)
+            self.transport.set_times(pos, self.engine.duration)
+            self.monitor.set_position(pos, self.engine.duration)
+        else:
+            self.transport.set_times(0.0, self.engine.duration)
+            self.monitor.set_position(0.0, self.engine.duration)
+        self._refresh_output_timecode_clock(0.0 if not already_armed else float(self.engine.position))
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()

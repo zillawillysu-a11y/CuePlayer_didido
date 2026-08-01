@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -93,12 +94,22 @@ def save_cached_audio(path: Path, buffer: AudioBuffer) -> None:
         pass
 
 
-def load_audio_cached(path: Path) -> AudioBuffer:
-    """Disk cache hit when possible; otherwise decode from the media file."""
+def load_audio_cached(
+    path: Path,
+    *,
+    on_pcm_ready: Callable[[AudioBuffer], None] | None = None,
+) -> AudioBuffer:
+    """Disk cache hit when possible; otherwise decode from the media file.
+
+    ``on_pcm_ready`` is forwarded on cold decode so playback can start before
+    the peak pyramid finishes. Cache hits call it with the full buffer.
+    """
     cached = load_cached_audio(path)
     if cached is not None:
+        if on_pcm_ready is not None:
+            on_pcm_ready(cached)
         return cached
-    buffer = load_audio(path)
+    buffer = load_audio(path, on_pcm_ready=on_pcm_ready)
     save_cached_audio(path, buffer)
     return buffer
 

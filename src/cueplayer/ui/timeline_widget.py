@@ -3693,8 +3693,10 @@ class TimelineWidget(QWidget):
         if self._audio_loading:
             painter.setPen(QColor("#a1a1aa"))
             label = self._audio_loading_label
-            line1 = "Loading waveform…"
-            line2 = label if label else "Reading audio file"
+            # Duration already comes from file metadata; playback may be ready
+            # before peaks finish — wording reflects audio decode, not "wait forever".
+            line1 = "Loading audio…"
+            line2 = label if label else "Reading file"
             painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
             painter.setPen(QColor("#71717a"))
             painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)

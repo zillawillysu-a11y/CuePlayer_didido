@@ -97,7 +97,12 @@ def _place_on_timeline(
 
 
 def _downsample_to_overview(samples: np.ndarray, src_rate: int, overview_hz: int) -> np.ndarray:
-    """Peak-hold downsample stereo/mono float32 to overview_hz mono."""
+    """Peak-hold downsample stereo/mono float32 to overview_hz mono.
+
+    Keeps the sample with the largest absolute value **with sign** so the
+    Music-lane painter (bipolar mid±peak) fills both halves of the lane.
+    Absolute-only peaks used to draw as a comb under the midline only.
+    """
     if samples.ndim == 2:
         mono = samples.mean(axis=1).astype(np.float32)
     else:
@@ -107,8 +112,9 @@ def _downsample_to_overview(samples: np.ndarray, src_rate: int, overview_hz: int
     ratio = max(1, int(round(src_rate / float(overview_hz))))
     buckets = max(1, mono.size // ratio)
     usable = buckets * ratio
-    chunk = np.abs(mono[:usable]).reshape(buckets, ratio)
-    return chunk.max(axis=1).astype(np.float32)
+    chunk = mono[:usable].reshape(buckets, ratio)
+    idx = np.argmax(np.abs(chunk), axis=1)
+    return chunk[np.arange(buckets), idx].astype(np.float32)
 
 
 def build_music_standin_from_video(
@@ -185,7 +191,9 @@ def build_music_standin_from_video(
             timeline_t = float(clip.start_seconds) + local
             idx = int(round(timeline_t * overview_hz))
             if 0 <= idx < total_frames:
-                overview[idx] = max(overview[idx], float(peak))
+                # Keep the stronger signed peak (not abs-max → unipolar).
+                if abs(float(peak)) > abs(float(overview[idx])):
+                    overview[idx] = float(peak)
         t = origin + (chunk.frames / float(chunk.sample_rate))
         if t <= origin + 1e-3:
             t += window
