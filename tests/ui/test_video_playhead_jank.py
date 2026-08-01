@@ -177,6 +177,8 @@ def test_playhead_dirty_update_when_scroll_static(
     widget.set_playing(True)
     widget._auto_scroll = False
     widget._last_playhead_paint_x = 100
+    widget._last_playhead_paint_scroll = float(widget._scroll_x)
+    widget._last_playhead_paint_pps = float(widget._pixels_per_second)
 
     clock_ns = [0]
 
@@ -197,3 +199,78 @@ def test_playhead_dirty_update_when_scroll_static(
     widget.set_position(1.0)
     assert regions
     assert any(isinstance(r, QRect) for r in regions)
+
+
+def test_zoom_while_playing_resets_playhead_dirty_tracking(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zoom/pan must not leave a ghost playhead from a stale dirty-rect X."""
+    song = Song.create("Ghost")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    widget.resize(800, 400)
+    widget.set_playing(True)
+    widget._auto_scroll = False
+    widget._pixels_per_second = 200.0
+    widget._position = 2.0
+    widget._last_playhead_paint_x = int(round(widget._x_for_time(2.0)))
+    widget._last_playhead_paint_scroll = float(widget._scroll_x)
+    widget._last_playhead_paint_pps = 200.0
+
+    widget.set_zoom(400.0)
+    assert widget._last_playhead_paint_x is None
+    assert widget._last_playhead_paint_scroll is None
+
+    # After zoom, next play tick must full-repaint (not a narrow strip from the
+    # pre-zoom X), then resume dirty strips once tracking is primed.
+    widget._last_playhead_paint_x = None
+    clock_ns = [0]
+
+    def _fake_mono() -> int:
+        clock_ns[0] += 40_000_000
+        return clock_ns[0]
+
+    monkeypatch.setattr("cueplayer.ui.timeline_widget.monotonic_ns", _fake_mono)
+
+    regions: list[object] = []
+    original_update = widget.update
+
+    def _track_update(*args, **kwargs):  # noqa: ANN002, ANN003
+        regions.append(args[0] if args else "full")
+        return original_update(*args, **kwargs)
+
+    widget.update = _track_update  # type: ignore[method-assign]
+    widget.set_position(2.05)
+    assert regions
+    assert regions[0] == "full"
+
+    regions.clear()
+    widget.set_position(2.10)
+    assert any(isinstance(r, QRect) for r in regions)
+
+
+def test_playhead_dirty_skips_strip_when_scroll_drifted(
+    app: QApplication,
+) -> None:
+    """If scroll moved since last dirty paint, force a full update."""
+    song = Song.create("Drift")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    widget.resize(800, 400)
+    widget.set_playing(True)
+    widget._auto_scroll = False
+    widget._last_playhead_paint_x = 120
+    widget._last_playhead_paint_scroll = 0.0
+    widget._last_playhead_paint_pps = float(widget._pixels_per_second)
+    widget._scroll_x = 80.0
+
+    regions: list[object] = []
+    original_update = widget.update
+
+    def _track_update(*args, **kwargs):  # noqa: ANN002, ANN003
+        regions.append(args[0] if args else "full")
+        return original_update(*args, **kwargs)
+
+    widget.update = _track_update  # type: ignore[method-assign]
+    widget._update_playhead_dirty_region()
+    assert regions == ["full"]
