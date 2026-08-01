@@ -93,7 +93,7 @@ def test_tall_note_row_centers_time_type_cue_id(app: QApplication) -> None:
         assert int(item.textAlignment()) & int(center) == int(center)
     note = panel.cue_table.item(0, panel._col_for_field("note"))
     assert note is not None
-    assert note.textAlignment() & Qt.AlignmentFlag.AlignTop
+    assert note.textAlignment() & Qt.AlignmentFlag.AlignVCenter
     assert note.textAlignment() & Qt.AlignmentFlag.AlignLeft
 
 

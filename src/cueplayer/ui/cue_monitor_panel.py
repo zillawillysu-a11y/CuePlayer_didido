@@ -58,10 +58,12 @@ _COL_COUNT = len(CUE_LIST_FIELDS)
 _NOTE_PAD_X = 8
 _NOTE_PAD_Y = 8
 _NOTE_WRAP_FLAGS = int(
-    Qt.TextFlag.TextWordWrap
-    | Qt.TextFlag.TextWrapAnywhere
+    Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere
+)
+_NOTE_PAINT_FLAGS = int(
+    _NOTE_WRAP_FLAGS
     | Qt.AlignmentFlag.AlignLeft
-    | Qt.AlignmentFlag.AlignTop
+    | Qt.AlignmentFlag.AlignVCenter
 )
 _ROW_HEIGHT = 34
 
@@ -146,7 +148,9 @@ class _PaddedItemDelegate(QStyledItemDelegate):
         painter.save()
         painter.setFont(opt.font)
         painter.setPen(QColor(TEXT))
-        painter.drawText(text_rect, _NOTE_WRAP_FLAGS, text)
+        # Vertically center the wrapped block in the cell (row already sized
+        # with slack so the last CJK glyphs are not clipped into "…").
+        painter.drawText(text_rect, _NOTE_PAINT_FLAGS, text)
         painter.restore()
 
     def sizeHint(self, option, index):  # noqa: ANN001
@@ -1803,10 +1807,8 @@ class CueMonitorPanel(QWidget):
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
-                    # Top-align wrapped Note so the last line is never clipped
-                    # by vertical centering inside a barely-tall-enough row.
                     note_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                     )
                     note_item.setToolTip(
                         "Click to edit Note — long text wraps and grows the row"
