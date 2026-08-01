@@ -258,8 +258,9 @@ class WebRemoteBridge(QObject):
         start: float | None = None,
         seconds: float | None = None,
         rate: int | None = None,
+        as_wav: bool = False,
     ) -> tuple[dict[str, Any], bytes]:
-        """Music-only PCM chunk for iPad / Safari listen-along (no LTC)."""
+        """Music-only PCM/WAV chunk for iPad / Safari listen-along (no LTC)."""
         host = self._host
         song = host.current_song
         engine = host.engine
@@ -275,6 +276,7 @@ class WebRemoteBridge(QObject):
             seconds=float(seconds) if seconds is not None else 0.35,
             out_rate=int(rate) if rate else 24000,
             exclude_channel=exclude,
+            as_wav=bool(as_wav),
         )
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:

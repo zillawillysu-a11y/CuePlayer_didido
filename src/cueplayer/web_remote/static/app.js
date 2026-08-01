@@ -212,19 +212,23 @@
     return Math.min(syncDur, Math.max(0, syncPos + elapsed));
   }
 
-  // --- LAN music-only listen (Web Audio; ~0.3–0.6s ahead of PC) ---
+  // --- LAN music-only listen (HTMLAudio WAV; ~0.3–0.6s ahead of PC) ---
   let listenOn = false;
-  let listenCtx = null;
-  let listenGain = null;
-  let listenSources = [];
   let listenCursor = 0;
-  let listenNextAt = 0;
   let listenBusy = false;
   let listenPumpTimer = null;
   let listenWasPlaying = false;
-  const LISTEN_CHUNK = 0.32;
-  const LISTEN_LEAD = 0.35;
-  const LISTEN_AHEAD = 0.75;
+  let listenAudio = null;
+  let listenObjectUrl = null;
+  let listenNextAudio = null;
+  let listenNextObjectUrl = null;
+  let listenNextMeta = null;
+  let listenFailToastAt = 0;
+  let listenUnlockAudio = null;
+  const LISTEN_CHUNK = 0.40;
+  const LISTEN_AHEAD = 0.85;
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
   function updateListenBtn() {
     if (!els.listenBtn) return;
@@ -235,34 +239,39 @@
       : "Listen music only on this device (no LTC)";
   }
 
-  async function ensureListenCtx() {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) throw new Error("Web Audio unsupported");
-    if (!listenCtx) {
-      listenCtx = new AC();
-      listenGain = listenCtx.createGain();
-      listenGain.gain.value = 0.9;
-      listenGain.connect(listenCtx.destination);
-    }
-    if (listenCtx.state === "suspended") {
-      await listenCtx.resume();
-    }
-    return listenCtx;
+  function listenToastOnce(msg, everyMs = 4000) {
+    const now = performance.now();
+    if (now - listenFailToastAt < everyMs) return;
+    listenFailToastAt = now;
+    showToast(msg);
   }
 
-  function listenStopSources() {
-    for (const src of listenSources) {
-      try { src.stop(0); } catch (_) { /* already stopped */ }
-      try { src.disconnect(); } catch (_) { /* noop */ }
+  function revokeListenUrl(url) {
+    if (url) {
+      try { URL.revokeObjectURL(url); } catch (_) { /* noop */ }
     }
-    listenSources = [];
+  }
+
+  function stopListenElement(el) {
+    if (!el) return;
+    try { el.onended = null; } catch (_) { /* noop */ }
+    try { el.onerror = null; } catch (_) { /* noop */ }
+    try { el.pause(); } catch (_) { /* noop */ }
+    try { el.removeAttribute("src"); el.load(); } catch (_) { /* noop */ }
   }
 
   function listenFlush(atPos) {
-    listenStopSources();
     listenBusy = false;
     listenCursor = Math.max(0, Number(atPos) || 0);
-    listenNextAt = 0;
+    stopListenElement(listenAudio);
+    stopListenElement(listenNextAudio);
+    revokeListenUrl(listenObjectUrl);
+    revokeListenUrl(listenNextObjectUrl);
+    listenAudio = null;
+    listenNextAudio = null;
+    listenObjectUrl = null;
+    listenNextObjectUrl = null;
+    listenNextMeta = null;
   }
 
   function listenResync(atPos) {
@@ -287,11 +296,60 @@
     listenWasPlaying = true;
   }
 
-  async function fetchMonitorChunk(start, seconds) {
+  function makeSilentWavBlob() {
+    // Short soft beep so iOS Safari unlocks media + confirms audio path works.
+    const sr = 22050;
+    const frames = Math.floor(sr * 0.08);
+    const dataSize = frames * 2;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    w(8, "WAVE");
+    w(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    w(36, "data");
+    view.setUint32(40, dataSize, true);
+    for (let i = 0; i < frames; i += 1) {
+      const t = i / sr;
+      const env = Math.min(1, i / 200) * Math.min(1, (frames - i) / 400);
+      const sample = Math.sin(2 * Math.PI * 880 * t) * 0.18 * env;
+      view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sample)) * 32767, true);
+    }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+
+  async function unlockListenAudio() {
+    const blob = makeSilentWavBlob();
+    const url = URL.createObjectURL(blob);
+    const a = new Audio();
+    a.playsInline = true;
+    a.preload = "auto";
+    a.src = url;
+    listenUnlockAudio = a;
+    try {
+      await a.play();
+      a.pause();
+    } catch (err) {
+      throw err;
+    } finally {
+      revokeListenUrl(url);
+    }
+  }
+
+  async function fetchMonitorWav(start, seconds) {
     const q = new URLSearchParams({
       start: String(start),
       seconds: String(seconds),
       rate: "24000",
+      format: "wav",
     });
     const res = await fetch(`/api/monitor?${q}`, { headers: headers(false) });
     if (res.status === 401) {
@@ -305,64 +363,151 @@
     const chunkStart = Number(res.headers.get("X-CuePlayer-Start") || start);
     const chunkSec = Number(res.headers.get("X-CuePlayer-Seconds") || 0);
     const songId = res.headers.get("X-CuePlayer-Song-Id") || "";
+    const frames = Number(res.headers.get("X-CuePlayer-Frames") || 0);
     const ab = await res.arrayBuffer();
-    return { ready, rate, chunkStart, chunkSec, songId, ab };
+    return { ready, rate, chunkStart, chunkSec, songId, frames, ab };
   }
 
-  async function listenFill() {
-    if (!listenOn || listenBusy || !syncPlaying) return;
-    const ctx = listenCtx;
-    if (!ctx) return;
+  function armListenElement(audio, objectUrl, meta) {
+    stopListenElement(listenAudio);
+    revokeListenUrl(listenObjectUrl);
+    listenAudio = audio;
+    listenObjectUrl = objectUrl;
+    listenCursor = (Number.isFinite(meta.chunkStart) ? meta.chunkStart : listenCursor)
+      + (Number(meta.chunkSec) || LISTEN_CHUNK);
+    audio.onended = () => {
+      if (!listenOn || !syncPlaying) return;
+      if (listenNextAudio && listenNextObjectUrl) {
+        const next = listenNextAudio;
+        const nextUrl = listenNextObjectUrl;
+        const nextMeta = listenNextMeta || meta;
+        listenNextAudio = null;
+        listenNextObjectUrl = null;
+        listenNextMeta = null;
+        armListenElement(next, nextUrl, nextMeta);
+        next.play().catch((err) => {
+          listenToastOnce(`Listen play failed: ${err && err.name ? err.name : "error"}`);
+          scheduleListenPump(120);
+        });
+      } else {
+        scheduleListenPump(0);
+      }
+    };
+    audio.onerror = () => {
+      listenToastOnce("Listen decode failed");
+      scheduleListenPump(200);
+    };
+  }
+
+  async function prefetchListenNext() {
+    if (!listenOn || !syncPlaying || listenNextAudio || listenBusy) return;
     const pos = livePosition();
-    // Underrun / seek: catch up to the live playhead.
-    if (listenCursor + 0.05 < pos) {
-      listenCursor = pos;
-      listenNextAt = 0;
-    }
-    if (listenCursor - pos > LISTEN_AHEAD + 0.15) return;
+    if (listenCursor - pos > LISTEN_AHEAD) return;
     listenBusy = true;
     try {
-      const chunk = await fetchMonitorChunk(listenCursor, LISTEN_CHUNK);
+      const chunk = await fetchMonitorWav(listenCursor, LISTEN_CHUNK);
       if (!listenOn || !syncPlaying) return;
       if (chunk.songId && syncSongId && chunk.songId !== syncSongId) {
         listenFlush(livePosition());
         return;
       }
-      if (!chunk.ready || !chunk.ab || chunk.ab.byteLength < 2) {
+      if (!chunk.ready || !chunk.ab || chunk.ab.byteLength < 44 || chunk.frames < 32) {
+        listenToastOnce("No music buffer on PC yet");
         listenCursor += LISTEN_CHUNK;
         return;
       }
-      const i16 = new Int16Array(chunk.ab);
-      const frames = i16.length;
-      if (!frames) {
-        listenCursor += LISTEN_CHUNK;
-        return;
-      }
-      const buf = ctx.createBuffer(1, frames, chunk.rate || 24000);
-      const ch = buf.getChannelData(0);
-      for (let i = 0; i < frames; i += 1) ch[i] = i16[i] / 32768;
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(listenGain || ctx.destination);
-      const now = ctx.currentTime;
-      if (!listenNextAt || listenNextAt < now + 0.02) {
-        listenNextAt = now + LISTEN_LEAD;
-      }
-      src.start(listenNextAt);
-      listenSources.push(src);
-      src.onended = () => {
-        listenSources = listenSources.filter((s) => s !== src);
-      };
-      const dur = frames / (chunk.rate || 24000);
-      listenNextAt += dur;
-      listenCursor = (Number.isFinite(chunk.chunkStart) ? chunk.chunkStart : listenCursor) + dur;
+      const blob = new Blob([chunk.ab], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio();
+      audio.playsInline = true;
+      audio.preload = "auto";
+      audio.src = url;
+      try { audio.load(); } catch (_) { /* noop */ }
+      listenNextAudio = audio;
+      listenNextObjectUrl = url;
+      listenNextMeta = chunk;
     } catch (err) {
-      if (String(err && err.message) !== "unauthorized") {
-        // Soft-fail; keep trying while Listen is on.
-      }
+      if (String(err && err.message) === "unauthorized") return;
+      listenToastOnce(`Listen fetch failed (${err && err.message ? err.message : "error"})`);
     } finally {
       listenBusy = false;
     }
+  }
+
+  async function listenFill() {
+    if (!listenOn || !syncPlaying) return;
+    if (listenCtxSuspendedHint()) return;
+    const pos = livePosition();
+    if (listenCursor + 0.08 < pos) {
+      listenCursor = pos;
+      // Drop stale prefetched chunk after a catch-up.
+      if (listenNextAudio) {
+        stopListenElement(listenNextAudio);
+        revokeListenUrl(listenNextObjectUrl);
+        listenNextAudio = null;
+        listenNextObjectUrl = null;
+        listenNextMeta = null;
+      }
+    }
+    // Already playing something — just keep the next chunk warm.
+    if (listenAudio && !listenAudio.paused && !listenAudio.ended) {
+      await prefetchListenNext();
+      return;
+    }
+    if (listenBusy) return;
+    listenBusy = true;
+    try {
+      let audio = listenNextAudio;
+      let url = listenNextObjectUrl;
+      let meta = listenNextMeta;
+      listenNextAudio = null;
+      listenNextObjectUrl = null;
+      listenNextMeta = null;
+      if (!audio || !url || !meta) {
+        const chunk = await fetchMonitorWav(listenCursor, LISTEN_CHUNK);
+        if (!listenOn || !syncPlaying) return;
+        if (chunk.songId && syncSongId && chunk.songId !== syncSongId) {
+          listenFlush(livePosition());
+          return;
+        }
+        if (!chunk.ready || !chunk.ab || chunk.ab.byteLength < 44 || chunk.frames < 32) {
+          listenToastOnce("No music buffer on PC yet — open a song with audio");
+          listenCursor += LISTEN_CHUNK;
+          return;
+        }
+        const blob = new Blob([chunk.ab], { type: "audio/wav" });
+        url = URL.createObjectURL(blob);
+        audio = new Audio();
+        audio.playsInline = true;
+        audio.preload = "auto";
+        audio.src = url;
+        meta = chunk;
+      }
+      armListenElement(audio, url, meta);
+      try {
+        await audio.play();
+      } catch (err) {
+        listenToastOnce(
+          IS_IOS
+            ? "iPad blocked audio — tap Listen again (unmute switch?)"
+            : `Listen blocked: ${err && err.name ? err.name : "error"}`,
+        );
+        return;
+      }
+      // Warm the following chunk while this one plays.
+      listenBusy = false;
+      await prefetchListenNext();
+    } catch (err) {
+      if (String(err && err.message) === "unauthorized") return;
+      listenToastOnce(`Listen error: ${err && err.message ? err.message : "error"}`);
+    } finally {
+      listenBusy = false;
+    }
+  }
+
+  function listenCtxSuspendedHint() {
+    // Placeholder kept for older call sites; HTMLAudio path does not use AudioContext.
+    return false;
   }
 
   function scheduleListenPump(delayMs) {
@@ -373,7 +518,10 @@
       try {
         await listenFill();
       } catch (_) { /* ignore */ }
-      if (listenOn) scheduleListenPump(syncPlaying ? 90 : 400);
+      if (listenOn) {
+        const playingEl = listenAudio && !listenAudio.paused && !listenAudio.ended;
+        scheduleListenPump(syncPlaying ? (playingEl ? 180 : 90) : 450);
+      }
     }, delayMs);
   }
 
@@ -391,16 +539,22 @@
       return;
     }
     try {
-      await ensureListenCtx();
+      await unlockListenAudio();
     } catch (err) {
       listenOn = false;
       updateListenBtn();
-      showToast("Listen unsupported on this browser");
+      showToast(IS_IOS
+        ? "iPad blocked audio — check silent switch / volume"
+        : "Browser blocked audio unlock");
       return;
     }
     listenWasPlaying = syncPlaying;
     listenFlush(livePosition());
-    showToast("Listening (music only · LAN delay)");
+    if (!syncPlaying) {
+      showToast("Listening armed — press Play");
+    } else {
+      showToast("Listening (music only · LAN delay)");
+    }
     scheduleListenPump(0);
   }
 
@@ -408,7 +562,9 @@
     const nextPos = Math.max(0, Number(position) || 0);
     const nextDur = Math.max(0.1, Number(duration) || 0.1);
     const songChanged = songId && songId !== syncSongId;
-    const seekJump = !songChanged && Math.abs(nextPos - livePosition()) > 0.45;
+    const posDelta = Math.abs(nextPos - livePosition());
+    const seekJump = !songChanged && posDelta > 0.45;
+    const listenHardSeek = Boolean(songChanged) || (!songChanged && posDelta > 1.0);
     if (songChanged) {
       syncSongId = songId;
       lastPlayheadCueId = "";
@@ -435,7 +591,7 @@
       viewEnd = Math.min(viewEnd, nextDur);
       viewStart = Math.max(0, Math.min(viewStart, viewEnd - 0.05));
     }
-    if (songChanged || seekJump) {
+    if (listenHardSeek) {
       listenResync(nextPos);
     } else {
       listenOnTransport(Boolean(playing), nextPos);

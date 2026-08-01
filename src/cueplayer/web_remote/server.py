@@ -213,10 +213,12 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
                         return None
 
                 try:
+                    fmt = str((qs.get("format") or ["s16le"])[0] or "s16le").lower()
                     meta, pcm = server.get_monitor(
                         start=_qfloat("start"),
                         seconds=_qfloat("seconds"),
                         rate=_qint("rate"),
+                        as_wav=fmt in ("wav", "wave", "audio/wav"),
                     )
                 except TypeError:
                     try:
@@ -312,9 +314,14 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _pcm(self, status: HTTPStatus, meta: dict[str, Any], pcm: bytes) -> None:
+            fmt = str(meta.get("format") or "s16le").lower()
+            is_wav = fmt in ("wav", "wave", "audio/wav")
             self.send_response(status)
             self._cors_headers()
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header(
+                "Content-Type",
+                "audio/wav" if is_wav else "application/octet-stream",
+            )
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(pcm)))
             self.send_header(
@@ -339,7 +346,7 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             )
             self.send_header("X-CuePlayer-Ready", "1" if meta.get("ready") else "0")
             self.send_header("X-CuePlayer-Frames", str(int(meta.get("frames") or 0)))
-            self.send_header("X-CuePlayer-Format", str(meta.get("format") or "s16le"))
+            self.send_header("X-CuePlayer-Format", "wav" if is_wav else "s16le")
             self.end_headers()
             if pcm:
                 self.wfile.write(pcm)

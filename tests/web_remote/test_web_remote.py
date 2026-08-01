@@ -21,6 +21,7 @@ from cueplayer.web_remote.state import (
     build_waveform_window,
     format_clock,
     music_mono_samples,
+    pcm16_le_to_wav,
 )
 from cueplayer.media.audio_loader import AudioBuffer, PeakLevel
 import numpy as np
@@ -70,6 +71,8 @@ def test_static_dir_has_index() -> None:
     assert "scrollCueListTo" in js
     assert "setListenOn" in js
     assert "/api/monitor" in js
+    assert 'format: "wav"' in js
+    assert "unlockListenAudio" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -221,6 +224,25 @@ def test_monitor_pcm_music_only_strips_ltc() -> None:
     # Resampled music still has energy; LTC-dominated mix would be much louder.
     assert float(np.max(np.abs(samples))) > 0.05
     assert float(np.max(np.abs(samples))) < 0.6
+    meta_wav, wav = build_monitor_pcm(
+        buf,
+        song_id="s",
+        position=0.1,
+        playing=True,
+        duration=1.0,
+        start=0.1,
+        seconds=0.25,
+        out_rate=24000,
+        exclude_channel=1,
+        as_wav=True,
+    )
+    assert meta_wav["format"] == "wav"
+    assert wav[:4] == b"RIFF"
+    assert wav[8:12] == b"WAVE"
+    assert len(wav) == 44 + meta_wav["frames"] * 2
+    wrapped = pcm16_le_to_wav(pcm, sample_rate=24000, channels=1)
+    assert wrapped[:4] == b"RIFF"
+    assert len(wrapped) == 44 + len(pcm)
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:
@@ -381,7 +403,7 @@ def test_web_remote_server_auth_and_command() -> None:
             "duration": engine.duration,
             "server_ms": 1,
         },
-        get_monitor=lambda start=None, seconds=None, rate=None: (
+        get_monitor=lambda start=None, seconds=None, rate=None, as_wav=False: (
             {
                 "ok": True,
                 "song_id": song.id,
@@ -392,11 +414,23 @@ def test_web_remote_server_auth_and_command() -> None:
                 "seconds": 0.01,
                 "sample_rate": int(rate or 24000),
                 "channels": 1,
-                "format": "s16le",
+                "format": "wav" if as_wav else "s16le",
                 "ready": True,
                 "frames": 240,
             },
-            (np.linspace(-0.2, 0.2, 240, dtype=np.float32) * 32767).astype(np.int16).tobytes(),
+            (
+                pcm16_le_to_wav(
+                    (np.linspace(-0.2, 0.2, 240, dtype=np.float32) * 32767)
+                    .astype(np.int16)
+                    .tobytes(),
+                    sample_rate=int(rate or 24000),
+                    channels=1,
+                )
+                if as_wav
+                else (np.linspace(-0.2, 0.2, 240, dtype=np.float32) * 32767)
+                .astype(np.int16)
+                .tobytes()
+            ),
         ),
     )
     try:
@@ -457,6 +491,18 @@ def test_web_remote_server_auth_and_command() -> None:
             assert resp.headers.get("X-CuePlayer-Format") == "s16le"
             body = resp.read()
             assert len(body) == 480  # 240 int16 frames
+
+        wav_req = urllib.request.Request(
+            "http://127.0.0.1:18765/api/monitor?start=0&seconds=0.01&rate=24000&format=wav",
+            headers={"Authorization": "Bearer secret"},
+        )
+        with urllib.request.urlopen(wav_req, timeout=3) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type", "").startswith("audio/wav")
+            assert resp.headers.get("X-CuePlayer-Format") == "wav"
+            wav_body = resp.read()
+            assert wav_body[:4] == b"RIFF"
+            assert len(wav_body) == 44 + 480
 
         req = urllib.request.Request("http://127.0.0.1:18765/")
         with urllib.request.urlopen(req, timeout=3) as resp:

@@ -552,6 +552,34 @@ def music_mono_samples(
     return samples[:, keep].mean(axis=1).astype(np.float32)
 
 
+def pcm16_le_to_wav(pcm: bytes, *, sample_rate: int, channels: int = 1) -> bytes:
+    """Wrap little-endian int16 PCM in a minimal mono/stereo WAV container."""
+    import struct
+
+    sr = max(1, int(sample_rate))
+    ch = max(1, int(channels))
+    data = bytes(pcm or b"")
+    byte_rate = sr * ch * 2
+    block_align = ch * 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(data),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        ch,
+        sr,
+        byte_rate,
+        block_align,
+        16,
+        b"data",
+        len(data),
+    )
+    return header + data
+
+
 def build_monitor_pcm(
     buffer: AudioBuffer | None,
     *,
@@ -563,13 +591,14 @@ def build_monitor_pcm(
     seconds: float = 0.35,
     out_rate: int = MONITOR_SAMPLE_RATE,
     exclude_channel: int | None = None,
+    as_wav: bool = False,
 ) -> tuple[dict[str, Any], bytes]:
     """
     Slice music-only mono PCM for the Web Remote listen stream.
 
-    Returns ``(meta, pcm_bytes)`` where pcm is little-endian int16 mono at
-    ``out_rate`` (default 24 kHz). Intentionally lossy / low-rate — listen-along
-    on LAN, not cue-critical monitoring.
+    Returns ``(meta, body)`` where body is little-endian int16 mono at
+    ``out_rate`` (default 24 kHz), or a WAV file when ``as_wav`` is True.
+    Intentionally lossy / low-rate — listen-along on LAN, not cue-critical.
     """
     from cueplayer.playback.resample import resample_linear
 
@@ -594,19 +623,22 @@ def build_monitor_pcm(
         "seconds": 0.0,
         "sample_rate": out_sr,
         "channels": 1,
-        "format": "s16le",
+        "format": "wav" if as_wav else "s16le",
         "ready": False,
         "frames": 0,
     }
     if buffer is None or int(getattr(buffer, "frames", 0) or 0) <= 0:
-        return meta, b""
+        body = pcm16_le_to_wav(b"", sample_rate=out_sr, channels=1) if as_wav else b""
+        return meta, body
 
     src_sr = float(getattr(buffer, "sample_rate", 0) or 0)
     if src_sr <= 0:
-        return meta, b""
+        body = pcm16_le_to_wav(b"", sample_rate=out_sr, channels=1) if as_wav else b""
+        return meta, body
     mono = music_mono_samples(buffer, exclude_channel=exclude_channel)
     if mono.size == 0:
-        return meta, b""
+        body = pcm16_le_to_wav(b"", sample_rate=out_sr, channels=1) if as_wav else b""
+        return meta, body
 
     # Clamp to available audio; pad short tails with silence so the client
     # can keep a steady schedule near song end.
@@ -622,6 +654,7 @@ def build_monitor_pcm(
     # Soft clip then quantize.
     chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
     pcm = (chunk * 32767.0).astype(np.int16)
+    raw = pcm.tobytes(order="C")
     actual = float(pcm.size) / float(out_sr) if out_sr else 0.0
     meta.update(
         {
@@ -629,6 +662,9 @@ def build_monitor_pcm(
             "seconds": actual,
             "frames": int(pcm.size),
             "start": float(i0) / src_sr,
+            "format": "wav" if as_wav else "s16le",
         }
     )
-    return meta, pcm.tobytes(order="C")
+    if as_wav:
+        return meta, pcm16_le_to_wav(raw, sample_rate=out_sr, channels=1)
+    return meta, raw
