@@ -1275,66 +1275,79 @@
 
   let scrubPointerX = null;
   let scrubEdgeRaf = null;
+  let scrubLastPanMs = 0;
+  let scrubDetailAt = 0;
 
   function stopScrubEdgeLoop() {
     if (scrubEdgeRaf != null) {
       cancelAnimationFrame(scrubEdgeRaf);
       scrubEdgeRaf = null;
     }
+    scrubLastPanMs = 0;
   }
 
   function scrubEdgeZone(clientX) {
     const rect = els.waveWrap.getBoundingClientRect();
     const w = Math.max(1, rect.width);
     const local = clientX - rect.left;
-    const edge = Math.min(80, Math.max(40, w * 0.14));
+    const edge = Math.min(72, Math.max(36, w * 0.12));
     return { rect, w, local, edge, left: local < edge, right: local > w - edge };
   }
 
-  function scrubAtClientX(clientX) {
+  function updateScrubPlayhead(clientX) {
     const zone = scrubEdgeZone(clientX);
-    const span = viewSpan();
-    let scrolled = false;
-    if (span < syncDur - 0.02) {
-      if (zone.left) {
-        // Stronger when finger is past / deep in the edge; keep moving while held.
-        const t = Math.min(1.5, Math.max(0.15, (zone.edge - zone.local) / zone.edge));
-        const delta = span * (0.035 + 0.09 * t);
-        viewStart -= delta;
-        viewEnd -= delta;
-        clampView();
-        scrolled = true;
-      } else if (zone.right) {
-        const t = Math.min(1.5, Math.max(0.15, (zone.local - (zone.w - zone.edge)) / zone.edge));
-        const delta = span * (0.035 + 0.09 * t);
-        viewStart += delta;
-        viewEnd += delta;
-        clampView();
-        scrolled = true;
-      }
-    }
-    if (scrolled) {
-      setWaveFollowSuspended(true);
-      scheduleWaveDetail();
-    }
     const ratio = Math.min(1, Math.max(0, zone.local / zone.w));
     const seconds = Math.min(syncDur, Math.max(0, viewStart + ratio * viewSpan()));
     scrubbing = { seconds, clientX };
     scrubPointerX = clientX;
     drawWave(true);
-    return zone.left || zone.right;
+    return zone;
+  }
+
+  function panScrubEdge(clientX, dt) {
+    const zone = scrubEdgeZone(clientX);
+    const span = viewSpan();
+    if (!(span < syncDur - 0.02) || dt <= 0) return zone.left || zone.right;
+    // ~8%–28% of the visible window per second (was ~200%+/s and flew to the end).
+    let t = 0;
+    if (zone.left) t = Math.min(1, Math.max(0, (zone.edge - zone.local) / zone.edge));
+    else if (zone.right) t = Math.min(1, Math.max(0, (zone.local - (zone.w - zone.edge)) / zone.edge));
+    else return false;
+    const viewportsPerSec = 0.08 + 0.20 * t;
+    const delta = Math.min(span * 0.08, span * viewportsPerSec * dt);
+    if (zone.left) {
+      viewStart -= delta;
+      viewEnd -= delta;
+    } else {
+      viewStart += delta;
+      viewEnd += delta;
+    }
+    clampView();
+    setWaveFollowSuspended(true);
+    const now = performance.now();
+    if (now - scrubDetailAt > 180) {
+      scrubDetailAt = now;
+      scheduleWaveDetail();
+    }
+    return true;
   }
 
   function startScrubEdgeLoop() {
     if (scrubEdgeRaf != null) return;
-    const tick = () => {
+    scrubLastPanMs = performance.now();
+    const tick = (now) => {
       scrubEdgeRaf = null;
       if (!scrubbing || scrubPointerX == null) return;
       const zone = scrubEdgeZone(scrubPointerX);
-      if (zone.left || zone.right) {
-        scrubAtClientX(scrubPointerX);
-        scrubEdgeRaf = requestAnimationFrame(tick);
+      if (!(zone.left || zone.right)) {
+        scrubLastPanMs = 0;
+        return;
       }
+      const dt = Math.min(0.05, Math.max(0.008, (now - (scrubLastPanMs || now)) / 1000));
+      scrubLastPanMs = now;
+      panScrubEdge(scrubPointerX, dt);
+      updateScrubPlayhead(scrubPointerX);
+      scrubEdgeRaf = requestAnimationFrame(tick);
     };
     scrubEdgeRaf = requestAnimationFrame(tick);
   }
@@ -1344,14 +1357,14 @@
     panning = null;
     pinching = null;
     els.waveWrap.setPointerCapture(ev.pointerId);
-    scrubAtClientX(ev.clientX);
-    startScrubEdgeLoop();
+    const zone = updateScrubPlayhead(ev.clientX);
+    if (zone.left || zone.right) startScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointermove", (ev) => {
     if (!scrubbing) return;
     scrubPointerX = ev.clientX;
-    const atEdge = scrubAtClientX(ev.clientX);
-    if (atEdge) startScrubEdgeLoop();
+    const zone = updateScrubPlayhead(ev.clientX);
+    if (zone.left || zone.right) startScrubEdgeLoop();
     else stopScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointerup", async (ev) => {

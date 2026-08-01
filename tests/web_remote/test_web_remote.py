@@ -53,8 +53,8 @@ def test_static_dir_has_index() -> None:
     assert "ensureWaveDetail" in js
     assert "build_waveform_window" not in js  # server-side only
     assert "scheduleWaveDetail" in js
-    assert "scrubAtClientX" in js
     assert "startScrubEdgeLoop" in js
+    assert "panScrubEdge" in js
     assert "renumber_cue_ids" in js
     assert "set_mark_cue_id" in js
     assert "bindSplitter" in js
