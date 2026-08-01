@@ -14,7 +14,9 @@ import pytest
 from cueplayer.domain.models import Project, Song
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer, static_dir
-from cueplayer.web_remote.state import build_state, format_clock
+from cueplayer.web_remote.state import build_state, build_waveform_overview, format_clock
+from cueplayer.media.audio_loader import AudioBuffer, PeakLevel
+import numpy as np
 
 
 @dataclass
@@ -27,13 +29,35 @@ class _FakeEngine:
 def test_static_dir_has_index() -> None:
     root = static_dir()
     assert (root / "index.html").is_file()
+    html = (root / "index.html").read_text(encoding="utf-8")
+    assert 'id="waveCanvas"' in html
+    assert 'id="pauseBtn"' in html
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
 
 
 def test_format_clock() -> None:
-    assert format_clock(0).startswith("00:00")
-    assert "01:05" in format_clock(65.25)
+    assert format_clock(0) == "00:00:00.00"
+    assert format_clock(65.25) == "00:01:05.25"
+    assert format_clock(1.89) == "00:00:01.89"
+
+
+def test_build_waveform_overview_from_peaks() -> None:
+    mins = np.linspace(-0.5, -0.1, 200, dtype=np.float32)
+    maxs = np.linspace(0.1, 0.8, 200, dtype=np.float32)
+    buf = AudioBuffer(
+        path=__import__("pathlib").Path("x.wav"),
+        sample_rate=48000,
+        samples=np.zeros((48000, 2), dtype=np.float32),
+        mono=np.zeros(48000, dtype=np.float32),
+        peak_levels=[PeakLevel(samples_per_bucket=240, mins=mins, maxs=maxs)],
+    )
+    wave = build_waveform_overview(buf, song_id="s1", duration=1.0, buckets=100)
+    assert wave["ready"] is True
+    assert wave["buckets"] == 100
+    assert len(wave["mins"]) == 100
+    assert len(wave["maxs"]) == 100
+    assert max(abs(v) for v in wave["maxs"]) <= 1.0001
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:
@@ -50,6 +74,8 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert len(state["marks"]) == 2
     assert state["now"]["primary"]
     assert state["now"]["primary"][0]["display_name"] == "主歌"
+    assert state["now"]["primary"][0]["time_display"] == "00:00:02.00"
+    assert state["marks"][0]["time_display"].startswith("00:00:")
 
 
 def test_prefs_port_clamp() -> None:
@@ -104,6 +130,7 @@ def test_web_remote_server_auth_and_command() -> None:
         password="secret",
         get_state=get_state,
         run_command=run_command,
+        get_waveform=lambda: {"ok": True, "song_id": song.id, "ready": False, "buckets": 0, "mins": [], "maxs": [], "duration": 1.0},
     )
     try:
         server.start()
@@ -137,10 +164,18 @@ def test_web_remote_server_auth_and_command() -> None:
         assert result["ok"] is True
         assert commands and commands[0]["op"] == "play"
 
+        code, wave = _http_json(
+            "http://127.0.0.1:18765/api/waveform",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert code == 200
+        assert wave["ok"] is True
+
         req = urllib.request.Request("http://127.0.0.1:18765/")
         with urllib.request.urlopen(req, timeout=3) as resp:
             html = resp.read().decode("utf-8")
             assert "CuePlayer" in html
+            assert 'id="waveCanvas"' in html
             assert resp.status == 200
     finally:
         server.stop()

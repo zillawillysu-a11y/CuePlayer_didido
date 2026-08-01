@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer
-from cueplayer.web_remote.state import build_state
+from cueplayer.web_remote.state import build_state, build_waveform_overview
 
 
 class WebRemoteBridge(QObject):
@@ -27,6 +27,8 @@ class WebRemoteBridge(QObject):
         self._cmd_queue: queue.Queue[tuple[dict[str, Any], queue.Queue[dict[str, Any]]]] = (
             queue.Queue()
         )
+        self._wave_cache_key: tuple[str, int, int] | None = None
+        self._wave_cache: dict[str, Any] | None = None
         self._pump = QTimer(self)
         self._pump.setInterval(16)
         self._pump.timeout.connect(self._drain_commands)
@@ -71,6 +73,7 @@ class WebRemoteBridge(QObject):
             password=self._prefs.password,
             get_state=self._safe_state,
             run_command=self._enqueue_command,
+            get_waveform=self._safe_waveform,
         )
         try:
             server.start()
@@ -110,6 +113,25 @@ class WebRemoteBridge(QObject):
         song = host.current_song
         engine = host.engine
         return build_state(project=project, song=song, engine=engine)
+
+    def _safe_waveform(self) -> dict[str, Any]:
+        host = self._host
+        song = host.current_song
+        engine = host.engine
+        buf = getattr(engine, "buffer", None)
+        frames = int(getattr(buf, "frames", 0) or 0) if buf is not None else 0
+        key = (str(song.id), frames, int(round(float(engine.duration) * 1000)))
+        if self._wave_cache is not None and self._wave_cache_key == key:
+            return self._wave_cache
+        payload = build_waveform_overview(
+            buf,
+            song_id=str(song.id),
+            duration=float(engine.duration),
+            buckets=900,
+        )
+        self._wave_cache_key = key
+        self._wave_cache = payload
+        return payload
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:
         reply: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)

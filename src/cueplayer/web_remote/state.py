@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+import numpy as np
+
 from cueplayer.domain.models import Mark, MarkLane, Project, Song
+from cueplayer.media.audio_loader import AudioBuffer
 from cueplayer.timecode.smpte import seconds_to_timecode
 
 
@@ -20,19 +23,21 @@ class _EngineView(Protocol):
 
 
 def format_clock(seconds: float) -> str:
-    total = max(0.0, float(seconds))
-    minutes = int(total // 60.0)
-    secs = total - minutes * 60.0
-    if minutes >= 100:
-        return f"{minutes}:{secs:06.3f}"
-    return f"{minutes:02d}:{secs:06.3f}"
+    """Song-relative clock: ``HH:MM:SS.cc`` (centiseconds), e.g. ``00:00:07.07``."""
+    total_cs = int(round(max(0.0, float(seconds)) * 100.0))
+    hours, rem = divmod(total_cs, 360_000)
+    minutes, rem = divmod(rem, 6_000)
+    secs, cs = divmod(rem, 100)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{cs:02d}"
 
 
 def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
+    t = float(mark.time_seconds)
     return {
         "id": mark.id,
         "lane_index": int(mark.lane_index),
-        "time_seconds": float(mark.time_seconds),
+        "time_seconds": t,
+        "time_display": format_clock(t),
         "display_name": mark.display_name or "",
         "main_cue_id": mark.main_cue_id or "",
         "lane_name": lane.name if lane is not None else f"Mark {mark.lane_index}",
@@ -132,6 +137,9 @@ def build_state(
         fps,
     ).format()
 
+    playhead = str(getattr(project, "playhead_color", "") or "#3dd68c")
+    waveform_color = str(getattr(project, "waveform_color", "") or "#616161")
+
     return {
         "project_name": project.name,
         "playing": bool(engine.playing),
@@ -140,6 +148,8 @@ def build_state(
         "clock": format_clock(position),
         "duration_clock": format_clock(duration),
         "timecode": abs_tc,
+        "playhead_color": playhead,
+        "waveform_color": waveform_color,
         "song": {
             "id": song.id,
             "index": song_index,
@@ -156,6 +166,66 @@ def build_state(
             "primary": _now_for_lanes(song, position, primary_lanes, lanes),
             "secondary": _now_for_lanes(song, position, secondary_lanes, lanes),
         },
+    }
+
+
+def build_waveform_overview(
+    buffer: AudioBuffer | None,
+    *,
+    song_id: str,
+    duration: float,
+    buckets: int = 900,
+) -> dict[str, Any]:
+    """Downsample peak pyramid into a fixed-width overview for the remote canvas."""
+    n = max(32, min(2000, int(buckets)))
+    empty = {
+        "ok": True,
+        "song_id": song_id,
+        "duration": float(max(0.1, duration)),
+        "buckets": n,
+        "mins": [0.0] * n,
+        "maxs": [0.0] * n,
+        "ready": False,
+    }
+    if buffer is None or not buffer.peak_levels:
+        return empty
+
+    # Prefer a coarse level so overview stays light for iPad Safari.
+    level = buffer.peak_levels[-1]
+    for candidate in reversed(buffer.peak_levels):
+        if candidate.mins.size >= n // 2:
+            level = candidate
+            break
+
+    mins = np.asarray(level.mins, dtype=np.float32)
+    maxs = np.asarray(level.maxs, dtype=np.float32)
+    if mins.size == 0:
+        return empty
+
+    src_n = int(mins.size)
+    out_mins = np.zeros(n, dtype=np.float32)
+    out_maxs = np.zeros(n, dtype=np.float32)
+    for i in range(n):
+        a = int(i * src_n / n)
+        b = max(a + 1, int((i + 1) * src_n / n))
+        out_mins[i] = float(mins[a:b].min())
+        out_maxs[i] = float(maxs[a:b].max())
+
+    # Soft normalize for display (avoid flat lines on quiet beds).
+    peak = float(max(np.max(np.abs(out_mins)), np.max(np.abs(out_maxs)), 1e-6))
+    scale = 1.0 / peak
+    out_mins = out_mins * scale
+    out_maxs = out_maxs * scale
+
+    dur = float(buffer.duration_seconds) if buffer.frames > 0 else float(duration)
+    return {
+        "ok": True,
+        "song_id": song_id,
+        "duration": float(max(0.1, dur)),
+        "buckets": n,
+        "mins": [round(float(v), 4) for v in out_mins.tolist()],
+        "maxs": [round(float(v), 4) for v in out_maxs.tolist()],
+        "ready": True,
     }
 
 

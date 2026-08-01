@@ -3,11 +3,11 @@
   --bg1: #0c0c0c;
   --bg2: #141414;
   --line: #2a2a2a;
-  --text: #e8e8e8;
+  --text: #ededed;
   --muted: #8a8a8a;
   --accent: #d4a017;
-  --danger: #c0392b;
-  --ok: #2ecc71;
+  --ok: #3dd68c;
+  --wave: #616161;
   --pad: max(12px, env(safe-area-inset-left));
   --pad-r: max(12px, env(safe-area-inset-right));
   --pad-t: max(10px, env(safe-area-inset-top));
@@ -41,7 +41,7 @@ body {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(1200px 600px at 15% -10%, rgba(212, 160, 23, 0.12), transparent 55%),
+    radial-gradient(1200px 600px at 15% -10%, rgba(212, 160, 23, 0.10), transparent 55%),
     radial-gradient(900px 500px at 100% 0%, rgba(40, 40, 40, 0.45), transparent 50%),
     linear-gradient(180deg, #0a0a0a 0%, #050505 45%, #080808 100%);
   pointer-events: none;
@@ -72,7 +72,7 @@ body {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(160px, 0.9fr) minmax(280px, 1.4fr) minmax(180px, 1fr);
+  grid-template-columns: minmax(160px, 0.85fr) minmax(300px, 1.5fr) minmax(200px, 1fr);
   gap: 12px;
   min-height: calc(100vh - 70px);
 }
@@ -80,11 +80,10 @@ body {
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto;
   }
-  .setlist { order: 2; max-height: 220px; }
+  .setlist { order: 2; max-height: 200px; }
   .stage { order: 1; }
-  .cues { order: 3; max-height: 280px; }
+  .cues { order: 3; max-height: 260px; }
 }
 
 .panel {
@@ -136,9 +135,7 @@ body {
   font-size: 0.8rem;
 }
 
-.song-item .name {
-  font-weight: 600;
-}
+.song-item .name { font-weight: 600; }
 
 .song-title {
   font-size: 1.25rem;
@@ -154,7 +151,7 @@ body {
 
 .clock {
   font-family: var(--mono);
-  font-size: clamp(1.8rem, 5vw, 2.6rem);
+  font-size: clamp(1.45rem, 4.2vw, 2.2rem);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
 }
@@ -162,7 +159,7 @@ body {
 .duration {
   font-family: var(--mono);
   color: var(--muted);
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 .timecode {
@@ -177,14 +174,14 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .now-card {
   background: var(--bg2);
   border-left: 3px solid var(--line);
   padding: 8px 10px;
-  min-height: 72px;
+  min-height: 68px;
 }
 
 .now-card.primary { border-left-color: #c0392b; }
@@ -201,45 +198,75 @@ body {
   font-size: 0.95rem;
   line-height: 1.35;
   word-break: break-word;
+  white-space: pre-line;
 }
+
+.wave-wrap {
+  position: relative;
+  height: 112px;
+  margin-bottom: 12px;
+  background: #0a0a0a;
+  border: 1px solid var(--line);
+  touch-action: none;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.wave-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wave-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+.wave-empty.hidden { display: none; }
 
 .transport {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin-bottom: 12px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-bottom: 14px;
+  max-width: 420px;
 }
 
-.tbtn, .mbtn, button.ghost, button.primary {
+.icon-btn {
   appearance: none;
-  border: 1px solid var(--line);
-  background: #121212;
-  color: var(--text);
-  font: inherit;
+  border: none;
+  background: transparent;
+  color: #ededed;
   min-height: 52px;
+  border-radius: 8px;
+  padding: 0;
   cursor: pointer;
-  border-radius: 0;
+  display: grid;
+  place-items: center;
 }
 
-.tbtn.primary, button.primary, .mbtn:active {
-  background: #222;
-  border-color: var(--accent);
+.icon-btn svg {
+  width: 28px;
+  height: 24px;
+  display: block;
+}
+
+.icon-btn:hover { background: #222; }
+.icon-btn:active { background: #2a2a2a; }
+.icon-btn.active {
+  background: #3a3a3a;
   color: #fff;
 }
-
-.tbtn.playing {
-  background: #1f1a0a;
-  border-color: var(--accent);
-}
-
-.scrub {
-  margin-bottom: 14px;
-}
-
-.scrub input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent);
-  height: 28px;
+.icon-btn:disabled {
+  color: #555;
+  background: transparent;
+  cursor: default;
 }
 
 .marks {
@@ -249,6 +276,11 @@ body {
 }
 
 .mbtn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #121212;
+  color: var(--text);
+  font: inherit;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -256,6 +288,8 @@ body {
   padding: 10px 12px;
   min-height: 64px;
   gap: 2px;
+  cursor: pointer;
+  border-radius: 0;
 }
 
 .mbtn .key {
@@ -281,6 +315,12 @@ body {
 .cue-item .meta {
   color: var(--muted);
   font-family: var(--mono);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cue-item .lane {
+  color: var(--muted);
   font-size: 0.75rem;
 }
 
@@ -308,9 +348,7 @@ dialog {
   width: min(360px, 92vw);
 }
 
-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.65);
-}
+dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
 
 .auth-form {
   padding: 16px;
@@ -332,10 +370,22 @@ dialog::backdrop {
   gap: 8px;
 }
 
-.auth-actions button {
+.auth-actions button,
+.top .ghost {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #121212;
+  color: var(--text);
+  font: inherit;
   min-height: 40px;
   min-width: 88px;
   padding: 0 12px;
+  cursor: pointer;
+}
+
+.auth-actions button.primary {
+  border-color: #444;
+  background: #222;
 }
 
 .top .ghost {
