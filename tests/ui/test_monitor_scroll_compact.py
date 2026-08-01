@@ -92,10 +92,44 @@ def test_showing_tc_clock_does_not_zero_clock_height(app: QApplication) -> None:
     assert panel.clock_label.height() >= 16
     from PySide6.QtWidgets import QSizePolicy
 
-    # Frame keeps Minimum policy so showing TC grows content (scroll) instead of
-    # clipping the main clock against a fixed short box.
+    # Frame hugs digits (Maximum) so leftover column height goes to Cue List,
+    # not a giant empty clock.
     assert (
         panel._clock_frame.sizePolicy().verticalPolicy()  # noqa: SLF001
-        == QSizePolicy.Policy.Minimum
+        == QSizePolicy.Policy.Maximum
     )
     assert before >= 0  # smoke: layout ran
+
+
+def test_enlarging_panel_does_not_inflate_clock(app: QApplication) -> None:
+    """Growing the window must grow Cue List, not stretch the Clock frame."""
+    panel = CueMonitorPanel()
+    song = Project.create("S").new_song("Song")
+    for i in range(30):
+        song.add_mark(1, float(i))
+    panel.set_song(song)
+    panel.configure_output_timecode_clock(visible=True, color="#3dd68c")
+    panel._now_primary_visible = False  # noqa: SLF001
+    panel._now_secondary_visible = False  # noqa: SLF001
+    panel._apply_now_panel_visibility()  # noqa: SLF001
+    panel.show()
+    panel.resize(300, 320)
+    app.processEvents()
+    panel._fit_clock_fonts()  # noqa: SLF001
+    panel._fit_monitor_body_to_viewport()  # noqa: SLF001
+    app.processEvents()
+
+    clock_short = panel._clock_frame.height()  # noqa: SLF001
+    cue_short = panel._cue_list_block.height()  # noqa: SLF001
+
+    panel.resize(300, 700)
+    app.processEvents()
+    panel._fit_clock_fonts()  # noqa: SLF001
+    panel._fit_monitor_body_to_viewport()  # noqa: SLF001
+    app.processEvents()
+
+    clock_tall = panel._clock_frame.height()  # noqa: SLF001
+    cue_tall = panel._cue_list_block.height()  # noqa: SLF001
+    # Clock may reflow fonts slightly, but must not absorb the extra ~380px.
+    assert clock_tall <= clock_short + 40
+    assert cue_tall > cue_short + 200

@@ -348,9 +348,10 @@ class CueMonitorPanel(QWidget):
         clock_frame = QFrame()
         self._clock_frame = clock_frame
         clock_frame.setObjectName("clockFrame")
-        # Never crush the clock block — short panels scroll instead.
+        # Hug the digits — do not vertically expand into leftover column space
+        # (Minimum would grow and starve Cue List / create a huge empty clock).
         clock_frame.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         clock_frame.setStyleSheet(
             "#clockFrame {"
@@ -377,7 +378,7 @@ class CueMonitorPanel(QWidget):
         self.clock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.clock_label.setMinimumWidth(0)
         self.clock_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._apply_clock_label_style()
 
@@ -385,7 +386,7 @@ class CueMonitorPanel(QWidget):
         self.duration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.duration_label.setMinimumWidth(0)
         self.duration_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._apply_duration_label_style()
 
@@ -396,7 +397,7 @@ class CueMonitorPanel(QWidget):
         self._tc_output_block.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tc_output_block.setStyleSheet("background: transparent;")
         self._tc_output_block.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         tc_out_layout = QVBoxLayout(self._tc_output_block)
         tc_out_layout.setContentsMargins(0, 8, 0, 4)
@@ -406,14 +407,14 @@ class CueMonitorPanel(QWidget):
         self.tc_output_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.tc_output_status.setMinimumWidth(0)
         self.tc_output_status.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
 
         self.tc_output_value = QLabel("01:00:00:00")
         self.tc_output_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.tc_output_value.setMinimumWidth(0)
         self.tc_output_value.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._tc_clock_color = "#3dd68c"
         self._show_output_tc_clock = True
@@ -1065,6 +1066,10 @@ class CueMonitorPanel(QWidget):
             + self._secondary_col_min()
         )
 
+    def _clock_content_height(self) -> int:
+        """Natural Clock block height (digits + optional TC) — never stretched."""
+        return max(1, self._clock_frame.sizeHint().height())
+
     def _fit_monitor_body_to_viewport(self) -> None:
         """Cap NOW/Cue List so Clock + body fit the monitor viewport when short.
 
@@ -1082,9 +1087,9 @@ class CueMonitorPanel(QWidget):
         lay = self._monitor_scroll_content.layout()
         if lay is not None:
             spacing = max(0, int(lay.spacing()))
-        clock_h = self._clock_frame.height()
-        if clock_h <= 0:
-            clock_h = max(1, self._clock_frame.sizeHint().height())
+        # Always budget from the compact clock sizeHint — using the stretched
+        # frame height would shrink Cue List and inflate the Clock further.
+        clock_h = self._clock_content_height()
         body_budget = vp_h - clock_h - spacing
         if body_budget >= _MONITOR_BODY_SCROLL_MIN:
             # Tall enough: let the body expand with the panel (no artificial cap).
