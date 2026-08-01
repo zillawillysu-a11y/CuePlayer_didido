@@ -6,9 +6,9 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-**1.0.4 — first milestone usable** (timeline, marks, video, LTC/MTC, Clean Output + NDI, MA2/MA3 export).
+**1.0.5** — polish release on top of the usable 1.0.4 milestone (NOW / View / Mark Manager / Clean Output + song-switch performance).
 
-Ship tip / integrate to `master`: `cursor/release-1-0-4-028d`
+Ship tip / integrate to `master`: `cursor/release-1-0-5-028d`
 
 Product requirements: `docs/PRODUCT_SPEC.md`  
 User tips (shortcuts / Bundle / Relink): `docs/USER_MANUAL.md`  
@@ -36,7 +36,7 @@ Then send `dist\CuePlayer-*-win64.zip` (unzip → run `CuePlayer.exe`) or
 ```powershell
 cd C:\Users\User\Projects\CuePlayer_didido
 git fetch origin
-git checkout cursor/laptop-ux-pack-028d
+git checkout cursor/release-1-0-5-028d
 git pull
 
 .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
@@ -70,7 +70,7 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## Next after 1.0.4
+## Next after 1.0.5
 
 1. Multi-audio version comparison + Align Anchors
 2. Missing Media Relink for rehearsals
