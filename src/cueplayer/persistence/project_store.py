@@ -781,6 +781,7 @@ def project_from_dict(
         song.show_video_track = show_video_track
         song.show_ltc_track = show_video_track
         migrate_main_cue_ids(song)
+        song.sort_marks()
     categories = [
         SetlistCategory(
             id=str(item["id"]),

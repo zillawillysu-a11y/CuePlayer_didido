@@ -11,6 +11,21 @@ def _to_decimal(cue_id: str) -> Decimal:
     return Decimal(cue_id.strip())
 
 
+def mark_time_sort_key(mark: Mark) -> tuple[float, int, Decimal, str]:
+    """Sort marks by time, then Cue ID ascending (same-time never shows 7 then 6)."""
+    cue = (mark.main_cue_id or "").strip()
+    if cue:
+        try:
+            cue_key = _to_decimal(cue)
+        except Exception:
+            cue_key = Decimal("Infinity")
+    else:
+        # Unassigned ids sort after numbered cues at the same time so a newly
+        # added mark becomes the next integer (…6, then 7), not a fraction.
+        cue_key = Decimal("Infinity")
+    return (mark.time_seconds, mark.lane_index, cue_key, mark.id)
+
+
 def _id_fits_between(
     cue_id: str,
     left: str | None,
@@ -116,7 +131,7 @@ def next_main_cue_id_at_end(existing_ids: list[str]) -> str:
 def main_marks_sorted_for_lane(song: Song, lane_index: int) -> list[Mark]:
     return sorted(
         (m for m in song.marks if m.lane_index == lane_index),
-        key=lambda m: (m.time_seconds, m.lane_index, m.id),
+        key=mark_time_sort_key,
     )
 
 
@@ -181,6 +196,7 @@ def refresh_main_cue_ids(song: Song, *, mark_ids: set[str] | None = None) -> Non
         if mark is None or not song.lane_has_cue_id(mark.lane_index):
             continue
         assign_main_cue_id_for_mark(song, mark, force=True)
+    song.sort_marks()
 
 
 def sync_lane_cue_ids(song: Song) -> None:
@@ -337,6 +353,7 @@ def renumber_main_cue_ids_sequential(
             new_id = str(index)
             mark.main_cue_id = new_id
             result[mark.id] = new_id
+    song.sort_marks()
     return result
 
 

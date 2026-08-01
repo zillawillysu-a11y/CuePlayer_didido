@@ -468,22 +468,26 @@ class Song:
         return lane is not None and lane.cue_id_enabled
 
     def main_marks_sorted(self) -> list[Mark]:
-        """All marks on Cue-ID lanes, sorted by time (legacy helper)."""
+        """All marks on Cue-ID lanes, sorted by time then Cue ID."""
         id_lanes = set(self.cue_id_lane_indices())
         if not id_lanes:
             return []
+        from cueplayer.domain.main_cue_id import mark_time_sort_key
+
         return sorted(
             (m for m in self.marks if m.lane_index in id_lanes),
-            key=lambda m: (m.time_seconds, m.lane_index, m.id),
+            key=mark_time_sort_key,
         )
 
     def add_mark(self, lane_index: int, time_seconds: float, display_name: str = "") -> Mark:
         mark = Mark.create(lane_index=lane_index, time_seconds=time_seconds, display_name=display_name)
         self.marks.append(mark)
-        self.marks.sort(key=lambda m: (m.time_seconds, m.lane_index))
+        self.sort_marks()
         from cueplayer.domain.main_cue_id import assign_main_cue_id_for_mark
 
         assign_main_cue_id_for_mark(self, mark)
+        # Re-sort so the new Cue ID lands in numeric order among same-time marks.
+        self.sort_marks()
         return mark
 
     def mark_by_id(self, mark_id: str) -> Mark | None:
@@ -499,7 +503,9 @@ class Song:
         return before - len(self.marks)
 
     def sort_marks(self) -> None:
-        self.marks.sort(key=lambda m: (m.time_seconds, m.lane_index))
+        from cueplayer.domain.main_cue_id import mark_time_sort_key
+
+        self.marks.sort(key=mark_time_sort_key)
 
     def duplicate(
         self,
