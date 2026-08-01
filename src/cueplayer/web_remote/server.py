@@ -17,6 +17,7 @@ from cueplayer.util.runtime import package_root
 CommandFn = Callable[[dict[str, Any]], dict[str, Any]]
 StateFn = Callable[[], dict[str, Any]]
 WaveformFn = Callable[[], dict[str, Any]]
+ClockFn = Callable[[], dict[str, Any]]
 
 
 def static_dir() -> Path:
@@ -35,6 +36,7 @@ class WebRemoteServer:
         get_state: StateFn,
         run_command: CommandFn,
         get_waveform: WaveformFn | None = None,
+        get_clock: ClockFn | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -42,6 +44,7 @@ class WebRemoteServer:
         self.get_state = get_state
         self.run_command = run_command
         self.get_waveform = get_waveform
+        self.get_clock = get_clock
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -136,6 +139,18 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
                     self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
                     return
                 self._json(HTTPStatus.OK, wave)
+                return
+            if path == "/api/clock":
+                if not self._authorized(parsed.query):
+                    self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                getter = server.get_clock or (lambda: {})
+                try:
+                    clock = getter()
+                except Exception as exc:  # noqa: BLE001
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                    return
+                self._json(HTTPStatus.OK, clock)
                 return
             self._serve_static(path)
 

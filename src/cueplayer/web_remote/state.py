@@ -44,6 +44,8 @@ def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
         "lane_type": lane.lane_type if lane is not None else "top_button",
         "color": lane.color if lane is not None else "#888888",
         "shortcut": lane.shortcut if lane is not None else "",
+        "cue_list_enabled": bool(lane.cue_list_enabled) if lane is not None else True,
+        "lane_visible": bool(lane.visible) if lane is not None else True,
     }
 
 
@@ -115,6 +117,7 @@ def build_state(
             "lane_type": lane.lane_type,
             "visible": bool(lane.visible),
             "locked": bool(lane.locked),
+            "cue_list_enabled": bool(lane.cue_list_enabled),
         }
         for lane in sorted(song.mark_lanes, key=lambda L: L.index)
     ]
@@ -122,6 +125,11 @@ def build_state(
     mark_rows = [
         mark_payload(m, lanes.get(m.lane_index))
         for m in sorted(song.marks, key=lambda m: (m.time_seconds, m.lane_index))
+    ]
+    cue_list_rows = [
+        m
+        for m in mark_rows
+        if m.get("cue_list_enabled", True) and m.get("lane_visible", True)
     ]
 
     primary_lanes = list(song.now_primary_lanes) if song.now_lanes_configured else [1]
@@ -131,6 +139,15 @@ def build_state(
 
     position = float(engine.position)
     duration = float(engine.duration)
+
+    # Playhead Cue List row (same rule as desktop last_cue_list_mark_at_or_before).
+    playhead_cue_id = ""
+    for m in cue_list_rows:
+        if float(m["time_seconds"]) - 1e-9 <= position:
+            playhead_cue_id = str(m["id"])
+        else:
+            break
+
     fps = float(song.fps) if song.fps > 0 else 30.0
     abs_tc = seconds_to_timecode(
         timecode_to_abs_seconds(song.start_timecode, fps) + position,
@@ -150,6 +167,7 @@ def build_state(
         "timecode": abs_tc,
         "playhead_color": playhead,
         "waveform_color": waveform_color,
+        "playhead_cue_id": playhead_cue_id,
         "song": {
             "id": song.id,
             "index": song_index,
@@ -162,6 +180,7 @@ def build_state(
         "songs": song_rows,
         "lanes": lane_rows,
         "marks": mark_rows,
+        "cue_list": cue_list_rows,
         "now": {
             "primary": _now_for_lanes(song, position, primary_lanes, lanes),
             "secondary": _now_for_lanes(song, position, secondary_lanes, lanes),

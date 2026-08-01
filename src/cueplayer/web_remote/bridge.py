@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import time
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -74,6 +75,7 @@ class WebRemoteBridge(QObject):
             get_state=self._safe_state,
             run_command=self._enqueue_command,
             get_waveform=self._safe_waveform,
+            get_clock=self._safe_clock,
         )
         try:
             server.start()
@@ -113,6 +115,20 @@ class WebRemoteBridge(QObject):
         song = host.current_song
         engine = host.engine
         return build_state(project=project, song=song, engine=engine)
+
+    def _safe_clock(self) -> dict[str, Any]:
+        """Lightweight position tick for smooth remote clock correction."""
+        host = self._host
+        song = host.current_song
+        engine = host.engine
+        return {
+            "ok": True,
+            "song_id": str(song.id),
+            "playing": bool(engine.playing),
+            "position": float(engine.position),
+            "duration": float(engine.duration),
+            "server_ms": int(time.time() * 1000),
+        }
 
     def _safe_waveform(self) -> dict[str, Any]:
         host = self._host

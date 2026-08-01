@@ -328,6 +328,15 @@ body {
   font-weight: 560;
 }
 
+.cue-item.current {
+  background: #1a2430;
+  box-shadow: inset 0 0 0 1px rgba(61, 214, 140, 0.35);
+}
+
+.cue-item.current .meta {
+  color: var(--ok);
+}
+
 .toast {
   position: fixed;
   left: 50%;

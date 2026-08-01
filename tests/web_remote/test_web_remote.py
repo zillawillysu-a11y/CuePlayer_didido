@@ -76,6 +76,12 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert state["now"]["primary"][0]["display_name"] == "主歌"
     assert state["now"]["primary"][0]["time_display"] == "00:00:02.00"
     assert state["marks"][0]["time_display"].startswith("00:00:")
+    assert len(state["cue_list"]) == 2
+    # At 3.0s the latest cue-list mark is the Button at 3.5? No — 3.5 is after.
+    # Primary mark at 2.0 is active; playhead cue is the last at-or-before 3.0.
+    assert state["playhead_cue_id"] == song.marks[0].id  # 主歌 @ 2.0
+    later = build_state(project=project, song=song, engine=_FakeEngine(position=4.0))
+    assert later["playhead_cue_id"] == song.marks[1].id  # Button @ 3.5
 
 
 def test_prefs_port_clamp() -> None:
@@ -130,7 +136,23 @@ def test_web_remote_server_auth_and_command() -> None:
         password="secret",
         get_state=get_state,
         run_command=run_command,
-        get_waveform=lambda: {"ok": True, "song_id": song.id, "ready": False, "buckets": 0, "mins": [], "maxs": [], "duration": 1.0},
+        get_waveform=lambda: {
+            "ok": True,
+            "song_id": song.id,
+            "ready": False,
+            "buckets": 0,
+            "mins": [],
+            "maxs": [],
+            "duration": 1.0,
+        },
+        get_clock=lambda: {
+            "ok": True,
+            "song_id": song.id,
+            "playing": engine.playing,
+            "position": engine.position,
+            "duration": engine.duration,
+            "server_ms": 1,
+        },
     )
     try:
         server.start()
@@ -170,6 +192,14 @@ def test_web_remote_server_auth_and_command() -> None:
         )
         assert code == 200
         assert wave["ok"] is True
+
+        code, clock = _http_json(
+            "http://127.0.0.1:18765/api/clock",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert code == 200
+        assert clock["playing"] is True
+        assert "position" in clock
 
         req = urllib.request.Request("http://127.0.0.1:18765/")
         with urllib.request.urlopen(req, timeout=3) as resp:
