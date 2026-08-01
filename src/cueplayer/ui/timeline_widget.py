@@ -1712,9 +1712,15 @@ class TimelineWidget(QWidget):
     def fit_to_view(self) -> None:
         """Zoom out so the whole song fits in one screen."""
         self._view_pinned = False
+        # Ensure header leaves a waveform strip before measuring min zoom —
+        # min-size windows often still carry a wide header from a previous layout.
+        hw = self._clamp_header_width(self._header_width)
+        if hw != int(self._header_width):
+            self._header_width = hw
         self._pixels_per_second = self._min_pixels_per_second()
         self._scroll_x = 0.0
         self._invalidate_scrub_backdrop()
+        self._layout_zoom_overlay()
         self.update()
         self.view_changed.emit()
 
@@ -1756,10 +1762,20 @@ class TimelineWidget(QWidget):
             self.header_width_changed.emit(new_w)
 
     def _clamp_header_width(self, width: int | float) -> int:
-        # Leave room for the waveform scrub zone when the timeline is narrow.
-        room = max(self._header_width_min, int(self.width()) - 120) if self.width() > 0 else self._header_width_max
-        hi = min(self._header_width_max, room)
-        return max(self._header_width_min, min(hi, int(round(float(width)))))
+        # Leave a usable waveform scrub strip when the timeline is narrow.
+        # Soft floor is 72px, but we shrink below that rather than letting the
+        # header swallow the whole pane (fit-to-view while playing at min window
+        # used to paint with content_w==0 / empty peak slices → flash quit).
+        min_wave = 48
+        if self.width() <= 0:
+            return max(
+                self._header_width_min,
+                min(self._header_width_max, int(round(float(width)))),
+            )
+        hard_max = max(24, int(self.width()) - min_wave)
+        soft_min = min(self._header_width_min, hard_max)
+        hi = min(self._header_width_max, hard_max)
+        return max(soft_min, min(hi, int(round(float(width)))))
 
     def _near_header_split(self, x: float) -> bool:
         return abs(float(x) - float(self._header_width)) <= self._header_split_hit
@@ -1896,6 +1912,13 @@ class TimelineWidget(QWidget):
         # calling ``resize()`` so height clamping does not re-enter — that used
         # to skip overlay layout entirely, leaving A/zoom/fit stuck mid-widget
         # until something else (e.g. Video eye toggle) re-laid them out.
+        # Always clamp the header even on the busy path — otherwise a min-size
+        # window keeps a 140px header on a ~180px timeline and fit-to-view
+        # while playing can hit empty paint ranges / zero content width.
+        hw_clamped = self._clamp_header_width(self._header_width)
+        if hw_clamped != int(self._header_width):
+            self._header_width = hw_clamped
+            self._invalidate_scrub_backdrop()
         if getattr(self, "_layout_heights_busy", False):
             self._layout_zoom_overlay()
             self._layout_video_track_overlay()
@@ -1910,10 +1933,6 @@ class TimelineWidget(QWidget):
                 self._video_lane_base_height = lane_clamped
                 if self._song is not None:
                     self._song.video_lane_height = lane_clamped
-            hw_clamped = self._clamp_header_width(self._header_width)
-            if hw_clamped != int(self._header_width):
-                self._header_width = hw_clamped
-                self._invalidate_scrub_backdrop()
             self._apply_layout_heights()
             self._layout_zoom_overlay()
             self._layout_video_track_overlay()
@@ -2098,19 +2117,31 @@ class TimelineWidget(QWidget):
         h = self.height()
         hw = int(self._header_width)
         content_w = max(0, w - hw)
+        painter.fillRect(0, 0, w, h, QColor(BG_APP))
+        dpr = max(1.0, float(pm.devicePixelRatio()))
+
+        def _dev(logical: float) -> int:
+            return int(round(float(logical) * dpr))
+
+        # Header column stays fixed (baked at x=0 in the cache).
+        header_blit_w = min(hw, w, pm.width())
+        if header_blit_w > 0 and h > 0:
+            painter.save()
+            painter.setClipRect(0, 0, header_blit_w, h)
+            painter.drawPixmap(
+                0, 0, header_blit_w, h, pm, 0, 0, _dev(header_blit_w), _dev(h)
+            )
+            painter.restore()
+
+        if content_w <= 0 or h <= 0:
+            return True
+
         src_x = hw + overscan + delta
         # QPainter.drawPixmap(int sx/sy/sw/sh) treats the source rect as *device*
         # pixels. Our cache is sized with setDevicePixelRatio(dpr) and painted in
         # logical coords — so multiply source by dpr. Without this, 125%/150%
         # Windows scaling shifts the waveform vs live marks/playhead (and the
         # offset grows with overscan + scroll delta).
-        dpr = max(1.0, float(pm.devicePixelRatio()))
-
-        def _dev(logical: float) -> int:
-            return int(round(float(logical) * dpr))
-
-        painter.fillRect(0, 0, w, h, QColor(BG_APP))
-        # Content region — sample the matching strip from the wide cache.
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
@@ -2124,11 +2155,6 @@ class TimelineWidget(QWidget):
             _dev(content_w),
             _dev(h),
         )
-        painter.restore()
-        # Header column stays fixed (baked at x=0 in the cache).
-        painter.save()
-        painter.setClipRect(0, 0, hw, h)
-        painter.drawPixmap(0, 0, hw, h, pm, 0, 0, _dev(hw), _dev(h))
         painter.restore()
         return True
 
@@ -3864,6 +3890,8 @@ class TimelineWidget(QWidget):
             s1 = int(t1 * audio.sample_rate)
             b0 = max(0, s0 // level.samples_per_bucket)
             b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+            if b0 >= b1 or b0 >= level.maxs.size:
+                continue
             lo = float(level.mins[b0:b1].min())
             hi = float(level.maxs[b0:b1].max())
             peak = max(abs(lo), abs(hi))
@@ -3923,6 +3951,8 @@ class TimelineWidget(QWidget):
             s1 = int(t1 * audio.sample_rate)
             b0 = max(0, s0 // level.samples_per_bucket)
             b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+            if b0 >= b1 or b0 >= level.maxs.size:
+                continue
             lo = float(level.mins[b0:b1].min())
             hi = float(level.maxs[b0:b1].max())
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
@@ -3943,9 +3973,11 @@ class TimelineWidget(QWidget):
             t1 = self._time_for_x(x + 1)
             s0 = max(0, int(t0 * sr))
             s1 = min(mono.size, max(s0 + 1, int(t1 * sr)))
-            if s0 >= mono.size:
+            if s0 >= mono.size or s0 >= s1:
                 continue
             segment = mono[s0:s1]
+            if segment.size == 0:
+                continue
             lo = float(segment.min())
             hi = float(segment.max())
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
