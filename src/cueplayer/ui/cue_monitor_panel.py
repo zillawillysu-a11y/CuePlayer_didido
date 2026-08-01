@@ -189,10 +189,12 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 
 
 _MIME_NOW_SECONDARY = "application/x-cueplayer-now-secondary"
-_NOW_CARD_MIN_H = 56
-_NOW_CARD_MIN_H_BELOW = 44
-_NOW_PRIMARY_COL_MIN = 56
-_NOW_SECONDARY_COL_MIN = 48
+# Compact floors — single-line Primary hugs text; multi-line still needs room.
+_NOW_CARD_MIN_H = 40
+_NOW_CARD_MIN_H_BELOW = 32
+_NOW_CARD_MIN_H_SINGLE = 28
+_NOW_PRIMARY_COL_MIN = 40
+_NOW_SECONDARY_COL_MIN = 36
 _CUE_LIST_BODY_MIN = 56
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
 # Keep NOW + Cue List tall enough inside the scroll area so a short panel
@@ -222,7 +224,7 @@ def _now_card_style(
     padding = pad if pad is not None else ("10px 10px" if secondary else "12px 12px")
     return (
         f"color: #e4e4e7; font-size: {size}px; font-weight: 600;"
-        f"padding: {padding}; line-height: 1.3;"
+        f"padding: {padding}; line-height: 1.25;"
         f"background-color: #141416;"
         # Qt only rounds reliably when all sides are set (not border-left alone).
         f"border: 1px solid #1f1f22;"
@@ -1023,6 +1025,9 @@ class CueMonitorPanel(QWidget):
     def _primary_col_min(self) -> int:
         # Constant floor only — do not follow card minimumHeight (that feedback
         # loop grows the main window off-screen when width wraps text).
+        if self._now_primary_single_line:
+            # Track label (~14) + gap + compact single-line card.
+            return max(32, _NOW_CARD_MIN_H_SINGLE + 14)
         return _NOW_PRIMARY_COL_MIN
 
     def _secondary_col_min(self) -> int:
@@ -1306,6 +1311,10 @@ class CueMonitorPanel(QWidget):
             self._primary_card_accent = accent
             font_px = int(getattr(self, "_now_primary_font_px", 20))
             pad = getattr(self, "_now_card_pad", "12px 12px")
+            if self._now_primary_single_line or self._primary_should_hug():
+                # Tight vertical pad — one-line / empty Primary should hug the text.
+                font_px = min(font_px, 16)
+                pad = "4px 10px"
         cue.setStyleSheet(
             _now_card_style(accent, secondary=secondary, font_px=font_px, pad=pad)
         )
@@ -1587,22 +1596,42 @@ class CueMonitorPanel(QWidget):
     def _schedule_now_card_fit(self) -> None:
         QTimer.singleShot(0, self._fit_now_cards)
 
+    def _primary_should_hug(self) -> bool:
+        """True when Primary should hug text instead of expanding into empty pad."""
+        if self._now_primary_single_line:
+            return True
+        text = self.primary_cue.text() if hasattr(self, "primary_cue") else ""
+        return "\n" not in (text or "")
+
     def _fit_now_cards(self) -> None:
         """Keep a modest card floor; never raise mins enough to grow the window."""
         below = self._now_placement == "below"
-        floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
-        # Cap by currently allocated card height so width-wrap cannot inflate
-        # minimumHeight and push the main window off-screen.
+        hug_primary = self._primary_should_hug()
         for card in (self.primary_cue, self.secondary_cue):
             if not card.isVisible():
-                card.setMinimumHeight(floor)
+                if card is self.primary_cue and hug_primary:
+                    card.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
+                    card.setMaximumHeight(_NOW_CARD_MIN_H_SINGLE)
+                else:
+                    floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
+                    card.setMaximumHeight(16777215)
+                    card.setMinimumHeight(floor)
                 continue
-            allocated = card.height()
-            cap = allocated if allocated > floor else floor
             width = max(40, card.width())
             natural = card.heightForWidth(width)
             if natural <= 0:
                 natural = card.sizeHint().height()
+            if card is self.primary_cue and hug_primary:
+                # Hug one-line / empty Primary — spare height stays below the card.
+                floor = _NOW_CARD_MIN_H_SINGLE
+                h = max(floor, int(natural))
+                card.setMinimumHeight(h)
+                card.setMaximumHeight(h)
+                continue
+            floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
+            card.setMaximumHeight(16777215)
+            allocated = card.height()
+            cap = allocated if allocated > floor else floor
             card.setMinimumHeight(min(max(floor, natural), cap))
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
             # Keep Primary locked and Cue List boundary fixed while cards reflow.
@@ -2251,7 +2280,10 @@ class CueMonitorPanel(QWidget):
             track.setText(title)
             track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             cue.setText("—")
-            self._apply_card_style(cue, "#3f3f46", secondary=secondary)
+            if secondary:
+                self._apply_card_style(cue, "#3f3f46", secondary=True)
+            else:
+                self._sync_primary_card_alignment()
             return None
 
         lane = self._song.lane_by_index(active.lane_index)
@@ -2275,21 +2307,49 @@ class CueMonitorPanel(QWidget):
                 ),
             )
         )
-        self._apply_card_style(cue, accent, secondary=secondary)
+        if secondary:
+            self._apply_card_style(cue, accent, secondary=True)
+        else:
+            self._sync_primary_card_alignment()
         active_ids.add(active.id)
         return active.id
 
     def _sync_primary_card_alignment(self) -> None:
         if not hasattr(self, "primary_cue"):
             return
-        if self._now_primary_single_line:
+        lay = self._primary_now_column.layout()
+        hug = self._primary_should_hug()
+        if hug:
             self.primary_cue.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
+            # Content-sized card; spare column height stays below (not inside).
+            self.primary_cue.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
+            )
+            if lay is not None:
+                lay.setStretchFactor(self.primary_cue, 0)
+                if lay.count() == 2:
+                    lay.addStretch(1)
+            self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
         else:
             self.primary_cue.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
             )
+            self.primary_cue.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+            )
+            self.primary_cue.setMaximumHeight(16777215)
+            self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
+            if lay is not None:
+                lay.setStretchFactor(self.primary_cue, 1)
+                while lay.count() > 2:
+                    item = lay.takeAt(lay.count() - 1)
+                    if item is None:
+                        break
+                    del item
+        accent = getattr(self, "_primary_card_accent", "#ff5a5f")
+        self._apply_card_style(self.primary_cue, accent)
 
     def _sync_current(self, *, force_now: bool = False) -> None:
         del force_now
@@ -2298,7 +2358,7 @@ class CueMonitorPanel(QWidget):
             self.primary_track.setText("PRIMARY")
             self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             self.primary_cue.setText("—")
-            self._apply_card_style(self.primary_cue, "#ff5a5f")
+            self._sync_primary_card_alignment()
             self._primary_now_column.show()
             self.secondary_track.hide()
             self.secondary_cue.hide()
