@@ -1491,7 +1491,13 @@ class TimelineWidget(QWidget):
             self._ltc_audio = None
             self._ltc_channel = None
             self._layout_video_track_overlay()
+        # Play/scrub uses a cached backdrop — must rebuild or the loading
+        # text vanishes the moment transport starts.
+        self._invalidate_scrub_backdrop()
         self.update()
+
+    def audio_loading(self) -> bool:
+        return bool(self._audio_loading)
 
     def set_auto_scroll(self, enabled: bool) -> None:
         self._auto_scroll = bool(enabled)
@@ -3224,6 +3230,9 @@ class TimelineWidget(QWidget):
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
                 self._paint_header_splitter(painter)
+                # Live overlay: keep "Loading audio…" visible while playing
+                # even if the cached backdrop was baked before loading started.
+                self._paint_audio_loading_overlay(painter)
                 return
 
         painter.fillRect(self.rect(), QColor(BG_APP))
@@ -3683,6 +3692,24 @@ class TimelineWidget(QWidget):
         if step < 10.0:
             return f"{minutes:02d}:{seconds:04.1f}"
         return f"{minutes:02d}:{int(seconds):02d}"
+
+    def _paint_audio_loading_overlay(self, painter: QPainter) -> None:
+        """Draw loading copy on top of play/scrub blits (viewport-fixed)."""
+        if not self._audio_loading:
+            return
+        y0 = self._ruler_height
+        right = self._paint_right()
+        painter.fillRect(
+            self._header_width, y0, max(1, right - self._header_width), self._wave_height,
+            QColor(9, 9, 11, 210),
+        )
+        painter.setPen(QColor("#a1a1aa"))
+        label = self._audio_loading_label
+        line1 = "Loading audio…"
+        line2 = label if label else "Reading file"
+        painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
+        painter.setPen(QColor("#71717a"))
+        painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
 
     def _paint_waveform(self, painter: QPainter) -> int:
         y0 = self._ruler_height

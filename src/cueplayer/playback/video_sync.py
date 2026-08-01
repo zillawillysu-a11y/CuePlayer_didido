@@ -50,7 +50,11 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # Play decode stays on the UI thread (throttled). A background play-decode
 # worker was tried and removed: seek/scrub while Clean Output was open raced
 # a second PyAV container on the same path (hourglass → hard crash).
-_MAX_PLAY_DECODE_HZ = 24.0
+# Cap Preview/Clean emit rate for UI-thread budget. Frame *selection* still
+# follows the file's own timestamps (source FPS); this only limits how often
+# we convert+paint. 30 Hz covers typical 25/29.97/30 rehearsal footage better
+# than the old 24 Hz cap without returning to a 60 Hz UI storm.
+_MAX_PLAY_DECODE_HZ = 30.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
 
 # Rapid click-seeks while paused used to decode every land frame on the UI

@@ -966,6 +966,8 @@ class MainWindow(QMainWindow):
         self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
         self._video_standin_token = 0
+        # Display-only Music waveforms built from video audio (survive song switch).
+        self._video_standin_cache: dict[str, AudioBuffer] = {}
         self._song_activate_gen = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
@@ -6125,7 +6127,7 @@ class MainWindow(QMainWindow):
         self.timeline.set_audio_loading(True, path.name)
         if not self._media_warm_active:
             self.status.showMessage(
-                f"Audio ready — building waveform… ({path.name})", 0
+                f"Audio ready — decoding continues… ({path.name})", 0
             )
 
     def _on_audio_prefetch_finished(self, path: object, result: object) -> None:
@@ -6228,6 +6230,25 @@ class MainWindow(QMainWindow):
                 return clip
         return None
 
+    def _video_standin_cache_key(
+        self, clip: VideoClip, *, timeline_duration: float
+    ) -> str | None:
+        path = Path(clip.path)
+        try:
+            resolved = str(path.resolve())
+            stat = path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            size = int(stat.st_size)
+        except OSError:
+            return None
+        return (
+            f"{clip.id}|{resolved}|{mtime_ns}|{size}|"
+            f"{round(float(timeline_duration), 3)}|"
+            f"{round(float(clip.start_seconds), 3)}|"
+            f"{round(float(clip.source_in_seconds), 3)}|"
+            f"{round(float(clip.source_span_seconds or clip.duration_seconds), 3)}"
+        )
+
     def _schedule_video_music_standin(self) -> None:
         """Fill the Music waveform from embedded video audio when no music file."""
         if self._song_has_main_audio_file():
@@ -6238,10 +6259,19 @@ class MainWindow(QMainWindow):
             self.timeline.set_audio(None)
             self.timeline.set_audio_loading(False)
             return
+        duration = float(self.current_song.duration_seconds)
+        cache_key = self._video_standin_cache_key(clip, timeline_duration=duration)
+        if cache_key is not None:
+            cached = self._video_standin_cache.get(cache_key)
+            if cached is not None:
+                self._video_standin_token += 1
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(cached, reset_view=False)
+                self._sync_timeline_overview()
+                return
         self._video_standin_token += 1
         token = self._video_standin_token
         song_id = self.current_song.id
-        duration = float(self.current_song.duration_seconds)
         self.timeline.set_audio_loading(True, f"{clip.name} (video)")
         clip_snapshot = clip
 
@@ -6292,6 +6322,13 @@ class MainWindow(QMainWindow):
         if not isinstance(result, AudioBuffer):
             self.timeline.set_audio(None)
             return
+        clip = self._primary_video_clip_for_standin()
+        if clip is not None:
+            key = self._video_standin_cache_key(
+                clip, timeline_duration=float(self.current_song.duration_seconds)
+            )
+            if key is not None:
+                self._video_standin_cache[key] = result
         # Display only — playback stays on VideoAudioMixer so we don't double.
         self.timeline.set_audio(result, reset_view=True)
         self._sync_timeline_overview()
@@ -6402,13 +6439,16 @@ class MainWindow(QMainWindow):
                 )
             ]
         # Same buffer object may already be playing from _on_audio_pcm_ready
-        # (peaks filled in place). Do not set_buffer again — that seeks to 0
-        # and cuts playback mid-stream.
+        # (peaks filled in place / progressive tail decode). Do not set_buffer
+        # again — that seeks to 0 and cuts playback mid-stream.
         already_armed = self.engine.buffer is buffer
         if not already_armed:
             self.engine.set_buffer(buffer)
             if replace_track:
                 self.engine.ensure_playback_ready()
+        else:
+            # Progressive load: refresh resample snapshot now that PCM is complete.
+            self.engine.rebind_playback_samples()
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;

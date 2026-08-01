@@ -868,6 +868,23 @@ class AudioEngine(QObject):
         self._complete_buffer_setup(self._buffer_setup_token)
         self._wait_for_playback_samples()
 
+    def rebind_playback_samples(self) -> None:
+        """Re-link / re-resample after progressive PCM fill finishes in place.
+
+        Early play may arm a full-length buffer while the tail is still being
+        decoded into the same ndarray. When rates differ from the device rate,
+        the first resample snapshot can be mostly silence — refresh here once
+        the file read completes (same buffer object, no seek reset).
+        """
+        if self._buffer is None:
+            return
+        with self._lock:
+            self._playback_cache_key = None
+            self._playback_samples = None
+        self._refresh_playback_samples()
+        self._wait_for_playback_samples()
+        self._refresh_source_routing_cache()
+
     def _apply_resampled_pcm(self, built_key: tuple, pcm: np.ndarray) -> None:
         with self._lock:
             if self._playback_cache_key != built_key:
