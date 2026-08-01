@@ -13,6 +13,8 @@ ExportMode = Literal["full", "timecode_only"]
 _SAFE_RE = re.compile(r"[^A-Za-z0-9 _.-]+")
 _SPACE_RE = re.compile(r"\s+")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+# Auto / placeholder cue titles — not real Notes (also catches Cue_15 after sanitize).
+_CUE_PLACEHOLDER_RE = re.compile(r"^cue[_\s]*[\d.]+$", re.IGNORECASE)
 
 
 def ma_export_name_from_display(display_name: str) -> str:
@@ -278,23 +280,30 @@ class ExportCue:
 
         Returns None when there is no real note (leave cue numbered only).
         Chinese notes become pinyin (MA Label rejects / drops CJK).
+
+        Any ``Cue 14`` / ``Cue_15`` / ``Cue 14.1`` style title is treated as a
+        placeholder — never Store that as the MA cue name. Timecode events
+        resolve ``Cue name="Cue 14.1"``; a mismatched ``Cue_15`` breaks the link.
         """
         if self.ma_export_name and self.ma_export_name.strip():
             cleaned = sanitize_ma_name(self.ma_export_name, fallback="")
-            return cleaned or None
+            if cleaned and not _CUE_PLACEHOLDER_RE.match(cleaned):
+                return cleaned
+            return None
         raw = (self.display_name or "").strip()
         if not raw:
             return None
-        # plan_from_song defaults empty notes to "Cue N" — treat as unnamed.
-        label = format_ma_cue_number(self.cue_number)
-        if raw.casefold() in {f"cue {label}", f"cue{label}", f"cue {int(self.cue_number)}"}:
+        if _CUE_PLACEHOLDER_RE.match(raw):
             return None
         for ch in '\\"$&*?,.;^{|}~':
             raw = raw.replace(ch, "")
         raw = " ".join(raw.split())
         if not raw:
             return None
-        return sanitize_ma_name(raw, fallback="") or None
+        cleaned = sanitize_ma_name(raw, fallback="") or None
+        if cleaned and _CUE_PLACEHOLDER_RE.match(cleaned):
+            return None
+        return cleaned
 
 
 @dataclass

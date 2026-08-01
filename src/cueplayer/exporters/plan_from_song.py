@@ -10,6 +10,7 @@ from cueplayer.exporters.common import (
     ExportMode,
     MaExportProfile,
     SongExportPlan,
+    format_ma_cue_number,
     parse_page_executor,
     sanitize_ma_name,
 )
@@ -79,7 +80,6 @@ def build_export_plan(
     )
     main_cues: list[ExportCue] = []
     for i, mark in enumerate(main_marks, start=1):
-        display = (mark.display_name or "").strip() or f"Cue {i}"
         raw_id = (mark.main_cue_id or "").strip()
         if raw_id:
             try:
@@ -90,6 +90,11 @@ def build_export_plan(
             cue_number = float(i)
         if cue_number <= 0:
             cue_number = float(i)
+        # Never invent "Cue {index}" — that drifts from Cue ID when fractions
+        # exist (14, 14.1 → fake Cue 15) and MA Store labels break Timecode links.
+        display = (mark.display_name or "").strip()
+        if not display:
+            display = f"Cue {format_ma_cue_number(cue_number)}"
         main_cues.append(
             ExportCue(
                 cue_number=cue_number,

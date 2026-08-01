@@ -442,9 +442,20 @@ class Ma2Exporter:
         for cue in plan.main_cues:
             cue_label_no = format_ma_cue_number(cue.cue_number)
             label = _ma2_store_cue_label(cue)
-            cmd_lines.append(
-                f'Store Sequence {main_seq} Cue {cue_label_no} "{label}" /noconfirm'
-            )
+            if label:
+                cmd_lines.append(
+                    f'Store Sequence {main_seq} Cue {cue_label_no} "{label}" /noconfirm'
+                )
+            else:
+                # Empty "" clears the default name; Timecode Event looks up
+                # Cue name="Cue 14.1" and will not link if the cue is unnamed
+                # or wrongly titled Cue_15 from a sequential placeholder.
+                cmd_lines.append(
+                    f"Store Sequence {main_seq} Cue {cue_label_no} /noconfirm"
+                )
+                cmd_lines.append(
+                    f'Label Sequence {main_seq} Cue {cue_label_no} "Cue {cue_label_no}"'
+                )
         cmd_lines.extend(
             [
                 f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
@@ -758,8 +769,9 @@ class Ma2Exporter:
     local tcxml = io.open(tcfile, 'w')
     tcxml:write('{tc_escaped}')
     tcxml:close()
-    -- XML time/lenght are FPS frames; set TimeUnit before Import (post-import
-    -- TimeUnit only changes display and previously stretched cues ~x3.33).
+    -- Ensure pool exists, then set TimeUnit before Import. XML time/lenght are
+    -- FPS frames; post-import TimeUnit only changes display (old ×100/30 bug).
+    gma.cmd('Store Timecode {int(tc_pool)}')
     {pre_import}
     gma.cmd('Import "'..tcname..'" At Timecode {int(tc_pool)}')
     gma.sleep(0.5)

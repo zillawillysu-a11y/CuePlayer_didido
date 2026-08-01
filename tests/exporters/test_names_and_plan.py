@@ -56,7 +56,66 @@ def test_cue_name_for_export_uses_note() -> None:
     assert ExportCue(2, "主歌", time_seconds=2.0).cue_name_for_export() == "ZhuGe"
     assert ExportCue(3, "Cue 3", time_seconds=3.0).cue_name_for_export() is None
     assert ExportCue(4, "", time_seconds=4.0).cue_name_for_export() is None
+    # Sequential placeholder must not become Store label when Cue ID is fractional.
+    assert ExportCue(14.1, "Cue 15", time_seconds=1.0).cue_name_for_export() is None
+    assert ExportCue(15.0, "Cue_16", time_seconds=1.0).cue_name_for_export() is None
+    assert ExportCue(14.1, "Cue 14.1", time_seconds=1.0).cue_name_for_export() is None
 
+
+def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None:
+    from cueplayer.domain.models import Song
+    from cueplayer.exporters.plan_from_song import build_export_plan
+
+    song = Song.create("Song")
+    marks = []
+    for i, (t, cid) in enumerate(
+        [
+            (1.0, "14"),
+            (2.0, "14.1"),
+            (3.0, "15"),
+            (4.0, "15.1"),
+        ],
+        start=1,
+    ):
+        m = song.add_mark(1, t)  # empty Note
+        m.main_cue_id = cid
+        marks.append(m)
+    # Poison: simulate old plan_from_song sequential display (should still export clean).
+    marks[1].display_name = "Cue 15"
+    marks[2].display_name = "Cue 16"
+    marks[3].display_name = "Cue 17"
+
+    plan = build_export_plan(song, console="ma2")
+    assert [c.cue_number for c in plan.main_cues] == [14.0, 14.1, 15.0, 15.1]
+    assert all(c.cue_name_for_export() is None for c in plan.main_cues)
+
+    cmds = Ma2Exporter().install_commands_for_plan(plan)
+    store = [c for c in cmds if c.startswith("Store Sequence 1 Cue")]
+    label = [c for c in cmds if c.startswith("Label Sequence 1 Cue")]
+    assert store == [
+        "Store Sequence 1 Cue 14 /noconfirm",
+        "Store Sequence 1 Cue 14.1 /noconfirm",
+        "Store Sequence 1 Cue 15 /noconfirm",
+        "Store Sequence 1 Cue 15.1 /noconfirm",
+    ]
+    assert 'Label Sequence 1 Cue 14.1 "Cue 14.1"' in label
+    assert 'Label Sequence 1 Cue 15.1 "Cue 15.1"' in label
+    assert not any("Cue_15" in c or "Cue_16" in c or "Cue_17" in c for c in cmds)
+
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        paths = Ma2Exporter().export_to_directory(plan, Path(d), include_plugin=True)
+        tc = paths["timecode"].read_text(encoding="utf-8")
+        assert 'name="Cue 14.1"' in tc
+        assert 'name="Cue 15.1"' in tc
+        assert "Cue_15" not in tc
+        assert 'step="14.1"' in tc
+        # Nos include MA2 milli sub for 14.1 → 100
+        assert "<No>14</No><No>100</No>" in tc.replace("\n", "").replace(" ", "") or (
+            ">14</No>" in tc and ">100</No>" in tc
+        )
 
 def test_exporter_summaries_include_target_versions() -> None:
     plan = SongExportPlan(
