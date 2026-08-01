@@ -11,6 +11,8 @@ from cueplayer.exporters.common import (
     MaExportProfile,
     SongExportPlan,
     export_event_time_seconds,
+    format_ma2_cue_link_name,
+    format_ma2_timecode_step,
     format_ma_cue_number,
     ma2_timecode_assign_settings,
     ma2_timecode_pre_import_timeunit,
@@ -358,6 +360,7 @@ class Ma2Exporter:
             frames = _rel_event_frames(plan, cue.time_seconds)
             major, sub = split_ma_cue_number(cue.cue_number)
             cue_label = format_ma_cue_number(cue.cue_number)
+            link_name = format_ma2_cue_link_name(cue.cue_number)
             event = ET.SubElement(
                 main_sub,
                 f"{{{MA2_NS}}}Event",
@@ -366,12 +369,12 @@ class Ma2Exporter:
                     "time": str(frames),
                     "command": "Go",
                     "pressed": "true",
-                    "step": cue_label,
+                    # Integer only — decimal step="14.1" shifts later destinations.
+                    "step": format_ma2_timecode_step(cue.cue_number),
                 },
             )
-            # MA2 Main XML has no note labels — TC Cue name must stay "Cue N"
-            # or events fail to resolve (only Cue 1 appeared linked).
-            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": f"Cue {cue_label}"})
+            # Link name must match Sequence Label (no '.' in the XML attr).
+            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": link_name})
             nos = [1, main_seq, major]
             if sub:
                 nos.append(sub)
@@ -442,19 +445,20 @@ class Ma2Exporter:
         for cue in plan.main_cues:
             cue_label_no = format_ma_cue_number(cue.cue_number)
             label = _ma2_store_cue_label(cue)
+            link_name = format_ma2_cue_link_name(cue.cue_number)
             if label:
                 cmd_lines.append(
                     f'Store Sequence {main_seq} Cue {cue_label_no} "{label}" /noconfirm'
                 )
             else:
                 # Empty "" clears the default name; Timecode Event looks up
-                # Cue name="Cue 14.1" and will not link if the cue is unnamed
+                # Cue name=link_name and will not link if the cue is unnamed
                 # or wrongly titled Cue_15 from a sequential placeholder.
                 cmd_lines.append(
                     f"Store Sequence {main_seq} Cue {cue_label_no} /noconfirm"
                 )
                 cmd_lines.append(
-                    f'Label Sequence {main_seq} Cue {cue_label_no} "Cue {cue_label_no}"'
+                    f'Label Sequence {main_seq} Cue {cue_label_no} "{link_name}"'
                 )
         cmd_lines.extend(
             [
@@ -516,14 +520,15 @@ class Ma2Exporter:
                 frames = _rel_event_frames(plan, cue.time_seconds)
                 max_frames = max(max_frames, frames)
                 major, sub = split_ma_cue_number(cue.cue_number)
-                cue_label = format_ma_cue_number(cue.cue_number)
+                link_name = _xml_esc(format_ma2_cue_link_name(cue.cue_number))
+                step = format_ma2_timecode_step(cue.cue_number)
                 nos = f"<No>1</No><No>{main_seq}</No><No>{major}</No>"
                 if sub:
                     nos += f"<No>{sub}</No>"
                 events.append(
                     f'<Event index="{idx}" time="{frames}" command="Go" '
-                    f'pressed="true" step="{cue_label}">'
-                    f'<Cue name="Cue {cue_label}">{nos}</Cue></Event>'
+                    f'pressed="true" step="{step}">'
+                    f'<Cue name="{link_name}">{nos}</Cue></Event>'
                 )
             tracks.append(
                 f'<Track index="{track_i}" active="true" expanded="true">'

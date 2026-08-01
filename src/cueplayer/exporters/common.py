@@ -248,6 +248,32 @@ def split_ma_cue_number(cue_number: float) -> tuple[int, int]:
     return major, max(0, sub)
 
 
+def format_ma2_timecode_step(cue_number: float) -> str:
+    """
+    Timecode Event ``step`` must be an integer string.
+
+    A decimal like ``step="14.1"`` confuses MA2's Timecode XML importer and
+    shifts subsequent Cue destinations (14.1 time OK, next event keeps 14.1,
+    then 15 / 15.1 / … all lag). Whole cues stay ``"14"``; fractions use the
+    milli handle (``14.1`` → ``"14100"``).
+    """
+    major, sub = split_ma_cue_number(cue_number)
+    if sub:
+        return str(major * 1000 + sub)
+    return str(major)
+
+
+def format_ma2_cue_link_name(cue_number: float) -> str:
+    """
+    Sequence Label + Timecode ``Cue name=`` for link matching.
+
+    Avoid ``.`` inside the Timecode XML attribute (same importer hazard as
+    ``step``). ``14.1`` → ``Cue 14_1``.
+    """
+    label = format_ma_cue_number(cue_number).replace(".", "_")
+    return f"Cue {label}"
+
+
 def ma3_cue_destination_handle(cue_number: float) -> int:
     """MA3 ValCueDestination milli-handle: cue 1 → 1000, cue 4.1 → 4100."""
     return int(round(float(cue_number) * 1000))
