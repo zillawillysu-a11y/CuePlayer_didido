@@ -19,6 +19,7 @@ StateFn = Callable[[], dict[str, Any]]
 WaveformFn = Callable[..., dict[str, Any]]
 ClockFn = Callable[[], dict[str, Any]]
 MonitorFn = Callable[..., tuple[dict[str, Any], bytes]]
+WebRtcFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def static_dir() -> Path:
@@ -39,6 +40,7 @@ class WebRemoteServer:
         get_waveform: WaveformFn | None = None,
         get_clock: ClockFn | None = None,
         get_monitor: MonitorFn | None = None,
+        run_webrtc: WebRtcFn | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -48,6 +50,7 @@ class WebRemoteServer:
         self.get_waveform = get_waveform
         self.get_clock = get_clock
         self.get_monitor = get_monitor
+        self.run_webrtc = run_webrtc
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -113,10 +116,19 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             parsed = urlparse(self.path)
             path = parsed.path or "/"
             if path == "/api/health":
-                self._json(
-                    HTTPStatus.OK,
-                    {"ok": True, "service": "cueplayer-web-remote"},
-                )
+                payload: dict[str, Any] = {
+                    "ok": True,
+                    "service": "cueplayer-web-remote",
+                }
+                if server.run_webrtc is not None:
+                    try:
+                        caps = server.run_webrtc({"op": "capabilities"})
+                        payload["webrtc"] = bool(caps.get("webrtc") or caps.get("ok"))
+                    except Exception:  # noqa: BLE001
+                        payload["webrtc"] = False
+                else:
+                    payload["webrtc"] = False
+                self._json(HTTPStatus.OK, payload)
                 return
             if path == "/api/state":
                 if not self._authorized(parsed.query):
@@ -240,6 +252,31 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             path = parsed.path or "/"
+            if path == "/api/webrtc":
+                if not self._authorized(parsed.query):
+                    self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                if server.run_webrtc is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "webrtc_unavailable"})
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                    return
+                if not isinstance(payload, dict):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                    return
+                try:
+                    result = server.run_webrtc(payload)
+                except Exception as exc:  # noqa: BLE001
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                    return
+                status = HTTPStatus.OK if result.get("ok", True) else HTTPStatus.BAD_REQUEST
+                self._json(status, result)
+                return
             if path not in ("/api/command", "/api/transport", "/api/song", "/api/mark", "/api/seek"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 return

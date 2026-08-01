@@ -212,8 +212,9 @@
     return Math.min(syncDur, Math.max(0, syncPos + elapsed));
   }
 
-  // --- LAN music-only listen (gapless Web Audio; HTMLAudio unlock / iOS route) ---
+  // --- LAN music-only listen (WebRTC low-latency primary; HTTP chunk fallback) ---
   let listenOn = false;
+  let listenMode = ""; // "webrtc" | "http" | ""
   let listenCursor = 0;
   let listenBusy = false;
   let listenPumpTimer = null;
@@ -227,6 +228,8 @@
   let listenNextAt = 0;
   let listenSchedFrames = 0;
   let listenOriginAt = 0;
+  let listenPc = null;
+  let listenRtcAudio = null;
   const LISTEN_CHUNK = 0.55;
   const LISTEN_AHEAD = 1.25;
   const LISTEN_LEAD = 0.28;
@@ -268,13 +271,13 @@
   }
 
   function listenResync(atPos) {
-    if (!listenOn) return;
+    if (!listenOn || listenMode === "webrtc") return;
     listenFlush(atPos);
     if (syncPlaying) scheduleListenPump(0);
   }
 
   function listenOnTransport(playing, pos) {
-    if (!listenOn) return;
+    if (!listenOn || listenMode === "webrtc") return;
     if (!playing) {
       listenWasPlaying = false;
       listenFlush(pos);
@@ -530,15 +533,134 @@
   }
 
   function scheduleListenPump(delayMs) {
+    if (listenMode === "webrtc") return;
     if (listenPumpTimer) clearTimeout(listenPumpTimer);
     listenPumpTimer = setTimeout(async () => {
       listenPumpTimer = null;
-      if (!listenOn) return;
+      if (!listenOn || listenMode !== "http") return;
       try {
         await listenFill();
       } catch (_) { /* ignore */ }
-      if (listenOn) scheduleListenPump(syncPlaying ? 120 : 450);
+      if (listenOn && listenMode === "http") {
+        scheduleListenPump(syncPlaying ? 120 : 450);
+      }
     }, delayMs);
+  }
+
+  function waitIceComplete(pc, timeoutMs) {
+    if (!pc || pc.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs || 4000);
+      pc.addEventListener("icegatheringstatechange", () => {
+        if (pc.iceGatheringState === "complete") {
+          clearTimeout(timer);
+          finish();
+        }
+      });
+    });
+  }
+
+  async function stopWebRtcListen() {
+    const pc = listenPc;
+    listenPc = null;
+    if (pc) {
+      try { pc.ontrack = null; } catch (_) { /* noop */ }
+      try { pc.close(); } catch (_) { /* noop */ }
+    }
+    if (listenRtcAudio) {
+      try { listenRtcAudio.pause(); } catch (_) { /* noop */ }
+      try { listenRtcAudio.srcObject = null; } catch (_) { /* noop */ }
+      listenRtcAudio = null;
+    }
+    try {
+      await api("/api/webrtc", {
+        method: "POST",
+        body: JSON.stringify({ op: "hangup" }),
+      });
+    } catch (_) { /* offline / already down */ }
+  }
+
+  async function startWebRtcListen() {
+    if (typeof RTCPeerConnection !== "function") {
+      throw new Error("RTCPeerConnection unsupported");
+    }
+    const caps = await api("/api/webrtc", {
+      method: "POST",
+      body: JSON.stringify({ op: "capabilities" }),
+    });
+    if (!caps || !caps.webrtc) {
+      throw new Error(caps && caps.error ? caps.error : "webrtc_unavailable");
+    }
+
+    await stopWebRtcListen();
+
+    const pc = new RTCPeerConnection({
+      iceServers: [],
+      bundlePolicy: "max-bundle",
+    });
+    listenPc = pc;
+    pc.addTransceiver("audio", { direction: "recvonly" });
+
+    const audioEl = new Audio();
+    audioEl.playsInline = true;
+    audioEl.setAttribute("playsinline", "true");
+    audioEl.autoplay = true;
+    listenRtcAudio = audioEl;
+
+    pc.ontrack = (ev) => {
+      const stream = (ev.streams && ev.streams[0])
+        ? ev.streams[0]
+        : new MediaStream([ev.track]);
+      audioEl.srcObject = stream;
+      audioEl.play().catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (!listenOn || listenMode !== "webrtc") return;
+      if (pc.connectionState === "failed") {
+        listenToastOnce("WebRTC failed — falling back");
+        fallbackListenHttp();
+      }
+    };
+
+    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    await pc.setLocalDescription(offer);
+    await waitIceComplete(pc, 4000);
+    if (!listenOn || !listenPc) throw new Error("listen_cancelled");
+
+    const answer = await api("/api/webrtc", {
+      method: "POST",
+      body: JSON.stringify({
+        op: "offer",
+        type: pc.localDescription.type,
+        sdp: pc.localDescription.sdp,
+      }),
+    });
+    if (!answer || !answer.ok || !answer.sdp) {
+      throw new Error((answer && answer.error) || "webrtc_answer");
+    }
+    await pc.setRemoteDescription({
+      type: answer.type || "answer",
+      sdp: answer.sdp,
+    });
+    if (audioEl.srcObject) {
+      await audioEl.play();
+    }
+  }
+
+  async function fallbackListenHttp() {
+    if (!listenOn) return;
+    await stopWebRtcListen();
+    listenMode = "http";
+    listenWasPlaying = syncPlaying;
+    listenFlush(livePosition());
+    showToast("Listening (HTTP fallback)");
+    scheduleListenPump(0);
   }
 
   async function setListenOn(on) {
@@ -551,9 +673,11 @@
       }
       listenFlush(livePosition());
       listenWasPlaying = false;
+      listenMode = "";
       if (listenElement) {
         try { listenElement.pause(); } catch (_) { /* noop */ }
       }
+      await stopWebRtcListen();
       showToast("Listen off");
       return;
     }
@@ -567,14 +691,25 @@
         : "Browser blocked audio unlock");
       return;
     }
-    listenWasPlaying = syncPlaying;
-    listenFlush(livePosition());
-    if (!syncPlaying) {
-      showToast("Listening armed — press Play");
-    } else {
-      showToast("Listening (music only · seamless)");
+
+    // Prefer Sunshine-class WebRTC (Opus/UDP). Fall back to HTTP chunks.
+    try {
+      await startWebRtcListen();
+      listenMode = "webrtc";
+      listenWasPlaying = syncPlaying;
+      if (!syncPlaying) {
+        showToast("WebRTC listen armed — press Play");
+      } else {
+        showToast("Listening (WebRTC · low latency)");
+      }
+      return;
+    } catch (err) {
+      const msg = err && err.message ? String(err.message) : "error";
+      if (msg !== "unauthorized") {
+        listenToastOnce(`WebRTC unavailable (${msg}) — HTTP fallback`);
+      }
+      await fallbackListenHttp();
     }
-    scheduleListenPump(0);
   }
 
   function syncFromServer(position, duration, playing, songId) {

@@ -15,9 +15,11 @@ from cueplayer.web_remote.state import (
     build_state,
     build_waveform_overview,
     build_waveform_window,
+    music_mono_samples,
     seconds_to_timecode,
     timecode_to_abs_seconds,
 )
+from cueplayer.web_remote.webrtc_listen import WebRTCListenHub
 
 
 class WebRemoteBridge(QObject):
@@ -31,6 +33,7 @@ class WebRemoteBridge(QObject):
         super().__init__(parent)
         self._host = host_window
         self._server: WebRemoteServer | None = None
+        self._webrtc = WebRTCListenHub(self._live_monitor_pcm)
         self._prefs = WebRemotePrefs()
         self._cmd_queue: queue.Queue[tuple[dict[str, Any], queue.Queue[dict[str, Any]]]] = (
             queue.Queue()
@@ -86,6 +89,7 @@ class WebRemoteBridge(QObject):
             get_waveform=self._safe_waveform,
             get_clock=self._safe_clock,
             get_monitor=self._safe_monitor,
+            run_webrtc=self._safe_webrtc,
         )
         try:
             server.start()
@@ -93,9 +97,13 @@ class WebRemoteBridge(QObject):
             self.status_changed.emit(f"Web Remote failed: {exc}")
             return str(exc)
         self._server = server
+        if self._webrtc.available:
+            self._webrtc.start()
         if not self._pump.isActive():
             self._pump.start()
         msg = f"Web Remote on :{port}"
+        if self._webrtc.available:
+            msg += " · WebRTC listen"
         self.status_changed.emit(msg)
         self.started.emit()
         return None
@@ -103,6 +111,10 @@ class WebRemoteBridge(QObject):
     def stop(self) -> None:
         server = self._server
         self._server = None
+        try:
+            self._webrtc.stop()
+        except Exception:  # noqa: BLE001
+            pass
         if server is not None:
             server.stop()
         # Drain pending command waiters so HTTP threads do not hang.
@@ -278,6 +290,53 @@ class WebRemoteBridge(QObject):
             exclude_channel=exclude,
             as_wav=bool(as_wav),
         )
+
+    def _safe_webrtc(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._webrtc.handle(payload if isinstance(payload, dict) else {})
+
+    def _live_monitor_pcm(self, n_samples: int, sample_rate: int) -> Any:
+        """Int16 mono slice at the live playhead for the WebRTC audio track."""
+        import numpy as np
+
+        from cueplayer.playback.resample import resample_linear
+
+        n = max(1, int(n_samples))
+        sr = max(8000, int(sample_rate) or 48000)
+        silence = np.zeros(n, dtype=np.int16)
+        host = self._host
+        engine = host.engine
+        if not bool(getattr(engine, "playing", False)):
+            return silence
+        buf = getattr(engine, "buffer", None)
+        if buf is None or int(getattr(buf, "frames", 0) or 0) <= 0:
+            return silence
+        try:
+            exclude = self._ltc_exclude_for_cache()
+            mono = music_mono_samples(buf, exclude_channel=exclude)
+        except Exception:  # noqa: BLE001
+            return silence
+        if mono.size == 0:
+            return silence
+        src_sr = float(getattr(buf, "sample_rate", 0) or 0)
+        if src_sr <= 0:
+            return silence
+        t0 = float(engine.position)
+        i0 = int(max(0, min(mono.size, round(t0 * src_sr))))
+        need = int(max(1, round(n * src_sr / float(sr))))
+        i1 = min(mono.size, i0 + need)
+        chunk = mono[i0:i1]
+        if chunk.size < need:
+            chunk = np.concatenate(
+                [chunk, np.zeros(need - chunk.size, dtype=np.float32)]
+            )
+        if abs(src_sr - float(sr)) > 0.5:
+            chunk = resample_linear(chunk, src_sr, float(sr))
+        if chunk.size < n:
+            chunk = np.concatenate([chunk, np.zeros(n - chunk.size, dtype=np.float32)])
+        elif chunk.size > n:
+            chunk = chunk[:n]
+        chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
+        return (chunk * 32767.0).astype(np.int16)
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:
         reply: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)

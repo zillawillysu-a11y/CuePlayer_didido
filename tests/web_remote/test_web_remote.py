@@ -71,10 +71,12 @@ def test_static_dir_has_index() -> None:
     assert "scrollCueListTo" in js
     assert "setListenOn" in js
     assert "/api/monitor" in js
+    assert "/api/webrtc" in js
+    assert "startWebRtcListen" in js
     assert "fetchMonitorPcm" in js
     assert "scheduleListenBuffer" in js
     assert "unlockListenAudio" in js
-    assert "createMediaStreamDestination" in js
+    assert "fallbackListenHttp" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -434,6 +436,11 @@ def test_web_remote_server_auth_and_command() -> None:
                 .tobytes()
             ),
         ),
+        run_webrtc=lambda payload: (
+            {"ok": True, "webrtc": True, "op": "capabilities"}
+            if str(payload.get("op") or "") == "capabilities"
+            else {"ok": True, "op": str(payload.get("op") or ""), "type": "answer", "sdp": "v=0"}
+        ),
     )
     try:
         server.start()
@@ -447,6 +454,8 @@ def test_web_remote_server_auth_and_command() -> None:
                 time.sleep(0.05)
         else:
             pytest.fail("server did not start")
+
+        assert health.get("webrtc") is True
 
         code, _ = _http_json("http://127.0.0.1:18765/api/state")
         assert code == 401
@@ -506,6 +515,14 @@ def test_web_remote_server_auth_and_command() -> None:
             assert wav_body[:4] == b"RIFF"
             assert len(wav_body) == 44 + 480
 
+        code, caps = _http_json(
+            "http://127.0.0.1:18765/api/webrtc",
+            data={"op": "capabilities"},
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert code == 200
+        assert caps.get("webrtc") is True
+
         req = urllib.request.Request("http://127.0.0.1:18765/")
         with urllib.request.urlopen(req, timeout=3) as resp:
             html = resp.read().decode("utf-8")
@@ -515,6 +532,49 @@ def test_web_remote_server_auth_and_command() -> None:
             assert resp.status == 200
     finally:
         server.stop()
+
+
+def test_webrtc_listen_hub_offer_answer() -> None:
+    pytest.importorskip("aiortc")
+    from aiortc import RTCPeerConnection
+
+    from cueplayer.web_remote.webrtc_listen import WEBRTC_AVAILABLE, WebRTCListenHub
+
+    assert WEBRTC_AVAILABLE is True
+    hub = WebRTCListenHub(lambda n, _sr: np.zeros(int(n), dtype=np.int16))
+    try:
+        caps = hub.handle({"op": "capabilities"})
+        assert caps["ok"] is True
+        assert caps["webrtc"] is True
+
+        async def _client_offer() -> tuple[str, str]:
+            pc = RTCPeerConnection()
+            pc.addTransceiver("audio", direction="recvonly")
+            offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            # Give ICE a moment; hub also waits.
+            for _ in range(40):
+                if pc.iceGatheringState == "complete":
+                    break
+                await __import__("asyncio").sleep(0.05)
+            local = pc.localDescription
+            assert local is not None
+            sdp, typ = local.sdp, local.type
+            await pc.close()
+            return sdp, typ
+
+        import asyncio
+
+        sdp, typ = asyncio.run(_client_offer())
+        answer = hub.handle({"op": "offer", "sdp": sdp, "type": typ})
+        assert answer.get("ok") is True, answer
+        assert answer.get("type") == "answer"
+        assert "m=audio" in str(answer.get("sdp") or "")
+
+        hang = hub.handle({"op": "hangup"})
+        assert hang.get("ok") is True
+    finally:
+        hub.stop()
 
 
 def test_web_remote_bridge_dispatch_marks() -> None:
