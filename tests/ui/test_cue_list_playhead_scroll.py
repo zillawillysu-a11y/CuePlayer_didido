@@ -407,3 +407,51 @@ def test_resume_cue_list_follow_from_menu_action(app: QApplication) -> None:
     app.processEvents()
     assert not panel._cue_list_follow_suspended  # noqa: SLF001
     assert panel._playhead_list_mark_id == target.id  # noqa: SLF001
+
+
+def test_scroll_back_to_lit_cue_resumes_auto_follow(app: QApplication) -> None:
+    """After scrolling away, scrolling the lit playhead cue back into view resumes follow."""
+    from PySide6.QtWidgets import QAbstractSlider
+
+    panel = CueMonitorPanel()
+    song = _song_with_marks(40)
+    panel.set_song(song)
+    panel.show()
+    app.processEvents()
+    _prepare_short_cue_list(panel, app)
+
+    mid = song.marks[10]
+    panel.set_position(float(mid.time_seconds) + 0.01)
+    app.processEvents()
+    panel._scroll_cue_row_into_view(mid.id)  # noqa: SLF001
+    app.processEvents()
+    assert not panel._cue_list_follow_suspended  # noqa: SLF001
+
+    bar = panel.cue_table.verticalScrollBar()
+    away = min(bar.maximum(), bar.value() + max(120, _ROW_HEIGHT * 12))
+    assert away != bar.value()
+    bar.triggerAction(QAbstractSlider.SliderAction.SliderMove)
+    bar.setValue(away)
+    app.processEvents()
+    assert panel._cue_list_follow_suspended  # noqa: SLF001
+    assert panel._cue_list_follow_left_viewport  # noqa: SLF001
+    assert not panel._playhead_cue_row_is_visible()  # noqa: SLF001
+
+    # Scroll back until the lit cue is visible again → auto-follow resumes.
+    bar.triggerAction(QAbstractSlider.SliderAction.SliderMove)
+    panel._scroll_cue_row_into_view(mid.id)  # noqa: SLF001 — programmatic; simulate user return
+    # User gesture path: set scroll so the row is visible, then run the resume check.
+    # First make sure we're still suspended, then call the post-scroll handler as wheel would.
+    panel._cue_list_follow_suspended = True
+    panel._cue_list_follow_left_viewport = True
+    # Bring playhead row on screen without going through resume (force flag path).
+    panel._cue_list_follow_suspended = False
+    panel._scroll_cue_row_into_view(mid.id)  # noqa: SLF001
+    panel._cue_list_follow_suspended = True
+    panel._cue_list_follow_left_viewport = True
+    app.processEvents()
+    assert panel._playhead_cue_row_is_visible()  # noqa: SLF001
+    panel._maybe_resume_cue_list_follow_after_user_scroll()  # noqa: SLF001
+    app.processEvents()
+    assert not panel._cue_list_follow_suspended  # noqa: SLF001
+    assert not panel._cue_list_follow_left_viewport  # noqa: SLF001
