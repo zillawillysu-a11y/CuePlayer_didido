@@ -344,6 +344,13 @@ def test_manual_cue_list_scroll_pauses_playhead_follow(app: QApplication) -> Non
     assert not panel._cue_list_follow_suspended  # noqa: SLF001
 
     bar = panel.cue_table.verticalScrollBar()
+    # Get onto a mid cue first, then suspend, then step to the next cue (<0.5s).
+    mid = song.marks[12]
+    nxt = song.marks[13]
+    panel.set_position(float(mid.time_seconds) + 0.8)
+    app.processEvents()
+    assert panel._playhead_list_mark_id == mid.id  # noqa: SLF001
+
     parked = min(bar.maximum(), bar.value() + max(80, _ROW_HEIGHT * 8))
     assert parked != bar.value()
     # Simulate a user scrollbar gesture (not a bare setValue from layout code).
@@ -353,14 +360,16 @@ def test_manual_cue_list_scroll_pauses_playhead_follow(app: QApplication) -> Non
     assert panel._cue_list_follow_suspended  # noqa: SLF001
     assert bar.value() == parked
 
-    # Playhead advances during playback — must not steal the scroll position.
-    late = song.marks[30]
-    panel.set_position(float(early.time_seconds) + 0.2)  # small tick, stay suspended
+    # Playhead crosses into the next cue — selection advances, scroll stays put.
+    panel.set_position(float(nxt.time_seconds) + 0.05)  # 12.8 → 13.05 (<0.5s)
     app.processEvents()
     assert panel._cue_list_follow_suspended  # noqa: SLF001
     assert bar.value() == parked
+    assert panel._playhead_list_mark_id == nxt.id  # noqa: SLF001
+    assert panel.selected_mark_ids() == [nxt.id]
 
     # Large seek resumes follow.
+    late = song.marks[30]
     panel.set_position(float(late.time_seconds) + 0.01)
     app.processEvents()
     assert not panel._cue_list_follow_suspended  # noqa: SLF001
