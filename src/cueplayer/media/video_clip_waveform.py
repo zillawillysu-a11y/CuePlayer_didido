@@ -232,7 +232,7 @@ class VideoClipWaveformCache:
             media_kind=str(clip.media_kind),
         )
 
-    def get_peaks(self, clip: VideoClip) -> ClipWaveformPeaks | None:
+    def get_peaks(self, clip: VideoClip, *, allow_submit: bool = True) -> ClipWaveformPeaks | None:
         # Paint path also calls this — must skip heavy clips here, not only
         # in preload(), or the first paint would still decode huge PCM.
         if clip_is_heavy(clip):
@@ -243,13 +243,17 @@ class VideoClipWaveformCache:
                 return self._peaks[key]
             if key in self._pending:
                 return None
+            if not allow_submit:
+                return None
             self._pending.add(key)
             generation = self._generation
         self._executor.submit(self._build_async, generation, key, clip)
         return None
 
-    def peaks_for_paint(self, clip: VideoClip) -> ClipWaveformPeaks | None:
-        return self.get_peaks(clip)
+    def peaks_for_paint(
+        self, clip: VideoClip, *, allow_submit: bool = True
+    ) -> ClipWaveformPeaks | None:
+        return self.get_peaks(clip, allow_submit=allow_submit)
 
     def preload(self, clips: list[VideoClip]) -> None:
         for clip in clips:
