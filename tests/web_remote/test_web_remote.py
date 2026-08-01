@@ -37,10 +37,16 @@ def test_static_dir_has_index() -> None:
     assert 'id="dispBtn"' in html
     assert 'id="dispDialog"' in html
     assert 'id="cueFollowBtn"' in html
+    assert 'id="noteDialog"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
     assert "ignoreCueScroll" in js
     assert "set_display" in js
     assert "scrollCueListTo" in js
+    assert "pause_on_mark" in js
+    assert "prompt_note_on_mark" in js
+    assert "show_note_on_wave" in js
+    assert "show_cue_id_on_wave" in js
+    assert "set_mark_note" in js
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
 
@@ -105,6 +111,17 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert hidden["display"]["primary"] is False
     assert hidden["display"]["timecode"] is False
     assert hidden["display"]["toggles"] is False
+    lane = song.mark_lanes[0]
+    lane.pause_on_mark = True
+    lane.prompt_note_on_mark = True
+    lane.show_note_on_wave = True
+    lane.show_cue_id_on_wave = True
+    flagged = build_state(project=project, song=song, engine=_FakeEngine(position=3.0))
+    row = next(r for r in flagged["lanes"] if r["index"] == lane.index)
+    assert row["pause_on_mark"] is True
+    assert row["prompt_note_on_mark"] is True
+    assert row["show_note_on_wave"] is True
+    assert row["show_cue_id_on_wave"] is True
 
 
 def test_setlist_includes_collapsible_folders() -> None:

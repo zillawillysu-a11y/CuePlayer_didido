@@ -545,16 +545,52 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
 
 .mgr-row {
   display: grid;
-  grid-template-columns: 14px 1fr 64px 72px 70px;
-  gap: 8px;
+  grid-template-columns: 14px minmax(0, 1fr) 52px 88px 56px;
+  gap: 6px 8px;
   align-items: center;
-  padding: 8px 0;
+  padding: 10px 0;
   border-bottom: 1px solid #1c1c1c;
+}
+
+.mgr-flags {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mgr-flag {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted, #9a9a9a);
+  user-select: none;
+}
+
+.mgr-flag input {
+  appearance: none;
+  width: 34px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #0a0a0a;
+  cursor: pointer;
+}
+
+.mgr-flag input:checked {
+  background: #c8c8c8;
+  border-color: #c8c8c8;
 }
 
 .mgr-row input[type="text"],
 .mgr-row select,
-.auth-form input {
+.auth-form input,
+.note-form input {
   width: 100%;
   background: #0a0a0a;
   border: 1px solid var(--line);
@@ -563,10 +599,20 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
   font: inherit;
 }
 
+.note-form {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  min-width: min(92vw, 360px);
+}
+
+.note-form h3 { margin: 0; }
+
 .mgr-swatch {
   width: 14px;
   height: 28px;
   border-radius: 2px;
+  grid-row: 1;
 }
 
 .auth-actions {

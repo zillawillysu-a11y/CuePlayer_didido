@@ -212,6 +212,8 @@ class WebRemoteBridge(QObject):
             return self._step_song(-1)
         if op == "add_mark":
             return self._add_mark(command)
+        if op == "set_mark_note":
+            return self._set_mark_note(command)
         if op == "set_output_toggle":
             return self._set_output_toggle(command)
         if op == "toggle_folder":
@@ -397,6 +399,14 @@ class WebRemoteBridge(QObject):
                 [song.mark_lanes[0].index] if song.mark_lanes else []
             )
             song.now_secondary_lanes = sorted(set(secondary))
+        if "pause_on_mark" in command:
+            lane.pause_on_mark = bool(command.get("pause_on_mark"))
+        if "prompt_note_on_mark" in command:
+            lane.prompt_note_on_mark = bool(command.get("prompt_note_on_mark"))
+        if "show_note_on_wave" in command:
+            lane.show_note_on_wave = bool(command.get("show_note_on_wave"))
+        if "show_cue_id_on_wave" in command:
+            lane.show_cue_id_on_wave = bool(command.get("show_cue_id_on_wave"))
 
         host._rebuild_digit_shortcuts()
         host.timeline.apply_song_display_settings()
@@ -465,18 +475,59 @@ class WebRemoteBridge(QObject):
             return {"ok": False, "error": "lane_unavailable"}
         if not getattr(song, "show_mark_tracks", True):
             return {"ok": False, "error": "mark_tracks_hidden"}
+        ask_note = bool(getattr(lane, "prompt_note_on_mark", False))
         # Remote must never open a blocking Note dialog on the PC.
-        saved_prompt = bool(getattr(lane, "prompt_note_on_mark", False))
+        saved_prompt = ask_note
+        before_ids = {m.id for m in song.marks}
         try:
             lane.prompt_note_on_mark = False
             host._add_mark(lane.index)
         finally:
             lane.prompt_note_on_mark = saved_prompt
+
+        mark = None
+        for m in reversed(song.marks):
+            if m.lane_index == lane.index and m.id not in before_ids:
+                mark = m
+                break
+        if mark is None:
+            for m in reversed(song.marks):
+                if m.lane_index == lane.index:
+                    mark = m
+                    break
+
+        note = command.get("note")
+        if mark is not None and note is not None:
+            mark.display_name = str(note).strip()
+            host._refresh_marks_ui()
+            host._mark_dirty()
+
         return {
             "ok": True,
             "op": "add_mark",
             "lane_index": lane.index,
             "shortcut": lane.shortcut or shortcut,
+            "mark_id": mark.id if mark is not None else "",
+            "ask_note": ask_note,
+            "note": (mark.display_name if mark is not None else "") or "",
+            "lane_name": lane.name,
+        }
+
+    def _set_mark_note(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        mark_id = str(command.get("mark_id") or "").strip()
+        mark = host.current_song.mark_by_id(mark_id)
+        if mark is None:
+            return {"ok": False, "error": "mark_not_found"}
+        note = str(command.get("note") or "").strip()
+        mark.display_name = note
+        host._refresh_marks_ui()
+        host._mark_dirty()
+        return {
+            "ok": True,
+            "op": "set_mark_note",
+            "mark_id": mark_id,
+            "note": note,
         }
 
 

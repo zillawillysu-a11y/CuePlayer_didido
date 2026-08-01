@@ -36,6 +36,11 @@
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
     markMgrBody: document.getElementById("markMgrBody"),
+    noteDialog: document.getElementById("noteDialog"),
+    noteDialogTitle: document.getElementById("noteDialogTitle"),
+    noteInput: document.getElementById("noteInput"),
+    noteCancel: document.getElementById("noteCancel"),
+    noteSave: document.getElementById("noteSave"),
     dispBtn: document.getElementById("dispBtn"),
     dispDialog: document.getElementById("dispDialog"),
     dispClose: document.getElementById("dispClose"),
@@ -461,9 +466,48 @@
       .catch((e) => showToast(String(e.message || e)));
   }
 
+  function askMarkNote(laneName, initial) {
+    return new Promise((resolve) => {
+      if (!els.noteDialog || !els.noteDialog.showModal) {
+        resolve(null);
+        return;
+      }
+      els.noteDialogTitle.textContent = `Note for ${laneName || "mark"}`;
+      els.noteInput.value = initial || "";
+      const finish = (value) => {
+        els.noteDialog.removeEventListener("close", onClose);
+        resolve(value);
+      };
+      const onClose = () => {
+        finish(els.noteDialog.returnValue === "ok" ? els.noteInput.value : null);
+      };
+      els.noteDialog.addEventListener("close", onClose, { once: true });
+      els.noteDialog.showModal();
+      requestAnimationFrame(() => {
+        els.noteInput.focus();
+        els.noteInput.select();
+      });
+    });
+  }
+
+  async function placeMark(payload, lane) {
+    const result = await command({ op: "add_mark", ...payload });
+    const name = (lane && lane.name) || result.lane_name || payload.shortcut || "mark";
+    if (result && result.ask_note && result.mark_id) {
+      const note = await askMarkNote(name, result.note || "");
+      if (note != null) {
+        await command({ op: "set_mark_note", mark_id: result.mark_id, note });
+      }
+    }
+    showToast(`Marked ${name}`);
+    return result;
+  }
+
   function renderMarkButtons(lanes) {
     const usable = (lanes || []).filter((l) => l.shortcut && l.shortcut >= "1" && l.shortcut <= "9");
-    const sig = JSON.stringify(usable.map((l) => [l.index, l.shortcut, l.name, l.visible, l.locked, l.color]));
+    const sig = JSON.stringify(usable.map((l) => [
+      l.index, l.shortcut, l.name, l.visible, l.locked, l.color, l.prompt_note_on_mark,
+    ]));
     if (sig === lastLanesSig) return;
     lastLanesSig = sig;
     els.markButtons.innerHTML = "";
@@ -483,9 +527,7 @@
         btn.style.borderLeft = `3px solid ${lane.color || "#444"}`;
         btn.disabled = !lane.visible || lane.locked;
         btn.addEventListener("click", () => {
-          command({ op: "add_mark", shortcut: key })
-            .then(() => showToast(`Marked ${lane.name}`))
-            .catch((e) => showToast(String(e.message || e)));
+          placeMark({ shortcut: key }, lane).catch((e) => showToast(String(e.message || e)));
         });
       }
       els.markButtons.appendChild(btn);
@@ -510,7 +552,13 @@
         `<input type="text" class="mgr-name" />` +
         `<label><input type="checkbox" class="mgr-vis" /> Eye</label>` +
         `<select class="mgr-now"><option value="off">Off</option><option value="primary">Primary</option><option value="secondary">Secondary</option></select>` +
-        `<select class="mgr-key"><option value="">—</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>`;
+        `<select class="mgr-key"><option value="">—</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>` +
+        `<div class="mgr-flags">` +
+          `<label class="mgr-flag">Pause<input type="checkbox" class="mgr-pause" /></label>` +
+          `<label class="mgr-flag">Ask Note<input type="checkbox" class="mgr-ask" /></label>` +
+          `<label class="mgr-flag">Wave Note<input type="checkbox" class="mgr-wnote" /></label>` +
+          `<label class="mgr-flag">Wave Cue<input type="checkbox" class="mgr-wcue" /></label>` +
+        `</div>`;
       row.querySelector(".mgr-swatch").style.background = lane.color || "#666";
       const name = row.querySelector(".mgr-name");
       name.value = lane.name || "";
@@ -520,6 +568,14 @@
       now.value = lane.now || "off";
       const key = row.querySelector(".mgr-key");
       key.value = lane.shortcut || "";
+      const pause = row.querySelector(".mgr-pause");
+      pause.checked = Boolean(lane.pause_on_mark);
+      const ask = row.querySelector(".mgr-ask");
+      ask.checked = Boolean(lane.prompt_note_on_mark);
+      const wnote = row.querySelector(".mgr-wnote");
+      wnote.checked = Boolean(lane.show_note_on_wave);
+      const wcue = row.querySelector(".mgr-wcue");
+      wcue.checked = Boolean(lane.show_cue_id_on_wave);
 
       const save = () => {
         command({
@@ -529,12 +585,20 @@
           visible: vis.checked,
           now: now.value,
           shortcut: key.value,
+          pause_on_mark: pause.checked,
+          prompt_note_on_mark: ask.checked,
+          show_note_on_wave: wnote.checked,
+          show_cue_id_on_wave: wcue.checked,
         }).catch((e) => showToast(String(e.message || e)));
       };
       name.addEventListener("change", save);
       vis.addEventListener("change", save);
       now.addEventListener("change", save);
       key.addEventListener("change", save);
+      pause.addEventListener("change", save);
+      ask.addEventListener("change", save);
+      wnote.addEventListener("change", save);
+      wcue.addEventListener("change", save);
       els.markMgrBody.appendChild(row);
     }
   }
@@ -773,6 +837,8 @@
       || body.op === "update_lane"
       || body.op === "set_output_toggle"
       || body.op === "set_display"
+      || body.op === "set_mark_note"
+      || body.op === "add_mark"
     ) {
       api("/api/state").then(applyState).catch(() => {});
     } else if (body.op === "toggle") {
@@ -958,19 +1024,44 @@
     showToast(token ? "Password saved" : "Password cleared");
   });
 
+  if (els.noteSave) {
+    els.noteSave.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (els.noteDialog) {
+        els.noteDialog.close("ok");
+      }
+    });
+  }
+  if (els.noteCancel) {
+    els.noteCancel.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (els.noteDialog) {
+        els.noteDialog.close("cancel");
+      }
+    });
+  }
+  if (els.noteInput) {
+    els.noteInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        if (els.noteDialog) els.noteDialog.close("ok");
+      }
+    });
+  }
+
   window.addEventListener("keydown", (ev) => {
     if (ev.repeat) return;
     const t = ev.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    if (els.noteDialog && els.noteDialog.open) return;
     if (ev.code === "Space") {
       ev.preventDefault();
       command({ op: "toggle" }).catch(() => {});
       return;
     }
     if (ev.key >= "1" && ev.key <= "9") {
-      command({ op: "add_mark", shortcut: ev.key })
-        .then(() => showToast(`Marked ${ev.key}`))
-        .catch(() => {});
+      const lane = ((stateCache && stateCache.lanes) || []).find((l) => l.shortcut === ev.key);
+      placeMark({ shortcut: ev.key }, lane).catch(() => {});
     }
   });
 

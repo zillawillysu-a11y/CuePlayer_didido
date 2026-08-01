@@ -199,6 +199,9 @@ def build_state(
             "cue_id_enabled": bool(lane.cue_id_enabled),
             "now": _now_role(song, lane.index),
             "pause_on_mark": bool(lane.pause_on_mark),
+            "prompt_note_on_mark": bool(getattr(lane, "prompt_note_on_mark", False)),
+            "show_note_on_wave": bool(getattr(lane, "show_note_on_wave", False)),
+            "show_cue_id_on_wave": bool(getattr(lane, "show_cue_id_on_wave", False)),
         }
         for lane in sorted(song.mark_lanes, key=lambda L: L.index)
     ]

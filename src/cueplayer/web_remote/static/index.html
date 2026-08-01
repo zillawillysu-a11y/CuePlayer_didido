@@ -120,6 +120,17 @@
     </form>
   </dialog>
 
+  <dialog id="noteDialog">
+    <form method="dialog" class="note-form">
+      <h3 id="noteDialogTitle">Mark Note</h3>
+      <input type="text" id="noteInput" autocomplete="off" enterkeyhint="done" />
+      <div class="auth-actions">
+        <button value="cancel" class="ghost" id="noteCancel">Skip</button>
+        <button value="ok" class="primary" id="noteSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="authDialog">
     <form method="dialog" class="auth-form">
       <h3>Remote password</h3>
