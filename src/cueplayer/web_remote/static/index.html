@@ -24,31 +24,7 @@
         <div id="songList" class="song-list"></div>
       </section>
 
-      <section class="panel stage" aria-label="Monitor">
-        <div class="monitor-clock">
-          <div class="clock" id="clock">00:00.000</div>
-          <div class="duration" id="duration">/ 00:00.000</div>
-          <div class="tc-status" id="tcStatus">TC off</div>
-          <div class="timecode" id="timecode">—</div>
-          <div class="toggles" id="toggles" role="group" aria-label="Output toggles">
-            <button type="button" class="chip" data-key="translate">TRANS</button>
-            <button type="button" class="chip" data-key="note">Note</button>
-            <button type="button" class="chip" data-key="mtc">MTC</button>
-            <button type="button" class="chip" data-key="ltc">LTC</button>
-          </div>
-        </div>
-
-        <div class="now-stack">
-          <div class="now-card primary">
-            <div class="now-label" id="nowPrimaryLabel">PRIMARY</div>
-            <div class="now-body" id="nowPrimary">—</div>
-          </div>
-          <div class="now-card secondary">
-            <div class="now-label" id="nowSecondaryLabel">SECONDARY</div>
-            <div class="now-body" id="nowSecondary">—</div>
-          </div>
-        </div>
-
+      <section class="panel stage" aria-label="Timeline">
         <div class="wave-toolbar">
           <button type="button" class="ghost tiny" id="zoomOut" title="Zoom out">−</button>
           <button type="button" class="ghost tiny" id="zoomFit" title="Fit song">Fit</button>
@@ -81,7 +57,31 @@
         <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
       </section>
 
-      <section class="panel cues" aria-label="Cue list">
+      <section class="panel monitor" aria-label="Cue monitor">
+        <div class="monitor-clock">
+          <div class="clock" id="clock">00:00.000</div>
+          <div class="duration" id="duration">/ 00:00.000</div>
+          <div class="tc-status" id="tcStatus">TC off</div>
+          <div class="timecode" id="timecode">—</div>
+          <div class="toggles" id="toggles" role="group" aria-label="Output toggles">
+            <button type="button" class="chip" data-key="translate">TRANS</button>
+            <button type="button" class="chip" data-key="note">Note</button>
+            <button type="button" class="chip" data-key="mtc">MTC</button>
+            <button type="button" class="chip" data-key="ltc">LTC</button>
+          </div>
+        </div>
+
+        <div class="now-stack">
+          <div class="now-card primary">
+            <div class="now-label" id="nowPrimaryLabel">PRIMARY</div>
+            <div class="now-body" id="nowPrimary">—</div>
+          </div>
+          <div class="now-card secondary">
+            <div class="now-label" id="nowSecondaryLabel">SECONDARY</div>
+            <div class="now-body" id="nowSecondary">—</div>
+          </div>
+        </div>
+
         <h2>Cue List</h2>
         <div class="cue-head">
           <span>Time</span><span>Type</span><span>Cue</span><span>Note</span>

@@ -107,6 +107,24 @@ def test_setlist_includes_collapsible_folders() -> None:
     assert state2["setlist"][1]["collapsed"] is True
 
 
+def test_now_secondary_is_single_active_mark() -> None:
+    project = Project.create("Now", with_song=True)
+    song = project.songs[0]
+    song.now_primary_lanes = [1]
+    song.now_secondary_lanes = [2, 3]
+    song.now_secondary_enabled = True
+    song.now_secondary_clear_seconds = 0.5
+    song.add_mark(2, 1.0, "A")
+    song.add_mark(3, 2.0, "B")
+    song.add_mark(2, 3.0, "C")
+    state = build_state(project=project, song=song, engine=_FakeEngine(position=2.5))
+    assert len(state["now"]["secondary"]) == 1
+    assert state["now"]["secondary"][0]["display_name"] == "B"
+    assert state["now"]["secondary_clear_seconds"] == 0.5
+    later = build_state(project=project, song=song, engine=_FakeEngine(position=3.5))
+    assert later["now"]["secondary"][0]["display_name"] == "C"
+
+
 def test_prefs_port_clamp() -> None:
     assert WebRemotePrefs(port=80).normalized_port() == 8765
     assert WebRemotePrefs(port=9000).normalized_port() == 9000

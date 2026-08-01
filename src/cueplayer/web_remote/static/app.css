@@ -73,18 +73,18 @@ html, body {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(150px, 0.85fr) minmax(280px, 1.35fr) minmax(220px, 1.05fr);
+  grid-template-columns: minmax(150px, 0.8fr) minmax(300px, 1.45fr) minmax(240px, 1.05fr);
   gap: 8px;
 }
 
 @media (max-width: 980px) {
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.4fr) minmax(0, 1.1fr);
+    grid-template-rows: minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 0.9fr);
   }
-  .setlist { order: 3; }
   .stage { order: 1; }
-  .cues { order: 2; }
+  .monitor { order: 2; }
+  .setlist { order: 3; }
 }
 
 .panel {
@@ -167,6 +167,19 @@ html, body {
 
 .stage {
   gap: 8px;
+}
+
+.monitor {
+  gap: 8px;
+}
+
+.monitor .monitor-clock,
+.monitor .now-stack {
+  flex: 0 0 auto;
+}
+
+.monitor > h2 {
+  margin-top: 2px;
 }
 
 .monitor-clock {
@@ -281,8 +294,8 @@ html, body {
 
 .wave-wrap {
   position: relative;
-  height: 108px;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 120px;
   background: #0a0a0a;
   border: 1px solid var(--line);
   touch-action: none;

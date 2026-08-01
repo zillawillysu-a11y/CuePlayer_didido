@@ -63,31 +63,27 @@ def _now_role(song: Song, lane_index: int) -> str:
     return "off"
 
 
+def _now_slot(
+    song: Song,
+    position: float,
+    lane_indices: list[int],
+    lanes: dict[int, MarkLane],
+) -> list[dict[str, Any]]:
+    """At most one active mark for a NOW card (desktop active_mark_among_lanes)."""
+    mark = song.active_mark_among_lanes(lane_indices, position)
+    if mark is None:
+        return []
+    return [mark_payload(mark, lanes.get(mark.lane_index))]
+
+
 def _now_for_lanes(
     song: Song,
     position: float,
     lane_indices: list[int],
     lanes: dict[int, MarkLane],
 ) -> list[dict[str, Any]]:
-    wanted = set(lane_indices)
-    if not wanted:
-        return []
-    latest: dict[int, Mark] = {}
-    for mark in song.marks:
-        if mark.lane_index not in wanted:
-            continue
-        if mark.time_seconds - 1e-9 > position:
-            continue
-        prev = latest.get(mark.lane_index)
-        if prev is None or mark.time_seconds >= prev.time_seconds:
-            latest[mark.lane_index] = mark
-    out: list[dict[str, Any]] = []
-    for index in lane_indices:
-        mark = latest.get(index)
-        if mark is None:
-            continue
-        out.append(mark_payload(mark, lanes.get(index)))
-    return out
+    # Kept name for callers; behavior is single-slot like the desktop NOW cards.
+    return _now_slot(song, position, lane_indices, lanes)
 
 
 def _setlist_rows(project: Project, active_song_id: str) -> list[dict[str, Any]]:
@@ -285,6 +281,11 @@ def build_state(
             "primary": _now_for_lanes(song, position, primary_lanes, lanes),
             "secondary": _now_for_lanes(song, position, secondary_lanes, lanes),
             "secondary_enabled": bool(song.now_secondary_enabled),
+            "secondary_clear_seconds": float(
+                getattr(song, "now_secondary_clear_seconds", 0.5) or 0.0
+            ),
+            "primary_lanes": list(primary_lanes),
+            "secondary_lanes": list(secondary_lanes),
         },
     }
 

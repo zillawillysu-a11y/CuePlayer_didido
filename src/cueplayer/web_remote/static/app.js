@@ -134,6 +134,9 @@
       lastPlayheadCueId = "";
       viewStart = 0;
       viewEnd = nextDur;
+      clearSecondaryTimer();
+      secondaryHoldId = null;
+      secondaryCleared = false;
     }
     if (Math.abs(nextPos - livePosition()) > 0.45) {
       cueFollowSuspended = false;
@@ -152,15 +155,97 @@
     }
   }
 
-  function formatNowBody(items) {
-    if (!items || !items.length) return "—";
-    return items.map((m) => {
-      const bits = [];
-      bits.push(m.lane_name || "");
-      if (m.main_cue_id) bits.push(`Cue ${m.main_cue_id}`);
-      if (m.display_name) bits.push(m.display_name);
-      return bits.filter(Boolean).join(" · ");
-    }).join("\n");
+  function formatNowBody(item) {
+    if (!item) return "—";
+    const bits = [];
+    bits.push(item.lane_name || "");
+    if (item.main_cue_id) bits.push(`Cue ${item.main_cue_id}`);
+    if (item.display_name) bits.push(item.display_name);
+    return bits.filter(Boolean).join(" · ") || "—";
+  }
+
+  function activeAmongLanes(marks, laneIndices, position) {
+    const allowed = new Set(laneIndices || []);
+    if (!allowed.size) return null;
+    let active = null;
+    for (const m of marks || []) {
+      if (Number(m.time_seconds) > position + 1e-4) break;
+      if (allowed.has(Number(m.lane_index))) active = m;
+    }
+    return active;
+  }
+
+  let secondaryHoldId = null;
+  let secondaryCleared = false;
+  let secondaryClearTimer = null;
+  let secondaryClearSeconds = 0.5;
+
+  function clearSecondaryTimer() {
+    if (secondaryClearTimer != null) {
+      clearTimeout(secondaryClearTimer);
+      secondaryClearTimer = null;
+    }
+  }
+
+  function showSecondaryEmpty() {
+    els.nowSecondaryLabel.textContent = "SECONDARY";
+    els.nowSecondary.textContent = "—";
+  }
+
+  function applySecondaryHold(mark) {
+    if (!mark) {
+      clearSecondaryTimer();
+      secondaryHoldId = null;
+      secondaryCleared = false;
+      showSecondaryEmpty();
+      return;
+    }
+    if (mark.id !== secondaryHoldId) {
+      secondaryHoldId = mark.id;
+      secondaryCleared = false;
+      clearSecondaryTimer();
+      const clearS = Math.max(0, Number(secondaryClearSeconds) || 0);
+      if (clearS > 0) {
+        secondaryClearTimer = setTimeout(() => {
+          secondaryCleared = true;
+          showSecondaryEmpty();
+        }, Math.round(clearS * 1000));
+      }
+    }
+    if (secondaryCleared) {
+      showSecondaryEmpty();
+      return;
+    }
+    els.nowSecondaryLabel.textContent = `SECONDARY · ${mark.lane_name || ""}`;
+    els.nowSecondary.textContent = formatNowBody(mark);
+  }
+
+  function updateNowCards(position) {
+    if (!stateCache) return;
+    const now = stateCache.now || {};
+    const marks = stateCache.marks || [];
+    const primaryLanes = now.primary_lanes || [];
+    const secondaryLanes = now.secondary_lanes || [];
+    secondaryClearSeconds = Number(now.secondary_clear_seconds);
+    if (!Number.isFinite(secondaryClearSeconds)) secondaryClearSeconds = 0.5;
+
+    const primary = activeAmongLanes(marks, primaryLanes, position)
+      || ((now.primary && now.primary[0]) || null);
+    if (primary) {
+      els.nowPrimaryLabel.textContent = `PRIMARY · ${primary.lane_name || ""}`;
+      els.nowPrimary.textContent = formatNowBody(primary);
+    } else {
+      els.nowPrimaryLabel.textContent = "PRIMARY";
+      els.nowPrimary.textContent = "—";
+    }
+
+    if (now.secondary_enabled === false) {
+      applySecondaryHold(null);
+      return;
+    }
+    const secondary = activeAmongLanes(marks, secondaryLanes, position)
+      || ((now.secondary && now.secondary[0]) || null);
+    applySecondaryHold(secondary);
   }
 
   function renderSetlist(rows) {
@@ -490,6 +575,7 @@
       lastDrawnClock = clock;
       els.clock.textContent = clock;
     }
+    updateNowCards(pos);
     updateCueFollow(pos, false);
     if (syncPlaying || scrubbing || panning) drawWave(false);
     requestAnimationFrame(tickFrame);
@@ -536,13 +622,7 @@
     els.timecode.style.color = tcAccent;
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
-
-    const primary = (state.now && state.now.primary) || [];
-    const secondary = (state.now && state.now.secondary) || [];
-    els.nowPrimaryLabel.textContent = primary[0] ? `PRIMARY · ${primary[0].lane_name}` : "PRIMARY";
-    els.nowPrimary.textContent = formatNowBody(primary);
-    els.nowSecondaryLabel.textContent = secondary[0] ? `SECONDARY · ${secondary[0].lane_name}` : "SECONDARY";
-    els.nowSecondary.textContent = formatNowBody(secondary);
+    updateNowCards(livePosition());
 
     renderToggles(state.output_toggles);
     const playing = Boolean(state.playing);
