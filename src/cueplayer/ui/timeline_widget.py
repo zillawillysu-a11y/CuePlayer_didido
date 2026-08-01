@@ -224,6 +224,11 @@ class TimelineWidget(QWidget):
         # Overview / transport chrome can lag a bit behind the green line.
         self._play_view_changed_interval_ns = 66_000_000  # ~15 Hz while playing
         self._last_playhead_paint_x: int | None = None
+        # View transform at the last playhead dirty-rect paint. If scroll/zoom
+        # changed since then, a narrow dirty strip cannot erase the old green
+        # line (ghost playhead after wheel zoom / pan while playing).
+        self._last_playhead_paint_scroll: float | None = None
+        self._last_playhead_paint_pps: float | None = None
         self._scrub_backdrop: QPixmap | None = None
         self._scrub_backdrop_scroll = 0.0
         self._scrub_backdrop_pps = 0.0
@@ -1535,7 +1540,7 @@ class TimelineWidget(QWidget):
             self._invalidate_scrub_backdrop()
         if was != self._playing:
             # Play uses the same static-backdrop path as scrub; rebuild once.
-            self._last_playhead_paint_x = None
+            self._reset_playhead_dirty_tracking()
             self._invalidate_scrub_backdrop()
             self._update_video_lane()
             if not self._playing and self._video_waveform_pending_refresh:
@@ -1698,7 +1703,7 @@ class TimelineWidget(QWidget):
             if now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
                 self._last_play_repaint_ns = now
                 if scroll_moved:
-                    self._last_playhead_paint_x = None
+                    self._reset_playhead_dirty_tracking()
                     self.update()
                 else:
                     # Auto Scroll off (or playhead still in view): only dirty the
@@ -1709,18 +1714,38 @@ class TimelineWidget(QWidget):
                 self._last_view_changed_ns = now
                 self.view_changed.emit()
         else:
-            self._last_playhead_paint_x = None
+            self._reset_playhead_dirty_tracking()
             self.update()
             self.view_changed.emit()
+
+    def _reset_playhead_dirty_tracking(self) -> None:
+        """Drop dirty-rect playhead cache after scroll/zoom/play-state changes."""
+        self._last_playhead_paint_x = None
+        self._last_playhead_paint_scroll = None
+        self._last_playhead_paint_pps = None
 
     def _update_playhead_dirty_region(self) -> None:
         """Invalidate only the strip covering the previous and current playhead."""
         x = int(round(self._x_for_time(self._position)))
         prev = self._last_playhead_paint_x
+        scroll = float(self._scroll_x)
+        pps = float(self._pixels_per_second)
+        view_changed = (
+            prev is None
+            or self._last_playhead_paint_scroll is None
+            or self._last_playhead_paint_pps is None
+            or abs(scroll - float(self._last_playhead_paint_scroll)) > 0.5
+            or abs(pps - float(self._last_playhead_paint_pps)) > 1e-6
+        )
         self._last_playhead_paint_x = x
-        margin = 5
+        self._last_playhead_paint_scroll = scroll
+        self._last_playhead_paint_pps = pps
+        # Pen is 2px; keep a slightly wider erase strip for DPR rounding.
+        margin = 8
         h = max(1, self.height())
-        if prev is None:
+        if view_changed:
+            # Scroll/zoom moved the green line in screen space — a narrow strip
+            # from the pre-transform X would leave a ghost playhead behind.
             self.update()
             return
         left = min(prev, x) - margin
@@ -1742,6 +1767,7 @@ class TimelineWidget(QWidget):
         else:
             self._pixels_per_second = new_pps
             self._center_on_playhead()
+        self._reset_playhead_dirty_tracking()
         self._invalidate_scrub_backdrop()
         self.update()
         self.view_changed.emit()
@@ -2101,6 +2127,9 @@ class TimelineWidget(QWidget):
     def _invalidate_scrub_backdrop(self) -> None:
         self._scrub_backdrop = None
         self._scrub_backdrop_overscan = 0
+        # Backdrop drop usually means scroll/zoom/content changed — don't keep a
+        # stale playhead X for dirty-rect erasing (ghost green line).
+        self._reset_playhead_dirty_tracking()
 
     def invalidate_static_layers(self) -> None:
         """Drop the play/scrub pixmap cache (waveform/video/lanes).
@@ -2742,6 +2771,7 @@ class TimelineWidget(QWidget):
             if self._pan_moved:
                 self._scroll_x = self._pan_origin_scroll - dx
                 self._clamp_scroll()
+                self._reset_playhead_dirty_tracking()
                 self._invalidate_scrub_backdrop()
                 self.update()
                 self.view_changed.emit()
@@ -3369,6 +3399,7 @@ class TimelineWidget(QWidget):
             self._view_pinned = True
             self._scroll_x -= dx * 0.9
             self._clamp_scroll()
+            self._reset_playhead_dirty_tracking()
             self._invalidate_scrub_backdrop()
             self.update()
             self.view_changed.emit()
@@ -3421,6 +3452,14 @@ class TimelineWidget(QWidget):
         # playhead so the UI never does full waveform+video paints on the clock
         # tick. Audio still advances on the PortAudio thread regardless.
         if self._can_use_static_backdrop():
+            # Partial dirty from playhead tracking can miss the real line after
+            # zoom/scroll if tracking was stale — expand so no ghost remains.
+            if dirty.width() < self.width() - 1 or dirty.height() < self.height() - 1:
+                ph_x = int(round(self._x_for_time(self._position)))
+                pad = 8
+                if ph_x < dirty.left() - pad or ph_x > dirty.right() + pad:
+                    dirty = self.rect()
+                    self._reset_playhead_dirty_tracking()
             painter.setClipRect(dirty)
             if self._blit_scrub_backdrop(painter):
                 # Lane fills/headers are already in the backdrop — only stems +
