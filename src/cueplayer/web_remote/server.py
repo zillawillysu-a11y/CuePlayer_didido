@@ -16,7 +16,7 @@ from cueplayer.util.runtime import package_root
 
 CommandFn = Callable[[dict[str, Any]], dict[str, Any]]
 StateFn = Callable[[], dict[str, Any]]
-WaveformFn = Callable[[], dict[str, Any]]
+WaveformFn = Callable[..., dict[str, Any]]
 ClockFn = Callable[[], dict[str, Any]]
 
 
@@ -133,8 +133,38 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
                 if server.get_waveform is None:
                     self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                     return
+                qs = parse_qs(parsed.query)
+                def _qfloat(name: str) -> float | None:
+                    raw = (qs.get(name) or [None])[0]
+                    if raw is None or raw == "":
+                        return None
+                    try:
+                        return float(raw)
+                    except ValueError:
+                        return None
+
+                def _qint(name: str) -> int | None:
+                    raw = (qs.get(name) or [None])[0]
+                    if raw is None or raw == "":
+                        return None
+                    try:
+                        return int(float(raw))
+                    except ValueError:
+                        return None
+
                 try:
-                    wave = server.get_waveform()
+                    wave = server.get_waveform(
+                        start=_qfloat("start"),
+                        end=_qfloat("end"),
+                        buckets=_qint("buckets"),
+                    )
+                except TypeError:
+                    # Older callback signature without kwargs.
+                    try:
+                        wave = server.get_waveform()
+                    except Exception as exc:  # noqa: BLE001
+                        self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                        return
                 except Exception as exc:  # noqa: BLE001
                     self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
                     return

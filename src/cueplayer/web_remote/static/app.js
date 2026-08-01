@@ -71,7 +71,12 @@
   let failCount = 0;
   let lastSongId = "";
   let wave = null;
+  let waveOverview = null;
+  let waveDetail = null;
   let waveLoading = false;
+  let waveDetailLoading = false;
+  let waveDetailReq = 0;
+  let waveDetailTimer = null;
   let stateCache = null;
   let playheadColor = "#3dd68c";
   let waveColor = "#616161";
@@ -796,6 +801,7 @@
     viewStart = pos - half;
     viewEnd = pos + half;
     clampView();
+    scheduleWaveDetail();
     return true;
   }
 
@@ -825,7 +831,30 @@
     viewEnd = viewStart + next;
     clampView();
     setWaveFollowSuspended(true);
+    scheduleWaveDetail();
     drawWave(true);
+  }
+
+  function activeWave() {
+    const detail = waveDetail;
+    if (
+      detail
+      && detail.ready
+      && detail.song_id === syncSongId
+      && Number(detail.end) > Number(detail.start)
+      && viewStart >= Number(detail.start) - 1e-3
+      && viewEnd <= Number(detail.end) + 1e-3
+    ) {
+      return detail;
+    }
+    return waveOverview || wave;
+  }
+
+  function scheduleWaveDetail() {
+    clearTimeout(waveDetailTimer);
+    waveDetailTimer = setTimeout(() => {
+      ensureWaveDetail().catch(() => {});
+    }, 90);
   }
 
   function resizeCanvas() {
@@ -856,29 +885,35 @@
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(0, 0, w, h);
 
-    const ready = wave && wave.ready && wave.mins && wave.mins.length;
+    const src = activeWave();
+    const ready = src && src.ready && src.mins && src.mins.length;
     els.waveEmpty.classList.toggle("hidden", Boolean(ready));
     els.waveRange.textContent = `${formatClock(viewStart)} – ${formatClock(viewEnd)}`;
     if (!ready) return;
 
     const mid = h * 0.5;
     const amp = h * 0.42;
-    const n = wave.mins.length;
-    const dur = Math.max(0.1, Number(wave.duration) || syncDur);
+    const n = src.mins.length;
+    const waveStart = Number(src.start != null ? src.start : 0);
+    const waveEnd = Number(src.end != null ? src.end : (src.duration || syncDur));
+    const waveSpan = Math.max(0.05, waveEnd - waveStart);
     const v0 = viewStart;
     const v1 = Math.max(v0 + 0.05, viewEnd);
-    const i0 = Math.max(0, Math.floor((v0 / dur) * n));
-    const i1 = Math.min(n, Math.ceil((v1 / dur) * n));
+    const viewSpanSec = v1 - v0;
+
+    // Map visible time → source bucket range.
+    const i0 = Math.max(0, Math.floor(((v0 - waveStart) / waveSpan) * n));
+    const i1 = Math.min(n, Math.ceil(((v1 - waveStart) / waveSpan) * n));
 
     ctx.fillStyle = waveColor || "#616161";
     ctx.beginPath();
     for (let i = i0; i < i1; i++) {
-      const t0 = (i / n) * dur;
-      const t1 = ((i + 1) / n) * dur;
-      const x0 = ((t0 - v0) / (v1 - v0)) * w;
-      const x1 = ((t1 - v0) / (v1 - v0)) * w;
-      const yMax = mid - Number(wave.maxs[i]) * amp;
-      const yMin = mid - Number(wave.mins[i]) * amp;
+      const t0 = waveStart + (i / n) * waveSpan;
+      const t1 = waveStart + ((i + 1) / n) * waveSpan;
+      const x0 = ((t0 - v0) / viewSpanSec) * w;
+      const x1 = ((t1 - v0) / viewSpanSec) * w;
+      const yMax = mid - Number(src.maxs[i]) * amp;
+      const yMin = mid - Number(src.mins[i]) * amp;
       const top = Math.min(yMax, yMin);
       const bot = Math.max(yMax, yMin);
       ctx.rect(x0, top, Math.max(1, x1 - x0), Math.max(1, bot - top));
@@ -893,7 +928,7 @@
     for (const m of marks) {
       const t = Number(m.time_seconds);
       if (t < v0 || t > v1) continue;
-      const x = ((t - v0) / (v1 - v0)) * w;
+      const x = ((t - v0) / viewSpanSec) * w;
       ctx.strokeStyle = m.color || "#888";
       ctx.globalAlpha = 0.9;
       ctx.lineWidth = Math.max(1, w / 900);
@@ -923,13 +958,99 @@
     let pos = livePosition();
     if (scrubbing && scrubbing.seconds != null) pos = scrubbing.seconds;
     if (pos >= v0 && pos <= v1) {
-      const x = ((pos - v0) / (v1 - v0)) * w;
+      const x = ((pos - v0) / viewSpanSec) * w;
       ctx.strokeStyle = playheadColor || "#3dd68c";
       ctx.lineWidth = Math.max(2, w / 450);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
+    }
+  }
+
+  async function ensureWaveform(songId) {
+    if (!songId) {
+      wave = null;
+      waveOverview = null;
+      waveDetail = null;
+      drawWave(true);
+      return;
+    }
+    if (waveOverview && waveOverview.song_id === songId && waveOverview.ready) {
+      wave = waveOverview;
+      scheduleWaveDetail();
+      return;
+    }
+    if (waveLoading) return;
+    waveLoading = true;
+    try {
+      const data = await api("/api/waveform?buckets=2400");
+      waveOverview = data;
+      wave = data;
+      if (!data.ready) {
+        setTimeout(() => {
+          if (lastSongId === songId) {
+            waveOverview = null;
+            wave = null;
+            ensureWaveform(songId);
+          }
+        }, 1200);
+      } else {
+        scheduleWaveDetail();
+      }
+      drawWave(true);
+    } catch (_) {
+      /* keep */
+    } finally {
+      waveLoading = false;
+    }
+  }
+
+  async function ensureWaveDetail() {
+    const songId = syncSongId || lastSongId;
+    if (!songId || !waveOverview || !waveOverview.ready) return;
+    const span = viewSpan();
+    // Fully zoomed out — overview is enough.
+    if (span >= syncDur * 0.92) {
+      waveDetail = null;
+      return;
+    }
+    const pad = Math.max(0.05, span * 0.35);
+    const a = Math.max(0, viewStart - pad);
+    const b = Math.min(syncDur, viewEnd + pad);
+    if (
+      waveDetail
+      && waveDetail.ready
+      && waveDetail.song_id === songId
+      && a >= Number(waveDetail.start)
+      && b <= Number(waveDetail.end)
+      && Number(waveDetail.buckets) >= 900
+    ) {
+      return;
+    }
+    if (waveDetailLoading) {
+      // Still allow a newer request id to supersede when this finishes.
+    }
+    const px = Math.max(600, Math.min(2400, Math.round((els.waveCanvas && els.waveCanvas.width) || 1200)));
+    const buckets = px;
+    const req = ++waveDetailReq;
+    waveDetailLoading = true;
+    try {
+      const q = new URLSearchParams({
+        start: String(a),
+        end: String(b),
+        buckets: String(buckets),
+      });
+      const data = await api(`/api/waveform?${q.toString()}`);
+      if (req !== waveDetailReq) return;
+      if (data && data.ready) {
+        waveDetail = data;
+        drawWave(true);
+      }
+    } catch (_) {
+      /* keep overview */
+    } finally {
+      if (req === waveDetailReq) waveDetailLoading = false;
     }
   }
 
@@ -952,34 +1073,6 @@
     const waveScrolled = followWavePlayhead(pos);
     if (syncPlaying || scrubbing || panning || waveScrolled) drawWave(false);
     requestAnimationFrame(tickFrame);
-  }
-
-  async function ensureWaveform(songId) {
-    if (!songId) {
-      wave = null;
-      drawWave(true);
-      return;
-    }
-    if (wave && wave.song_id === songId && wave.ready) return;
-    if (waveLoading) return;
-    waveLoading = true;
-    try {
-      const data = await api("/api/waveform");
-      wave = data;
-      if (!data.ready) {
-        setTimeout(() => {
-          if (lastSongId === songId) {
-            wave = null;
-            ensureWaveform(songId);
-          }
-        }, 1200);
-      }
-      drawWave(true);
-    } catch (_) {
-      /* keep */
-    } finally {
-      waveLoading = false;
-    }
   }
 
   function applyState(state) {
@@ -1011,8 +1104,10 @@
     if (songId !== lastSongId) {
       lastSongId = songId;
       wave = null;
+      waveOverview = null;
+      waveDetail = null;
       ensureWaveform(songId);
-    } else if (!wave || !wave.ready) {
+    } else if (!waveOverview || !waveOverview.ready) {
       ensureWaveform(songId);
     }
 
@@ -1140,6 +1235,7 @@
     viewStart = 0;
     viewEnd = syncDur;
     setWaveFollowSuspended(false);
+    waveDetail = null;
     drawWave(true);
   });
   if (els.waveFollowBtn) {
@@ -1152,6 +1248,7 @@
         viewEnd = pos + span / 2;
         clampView();
       }
+      scheduleWaveDetail();
       drawWave(true);
     });
   }

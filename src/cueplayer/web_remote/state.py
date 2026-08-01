@@ -7,7 +7,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from cueplayer.domain.models import Mark, MarkLane, Project, Song
-from cueplayer.media.audio_loader import AudioBuffer
+from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.timecode.smpte import seconds_to_timecode
 
 
@@ -309,61 +309,138 @@ def build_state(
     }
 
 
+def _resample_peaks(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    *,
+    src_a: int,
+    src_b: int,
+    buckets: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Min/max resample a peak slice into ``buckets`` columns."""
+    n = max(1, int(buckets))
+    src_a = max(0, int(src_a))
+    src_b = max(src_a + 1, int(src_b))
+    src_n = max(1, src_b - src_a)
+    out_mins = np.zeros(n, dtype=np.float32)
+    out_maxs = np.zeros(n, dtype=np.float32)
+    for i in range(n):
+        a = src_a + int(i * src_n / n)
+        b = src_a + max(int(i * src_n / n) + 1, int((i + 1) * src_n / n))
+        b = min(src_b, max(a + 1, b))
+        out_mins[i] = float(mins[a:b].min())
+        out_maxs[i] = float(maxs[a:b].max())
+    peak = float(max(np.max(np.abs(out_mins)), np.max(np.abs(out_maxs)), 1e-6))
+    scale = 1.0 / peak
+    return out_mins * scale, out_maxs * scale
+
+
 def build_waveform_overview(
     buffer: AudioBuffer | None,
     *,
     song_id: str,
     duration: float,
-    buckets: int = 1600,
+    buckets: int = 2400,
 ) -> dict[str, Any]:
-    """Downsample peak pyramid into a fixed-width overview for the remote canvas."""
+    """Downsample peak pyramid into a full-song overview for the remote canvas."""
     n = max(32, min(4000, int(buckets)))
     empty = {
         "ok": True,
         "song_id": song_id,
         "duration": float(max(0.1, duration)),
+        "start": 0.0,
+        "end": float(max(0.1, duration)),
         "buckets": n,
         "mins": [0.0] * n,
         "maxs": [0.0] * n,
         "ready": False,
+        "detail": False,
     }
     if buffer is None or not buffer.peak_levels:
         return empty
 
-    level = buffer.peak_levels[-1]
-    for candidate in reversed(buffer.peak_levels):
-        if candidate.mins.size >= n // 2:
-            level = candidate
-            break
-
+    dur = float(buffer.duration_seconds) if buffer.frames > 0 else float(duration)
+    dur = float(max(0.1, dur))
+    sr = max(1, int(getattr(buffer, "sample_rate", 48000) or 48000))
+    samples_per_pixel = float(buffer.frames) / float(n) if buffer.frames > 0 else float(sr * dur) / float(n)
+    level = choose_peak_level(buffer.peak_levels, samples_per_pixel) or buffer.peak_levels[-1]
     mins = np.asarray(level.mins, dtype=np.float32)
     maxs = np.asarray(level.maxs, dtype=np.float32)
     if mins.size == 0:
         return empty
 
-    src_n = int(mins.size)
-    out_mins = np.zeros(n, dtype=np.float32)
-    out_maxs = np.zeros(n, dtype=np.float32)
-    for i in range(n):
-        a = int(i * src_n / n)
-        b = max(a + 1, int((i + 1) * src_n / n))
-        out_mins[i] = float(mins[a:b].min())
-        out_maxs[i] = float(maxs[a:b].max())
-
-    peak = float(max(np.max(np.abs(out_mins)), np.max(np.abs(out_maxs)), 1e-6))
-    scale = 1.0 / peak
-    out_mins = out_mins * scale
-    out_maxs = out_maxs * scale
-
-    dur = float(buffer.duration_seconds) if buffer.frames > 0 else float(duration)
+    out_mins, out_maxs = _resample_peaks(mins, maxs, src_a=0, src_b=mins.size, buckets=n)
     return {
         "ok": True,
         "song_id": song_id,
-        "duration": float(max(0.1, dur)),
+        "duration": dur,
+        "start": 0.0,
+        "end": dur,
         "buckets": n,
         "mins": [round(float(v), 4) for v in out_mins.tolist()],
         "maxs": [round(float(v), 4) for v in out_maxs.tolist()],
         "ready": True,
+        "detail": False,
+    }
+
+
+def build_waveform_window(
+    buffer: AudioBuffer | None,
+    *,
+    song_id: str,
+    duration: float,
+    start: float,
+    end: float,
+    buckets: int = 1600,
+) -> dict[str, Any]:
+    """High-resolution peaks for a zoomed time window."""
+    n = max(64, min(4000, int(buckets)))
+    dur = float(max(0.1, duration))
+    if buffer is not None and buffer.frames > 0:
+        dur = float(max(0.1, buffer.duration_seconds))
+    t0 = float(max(0.0, min(dur, start)))
+    t1 = float(max(t0 + 0.02, min(dur, end)))
+    empty = {
+        "ok": True,
+        "song_id": song_id,
+        "duration": dur,
+        "start": t0,
+        "end": t1,
+        "buckets": n,
+        "mins": [0.0] * n,
+        "maxs": [0.0] * n,
+        "ready": False,
+        "detail": True,
+    }
+    if buffer is None or not buffer.peak_levels:
+        return empty
+
+    sr = max(1, int(getattr(buffer, "sample_rate", 48000) or 48000))
+    samples_in_window = max(1.0, (t1 - t0) * float(sr))
+    samples_per_pixel = samples_in_window / float(n)
+    level = choose_peak_level(buffer.peak_levels, samples_per_pixel) or buffer.peak_levels[0]
+    mins = np.asarray(level.mins, dtype=np.float32)
+    maxs = np.asarray(level.maxs, dtype=np.float32)
+    if mins.size == 0:
+        return empty
+
+    spb = max(1.0, float(level.samples_per_bucket))
+    src_a = int(max(0, min(mins.size - 1, (t0 * sr) / spb)))
+    src_b = int(max(src_a + 1, min(mins.size, (t1 * sr) / spb)))
+    out_mins, out_maxs = _resample_peaks(
+        mins, maxs, src_a=src_a, src_b=src_b, buckets=n
+    )
+    return {
+        "ok": True,
+        "song_id": song_id,
+        "duration": dur,
+        "start": t0,
+        "end": t1,
+        "buckets": n,
+        "mins": [round(float(v), 4) for v in out_mins.tolist()],
+        "maxs": [round(float(v), 4) for v in out_maxs.tolist()],
+        "ready": True,
+        "detail": True,
     }
 
 

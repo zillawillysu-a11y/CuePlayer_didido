@@ -13,6 +13,7 @@ from cueplayer.web_remote.server import WebRemoteServer
 from cueplayer.web_remote.state import (
     build_state,
     build_waveform_overview,
+    build_waveform_window,
     seconds_to_timecode,
     timecode_to_abs_seconds,
 )
@@ -35,6 +36,8 @@ class WebRemoteBridge(QObject):
         )
         self._wave_cache_key: tuple[str, int, int] | None = None
         self._wave_cache: dict[str, Any] | None = None
+        self._wave_detail_key: tuple[Any, ...] | None = None
+        self._wave_detail_cache: dict[str, Any] | None = None
         self._pump = QTimer(self)
         self._pump.setInterval(16)
         self._pump.timeout.connect(self._drain_commands)
@@ -161,23 +164,53 @@ class WebRemoteBridge(QObject):
             ),
         }
 
-    def _safe_waveform(self) -> dict[str, Any]:
+    def _safe_waveform(
+        self,
+        start: float | None = None,
+        end: float | None = None,
+        buckets: int | None = None,
+    ) -> dict[str, Any]:
         host = self._host
         song = host.current_song
         engine = host.engine
         buf = getattr(engine, "buffer", None)
         frames = int(getattr(buf, "frames", 0) or 0) if buf is not None else 0
-        key = (str(song.id), frames, int(round(float(engine.duration) * 1000)))
-        if self._wave_cache is not None and self._wave_cache_key == key:
-            return self._wave_cache
-        payload = build_waveform_overview(
+        duration = float(engine.duration)
+        song_id = str(song.id)
+
+        if start is None and end is None:
+            key = (song_id, frames, int(round(duration * 1000)))
+            if self._wave_cache is not None and self._wave_cache_key == key:
+                return self._wave_cache
+            payload = build_waveform_overview(
+                buf,
+                song_id=song_id,
+                duration=duration,
+                buckets=int(buckets) if buckets else 2400,
+            )
+            self._wave_cache_key = key
+            self._wave_cache = payload
+            return payload
+
+        t0 = float(start if start is not None else 0.0)
+        t1 = float(end if end is not None else duration)
+        n = int(buckets) if buckets else 1600
+        # Quantize cache key so tiny pan deltas reuse the last detail slice.
+        q0 = round(t0 * 20) / 20.0
+        q1 = round(t1 * 20) / 20.0
+        dkey = (song_id, frames, q0, q1, n)
+        if self._wave_detail_cache is not None and self._wave_detail_key == dkey:
+            return self._wave_detail_cache
+        payload = build_waveform_window(
             buf,
-            song_id=str(song.id),
-            duration=float(engine.duration),
-            buckets=900,
+            song_id=song_id,
+            duration=duration,
+            start=t0,
+            end=t1,
+            buckets=n,
         )
-        self._wave_cache_key = key
-        self._wave_cache = payload
+        self._wave_detail_key = dkey
+        self._wave_detail_cache = payload
         return payload
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:

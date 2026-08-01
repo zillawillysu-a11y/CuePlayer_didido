@@ -14,7 +14,12 @@ import pytest
 from cueplayer.domain.models import Project, SetlistCategory, Song
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer, static_dir
-from cueplayer.web_remote.state import build_state, build_waveform_overview, format_clock
+from cueplayer.web_remote.state import (
+    build_state,
+    build_waveform_overview,
+    build_waveform_window,
+    format_clock,
+)
 from cueplayer.media.audio_loader import AudioBuffer, PeakLevel
 import numpy as np
 
@@ -45,6 +50,9 @@ def test_static_dir_has_index() -> None:
     assert "set_display" in js
     assert "scrollCueListTo" in js
     assert "followWavePlayhead" in js
+    assert "ensureWaveDetail" in js
+    assert "build_waveform_window" not in js  # server-side only
+    assert "scheduleWaveDetail" in js
     assert "renumber_cue_ids" in js
     assert "set_mark_cue_id" in js
     assert "bindSplitter" in js
@@ -86,6 +94,41 @@ def test_build_waveform_overview_from_peaks() -> None:
     assert len(wave["mins"]) == 100
     assert len(wave["maxs"]) == 100
     assert max(abs(v) for v in wave["maxs"]) <= 1.0001
+    assert wave["start"] == 0.0
+    assert wave["detail"] is False
+
+
+def test_build_waveform_window_zoomed() -> None:
+    # Fine pyramid: 1 bucket per sample (synthetic).
+    n = 4800
+    mins = np.linspace(-0.8, -0.1, n, dtype=np.float32)
+    maxs = np.linspace(0.1, 0.9, n, dtype=np.float32)
+    buf = AudioBuffer(
+        path=__import__("pathlib").Path("x.wav"),
+        sample_rate=48000,
+        samples=np.zeros((48000, 1), dtype=np.float32),
+        mono=np.zeros(48000, dtype=np.float32),
+        peak_levels=[
+            PeakLevel(samples_per_bucket=10, mins=mins, maxs=maxs),
+            PeakLevel(samples_per_bucket=100, mins=mins[::10], maxs=maxs[::10]),
+        ],
+    )
+    window = build_waveform_window(
+        buf,
+        song_id="s1",
+        duration=1.0,
+        start=0.2,
+        end=0.4,
+        buckets=200,
+    )
+    assert window["ready"] is True
+    assert window["detail"] is True
+    assert window["buckets"] == 200
+    assert abs(window["start"] - 0.2) < 1e-6
+    assert abs(window["end"] - 0.4) < 1e-6
+    assert len(window["mins"]) == 200
+    # Zoomed window should not be flat zeros.
+    assert max(abs(v) for v in window["maxs"]) > 0.05
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:
