@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QSlider, QWidget
 from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
+    ClipWaveformPeaks,
     VideoClipWaveformCache,
     sample_source_peaks_for_clip_times,
     sample_source_raw_for_clip_times,
@@ -216,7 +217,13 @@ class TimelineWidget(QWidget):
         self._playing = False
         self._video_waveform_pending_refresh = False
         self._last_play_repaint_ns = 0
-        self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
+        # ~30 Hz playhead blit is enough; 60 Hz with Video Track + follow was
+        # starving the UI thread whenever auto-scroll moved every tick.
+        self._play_repaint_interval_ns = 33_000_000
+        self._last_view_changed_ns = 0
+        # Overview / transport chrome can lag a bit behind the green line.
+        self._play_view_changed_interval_ns = 66_000_000  # ~15 Hz while playing
+        self._last_playhead_paint_x: int | None = None
         self._scrub_backdrop: QPixmap | None = None
         self._scrub_backdrop_scroll = 0.0
         self._scrub_backdrop_pps = 0.0
@@ -1528,6 +1535,7 @@ class TimelineWidget(QWidget):
             self._invalidate_scrub_backdrop()
         if was != self._playing:
             # Play uses the same static-backdrop path as scrub; rebuild once.
+            self._last_playhead_paint_x = None
             self._invalidate_scrub_backdrop()
             self._update_video_lane()
             if not self._playing and self._video_waveform_pending_refresh:
@@ -1684,15 +1692,40 @@ class TimelineWidget(QWidget):
                 self._invalidate_scrub_backdrop()
         if self._playing:
             now = monotonic_ns()
-            # Playhead-only blit stays ~60 Hz; backdrop rebuild is rare now that
-            # auto-scroll no longer invalidates every edge tick.
-            interval = 16_000_000
-            if scroll_moved or now - self._last_play_repaint_ns >= interval:
+            # Always honor the play paint cadence — even when auto-scroll
+            # moves _scroll_x every tick. Bypassing on scroll_moved forced
+            # ~60 Hz blit + live marks and made Video Track play feel low-FPS.
+            if now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
                 self._last_play_repaint_ns = now
-                self.update()
+                if scroll_moved:
+                    self._last_playhead_paint_x = None
+                    self.update()
+                else:
+                    # Auto Scroll off (or playhead still in view): only dirty the
+                    # old+new playhead columns. Full-widget update every tick was
+                    # blitting the tall Video Track pixmap + live marks for free.
+                    self._update_playhead_dirty_region()
+            if now - self._last_view_changed_ns >= self._play_view_changed_interval_ns:
+                self._last_view_changed_ns = now
+                self.view_changed.emit()
         else:
+            self._last_playhead_paint_x = None
             self.update()
-        self.view_changed.emit()
+            self.view_changed.emit()
+
+    def _update_playhead_dirty_region(self) -> None:
+        """Invalidate only the strip covering the previous and current playhead."""
+        x = int(round(self._x_for_time(self._position)))
+        prev = self._last_playhead_paint_x
+        self._last_playhead_paint_x = x
+        margin = 5
+        h = max(1, self.height())
+        if prev is None:
+            self.update()
+            return
+        left = min(prev, x) - margin
+        width = abs(x - prev) + 2 * margin
+        self.update(QRect(max(0, left), 0, max(2 * margin, width), h))
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
         lo = self._min_pixels_per_second()
@@ -2175,7 +2208,14 @@ class TimelineWidget(QWidget):
         # not the stylesheet-resolved widget font (theme sets 13px on QWidget).
         # Without copying self.font(), ruler/lane/header text looks smaller for
         # the whole scrub gesture and snaps back on mouse-up.
-        overscan = max(64, int(self._view_width() * 0.75))
+        # While playing, bake a wider overscan so auto-scroll follow rebuilds
+        # less often — each rebuild paints Music + Video lane (+ waves) on the
+        # UI thread and is the main Video Track playhead hitch.
+        view_w = self._view_width()
+        if self._playing:
+            overscan = max(128, int(view_w * 1.5))
+        else:
+            overscan = max(64, int(view_w * 0.75))
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         # Bake content for [scroll - overscan, scroll + view + overscan].
@@ -3373,7 +3413,7 @@ class TimelineWidget(QWidget):
         event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: ANN001
-        del event
+        dirty = event.rect() if event is not None else self.rect()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
@@ -3381,9 +3421,15 @@ class TimelineWidget(QWidget):
         # playhead so the UI never does full waveform+video paints on the clock
         # tick. Audio still advances on the PortAudio thread regardless.
         if self._can_use_static_backdrop():
+            painter.setClipRect(dirty)
             if self._blit_scrub_backdrop(painter):
-                self._paint_marks_live(painter)
-                self._paint_video_selection_live(painter)
+                # Lane fills/headers are already in the backdrop — only stems +
+                # shapes here. Full lane refill every tick made Video Track
+                # (taller stems) feel dull even with Auto Scroll off.
+                self._paint_marks_live(painter, lite=True)
+                need_video_sel = bool(self._selected_clip_ids) or self._hover_clip_id is not None
+                if need_video_sel or not self._playing:
+                    self._paint_video_selection_live(painter)
                 self._paint_loop_region(painter)
                 self._paint_selection_box(painter)
                 # Loading copy under the playhead — never dim the green line.
@@ -3394,9 +3440,10 @@ class TimelineWidget(QWidget):
                 self._paint_header_splitter(painter)
                 return
 
-        painter.fillRect(self.rect(), QColor(BG_APP))
+        painter.fillRect(dirty, QColor(BG_APP))
+        painter.setClipRect(dirty)
         self._paint_static_layers(painter)
-        self._paint_marks_live(painter)
+        self._paint_marks_live(painter, lite=False)
         self._paint_loop_region(painter)
         self._paint_selection_box(painter)
         # Loading may also paint inside _paint_waveform; playhead stays last.
@@ -3580,14 +3627,19 @@ class TimelineWidget(QWidget):
         # on pause). Decode stays async via VideoClipWaveformCache.
         x_left = int(rect.left())
         x_right = int(rect.right())
-        if x_right - x_left < 4:
+        width_px = x_right - x_left
+        if width_px < 4:
             return
 
         duration = float(clip.duration_seconds)
         if duration <= 1e-9:
             return
 
-        peaks = self._video_waveform_cache.peaks_for_paint(clip)
+        # Do not start new PyAV waveform workers mid-play (av_path_lock /
+        # GIL contention with the mixer). Cached peaks still paint.
+        peaks = self._video_waveform_cache.peaks_for_paint(
+            clip, allow_submit=not self._playing
+        )
         if peaks is None or peaks.mono.size == 0:
             return
 
@@ -3597,13 +3649,30 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
+        # Play-time backdrop bake: use the coarse mins/maxs overview instead of
+        # per-pixel source-pyramid sampling. That path was the main hitch when
+        # Video Track was open even with Preview/Clean closed.
+        if self._playing:
+            self._paint_video_clip_waveform_coarse(
+                painter, peaks, duration=duration, x_left=x_left, x_right=x_right,
+                mid=mid, amp=amp, clip_start=float(clip.start_seconds),
+            )
+            return
+
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
+        # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
+        # overscan while a Video Track is open) does not stall the UI thread.
+        step = 1
+        if width_px > 2400 or samples_per_pixel >= 48:
+            step = 3
+        elif width_px > 1200 or samples_per_pixel >= 12:
+            step = 2
 
         try:
-            for x in range(x_left, x_right):
+            for x in range(x_left, x_right, step):
                 t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + 1)
+                t1 = self._time_for_x(x + step)
                 clip_t0 = timeline_to_clip_local(t0, clip)
                 clip_t1 = timeline_to_clip_local(t1, clip)
                 if clip_t0 is None and clip_t1 is None:
@@ -3624,11 +3693,44 @@ class TimelineWidget(QWidget):
                         clip,
                         clip_t0=clip_t0,
                         clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel,
+                        samples_per_pixel=samples_per_pixel * step,
                     )
                 painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
         except Exception:
             # Corrupt / partially-built peaks must never take down the UI.
+            return
+
+    def _paint_video_clip_waveform_coarse(
+        self,
+        painter: QPainter,
+        peaks: ClipWaveformPeaks,
+        *,
+        duration: float,
+        x_left: int,
+        x_right: int,
+        mid: float,
+        amp: float,
+        clip_start: float,
+    ) -> None:
+        """O(buckets) overview paint for play-time backdrop bake."""
+        n = int(peaks.mins.size)
+        if n <= 0 or duration <= 1e-9:
+            return
+        try:
+            for i in range(n):
+                t0 = duration * (i / n)
+                t1 = duration * ((i + 1) / n)
+                x0 = int(self._x_for_time(clip_start + t0))
+                x1 = int(self._x_for_time(clip_start + t1))
+                if x1 < x_left or x0 > x_right:
+                    continue
+                x0 = max(x_left, x0)
+                x1 = min(x_right, max(x0 + 1, x1))
+                lo = float(peaks.mins[i])
+                hi = float(peaks.maxs[i])
+                xm = (x0 + x1) * 0.5
+                painter.drawLine(QPointF(xm, mid + lo * amp), QPointF(xm, mid + hi * amp))
+        except Exception:
             return
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
@@ -3717,11 +3819,14 @@ class TimelineWidget(QWidget):
             bottom += self._mark_lane_split_h
         return bottom
 
-    def _paint_marks_live(self, painter: QPainter) -> None:
+    def _paint_marks_live(self, painter: QPainter, *, lite: bool = False) -> None:
         """Repaint marks on top of the static backdrop (or full paint path).
 
         Marks are never baked into the play/scrub cache — rebuilding that cache
         on every shortcut mark was freezing playback on songs with many cues.
+
+        ``lite=True`` (play/scrub backdrop path): skip lane fills and headers —
+        those are already in the cached pixmap. Only stems + shapes are live.
         """
         if self._song is None:
             return
@@ -3752,15 +3857,27 @@ class TimelineWidget(QWidget):
             return
         band_h = bottom - tracks_top
 
-        painter.save()
-        painter.setClipRect(0, tracks_top, hw, band_h)
-        painter.fillRect(0, tracks_top, hw, band_h, QColor("#111113"))
-        self._paint_mark_track_headers(painter, tracks_top)
-        painter.restore()
+        if not lite:
+            painter.save()
+            painter.setClipRect(0, tracks_top, hw, band_h)
+            painter.fillRect(0, tracks_top, hw, band_h, QColor("#111113"))
+            self._paint_mark_track_headers(painter, tracks_top)
+            painter.restore()
+
+            painter.save()
+            painter.setClipRect(hw, tracks_top, max(0, w - hw), band_h)
+            self._paint_lanes(painter, start_y=tracks_top)
+            self._paint_marks(
+                painter,
+                start_y=tracks_top,
+                waveform_lines=False,
+                lane_shapes=True,
+            )
+            painter.restore()
+            return
 
         painter.save()
         painter.setClipRect(hw, tracks_top, max(0, w - hw), band_h)
-        self._paint_lanes(painter, start_y=tracks_top)
         self._paint_marks(
             painter,
             start_y=tracks_top,

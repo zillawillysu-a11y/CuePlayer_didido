@@ -46,3 +46,10 @@ def test_set_qimage_shares_without_recopy(app: QApplication) -> None:
 def test_clean_output_uses_smooth_scale(app: QApplication) -> None:
     window = CleanVideoOutputWindow()
     assert window.preview._smooth_scale is True
+
+
+def test_embedded_preview_defaults_to_fast_scale(app: QApplication) -> None:
+    """Timeline-side Preview prefers nearest-neighbor so playhead paint wins
+    over SmoothPixmapTransform on every video frame (Clean keeps smooth)."""
+    widget = VideoPreviewWidget(smooth_scale=False)
+    assert widget._smooth_scale is False

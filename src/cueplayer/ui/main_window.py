@@ -1043,7 +1043,7 @@ class MainWindow(QMainWindow):
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
-        self.video_preview = VideoPreviewWidget(context_menu=True)
+        self.video_preview = VideoPreviewWidget(context_menu=True, smooth_scale=False)
         self.video_preview.set_decode_quality(self.project.video_decode_quality)
         self.video_preview.decode_quality_changed.connect(self._set_video_decode_quality)
         # Parented to MainWindow for object lifetime, but Qt.Window still makes
@@ -4934,7 +4934,8 @@ class MainWindow(QMainWindow):
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
-        self._sync_timeline_overview()
+        # Overview syncs via timeline.view_changed (set_position) — do not
+        # call _sync_timeline_overview again here (~60 Hz double work).
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
