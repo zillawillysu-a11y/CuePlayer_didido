@@ -96,12 +96,22 @@ def _note_inner_width(column_width: int) -> int:
 
 
 def _note_text_height(fm: QFontMetrics, text: str, column_width: int) -> int:
-    """Full wrapped Note height including cell padding (no elide)."""
+    """Full wrapped Note height including cell padding (no elide).
+
+    Single-line / empty Notes stay at the compact default row height so the
+    Cue List keeps dense. Only multi-line Notes grow; a few px of slack stops
+    the last CJK glyphs from clipping without adding a whole empty line.
+    """
+    text = text or ""
+    if not text.strip():
+        return _ROW_HEIGHT
     inner = _note_inner_width(column_width)
-    br = fm.boundingRect(0, 0, inner, 100000, _NOTE_WRAP_FLAGS, text or "")
-    # +1 line of slack: Fusion/style rounding can otherwise clip the last glyph
-    # into "…" even when ElideNone is set on the view.
-    return max(_ROW_HEIGHT, int(br.height()) + (2 * _NOTE_PAD_Y) + fm.lineSpacing())
+    br = fm.boundingRect(0, 0, inner, 100000, _NOTE_WRAP_FLAGS, text)
+    content_h = int(br.height())
+    # One line of text fits in the default band (QSS pad 8+8 inside 34px).
+    if content_h <= fm.lineSpacing() + 2:
+        return _ROW_HEIGHT
+    return max(_ROW_HEIGHT, content_h + (2 * _NOTE_PAD_Y) + 4)
 
 
 class _PaddedItemDelegate(QStyledItemDelegate):

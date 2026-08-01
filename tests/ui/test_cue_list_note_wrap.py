@@ -46,15 +46,22 @@ def test_long_note_grows_cue_list_row_height(app: QApplication) -> None:
     assert panel.cue_table.rowHeight(0) > _ROW_HEIGHT
 
 
-def test_short_note_keeps_near_minimum_row_height(app: QApplication) -> None:
+def test_short_note_keeps_compact_default_row_height(app: QApplication) -> None:
     song = Song.create("Note short")
     song.add_mark(1, 1.0, "Verse")
     panel = CueMonitorPanel()
     panel.set_song(song)
     panel.refresh_list()
-    # One extra lineSpacing of slack is OK for short notes.
-    fm = QFontMetrics(panel.cue_table.font())
-    assert _ROW_HEIGHT <= panel.cue_table.rowHeight(0) <= _ROW_HEIGHT + fm.lineSpacing() + 2
+    assert panel.cue_table.rowHeight(0) == _ROW_HEIGHT
+
+
+def test_empty_note_keeps_compact_default_row_height(app: QApplication) -> None:
+    song = Song.create("Note empty")
+    song.add_mark(1, 1.0, "")
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    panel.refresh_list()
+    assert panel.cue_table.rowHeight(0) == _ROW_HEIGHT
 
 
 def test_note_column_resize_reflows_row_height(app: QApplication) -> None:
