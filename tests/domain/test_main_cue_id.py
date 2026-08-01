@@ -82,18 +82,34 @@ def test_next_at_end() -> None:
     assert next_main_cue_id_at_end(["1", "1.1", "2"]) == "3"
 
 
-def test_add_main_marks_sequential() -> None:
+def test_same_time_marks_list_in_cue_id_order() -> None:
+    """Cue List must not show 7 then 6 when two Main cues share a timestamp."""
     song = Song.create("Test")
-    main_lane = song.lane_by_index(1)
-    assert main_lane is not None
-    assert main_lane.lane_type == "main"
+    for i in range(5):
+        song.add_mark(1, float(i))
+    earlier = song.add_mark(1, 10.0)
+    later = song.add_mark(1, 11.0)
+    assert earlier.main_cue_id == "6"
+    assert later.main_cue_id == "7"
+    # Drag 6 onto 7's time — stable time-only sort used to leave 7 before 6.
+    earlier.time_seconds = later.time_seconds
+    song.sort_marks()
+    ids = [m.main_cue_id for m in song.marks if abs(m.time_seconds - 11.0) < 1e-9]
+    assert ids == ["6", "7"]
 
-    first = song.add_mark(1, 1.0)
-    second = song.add_mark(1, 2.0)
-    third = song.add_mark(1, 3.0)
-    assert first.main_cue_id == "1"
-    assert second.main_cue_id == "2"
-    assert third.main_cue_id == "3"
+
+def test_second_mark_at_same_time_gets_next_integer() -> None:
+    song = Song.create("Test")
+    for i in range(5):
+        song.add_mark(1, float(i))
+    first = song.add_mark(1, 53.306)
+    second = song.add_mark(1, 53.306)
+    assert first.main_cue_id == "6"
+    assert second.main_cue_id == "7"
+    assert [m.main_cue_id for m in song.marks if abs(m.time_seconds - 53.306) < 1e-9] == [
+        "6",
+        "7",
+    ]
 
 
 def test_insert_between_1_and_2_preserves_existing_ids() -> None:
