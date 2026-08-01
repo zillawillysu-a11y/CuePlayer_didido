@@ -163,9 +163,12 @@ def test_waveform_strips_ltc_channel_energy() -> None:
     )
     stripped = waveform_display_buffer(mixed, exclude_channel=1)
     assert stripped is not mixed
-    # Mixed mono (mean of L+R) is dominated by LTC; stripped peaks come from music only.
-    assert float(np.max(np.abs(mixed.mono))) > 0.7
-    assert float(np.max(np.abs(stripped.mono))) < 0.35
+    assert not np.allclose(stripped.mono, mixed.mono)
+    music_norm = music / float(np.max(np.abs(music)))
+    corr_clean = float(np.corrcoef(stripped.mono, music_norm)[0, 1])
+    corr_mixed = float(np.corrcoef(mixed.mono, music_norm)[0, 1])
+    assert corr_clean > corr_mixed
+    assert corr_clean > 0.95
     clean_wave = build_waveform_window(
         stripped, song_id="m", duration=1.0, start=0.1, end=0.3, buckets=800
     )
