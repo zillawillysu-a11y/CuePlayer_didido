@@ -54,6 +54,7 @@ def test_tools_bpm_and_video_are_submenus(app: QApplication) -> None:
     top_titles = _menu_titles(window, ["Tools"])
     assert "BPM" in top_titles
     assert "Video" in top_titles
+    assert "Web Remote…" in top_titles
     assert "Show Video / LTC Tracks" not in top_titles
     assert "Detect BPM (songs without BPM)" not in top_titles
     assert "Add Video Clip…" not in top_titles
@@ -72,6 +73,8 @@ def test_tools_bpm_and_video_are_submenus(app: QApplication) -> None:
     assert "NDI Source Name…" in video_titles
     assert "Video Decode Quality" in video_titles
 
+    window._web_remote.stop()
+
 
 def test_view_menu_holds_preview_track_clean(app: QApplication) -> None:
     window = MainWindow(Project.create("View"))
@@ -84,6 +87,7 @@ def test_view_menu_holds_preview_track_clean(app: QApplication) -> None:
         "Video Preview Panel",
         "Clean Video Output",
     ]
+    window._web_remote.stop()
 
 
 def test_view_can_hide_and_show_setlist(app: QApplication) -> None:
@@ -111,3 +115,4 @@ def test_view_can_hide_and_show_setlist(app: QApplication) -> None:
     assert window._setlist_panel.isVisible() is True
     assert window._act_setlist.isChecked() is True
     assert window._main_splitter.sizes()[0] >= 160
+    window._web_remote.stop()

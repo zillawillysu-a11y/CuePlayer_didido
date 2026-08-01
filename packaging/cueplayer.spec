@@ -39,9 +39,15 @@ hiddenimports: list[str] = [
     "cyndilib.wrapper.ndi_structs",
 ]
 
-# Bundle UI assets (checkmark, optional app icon).
+# Bundle UI assets (checkmark, optional app icon) + Web Remote static UI.
 if ASSETS.is_dir():
     datas += collect_data_files("cueplayer", includes=["ui/assets/*"])
+datas += collect_data_files("cueplayer", includes=["web_remote/static/*"])
+hiddenimports += [
+    "cueplayer.web_remote",
+    "cueplayer.web_remote.server",
+    "cueplayer.web_remote.bridge",
+]
 
 for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib"):
     try:

@@ -45,7 +45,7 @@ cueplayer = "cueplayer.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cueplayer = ["ui/assets/*"]
+cueplayer = ["ui/assets/*", "web_remote/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

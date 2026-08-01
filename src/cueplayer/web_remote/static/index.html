@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#050505" />
+  <title>CuePlayer Remote</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <header class="top">
+    <div class="brand">CuePlayer</div>
+    <div class="project" id="projectName">—</div>
+    <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
+  </header>
+
+  <main class="layout">
+    <section class="panel setlist" aria-label="Setlist">
+      <h2>Setlist</h2>
+      <div id="songList" class="song-list"></div>
+    </section>
+
+    <section class="panel stage" aria-label="Transport">
+      <div class="song-title" id="songTitle">No song</div>
+      <div class="clock-row">
+        <div class="clock" id="clock">00:00.000</div>
+        <div class="duration" id="duration">/ 00:00.000</div>
+      </div>
+      <div class="timecode" id="timecode">01:00:00:00</div>
+
+      <div class="now-grid">
+        <div class="now-card primary">
+          <div class="now-label">NOW</div>
+          <div class="now-body" id="nowPrimary">—</div>
+        </div>
+        <div class="now-card secondary">
+          <div class="now-label">BUTTON</div>
+          <div class="now-body" id="nowSecondary">—</div>
+        </div>
+      </div>
+
+      <div class="transport" role="group" aria-label="Transport">
+        <button type="button" class="tbtn" id="prevSong" aria-label="Previous song">⏮</button>
+        <button type="button" class="tbtn" id="stopBtn" aria-label="Stop">⏹</button>
+        <button type="button" class="tbtn primary" id="playBtn" aria-label="Play/Pause">▶</button>
+        <button type="button" class="tbtn" id="nextSong" aria-label="Next song">⏭</button>
+      </div>
+
+      <div class="scrub">
+        <input type="range" id="seekBar" min="0" max="1000" value="0" step="1" />
+      </div>
+
+      <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
+    </section>
+
+    <section class="panel cues" aria-label="Cue list">
+      <h2>Cues</h2>
+      <div id="cueList" class="cue-list"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <dialog id="authDialog">
+    <form method="dialog" class="auth-form">
+      <h3>Remote password</h3>
+      <p>Same password as Tools → Web Remote on the PC.</p>
+      <input type="password" id="passwordInput" autocomplete="current-password" />
+      <div class="auth-actions">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button value="ok" class="primary" id="savePassword">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

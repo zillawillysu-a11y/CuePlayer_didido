@@ -136,6 +136,9 @@ from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
+from cueplayer.web_remote.bridge import WebRemoteBridge
+from cueplayer.web_remote.dialog import WebRemoteDialog
+from cueplayer.web_remote.prefs import load_web_remote_prefs, save_web_remote_prefs
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
 from cueplayer.ui.mark_manager_dialog import MarkManagerDialog
 from cueplayer.ui.ndi_install_dialog import show_ndi_install_dialog
@@ -1263,6 +1266,14 @@ class MainWindow(QMainWindow):
         self._setup_autosave()
         self._refresh_window_title()
         self._refresh_status()
+        self._web_remote = WebRemoteBridge(self, parent=self)
+        self._web_remote.status_changed.connect(
+            lambda msg: self.status.showMessage(msg, 4000)
+        )
+        saved_remote = load_web_remote_prefs()
+        err = self._web_remote.apply_prefs(saved_remote, restart=True)
+        if err:
+            self.status.showMessage(f"Web Remote failed: {err}", 6000)
 
         self.setAcceptDrops(True)
 
@@ -2249,10 +2260,17 @@ class MainWindow(QMainWindow):
         act_display.triggered.connect(self._open_display_settings)
         act_audio = QAction("&Audio / Midi / Timecode…", self)
         act_audio.triggered.connect(self._open_audio_timecode)
+        act_web_remote = QAction("&Web Remote…", self)
+        act_web_remote.setToolTip(
+            "Control CuePlayer from Safari on iPad / phone (same LAN). "
+            "Playback and marks on this PC; LTC stays here."
+        )
+        act_web_remote.triggered.connect(self._open_web_remote)
         tools_menu.addAction(act_manager)
         tools_menu.addAction(act_display)
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
+        tools_menu.addAction(act_web_remote)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -5045,6 +5063,9 @@ class MainWindow(QMainWindow):
         # keeps the OBS capture target valid) — but that must not let it
         # survive the main window closing, or keep the app process alive.
         self._shutdown_secondary_windows()
+        remote = getattr(self, "_web_remote", None)
+        if remote is not None:
+            remote.stop()
         event.accept()
         app = QApplication.instance()
         if app is not None:
@@ -5630,6 +5651,30 @@ class MainWindow(QMainWindow):
         dialog.calibrate_requested.connect(_run_calib)
         dialog.exec()
         _apply_live()
+
+    def _open_web_remote(self) -> None:
+        dialog = WebRemoteDialog(
+            self._web_remote.prefs,
+            running=self._web_remote.running,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+        result = dialog.result_prefs()
+        save_web_remote_prefs(result)
+        err = self._web_remote.apply_prefs(result, restart=True)
+        if err:
+            QMessageBox.warning(self, "Web Remote", f"Could not start server:\n{err}")
+            self.status.showMessage(f"Web Remote failed: {err}", 6000)
+            return
+        if result.enabled:
+            from cueplayer.web_remote.bridge import lan_urls
+
+            urls = lan_urls(result.normalized_port())
+            tip = urls[-1] if urls else f"http://127.0.0.1:{result.normalized_port()}/"
+            self.status.showMessage(f"Web Remote on — open {tip} on iPad Safari", 8000)
+        else:
+            self.status.showMessage("Web Remote off", 3000)
 
     def _open_audio_timecode(self) -> None:
         dialog = AudioTimecodeDialog(self.project.audio_output, parent=self)
