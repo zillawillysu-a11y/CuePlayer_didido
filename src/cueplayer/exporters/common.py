@@ -250,28 +250,34 @@ def split_ma_cue_number(cue_number: float) -> tuple[int, int]:
 
 def format_ma2_timecode_step(cue_number: float) -> str:
     """
-    Timecode Event ``step`` must be an integer string.
+    Deprecated helper: Timecode ``step`` must be the 1-based cue *index*
+    in the sequence (see ``ma2_timecode_cue_nos``), not the Cue ID.
 
-    A decimal like ``step="14.1"`` confuses MA2's Timecode XML importer and
-    shifts subsequent Cue destinations (14.1 time OK, next event keeps 14.1,
-    then 15 / 15.1 / … all lag). Whole cues stay ``"14"``; fractions use the
-    milli handle (``14.1`` → ``"14100"``).
+    Kept for callers that still pass a whole cue id (== index when no fractions).
     """
     major, sub = split_ma_cue_number(cue_number)
     if sub:
+        # Fractions must not put a decimal in ``step``; callers should pass index.
         return str(major * 1000 + sub)
     return str(major)
 
 
 def format_ma2_cue_link_name(cue_number: float) -> str:
-    """
-    Sequence Label + Timecode ``Cue name=`` for link matching.
+    """Timecode ``Cue name=`` / Sequence Label — matches MA Store default ``Cue N``."""
+    return f"Cue {format_ma_cue_number(cue_number)}"
 
-    Avoid ``.`` inside the Timecode XML attribute (same importer hazard as
-    ``step``). ``14.1`` → ``Cue 14_1``.
+
+def ma2_timecode_cue_nos(sequence_pool: int, cue_index: int) -> list[int]:
     """
-    label = format_ma_cue_number(cue_number).replace(".", "_")
-    return f"Cue {label}"
+    MA2 Timecode Event Cue ``<No>`` list.
+
+    Third value is the 1-based **index** of the cue inside the sequence (the
+    order cues were Store'd), not the Cue ID number. When Cue IDs are 1…N with
+    no fractions, index == number so old exports looked fine — but after
+    ``14.1`` the next cue id ``15`` is index 16, and writing ``15`` made MA
+    fire Cue 14.1 (the 15th cue) instead.
+    """
+    return [1, int(sequence_pool), max(1, int(cue_index))]
 
 
 def ma3_cue_destination_handle(cue_number: float) -> int:

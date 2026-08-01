@@ -153,7 +153,8 @@ def test_ma2_timecode_uses_fps_frames_not_centiseconds(tmp_path: Path) -> None:
     # Must NOT be old centisecond stamps (194.7→195, etc.)
     assert 195 not in times and 820 not in times and 2083 not in times
     lua = paths["plugin_lua"].read_text(encoding="utf-8")
-    assert lua.index('/TimeUnit="30 FPS"') < lua.index('Import "')
+    assert lua.index('Import "') < lua.index('/TimeUnit="30 FPS"')
+    assert "Store Timecode" not in lua
     assert "/TimeUnit=0" not in lua
 
 
