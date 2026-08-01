@@ -332,8 +332,11 @@ def test_playback_decode_rate_stays_near_display_refresh_cap(
     play_hz = float(video_sync_mod._MAX_PLAY_DECODE_HZ)
     max_expected_frames = int(window_seconds * play_hz) + 3  # + slack for scheduling jitter
     assert len(frames) <= max_expected_frames
-    # Cap must stay well below the audio clock (~60 Hz) so timeline paint wins.
-    assert play_hz <= 20.0
+    # Cap must stay at/under ~display refresh so timeline paint still wins.
+    assert play_hz <= 30.0
+    assert play_hz >= 24.0
+    assert float(video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY) <= play_hz
+    assert float(video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY) >= 20.0
 
 
 def test_duplicate_decoded_frame_is_not_reemitted(app: QApplication, red_clip_path: Path) -> None:

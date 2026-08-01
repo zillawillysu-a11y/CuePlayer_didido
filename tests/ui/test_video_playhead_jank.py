@@ -28,8 +28,11 @@ def app() -> QApplication:
 
 
 def test_play_decode_cap_leaves_headroom_for_timeline() -> None:
-    assert video_sync_mod._MAX_PLAY_DECODE_HZ <= 20.0
-    assert video_sync_mod._MAX_PLAY_DECODE_HZ >= 12.0
+    # Light path targets ~30 Hz video; heavy (Video Track open) stays ≤ light.
+    assert video_sync_mod._MAX_PLAY_DECODE_HZ <= 30.0
+    assert video_sync_mod._MAX_PLAY_DECODE_HZ >= 24.0
+    assert video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY <= video_sync_mod._MAX_PLAY_DECODE_HZ
+    assert video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY >= 20.0
 
 
 def test_view_changed_throttled_while_playing(app: QApplication) -> None:
