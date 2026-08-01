@@ -70,16 +70,29 @@ def build_export_plan(
     file_base = base.replace(" ", "_")
 
     id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}
+    # Timecode events must stay in time order; Cue numbers come from Cue ID.
+    from cueplayer.domain.main_cue_id import mark_time_sort_key
+
     main_marks = sorted(
         (m for m in song.marks if m.lane_index in id_lanes),
-        key=lambda m: (m.time_seconds, m.lane_index),
+        key=mark_time_sort_key,
     )
     main_cues: list[ExportCue] = []
     for i, mark in enumerate(main_marks, start=1):
         display = (mark.display_name or "").strip() or f"Cue {i}"
+        raw_id = (mark.main_cue_id or "").strip()
+        if raw_id:
+            try:
+                cue_number = float(raw_id)
+            except ValueError:
+                cue_number = float(i)
+        else:
+            cue_number = float(i)
+        if cue_number <= 0:
+            cue_number = float(i)
         main_cues.append(
             ExportCue(
-                cue_number=float(i),
+                cue_number=cue_number,
                 display_name=display,
                 ma_export_name=mark.ma_export_name,
                 time_seconds=float(mark.time_seconds),

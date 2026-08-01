@@ -23,6 +23,23 @@ def test_sanitize_strips_chinese_and_falls_back() -> None:
     assert sanitize_ma_name("!!!", fallback="Cue1") == "Cue1"
 
 
+def test_split_ma_cue_number_fractional() -> None:
+    from cueplayer.exporters.common import (
+        format_ma3_cue_no_attr,
+        format_ma_cue_number,
+        ma3_cue_destination_handle,
+        split_ma_cue_number,
+    )
+
+    assert split_ma_cue_number(4.0) == (4, 0)
+    assert split_ma_cue_number(4.1) == (4, 100)
+    assert split_ma_cue_number(1.01) == (1, 10)
+    assert format_ma_cue_number(4.1) == "4.1"
+    assert format_ma3_cue_no_attr(4.1) == "4.100"
+    assert ma3_cue_destination_handle(4.1) == 4100
+    assert ma3_cue_destination_handle(1) == 1000
+
+
 def test_manual_ma_export_name_wins() -> None:
     cue = ExportCue(
         cue_number=1,
