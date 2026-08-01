@@ -7309,9 +7309,13 @@ class MainWindow(QMainWindow):
             return
         if not getattr(self.current_song, "show_mark_tracks", True):
             return
-        # Use the visual playhead (timeline), not engine.position — mid-scrub
-        # the engine still sits at press/last-seek while the line follows the cursor.
-        mark_at = self.timeline.playhead_seconds()
+        # Use the visual playhead while scrubbing (engine still sits at press).
+        # While playing, read the engine's interpolated write-head so marks are
+        # not quantized to the audio-block grid (often 10ms → sticky ms digit).
+        if self.engine.playing and not self.timeline.is_scrubbing():
+            mark_at = float(self.engine.position)
+        else:
+            mark_at = self.timeline.playhead_seconds()
         mark = self.current_song.add_mark(lane_index, mark_at)
         self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
