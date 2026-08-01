@@ -22,6 +22,7 @@
 
 | 項目 | 說明 |
 |------|------|
+| **Show Set List** | 顯示／隱藏左側 Set List（歌單／資料夾） |
 | **Show Video / LTC Tracks** | 顯示／隱藏時間軸上的 Video + LTC 軌道（Preview／Clean Output 仍會播） |
 | **Video Preview Panel** | 嵌入式預覽面板 |
 | **Clean Video Output** | 開 OBS 用乾淨輸出視窗 |

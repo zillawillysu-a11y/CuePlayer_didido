@@ -202,6 +202,8 @@ _KEY_CUE_LIST_SHOW_CUE_ID = "ui/cue_list_show_cue_id"
 _KEY_CUE_LIST_COLUMN_ORDER = "ui/cue_list_column_order"
 _KEY_CUE_LIST_HEADER = "ui/cue_list_header"
 _KEY_VIEW_MODE = "ui/view_mode"
+_KEY_SETLIST_VISIBLE = "ui/setlist_visible"
+_KEY_SETLIST_WIDTH = "ui/setlist_width"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
 
@@ -1080,6 +1082,8 @@ class MainWindow(QMainWindow):
         left.setAcceptDrops(True)
         left.installEventFilter(self)
         self._setlist_panel = left
+        self._setlist_saved_width = 240
+        self._setlist_visible = True
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_title = QLabel("Setlist")
@@ -1530,21 +1534,95 @@ class MainWindow(QMainWindow):
         split.setSizes([new_timeline, mon_w])
 
     def _lock_main_splitter_panels(self) -> None:
-        """Prevent the Setlist / content panes from collapsing to zero width."""
+        """Prevent the Setlist / content panes from collapsing to zero width.
+
+        When Setlist is hidden via View → Set List, index 0 may stay collapsed
+        until the user shows it again — do not force it open here.
+        """
         main_split = getattr(self, "_main_splitter", None)
         if main_split is None:
             return
-        main_split.setChildrenCollapsible(False)
-        for index in range(main_split.count()):
-            main_split.setCollapsible(index, False)
-        left = main_split.widget(0)
-        if left is not None and left.minimumWidth() < 160:
-            left.setMinimumWidth(160)
+        setlist_visible = self._setlist_panel_is_visible()
+        if setlist_visible:
+            main_split.setChildrenCollapsible(False)
+            for index in range(main_split.count()):
+                main_split.setCollapsible(index, False)
+            left = main_split.widget(0)
+            if left is not None and left.minimumWidth() < 160:
+                left.setMinimumWidth(160)
+        else:
+            main_split.setChildrenCollapsible(False)
+            main_split.setCollapsible(0, True)
+            main_split.setCollapsible(1, False)
+            left = main_split.widget(0)
+            if left is not None:
+                left.setMinimumWidth(0)
         right = main_split.widget(1)
         # Keep an explicit content floor so transport sizeHints cannot freeze
         # the Setlist splitter on narrow windows (see ctor comment).
         if right is not None and right.minimumWidth() < 280:
             right.setMinimumWidth(280)
+
+    def _setlist_panel_is_visible(self) -> bool:
+        return bool(getattr(self, "_setlist_visible", True))
+
+    def _remember_setlist_width(self) -> None:
+        main_split = getattr(self, "_main_splitter", None)
+        if main_split is None:
+            return
+        sizes = main_split.sizes()
+        if sizes and sizes[0] > 0:
+            self._setlist_saved_width = int(sizes[0])
+
+    def _set_setlist_visible(self, visible: bool, *, persist: bool = True) -> None:
+        """Show or hide the left Set List panel (View menu)."""
+        panel = getattr(self, "_setlist_panel", None)
+        main_split = getattr(self, "_main_splitter", None)
+        if panel is None or main_split is None:
+            return
+        visible = bool(visible)
+        self._setlist_visible = visible
+        if visible:
+            panel.setVisible(True)
+            panel.setMinimumWidth(160)
+            main_split.setCollapsible(0, False)
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if width < 160:
+                raw = self._settings.value(_KEY_SETLIST_WIDTH, 240)
+                try:
+                    width = int(raw)
+                except (TypeError, ValueError):
+                    width = 240
+            width = max(160, width)
+            total = sum(main_split.sizes()) or max(main_split.width(), width + 280)
+            main_split.setSizes([width, max(280, total - width)])
+        else:
+            self._remember_setlist_width()
+            panel.setMinimumWidth(0)
+            main_split.setCollapsible(0, True)
+            sizes = main_split.sizes()
+            total = sum(sizes) if sizes else max(1, main_split.width())
+            main_split.setSizes([0, max(1, total)])
+            panel.setVisible(False)
+        self._lock_main_splitter_panels()
+        action = getattr(self, "_act_setlist", None)
+        if action is not None and action.isChecked() != visible:
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+        if persist and not getattr(self, "_restoring_session", False):
+            self._settings.setValue(_KEY_SETLIST_VISIBLE, visible)
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if visible:
+                sizes = main_split.sizes()
+                if sizes and sizes[0] > 0:
+                    width = int(sizes[0])
+            if width >= 160:
+                self._settings.setValue(_KEY_SETLIST_WIDTH, width)
+        self._sync_transport_layout()
+
+    def _toggle_setlist_panel(self, visible: bool) -> None:
+        self._set_setlist_visible(bool(visible))
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
@@ -1566,6 +1644,15 @@ class MainWindow(QMainWindow):
             # restoreState can re-enable collapse from an older session; keep
             # Setlist from vanishing into the left edge when dragged narrow.
             self._lock_main_splitter_panels()
+        raw_setlist_w = self._settings.value(_KEY_SETLIST_WIDTH, 240)
+        try:
+            self._setlist_saved_width = max(160, int(raw_setlist_w))
+        except (TypeError, ValueError):
+            self._setlist_saved_width = 240
+        setlist_visible = bool(
+            self._settings.value(_KEY_SETLIST_VISIBLE, True, type=bool)
+        )
+        self._set_setlist_visible(setlist_visible, persist=False)
         timeline_split = getattr(self, "_timeline_split", None)
         if timeline_split is not None:
             raw = self._settings.value(_KEY_TIMELINE_SPLITTER)
@@ -1675,7 +1762,15 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_MAIN_STATE, self.saveState())
         main_split = getattr(self, "_main_splitter", None)
         if main_split is not None:
+            if self._setlist_panel_is_visible():
+                self._remember_setlist_width()
             self._settings.setValue(_KEY_MAIN_SPLITTER, main_split.saveState())
+            self._settings.setValue(
+                _KEY_SETLIST_VISIBLE, self._setlist_panel_is_visible()
+            )
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if width >= 160:
+                self._settings.setValue(_KEY_SETLIST_WIDTH, width)
         timeline_split = getattr(self, "_timeline_split", None)
         if timeline_split is not None:
             self._settings.setValue(_KEY_TIMELINE_SPLITTER, timeline_split.saveState())
@@ -2177,6 +2272,15 @@ class MainWindow(QMainWindow):
         self._build_video_decode_quality_menu(video_menu)
 
         view_menu = self.menuBar().addMenu("&View")
+        act_setlist = QAction("Show &Set List", self)
+        act_setlist.setCheckable(True)
+        act_setlist.setChecked(True)
+        act_setlist.setToolTip(
+            "Show or hide the left Set List panel (song order / folders)"
+        )
+        act_setlist.triggered.connect(self._toggle_setlist_panel)
+        view_menu.addAction(act_setlist)
+        self._act_setlist = act_setlist
         self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
         self._show_video_track_action.setCheckable(True)
         self._show_video_track_action.setChecked(True)

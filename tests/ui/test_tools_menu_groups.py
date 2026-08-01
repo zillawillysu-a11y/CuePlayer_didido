@@ -79,7 +79,35 @@ def test_view_menu_holds_preview_track_clean(app: QApplication) -> None:
 
     view_titles = _menu_titles(window, ["View"])
     assert view_titles == [
+        "Show Set List",
         "Show Video / LTC Tracks",
         "Video Preview Panel",
         "Clean Video Output",
     ]
+
+
+def test_view_can_hide_and_show_setlist(app: QApplication) -> None:
+    window = MainWindow(Project.create("SetListToggle"))
+    window.resize(1200, 700)
+    window.show()
+    app.processEvents()
+
+    assert window._setlist_panel_is_visible() is True
+    assert window._act_setlist.isChecked() is True
+    left_before = window._main_splitter.sizes()[0]
+    assert left_before >= 160
+
+    window._set_setlist_visible(False)
+    app.processEvents()
+    assert window._setlist_panel_is_visible() is False
+    assert window._setlist_panel.isVisible() is False
+    assert window._act_setlist.isChecked() is False
+    assert window._main_splitter.sizes()[0] == 0
+    assert window._main_splitter.sizes()[1] >= 280
+
+    window._set_setlist_visible(True)
+    app.processEvents()
+    assert window._setlist_panel_is_visible() is True
+    assert window._setlist_panel.isVisible() is True
+    assert window._act_setlist.isChecked() is True
+    assert window._main_splitter.sizes()[0] >= 160
