@@ -71,8 +71,10 @@ def test_static_dir_has_index() -> None:
     assert "scrollCueListTo" in js
     assert "setListenOn" in js
     assert "/api/monitor" in js
-    assert 'format: "wav"' in js
+    assert "fetchMonitorPcm" in js
+    assert "scheduleListenBuffer" in js
     assert "unlockListenAudio" in js
+    assert "createMediaStreamDestination" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
