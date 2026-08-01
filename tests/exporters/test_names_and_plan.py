@@ -25,6 +25,8 @@ def test_sanitize_strips_chinese_and_falls_back() -> None:
 
 def test_split_ma_cue_number_fractional() -> None:
     from cueplayer.exporters.common import (
+        format_ma2_cue_link_name,
+        format_ma2_timecode_step,
         format_ma3_cue_no_attr,
         format_ma_cue_number,
         ma3_cue_destination_handle,
@@ -38,6 +40,13 @@ def test_split_ma_cue_number_fractional() -> None:
     assert format_ma3_cue_no_attr(4.1) == "4.100"
     assert ma3_cue_destination_handle(4.1) == 4100
     assert ma3_cue_destination_handle(1) == 1000
+    # Timecode XML attrs must stay decimal-free.
+    assert format_ma2_timecode_step(14.0) == "14"
+    assert format_ma2_timecode_step(14.1) == "14100"
+    assert format_ma2_timecode_step(15.1) == "15100"
+    assert format_ma2_cue_link_name(14.0) == "Cue 14"
+    assert format_ma2_cue_link_name(14.1) == "Cue 14_1"
+    assert format_ma2_cue_link_name(15.1) == "Cue 15_1"
 
 
 def test_manual_ma_export_name_wins() -> None:
@@ -98,8 +107,8 @@ def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None
         "Store Sequence 1 Cue 15 /noconfirm",
         "Store Sequence 1 Cue 15.1 /noconfirm",
     ]
-    assert 'Label Sequence 1 Cue 14.1 "Cue 14.1"' in label
-    assert 'Label Sequence 1 Cue 15.1 "Cue 15.1"' in label
+    assert 'Label Sequence 1 Cue 14.1 "Cue 14_1"' in label
+    assert 'Label Sequence 1 Cue 15.1 "Cue 15_1"' in label
     assert not any("Cue_15" in c or "Cue_16" in c or "Cue_17" in c for c in cmds)
 
     from pathlib import Path
@@ -108,10 +117,11 @@ def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None
     with tempfile.TemporaryDirectory() as d:
         paths = Ma2Exporter().export_to_directory(plan, Path(d), include_plugin=True)
         tc = paths["timecode"].read_text(encoding="utf-8")
-        assert 'name="Cue 14.1"' in tc
-        assert 'name="Cue 15.1"' in tc
+        assert 'name="Cue 14_1"' in tc
+        assert 'name="Cue 15_1"' in tc
+        assert 'step="14100"' in tc
+        assert 'step="14.1"' not in tc
         assert "Cue_15" not in tc
-        assert 'step="14.1"' in tc
         # Nos include MA2 milli sub for 14.1 → 100
         assert "<No>14</No><No>100</No>" in tc.replace("\n", "").replace(" ", "") or (
             ">14</No>" in tc and ">100</No>" in tc
