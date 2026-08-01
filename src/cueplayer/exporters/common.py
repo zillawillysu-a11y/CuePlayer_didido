@@ -212,6 +212,42 @@ def ma3_timecode_set_property_commands(plan_profile: MaExportProfile) -> list[st
     ]
 
 
+def format_ma_cue_number(cue_number: float) -> str:
+    """Command-line / display cue id (4, 4.1, 4.01) without trailing zeros."""
+    from decimal import Decimal
+
+    text = format(Decimal(str(cue_number)).normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def split_ma_cue_number(cue_number: float) -> tuple[int, int]:
+    """MA2 Number fields: cue 4.1 → (4, 100) because MA stores three decimals."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    quantized = Decimal(str(cue_number)).quantize(
+        Decimal("0.001"), rounding=ROUND_HALF_UP
+    )
+    major = int(quantized)
+    frac = quantized - Decimal(major)
+    sub = int((frac * Decimal(1000)).to_integral_value(rounding=ROUND_HALF_UP))
+    return major, max(0, sub)
+
+
+def ma3_cue_destination_handle(cue_number: float) -> int:
+    """MA3 ValCueDestination milli-handle: cue 1 → 1000, cue 4.1 → 4100."""
+    return int(round(float(cue_number) * 1000))
+
+
+def format_ma3_cue_no_attr(cue_number: float) -> str:
+    """MA3 Cue/@No text (right-padded whole numbers; decimals keep three places)."""
+    major, sub = split_ma_cue_number(cue_number)
+    if sub == 0:
+        return f"{major:3d}"
+    return f"{major}.{sub:03d}"
+
+
 @dataclass
 class ExportCue:
     cue_number: float
@@ -220,9 +256,10 @@ class ExportCue:
     time_seconds: float = 0.0
 
     def resolved_ma_name(self) -> str:
+        label = format_ma_cue_number(self.cue_number)
         if self.ma_export_name and self.ma_export_name.strip():
-            return sanitize_ma_name(self.ma_export_name, fallback=f"Cue{self.cue_number:g}")
-        return sanitize_ma_name(self.display_name, fallback=f"Cue{self.cue_number:g}")
+            return sanitize_ma_name(self.ma_export_name, fallback=f"Cue{label}")
+        return sanitize_ma_name(self.display_name, fallback=f"Cue{label}")
 
     def cue_name_for_export(self) -> str | None:
         """
@@ -238,8 +275,8 @@ class ExportCue:
         if not raw:
             return None
         # plan_from_song defaults empty notes to "Cue N" — treat as unnamed.
-        cue_no = int(self.cue_number)
-        if raw.casefold() in {f"cue {cue_no}", f"cue{cue_no}"}:
+        label = format_ma_cue_number(self.cue_number)
+        if raw.casefold() in {f"cue {label}", f"cue{label}", f"cue {int(self.cue_number)}"}:
             return None
         for ch in '\\"$&*?,.;^{|}~':
             raw = raw.replace(ch, "")

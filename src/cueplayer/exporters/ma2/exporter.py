@@ -11,9 +11,11 @@ from cueplayer.exporters.common import (
     MaExportProfile,
     SongExportPlan,
     export_event_time_seconds,
+    format_ma_cue_number,
     ma2_timecode_assign_settings,
     parse_page_executor,
     sanitize_ma_name,
+    split_ma_cue_number,
 )
 from cueplayer.exporters.ma_default_dirs import resolve_ma2_pool_dirs
 from cueplayer.exporters.xml_write import (
@@ -208,12 +210,13 @@ class Ma2Exporter:
             },
         )
         ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"NIL_PLACEHOLDER": "true"})
-        for cue in plan.main_cues:
-            cue_el = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(int(cue.cue_number))})
+        for index, cue in enumerate(plan.main_cues, start=1):
+            major, sub = split_ma_cue_number(cue.cue_number)
+            cue_el = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(index)})
             ET.SubElement(
                 cue_el,
                 f"{{{MA2_NS}}}Number",
-                {"number": str(int(cue.cue_number)), "sub_number": "0"},
+                {"number": str(major), "sub_number": str(sub)},
             )
             # Golden MA2 Seq XML has bare CuePart — CuePart/@name can fail Import
             # and leave an empty Sequence. Cue labels stay out of MA2 XML.
@@ -342,7 +345,8 @@ class Ma2Exporter:
         main_sub = ET.SubElement(main_track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
         for idx, cue in enumerate(plan.main_cues):
             cs = _rel_event_centiseconds(plan, cue.time_seconds)
-            cue_no = int(cue.cue_number)
+            major, sub = split_ma_cue_number(cue.cue_number)
+            cue_label = format_ma_cue_number(cue.cue_number)
             event = ET.SubElement(
                 main_sub,
                 f"{{{MA2_NS}}}Event",
@@ -351,13 +355,16 @@ class Ma2Exporter:
                     "time": str(cs),
                     "command": "Go",
                     "pressed": "true",
-                    "step": str(cue_no),
+                    "step": cue_label,
                 },
             )
             # MA2 Main XML has no note labels — TC Cue name must stay "Cue N"
             # or events fail to resolve (only Cue 1 appeared linked).
-            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": f"Cue {cue_no}"})
-            for value in (1, main_seq, cue_no):
+            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": f"Cue {cue_label}"})
+            nos = [1, main_seq, major]
+            if sub:
+                nos.append(sub)
+            for value in nos:
                 no = ET.SubElement(cue_el, f"{{{MA2_NS}}}No")
                 no.text = str(value)
 
@@ -422,10 +429,10 @@ class Ma2Exporter:
 
         # Main cues — Store like CuePoints (not Import XML).
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
+            cue_label_no = format_ma_cue_number(cue.cue_number)
             label = _ma2_store_cue_label(cue)
             cmd_lines.append(
-                f'Store Sequence {main_seq} Cue {cue_no} "{label}" /noconfirm'
+                f'Store Sequence {main_seq} Cue {cue_label_no} "{label}" /noconfirm'
             )
         cmd_lines.extend(
             [
@@ -484,13 +491,15 @@ class Ma2Exporter:
             for idx, cue in enumerate(plan.main_cues):
                 cs = _rel_event_centiseconds(plan, cue.time_seconds)
                 max_cs = max(max_cs, cs)
-                cue_no = int(cue.cue_number)
-                label = _xml_esc(_ma2_store_cue_label(cue))
+                major, sub = split_ma_cue_number(cue.cue_number)
+                cue_label = format_ma_cue_number(cue.cue_number)
+                nos = f"<No>1</No><No>{main_seq}</No><No>{major}</No>"
+                if sub:
+                    nos += f"<No>{sub}</No>"
                 events.append(
                     f'<Event index="{idx}" time="{cs}" command="Go" '
-                    f'pressed="true" step="{cue_no}">'
-                    f'<Cue name="{label}"><No>1</No><No>{main_seq}</No>'
-                    f"<No>{cue_no}</No></Cue></Event>"
+                    f'pressed="true" step="{cue_label}">'
+                    f'<Cue name="Cue {cue_label}">{nos}</Cue></Event>'
                 )
             tracks.append(
                 f'<Track index="{track_i}" active="true" expanded="true">'

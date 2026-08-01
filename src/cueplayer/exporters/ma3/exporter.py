@@ -8,7 +8,10 @@ import xml.etree.ElementTree as ET
 from cueplayer.exporters.common import (
     SongExportPlan,
     export_event_time_seconds,
+    format_ma3_cue_no_attr,
     format_ma3_offset_seconds,
+    format_ma_cue_number,
+    ma3_cue_destination_handle,
     ma3_timecode_set_property_commands,
     parse_page_executor,
     sanitize_ma_name,
@@ -206,13 +209,12 @@ class Ma3Exporter:
         self._cue_part(zero)
 
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
             # Name before No (matches CueZero pattern) so Import keeps the label.
             attrs: dict[str, str] = {}
             label = cue.cue_name_for_export()
             if label:
                 attrs["Name"] = label
-            attrs["No"] = f"{cue_no:3d}"
+            attrs["No"] = format_ma3_cue_no_attr(cue.cue_number)
             attrs["AllowDuplicates"] = ""
             cue_el = ET.SubElement(sequ, "Cue", attrs)
             part = self._cue_part(cue_el)
@@ -348,7 +350,8 @@ class Ma3Exporter:
         # in Object/ValCueDestination fail to resolve Cue destinations on import).
         main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
+            cue_label = format_ma_cue_number(cue.cue_number)
+            dest_handle = ma3_cue_destination_handle(cue.cue_number)
             t = export_event_time_seconds(cue.time_seconds, plan.profile)
             event = ET.SubElement(
                 main_cmds,
@@ -356,7 +359,7 @@ class Ma3Exporter:
                 {
                     "Name": "Go+",
                     "Time": f"{t:.3f}",
-                    "CueDestination": f"Cue {cue_no}",
+                    "CueDestination": f"Cue {cue_label}",
                 },
             )
             ET.SubElement(
@@ -383,7 +386,7 @@ class Ma3Exporter:
                     "IsExecXFade": "0",
                     "Object": f"13.13.0.5.{main_seq_idx}",
                     "ExecToken": "Go+",
-                    "ValCueDestination": f"0.5.{main_seq_idx}.{cue_no * 1000}",
+                    "ValCueDestination": f"0.5.{main_seq_idx}.{dest_handle}",
                 },
             )
 
