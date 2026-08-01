@@ -188,6 +188,8 @@ _KEY_MAIN_STATE = "mainwindow/state"
 _KEY_MAIN_SPLITTER = "ui/main_splitter"
 _KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
 _KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
+# Floor so the Video Preview splitter cannot be dragged shut (View menu still hides).
+_VIDEO_PREVIEW_SPLIT_MIN_HEIGHT = 96
 _KEY_TIMELINE_HEADER_WIDTH = "ui/timeline_header_width"
 _KEY_NOW_SPLITTER = "ui/now_splitter"
 _KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
@@ -1181,6 +1183,7 @@ class MainWindow(QMainWindow):
         # Video Preview directly underneath — not stacked under the Cue list.
         self.video_preview_panel = QWidget()
         self.video_preview_panel.setObjectName("videoPreviewPanel")
+        self.video_preview_panel.setMinimumHeight(_VIDEO_PREVIEW_SPLIT_MIN_HEIGHT)
         video_panel_layout = QVBoxLayout(self.video_preview_panel)
         video_panel_layout.setContentsMargins(0, 8, 0, 0)
         video_panel_layout.setSpacing(6)
@@ -1196,8 +1199,10 @@ class MainWindow(QMainWindow):
         timeline_preview_split.setStretchFactor(0, 3)
         timeline_preview_split.setStretchFactor(1, 2)
         timeline_preview_split.setSizes([560, 280])
+        timeline_preview_split.setChildrenCollapsible(False)
         timeline_preview_split.setCollapsible(0, False)
-        timeline_preview_split.setCollapsible(1, True)
+        # Dragging shut used to hide Preview entirely; View menu still toggles it.
+        timeline_preview_split.setCollapsible(1, False)
         self._timeline_preview_split = timeline_preview_split
 
         # Right column is Cue list only (clock + scrolling marks).
@@ -1680,6 +1685,7 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
+            self._clamp_video_preview_splitter()
         raw_hw = self._settings.value(_KEY_TIMELINE_HEADER_WIDTH)
         if raw_hw is not None:
             try:
@@ -2468,18 +2474,38 @@ class MainWindow(QMainWindow):
             self._video_decode_quality_actions[quality] = action
         self._sync_video_decode_quality_ui()
 
+    def _clamp_video_preview_splitter(self) -> None:
+        """Keep Preview tall enough after restore / drag (cannot collapse to 0)."""
+        split = getattr(self, "_timeline_preview_split", None)
+        panel = getattr(self, "video_preview_panel", None)
+        if split is None or panel is None or not panel.isVisible():
+            return
+        sizes = split.sizes()
+        if len(sizes) < 2:
+            return
+        floor = _VIDEO_PREVIEW_SPLIT_MIN_HEIGHT
+        if sizes[1] >= floor:
+            return
+        total = max(sum(sizes), split.height(), floor + 80)
+        preview = floor
+        timeline = max(80, total - preview)
+        split.setSizes([timeline, preview])
+
     def _toggle_video_preview_panel(self, visible: bool) -> None:
         split = getattr(self, "_timeline_preview_split", None)
+        self.video_preview_panel.setVisible(visible)
         if split is None:
-            self.video_preview_panel.setVisible(visible)
             self._sync_video_output_active()
             return
         if visible:
-            total = split.height()
-            split.setSizes([max(100, total * 3 // 5), max(120, total * 2 // 5)])
-        else:
-            total = split.height()
-            split.setSizes([total, 0])
+            total = max(1, split.height())
+            split.setSizes(
+                [
+                    max(100, total * 3 // 5),
+                    max(_VIDEO_PREVIEW_SPLIT_MIN_HEIGHT, total * 2 // 5),
+                ]
+            )
+            self._clamp_video_preview_splitter()
         self._sync_video_output_active()
 
     def _set_video_decode_quality(self, quality: str) -> None:
