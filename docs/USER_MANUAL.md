@@ -13,6 +13,7 @@
 | **Space** | Play / Pause |
 | **← / →** | 微調 playhead（配合修飾鍵可改秒數／Frame） |
 | **1–9** | 在 playhead 打對應 Mark |
+| 波形上 Mark **右鍵** | 刪除、Rename Note、換成其他 Type；也可 Offset Time |
 | Mark Manager **Pause** | 勾選後，打該 Type（快捷鍵或點軌道）會暫停播放 |
 | Mark Manager **Ask Note** | 勾選後，打標（常搭配 Pause）會跳出 Note 輸入框 |
 | Mark Manager **Wave Note** | 勾選後，波形上標記線頂端右側顯示該標的 Note |

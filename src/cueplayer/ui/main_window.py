@@ -93,6 +93,7 @@ from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
+    ChangeMarkLanesCommand,
     DeleteMarksCommand,
     DeleteVideoClipsCommand,
     EditMainCueIdCommand,
@@ -1302,6 +1303,8 @@ class MainWindow(QMainWindow):
         self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
+        self.timeline.note_rename_requested.connect(self._on_note_changed)
+        self.timeline.change_type_requested.connect(self._change_mark_types)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)
         self.timeline.offset_requested.connect(self._offset_marks)
@@ -5091,6 +5094,7 @@ class MainWindow(QMainWindow):
     def _on_note_changed(self, mark_id: str, old_name: str, new_name: str) -> None:
         self._push_song_undo(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
         self._mark_dirty()
+        self._refresh_marks_ui()
 
     def _on_cue_id_changed(self, mark_id: str, old_id: str, new_id: str) -> None:
         self._push_song_undo(
@@ -5186,6 +5190,40 @@ class MainWindow(QMainWindow):
         self.monitor.set_selected_mark_ids([])
         self._refresh_marks_ui()
         self.status.showMessage(f"Deleted {removed} cue(s)", 2500)
+
+    def _change_mark_types(self, mark_ids: list, lane_index: int) -> None:
+        """Move selected marks onto another Mark Manager type (lane)."""
+        if not mark_ids:
+            return
+        lane = self.current_song.lane_by_index(int(lane_index))
+        if lane is None:
+            return
+        from cueplayer.domain.main_cue_id import assign_main_cue_id_for_mark
+
+        changes: dict[str, tuple[int, int, str, str]] = {}
+        for mark_id in mark_ids:
+            mark = self.current_song.mark_by_id(str(mark_id))
+            if mark is None or mark.lane_index == lane.index:
+                continue
+            old_lane = int(mark.lane_index)
+            old_cue = str(mark.main_cue_id)
+            mark.lane_index = int(lane.index)
+            if self.current_song.lane_has_cue_id(lane.index):
+                assign_main_cue_id_for_mark(self.current_song, mark, force=True)
+            else:
+                mark.main_cue_id = ""
+            changes[mark.id] = (old_lane, int(lane.index), old_cue, str(mark.main_cue_id))
+        if not changes:
+            return
+        self.current_song.sort_marks()
+        self._push_song_undo(ChangeMarkLanesCommand(changes=changes))
+        self._mark_dirty()
+        self._refresh_marks_ui()
+        label = lane.name
+        self.status.showMessage(
+            f"Moved {len(changes)} mark(s) to {label}",
+            2500,
+        )
 
     def _sync_loop_ui(self) -> None:
         self.transport.set_loop_status(

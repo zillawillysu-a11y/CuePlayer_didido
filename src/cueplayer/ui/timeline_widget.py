@@ -63,6 +63,8 @@ class TimelineWidget(QWidget):
     marks_changed = Signal()
     marks_moved = Signal(object)  # dict[str, tuple[float, float]]
     offset_requested = Signal(list, float)  # mark ids, delta seconds
+    note_rename_requested = Signal(str, str, str)  # mark_id, old_name, new_name
+    change_type_requested = Signal(list, int)  # mark ids, new lane_index
     loop_changed = Signal(object, object)  # loop_a, loop_b
     auto_scroll_changed = Signal(bool)
 
@@ -3108,8 +3110,15 @@ class TimelineWidget(QWidget):
             return
         x = float(pos.x())
         y = float(pos.y())
+        # Marks (including waveform stems) win over wave-gain / lane menus.
+        hit_id = self._hit_mark_at(x, y)
+        if hit_id is not None:
+            if hit_id not in self._selected_mark_ids:
+                self.set_selected_mark_ids([hit_id])
+            self._show_mark_item_context_menu(pos, list(self._selected_mark_ids))
+            return
         lane_idx = self._lane_index_at(x, y)
-        if lane_idx is not None and self._hit_mark_at(x, y) is None:
+        if lane_idx is not None:
             self._show_mark_lane_context_menu(pos, lane_idx)
             return
         if x < self._header_width:
@@ -3123,23 +3132,46 @@ class TimelineWidget(QWidget):
         if self._in_ltc_waveform(x, y):
             self._show_ltc_gain_context_menu(pos)
             return
-        if self._in_mark_tracks(x, y) and self._hit_mark_at(x, y) is None:
+        if self._in_mark_tracks(x, y):
             self._show_mark_tracks_area_menu(pos)
             return
-        hit_id = self._hit_mark_at(x, y)
-        if hit_id is not None and hit_id not in self._selected_mark_ids:
-            self.set_selected_mark_ids([hit_id])
-        ids = list(self._selected_mark_ids)
-        menu = QMenu(self)
-        if not ids:
-            menu.addAction("(Select a Mark or right-click on one first)").setEnabled(False)
-            menu.exec(self.mapToGlobal(pos))
-            return
 
+    def _show_mark_item_context_menu(self, pos, ids: list[str]) -> None:  # noqa: ANN001
+        if self._song is None or not ids:
+            return
+        menu = QMenu(self)
         n = len(ids)
-        delete_action = menu.addAction(f"Delete Mark(s) ({n})")
-        offset_action = menu.addAction("Offset Time…")
+        delete_action = menu.addAction(
+            "Delete Mark" if n == 1 else f"Delete Marks ({n})"
+        )
+        rename_action = menu.addAction("Rename Note…")
+        rename_action.setEnabled(n == 1)
+        rename_action.setToolTip(
+            "Edit the Note for this mark"
+            if n == 1
+            else "Select a single mark to rename its Note"
+        )
+
+        type_menu = menu.addMenu("Change Type")
+        type_actions: list[tuple[object, int]] = []
+        current_lanes = {
+            mark.lane_index
+            for mid in ids
+            if (mark := self._song.mark_by_id(mid)) is not None
+        }
+        for lane in sorted(self._song.mark_lanes, key=lambda item: item.index):
+            shortcut = (lane.shortcut or "").strip()
+            label = lane.name
+            if shortcut:
+                label = f"{shortcut} · {lane.name}"
+            act = type_menu.addAction(label)
+            # Disable if every selected mark is already on this type.
+            if current_lanes == {lane.index}:
+                act.setEnabled(False)
+            type_actions.append((act, lane.index))
+
         menu.addSeparator()
+        offset_action = menu.addAction("Offset Time…")
         quick: list[tuple[object, float]] = []
         for label, delta in (
             ("+0.010s", 0.01),
@@ -3151,11 +3183,32 @@ class TimelineWidget(QWidget):
         ):
             act = menu.addAction(label)
             quick.append((act, delta))
+
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
         if chosen is delete_action:
             self.delete_requested.emit(ids)
+            return
+        if chosen is rename_action and n == 1:
+            mark = self._song.mark_by_id(ids[0])
+            if mark is None:
+                return
+            text, ok = QInputDialog.getText(
+                self,
+                "Rename Note",
+                "Note:",
+                text=mark.display_name,
+            )
+            if not ok:
+                return
+            new_name = text.strip()
+            if new_name == mark.display_name:
+                return
+            old_name = mark.display_name
+            mark.display_name = new_name
+            self.note_rename_requested.emit(mark.id, old_name, new_name)
+            self.update()
             return
         if chosen is offset_action:
             seconds, ok = QInputDialog.getDouble(
@@ -3170,6 +3223,10 @@ class TimelineWidget(QWidget):
             if ok and abs(seconds) >= 1e-6:
                 self.offset_requested.emit(ids, float(seconds))
             return
+        for act, lane_index in type_actions:
+            if chosen is act:
+                self.change_type_requested.emit(ids, int(lane_index))
+                return
         for act, delta in quick:
             if chosen is act:
                 self.offset_requested.emit(ids, float(delta))

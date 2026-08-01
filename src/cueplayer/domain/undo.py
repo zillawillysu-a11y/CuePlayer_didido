@@ -124,6 +124,32 @@ class RenameMarkCommand:
 
 
 @dataclass
+class ChangeMarkLanesCommand:
+    """id → (old_lane, new_lane, old_cue_id, new_cue_id)."""
+
+    changes: dict[str, tuple[int, int, str, str]]
+    label: str = "Change Mark Type"
+
+    def undo(self, song: Song) -> None:
+        for mark_id, (old_lane, _new_lane, old_cue_id, _new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(old_lane)
+            mark.main_cue_id = str(old_cue_id)
+        song.sort_marks()
+
+    def redo(self, song: Song) -> None:
+        for mark_id, (_old_lane, new_lane, _old_cue_id, new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(new_lane)
+            mark.main_cue_id = str(new_cue_id)
+        song.sort_marks()
+
+
+@dataclass
 class EditMainCueIdCommand:
     mark_id: str
     old_id: str
