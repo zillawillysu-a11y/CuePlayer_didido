@@ -1396,7 +1396,13 @@
       const a = ev.touches[0];
       const b = ev.touches[1];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-      pinching = { dist, span: viewSpan(), mid: (viewStart + viewEnd) / 2 };
+      const midX = (a.clientX + b.clientX) / 2;
+      pinching = {
+        dist: Math.max(1, dist),
+        span: viewSpan(),
+        // Time under the finger midpoint — keep this fixed while zooming.
+        anchor: timeFromClientX(midX),
+      };
       scrubbing = false;
       scrubPointerX = null;
       stopScrubEdgeLoop();
@@ -1408,15 +1414,37 @@
     const a = ev.touches[0];
     const b = ev.touches[1];
     const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    if (pinching.dist < 1) return;
+    const midX = (a.clientX + b.clientX) / 2;
     const factor = pinching.dist / Math.max(1, dist);
     const next = Math.min(syncDur, Math.max(0.12, pinching.span * factor));
-    viewStart = pinching.mid - next / 2;
-    viewEnd = pinching.mid + next / 2;
+    const rect = els.waveWrap.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (midX - rect.left) / Math.max(1, rect.width)));
+    // Keep the original pinch-mid time under the current finger midpoint.
+    viewStart = pinching.anchor - next * ratio;
+    viewEnd = viewStart + next;
     clampView();
+    const span = viewSpan();
+    if (span < syncDur - 1e-6) {
+      const idealStart = pinching.anchor - span * ratio;
+      if (idealStart >= 0 && idealStart + span <= syncDur + 1e-9) {
+        viewStart = idealStart;
+        viewEnd = idealStart + span;
+      }
+    }
     drawWave(true);
   }, { passive: true });
-  els.waveWrap.addEventListener("touchend", () => { pinching = null; });
+  els.waveWrap.addEventListener("touchend", (ev) => {
+    if (ev.touches.length < 2 && pinching) {
+      pinching = null;
+      scheduleWaveDetail();
+    }
+  });
+  els.waveWrap.addEventListener("touchcancel", () => {
+    if (pinching) {
+      pinching = null;
+      scheduleWaveDetail();
+    }
+  });
 
   function layoutStacked() {
     return window.matchMedia("(max-width: 980px)").matches;
