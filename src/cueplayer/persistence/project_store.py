@@ -556,6 +556,12 @@ def project_to_dict(
                         "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
                         "midi_note": int(getattr(lane, "midi_note", 0) or 0),
                         "pause_on_mark": bool(getattr(lane, "pause_on_mark", False)),
+                        "prompt_note_on_mark": bool(
+                            getattr(lane, "prompt_note_on_mark", False)
+                        ),
+                        "show_note_on_wave": bool(
+                            getattr(lane, "show_note_on_wave", False)
+                        ),
                         "marker_shape": lane.marker_shape,
                         "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
@@ -666,6 +672,8 @@ def project_from_dict(
                     midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
                     midi_note=int(lane.get("midi_note", 0) or 0),
                     pause_on_mark=bool(lane.get("pause_on_mark", False)),
+                    prompt_note_on_mark=bool(lane.get("prompt_note_on_mark", False)),
+                    show_note_on_wave=bool(lane.get("show_note_on_wave", False)),
                     marker_shape=shape,
                     show_row_color=bool(lane.get("show_row_color", True)),
                 )

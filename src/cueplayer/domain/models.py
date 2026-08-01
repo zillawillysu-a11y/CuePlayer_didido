@@ -106,6 +106,10 @@ class MarkLane:
     midi_note: int = 0
     # When True, placing a mark on this lane (shortcut or click) pauses playback.
     pause_on_mark: bool = False
+    # When True, after placing a mark, open a dialog to type the Note.
+    prompt_note_on_mark: bool = False
+    # When True, draw the Note text next to the mark line on the waveform.
+    show_note_on_wave: bool = False
     marker_shape: MarkerShape = "triangle_up"
     # Tinted row in the timeline (right of the header); header stays neutral.
     # Deprecated — track tint is project-global (show_mark_track_colors).

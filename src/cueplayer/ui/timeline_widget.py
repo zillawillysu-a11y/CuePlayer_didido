@@ -4065,6 +4065,21 @@ class TimelineWidget(QWidget):
                 else:
                     painter.setPen(self._mark_overlay_pen(color))
                 painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
+                # Optional Note label at the top of the stem (right of the line).
+                if lane is not None and bool(getattr(lane, "show_note_on_wave", False)):
+                    note = (mark.display_name or "").strip()
+                    if note:
+                        label_color = color.lighter(140) if (selected or hovered) else color
+                        painter.setPen(label_color)
+                        font = painter.font()
+                        font.setBold(True)
+                        font.setPointSize(max(8, min(11, font.pointSize() or 9)))
+                        painter.setFont(font)
+                        fm = painter.fontMetrics()
+                        # Cap width so dense marks stay readable.
+                        elided = fm.elidedText(note, Qt.TextElideMode.ElideRight, 140)
+                        text_y = self._ruler_height + fm.ascent() + 2
+                        painter.drawText(QPointF(x + 5, text_y), elided)
 
             if not lane_shapes:
                 continue

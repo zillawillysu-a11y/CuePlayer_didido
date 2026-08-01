@@ -7269,6 +7269,25 @@ class MainWindow(QMainWindow):
         if bool(getattr(lane, "pause_on_mark", False)) and self.engine.playing:
             self.engine.pause()
             paused = True
+        if bool(getattr(lane, "prompt_note_on_mark", False)):
+            text, ok = QInputDialog.getText(
+                self,
+                "Mark Note",
+                f"Note for {lane.name}:",
+                text=mark.display_name,
+            )
+            if ok:
+                new_name = text.strip()
+                if new_name != mark.display_name:
+                    old_name = mark.display_name
+                    mark.display_name = new_name
+                    self._push_song_undo(
+                        RenameMarkCommand(
+                            mark_id=mark.id, old_name=old_name, new_name=new_name
+                        )
+                    )
+                    self._mark_dirty()
+                    self._refresh_marks_ui()
         lat_ms = self.engine.sync_offset_ms()
         self.status.showMessage(
             f"Marked: {lane.name} @ {mark.time_seconds:.3f}s"
