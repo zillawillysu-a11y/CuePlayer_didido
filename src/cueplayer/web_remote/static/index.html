@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#050505" />
@@ -10,71 +10,98 @@
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <div class="atmosphere" aria-hidden="true"></div>
-  <header class="top">
-    <div class="brand">CuePlayer</div>
-    <div class="project" id="projectName">—</div>
-    <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
-  </header>
+  <div class="app">
+    <header class="top">
+      <div class="brand">CuePlayer</div>
+      <div class="song-chip" id="songTitle">—</div>
+      <button type="button" class="ghost" id="markMgrBtn">Marks</button>
+      <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
+    </header>
 
-  <main class="layout">
-    <section class="panel setlist" aria-label="Setlist">
-      <h2>Setlist</h2>
-      <div id="songList" class="song-list"></div>
-    </section>
+    <main class="layout">
+      <section class="panel setlist" aria-label="Setlist">
+        <h2>Setlist</h2>
+        <div id="songList" class="song-list"></div>
+      </section>
 
-    <section class="panel stage" aria-label="Transport">
-      <div class="song-title" id="songTitle">No song</div>
-      <div class="clock-row">
-        <div class="clock" id="clock">00:00:00.00</div>
-        <div class="duration" id="duration">/ 00:00:00.00</div>
-      </div>
-      <div class="timecode" id="timecode">01:00:00:00</div>
-
-      <div class="now-grid">
-        <div class="now-card primary">
-          <div class="now-label">NOW</div>
-          <div class="now-body" id="nowPrimary">—</div>
+      <section class="panel stage" aria-label="Monitor">
+        <div class="monitor-clock">
+          <div class="clock" id="clock">00:00.000</div>
+          <div class="duration" id="duration">/ 00:00.000</div>
+          <div class="tc-status" id="tcStatus">TC off</div>
+          <div class="timecode" id="timecode">—</div>
+          <div class="toggles" id="toggles" role="group" aria-label="Output toggles">
+            <button type="button" class="chip" data-key="translate">TRANS</button>
+            <button type="button" class="chip" data-key="note">Note</button>
+            <button type="button" class="chip" data-key="mtc">MTC</button>
+            <button type="button" class="chip" data-key="ltc">LTC</button>
+          </div>
         </div>
-        <div class="now-card secondary">
-          <div class="now-label">BUTTON</div>
-          <div class="now-body" id="nowSecondary">—</div>
+
+        <div class="now-stack">
+          <div class="now-card primary">
+            <div class="now-label" id="nowPrimaryLabel">PRIMARY</div>
+            <div class="now-body" id="nowPrimary">—</div>
+          </div>
+          <div class="now-card secondary">
+            <div class="now-label" id="nowSecondaryLabel">SECONDARY</div>
+            <div class="now-body" id="nowSecondary">—</div>
+          </div>
         </div>
-      </div>
 
-      <div class="wave-wrap" id="waveWrap" aria-label="Waveform">
-        <canvas id="waveCanvas" width="900" height="120"></canvas>
-        <div class="wave-empty" id="waveEmpty">No waveform yet</div>
-      </div>
+        <div class="wave-toolbar">
+          <button type="button" class="ghost tiny" id="zoomOut" title="Zoom out">−</button>
+          <button type="button" class="ghost tiny" id="zoomFit" title="Fit song">Fit</button>
+          <button type="button" class="ghost tiny" id="zoomIn" title="Zoom in">+</button>
+          <span class="wave-range" id="waveRange"></span>
+        </div>
+        <div class="wave-wrap" id="waveWrap" aria-label="Waveform">
+          <canvas id="waveCanvas" width="900" height="120"></canvas>
+          <div class="wave-empty" id="waveEmpty">No waveform yet</div>
+        </div>
 
-      <div class="transport" role="group" aria-label="Transport">
-        <button type="button" class="icon-btn" id="prevSong" aria-label="Previous song" title="Previous song">
-          <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M20 7 L11 15 L20 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="playBtn" aria-label="Play" title="Play">
-          <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M12 7 L12 23 L25 15 Z" fill="currentColor"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="pauseBtn" aria-label="Pause" title="Pause">
-          <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/><rect x="18.5" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="stopBtn" aria-label="Stop" title="Stop">
-          <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="8" width="14" height="14" rx="1.5" fill="currentColor"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="nextSong" aria-label="Next song" title="Next song">
-          <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M14 7 L23 15 L14 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-        </button>
-      </div>
+        <div class="transport" role="group" aria-label="Transport">
+          <button type="button" class="icon-btn" id="prevSong" aria-label="Previous song" title="Previous song">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M20 7 L11 15 L20 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="playBtn" aria-label="Play" title="Play">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M12 7 L12 23 L25 15 Z" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="pauseBtn" aria-label="Pause" title="Pause">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/><rect x="18.5" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="stopBtn" aria-label="Stop" title="Stop">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="8" width="14" height="14" rx="1.5" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="nextSong" aria-label="Next song" title="Next song">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M14 7 L23 15 L14 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
 
-      <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
-    </section>
+        <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
+      </section>
 
-    <section class="panel cues" aria-label="Cue list">
-      <h2>Cues</h2>
-      <div id="cueList" class="cue-list"></div>
-    </section>
-  </main>
+      <section class="panel cues" aria-label="Cue list">
+        <h2>Cue List</h2>
+        <div class="cue-head">
+          <span>Time</span><span>Type</span><span>Cue</span><span>Note</span>
+        </div>
+        <div id="cueList" class="cue-list"></div>
+      </section>
+    </main>
+  </div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <dialog id="markMgrDialog">
+    <form method="dialog" class="mgr-form">
+      <header>
+        <h3>Mark Manager</h3>
+        <button type="button" class="ghost" id="markMgrClose" value="cancel">Done</button>
+      </header>
+      <div id="markMgrBody" class="mgr-body"></div>
+    </form>
+  </dialog>
 
   <dialog id="authDialog">
     <form method="dialog" class="auth-form">

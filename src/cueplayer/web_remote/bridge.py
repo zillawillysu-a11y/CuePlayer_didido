@@ -212,7 +212,147 @@ class WebRemoteBridge(QObject):
             return self._step_song(-1)
         if op == "add_mark":
             return self._add_mark(command)
+        if op == "set_output_toggle":
+            return self._set_output_toggle(command)
+        if op == "toggle_folder":
+            return self._toggle_folder(command)
+        if op == "update_lane":
+            return self._update_lane(command)
         return {"ok": False, "error": f"unknown_op:{op}"}
+
+    def _set_output_toggle(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        key = str(command.get("key") or "").strip().lower()
+        enabled = bool(command.get("enabled"))
+        ao = host.project.audio_output
+        if key == "translate":
+            ao.ltc_to_mtc_translate = enabled
+        elif key == "mtc":
+            ao.mtc_enabled = enabled
+        elif key == "ltc":
+            ao.ltc_enabled = enabled
+        elif key == "note":
+            ao.midi_cue_notes_enabled = enabled
+        else:
+            return {"ok": False, "error": "bad_toggle_key"}
+
+        if enabled and key in ("translate", "mtc", "note"):
+            ao.midi_enabled = True
+        elif not (
+            ao.mtc_enabled
+            or ao.midi_cue_notes_enabled
+            or getattr(ao, "ltc_to_mtc_translate", False)
+        ):
+            ao.midi_enabled = False
+
+        if ao.midi_enabled and not ao.midi_port_name:
+            # Revert MIDI-dependent toggles when no port is configured.
+            if key in ("translate", "mtc", "note"):
+                if key == "translate":
+                    ao.ltc_to_mtc_translate = False
+                elif key == "mtc":
+                    ao.mtc_enabled = False
+                else:
+                    ao.midi_cue_notes_enabled = False
+                if not (
+                    ao.mtc_enabled
+                    or ao.midi_cue_notes_enabled
+                    or getattr(ao, "ltc_to_mtc_translate", False)
+                ):
+                    ao.midi_enabled = False
+            return {"ok": False, "error": "midi_port_required"}
+
+        from cueplayer.persistence.audio_prefs import save_global_audio_output
+
+        warning = host.engine.apply_audio_settings(ao)
+        host._refresh_timecode_status()
+        host._refresh_output_timecode_clock()
+        if hasattr(host, "monitor"):
+            host.monitor.sync_output_quick_toggles(ao)
+        save_global_audio_output(ao)
+        host._mark_dirty()
+        return {
+            "ok": True,
+            "op": "set_output_toggle",
+            "key": key,
+            "enabled": enabled,
+            "warning": warning or "",
+        }
+
+    def _toggle_folder(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        cat_id = str(command.get("category_id") or command.get("id") or "")
+        category = host.project.setlist_category_by_id(cat_id)
+        if category is None:
+            return {"ok": False, "error": "folder_not_found"}
+        if "collapsed" in command:
+            category.collapsed = bool(command.get("collapsed"))
+        else:
+            category.collapsed = not bool(category.collapsed)
+        # Keep Setlist UI in sync on the PC.
+        try:
+            host._rebuild_song_list(select_indexes=host._selected_song_indexes() or None)
+        except Exception:  # noqa: BLE001
+            pass
+        host._mark_dirty()
+        return {
+            "ok": True,
+            "op": "toggle_folder",
+            "category_id": cat_id,
+            "collapsed": bool(category.collapsed),
+        }
+
+    def _update_lane(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        song = host.current_song
+        try:
+            lane_index = int(command.get("lane_index"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "bad_lane_index"}
+        lane = song.lane_by_index(lane_index)
+        if lane is None:
+            return {"ok": False, "error": "lane_not_found"}
+
+        if "name" in command:
+            name = str(command.get("name") or "").strip()
+            if name:
+                lane.name = name
+        if "visible" in command:
+            lane.visible = bool(command.get("visible"))
+        if "color" in command:
+            color = str(command.get("color") or "").strip()
+            if color:
+                lane.color = color
+        if "shortcut" in command:
+            shortcut = str(command.get("shortcut") or "").strip()
+            if shortcut in ("", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                # Clear duplicate shortcuts.
+                if shortcut:
+                    for other in song.mark_lanes:
+                        if other is not lane and other.shortcut == shortcut:
+                            other.shortcut = ""
+                lane.shortcut = shortcut
+        if "now" in command:
+            role = str(command.get("now") or "off").strip().lower()
+            song.now_lanes_configured = True
+            primary = [i for i in song.now_primary_lanes if i != lane_index]
+            secondary = [i for i in song.now_secondary_lanes if i != lane_index]
+            if role == "primary":
+                primary.append(lane_index)
+            elif role == "secondary":
+                secondary.append(lane_index)
+                song.now_secondary_enabled = True
+            song.now_primary_lanes = sorted(set(primary)) or (
+                [song.mark_lanes[0].index] if song.mark_lanes else []
+            )
+            song.now_secondary_lanes = sorted(set(secondary))
+
+        host._rebuild_digit_shortcuts()
+        host.timeline.apply_song_display_settings()
+        host.monitor.apply_now_display_settings()
+        host._refresh_marks_ui()
+        host._mark_dirty()
+        return {"ok": True, "op": "update_lane", "lane_index": lane_index}
 
     def _select_song(self, command: dict[str, Any]) -> dict[str, Any]:
         host = self._host

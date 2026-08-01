@@ -2,12 +2,15 @@
   const TOKEN_KEY = "cueplayer_web_remote_token";
 
   const els = {
-    projectName: document.getElementById("projectName"),
     songTitle: document.getElementById("songTitle"),
     clock: document.getElementById("clock"),
     duration: document.getElementById("duration"),
+    tcStatus: document.getElementById("tcStatus"),
     timecode: document.getElementById("timecode"),
+    toggles: document.getElementById("toggles"),
+    nowPrimaryLabel: document.getElementById("nowPrimaryLabel"),
     nowPrimary: document.getElementById("nowPrimary"),
+    nowSecondaryLabel: document.getElementById("nowSecondaryLabel"),
     nowSecondary: document.getElementById("nowSecondary"),
     songList: document.getElementById("songList"),
     cueList: document.getElementById("cueList"),
@@ -20,17 +23,25 @@
     waveWrap: document.getElementById("waveWrap"),
     waveCanvas: document.getElementById("waveCanvas"),
     waveEmpty: document.getElementById("waveEmpty"),
+    waveRange: document.getElementById("waveRange"),
+    zoomIn: document.getElementById("zoomIn"),
+    zoomOut: document.getElementById("zoomOut"),
+    zoomFit: document.getElementById("zoomFit"),
     toast: document.getElementById("toast"),
     authBtn: document.getElementById("authBtn"),
     authDialog: document.getElementById("authDialog"),
     passwordInput: document.getElementById("passwordInput"),
     savePassword: document.getElementById("savePassword"),
+    markMgrBtn: document.getElementById("markMgrBtn"),
+    markMgrDialog: document.getElementById("markMgrDialog"),
+    markMgrClose: document.getElementById("markMgrClose"),
+    markMgrBody: document.getElementById("markMgrBody"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let scrubbing = false;
+  let lastSetlistSig = "";
   let lastMarksSig = "";
-  let lastSongsSig = "";
   let lastLanesSig = "";
   let failCount = 0;
   let lastSongId = "";
@@ -39,8 +50,8 @@
   let stateCache = null;
   let playheadColor = "#3dd68c";
   let waveColor = "#616161";
+  let tcAccent = "#3dd68c";
 
-  // Smooth local playhead (rAF) — corrected by /api/clock + /api/state.
   let syncPlaying = false;
   let syncPos = 0;
   let syncDur = 1;
@@ -51,14 +62,19 @@
   let cueFollowSuspended = false;
   let cueFollowLeftViewport = false;
   let cueUserScrolling = false;
-  let rafId = 0;
   let lastWaveDrawMs = 0;
+
+  // Wave view window (seconds).
+  let viewStart = 0;
+  let viewEnd = 1;
+  let panning = null;
+  let pinching = null;
 
   function headers(json) {
     const h = {};
     if (json) h["Content-Type"] = "application/json";
     if (token) {
-      h["Authorization"] = `Bearer ${token}`;
+      h.Authorization = `Bearer ${token}`;
       h["X-CuePlayer-Token"] = token;
     }
     return h;
@@ -75,9 +91,7 @@
       throw new Error("unauthorized");
     }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || `http_${res.status}`);
-    }
+    if (!res.ok) throw new Error(data.error || `http_${res.status}`);
     return data;
   }
 
@@ -85,26 +99,21 @@
     els.toast.hidden = false;
     els.toast.textContent = msg;
     clearTimeout(showToast._t);
-    showToast._t = setTimeout(() => {
-      els.toast.hidden = true;
-    }, 2200);
+    showToast._t = setTimeout(() => { els.toast.hidden = true; }, 2200);
   }
 
   function openAuth() {
     els.passwordInput.value = token;
-    if (typeof els.authDialog.showModal === "function") {
-      els.authDialog.showModal();
-    }
+    if (els.authDialog.showModal) els.authDialog.showModal();
   }
 
   function formatClock(seconds) {
-    const totalCs = Math.max(0, Math.round(Number(seconds) * 100));
-    const hours = Math.floor(totalCs / 360000);
-    const minutes = Math.floor((totalCs % 360000) / 6000);
-    const secs = Math.floor((totalCs % 6000) / 100);
-    const cs = totalCs % 100;
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${pad(hours)}:${pad(minutes)}:${pad(secs)}.${pad(cs)}`;
+    const totalMs = Math.max(0, Math.round(Number(seconds) * 1000));
+    const mins = Math.floor(totalMs / 60000);
+    const rem = totalMs % 60000;
+    const secs = Math.floor(rem / 1000);
+    const ms = rem % 1000;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
   }
 
   function livePosition() {
@@ -115,7 +124,6 @@
   }
 
   function syncFromServer(position, duration, playing, songId) {
-    const nextPlaying = Boolean(playing);
     const nextPos = Math.max(0, Number(position) || 0);
     const nextDur = Math.max(0.1, Number(duration) || 0.1);
     const songChanged = songId && songId !== syncSongId;
@@ -124,48 +132,72 @@
       cueFollowSuspended = false;
       cueFollowLeftViewport = false;
       lastPlayheadCueId = "";
+      viewStart = 0;
+      viewEnd = nextDur;
     }
-    // Large seek jump → snap + resume cue follow.
     if (Math.abs(nextPos - livePosition()) > 0.45) {
       cueFollowSuspended = false;
       cueFollowLeftViewport = false;
     }
-    syncPlaying = nextPlaying;
+    syncPlaying = Boolean(playing);
     syncPos = nextPos;
     syncDur = nextDur;
     syncEpochMs = performance.now();
+    if (viewEnd <= viewStart + 0.05 || viewEnd > nextDur + 0.5) {
+      viewStart = 0;
+      viewEnd = nextDur;
+    } else {
+      viewEnd = Math.min(viewEnd, nextDur);
+      viewStart = Math.max(0, Math.min(viewStart, viewEnd - 0.05));
+    }
   }
 
-  function formatNow(items) {
+  function formatNowBody(items) {
     if (!items || !items.length) return "—";
-    return items
-      .map((m) => {
-        const bits = [];
-        if (m.main_cue_id) bits.push(`Cue ${m.main_cue_id}`);
-        bits.push(m.lane_name || "");
-        if (m.display_name) bits.push(m.display_name);
-        return bits.filter(Boolean).join(" · ");
-      })
-      .join("\n");
+    return items.map((m) => {
+      const bits = [];
+      bits.push(m.lane_name || "");
+      if (m.main_cue_id) bits.push(`Cue ${m.main_cue_id}`);
+      if (m.display_name) bits.push(m.display_name);
+      return bits.filter(Boolean).join(" · ");
+    }).join("\n");
   }
 
-  function renderSongs(songs) {
-    const sig = JSON.stringify(songs.map((s) => [s.id, s.name, s.active, s.setlist_number]));
-    if (sig === lastSongsSig) return;
-    lastSongsSig = sig;
+  function renderSetlist(rows) {
+    const sig = JSON.stringify(rows);
+    if (sig === lastSetlistSig) return;
+    lastSetlistSig = sig;
     els.songList.innerHTML = "";
-    if (!songs.length) {
+    if (!rows.length) {
       els.songList.textContent = "Empty setlist";
       return;
     }
-    for (const s of songs) {
+    for (const row of rows) {
+      if (row.kind === "folder") {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "folder-item";
+        btn.innerHTML = `<span class="chev"></span><span class="name"></span>`;
+        btn.querySelector(".chev").textContent = row.collapsed ? "▸" : "▾";
+        btn.querySelector(".name").textContent = row.name || "Folder";
+        btn.addEventListener("click", () => {
+          command({
+            op: "toggle_folder",
+            category_id: row.id,
+            collapsed: !row.collapsed,
+          }).catch((e) => showToast(String(e.message || e)));
+        });
+        els.songList.appendChild(btn);
+        continue;
+      }
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "song-item" + (s.active ? " active" : "");
-      btn.innerHTML = `<span class="num">${Number(s.setlist_number)}</span><span class="name"></span>`;
-      btn.querySelector(".name").textContent = s.name;
+      btn.className = "song-item" + (row.active ? " active" : "") + (row.category_id ? " nested" : "");
+      btn.innerHTML = `<span class="num"></span><span class="name"></span>`;
+      btn.querySelector(".num").textContent = Number(row.setlist_number);
+      btn.querySelector(".name").textContent = row.name;
       btn.addEventListener("click", () => {
-        command({ op: "select_song", index: s.index }).catch(() => {});
+        command({ op: "select_song", index: row.index }).catch(() => {});
       });
       els.songList.appendChild(btn);
     }
@@ -186,9 +218,7 @@
   }
 
   function renderCues(marks) {
-    const sig = JSON.stringify(
-      marks.map((m) => [m.id, m.display_name, m.main_cue_id, m.time_display || m.time_seconds, m.color])
-    );
+    const sig = JSON.stringify(marks.map((m) => [m.id, m.display_name, m.main_cue_id, m.time_display, m.color, m.lane_name]));
     if (sig === lastMarksSig) return;
     lastMarksSig = sig;
     els.cueList.innerHTML = "";
@@ -202,16 +232,13 @@
       btn.type = "button";
       btn.className = "cue-item";
       btn.dataset.markId = m.id;
-      btn.dataset.time = String(m.time_seconds);
-      const time = m.time_display || formatClock(m.time_seconds);
-      const cue = m.main_cue_id ? `Cue ${m.main_cue_id}` : "";
-      btn.innerHTML =
-        `<span class="meta"></span>` +
-        `<span class="lane"></span>` +
-        `<span class="note"></span>`;
-      btn.querySelector(".meta").textContent = time;
-      btn.querySelector(".lane").textContent = [cue, m.lane_name].filter(Boolean).join(" · ");
-      btn.querySelector(".note").textContent = m.display_name || "(no note)";
+      btn.innerHTML = `<span class="time"></span><span class="type"></span><span class="cue-id"></span><span class="note"></span>`;
+      btn.querySelector(".time").textContent = m.time_display || formatClock(m.time_seconds);
+      const typeEl = btn.querySelector(".type");
+      typeEl.textContent = m.lane_name || "";
+      typeEl.style.color = m.color || "#aaa";
+      btn.querySelector(".cue-id").textContent = m.main_cue_id || "";
+      btn.querySelector(".note").textContent = m.display_name || "";
       btn.style.borderLeft = `3px solid ${m.color || "#444"}`;
       btn.addEventListener("click", () => {
         command({ op: "seek_mark", mark_id: m.id }).catch(() => {});
@@ -256,7 +283,8 @@
     const changed = id !== lastPlayheadCueId;
     lastPlayheadCueId = id;
     if (!cueFollowSuspended && (changed || forceScroll)) {
-      currentEl.scrollIntoView({ block: "nearest", behavior: changed ? "smooth" : "auto" });
+      // nearest keeps the page from jumping; only the cue list scrolls.
+      currentEl.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
     }
   }
 
@@ -291,6 +319,85 @@
     }
   }
 
+  function renderToggles(toggles) {
+    const map = toggles || {};
+    for (const chip of els.toggles.querySelectorAll(".chip")) {
+      const key = chip.dataset.key;
+      chip.classList.toggle("on", Boolean(map[key]));
+    }
+  }
+
+  function renderMarkManager(lanes) {
+    els.markMgrBody.innerHTML = "";
+    for (const lane of lanes || []) {
+      const row = document.createElement("div");
+      row.className = "mgr-row";
+      row.innerHTML =
+        `<span class="mgr-swatch"></span>` +
+        `<input type="text" class="mgr-name" />` +
+        `<label><input type="checkbox" class="mgr-vis" /> Eye</label>` +
+        `<select class="mgr-now"><option value="off">Off</option><option value="primary">Primary</option><option value="secondary">Secondary</option></select>` +
+        `<select class="mgr-key"><option value="">—</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>`;
+      row.querySelector(".mgr-swatch").style.background = lane.color || "#666";
+      const name = row.querySelector(".mgr-name");
+      name.value = lane.name || "";
+      const vis = row.querySelector(".mgr-vis");
+      vis.checked = Boolean(lane.visible);
+      const now = row.querySelector(".mgr-now");
+      now.value = lane.now || "off";
+      const key = row.querySelector(".mgr-key");
+      key.value = lane.shortcut || "";
+
+      const save = () => {
+        command({
+          op: "update_lane",
+          lane_index: lane.index,
+          name: name.value,
+          visible: vis.checked,
+          now: now.value,
+          shortcut: key.value,
+        }).catch((e) => showToast(String(e.message || e)));
+      };
+      name.addEventListener("change", save);
+      vis.addEventListener("change", save);
+      now.addEventListener("change", save);
+      key.addEventListener("change", save);
+      els.markMgrBody.appendChild(row);
+    }
+  }
+
+  function viewSpan() {
+    return Math.max(0.05, viewEnd - viewStart);
+  }
+
+  function clampView() {
+    const span = viewSpan();
+    if (span >= syncDur) {
+      viewStart = 0;
+      viewEnd = syncDur;
+      return;
+    }
+    if (viewStart < 0) {
+      viewStart = 0;
+      viewEnd = span;
+    }
+    if (viewEnd > syncDur) {
+      viewEnd = syncDur;
+      viewStart = Math.max(0, syncDur - span);
+    }
+  }
+
+  function zoomAt(factor, anchorSec) {
+    const span = viewSpan();
+    const next = Math.min(syncDur, Math.max(0.5, span * factor));
+    const anchor = anchorSec == null ? (viewStart + viewEnd) / 2 : anchorSec;
+    const ratio = span > 1e-6 ? (anchor - viewStart) / span : 0.5;
+    viewStart = anchor - next * ratio;
+    viewEnd = viewStart + next;
+    clampView();
+    drawWave(true);
+  }
+
   function resizeCanvas() {
     const canvas = els.waveCanvas;
     const rect = els.waveWrap.getBoundingClientRect();
@@ -307,7 +414,7 @@
 
   function drawWave(force) {
     const now = performance.now();
-    if (!force && !scrubbing && now - lastWaveDrawMs < 32) return;
+    if (!force && !scrubbing && !panning && now - lastWaveDrawMs < 32) return;
     lastWaveDrawMs = now;
     const canvas = els.waveCanvas;
     const ctx = canvas.getContext("2d");
@@ -321,16 +428,25 @@
 
     const ready = wave && wave.ready && wave.mins && wave.mins.length;
     els.waveEmpty.classList.toggle("hidden", Boolean(ready));
+    els.waveRange.textContent = `${formatClock(viewStart)} – ${formatClock(viewEnd)}`;
     if (!ready) return;
 
     const mid = h * 0.5;
     const amp = h * 0.42;
     const n = wave.mins.length;
+    const dur = Math.max(0.1, Number(wave.duration) || syncDur);
+    const v0 = viewStart;
+    const v1 = Math.max(v0 + 0.05, viewEnd);
+    const i0 = Math.max(0, Math.floor((v0 / dur) * n));
+    const i1 = Math.min(n, Math.ceil((v1 / dur) * n));
+
     ctx.fillStyle = waveColor || "#616161";
     ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const x0 = (i / n) * w;
-      const x1 = ((i + 1) / n) * w;
+    for (let i = i0; i < i1; i++) {
+      const t0 = (i / n) * dur;
+      const t1 = ((i + 1) / n) * dur;
+      const x0 = ((t0 - v0) / (v1 - v0)) * w;
+      const x1 = ((t1 - v0) / (v1 - v0)) * w;
       const yMax = mid - Number(wave.maxs[i]) * amp;
       const yMin = mid - Number(wave.mins[i]) * amp;
       const top = Math.min(yMax, yMin);
@@ -340,11 +456,12 @@
     ctx.fill();
 
     const marks = (stateCache && stateCache.marks) || [];
-    const dur = Math.max(0.1, syncDur || Number((stateCache && stateCache.duration) || wave.duration || 1));
     for (const m of marks) {
-      const x = (Number(m.time_seconds) / dur) * w;
+      const t = Number(m.time_seconds);
+      if (t < v0 || t > v1) continue;
+      const x = ((t - v0) / (v1 - v0)) * w;
       ctx.strokeStyle = m.color || "#888";
-      ctx.globalAlpha = 0.85;
+      ctx.globalAlpha = 0.9;
       ctx.lineWidth = Math.max(1, w / 900);
       ctx.beginPath();
       ctx.moveTo(x, 0);
@@ -353,11 +470,10 @@
       ctx.globalAlpha = 1;
     }
 
-    let ratio = null;
-    if (scrubbing && scrubbing.ratio != null) ratio = scrubbing.ratio;
-    else ratio = livePosition() / dur;
-    if (ratio != null) {
-      const x = Math.min(w - 1, Math.max(0, ratio * w));
+    let pos = livePosition();
+    if (scrubbing && scrubbing.seconds != null) pos = scrubbing.seconds;
+    if (pos >= v0 && pos <= v1) {
+      const x = ((pos - v0) / (v1 - v0)) * w;
       ctx.strokeStyle = playheadColor || "#3dd68c";
       ctx.lineWidth = Math.max(2, w / 450);
       ctx.beginPath();
@@ -375,8 +491,8 @@
       els.clock.textContent = clock;
     }
     updateCueFollow(pos, false);
-    if (syncPlaying || scrubbing) drawWave(false);
-    rafId = requestAnimationFrame(tickFrame);
+    if (syncPlaying || scrubbing || panning) drawWave(false);
+    requestAnimationFrame(tickFrame);
   }
 
   async function ensureWaveform(songId) {
@@ -401,7 +517,7 @@
       }
       drawWave(true);
     } catch (_) {
-      /* keep previous */
+      /* keep */
     } finally {
       waveLoading = false;
     }
@@ -409,23 +525,29 @@
 
   function applyState(state) {
     stateCache = state;
-    els.projectName.textContent = state.project_name || "—";
     const song = state.song || {};
-    els.songTitle.textContent = song.in_setlist === false || song.index < 0
-      ? "(no song)"
-      : song.name || "—";
+    els.songTitle.textContent = song.in_setlist === false || song.index < 0 ? "(no song)" : (song.name || "—");
     syncFromServer(state.position, state.duration, state.playing, song.id || "");
     els.duration.textContent = `/ ${state.duration_clock || formatClock(state.duration)}`;
+    els.tcStatus.textContent = state.tc_status || "TC off";
     els.timecode.textContent = state.timecode || "—";
-    els.nowPrimary.textContent = formatNow(state.now && state.now.primary);
-    els.nowSecondary.textContent = formatNow(state.now && state.now.secondary);
+    tcAccent = state.tc_accent || state.playhead_color || "#3dd68c";
+    document.documentElement.style.setProperty("--ok", tcAccent);
+    els.timecode.style.color = tcAccent;
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
 
+    const primary = (state.now && state.now.primary) || [];
+    const secondary = (state.now && state.now.secondary) || [];
+    els.nowPrimaryLabel.textContent = primary[0] ? `PRIMARY · ${primary[0].lane_name}` : "PRIMARY";
+    els.nowPrimary.textContent = formatNowBody(primary);
+    els.nowSecondaryLabel.textContent = secondary[0] ? `SECONDARY · ${secondary[0].lane_name}` : "SECONDARY";
+    els.nowSecondary.textContent = formatNowBody(secondary);
+
+    renderToggles(state.output_toggles);
     const playing = Boolean(state.playing);
     els.playBtn.disabled = playing;
     els.pauseBtn.disabled = !playing;
-    els.playBtn.classList.toggle("active", false);
     els.pauseBtn.classList.toggle("active", playing);
 
     const songId = song.id || "";
@@ -437,15 +559,15 @@
       ensureWaveform(songId);
     }
 
-    renderSongs(state.songs || []);
+    renderSetlist(state.setlist || []);
     renderCues(cueListMarks(state));
     renderMarkButtons(state.lanes || []);
+    if (els.markMgrDialog.open) renderMarkManager(state.lanes || []);
     drawWave(true);
   }
 
   async function command(body) {
     const result = await api("/api/command", { method: "POST", body: JSON.stringify(body) });
-    // Optimistic local sync for transport so the clock does not wait for poll.
     if (body.op === "play") {
       syncPlaying = true;
       syncEpochMs = performance.now();
@@ -471,15 +593,14 @@
       syncPos = Number(body.seconds);
       syncEpochMs = performance.now();
       cueFollowSuspended = false;
-    } else if (body.op === "seek_mark") {
-      cueFollowSuspended = false;
+    } else if (body.op === "seek_mark" || body.op === "toggle_folder" || body.op === "update_lane" || body.op === "set_output_toggle") {
+      // Full state poll will refresh; nudge a quick refresh.
+      api("/api/state").then(applyState).catch(() => {});
     } else if (body.op === "toggle") {
       if (syncPlaying) {
         syncPos = livePosition();
         syncPlaying = false;
-      } else {
-        syncPlaying = true;
-      }
+      } else syncPlaying = true;
       syncEpochMs = performance.now();
     }
     return result;
@@ -502,95 +623,127 @@
 
   async function pollClock() {
     try {
-      if (token !== undefined) {
-        const clock = await api("/api/clock");
-        if (clock && clock.ok !== false) {
-          if (clock.song_id && lastSongId && clock.song_id !== lastSongId) {
-            // Full state will catch song switch.
-          } else {
-            syncFromServer(clock.position, clock.duration, clock.playing, clock.song_id || syncSongId);
-            const playing = Boolean(clock.playing);
-            els.playBtn.disabled = playing;
-            els.pauseBtn.disabled = !playing;
-            els.pauseBtn.classList.toggle("active", playing);
-          }
-        }
+      const clock = await api("/api/clock");
+      if (clock && clock.ok !== false) {
+        syncFromServer(clock.position, clock.duration, clock.playing, clock.song_id || syncSongId);
+        const playing = Boolean(clock.playing);
+        els.playBtn.disabled = playing;
+        els.pauseBtn.disabled = !playing;
+        els.pauseBtn.classList.toggle("active", playing);
       }
     } catch (_) {
-      /* full state poll handles errors */
+      /* ignore */
     } finally {
       setTimeout(pollClock, syncPlaying ? 100 : 400);
     }
   }
 
-  function seekFromClientX(clientX) {
+  function timeFromClientX(clientX) {
     const rect = els.waveWrap.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
-    const dur = Math.max(0, syncDur);
-    return { seconds: ratio * dur, x: clientX - rect.left, ratio };
+    return viewStart + ratio * viewSpan();
   }
 
-  els.playBtn.addEventListener("click", () => {
-    command({ op: "play" }).catch(() => {});
-  });
-  els.pauseBtn.addEventListener("click", () => {
-    command({ op: "pause" }).catch(() => {});
-  });
-  els.stopBtn.addEventListener("click", () => {
-    command({ op: "stop" }).catch(() => {});
-  });
-  els.prevSong.addEventListener("click", () => {
-    command({ op: "prev_song" }).catch(() => {});
-  });
-  els.nextSong.addEventListener("click", () => {
-    command({ op: "next_song" }).catch(() => {});
+  els.playBtn.addEventListener("click", () => command({ op: "play" }).catch(() => {}));
+  els.pauseBtn.addEventListener("click", () => command({ op: "pause" }).catch(() => {}));
+  els.stopBtn.addEventListener("click", () => command({ op: "stop" }).catch(() => {}));
+  els.prevSong.addEventListener("click", () => command({ op: "prev_song" }).catch(() => {}));
+  els.nextSong.addEventListener("click", () => command({ op: "next_song" }).catch(() => {}));
+  els.zoomIn.addEventListener("click", () => zoomAt(0.7, livePosition()));
+  els.zoomOut.addEventListener("click", () => zoomAt(1.4, livePosition()));
+  els.zoomFit.addEventListener("click", () => {
+    viewStart = 0;
+    viewEnd = syncDur;
+    drawWave(true);
   });
 
-  function onWavePointerDown(ev) {
-    scrubbing = seekFromClientX(ev.clientX);
+  for (const chip of els.toggles.querySelectorAll(".chip")) {
+    chip.addEventListener("click", () => {
+      const key = chip.dataset.key;
+      const enabled = !chip.classList.contains("on");
+      command({ op: "set_output_toggle", key, enabled })
+        .then((r) => {
+          if (!r.ok) showToast(r.error === "midi_port_required" ? "Set MIDI port on PC first" : (r.error || "Toggle failed"));
+        })
+        .catch((e) => showToast(String(e.message || e)));
+    });
+  }
+
+  els.waveWrap.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType === "touch" && els.waveWrap.hasPointerCapture?.(ev.pointerId)) return;
+    scrubbing = { seconds: timeFromClientX(ev.clientX) };
+    panning = null;
     els.waveWrap.setPointerCapture(ev.pointerId);
     drawWave(true);
-  }
-  function onWavePointerMove(ev) {
+  });
+  els.waveWrap.addEventListener("pointermove", (ev) => {
+    if (scrubbing) {
+      scrubbing = { seconds: timeFromClientX(ev.clientX) };
+      drawWave(true);
+    }
+  });
+  els.waveWrap.addEventListener("pointerup", async (ev) => {
     if (!scrubbing) return;
-    scrubbing = seekFromClientX(ev.clientX);
-    drawWave(true);
-  }
-  async function onWavePointerUp(ev) {
-    if (!scrubbing) return;
-    const target = seekFromClientX(ev.clientX);
+    const seconds = timeFromClientX(ev.clientX);
     scrubbing = false;
-    try {
-      await command({ op: "seek", seconds: target.seconds });
-    } catch (_) {}
+    try { await command({ op: "seek", seconds }); } catch (_) {}
     drawWave(true);
-  }
-  els.waveWrap.addEventListener("pointerdown", onWavePointerDown);
-  els.waveWrap.addEventListener("pointermove", onWavePointerMove);
-  els.waveWrap.addEventListener("pointerup", onWavePointerUp);
+  });
   els.waveWrap.addEventListener("pointercancel", () => {
     scrubbing = false;
     drawWave(true);
   });
 
-  els.cueList.addEventListener(
-    "scroll",
-    () => {
-      if (cueUserScrolling) return;
-      cueUserScrolling = true;
-      cueFollowSuspended = true;
-      requestAnimationFrame(() => {
-        const current = els.cueList.querySelector(".cue-item.current");
-        if (current && !cueRowVisible(current)) cueFollowLeftViewport = true;
-        else if (current && cueRowVisible(current) && cueFollowLeftViewport) {
-          cueFollowSuspended = false;
-          cueFollowLeftViewport = false;
-        }
-        cueUserScrolling = false;
-      });
-    },
-    { passive: true }
-  );
+  els.waveWrap.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const anchor = timeFromClientX(ev.clientX);
+    zoomAt(ev.deltaY > 0 ? 1.2 : 0.8, anchor);
+  }, { passive: false });
+
+  els.waveWrap.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length === 2) {
+      const a = ev.touches[0];
+      const b = ev.touches[1];
+      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      pinching = { dist, span: viewSpan(), mid: (viewStart + viewEnd) / 2 };
+      scrubbing = false;
+    }
+  }, { passive: true });
+  els.waveWrap.addEventListener("touchmove", (ev) => {
+    if (!pinching || ev.touches.length !== 2) return;
+    const a = ev.touches[0];
+    const b = ev.touches[1];
+    const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    if (pinching.dist < 1) return;
+    const factor = pinching.dist / Math.max(1, dist);
+    const next = Math.min(syncDur, Math.max(0.5, pinching.span * factor));
+    viewStart = pinching.mid - next / 2;
+    viewEnd = pinching.mid + next / 2;
+    clampView();
+    drawWave(true);
+  }, { passive: true });
+  els.waveWrap.addEventListener("touchend", () => { pinching = null; });
+
+  els.cueList.addEventListener("scroll", () => {
+    if (cueUserScrolling) return;
+    cueUserScrolling = true;
+    cueFollowSuspended = true;
+    requestAnimationFrame(() => {
+      const current = els.cueList.querySelector(".cue-item.current");
+      if (current && !cueRowVisible(current)) cueFollowLeftViewport = true;
+      else if (current && cueRowVisible(current) && cueFollowLeftViewport) {
+        cueFollowSuspended = false;
+        cueFollowLeftViewport = false;
+      }
+      cueUserScrolling = false;
+    });
+  }, { passive: true });
+
+  els.markMgrBtn.addEventListener("click", () => {
+    renderMarkManager((stateCache && stateCache.lanes) || []);
+    if (els.markMgrDialog.showModal) els.markMgrDialog.showModal();
+  });
+  els.markMgrClose.addEventListener("click", () => els.markMgrDialog.close());
 
   els.authBtn.addEventListener("click", openAuth);
   els.savePassword.addEventListener("click", (ev) => {
@@ -604,7 +757,7 @@
   window.addEventListener("keydown", (ev) => {
     if (ev.repeat) return;
     const t = ev.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     if (ev.code === "Space") {
       ev.preventDefault();
       command({ op: "toggle" }).catch(() => {});
@@ -618,7 +771,7 @@
   });
 
   window.addEventListener("resize", () => drawWave(true));
-  rafId = requestAnimationFrame(tickFrame);
+  requestAnimationFrame(tickFrame);
   pollState();
   pollClock();
 })();

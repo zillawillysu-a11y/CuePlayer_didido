@@ -21,14 +21,15 @@ class _EngineView(Protocol):
     @property
     def duration(self) -> float: ...
 
+    def output_timecode_state(self, position_seconds: float | None = None) -> Any: ...
+
 
 def format_clock(seconds: float) -> str:
-    """Song-relative clock: ``HH:MM:SS.cc`` (centiseconds), e.g. ``00:00:07.07``."""
-    total_cs = int(round(max(0.0, float(seconds)) * 100.0))
-    hours, rem = divmod(total_cs, 360_000)
-    minutes, rem = divmod(rem, 6_000)
-    secs, cs = divmod(rem, 100)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{cs:02d}"
+    """Match desktop Cue Monitor ``format_time``: ``MM:SS.mmm``."""
+    total_ms = int(round(max(0.0, float(seconds)) * 1000.0))
+    mins, rem_ms = divmod(total_ms, 60_000)
+    secs, ms = divmod(rem_ms, 1000)
+    return f"{mins:02d}:{secs:02d}.{ms:03d}"
 
 
 def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
@@ -51,6 +52,15 @@ def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
 
 def _lane_map(song: Song) -> dict[int, MarkLane]:
     return {lane.index: lane for lane in song.mark_lanes}
+
+
+def _now_role(song: Song, lane_index: int) -> str:
+    primary, secondary = song.resolve_now_groups()
+    if lane_index in primary:
+        return "primary"
+    if lane_index in secondary:
+        return "secondary"
+    return "off"
 
 
 def _now_for_lanes(
@@ -80,6 +90,88 @@ def _now_for_lanes(
     return out
 
 
+def _setlist_rows(project: Project, active_song_id: str) -> list[dict[str, Any]]:
+    """Flat display rows: uncategorized songs, then folders + children."""
+    rows: list[dict[str, Any]] = []
+    for i, song in enumerate(project.songs):
+        if song.category_id:
+            continue
+        rows.append(
+            {
+                "kind": "song",
+                "index": i,
+                "id": song.id,
+                "name": song.name,
+                "setlist_number": float(song.setlist_number),
+                "category_id": "",
+                "active": song.id == active_song_id,
+            }
+        )
+    for category in project.setlist_categories:
+        rows.append(
+            {
+                "kind": "folder",
+                "id": category.id,
+                "name": category.name,
+                "collapsed": bool(category.collapsed),
+            }
+        )
+        if category.collapsed:
+            continue
+        for i, song in enumerate(project.songs):
+            if song.category_id != category.id:
+                continue
+            rows.append(
+                {
+                    "kind": "song",
+                    "index": i,
+                    "id": song.id,
+                    "name": song.name,
+                    "setlist_number": float(song.setlist_number),
+                    "category_id": category.id,
+                    "active": song.id == active_song_id,
+                }
+            )
+    return rows
+
+
+def _output_payload(project: Project, engine: _EngineView, position: float) -> dict[str, Any]:
+    ao = project.audio_output
+    try:
+        tc_state = engine.output_timecode_state(position)
+        outputs = list(getattr(tc_state, "outputs", ()) or ())
+        timecode = str(getattr(tc_state, "timecode", "—") or "—")
+        sending = bool(getattr(tc_state, "sending", False))
+    except Exception:  # noqa: BLE001
+        outputs = []
+        timecode = "—"
+        sending = False
+        if ao.ltc_enabled:
+            outputs.append("LTC")
+        if ao.midi_enabled and ao.mtc_enabled:
+            if ao.effective_ltc_to_mtc_translate():
+                outputs.append("LTC → MTC")
+            else:
+                outputs.append("MTC")
+        if ao.effective_midi_cue_notes():
+            outputs.append("Notes")
+    status = " · ".join(outputs) if outputs else "TC off"
+    accent = str(getattr(project, "output_timecode_clock_color", "") or "#3dd68c")
+    return {
+        "timecode": timecode,
+        "status": status,
+        "outputs": outputs,
+        "sending": sending,
+        "accent": accent,
+        "toggles": {
+            "translate": bool(ao.ltc_to_mtc_translate),
+            "note": bool(ao.midi_cue_notes_enabled),
+            "mtc": bool(ao.mtc_enabled),
+            "ltc": bool(ao.ltc_enabled),
+        },
+    }
+
+
 def build_state(
     *,
     project: Project,
@@ -92,22 +184,12 @@ def build_state(
     except ValueError:
         song_index = -1
 
-    categories = {c.id: c.name for c in project.setlist_categories}
-    song_rows: list[dict[str, Any]] = []
-    for i, s in enumerate(songs):
-        song_rows.append(
-            {
-                "index": i,
-                "id": s.id,
-                "name": s.name,
-                "setlist_number": float(s.setlist_number),
-                "category": categories.get(s.category_id or "", "") if s.category_id else "",
-                "duration_seconds": float(s.duration_seconds),
-                "active": i == song_index,
-            }
-        )
-
     lanes = _lane_map(song)
+    primary_lanes = list(song.now_primary_lanes) if song.now_lanes_configured else [1]
+    secondary_lanes = list(song.now_secondary_lanes) if song.now_lanes_configured else []
+    if not song.now_secondary_enabled:
+        secondary_lanes = []
+
     lane_rows = [
         {
             "index": lane.index,
@@ -118,6 +200,9 @@ def build_state(
             "visible": bool(lane.visible),
             "locked": bool(lane.locked),
             "cue_list_enabled": bool(lane.cue_list_enabled),
+            "cue_id_enabled": bool(lane.cue_id_enabled),
+            "now": _now_role(song, lane.index),
+            "pause_on_mark": bool(lane.pause_on_mark),
         }
         for lane in sorted(song.mark_lanes, key=lambda L: L.index)
     ]
@@ -132,15 +217,9 @@ def build_state(
         if m.get("cue_list_enabled", True) and m.get("lane_visible", True)
     ]
 
-    primary_lanes = list(song.now_primary_lanes) if song.now_lanes_configured else [1]
-    secondary_lanes = list(song.now_secondary_lanes) if song.now_lanes_configured else []
-    if not song.now_secondary_enabled:
-        secondary_lanes = []
-
     position = float(engine.position)
     duration = float(engine.duration)
 
-    # Playhead Cue List row (same rule as desktop last_cue_list_mark_at_or_before).
     playhead_cue_id = ""
     for m in cue_list_rows:
         if float(m["time_seconds"]) - 1e-9 <= position:
@@ -149,13 +228,17 @@ def build_state(
             break
 
     fps = float(song.fps) if song.fps > 0 else 30.0
-    abs_tc = seconds_to_timecode(
-        timecode_to_abs_seconds(song.start_timecode, fps) + position,
-        fps,
-    ).format()
+    output = _output_payload(project, engine, position)
+    # Prefer engine output TC (file LTC / MTC); fall back to song-start + position.
+    if not output["outputs"] or output["timecode"] in ("—", "", None):
+        output["timecode"] = seconds_to_timecode(
+            timecode_to_abs_seconds(song.start_timecode, fps) + position,
+            fps,
+        ).format()
 
     playhead = str(getattr(project, "playhead_color", "") or "#3dd68c")
     waveform_color = str(getattr(project, "waveform_color", "") or "#616161")
+    active_id = song.id if song_index >= 0 else ""
 
     return {
         "project_name": project.name,
@@ -164,7 +247,11 @@ def build_state(
         "duration": duration,
         "clock": format_clock(position),
         "duration_clock": format_clock(duration),
-        "timecode": abs_tc,
+        "timecode": output["timecode"],
+        "tc_status": output["status"],
+        "tc_sending": output["sending"],
+        "tc_accent": output["accent"],
+        "output_toggles": output["toggles"],
         "playhead_color": playhead,
         "waveform_color": waveform_color,
         "playhead_cue_id": playhead_cue_id,
@@ -177,13 +264,27 @@ def build_state(
             "fps": fps,
             "in_setlist": song_index >= 0,
         },
-        "songs": song_rows,
+        "setlist": _setlist_rows(project, active_id),
+        # Back-compat for older remote JS.
+        "songs": [
+            {
+                "index": i,
+                "id": s.id,
+                "name": s.name,
+                "setlist_number": float(s.setlist_number),
+                "category": "",
+                "duration_seconds": float(s.duration_seconds),
+                "active": i == song_index,
+            }
+            for i, s in enumerate(songs)
+        ],
         "lanes": lane_rows,
         "marks": mark_rows,
         "cue_list": cue_list_rows,
         "now": {
             "primary": _now_for_lanes(song, position, primary_lanes, lanes),
             "secondary": _now_for_lanes(song, position, secondary_lanes, lanes),
+            "secondary_enabled": bool(song.now_secondary_enabled),
         },
     }
 
@@ -193,10 +294,10 @@ def build_waveform_overview(
     *,
     song_id: str,
     duration: float,
-    buckets: int = 900,
+    buckets: int = 1600,
 ) -> dict[str, Any]:
     """Downsample peak pyramid into a fixed-width overview for the remote canvas."""
-    n = max(32, min(2000, int(buckets)))
+    n = max(32, min(4000, int(buckets)))
     empty = {
         "ok": True,
         "song_id": song_id,
@@ -209,7 +310,6 @@ def build_waveform_overview(
     if buffer is None or not buffer.peak_levels:
         return empty
 
-    # Prefer a coarse level so overview stays light for iPad Safari.
     level = buffer.peak_levels[-1]
     for candidate in reversed(buffer.peak_levels):
         if candidate.mins.size >= n // 2:
@@ -230,7 +330,6 @@ def build_waveform_overview(
         out_mins[i] = float(mins[a:b].min())
         out_maxs[i] = float(maxs[a:b].max())
 
-    # Soft normalize for display (avoid flat lines on quiet beds).
     peak = float(max(np.max(np.abs(out_mins)), np.max(np.abs(out_maxs)), 1e-6))
     scale = 1.0 / peak
     out_mins = out_mins * scale

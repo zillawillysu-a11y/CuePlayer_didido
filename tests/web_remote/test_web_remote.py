@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from cueplayer.domain.models import Project, Song
+from cueplayer.domain.models import Project, SetlistCategory, Song
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer, static_dir
 from cueplayer.web_remote.state import build_state, build_waveform_overview, format_clock
@@ -32,14 +32,16 @@ def test_static_dir_has_index() -> None:
     html = (root / "index.html").read_text(encoding="utf-8")
     assert 'id="waveCanvas"' in html
     assert 'id="pauseBtn"' in html
+    assert 'id="toggles"' in html
+    assert 'id="markMgrBtn"' in html
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
 
 
 def test_format_clock() -> None:
-    assert format_clock(0) == "00:00:00.00"
-    assert format_clock(65.25) == "00:01:05.25"
-    assert format_clock(1.89) == "00:00:01.89"
+    assert format_clock(0) == "00:00.000"
+    assert format_clock(65.25) == "01:05.250"
+    assert format_clock(1.89) == "00:01.890"
 
 
 def test_build_waveform_overview_from_peaks() -> None:
@@ -74,14 +76,35 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert len(state["marks"]) == 2
     assert state["now"]["primary"]
     assert state["now"]["primary"][0]["display_name"] == "主歌"
-    assert state["now"]["primary"][0]["time_display"] == "00:00:02.00"
-    assert state["marks"][0]["time_display"].startswith("00:00:")
+    assert state["now"]["primary"][0]["time_display"] == "00:02.000"
+    assert state["marks"][0]["time_display"].startswith("00:")
     assert len(state["cue_list"]) == 2
     # At 3.0s the latest cue-list mark is the Button at 3.5? No — 3.5 is after.
     # Primary mark at 2.0 is active; playhead cue is the last at-or-before 3.0.
     assert state["playhead_cue_id"] == song.marks[0].id  # 主歌 @ 2.0
     later = build_state(project=project, song=song, engine=_FakeEngine(position=4.0))
     assert later["playhead_cue_id"] == song.marks[1].id  # Button @ 3.5
+    assert "output_toggles" in state
+    assert "translate" in state["output_toggles"]
+    assert "setlist" in state
+
+
+def test_setlist_includes_collapsible_folders() -> None:
+    project = Project.create("Folders", with_song=False)
+    folder = SetlistCategory.create("Act 1")
+    project.setlist_categories.append(folder)
+    a = Song.create("Open")
+    b = Song.create("Inside")
+    b.category_id = folder.id
+    project.songs.extend([a, b])
+    state = build_state(project=project, song=a, engine=_FakeEngine())
+    kinds = [row["kind"] for row in state["setlist"]]
+    assert kinds == ["song", "folder", "song"]
+    folder.collapsed = True
+    state2 = build_state(project=project, song=a, engine=_FakeEngine())
+    kinds2 = [row["kind"] for row in state2["setlist"]]
+    assert kinds2 == ["song", "folder"]
+    assert state2["setlist"][1]["collapsed"] is True
 
 
 def test_prefs_port_clamp() -> None:
