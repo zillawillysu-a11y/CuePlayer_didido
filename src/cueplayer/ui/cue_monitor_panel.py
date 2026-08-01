@@ -571,7 +571,8 @@ class CueMonitorPanel(QWidget):
         self._list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
         self._list_title.setToolTip(
             "Shift/Ctrl multi-select · Del to delete · click Time to jump\n"
-            "Scroll pauses playhead follow — right-click → Follow playhead to resume"
+            "Scroll pauses auto-scroll (selection still follows playhead) — "
+            "right-click → Follow playhead to resume scrolling"
         )
         self._list_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list_title.customContextMenuRequested.connect(self._show_cue_list_context_menu)
@@ -2524,8 +2525,11 @@ class CueMonitorPanel(QWidget):
         if mark is None:
             return
         if self._cue_list_follow_suspended:
-            # Keep tracking the current cue id; do not steal selection or scroll.
-            self._playhead_list_mark_id = mark.id
+            # User scrolled away to inspect — keep their scroll position, but still
+            # advance the selected/highlighted row with the playhead.
+            if mark.id != self._playhead_list_mark_id:
+                if self._select_mark_row(mark.id, scroll=False, emit_selection=True):
+                    self._playhead_list_mark_id = mark.id
             return
         if mark.id == self._playhead_list_mark_id:
             # Same cue as last follow — still re-scroll if the row drifted out
@@ -2608,6 +2612,12 @@ class CueMonitorPanel(QWidget):
 
     def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> bool:
         """Select the cue row for ``mark_id``. Returns False if the row is missing."""
+        bar = self.cue_table.verticalScrollBar()
+        # Selecting an off-screen row can make Qt auto-scroll — pin the bar when
+        # follow is suspended so the user can keep inspecting elsewhere.
+        pinned_scroll: int | None = None
+        if self._cue_list_follow_suspended and bar is not None:
+            pinned_scroll = int(bar.value())
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
@@ -2627,6 +2637,8 @@ class CueMonitorPanel(QWidget):
                 )
             break
         self._syncing_selection = False
+        if pinned_scroll is not None and bar is not None:
+            bar.setValue(pinned_scroll)
         if found and emit_selection:
             self.selection_changed.emit([mark_id])
         return found
