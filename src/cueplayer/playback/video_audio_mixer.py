@@ -7,6 +7,10 @@ chunk at an explicit song-timeline *frame* range on every audio buffer.
 Per-clip audio is decoded in a background thread in capped windows (never a
 multi-hour whole file), then resampled to the engine rate. Long rehearsal
 clips use a sliding window so audio continues past the first minute.
+
+Rapid seek/scrub only keeps *one* decode job per clip; later requests while a
+job is running stash the latest source time and run after the current job —
+stale mid-queue 30–120s decodes must not pile up under ``av_path_lock``.
 """
 
 from __future__ import annotations
@@ -43,7 +47,10 @@ class VideoAudioMixer:
         self._playback_rate = 48000
         self.muted = False
         self._cache: dict[str, _CachedPcm] = {}
+        # clip_id -> key of the job currently running (at most one per clip).
         self._inflight: dict[str, tuple] = {}
+        # Latest source_time requested while a job was already busy.
+        self._pending_need: dict[str, float] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vid-audio")
 
@@ -60,6 +67,7 @@ class VideoAudioMixer:
             with self._lock:
                 self._cache.clear()
                 self._inflight.clear()
+                self._pending_need.clear()
 
     def preload(self, clips: list[VideoClip]) -> None:
         """
@@ -73,6 +81,7 @@ class VideoAudioMixer:
             for stale_id in [cid for cid in self._cache if cid not in valid_ids]:
                 self._cache.pop(stale_id, None)
                 self._inflight.pop(stale_id, None)
+                self._pending_need.pop(stale_id, None)
         for clip in clips:
             if clip.media_kind == "still":
                 continue
@@ -102,10 +111,18 @@ class VideoAudioMixer:
         with self._lock:
             cached = self._cache.get(clip.id)
             if cached is not None and cached.key == key:
+                self._pending_need.pop(clip.id, None)
                 return
             if self._inflight.get(clip.id) == key:
+                self._pending_need.pop(clip.id, None)
+                return
+            if clip.id in self._inflight:
+                # One job already running — keep only the latest need; do not
+                # queue another decode that would hold av_path_lock for minutes.
+                self._pending_need[clip.id] = float(source_time)
                 return
             self._inflight[clip.id] = key
+            self._pending_need.pop(clip.id, None)
         self._executor.submit(self._decode_window, clip.id, key, clip, start, dur)
 
     def _decode_window(
@@ -138,16 +155,29 @@ class VideoAudioMixer:
             if int(buf.sample_rate) != int(self._playback_rate):
                 data = resample_linear(data, buf.sample_rate, self._playback_rate)
             samples = np.ascontiguousarray(data, dtype=np.float32)
+
+        follow_up: float | None = None
         with self._lock:
             if self._inflight.get(clip_id) != key:
-                return  # newer request superseded this job
+                # Should not happen with coalesce; drop safely.
+                return
             self._inflight.pop(clip_id, None)
             if samples is None:
                 self._cache.pop(clip_id, None)
-                return
-            self._cache[clip_id] = _CachedPcm(
-                samples=samples, origin_seconds=origin, key=key
-            )
+            else:
+                self._cache[clip_id] = _CachedPcm(
+                    samples=samples, origin_seconds=origin, key=key
+                )
+            follow_up = self._pending_need.pop(clip_id, None)
+            # If the just-finished window already covers the pending need,
+            # skip another decode.
+            if follow_up is not None and samples is not None:
+                pcm = self._cache.get(clip_id)
+                if pcm is not None and self._covers(pcm, follow_up):
+                    follow_up = None
+
+        if follow_up is not None:
+            self._request_window(clip, follow_up)
 
     def _covers(self, pcm: _CachedPcm, source_time: float) -> bool:
         n = int(pcm.samples.shape[0])

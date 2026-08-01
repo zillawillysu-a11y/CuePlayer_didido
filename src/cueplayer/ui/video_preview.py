@@ -5,11 +5,20 @@ decoded frame (per PRODUCT_SPEC: no second independent video player)."""
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QActionGroup, QColor, QImage, QPainter
+from PySide6.QtWidgets import QMenu, QWidget
+
+from cueplayer.domain.models import VIDEO_DECODE_QUALITY_MAX_HEIGHT
 
 FitMode = str  # "fit" | "fill"
+
+_DECODE_QUALITY_LABELS: tuple[tuple[str, str], ...] = (
+    ("full", "Full (source resolution)"),
+    ("1080p", "1080p"),
+    ("720p", "720p"),
+    ("540p", "540p"),
+)
 
 
 def rgb_frame_to_qimage(frame: np.ndarray) -> QImage:
@@ -24,20 +33,28 @@ def rgb_frame_to_qimage(frame: np.ndarray) -> QImage:
 
 
 class VideoPreviewWidget(QWidget):
+    fit_mode_changed = Signal(str)
+    decode_quality_changed = Signal(str)
+
     def __init__(
         self,
         parent: QWidget | None = None,
         *,
         placeholder_text: str = "No clip — black",
         smooth_scale: bool = True,
+        context_menu: bool = False,
     ) -> None:
         super().__init__(parent)
         self._image: QImage | None = None
         self._fit_mode: FitMode = "fit"
         self._placeholder_text = placeholder_text
         self._smooth_scale = bool(smooth_scale)
+        self._decode_quality: str = "1080p"
         self.setStyleSheet("background: black;")
         self.setMinimumSize(120, 68)
+        if context_menu:
+            self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.customContextMenuRequested.connect(self._show_context_menu)
 
     def fit_mode(self) -> FitMode:
         return self._fit_mode
@@ -45,6 +62,13 @@ class VideoPreviewWidget(QWidget):
     def set_fit_mode(self, mode: str) -> None:
         self._fit_mode = "fill" if mode == "fill" else "fit"
         self.update()
+
+    def current_decode_quality(self) -> str:
+        return self._decode_quality
+
+    def set_decode_quality(self, quality: str) -> None:
+        if quality in VIDEO_DECODE_QUALITY_MAX_HEIGHT:
+            self._decode_quality = quality
 
     def set_frame(self, frame: np.ndarray | None) -> None:
         """Convert RGB ndarray → QImage and paint (one sink). Prefer
@@ -67,6 +91,39 @@ class VideoPreviewWidget(QWidget):
             return
         self._image = image
         self.update()
+
+    def _show_context_menu(self, pos) -> None:  # noqa: ANN001
+        menu = QMenu(self)
+        fit_action = menu.addAction("Fit")
+        fit_action.setCheckable(True)
+        fit_action.setChecked(self._fit_mode == "fit")
+        fill_action = menu.addAction("Fill")
+        fill_action.setCheckable(True)
+        fill_action.setChecked(self._fit_mode == "fill")
+
+        menu.addSeparator()
+        quality_menu = menu.addMenu("Video Decode Quality")
+        quality_group = QActionGroup(self)
+        quality_group.setExclusive(True)
+        quality_actions: dict[object, str] = {}
+        for q_key, q_label in _DECODE_QUALITY_LABELS:
+            qa = quality_menu.addAction(q_label)
+            qa.setCheckable(True)
+            qa.setChecked(q_key == self._decode_quality)
+            quality_group.addAction(qa)
+            quality_actions[qa] = q_key
+
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is fit_action:
+            self.set_fit_mode("fit")
+            self.fit_mode_changed.emit("fit")
+        elif chosen is fill_action:
+            self.set_fit_mode("fill")
+            self.fit_mode_changed.emit("fill")
+        elif chosen in quality_actions:
+            quality = quality_actions[chosen]
+            self._decode_quality = quality
+            self.decode_quality_changed.emit(quality)
 
     def paintEvent(self, event) -> None:  # noqa: ANN001
         del event

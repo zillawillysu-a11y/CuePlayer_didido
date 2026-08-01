@@ -48,3 +48,18 @@ def test_build_music_standin_places_clip_after_timeline_start(tmp_path: Path) ->
     body = buf.mono[int(1.0 * sr) : int(1.4 * sr)]
     assert float(np.max(np.abs(head))) < 0.05
     assert float(np.max(np.abs(body))) > 0.01
+
+
+def test_build_music_standin_honors_cancel_check(tmp_path: Path) -> None:
+    path = tmp_path / "short.mp4"
+    _make_clip_with_tone(path, seconds=0.5)
+    clip = VideoClip.create(
+        name="v",
+        path=path,
+        start_seconds=0.0,
+        duration_seconds=0.5,
+        source_duration_seconds=0.5,
+    )
+    assert build_music_standin_from_video(
+        clip, timeline_duration=0.5, cancel_check=lambda: True
+    ) is None

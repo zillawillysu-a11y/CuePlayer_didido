@@ -8,6 +8,7 @@ full-rate PCM for a multi-hour file.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,8 @@ from cueplayer.media.video_limits import clip_is_heavy
 # ~1.6 MB mono per hour.
 _OVERVIEW_HZ = 400
 # Decode this much source audio per background pass when building overviews.
-_OVERVIEW_WINDOW_SECONDS = 20.0
+# Shorter windows release ``av_path_lock`` more often so Preview/seek stay alive.
+_OVERVIEW_WINDOW_SECONDS = 10.0
 
 
 def _buffer_from_stereo(
@@ -113,13 +115,24 @@ def build_music_standin_from_video(
     clip: VideoClip,
     *,
     timeline_duration: float,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> AudioBuffer | None:
     """
     Return a display/playback-style AudioBuffer for the Music lane, or None
     when the video has no audio stream.
+
+    ``cancel_check`` (optional) is polled between overview windows — return
+    True to abort early (song switch / newer standin token) so long builds
+    do not keep holding ``av_path_lock`` after the user has moved on.
     """
     path = Path(clip.path)
     if not path.is_file() or clip.media_kind == "still":
+        return None
+
+    def _cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
+    if _cancelled():
         return None
 
     src_in = max(0.0, float(clip.source_in_seconds))
@@ -128,6 +141,8 @@ def build_music_standin_from_video(
 
     # Short enough: one decode at native rate.
     if span <= MAX_VIDEO_AUDIO_DECODE_SECONDS and not clip_is_heavy(clip):
+        if _cancelled():
+            return None
         buf = load_video_audio(
             path, start_seconds=src_in, max_duration_seconds=span
         )
@@ -151,6 +166,8 @@ def build_music_standin_from_video(
     t = src_in
     end = src_in + span
     while t < end - 1e-6:
+        if _cancelled():
+            return None
         chunk = load_video_audio(
             path, start_seconds=t, max_duration_seconds=min(window, end - t)
         )
@@ -173,5 +190,7 @@ def build_music_standin_from_video(
         if t <= origin + 1e-3:
             t += window
 
+    if _cancelled():
+        return None
     stereo = np.stack([overview, overview], axis=1)
     return _buffer_from_stereo(path, overview_hz, stereo)

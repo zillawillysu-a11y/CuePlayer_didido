@@ -43,14 +43,22 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # the underlying source frame hasn't advanced. Together these are what keep
 # the timeline (scroll/zoom/mark edit/playhead) responsive while a video
 # clip is playing. MainWindow also queues video decode behind the playhead
-# update so PyAV work cannot stall timeline paint. Paused/stopped ticks
-# (e.g. programmatic seeks) are left unthrottled so they stay frame-accurate.
+# update so PyAV work cannot stall timeline paint. Paused click-seeks use a
+# lighter trailing-edge throttle (_MIN_SEEK_DECODE_INTERVAL) so rapid jumps
+# only decode the latest land frame.
 #
 # Play decode stays on the UI thread (throttled). A background play-decode
 # worker was tried and removed: seek/scrub while Clean Output was open raced
 # a second PyAV container on the same path (hourglass → hard crash).
 _MAX_PLAY_DECODE_HZ = 24.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
+
+# Rapid click-seeks while paused used to decode every land frame on the UI
+# thread immediately. When ``av_path_lock`` was already held by mixer/standin
+# work, that stacked into a frozen UI + stuttering audio. Trailing-edge
+# throttle keeps only the latest jump.
+_MAX_SEEK_DECODE_HZ = 12.0
+_MIN_SEEK_DECODE_INTERVAL = 1.0 / _MAX_SEEK_DECODE_HZ
 
 _UNSET = object()
 
@@ -304,12 +312,14 @@ class VideoSyncController(QObject):
         """Minimum seconds between actual decode+emit work. Scrubbing takes
         priority over playing (both can briefly be true: dragging the
         playhead pauses the engine without firing playing_changed — see
-        AudioEngine.begin_scrub/pause(for_scrub=True))."""
+        AudioEngine.begin_scrub/pause(for_scrub=True)). Idle/paused seeks
+        still coalesce so rapid mouse jumps cannot stack PyAV on the UI
+        thread while mixer/standin hold ``av_path_lock``."""
         if self._scrubbing:
             return _MIN_SCRUB_DECODE_INTERVAL
         if self._playing:
             return _MIN_PLAY_DECODE_INTERVAL
-        return 0.0
+        return _MIN_SEEK_DECODE_INTERVAL
 
     def _scrub_composite(self, song: Song, seconds: float) -> np.ndarray | None:
         """Nearest scrub-cache frames for the active clip(s), or None if cold."""

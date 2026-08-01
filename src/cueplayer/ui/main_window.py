@@ -1026,7 +1026,9 @@ class MainWindow(QMainWindow):
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
-        self.video_preview = VideoPreviewWidget()
+        self.video_preview = VideoPreviewWidget(context_menu=True)
+        self.video_preview.set_decode_quality(self.project.video_decode_quality)
+        self.video_preview.decode_quality_changed.connect(self._set_video_decode_quality)
         # Parented to MainWindow for object lifetime, but Qt.Window still makes
         # this a separate top-level capture target for OBS. Its X button only
         # hides (see CleanVideoOutputWindow.closeEvent); MainWindow.closeEvent()
@@ -2334,6 +2336,8 @@ class MainWindow(QMainWindow):
             action.setChecked(True)
         if hasattr(self, "clean_output_window"):
             self.clean_output_window.set_decode_quality(current)
+        if hasattr(self, "video_preview"):
+            self.video_preview.set_decode_quality(current)
 
     def _project_filter(self) -> str:
         return "CuePlayer Project (*.cueplayer.json);;JSON (*.json);;All Files (*.*)"
@@ -6160,15 +6164,21 @@ class MainWindow(QMainWindow):
             from cueplayer.util.thread_priority import lower_background_thread_priority
 
             lower_background_thread_priority()
+
+            def _cancel() -> bool:
+                return token != self._video_standin_token or song_id != self.current_song.id
+
             try:
                 buffer = build_music_standin_from_video(
-                    clip_snapshot, timeline_duration=duration
+                    clip_snapshot,
+                    timeline_duration=duration,
+                    cancel_check=_cancel,
                 )
             except Exception as exc:  # noqa: BLE001
                 self._video_standin_finished.emit(token, exc)
                 return
-            # Ignore if song changed while decoding.
-            if song_id != self.current_song.id:
+            # Ignore if song changed / cancelled while decoding.
+            if _cancel():
                 self._video_standin_finished.emit(token, None)
                 return
             self._video_standin_finished.emit(token, buffer)

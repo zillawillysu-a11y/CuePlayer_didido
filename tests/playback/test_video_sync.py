@@ -186,10 +186,10 @@ def test_refresh_closes_decoders_for_removed_clips(app: QApplication, red_clip_p
 
 
 def test_scrubbing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path) -> None:
-    """Outside a scrub, every call decodes immediately (unthrottled) — this is what
-    keeps normal playback frame-accurate. While scrubbing, rapid-fire calls (as the
-    timeline emits on every mouse-move) should collapse to far fewer actual decodes,
-    which is the fix for drag lag once a video clip is on the timeline."""
+    """While scrubbing, rapid-fire calls (as the timeline emits on every
+    mouse-move) should collapse to far fewer actual decodes — the fix for
+    drag lag once a video clip is on the timeline. Idle/paused seeks use a
+    lighter trailing-edge throttle (see test_paused_seeks_coalesce)."""
     song = Song.create("Song")
     clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
     song.add_video_clip(clip)
@@ -259,6 +259,40 @@ def test_playing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path)
 
     controller.set_playing(False)  # flush: the last requested position must land.
     assert len(frames) >= 1
+
+
+def test_paused_seeks_coalesce_rapid_jumps(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    """Rapid click-seeks while paused must not decode every intermediate land
+    frame — only the latest after the trailing-edge flush."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.update_position(0.1)  # first land: immediate
+    for t in (0.5, 1.0, 1.5, 2.5):
+        controller.update_position(t)
+    assert len(frames) < 5
+    assert controller._pending_seconds == pytest.approx(2.5)
+
+    # Flush timer lands the latest jump (blue).
+    app.processEvents()
+    if controller._flush_timer.isActive():
+        controller._flush_timer.stop()
+        controller._flush_pending()
+    last = frames[-1]
+    assert last is not None
+    assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
 
 
 def test_playback_decode_rate_stays_near_display_refresh_cap(
