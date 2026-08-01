@@ -13,8 +13,10 @@ from cueplayer.exporters.common import (
     export_event_time_seconds,
     format_ma2_cue_link_name,
     format_ma_cue_number,
+    ma2_phantom_cue_delete_range,
     ma2_timecode_assign_settings,
     ma2_timecode_cue_nos,
+    MA2_TC_STEP_NONE,
     parse_page_executor,
     sanitize_ma_name,
     split_ma_cue_number,
@@ -366,8 +368,8 @@ class Ma2Exporter:
                     "time": str(frames),
                     "command": "Go",
                     "pressed": "true",
-                    # step / Cue Nos use 1-based sequence index (not Cue ID).
-                    "step": str(idx),
+                    # Do not put Store-order index in step — Import invents Cue 45…N.
+                    "step": MA2_TC_STEP_NONE,
                 },
             )
             cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": link_name})
@@ -518,7 +520,7 @@ class Ma2Exporter:
                 )
                 events.append(
                     f'<Event index="{idx - 1}" time="{frames}" command="Go" '
-                    f'pressed="true" step="{idx}">'
+                    f'pressed="true" step="{MA2_TC_STEP_NONE}">'
                     f'<Cue name="{link_name}">{nos}</Cue></Event>'
                 )
             tracks.append(
@@ -619,6 +621,8 @@ class Ma2Exporter:
                     float(plan.profile.start_offset_seconds),
                     float(plan.profile.fps or 30.0),
                     int(plan.profile.timecode_slot),
+                    int(plan.profile.sequence_pool_start),
+                    *(ma2_phantom_cue_delete_range(plan) or (0, 0)),
                 )
             ],
         )
@@ -635,7 +639,7 @@ class Ma2Exporter:
         one Timecode XML per song (separate TC pools) and Assign /Offset.
         """
         cmd_lines: list[str] = []
-        tc_jobs: list[tuple[str, int, str, str, float, float, int]] = []
+        tc_jobs: list[tuple[str, int, str, str, float, float, int, int, int, int]] = []
         for plan in plans:
             if plan.profile.export_mode != "full":
                 continue
@@ -645,6 +649,7 @@ class Ma2Exporter:
                 Path(plan.profile.timecode_file).stem or plan.song_name or "TC",
                 fallback=f"TC{plan.profile.timecode_pool}",
             ).replace(" ", "_")
+            phantom = ma2_phantom_cue_delete_range(plan) or (0, 0)
             tc_jobs.append(
                 (
                     self.build_show_timecode_xml([plan], name=tc_label),
@@ -654,6 +659,9 @@ class Ma2Exporter:
                     float(plan.profile.start_offset_seconds),
                     float(plan.profile.fps or 30.0),
                     int(plan.profile.timecode_slot),
+                    int(plan.profile.sequence_pool_start),
+                    int(phantom[0]),
+                    int(phantom[1]),
                 )
             )
         paths = self._write_plugin_pair(
@@ -712,12 +720,17 @@ class Ma2Exporter:
         cmd_lines: list[str],
         info_name: str,
         echo_note: str,
-        timecode_jobs: list[tuple[str, int, str, str, float, float, int]] | None = None,
+        timecode_jobs: list[
+            tuple[str, int, str, str, float, float, int, int, int, int]
+        ]
+        | None = None,
     ) -> dict[str, Path]:
         """Write Plugin XML + Lua.
 
-        timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps, slot)
+        timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps,
+        slot, sequence_pool, phantom_cue_lo, phantom_cue_hi)
         — one entry per Timecode. Options + Offset are Assigned after Import.
+        phantom_cue_lo/hi are 0 when no Delete is needed.
         """
         _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
         plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -739,7 +752,18 @@ class Ma2Exporter:
                 "  local slash = package.config:sub(1,1)",
                 "  local ie = path..slash..'importexport'..slash",
             ]
-            for tc_xml, tc_pool, tc_stem, tc_label, start_offset, fps, tc_slot in jobs:
+            for (
+                tc_xml,
+                tc_pool,
+                tc_stem,
+                tc_label,
+                start_offset,
+                fps,
+                tc_slot,
+                seq_pool,
+                phantom_lo,
+                phantom_hi,
+            ) in jobs:
                 tc_escaped = tc_xml.replace("\\", "\\\\").replace("'", "\\'")
                 label = sanitize_ma_name(tc_label, fallback=f"TC{tc_pool}")
                 job_profile = MaExportProfile(
@@ -757,6 +781,12 @@ class Ma2Exporter:
                 assign_lines = "\n".join(
                     "    " + _lua_cmd_line(cmd).lstrip() for cmd in assign_cmds
                 )
+                phantom_lines = ""
+                if int(phantom_lo) > 0 and int(phantom_hi) >= int(phantom_lo):
+                    phantom_lines = (
+                        f"\n    gma.cmd('Delete Sequence {int(seq_pool)} "
+                        f"Cue {int(phantom_lo)} Thru {int(phantom_hi)} /nc')"
+                    )
                 parts.append(
                     f"""
   do
@@ -770,7 +800,7 @@ class Ma2Exporter:
     gma.sleep(0.5)
     os.remove(tcfile)
     gma.cmd('Label Timecode {int(tc_pool)} "{_lua_str(label)}"')
-{assign_lines}
+{assign_lines}{phantom_lines}
   end"""
                 )
             tc_block = "\n".join(parts)

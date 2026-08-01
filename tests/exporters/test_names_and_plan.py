@@ -46,6 +46,24 @@ def test_split_ma_cue_number_fractional() -> None:
     # Timecode Cue Nos use sequence index, not Cue ID (15th cue may be 14.1).
     assert ma2_timecode_cue_nos(5, 15) == [1, 5, 15]
     assert ma2_timecode_cue_nos(1, 1) == [1, 1, 1]
+    from cueplayer.exporters.common import (
+        ExportCue,
+        MaExportProfile,
+        SongExportPlan,
+        ma2_phantom_cue_delete_range,
+    )
+
+    phantom_plan = SongExportPlan(
+        song_name="P",
+        profile=MaExportProfile(console="ma2"),
+        main_cues=[
+            ExportCue(float(i), f"C{i}", time_seconds=float(i))
+            for i in list(range(1, 45)) + [14.1, 15.1, 16.1, 17.1, 18.1, 19.1, 20.1, 21.1, 22.1]
+        ],
+        button_lanes=[],
+    )
+    # 44 + 9 fractions = 53 cues, max ID 44 → phantom 45..53
+    assert ma2_phantom_cue_delete_range(phantom_plan) == (45, 53)
 
 
 def test_manual_ma_export_name_wins() -> None:
@@ -119,15 +137,17 @@ def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None
         assert 'name="Cue 14.1"' in tc
         assert 'name="Cue 15.1"' in tc
         assert 'step="14.1"' not in tc
+        assert 'step="4294967295"' in tc
         compact = tc.replace("\n", "").replace(" ", "")
         # Cue 14.1 is the 2nd Store'd cue → Nos third = 2 (index), not Cue ID 14.
         assert "<No>1</No><No>1</No><No>2</No>" in compact
         # Cue 15 is the 3rd → index 3 (writing Cue ID 15 would wrongly hit index 15).
         assert "<No>1</No><No>1</No><No>3</No>" in compact
-        assert 'step="2"' in tc and 'step="3"' in tc
         lua = paths["plugin_lua"].read_text(encoding="utf-8")
         assert "Store Timecode" not in lua
         assert "At Timecode" in lua
+        # 14, 14.1, 15, 15.1 → max ID 15, count 4 → no phantom delete
+        assert "Delete Sequence" not in lua or "Thru" not in lua
 
 def test_exporter_summaries_include_target_versions() -> None:
     plan = SongExportPlan(
