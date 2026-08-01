@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal, QEvent
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -88,6 +88,11 @@ class _PaddedItemDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        # Note wraps; keep wrap flags even when the style option is rebuilt.
+        if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
+            opt.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
+            opt.textElideMode = Qt.TextElideMode.ElideNone
         opt.rect = opt.rect.adjusted(0, 2, 0, -2)
         if opt.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(opt.rect, QColor(BG_SELECTED))
@@ -106,6 +111,19 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             opt.palette.setColor(QPalette.ColorRole.Text, color)
             opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
         super().paint(painter, opt, index)
+
+    def sizeHint(self, option, index):  # noqa: ANN001
+        if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
+            text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            width = option.rect.width() if option.rect.width() > 0 else 140
+            # Match item padding in the Cue List stylesheet (~8px each side).
+            inner = max(24, int(width) - 20)
+            fm = option.fontMetrics
+            flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
+            br = fm.boundingRect(0, 0, inner, 10000, flags, text)
+            height = max(_ROW_HEIGHT, int(br.height()) + 18)
+            return QSize(width, height)
+        return super().sizeHint(option, index)
 
     def createEditor(self, parent, option, index):  # noqa: ANN001
         editor = super().createEditor(parent, option, index)
@@ -489,12 +507,18 @@ class CueMonitorPanel(QWidget):
         self.cue_table.verticalHeader().setVisible(False)
         self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.cue_table.setShowGrid(False)
+        self.cue_table.setWordWrap(True)
+        self.cue_table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # Smooth scrubbing — no row/column “notches” while panning the list.
         self.cue_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.cue_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # Rows grow with wrapped Note text (not a fixed one-line band).
+        self.cue_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
         header = self.cue_table.horizontalHeader()
         header.setSectionsMovable(True)
         header.setFirstSectionMovable(True)
@@ -667,10 +691,31 @@ class CueMonitorPanel(QWidget):
         self.cue_list_layout_changed.emit()
 
     def _on_header_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
-        del logical_index, old_size, new_size
+        del old_size, new_size
         if self._reordering_header or self._resizing_header:
             return
+        # Note column width drives wrap → reflow every row height.
+        if logical_index == LOGICAL_INDEX_BY_FIELD["note"]:
+            self._reflow_note_row_heights()
         self.cue_list_layout_changed.emit()
+
+    def _note_row_height_for_text(self, text: str, column_width: int) -> int:
+        """Height so the full Note is visible (wrap + CJK without spaces)."""
+        fm = QFontMetrics(self.cue_table.font())
+        inner = max(24, int(column_width) - 20)
+        flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
+        br = fm.boundingRect(0, 0, inner, 10000, flags, text or "")
+        return max(_ROW_HEIGHT, int(br.height()) + 18)
+
+    def _reflow_note_row_heights(self) -> None:
+        note_col = self._col_for_field("note")
+        width = int(self.cue_table.columnWidth(note_col))
+        if width <= 0:
+            width = 140
+        for row in range(self.cue_table.rowCount()):
+            item = self.cue_table.item(row, note_col)
+            text = item.text() if item is not None else ""
+            self.cue_table.setRowHeight(row, self._note_row_height_for_text(text, width))
 
     def save_cue_list_header_state(self) -> QByteArray:
         return QByteArray(self.cue_table.horizontalHeader().saveState())
@@ -1686,11 +1731,13 @@ class CueMonitorPanel(QWidget):
                         continue
                     row = self.cue_table.rowCount()
                     self.cue_table.insertRow(row)
-                    self.cue_table.setRowHeight(row, _ROW_HEIGHT)
 
                     time_item = QTableWidgetItem(format_time(mark.time_seconds))
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
+                    time_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                    )
                     self.cue_table.setItem(row, time_col, time_item)
 
                     cue_id_text = cue_ids.get(mark.id, "")
@@ -1706,13 +1753,18 @@ class CueMonitorPanel(QWidget):
                         cue_id_item.setToolTip("Click to edit Cue ID")
                     else:
                         cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    cue_id_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                    )
                     self.cue_table.setItem(row, cue_id_col, cue_id_item)
 
                     lane_name = lane.name
                     lane_item = QTableWidgetItem(lane_name)
                     lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     lane_item.setForeground(QColor(lane.color))
+                    lane_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                    )
                     self.cue_table.setItem(row, type_col, lane_item)
 
                     note_item = QTableWidgetItem(mark.display_name)
@@ -1722,8 +1774,14 @@ class CueMonitorPanel(QWidget):
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
-                    note_item.setToolTip("Click to type a Note directly (e.g. Verse / Chorus)")
+                    note_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                    )
+                    note_item.setToolTip(
+                        "Click to edit Note — long text wraps and grows the row"
+                    )
                     self.cue_table.setItem(row, note_col, note_item)
+            self._reflow_note_row_heights()
         finally:
             self.cue_table.blockSignals(False)
             self._updating_table = False
@@ -1908,6 +1966,13 @@ class CueMonitorPanel(QWidget):
             self._updating_table = True
             item.setText(new_name)
             self._updating_table = False
+        # Always reflow — wrap height can change even when text is unchanged
+        # after an edit session that only added trailing spaces (now stripped).
+        note_col = self._col_for_field("note")
+        width = int(self.cue_table.columnWidth(note_col)) or 140
+        self.cue_table.setRowHeight(
+            item.row(), self._note_row_height_for_text(new_name, width)
+        )
         if new_name == old_name:
             return
         mark.display_name = new_name

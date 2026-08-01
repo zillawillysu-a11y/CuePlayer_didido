@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal, QEvent
-from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -63,6 +63,10 @@ _TRIANGLE_HIT_MIN_PX = 28
 class _SheetItemDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        if index.column() == _COL_NOTE:
+            opt.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
+            opt.textElideMode = Qt.TextElideMode.ElideNone
         opt.rect = opt.rect.adjusted(0, 2, 0, -2)
         super().paint(painter, opt, index)
 
@@ -258,8 +262,11 @@ class SetlistSheetPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(True)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(_SHEET_ROW_HEIGHT)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
         header.setSectionsMovable(False)
@@ -274,6 +281,7 @@ class SetlistSheetPage(QWidget):
         header.resizeSection(_COL_TC, 140)
         header.resizeSection(_COL_BPM, 56)
         header.resizeSection(_COL_NOTE, 180)
+        header.sectionResized.connect(self._on_header_section_resized)
         self.table.setStyleSheet(
             "QTableWidget {"
             "  gridline-color: #3f3f46;"
@@ -322,7 +330,33 @@ class SetlistSheetPage(QWidget):
                 self._fill_folder_row(r, row)
                 continue
             self._fill_song_row(r, row)
+        self._reflow_note_row_heights()
         self._suppress = False
+
+    def _on_header_section_resized(
+        self, logical_index: int, old_size: int, new_size: int
+    ) -> None:
+        del old_size, new_size
+        if logical_index == _COL_NOTE:
+            self._reflow_note_row_heights()
+
+    def _note_row_height_for_text(self, text: str, column_width: int) -> int:
+        fm = QFontMetrics(self.table.font())
+        inner = max(24, int(column_width) - 16)
+        flags = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
+        br = fm.boundingRect(0, 0, inner, 10000, flags, text or "")
+        return max(_SHEET_ROW_HEIGHT, int(br.height()) + 18)
+
+    def _reflow_note_row_heights(self) -> None:
+        width = int(self.table.columnWidth(_COL_NOTE)) or 180
+        for row in range(self.table.rowCount()):
+            kind_item = self.table.item(row, _COL_ORDER)
+            if kind_item is not None and kind_item.data(_ROLE_KIND) == "folder":
+                self.table.setRowHeight(row, _SHEET_ROW_HEIGHT)
+                continue
+            item = self.table.item(row, _COL_NOTE)
+            text = item.text() if item is not None else ""
+            self.table.setRowHeight(row, self._note_row_height_for_text(text, width))
 
     def set_song_bpm_progress(self, song_id: str, progress: int | None) -> None:
         """Show detecting % / queued … in the BPM column for one song."""
@@ -540,7 +574,35 @@ class SetlistSheetPage(QWidget):
             | Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsEditable
         )
-        note_item.setToolTip("Free-text production note (not written into MA XML)")
+        note_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        note_item.setToolTip(
+            "Free-text production note (not written into MA XML) — wraps and grows the row"
+        )
+
+        # Keep each column's horizontal alignment; pin to top when Note grows.
+        order_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        name_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        en_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        seq_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
+        cue_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        tc_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
+        bpm_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
 
         self.table.setItem(r, _COL_ORDER, order_item)
         self.table.setItem(r, _COL_NAME, name_item)
@@ -700,6 +762,10 @@ class SetlistSheetPage(QWidget):
                 self._suppress = True
                 item.setText(note)
                 self._suppress = False
+            width = int(self.table.columnWidth(_COL_NOTE)) or 180
+            self.table.setRowHeight(
+                item.row(), self._note_row_height_for_text(note, width)
+            )
         if changed:
             self.song_field_changed.emit()
 

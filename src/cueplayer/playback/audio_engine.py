@@ -883,6 +883,11 @@ class AudioEngine(QObject):
             self._playback_samples = None
         self._refresh_playback_samples()
         self._wait_for_playback_samples()
+        # Early arm may have auto-detected LTC on a mostly-empty buffer —
+        # rescan now that the full file is present.
+        self._ltc_detect_ran = False
+        self._ltc_detect_inflight = False
+        self._refresh_ltc_detection()
         self._refresh_source_routing_cache()
 
     def _apply_resampled_pcm(self, built_key: tuple, pcm: np.ndarray) -> None:
