@@ -110,7 +110,10 @@ from cueplayer.domain.undo import (
 from cueplayer.media.audio_disk_cache import (
     load_audio_cached,
     load_all_ltc_channels,
+    load_cached_video_standin,
+    load_cached_waveform_peaks,
     save_cached_audio,
+    save_cached_video_standin,
     save_ltc_channel,
 )
 from cueplayer.media.audio_loader import (
@@ -1420,6 +1423,10 @@ class MainWindow(QMainWindow):
                 traceback.print_exc()
         finally:
             self._restoring_session = False
+            # Layout/splitter sizes settle after restore — Preview visibility
+            # (and thus decode arming) can be wrong on the first tick.
+            QTimer.singleShot(0, self._ensure_video_preview_frame)
+            QTimer.singleShot(80, self._ensure_video_preview_frame)
             # Let queued splitter/layout timers settle, then tell the splash we are ready.
             def _emit_ready() -> None:
                 self.startup_session_ready = True
@@ -2040,6 +2047,22 @@ class MainWindow(QMainWindow):
             or bool(self.project.clean_video_output.ndi_enabled)
         )
         self.video_sync.set_video_output_active(active)
+
+    def _ensure_video_preview_frame(self) -> None:
+        """Land a Preview/Clean frame after song swap or project open.
+
+        ``video_sync.set_song`` clears the picture; if output was already
+        active, ``set_video_output_active(True)`` is a no-op and Preview
+        stayed black until Clean Output forced a re-decode. Defer one tick
+        so splitter sizes (Preview visibility) settle after restore.
+        """
+        self._sync_video_output_active()
+        if not self.video_sync.video_output_active():
+            return
+        pos = float(getattr(self.engine, "position", 0.0) or 0.0)
+        # Defer: opening long video can contend with waveform workers on
+        # av_path_lock; same pattern as set_video_output_active.
+        QTimer.singleShot(0, lambda p=pos: self.video_sync.land_frame_at(p))
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -4295,9 +4318,24 @@ class MainWindow(QMainWindow):
                 self.engine.set_buffer(None)
                 self._timeline_ltc_exclude = None
                 self._apply_probed_audio_duration(audio_path, song=self.current_song)
-                self.timeline.set_audio_loading(True, audio_path.name)
+                # Peaks sidecar paints the Music lane immediately after restart
+                # while full PCM (or full .npz) loads for playback.
+                peaks = load_cached_waveform_peaks(audio_path)
+                if peaks is not None:
+                    self.timeline.set_audio_loading(False)
+                    self.timeline.set_audio(peaks, reset_view=False)
+                    if not self._media_warm_active:
+                        self.status.showMessage(
+                            f"Waveform ready — loading audio… ({audio_path.name})", 0
+                        )
+                else:
+                    self.timeline.set_audio_loading(True, audio_path.name)
                 self._load_audio_path(
-                    audio_path, mark_dirty=False, replace_track=False, bump_token=False
+                    audio_path,
+                    mark_dirty=False,
+                    replace_track=False,
+                    bump_token=False,
+                    keep_waveform=peaks is not None,
                 )
         else:
             self.engine.set_buffer(None)
@@ -4320,6 +4358,7 @@ class MainWindow(QMainWindow):
         self._refresh_window_title()
         self._refresh_status()
         self._sync_timeline_overview()
+        self._ensure_video_preview_frame()
 
     def _activate_song_monitor(self, gen: int, song) -> None:  # noqa: ANN001
         if gen != self._song_activate_gen or song is not self.current_song:
@@ -5372,6 +5411,7 @@ class MainWindow(QMainWindow):
         mark_dirty: bool = True,
         replace_track: bool = True,
         bump_token: bool = True,
+        keep_waveform: bool = False,
     ) -> None:
         path = Path(path)
         cached = self._cached_audio_buffer(path)
@@ -5391,9 +5431,18 @@ class MainWindow(QMainWindow):
             self._audio_load_token += 1
         token = self._audio_load_token
         self._apply_probed_audio_duration(path, song=self.current_song)
-        self.timeline.set_audio_loading(True, path.name)
-        if not self._media_warm_active:
+        if not keep_waveform:
+            peaks = load_cached_waveform_peaks(path)
+            if peaks is not None:
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(peaks, reset_view=replace_track)
+                keep_waveform = True
+            else:
+                self.timeline.set_audio_loading(True, path.name)
+        if not self._media_warm_active and not keep_waveform:
             self.status.showMessage(f"Loading {path.name}…", 0)
+        elif not self._media_warm_active and keep_waveform:
+            self.status.showMessage(f"Waveform ready — loading audio… ({path.name})", 0)
         # Reserve pending *before* submit so a fast PCM-ready signal can match.
         self._pending_audio_load = (token, None, path, mark_dirty, replace_track)
         future = self._start_audio_load(path, executor=self._audio_load_executor)
@@ -6123,8 +6172,9 @@ class MainWindow(QMainWindow):
         self.engine.ensure_playback_ready()
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
-        # Keep the loading placeholder until peaks land.
-        self.timeline.set_audio_loading(True, path.name)
+        # Keep any peaks-sidecar waveform; otherwise show loading until peaks land.
+        if self.timeline._audio is None:
+            self.timeline.set_audio_loading(True, path.name)
         if not self._media_warm_active:
             self.status.showMessage(
                 f"Audio ready — decoding continues… ({path.name})", 0
@@ -6269,6 +6319,19 @@ class MainWindow(QMainWindow):
                 self.timeline.set_audio(cached, reset_view=False)
                 self._sync_timeline_overview()
                 return
+            # Disk peaks from a previous session — paint instantly, no re-decode.
+            disk = load_cached_video_standin(cache_key)
+            if disk is not None:
+                self._video_standin_cache[cache_key] = disk
+                self._video_standin_token += 1
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(disk, reset_view=False)
+                self._sync_timeline_overview()
+                if not self._media_warm_active:
+                    self.status.showMessage(
+                        f"Music waveform from cache ({clip.name})", 2500
+                    )
+                return
         self._video_standin_token += 1
         token = self._video_standin_token
         song_id = self.current_song.id
@@ -6329,6 +6392,9 @@ class MainWindow(QMainWindow):
             )
             if key is not None:
                 self._video_standin_cache[key] = result
+                self._audio_prefetch_executor.submit(
+                    save_cached_video_standin, key, result
+                )
         # Display only — playback stays on VideoAudioMixer so we don't double.
         self.timeline.set_audio(result, reset_view=True)
         self._sync_timeline_overview()

@@ -59,3 +59,31 @@ def test_note_column_resize_reflows_row_height(app: QApplication) -> None:
     panel.cue_table.setColumnWidth(note_col, 400)
     panel._reflow_note_row_heights()
     assert panel.cue_table.rowHeight(0) < tall
+
+
+def test_tall_note_row_centers_time_type_cue_id(app: QApplication) -> None:
+    from PySide6.QtCore import Qt
+
+    song = Song.create("Note center")
+    song.add_mark(
+        1,
+        1.0,
+        "我現在跟你說我現在要超過整行了喔你最好要小心" * 2,
+    )
+    panel = CueMonitorPanel()
+    panel.resize(480, 640)
+    panel.set_song(song)
+    panel.cue_table.setColumnWidth(panel._col_for_field("note"), 100)
+    panel.refresh_list()
+    assert panel.cue_table.rowHeight(0) > _ROW_HEIGHT
+    center = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+    for field in ("time", "type", "cue_id"):
+        item = panel.cue_table.item(0, panel._col_for_field(field))
+        assert item is not None
+        assert item.textAlignment() & Qt.AlignmentFlag.AlignHCenter
+        assert item.textAlignment() & Qt.AlignmentFlag.AlignVCenter
+        assert int(item.textAlignment()) & int(center) == int(center)
+    note = panel.cue_table.item(0, panel._col_for_field("note"))
+    assert note is not None
+    assert note.textAlignment() & Qt.AlignmentFlag.AlignVCenter
+    assert note.textAlignment() & Qt.AlignmentFlag.AlignLeft

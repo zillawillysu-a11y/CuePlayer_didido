@@ -198,6 +198,30 @@ class VideoSyncController(QObject):
             return
         self._decode_and_emit(song, seconds)
 
+    def land_frame_at(self, seconds: float | None = None) -> None:
+        """Decode+emit one frame now, ignoring seek/play throttle.
+
+        Used after ``set_song`` / project open so Preview is not stuck black
+        until the user opens Clean Output (which used to be the only path
+        that re-armed decode when output was already marked active).
+        """
+        if seconds is not None:
+            self._last_position_seconds = float(seconds)
+        if not self._video_output_active:
+            return
+        song = self._song
+        pos = self._last_position_seconds
+        if song is None or pos is None:
+            return
+        self._flush_timer.stop()
+        self._pending_clip = None
+        self._pending_seconds = None
+        self._last_decode_time = 0.0
+        self._maybe_warn_overlap(song, float(pos))
+        primary = song.active_video_clip_at(float(pos))
+        self._set_active(primary.id if primary else None)
+        self._decode_and_emit(song, float(pos))
+
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.
 

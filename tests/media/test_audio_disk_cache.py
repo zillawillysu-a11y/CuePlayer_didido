@@ -13,7 +13,10 @@ from cueplayer.media.audio_disk_cache import (
     load_all_ltc_channels,
     load_audio_cached,
     load_cached_audio,
+    load_cached_video_standin,
+    load_cached_waveform_peaks,
     save_cached_audio,
+    save_cached_video_standin,
     save_ltc_channel,
 )
 from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
@@ -65,9 +68,12 @@ def test_load_audio_cached_writes_disk(tmp_path: Path, monkeypatch: pytest.Monke
 
     calls: list[Path] = []
 
-    def fake_load(path: Path) -> AudioBuffer:
+    def fake_load(path: Path, *, on_pcm_ready=None) -> AudioBuffer:  # noqa: ANN001
         calls.append(path)
-        return _tiny_buffer(path)
+        buf = _tiny_buffer(path)
+        if on_pcm_ready is not None:
+            on_pcm_ready(buf)
+        return buf
 
     monkeypatch.setattr(mod, "load_audio", fake_load)
     first = load_audio_cached(audio_path)
@@ -164,3 +170,73 @@ def test_adopt_waveform_only_without_ltc_row(
 
     assert adopt_caches_for_path(dest, former_path=former) is True
     assert load_cached_audio(dest) is not None
+
+
+def test_peaks_sidecar_survives_without_full_pcm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cueplayer.media.audio_disk_cache as mod
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    audio_path = tmp_path / "long.wav"
+    audio_path.write_bytes(b"placeholder")
+    buffer = _tiny_buffer(audio_path)
+    save_cached_audio(audio_path, buffer)
+
+    # Simulate full PCM write never finishing / being deleted.
+    key = audio_cache_key(audio_path)
+    assert key is not None
+    full = mod._cache_file(key)
+    if full.is_file():
+        full.unlink()
+
+    peaks = load_cached_waveform_peaks(audio_path)
+    assert peaks is not None
+    assert peaks.sample_rate == 48000
+    assert len(peaks.peak_levels) == len(buffer.peak_levels)
+    assert peaks.frames == buffer.frames
+    assert load_cached_audio(audio_path) is None
+
+
+def test_video_standin_disk_peaks_roundtrip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cueplayer.media.audio_disk_cache as mod
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    buffer = _tiny_buffer(tmp_path / "clip.mp4")
+    key = "clip|path|1|2|60.0|0.0|0.0|60.0"
+    save_cached_video_standin(key, buffer)
+    loaded = load_cached_video_standin(key)
+    assert loaded is not None
+    assert loaded.sample_rate == 48000
+    assert len(loaded.peak_levels) == len(buffer.peak_levels)
+    # Peaks-only stand-in — no multi-hundred-MB PCM on disk.
+    assert loaded.samples.shape[0] == buffer.frames
+
+
+def test_clone_copies_peaks_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    import cueplayer.media.audio_disk_cache as mod
+
+    monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mod, "_LTC_CACHE_FILE", tmp_path / "cache" / "ltc_channels.json")
+
+    src = tmp_path / "a" / "song.wav"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"WAVDATA")
+    save_cached_audio(src, _tiny_buffer(src))
+    src_key = audio_cache_key(src)
+    assert src_key is not None
+    # Keep peaks only (long-song case where full .npz never landed).
+    mod._cache_file(src_key).unlink(missing_ok=True)
+    assert mod._peaks_cache_file(src_key).is_file()
+
+    dest = tmp_path / "b" / "song.wav"
+    dest.parent.mkdir(parents=True)
+    shutil.copy2(src, dest)
+    assert clone_caches_for_copied_file(src, dest) is True
+    assert load_cached_waveform_peaks(dest) is not None

@@ -1736,7 +1736,7 @@ class CueMonitorPanel(QWidget):
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
                     time_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
                     )
                     self.cue_table.setItem(row, time_col, time_item)
 
@@ -1754,7 +1754,7 @@ class CueMonitorPanel(QWidget):
                     else:
                         cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     cue_id_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
                     )
                     self.cue_table.setItem(row, cue_id_col, cue_id_item)
 
@@ -1763,7 +1763,7 @@ class CueMonitorPanel(QWidget):
                     lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     lane_item.setForeground(QColor(lane.color))
                     lane_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
                     )
                     self.cue_table.setItem(row, type_col, lane_item)
 
@@ -1775,7 +1775,7 @@ class CueMonitorPanel(QWidget):
                         | Qt.ItemFlag.ItemIsEnabled
                     )
                     note_item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                     )
                     note_item.setToolTip(
                         "Click to edit Note — long text wraps and grows the row"

@@ -534,3 +534,29 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
     controller.set_scrubbing(False)
     # Mouse-up flush may open the live decoder for the exact land frame.
     assert clip.id in controller._decoders
+
+
+def test_land_frame_after_set_song_while_already_active(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Preview must not stay black after set_song when output stays active."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.update_position(0.4)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    # Mimic activate: clear picture, output flag unchanged (already True).
+    controller.set_song(song)
+    assert frames[-1] is None
+    controller.set_video_output_active(True)  # no-op — early return
+    assert frames[-1] is None
+
+    controller.land_frame_at(0.4)
+    assert isinstance(frames[-1], np.ndarray)
