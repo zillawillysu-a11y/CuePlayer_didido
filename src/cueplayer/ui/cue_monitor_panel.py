@@ -195,10 +195,15 @@ _NOW_CARD_MIN_H_BELOW = 32
 _NOW_CARD_MIN_H_SINGLE = 28
 _NOW_PRIMARY_COL_MIN = 40
 _NOW_SECONDARY_COL_MIN = 36
-_CUE_LIST_BODY_MIN = 56
+# Title (~17) + spacing (6) + table header (~21) + optional H-scrollbar (~14)
+# + at least one cue row. Below this the table viewport collapses and follow
+# cannot keep the playhead cue on screen.
+_CUE_LIST_BODY_MIN = 110
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
-# Keep NOW + Cue List tall enough inside the scroll area so a short panel
-# scrolls between the display (clock/NOW) and the Cue List instead of crushing both.
+# Soft floor used only when the monitor column is tall enough that outer
+# scrolling is unnecessary. Short panels cap the body to the viewport instead
+# (see `_fit_monitor_body_to_viewport`) so Cue List table scroll matches what
+# is on screen under the Clock.
 _MONITOR_BODY_SCROLL_MIN = 280
 _CLOCK_FONT_MAX_PX = 48
 _CLOCK_FONT_MIN_PX = 16
@@ -343,9 +348,10 @@ class CueMonitorPanel(QWidget):
         clock_frame = QFrame()
         self._clock_frame = clock_frame
         clock_frame.setObjectName("clockFrame")
-        # Never crush the clock block — short panels scroll instead.
+        # Hug the digits — do not vertically expand into leftover column space
+        # (Minimum would grow and starve Cue List / create a huge empty clock).
         clock_frame.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         clock_frame.setStyleSheet(
             "#clockFrame {"
@@ -372,7 +378,7 @@ class CueMonitorPanel(QWidget):
         self.clock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.clock_label.setMinimumWidth(0)
         self.clock_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._apply_clock_label_style()
 
@@ -380,7 +386,7 @@ class CueMonitorPanel(QWidget):
         self.duration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.duration_label.setMinimumWidth(0)
         self.duration_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._apply_duration_label_style()
 
@@ -391,7 +397,7 @@ class CueMonitorPanel(QWidget):
         self._tc_output_block.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tc_output_block.setStyleSheet("background: transparent;")
         self._tc_output_block.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         tc_out_layout = QVBoxLayout(self._tc_output_block)
         tc_out_layout.setContentsMargins(0, 8, 0, 4)
@@ -401,14 +407,14 @@ class CueMonitorPanel(QWidget):
         self.tc_output_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.tc_output_status.setMinimumWidth(0)
         self.tc_output_status.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
 
         self.tc_output_value = QLabel("01:00:00:00")
         self.tc_output_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.tc_output_value.setMinimumWidth(0)
         self.tc_output_value.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
         )
         self._tc_clock_color = "#3dd68c"
         self._show_output_tc_clock = True
@@ -660,14 +666,18 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setStretchFactor(0, 0)
         self._body_splitter.setStretchFactor(1, 1)
         self._body_splitter.setSizes([240, 420])
-        self._body_splitter.setMinimumHeight(_MONITOR_BODY_SCROLL_MIN)
+        # Short panels: height is capped to the viewport in
+        # `_fit_monitor_body_to_viewport` so Clock + Cue List stay on screen.
+        self._body_splitter.setMinimumHeight(_CUE_LIST_BODY_MIN)
         self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         body_handle = self._body_splitter.handle(1)
         body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
         self._sync_body_handle_tooltip()
 
-        # Short windows: scroll the right column between the display (clock/NOW)
-        # and Cue List instead of crushing both into illegible strips.
+        # Prefer Clock + NOW/Cue List in one viewport. A fixed tall body min
+        # used to force outer scrolling while the Cue List table stayed scrolled
+        # to the playhead "inside" a taller block — the window still showed the
+        # first rows. Cap the body under the clock instead (see fit helper).
         self._monitor_scroll_content = QWidget()
         self._monitor_scroll_content.setObjectName("monitorScrollContent")
         self._monitor_scroll_content.setMinimumWidth(0)
@@ -887,6 +897,7 @@ class CueMonitorPanel(QWidget):
         else:
             self._below_locked_primary_h = None
         self._sync_body_handle_tooltip()
+        self._fit_monitor_body_to_viewport()
 
     def _sync_now_section_collapsed(self, show_now: bool) -> None:
         """Show or collapse the NOW half of the body splitter."""
@@ -1055,6 +1066,56 @@ class CueMonitorPanel(QWidget):
             + self._secondary_col_min()
         )
 
+    def _clock_content_height(self) -> int:
+        """Natural Clock block height (digits + optional TC) — never stretched."""
+        return max(1, self._clock_frame.sizeHint().height())
+
+    def _fit_monitor_body_to_viewport(self) -> None:
+        """Cap NOW/Cue List so Clock + body fit the monitor viewport when short.
+
+        Playhead follow only scrolls ``cue_table``. If the body is taller than
+        the on-screen slice under the Clock, the window keeps showing the top
+        Cue List rows even after an internal scroll. Matching table height to
+        the visible area fixes that without yanking the outer scroller.
+        """
+        if not hasattr(self, "_monitor_scroll") or not hasattr(self, "_body_splitter"):
+            return
+        vp_h = self._monitor_scroll.viewport().height()
+        if vp_h <= 0:
+            return
+        spacing = 10
+        lay = self._monitor_scroll_content.layout()
+        if lay is not None:
+            spacing = max(0, int(lay.spacing()))
+        # Always budget from the compact clock sizeHint — using the stretched
+        # frame height would shrink Cue List and inflate the Clock further.
+        clock_h = self._clock_content_height()
+        body_budget = vp_h - clock_h - spacing
+        if body_budget >= _MONITOR_BODY_SCROLL_MIN:
+            # Tall enough: let the body expand with the panel (no artificial cap).
+            self._body_splitter.setMinimumHeight(_CUE_LIST_BODY_MIN)
+            self._body_splitter.setMaximumHeight(16777215)
+            return
+        # Short panel: keep Clock fully visible and give the rest to NOW/Cue List.
+        body_h = max(_CUE_LIST_BODY_MIN, body_budget)
+        if body_budget < _CUE_LIST_BODY_MIN:
+            # Extremely short — still keep a one-row Cue List; slight outer
+            # overflow is better than a zero-height table.
+            body_h = _CUE_LIST_BODY_MIN
+        self._body_splitter.setMinimumHeight(min(_CUE_LIST_BODY_MIN, body_h))
+        self._body_splitter.setMaximumHeight(body_h)
+        # Apply the cap immediately so sizeHints cannot re-expand the scroll content.
+        total = self._body_total_height()
+        if total <= 0 or total > body_h:
+            if self._now_section.isHidden():
+                self._body_splitter.setSizes([0, body_h])
+            else:
+                self._fit_body_within_panel()
+                sizes = self._body_splitter.sizes()
+                if len(sizes) == 2 and sum(sizes) != body_h:
+                    now_h = min(sizes[0], max(0, body_h - _CUE_LIST_BODY_MIN))
+                    self._body_splitter.setSizes([now_h, max(0, body_h - now_h)])
+
     def _fit_body_within_panel(self) -> None:
         """Keep NOW/Cue List split inside the current panel height (no window grow)."""
         if not hasattr(self, "_body_splitter"):
@@ -1071,7 +1132,9 @@ class CueMonitorPanel(QWidget):
         total = self._body_total_height()
         if total <= 0:
             return
-        max_now = max(40, total - max(40, _CUE_LIST_BODY_MIN // 2))
+        # Always reserve a Cue List tall enough for ≥1 scrollable row.
+        cue_floor = min(_CUE_LIST_BODY_MIN, max(40, total // 2))
+        max_now = max(40, total - cue_floor)
         preferred = min(self._now_content_min_height(), max_now)
         now_h = sizes[0]
         if now_h < preferred:
@@ -1112,10 +1175,14 @@ class CueMonitorPanel(QWidget):
 
         # Ideal NOW height from the drag, clamped so Cue List keeps a sliver
         # and Secondary keeps its floor — never increase `total`.
-        max_now = max(sec_min + self._now_chrome_height(), total - max(40, _CUE_LIST_BODY_MIN // 2))
+        cue_floor = min(_CUE_LIST_BODY_MIN, max(40, total // 2))
+        max_now = max(sec_min + self._now_chrome_height(), total - cue_floor)
         now_h = min(max(int(body[0]), min(now_floor, max_now)), max_now)
         if now_h < now_floor and now_floor <= max_now:
             now_h = now_floor
+        # Prefer a scrollable Cue List row over an oversized NOW pane.
+        if total > cue_floor:
+            now_h = min(now_h, total - cue_floor)
         # If the panel is too short for full floors, shrink Primary so Secondary lives.
         avail = max(0, now_h - self._now_chrome_height())
         if primary + handle + sec_min > avail:
@@ -1364,11 +1431,14 @@ class CueMonitorPanel(QWidget):
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
         QTimer.singleShot(0, self._fit_clock_fonts)
         QTimer.singleShot(0, self._fit_now_chrome)
+        QTimer.singleShot(0, self._fit_monitor_body_to_viewport)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
         super().resizeEvent(event)
         self._fit_clock_fonts()
         self._fit_now_chrome()
+        self._fit_monitor_body_to_viewport()
+        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
     @staticmethod
     def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
@@ -1554,6 +1624,7 @@ class CueMonitorPanel(QWidget):
         self._apply_tc_value_style()
         if self.output_quick_toggles.isVisible():
             self.output_quick_toggles._fit_to_width()  # noqa: SLF001
+        self._fit_monitor_body_to_viewport()
 
     def save_now_splitter_state(self):
         self._stash_current_splitter_state()
@@ -2404,12 +2475,14 @@ class CueMonitorPanel(QWidget):
         """Scroll/select the cue row for the current playhead (independent of NOW hold)."""
         if self._song is None:
             return
-        mark = self._song.last_mark_at_or_before(self._position)
+        # Only marks that actually appear in Cue List — otherwise select fails
+        # and the list stays parked on an older Main/Top row.
+        mark = self._song.last_cue_list_mark_at_or_before(self._position)
         if mark is None:
             return
         if mark.id == self._playhead_list_mark_id:
             # Same cue as last follow — still re-scroll if the row drifted out
-            # of view (e.g. after a deferred list rebuild or viewport resize).
+            # of the Cue List viewport (tiny height or deferred rebuild).
             self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=True):
@@ -2424,7 +2497,7 @@ class CueMonitorPanel(QWidget):
         # No cached row yet — resolve from playhead once.
         if self._song is None:
             return
-        mark = self._song.last_mark_at_or_before(self._position)
+        mark = self._song.last_cue_list_mark_at_or_before(self._position)
         if mark is None:
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=False):
@@ -2436,7 +2509,12 @@ class CueMonitorPanel(QWidget):
         *,
         only_if_obscured: bool = False,
     ) -> None:
-        """Center the cue row in the Cue List, with a bottom margin so it is not buried."""
+        """Keep the cue row visible inside the Cue List table (1–2 row viewports OK).
+
+        Only scrolls ``cue_table`` — never the outer ``_monitor_scroll``. Short
+        windows often show Clock + a thin Cue List; yanking the outer scroller
+        would steal the Clock the user wants to keep on screen.
+        """
         if not self.cue_table.isVisible():
             return
         row = -1
@@ -2455,24 +2533,27 @@ class CueMonitorPanel(QWidget):
         vp_h = self.cue_table.viewport().height()
         if vp_h <= 0:
             return
-        margin = max(12, _ROW_HEIGHT // 2)
+        # Soft margin: never demand more padding than the viewport can spare.
+        row_h = max(1, self.cue_table.visualRect(index).height() or _ROW_HEIGHT)
+        margin = min(max(4, _ROW_HEIGHT // 2), max(0, vp_h - row_h))
         rect = self.cue_table.visualRect(index)
         if only_if_obscured and rect.height() > 0:
             fully_visible = rect.top() >= 0 and rect.bottom() <= vp_h - margin
             if fully_visible:
                 return
-        self.cue_table.scrollToItem(
-            item,
-            QAbstractItemView.ScrollHint.PositionAtCenter,
+        # Tiny viewport: pin to top so the active cue is the one you see.
+        hint = (
+            QAbstractItemView.ScrollHint.PositionAtTop
+            if vp_h < row_h + margin + 8
+            else QAbstractItemView.ScrollHint.PositionAtCenter
         )
+        self.cue_table.scrollToItem(item, hint)
         rect = self.cue_table.visualRect(index)
-        # Keep at least ~½ row clear of the bottom edge (avoids “buried” selection).
-        if rect.bottom() > vp_h - margin:
+        # Keep a little air under the row when the viewport is tall enough.
+        if margin > 0 and rect.bottom() > vp_h - margin:
             bar = self.cue_table.verticalScrollBar()
             if bar is not None:
                 bar.setValue(int(bar.value() + (rect.bottom() - (vp_h - margin))))
-        # Do NOT touch `_monitor_scroll` here — yanking the outer scroller would
-        # lock the user on Cue List when they scrolled up to the Timecode clock.
 
     def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> bool:
         """Select the cue row for ``mark_id``. Returns False if the row is missing."""

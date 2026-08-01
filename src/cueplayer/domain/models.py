@@ -665,6 +665,18 @@ class Song:
             active = mark
         return active
 
+    def last_cue_list_mark_at_or_before(self, position: float) -> Mark | None:
+        """Latest Cue List row mark at or before position (visible + cue_list_enabled)."""
+        active: Mark | None = None
+        for mark in self.marks:
+            lane = self.lane_by_index(mark.lane_index)
+            if lane is None or not lane.visible or not lane.cue_list_enabled:
+                continue
+            if mark.time_seconds > position + 1e-4:
+                break
+            active = mark
+        return active
+
     def next_mark_among_lanes(self, lane_indices: list[int], position: float) -> Mark | None:
         allowed = set(lane_indices)
         if not allowed:
