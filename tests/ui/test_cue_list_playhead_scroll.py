@@ -69,46 +69,30 @@ def test_playhead_cue_scrolls_into_view_with_bottom_margin(app: QApplication) ->
     assert rect.bottom() <= vp_h - max(8, _ROW_HEIGHT // 4)
 
 
-def test_cue_row_scroll_does_not_yank_outer_when_row_already_visible(
-    app: QApplication,
-) -> None:
-    """Outer monitor scroller stays put when the playhead row is already on screen."""
+def test_cue_row_scroll_does_not_move_outer_monitor_scroll(app: QApplication) -> None:
+    """Cue follow must not yank the outer scroller — Clock stays where the user left it."""
     panel = CueMonitorPanel()
     song = _song_with_marks(40)
     panel.set_song(song)
     panel.show()
-    panel.resize(320, 360)
+    panel.configure_output_timecode_clock(visible=True, color="#3dd68c")
+    panel.resize(300, 240)
     app.processEvents()
     _prepare_short_cue_list(panel, app)
 
     outer = panel._monitor_scroll.verticalScrollBar()  # noqa: SLF001
-    # Scroll up toward Timecode (top of the monitor column).
+    # Park on Clock (top). Playhead follow must only scroll Cue List internally.
     outer.setValue(0)
     app.processEvents()
     assert outer.value() == 0
 
-    # With NOW collapsed and a tall-enough panel, Cue List fills the column —
-    # table scroll alone keeps the row visible; outer bar must stay at 0.
-    if outer.maximum() == 0:
-        target = song.marks[22]
-        panel.set_position(float(target.time_seconds) + 0.01)
-        app.processEvents()
-        panel._scroll_cue_row_into_view(target.id)  # noqa: SLF001
-        app.processEvents()
-        assert outer.value() == 0
-        return
-
-    # If the column is nested-scrolled, only assert we don't move when the
-    # target row is already mapped inside the outer viewport.
-    target = song.marks[2]
+    target = song.marks[22]
     panel.set_position(float(target.time_seconds) + 0.01)
     app.processEvents()
     panel._scroll_cue_row_into_view(target.id)  # noqa: SLF001
     app.processEvents()
-    before = outer.value()
-    panel._scroll_cue_row_into_view(target.id, only_if_obscured=True)  # noqa: SLF001
-    app.processEvents()
-    assert outer.value() == before
+
+    assert outer.value() == 0
 
 
 def test_tiny_cue_list_keeps_playhead_row_visible(app: QApplication) -> None:
@@ -183,41 +167,6 @@ def test_follow_skips_marks_hidden_from_cue_list(app: QApplication) -> None:
     assert other.id not in {
         panel._mark_id_at_row(r) for r in range(panel.cue_table.rowCount())  # noqa: SLF001
     }
-
-
-def test_short_window_outer_scroll_reveals_playhead_cue(app: QApplication) -> None:
-    """Nested monitor scroll still brings the active Cue List row into the window."""
-    panel = CueMonitorPanel()
-    song = _song_with_marks(40)
-    panel.set_song(song)
-    panel.show()
-    panel.configure_output_timecode_clock(visible=True, color="#3dd68c")
-    # Short enough to activate outer `_monitor_scroll`.
-    panel.resize(300, 240)
-    app.processEvents()
-    panel._fit_body_within_panel()  # noqa: SLF001
-    app.processEvents()
-
-    outer = panel._monitor_scroll.verticalScrollBar()  # noqa: SLF001
-    if outer.maximum() <= 0:
-        pytest.skip("layout did not nest-scroll in this environment")
-
-    # Park at top (clock) so Cue List is off-screen, then follow a late cue.
-    outer.setValue(0)
-    app.processEvents()
-    target = song.marks[30]
-    panel.set_position(float(target.time_seconds) + 0.01)
-    app.processEvents()
-    panel._scroll_cue_row_into_view(target.id)  # noqa: SLF001
-    app.processEvents()
-
-    row = next(
-        r
-        for r in range(panel.cue_table.rowCount())
-        if panel._mark_id_at_row(r) == target.id  # noqa: SLF001
-    )
-    index = panel.cue_table.model().index(row, 0)
-    assert panel._cue_row_visible_in_monitor_scroll(index)  # noqa: SLF001
 
 
 def test_layout_change_rescrolls_obscured_playhead_cue(app: QApplication) -> None:

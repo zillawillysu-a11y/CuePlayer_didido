@@ -2421,7 +2421,7 @@ class CueMonitorPanel(QWidget):
             return
         if mark.id == self._playhead_list_mark_id:
             # Same cue as last follow — still re-scroll if the row drifted out
-            # of view (tiny viewport, deferred rebuild, or outer monitor scroll).
+            # of the Cue List viewport (tiny height or deferred rebuild).
             self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=True):
@@ -2448,7 +2448,12 @@ class CueMonitorPanel(QWidget):
         *,
         only_if_obscured: bool = False,
     ) -> None:
-        """Keep the cue row visible in the Cue List — even when only 1–2 rows fit."""
+        """Keep the cue row visible inside the Cue List table (1–2 row viewports OK).
+
+        Only scrolls ``cue_table`` — never the outer ``_monitor_scroll``. Short
+        windows often show Clock + a thin Cue List; yanking the outer scroller
+        would steal the Clock the user wants to keep on screen.
+        """
         if not self.cue_table.isVisible():
             return
         row = -1
@@ -2466,8 +2471,6 @@ class CueMonitorPanel(QWidget):
         index = self.cue_table.model().index(row, 0)
         vp_h = self.cue_table.viewport().height()
         if vp_h <= 0:
-            # Table crushed — still try to bring Cue List into the outer viewport.
-            self._reveal_cue_list_in_monitor_scroll()
             return
         # Soft margin: never demand more padding than the viewport can spare.
         row_h = max(1, self.cue_table.visualRect(index).height() or _ROW_HEIGHT)
@@ -2475,8 +2478,7 @@ class CueMonitorPanel(QWidget):
         rect = self.cue_table.visualRect(index)
         if only_if_obscured and rect.height() > 0:
             fully_visible = rect.top() >= 0 and rect.bottom() <= vp_h - margin
-            # Also require the row to be on-screen in the outer monitor scroller.
-            if fully_visible and self._cue_row_visible_in_monitor_scroll(index):
+            if fully_visible:
                 return
         # Tiny viewport: pin to top so the active cue is the one you see.
         hint = (
@@ -2491,65 +2493,6 @@ class CueMonitorPanel(QWidget):
             bar = self.cue_table.verticalScrollBar()
             if bar is not None:
                 bar.setValue(int(bar.value() + (rect.bottom() - (vp_h - margin))))
-        # Short windows nest Cue List inside `_monitor_scroll`. Table scroll alone
-        # can leave the active row below the window — pull the outer scroller too.
-        self._reveal_cue_row_in_monitor_scroll(index)
-
-    def _cue_row_visible_in_monitor_scroll(self, index) -> bool:  # noqa: ANN001
-        """True when the row's table rect intersects the outer monitor viewport."""
-        if not hasattr(self, "_monitor_scroll"):
-            return True
-        outer = self._monitor_scroll
-        bar = outer.verticalScrollBar()
-        if bar is None or bar.maximum() <= 0:
-            return True
-        rect = self.cue_table.visualRect(index)
-        if rect.height() <= 0:
-            return False
-        outer_vp = outer.viewport()
-        top = self.cue_table.viewport().mapTo(outer_vp, rect.topLeft()).y()
-        bot = self.cue_table.viewport().mapTo(outer_vp, rect.bottomRight()).y()
-        return bot > 0 and top < outer_vp.height()
-
-    def _reveal_cue_list_in_monitor_scroll(self) -> None:
-        """Scroll the outer column so the Cue List block is in the window."""
-        if not hasattr(self, "_monitor_scroll") or not hasattr(self, "_cue_list_block"):
-            return
-        bar = self._monitor_scroll.verticalScrollBar()
-        if bar is None or bar.maximum() <= 0:
-            return
-        outer_vp = self._monitor_scroll.viewport()
-        top_left = self._cue_list_block.mapTo(outer_vp, self._cue_list_block.rect().topLeft())
-        if top_left.y() < 0:
-            bar.setValue(int(bar.value() + top_left.y()))
-        elif top_left.y() > outer_vp.height() - 40:
-            bar.setValue(int(bar.value() + (top_left.y() - max(0, outer_vp.height() // 3))))
-
-    def _reveal_cue_row_in_monitor_scroll(self, index) -> None:  # noqa: ANN001
-        """Adjust outer `_monitor_scroll` so the cue row is in the window viewport."""
-        if not hasattr(self, "_monitor_scroll"):
-            return
-        outer = self._monitor_scroll
-        bar = outer.verticalScrollBar()
-        if bar is None or bar.maximum() <= 0:
-            return
-        rect = self.cue_table.visualRect(index)
-        if rect.height() <= 0:
-            self._reveal_cue_list_in_monitor_scroll()
-            return
-        outer_vp = outer.viewport()
-        top = self.cue_table.viewport().mapTo(outer_vp, rect.topLeft()).y()
-        bot = self.cue_table.viewport().mapTo(outer_vp, rect.bottomRight()).y()
-        ovh = outer_vp.height()
-        if top >= 0 and bot <= ovh:
-            return
-        delta = 0
-        if top < 0:
-            delta = top - 4
-        elif bot > ovh:
-            delta = bot - ovh + 4
-        if delta:
-            bar.setValue(int(bar.value() + delta))
 
     def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> bool:
         """Select the cue row for ``mark_id``. Returns False if the row is missing."""
