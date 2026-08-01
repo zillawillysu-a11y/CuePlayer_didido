@@ -1041,8 +1041,10 @@ class Project:
     video_decode_quality: VideoDecodeQuality = "1080p"
 
     @classmethod
-    def create(cls, name: str) -> Project:
-        return cls(id=_new_id(), name=name, songs=[Song.create("Untitled Song")])
+    def create(cls, name: str, *, with_song: bool = True) -> Project:
+        """Create a project. ``with_song=False`` starts with an empty Setlist."""
+        songs = [Song.create("Untitled Song")] if with_song else []
+        return cls(id=_new_id(), name=name, songs=songs)
 
     def new_song(self, name: str) -> Song:
         """Create a song using the project Mark template when set."""

@@ -308,7 +308,10 @@ class UndoContext:
         for s in self.project.songs:
             if s.id == self.current_song_id:
                 return s
-        return self.project.songs[0]
+        if self.project.songs:
+            return self.project.songs[0]
+        # Empty Setlist — callers must tolerate missing song; return a throwaway.
+        return Song.create("Untitled Song")
 
 
 def _merge_setlist_state(live: Song, snap: Song) -> None:

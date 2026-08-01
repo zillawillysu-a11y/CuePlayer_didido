@@ -949,10 +949,13 @@ class MainWindow(QMainWindow):
     def __init__(self, project: Project | None = None) -> None:
         super().__init__()
         self.startup_session_ready = False
-        self.project = project or Project.create("Untitled Project")
-        if not self.project.songs:
-            self.project.songs.append(self.project.new_song("Untitled Song"))
-        self.current_song = self.project.songs[0]
+        self.project = project or Project.create("Untitled Project", with_song=False)
+        # Workspace stand-in when Setlist is empty — never listed as a song.
+        self._blank_song = Song.create("Untitled Song")
+        if self.project.songs:
+            self.current_song = self.project.songs[0]
+        else:
+            self.current_song = self._blank_song
         self._project_path: Path | None = None
         self._dirty = False
         self._digit_shortcuts: list[QShortcut] = []
@@ -1098,7 +1101,16 @@ class MainWindow(QMainWindow):
         self.song_list.setItemDelegate(SetlistRowDelegate(self.song_list))
         self.song_list.set_name_mode(self.project.setlist_name_mode)
         self._sync_setlist_column_prefs()
-        self._rebuild_song_list(select_indexes=[0])
+        self._rebuild_song_list(
+            select_indexes=[0] if self.project.songs else []
+        )
+        if not self.project.songs:
+            # Match New Project: empty Setlist, blank timeline (no phantom song).
+            self.timeline.set_song(None)
+            self.timeline.set_audio(None)
+            self.monitor.set_song(None)
+            self.video_sync.set_song(None)
+            self.engine.set_song(None)
         self.add_song_button = QPushButton("Add")
         self.edit_song_button = QPushButton("Edit")
         self.delete_song_button = QPushButton("Delete")
@@ -2542,6 +2554,11 @@ class MainWindow(QMainWindow):
             )
 
     def _sync_after_setlist_undo_redo(self, cmd: SetlistEditCommand) -> None:
+        if not self.project.songs:
+            self._apply_empty_project_workspace()
+            self._refresh_window_title()
+            self._refresh_status()
+            return
         try:
             idx = next(
                 i for i, s in enumerate(self.project.songs) if s.id == cmd.current_song_id
@@ -2674,14 +2691,17 @@ class MainWindow(QMainWindow):
             return False
         if (self.project.name or "").strip() not in ("Untitled Project", "Untitled", ""):
             return False
+        if self.project.setlist_categories:
+            return False
+        # Empty Setlist is the new blank project.
+        if not self.project.songs:
+            return True
         if len(self.project.songs) != 1:
             return False
         song = self.project.songs[0]
         if (song.name or "").strip() not in ("Untitled Song", ""):
             return False
         if song.audio_tracks or song.video_clips or song.marks:
-            return False
-        if self.project.setlist_categories:
             return False
         if any(song.category_id for song in self.project.songs):
             return False
@@ -2717,7 +2737,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_new_project():
             return
         self.engine.stop()
-        self.project = Project.create("Untitled Project")
+        self.project = Project.create("Untitled Project", with_song=False)
         self._project_path = None
         self._apply_project()
         self._set_clean()
@@ -2909,8 +2929,7 @@ class MainWindow(QMainWindow):
 
     def _apply_project(self, *, preferred_song_id: str | None = None) -> None:
         self._undo.clear()
-        if not self.project.songs:
-            self.project.songs.append(self.project.new_song("Untitled Song"))
+        # Do not invent an Untitled Song — New Project / empty files stay empty.
         self.show_patch_page.set_project(self.project)
         self.setlist_sheet_page.set_project(self.project)
         self._sync_setlist_name_mode_ui()
@@ -2931,6 +2950,9 @@ class MainWindow(QMainWindow):
         self._sync_output_timecode_clock_ui()
         self._refresh_output_timecode_clock()
         self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
+        if not self.project.songs:
+            self._apply_empty_project_workspace()
+            return
         song_index = 0
         if preferred_song_id:
             for i, song in enumerate(self.project.songs):
@@ -2939,6 +2961,33 @@ class MainWindow(QMainWindow):
                     break
         self._rebuild_song_list(select_indexes=[song_index])
         self._activate_song(song_index, stop_playback=True)
+
+    def _apply_empty_project_workspace(self) -> None:
+        """Clear timeline / monitor when the Setlist has no songs."""
+        self._blank_song = Song.create("Untitled Song")
+        self.current_song = self._blank_song
+        self._undo_ctx = UndoContext(self.project, self.current_song.id)
+        self._rebuild_song_list(select_indexes=[])
+        self.timeline.clear_selection(emit=False)
+        self.timeline.set_song(None)
+        self.timeline.set_audio(None)
+        self.timeline.set_audio_loading(False)
+        self.timeline.set_ltc_audio(None)
+        self.monitor.set_song(None)
+        self.monitor.set_selected_mark_ids([])
+        self.video_sync.set_song(None)
+        self.engine.set_song(None)
+        self.engine.set_buffer(None)
+        self.engine.set_duration(60.0)
+        self.engine.clear_loop()
+        self._sync_loop_ui()
+        self.transport.set_times(0.0, self.engine.duration)
+        self.monitor.set_position(0.0, self.engine.duration)
+        self._rebuild_digit_shortcuts()
+        self._refresh_window_title()
+        self._refresh_status()
+        self._sync_timeline_overview()
+        self._ensure_video_preview_frame()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -3697,7 +3746,7 @@ class MainWindow(QMainWindow):
         detect_all_bpm_action.setEnabled(
             any(self._main_audio_path_for_song(s) is not None for s in self.project.songs)
         )
-        delete_action.setEnabled(has_selection and len(self.project.songs) > 1)
+        delete_action.setEnabled(has_selection and len(self.project.songs) >= 1)
         renumber_action.setEnabled(has_selection)
         renumber_action.setToolTip(
             "Reset selected songs to 1, 2, 3… within each folder (list order)"
@@ -4733,12 +4782,10 @@ class MainWindow(QMainWindow):
         indexes = self._selected_song_indexes()
         if not indexes:
             row = self.song_list.currentRow()
-            if 0 <= row < len(self.project.songs):
-                indexes = [row]
+            song_index = self.song_list.row_song_index(row) if row >= 0 else None
+            if song_index is not None and 0 <= song_index < len(self.project.songs):
+                indexes = [song_index]
         if not indexes:
-            return
-        if len(self.project.songs) - len(indexes) < 1:
-            QMessageBox.information(self, "Cannot Delete", "The project must keep at least one song.")
             return
         if len(indexes) == 1:
             song = self.project.songs[indexes[0]]
@@ -4758,9 +4805,12 @@ class MainWindow(QMainWindow):
         with self._setlist_edit("Delete Song"):
             for i in sorted(indexes, reverse=True):
                 del self.project.songs[i]
-            new_row = min(indexes[0], len(self.project.songs) - 1)
-            self._rebuild_song_list(select_indexes=[new_row])
-            self._activate_song(new_row, stop_playback=True)
+            if self.project.songs:
+                new_row = min(indexes[0], len(self.project.songs) - 1)
+                self._rebuild_song_list(select_indexes=[new_row])
+                self._activate_song(new_row, stop_playback=True)
+            else:
+                self._apply_empty_project_workspace()
             self._mark_dirty()
         if len(removed_names) == 1:
             self.status.showMessage(f"Deleted song: {removed_names[0]}", 2500)
