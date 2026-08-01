@@ -143,6 +143,36 @@ def test_build_waveform_window_zoomed() -> None:
     assert max(abs(v) for v in tight["maxs"]) > 0.05
 
 
+def test_waveform_strips_ltc_channel_energy() -> None:
+    """Remote music wave must not be dominated by a striped LTC channel."""
+    from cueplayer.media.audio_loader import build_peak_pyramid, waveform_display_buffer
+
+    sr = 48000
+    t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+    music = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    # Loud square-ish LTC stand-in on Right.
+    ltc = np.where((np.arange(sr) % 48) < 24, 0.95, -0.95).astype(np.float32)
+    stereo = np.column_stack([music, ltc])
+    mono, levels = build_peak_pyramid(stereo, sr)
+    mixed = AudioBuffer(
+        path=__import__("pathlib").Path("mix.wav"),
+        sample_rate=sr,
+        samples=stereo,
+        mono=mono,
+        peak_levels=levels,
+    )
+    stripped = waveform_display_buffer(mixed, exclude_channel=1)
+    assert stripped is not mixed
+    # Mixed mono (mean of L+R) is dominated by LTC; stripped peaks come from music only.
+    assert float(np.max(np.abs(mixed.mono))) > 0.7
+    assert float(np.max(np.abs(stripped.mono))) < 0.35
+    clean_wave = build_waveform_window(
+        stripped, song_id="m", duration=1.0, start=0.1, end=0.3, buckets=800
+    )
+    assert clean_wave["ready"] is True
+    assert max(abs(v) for v in clean_wave["maxs"]) > 0.05
+
+
 def test_build_state_includes_unicode_song_and_marks() -> None:
     project = Project.create("現場", with_song=False)
     song = Song.create("彼个字")

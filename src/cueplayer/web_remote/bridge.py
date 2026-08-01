@@ -164,6 +164,43 @@ class WebRemoteBridge(QObject):
             ),
         }
 
+    def _music_waveform_buffer(self) -> Any:
+        """Music-only display buffer (LTC channel stripped), matching the timeline."""
+        host = self._host
+        engine = host.engine
+        buf = getattr(engine, "buffer", None)
+        if buf is None:
+            return None
+        # Prefer the same peaks the desktop Music lane is already painting.
+        try:
+            timeline = getattr(host, "timeline", None)
+            display = getattr(timeline, "_audio", None) if timeline is not None else None
+            if (
+                display is not None
+                and getattr(display, "peak_levels", None)
+                and getattr(display, "mono", None) is not None
+            ):
+                return display
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            song = host.current_song
+            exclude = host._ltc_channel_for_song(song)
+            path = host._main_audio_path_for_song(song)
+            if path is not None and hasattr(host, "_waveform_for_timeline"):
+                return host._waveform_for_timeline(buf, path, exclude)
+            from cueplayer.media.audio_loader import waveform_display_buffer
+
+            return waveform_display_buffer(buf, exclude_channel=exclude)
+        except Exception:  # noqa: BLE001
+            return buf
+
+    def _ltc_exclude_for_cache(self) -> int | None:
+        try:
+            return self._host._ltc_channel_for_song(self._host.current_song)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _safe_waveform(
         self,
         start: float | None = None,
@@ -173,13 +210,14 @@ class WebRemoteBridge(QObject):
         host = self._host
         song = host.current_song
         engine = host.engine
-        buf = getattr(engine, "buffer", None)
+        buf = self._music_waveform_buffer()
         frames = int(getattr(buf, "frames", 0) or 0) if buf is not None else 0
         duration = float(engine.duration)
         song_id = str(song.id)
+        exclude = self._ltc_exclude_for_cache()
 
         if start is None and end is None:
-            key = (song_id, frames, int(round(duration * 1000)))
+            key = (song_id, frames, int(round(duration * 1000)), exclude)
             if self._wave_cache is not None and self._wave_cache_key == key:
                 return self._wave_cache
             payload = build_waveform_overview(
@@ -198,7 +236,7 @@ class WebRemoteBridge(QObject):
         # Quantize cache key so tiny pan deltas reuse the last detail slice.
         q0 = round(t0 * 40) / 40.0
         q1 = round(t1 * 40) / 40.0
-        dkey = (song_id, frames, q0, q1, n)
+        dkey = (song_id, frames, q0, q1, n, exclude)
         if self._wave_detail_cache is not None and self._wave_detail_key == dkey:
             return self._wave_detail_cache
         payload = build_waveform_window(
