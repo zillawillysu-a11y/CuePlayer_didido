@@ -250,16 +250,19 @@ def split_ma_cue_number(cue_number: float) -> tuple[int, int]:
 
 def format_ma2_timecode_step(cue_number: float) -> str:
     """
-    Deprecated helper: Timecode ``step`` must be the 1-based cue *index*
-    in the sequence (see ``ma2_timecode_cue_nos``), not the Cue ID.
-
-    Kept for callers that still pass a whole cue id (== index when no fractions).
+    Deprecated: Main Timecode events should use ``MA2_TC_STEP_NONE`` so Import
+    does not create phantom Cue numbers from sequence indices.
     """
     major, sub = split_ma_cue_number(cue_number)
     if sub:
-        # Fractions must not put a decimal in ``step``; callers should pass index.
         return str(major * 1000 + sub)
     return str(major)
+
+
+# Same sentinel Top events use — "no step". Using the Store-order index as
+# step (45, 46, …) made MA Timecode Import invent Cue 45…N when Cue IDs only
+# went to 44 because of fractional inserts.
+MA2_TC_STEP_NONE = "4294967295"
 
 
 def format_ma2_cue_link_name(cue_number: float) -> str:
@@ -278,6 +281,21 @@ def ma2_timecode_cue_nos(sequence_pool: int, cue_index: int) -> list[int]:
     fire Cue 14.1 (the 15th cue) instead.
     """
     return [1, int(sequence_pool), max(1, int(cue_index))]
+
+
+def ma2_phantom_cue_delete_range(plan: "SongExportPlan") -> tuple[int, int] | None:
+    """
+    If Timecode Import still spawned Cue (max_id+1)…(cue_count), return that
+    inclusive Delete range. Example: 44 IDs + 9 fractions → 53 Stores, max ID
+    44 → delete Cue 45 Thru 53.
+    """
+    if not plan.main_cues:
+        return None
+    max_major = max(split_ma_cue_number(c.cue_number)[0] for c in plan.main_cues)
+    count = len(plan.main_cues)
+    if count > max_major:
+        return max_major + 1, count
+    return None
 
 
 def ma3_cue_destination_handle(cue_number: float) -> int:
