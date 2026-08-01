@@ -64,6 +64,51 @@ _COL_WAVE_CUE = 13
 _COL_NOW = 14
 _COL_COUNT = 15
 
+_HEADER_LABELS = (
+    "#",
+    "Name",
+    "Shortcut",
+    "Shape",
+    "Color",
+    "Visible",
+    "Cue List",
+    "Cue ID",
+    "MIDI On",
+    "Note",
+    "Pause",
+    "Ask Note",
+    "Wave Note",
+    "Wave Cue",
+    "NOW",
+)
+
+# Floors so headers and combo text (Secondary / auto (36)) are not clipped.
+_COLUMN_MIN_WIDTHS = {
+    _COL_INDEX: 44,
+    _COL_NAME: 140,
+    _COL_KEY: 80,
+    _COL_SHAPE: 140,
+    _COL_COLOR: 72,
+    _COL_VISIBLE: 78,
+    _COL_CUE_LIST: 86,
+    _COL_CUE_ID: 78,
+    _COL_MIDI: 82,
+    _COL_MIDI_NOTE: 128,
+    _COL_PAUSE: 72,
+    _COL_ASK_NOTE: 96,
+    _COL_WAVE_NOTE: 104,
+    _COL_WAVE_CUE: 100,
+    _COL_NOW: 128,
+}
+
+# Extra room for combo arrow + padding when sizing from sample cell text.
+_COMBO_CELL_SAMPLES = {
+    _COL_SHAPE: "Triangle ▲",
+    _COL_MIDI_NOTE: "auto (127)",
+    _COL_NOW: "Secondary",
+}
+_COMBO_CHROME_PX = 36
+
 _TABLE_COMBO_QSS = (
     "QComboBox {"
     "  padding: 2px 6px;"
@@ -289,8 +334,10 @@ class MarkManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Mark Manager")
-        self.setMinimumWidth(1140)
-        self.resize(1340, 560)
+        # Wide enough for every header + combos without squeezing columns.
+        total_cols = sum(_COLUMN_MIN_WIDTHS.values()) + 48
+        self.setMinimumWidth(max(1280, total_cols))
+        self.resize(max(1480, total_cols + 40), 580)
         self._song = song
         self._project = project
         self._suppress_key_prompt = False
@@ -307,7 +354,8 @@ class MarkManagerDialog(QDialog):
             "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
             "Pause stops playback when you place a mark of that type; Ask Note opens a Note dialog after placing; "
             "Wave Note / Wave Cue show the Note or Cue ID next to the mark line on the waveform. "
-            'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
+            'Use "Save Settings" to write a file you can later load and apply to a song or as the show default. '
+            "Scroll horizontally if needed — columns keep their full labels."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -317,49 +365,17 @@ class MarkManagerDialog(QDialog):
         layout.addWidget(self.preview)
 
         self.table = QTableWidget(0, _COL_COUNT)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "#",
-                "Name",
-                "Shortcut",
-                "Shape",
-                "Color",
-                "Visible",
-                "Cue List",
-                "Cue ID",
-                "MIDI On",
-                "Note",
-                "Pause",
-                "Ask Note",
-                "Wave Note",
-                "Wave Cue",
-                "NOW",
-            ]
-        )
+        self.table.setHorizontalHeaderLabels(list(_HEADER_LABELS))
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setMinimumSectionSize(36)
-        default_widths = {
-            _COL_INDEX: 40,
-            _COL_NAME: 120,
-            _COL_KEY: 68,
-            _COL_SHAPE: 112,
-            _COL_COLOR: 64,
-            _COL_VISIBLE: 52,
-            _COL_CUE_LIST: 68,
-            _COL_CUE_ID: 64,
-            _COL_MIDI: 68,
-            _COL_MIDI_NOTE: 96,
-            _COL_PAUSE: 52,
-            _COL_ASK_NOTE: 68,
-            _COL_WAVE_NOTE: 72,
-            _COL_WAVE_CUE: 72,
-            _COL_NOW: 96,
-        }
-        for col, width in default_widths.items():
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(col, width)
+        header.setMinimumSectionSize(44)
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+        header.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -396,10 +412,25 @@ class MarkManagerDialog(QDialog):
         self.load_template_btn.clicked.connect(self._load_template)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self._load_from_song()
+        self._apply_column_widths()
         if self._lane_row_count() > 0:
             self.table.selectRow(0)
         self._refresh_preview()
         self._refresh_bulk_toggle_states()
+
+    def _apply_column_widths(self) -> None:
+        """Size columns so headers and typical combo text are not clipped."""
+        header = self.table.horizontalHeader()
+        metrics = self.table.fontMetrics()
+        for col, label in enumerate(_HEADER_LABELS):
+            text_w = metrics.horizontalAdvance(label) + 28
+            sample = _COMBO_CELL_SAMPLES.get(col)
+            cell_w = (
+                metrics.horizontalAdvance(sample) + _COMBO_CHROME_PX if sample else 0
+            )
+            width = max(_COLUMN_MIN_WIDTHS[col], text_w, cell_w)
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(col, width)
 
     def _lane_row_count(self) -> int:
         count = self.table.rowCount()
@@ -892,6 +923,7 @@ class MarkManagerDialog(QDialog):
         shape_idx = shape.findData(lane.marker_shape)
         shape.setCurrentIndex(shape_idx if shape_idx >= 0 else 0)
         shape.currentIndexChanged.connect(lambda _i, r=row: self._on_shape_or_color_changed(r))
+        shape.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_SHAPE] - 8)
         _style_table_combo(shape)
         self.table.setCellWidget(row, _COL_SHAPE, shape)
 
@@ -953,6 +985,7 @@ class MarkManagerDialog(QDialog):
 
         default_note = self._default_note_for_lane(lane)
         note_combo = self._make_note_combo(lane, default_note)
+        note_combo.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_MIDI_NOTE] - 8)
         _style_table_combo(note_combo)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
 
@@ -1020,6 +1053,7 @@ class MarkManagerDialog(QDialog):
         now_combo.setToolTip(
             "NOW monitor assignment: Off screen, Primary display, or Secondary display"
         )
+        now_combo.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_NOW] - 8)
         _style_table_combo(now_combo)
         now_combo.currentIndexChanged.connect(lambda _i: self._on_now_display_changed())
         self.table.setCellWidget(row, _COL_NOW, now_combo)
@@ -1078,6 +1112,8 @@ class MarkManagerDialog(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
+        # Re-measure after the dialog is shown (font metrics can differ offscreen).
+        self._apply_column_widths()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
