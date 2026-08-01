@@ -18,6 +18,7 @@
 | Mark Manager **Ask Note** | 勾選後，打標（常搭配 Pause）會跳出 Note 輸入框 |
 | Mark Manager **Wave Note** | 勾選後，波形上標記線頂端右側顯示該標的 Note |
 | Mark Manager **Wave Cue** | 勾選後，波形上標記線頂端右側顯示 Cue ID（需該 Type 開 Cue ID） |
+| **Display Settings → Wave Label Size** | 同步調整波形旁 Cue ID／Note 字級（整專案） |
 | 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
 | Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
 | 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |

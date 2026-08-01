@@ -996,6 +996,8 @@ class Project:
     mark_dash_on: float = 4.0
     mark_dash_off: float = 4.0
     mark_line_width: float = 1.0
+    # Font size (pt) for Wave Cue / Wave Note labels on the waveform — project-global.
+    wave_label_font_px: int = 10
     waveform_color: str = "#616161"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#3dd68c"

@@ -153,6 +153,7 @@ class TimelineWidget(QWidget):
         self._mark_dash_on = 4.0
         self._mark_dash_off = 4.0
         self._mark_line_width = 1.0
+        self._wave_label_font_px = 10
         self._waveform_color = "#616161"
         self._playhead_color = "#3dd68c"
         self._loop_a: float | None = None
@@ -744,6 +745,7 @@ class TimelineWidget(QWidget):
         dash_off: float,
         waveform_color: str | None = None,
         playhead_color: str | None = None,
+        wave_label_font_px: int | None = None,
     ) -> None:
         """Project-global mark line look + waveform / playhead colors."""
         if style not in ("solid", "dash", "dot"):
@@ -752,6 +754,8 @@ class TimelineWidget(QWidget):
         self._mark_line_width = max(1.0, min(12.0, float(width)))
         self._mark_dash_on = max(1.0, min(40.0, float(dash_on)))
         self._mark_dash_off = max(1.0, min(40.0, float(dash_off)))
+        if wave_label_font_px is not None:
+            self._wave_label_font_px = max(8, min(28, int(wave_label_font_px)))
         if waveform_color is not None:
             q = QColor(waveform_color)
             self._waveform_color = q.name() if q.isValid() else "#616161"
@@ -4210,7 +4214,7 @@ class TimelineWidget(QWidget):
                         painter.setPen(label_color)
                         font = painter.font()
                         font.setBold(True)
-                        font.setPointSize(max(8, min(11, font.pointSize() or 9)))
+                        font.setPointSize(int(self._wave_label_font_px))
                         painter.setFont(font)
                         fm = painter.fontMetrics()
                         text_y = self._ruler_height + fm.ascent() + 2

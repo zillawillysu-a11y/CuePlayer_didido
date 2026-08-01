@@ -165,6 +165,18 @@ class MarkDisplayDialog(QDialog):
         self.line_width.setToolTip("Applies to the whole project")
         form2.addRow("Waveform Line Width (project)", self.line_width)
 
+        self.wave_label_font = NoWheelSpinBox()
+        self.wave_label_font.setRange(8, 28)
+        self.wave_label_font.setValue(
+            int(getattr(line_src, "wave_label_font_px", 10) or 10)
+        )
+        self.wave_label_font.setSuffix(" pt")
+        self.wave_label_font.setToolTip(
+            "Cue ID and Note text beside marks on the waveform "
+            "(Mark Manager → Wave Cue / Wave Note). One size for both."
+        )
+        form2.addRow("Wave Label Size (Cue ID / Note)", self.wave_label_font)
+
         self.dash_spacing = NoWheelSpinBox()
         self.dash_spacing.setRange(1, 40)
         self.dash_spacing.setValue(int(round(line_src.mark_dash_on)))
@@ -231,6 +243,7 @@ class MarkDisplayDialog(QDialog):
         self.tc_clock_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
+        self.wave_label_font.valueChanged.connect(self._apply)
         self.dash_spacing.valueChanged.connect(self._apply)
         self.latency_spin.valueChanged.connect(self._apply)
         self.nudge_minus.clicked.connect(lambda: self._nudge(-10))
@@ -261,13 +274,17 @@ class MarkDisplayDialog(QDialog):
         target.mark_dash_on = spacing
         target.mark_dash_off = spacing
         target.waveform_color = self.wave_color.color()
+        label_px = int(self.wave_label_font.value())
         if self._project is not None:
+            self._project.wave_label_font_px = label_px
             self._project.playhead_color = self.playhead_color.color()
             self._project.show_output_timecode_clock = self.tc_clock_box.isChecked()
             self._project.output_timecode_clock_color = self.tc_clock_color.color()
             self._project.show_output_quick_toggles = self.output_toggles_box.isChecked()
         elif hasattr(target, "playhead_color"):
             target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
+            if hasattr(target, "wave_label_font_px"):
+                target.wave_label_font_px = label_px  # type: ignore[attr-defined]
         self._song.now_secondary_enabled = self.secondary_enabled_box.isChecked()
         self._song.now_secondary_clear_seconds = float(self.secondary_clear_spin.value())
         self.settings_changed.emit()

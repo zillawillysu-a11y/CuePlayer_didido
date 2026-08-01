@@ -462,6 +462,7 @@ def project_to_dict(
         "mark_dash_on": project.mark_dash_on,
         "mark_dash_off": project.mark_dash_off,
         "mark_line_width": project.mark_line_width,
+        "wave_label_font_px": int(getattr(project, "wave_label_font_px", 10) or 10),
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
         "mark_lane_height": float(project.mark_lane_height),
@@ -807,6 +808,10 @@ def project_from_dict(
         mark_line_width=line_width,
         mark_dash_on=dash_on,
         mark_dash_off=dash_off,
+        wave_label_font_px=max(
+            8,
+            min(28, int(data.get("wave_label_font_px", 10) or 10)),
+        ),
         waveform_color=wave_color,
         playhead_color=playhead_color,
         mark_lane_height=mark_lane_height,
