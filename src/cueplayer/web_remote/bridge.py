@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer
 from cueplayer.web_remote.state import (
+    build_monitor_pcm,
     build_state,
     build_waveform_overview,
     build_waveform_window,
@@ -84,6 +85,7 @@ class WebRemoteBridge(QObject):
             run_command=self._enqueue_command,
             get_waveform=self._safe_waveform,
             get_clock=self._safe_clock,
+            get_monitor=self._safe_monitor,
         )
         try:
             server.start()
@@ -250,6 +252,30 @@ class WebRemoteBridge(QObject):
         self._wave_detail_key = dkey
         self._wave_detail_cache = payload
         return payload
+
+    def _safe_monitor(
+        self,
+        start: float | None = None,
+        seconds: float | None = None,
+        rate: int | None = None,
+    ) -> tuple[dict[str, Any], bytes]:
+        """Music-only PCM chunk for iPad / Safari listen-along (no LTC)."""
+        host = self._host
+        song = host.current_song
+        engine = host.engine
+        buf = getattr(engine, "buffer", None)
+        exclude = self._ltc_exclude_for_cache()
+        return build_monitor_pcm(
+            buf,
+            song_id=str(song.id),
+            position=float(engine.position),
+            playing=bool(engine.playing),
+            duration=float(engine.duration),
+            start=start,
+            seconds=float(seconds) if seconds is not None else 0.35,
+            out_rate=int(rate) if rate else 24000,
+            exclude_channel=exclude,
+        )
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:
         reply: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)

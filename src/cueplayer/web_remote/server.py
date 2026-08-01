@@ -18,6 +18,7 @@ CommandFn = Callable[[dict[str, Any]], dict[str, Any]]
 StateFn = Callable[[], dict[str, Any]]
 WaveformFn = Callable[..., dict[str, Any]]
 ClockFn = Callable[[], dict[str, Any]]
+MonitorFn = Callable[..., tuple[dict[str, Any], bytes]]
 
 
 def static_dir() -> Path:
@@ -37,6 +38,7 @@ class WebRemoteServer:
         run_command: CommandFn,
         get_waveform: WaveformFn | None = None,
         get_clock: ClockFn | None = None,
+        get_monitor: MonitorFn | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -45,6 +47,7 @@ class WebRemoteServer:
         self.run_command = run_command
         self.get_waveform = get_waveform
         self.get_clock = get_clock
+        self.get_monitor = get_monitor
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -182,6 +185,54 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
                     return
                 self._json(HTTPStatus.OK, clock)
                 return
+            if path == "/api/monitor":
+                if not self._authorized(parsed.query):
+                    self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                if server.get_monitor is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                    return
+                qs = parse_qs(parsed.query)
+
+                def _qfloat(name: str) -> float | None:
+                    raw = (qs.get(name) or [None])[0]
+                    if raw is None or raw == "":
+                        return None
+                    try:
+                        return float(raw)
+                    except ValueError:
+                        return None
+
+                def _qint(name: str) -> int | None:
+                    raw = (qs.get(name) or [None])[0]
+                    if raw is None or raw == "":
+                        return None
+                    try:
+                        return int(float(raw))
+                    except ValueError:
+                        return None
+
+                try:
+                    meta, pcm = server.get_monitor(
+                        start=_qfloat("start"),
+                        seconds=_qfloat("seconds"),
+                        rate=_qint("rate"),
+                    )
+                except TypeError:
+                    try:
+                        meta, pcm = server.get_monitor()
+                    except Exception as exc:  # noqa: BLE001
+                        self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                        return
+                except Exception as exc:  # noqa: BLE001
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                    return
+                if not isinstance(meta, dict):
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "bad_monitor"})
+                    return
+                body = pcm if isinstance(pcm, (bytes, bytearray)) else b""
+                self._pcm(HTTPStatus.OK, meta, bytes(body))
+                return
             self._serve_static(path)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -242,6 +293,13 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-CuePlayer-Token")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header(
+                "Access-Control-Expose-Headers",
+                "X-CuePlayer-Sample-Rate, X-CuePlayer-Channels, X-CuePlayer-Start, "
+                "X-CuePlayer-Seconds, X-CuePlayer-Song-Id, X-CuePlayer-Playing, "
+                "X-CuePlayer-Position, X-CuePlayer-Duration, X-CuePlayer-Ready, "
+                "X-CuePlayer-Frames, X-CuePlayer-Format",
+            )
 
         def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -252,6 +310,39 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _pcm(self, status: HTTPStatus, meta: dict[str, Any], pcm: bytes) -> None:
+            self.send_response(status)
+            self._cors_headers()
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(pcm)))
+            self.send_header(
+                "X-CuePlayer-Sample-Rate",
+                str(int(meta.get("sample_rate") or 24000)),
+            )
+            self.send_header("X-CuePlayer-Channels", str(int(meta.get("channels") or 1)))
+            self.send_header("X-CuePlayer-Start", f"{float(meta.get('start') or 0.0):.6f}")
+            self.send_header("X-CuePlayer-Seconds", f"{float(meta.get('seconds') or 0.0):.6f}")
+            self.send_header("X-CuePlayer-Song-Id", str(meta.get("song_id") or ""))
+            self.send_header(
+                "X-CuePlayer-Playing",
+                "1" if meta.get("playing") else "0",
+            )
+            self.send_header(
+                "X-CuePlayer-Position",
+                f"{float(meta.get('position') or 0.0):.6f}",
+            )
+            self.send_header(
+                "X-CuePlayer-Duration",
+                f"{float(meta.get('duration') or 0.0):.6f}",
+            )
+            self.send_header("X-CuePlayer-Ready", "1" if meta.get("ready") else "0")
+            self.send_header("X-CuePlayer-Frames", str(int(meta.get("frames") or 0)))
+            self.send_header("X-CuePlayer-Format", str(meta.get("format") or "s16le"))
+            self.end_headers()
+            if pcm:
+                self.wfile.write(pcm)
 
         def _serve_static(self, path: str) -> None:
             root = static_dir().resolve()

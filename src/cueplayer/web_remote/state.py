@@ -520,3 +520,115 @@ def timecode_to_abs_seconds(timecode: str, fps: float) -> float:
     from cueplayer.timecode.smpte import timecode_to_seconds
 
     return float(timecode_to_seconds(timecode, fps))
+
+
+# LAN monitor stream: music-only mono PCM for Safari / iPad listen-along.
+MONITOR_SAMPLE_RATE = 24000
+MONITOR_MAX_SECONDS = 1.0
+
+
+def music_mono_samples(
+    buffer: AudioBuffer,
+    *,
+    exclude_channel: int | None = None,
+) -> np.ndarray:
+    """Raw float32 mono from music channels (LTC stripped). Not peak-normalized."""
+    samples = np.asarray(buffer.samples, dtype=np.float32)
+    if samples.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    if samples.ndim == 1:
+        return samples
+    if samples.shape[1] <= 1:
+        return samples[:, 0]
+    keep = list(range(int(samples.shape[1])))
+    if exclude_channel is not None:
+        ch = int(exclude_channel)
+        if 0 <= ch < samples.shape[1]:
+            keep = [i for i in keep if i != ch]
+    if not keep:
+        return samples.mean(axis=1).astype(np.float32)
+    if len(keep) == 1:
+        return samples[:, keep[0]].astype(np.float32)
+    return samples[:, keep].mean(axis=1).astype(np.float32)
+
+
+def build_monitor_pcm(
+    buffer: AudioBuffer | None,
+    *,
+    song_id: str,
+    position: float,
+    playing: bool,
+    duration: float,
+    start: float | None = None,
+    seconds: float = 0.35,
+    out_rate: int = MONITOR_SAMPLE_RATE,
+    exclude_channel: int | None = None,
+) -> tuple[dict[str, Any], bytes]:
+    """
+    Slice music-only mono PCM for the Web Remote listen stream.
+
+    Returns ``(meta, pcm_bytes)`` where pcm is little-endian int16 mono at
+    ``out_rate`` (default 24 kHz). Intentionally lossy / low-rate — listen-along
+    on LAN, not cue-critical monitoring.
+    """
+    from cueplayer.playback.resample import resample_linear
+
+    t0 = float(position if start is None else start)
+    if not np.isfinite(t0) or t0 < 0.0:
+        t0 = 0.0
+    want = float(seconds)
+    if not np.isfinite(want) or want <= 0.0:
+        want = 0.35
+    want = min(float(MONITOR_MAX_SECONDS), max(0.05, want))
+    out_sr = int(out_rate) if out_rate and int(out_rate) > 0 else MONITOR_SAMPLE_RATE
+    out_sr = max(8000, min(48000, out_sr))
+    dur = max(0.0, float(duration))
+
+    meta: dict[str, Any] = {
+        "ok": True,
+        "song_id": str(song_id),
+        "playing": bool(playing),
+        "position": float(position),
+        "duration": dur,
+        "start": t0,
+        "seconds": 0.0,
+        "sample_rate": out_sr,
+        "channels": 1,
+        "format": "s16le",
+        "ready": False,
+        "frames": 0,
+    }
+    if buffer is None or int(getattr(buffer, "frames", 0) or 0) <= 0:
+        return meta, b""
+
+    src_sr = float(getattr(buffer, "sample_rate", 0) or 0)
+    if src_sr <= 0:
+        return meta, b""
+    mono = music_mono_samples(buffer, exclude_channel=exclude_channel)
+    if mono.size == 0:
+        return meta, b""
+
+    # Clamp to available audio; pad short tails with silence so the client
+    # can keep a steady schedule near song end.
+    i0 = int(max(0, min(mono.size, round(t0 * src_sr))))
+    need = int(max(1, round(want * src_sr)))
+    i1 = min(mono.size, i0 + need)
+    chunk = mono[i0:i1]
+    if chunk.size < need:
+        pad = np.zeros(need - chunk.size, dtype=np.float32)
+        chunk = np.concatenate([chunk, pad]) if chunk.size else pad
+    if abs(src_sr - float(out_sr)) > 0.5:
+        chunk = resample_linear(chunk, src_sr, float(out_sr))
+    # Soft clip then quantize.
+    chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
+    pcm = (chunk * 32767.0).astype(np.int16)
+    actual = float(pcm.size) / float(out_sr) if out_sr else 0.0
+    meta.update(
+        {
+            "ready": True,
+            "seconds": actual,
+            "frames": int(pcm.size),
+            "start": float(i0) / src_sr,
+        }
+    )
+    return meta, pcm.tobytes(order="C")

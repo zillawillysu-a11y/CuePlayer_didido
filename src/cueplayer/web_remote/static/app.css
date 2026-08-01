@@ -339,6 +339,12 @@ html, body {
   color: var(--ok);
 }
 
+#listenBtn.on {
+  background: color-mix(in srgb, var(--ok) 16%, #111);
+  border-color: transparent;
+  color: var(--ok);
+}
+
 .now-stack {
   display: grid;
   gap: 6px;

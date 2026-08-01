@@ -32,6 +32,7 @@
     authDialog: document.getElementById("authDialog"),
     passwordInput: document.getElementById("passwordInput"),
     savePassword: document.getElementById("savePassword"),
+    listenBtn: document.getElementById("listenBtn"),
     markMgrBtn: document.getElementById("markMgrBtn"),
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
@@ -211,10 +212,203 @@
     return Math.min(syncDur, Math.max(0, syncPos + elapsed));
   }
 
+  // --- LAN music-only listen (Web Audio; ~0.3–0.6s ahead of PC) ---
+  let listenOn = false;
+  let listenCtx = null;
+  let listenGain = null;
+  let listenSources = [];
+  let listenCursor = 0;
+  let listenNextAt = 0;
+  let listenBusy = false;
+  let listenPumpTimer = null;
+  let listenWasPlaying = false;
+  const LISTEN_CHUNK = 0.32;
+  const LISTEN_LEAD = 0.35;
+  const LISTEN_AHEAD = 0.75;
+
+  function updateListenBtn() {
+    if (!els.listenBtn) return;
+    els.listenBtn.classList.toggle("on", listenOn);
+    els.listenBtn.textContent = listenOn ? "Listening" : "Listen";
+    els.listenBtn.title = listenOn
+      ? "Stop music-only listen (LAN latency)"
+      : "Listen music only on this device (no LTC)";
+  }
+
+  async function ensureListenCtx() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) throw new Error("Web Audio unsupported");
+    if (!listenCtx) {
+      listenCtx = new AC();
+      listenGain = listenCtx.createGain();
+      listenGain.gain.value = 0.9;
+      listenGain.connect(listenCtx.destination);
+    }
+    if (listenCtx.state === "suspended") {
+      await listenCtx.resume();
+    }
+    return listenCtx;
+  }
+
+  function listenStopSources() {
+    for (const src of listenSources) {
+      try { src.stop(0); } catch (_) { /* already stopped */ }
+      try { src.disconnect(); } catch (_) { /* noop */ }
+    }
+    listenSources = [];
+  }
+
+  function listenFlush(atPos) {
+    listenStopSources();
+    listenBusy = false;
+    listenCursor = Math.max(0, Number(atPos) || 0);
+    listenNextAt = 0;
+  }
+
+  function listenResync(atPos) {
+    if (!listenOn) return;
+    listenFlush(atPos);
+    if (syncPlaying) scheduleListenPump(0);
+  }
+
+  function listenOnTransport(playing, pos) {
+    if (!listenOn) return;
+    if (!playing) {
+      listenWasPlaying = false;
+      listenFlush(pos);
+      return;
+    }
+    if (!listenWasPlaying) {
+      listenWasPlaying = true;
+      listenFlush(pos);
+      scheduleListenPump(0);
+      return;
+    }
+    listenWasPlaying = true;
+  }
+
+  async function fetchMonitorChunk(start, seconds) {
+    const q = new URLSearchParams({
+      start: String(start),
+      seconds: String(seconds),
+      rate: "24000",
+    });
+    const res = await fetch(`/api/monitor?${q}`, { headers: headers(false) });
+    if (res.status === 401) {
+      showToast("Password required");
+      openAuth();
+      throw new Error("unauthorized");
+    }
+    if (!res.ok) throw new Error(`monitor_${res.status}`);
+    const ready = res.headers.get("X-CuePlayer-Ready") === "1";
+    const rate = Number(res.headers.get("X-CuePlayer-Sample-Rate") || 24000);
+    const chunkStart = Number(res.headers.get("X-CuePlayer-Start") || start);
+    const chunkSec = Number(res.headers.get("X-CuePlayer-Seconds") || 0);
+    const songId = res.headers.get("X-CuePlayer-Song-Id") || "";
+    const ab = await res.arrayBuffer();
+    return { ready, rate, chunkStart, chunkSec, songId, ab };
+  }
+
+  async function listenFill() {
+    if (!listenOn || listenBusy || !syncPlaying) return;
+    const ctx = listenCtx;
+    if (!ctx) return;
+    const pos = livePosition();
+    // Underrun / seek: catch up to the live playhead.
+    if (listenCursor + 0.05 < pos) {
+      listenCursor = pos;
+      listenNextAt = 0;
+    }
+    if (listenCursor - pos > LISTEN_AHEAD + 0.15) return;
+    listenBusy = true;
+    try {
+      const chunk = await fetchMonitorChunk(listenCursor, LISTEN_CHUNK);
+      if (!listenOn || !syncPlaying) return;
+      if (chunk.songId && syncSongId && chunk.songId !== syncSongId) {
+        listenFlush(livePosition());
+        return;
+      }
+      if (!chunk.ready || !chunk.ab || chunk.ab.byteLength < 2) {
+        listenCursor += LISTEN_CHUNK;
+        return;
+      }
+      const i16 = new Int16Array(chunk.ab);
+      const frames = i16.length;
+      if (!frames) {
+        listenCursor += LISTEN_CHUNK;
+        return;
+      }
+      const buf = ctx.createBuffer(1, frames, chunk.rate || 24000);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < frames; i += 1) ch[i] = i16[i] / 32768;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(listenGain || ctx.destination);
+      const now = ctx.currentTime;
+      if (!listenNextAt || listenNextAt < now + 0.02) {
+        listenNextAt = now + LISTEN_LEAD;
+      }
+      src.start(listenNextAt);
+      listenSources.push(src);
+      src.onended = () => {
+        listenSources = listenSources.filter((s) => s !== src);
+      };
+      const dur = frames / (chunk.rate || 24000);
+      listenNextAt += dur;
+      listenCursor = (Number.isFinite(chunk.chunkStart) ? chunk.chunkStart : listenCursor) + dur;
+    } catch (err) {
+      if (String(err && err.message) !== "unauthorized") {
+        // Soft-fail; keep trying while Listen is on.
+      }
+    } finally {
+      listenBusy = false;
+    }
+  }
+
+  function scheduleListenPump(delayMs) {
+    if (listenPumpTimer) clearTimeout(listenPumpTimer);
+    listenPumpTimer = setTimeout(async () => {
+      listenPumpTimer = null;
+      if (!listenOn) return;
+      try {
+        await listenFill();
+      } catch (_) { /* ignore */ }
+      if (listenOn) scheduleListenPump(syncPlaying ? 90 : 400);
+    }, delayMs);
+  }
+
+  async function setListenOn(on) {
+    listenOn = Boolean(on);
+    updateListenBtn();
+    if (!listenOn) {
+      if (listenPumpTimer) {
+        clearTimeout(listenPumpTimer);
+        listenPumpTimer = null;
+      }
+      listenFlush(livePosition());
+      listenWasPlaying = false;
+      showToast("Listen off");
+      return;
+    }
+    try {
+      await ensureListenCtx();
+    } catch (err) {
+      listenOn = false;
+      updateListenBtn();
+      showToast("Listen unsupported on this browser");
+      return;
+    }
+    listenWasPlaying = syncPlaying;
+    listenFlush(livePosition());
+    showToast("Listening (music only · LAN delay)");
+    scheduleListenPump(0);
+  }
+
   function syncFromServer(position, duration, playing, songId) {
     const nextPos = Math.max(0, Number(position) || 0);
     const nextDur = Math.max(0.1, Number(duration) || 0.1);
     const songChanged = songId && songId !== syncSongId;
+    const seekJump = !songChanged && Math.abs(nextPos - livePosition()) > 0.45;
     if (songChanged) {
       syncSongId = songId;
       lastPlayheadCueId = "";
@@ -226,7 +420,7 @@
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
       setWaveFollowSuspended(false);
-    } else if (Math.abs(nextPos - livePosition()) > 0.45) {
+    } else if (seekJump) {
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
     }
@@ -240,6 +434,11 @@
     } else {
       viewEnd = Math.min(viewEnd, nextDur);
       viewStart = Math.max(0, Math.min(viewStart, viewEnd - 0.05));
+    }
+    if (songChanged || seekJump) {
+      listenResync(nextPos);
+    } else {
+      listenOnTransport(Boolean(playing), nextPos);
     }
   }
 
@@ -1565,6 +1764,12 @@
 
   if (els.dispBtn) {
     els.dispBtn.addEventListener("click", openDisp);
+  }
+  if (els.listenBtn) {
+    updateListenBtn();
+    els.listenBtn.addEventListener("click", () => {
+      setListenOn(!listenOn);
+    });
   }
   if (els.dispClose) {
     els.dispClose.addEventListener("click", () => els.dispDialog.close());

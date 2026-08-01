@@ -1,7 +1,8 @@
 """Local LAN Web Remote (Safari / iPad control surface).
 
 Windows CuePlayer is the session server (timeline, cues, LTC, export).
-The remote is control-only in v1 — no monitor audio stream yet.
+The remote can control transport/marks and optionally listen to a music-only
+monitor stream (no LTC) over the LAN — latency is listen-along, not cue-critical.
 """
 
 from cueplayer.web_remote.prefs import (

@@ -15,10 +15,12 @@ from cueplayer.domain.models import Project, SetlistCategory, Song
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer, static_dir
 from cueplayer.web_remote.state import (
+    build_monitor_pcm,
     build_state,
     build_waveform_overview,
     build_waveform_window,
     format_clock,
+    music_mono_samples,
 )
 from cueplayer.media.audio_loader import AudioBuffer, PeakLevel
 import numpy as np
@@ -43,6 +45,7 @@ def test_static_dir_has_index() -> None:
     assert 'id="dispDialog"' in html
     assert 'id="renumberCueBtn"' in html
     assert 'id="waveFollowBtn"' in html
+    assert 'id="listenBtn"' in html
     assert 'id="splitSetlist"' in html
     assert 'id="confirmDialog"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -65,6 +68,8 @@ def test_static_dir_has_index() -> None:
     assert "set_mark_note" in js
     assert "liveTimecode" in js
     assert "scrollCueListTo" in js
+    assert "setListenOn" in js
+    assert "/api/monitor" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -72,6 +77,7 @@ def test_static_dir_has_index() -> None:
     assert ".now-card.primary .now-body" in css
     assert "position: relative" in css
     assert ".splitter" in css
+    assert "#listenBtn.on" in css
 
 
 def test_format_clock() -> None:
@@ -176,6 +182,45 @@ def test_waveform_strips_ltc_channel_energy() -> None:
     )
     assert clean_wave["ready"] is True
     assert max(abs(v) for v in clean_wave["maxs"]) > 0.05
+
+
+def test_monitor_pcm_music_only_strips_ltc() -> None:
+    """Listen stream must use music channels only (no striped LTC energy)."""
+    sr = 48000
+    t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+    music = (0.35 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    ltc = np.where((np.arange(sr) % 48) < 24, 0.95, -0.95).astype(np.float32)
+    stereo = np.column_stack([music, ltc])
+    buf = AudioBuffer(
+        path=__import__("pathlib").Path("mon.wav"),
+        sample_rate=sr,
+        samples=stereo,
+        mono=stereo.mean(axis=1),
+        peak_levels=[],
+    )
+    mono = music_mono_samples(buf, exclude_channel=1)
+    assert float(np.corrcoef(mono, music)[0, 1]) > 0.99
+    meta, pcm = build_monitor_pcm(
+        buf,
+        song_id="s",
+        position=0.1,
+        playing=True,
+        duration=1.0,
+        start=0.1,
+        seconds=0.25,
+        out_rate=24000,
+        exclude_channel=1,
+    )
+    assert meta["ready"] is True
+    assert meta["sample_rate"] == 24000
+    assert meta["format"] == "s16le"
+    assert meta["channels"] == 1
+    assert meta["frames"] > 1000
+    assert len(pcm) == meta["frames"] * 2
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    # Resampled music still has energy; LTC-dominated mix would be much louder.
+    assert float(np.max(np.abs(samples))) > 0.05
+    assert float(np.max(np.abs(samples))) < 0.6
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:
@@ -336,6 +381,23 @@ def test_web_remote_server_auth_and_command() -> None:
             "duration": engine.duration,
             "server_ms": 1,
         },
+        get_monitor=lambda start=None, seconds=None, rate=None: (
+            {
+                "ok": True,
+                "song_id": song.id,
+                "playing": engine.playing,
+                "position": engine.position,
+                "duration": engine.duration,
+                "start": float(start or 0.0),
+                "seconds": 0.01,
+                "sample_rate": int(rate or 24000),
+                "channels": 1,
+                "format": "s16le",
+                "ready": True,
+                "frames": 240,
+            },
+            (np.linspace(-0.2, 0.2, 240, dtype=np.float32) * 32767).astype(np.int16).tobytes(),
+        ),
     )
     try:
         server.start()
@@ -384,11 +446,24 @@ def test_web_remote_server_auth_and_command() -> None:
         assert clock["playing"] is True
         assert "position" in clock
 
+        mon_req = urllib.request.Request(
+            "http://127.0.0.1:18765/api/monitor?start=0&seconds=0.01&rate=24000",
+            headers={"Authorization": "Bearer secret"},
+        )
+        with urllib.request.urlopen(mon_req, timeout=3) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("X-CuePlayer-Ready") == "1"
+            assert resp.headers.get("X-CuePlayer-Sample-Rate") == "24000"
+            assert resp.headers.get("X-CuePlayer-Format") == "s16le"
+            body = resp.read()
+            assert len(body) == 480  # 240 int16 frames
+
         req = urllib.request.Request("http://127.0.0.1:18765/")
         with urllib.request.urlopen(req, timeout=3) as resp:
             html = resp.read().decode("utf-8")
             assert "CuePlayer" in html
             assert 'id="waveCanvas"' in html
+            assert 'id="listenBtn"' in html
             assert resp.status == 200
     finally:
         server.stop()
