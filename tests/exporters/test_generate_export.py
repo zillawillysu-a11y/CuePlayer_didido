@@ -112,7 +112,8 @@ def test_ma2_exporter_writes_expected_semantics(tmp_path: Path) -> None:
     assert 'WhenStopping="Rewind"' in macro_xml
     assert 'AutoStart="Off"' in macro_xml
     assert 'TimeUnit="1/100 Seconds"' not in macro_xml
-    assert "/TimeUnit=0" in macro_xml
+    assert '/TimeUnit="30 FPS"' in macro_xml
+    assert "/TimeUnit=0" not in macro_xml
     assert "/Slot=1" in macro_xml
     assert '/RecordMode="Go"' in macro_xml
     assert "/Slot=Intern" not in macro_xml
