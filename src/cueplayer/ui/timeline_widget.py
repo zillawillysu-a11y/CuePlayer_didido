@@ -3226,13 +3226,12 @@ class TimelineWidget(QWidget):
                 self._paint_video_selection_live(painter)
                 self._paint_loop_region(painter)
                 self._paint_selection_box(painter)
+                # Loading copy under the playhead — never dim the green line.
+                self._paint_audio_loading_overlay(painter)
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
                 self._paint_header_splitter(painter)
-                # Live overlay: keep "Loading audio…" visible while playing
-                # even if the cached backdrop was baked before loading started.
-                self._paint_audio_loading_overlay(painter)
                 return
 
         painter.fillRect(self.rect(), QColor(BG_APP))
@@ -3240,6 +3239,8 @@ class TimelineWidget(QWidget):
         self._paint_marks_live(painter)
         self._paint_loop_region(painter)
         self._paint_selection_box(painter)
+        # Loading may also paint inside _paint_waveform; playhead stays last.
+        self._paint_audio_loading_overlay(painter)
         self._paint_playhead(painter)
         self._paint_audio_gain_overlays(painter)
         self._paint_drag_guides(painter)
@@ -3693,23 +3694,58 @@ class TimelineWidget(QWidget):
             return f"{minutes:02d}:{seconds:04.1f}"
         return f"{minutes:02d}:{int(seconds):02d}"
 
+    def _song_expects_waveform(self) -> bool:
+        """True when the song has media that should fill the Music lane."""
+        song = self._song
+        if song is None:
+            return False
+        if song.audio_tracks:
+            return True
+        return bool(song.video_clips)
+
     def _paint_audio_loading_overlay(self, painter: QPainter) -> None:
-        """Draw loading copy on top of play/scrub blits (viewport-fixed)."""
-        if not self._audio_loading:
+        """Corner loading copy — no full-band dim (that washed out the playhead)."""
+        if not self._audio_loading and not (
+            self._audio is None and self._song_expects_waveform()
+        ):
+            return
+        if self._audio is not None and not self._audio_loading:
             return
         y0 = self._ruler_height
-        right = self._paint_right()
+        label = self._audio_loading_label
+        if self._audio_loading:
+            line1 = "Loading audio…"
+            line2 = label if label else "Reading file"
+        else:
+            # Song already has media; avoid the empty-project "Open audio…" flash
+            # between set_song and the async load arming.
+            line1 = "Loading audio…"
+            if self._song is not None and self._song.video_clips and not self._song.audio_tracks:
+                line2 = f"{self._song.video_clips[0].name} (video)"
+            elif self._song is not None and self._song.audio_tracks:
+                line2 = Path(self._song.audio_tracks[0].path).name
+            else:
+                line2 = "Reading file"
+        # Soft label plate only — leave the rest of the wave band clear so the
+        # green playhead stays fully saturated across the timeline.
+        fm = painter.fontMetrics()
+        pad_x, pad_y = 10, 8
+        text_w = max(fm.horizontalAdvance(line1), fm.horizontalAdvance(line2))
+        plate_w = text_w + pad_x * 2
+        plate_h = fm.height() * 2 + pad_y * 2 + 4
+        plate_x = self._header_width + 12
+        plate_y = y0 + max(8, (self._wave_height - plate_h) // 2)
         painter.fillRect(
-            self._header_width, y0, max(1, right - self._header_width), self._wave_height,
-            QColor(9, 9, 11, 210),
+            plate_x, plate_y, plate_w, plate_h, QColor(9, 9, 11, 160)
         )
         painter.setPen(QColor("#a1a1aa"))
-        label = self._audio_loading_label
-        line1 = "Loading audio…"
-        line2 = label if label else "Reading file"
-        painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
+        painter.drawText(plate_x + pad_x, plate_y + pad_y + fm.ascent(), line1)
         painter.setPen(QColor("#71717a"))
-        painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
+        painter.drawText(
+            plate_x + pad_x,
+            plate_y + pad_y + fm.height() + 4 + fm.ascent(),
+            line2,
+        )
 
     def _paint_waveform(self, painter: QPainter) -> int:
         y0 = self._ruler_height
@@ -3717,16 +3753,9 @@ class TimelineWidget(QWidget):
         right = self._paint_right()
         painter.fillRect(self._header_width, y0, right, self._wave_height, QColor("#09090b"))
 
-        if self._audio_loading:
-            painter.setPen(QColor("#a1a1aa"))
-            label = self._audio_loading_label
-            # Duration already comes from file metadata; playback may be ready
-            # before peaks finish — wording reflects audio decode, not "wait forever".
-            line1 = "Loading audio…"
-            line2 = label if label else "Reading file"
-            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
-            painter.setPen(QColor("#71717a"))
-            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
+        if self._audio_loading or (self._audio is None and self._song_expects_waveform()):
+            # Loading copy is painted live (after static layers) so the playhead
+            # can sit on top — only draw the wave band background here.
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y1 - 1, right, y1 - 1)
             return y1

@@ -4271,6 +4271,9 @@ class MainWindow(QMainWindow):
         self._sync_loop_ui()
         self.timeline.clear_selection(emit=False)
         self.monitor.set_selected_mark_ids([])
+        # Arm Loading before set_song paints — otherwise the Music lane flashes
+        # "Open audio…" while the first long video/audio decode is still queued.
+        self._arm_timeline_audio_loading_placeholder(self.current_song)
         self.timeline.set_song(self.current_song)
         self._apply_project_mark_line_settings()
         # Cue List rebuild is relatively heavy — defer so Setlist selection
@@ -6298,6 +6301,36 @@ class MainWindow(QMainWindow):
             f"{round(float(clip.source_in_seconds), 3)}|"
             f"{round(float(clip.source_span_seconds or clip.duration_seconds), 3)}"
         )
+
+    def _arm_timeline_audio_loading_placeholder(self, song: Song) -> None:
+        """Show Loading immediately when a cold decode is about to start.
+
+        Avoids a frame of empty-project copy ("Open audio…") and clears a
+        previous song's waveform so we don't flash the wrong music lane.
+        Skips when RAM / peaks / stand-in disk cache will paint instantly.
+        """
+        path = self._main_audio_path_for_song(song)
+        if path is not None:
+            if self._cached_audio_buffer(path) is not None:
+                return
+            if load_cached_waveform_peaks(path) is not None:
+                return
+            self.timeline.set_audio_loading(True, path.name)
+            return
+        if song.audio_tracks:
+            # Path missing — activate will show Relink; don't pretend to load.
+            return
+        clip = self._primary_video_clip_for_standin(song)
+        if clip is None:
+            return
+        duration = float(song.duration_seconds)
+        cache_key = self._video_standin_cache_key(clip, timeline_duration=duration)
+        if cache_key is not None:
+            if cache_key in self._video_standin_cache:
+                return
+            if load_cached_video_standin(cache_key) is not None:
+                return
+        self.timeline.set_audio_loading(True, f"{clip.name} (video)")
 
     def _schedule_video_music_standin(self) -> None:
         """Fill the Music waveform from embedded video audio when no music file."""
