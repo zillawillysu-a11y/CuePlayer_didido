@@ -933,18 +933,13 @@ class CueMonitorPanel(QWidget):
 
     def _on_now_splitter_moved(self, *_args) -> None:
         # User dragged Primary|Secondary — lock Primary for later body drags.
+        # Keep the NOW↔Cue List boundary fixed; only redistribute inside NOW.
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
-            sizes = self._now_splitter.sizes()
-            if len(sizes) == 2:
-                self._below_locked_primary_h = max(
-                    self._primary_col_min(), int(sizes[0])
-                )
-        self._schedule_now_card_fit()
-        # Redistribute inside the current panel only — never grow the window.
-        if self._now_placement == "below" and self._secondary_now_column.isVisible():
-            self._grow_body_for_below_now_inner()
+            self._remember_below_primary()
+            self._clamp_below_inner_to_now_body()
         else:
             self._fit_body_within_panel()
+        self._schedule_now_card_fit()
         self.now_layout_changed.emit()
 
     def _on_body_splitter_moved(self, *_args) -> None:
@@ -973,24 +968,33 @@ class CueMonitorPanel(QWidget):
         if len(sizes) == 2:
             self._below_locked_primary_h = max(self._primary_col_min(), int(sizes[0]))
 
-    def _grow_body_for_below_now_inner(self) -> None:
-        """After Primary|Secondary drag, expand NOW body so both fit (Cue List shrinks)."""
+    def _clamp_below_inner_to_now_body(self) -> None:
+        """Fit Primary|Secondary inside the current NOW body — do not move Cue List."""
         if not hasattr(self, "_body_splitter"):
             return
-        sizes = self._now_splitter.sizes()
-        if len(sizes) != 2:
+        body = self._body_splitter.sizes()
+        if len(body) != 2:
             return
-        total = self._body_total_height()
-        if total <= 0:
-            return
-        need = self._now_chrome_height() + sizes[0] + sizes[1] + max(
-            8, self._now_splitter.handleWidth()
-        )
-        max_now = max(40, total - max(40, _CUE_LIST_BODY_MIN // 2))
-        now_h = min(max(need, self._below_now_floor(sizes[0])), max_now)
-        self._body_splitter.setSizes([now_h, max(0, total - now_h)])
-        self._apply_below_body_to_secondary()
-
+        now_h = int(body[0])
+        avail = max(0, now_h - self._now_chrome_height())
+        handle = max(8, self._now_splitter.handleWidth())
+        sec_min = self._secondary_col_min()
+        if self._below_locked_primary_h is not None:
+            primary = int(self._below_locked_primary_h)
+        else:
+            sizes = self._now_splitter.sizes()
+            primary = int(sizes[0]) if len(sizes) == 2 else self._primary_col_min()
+        primary = max(self._primary_col_min(), primary)
+        if primary + handle + sec_min > avail:
+            primary = max(40, avail - handle - sec_min)
+        secondary = max(sec_min, avail - primary - handle)
+        if primary + handle + secondary > avail:
+            secondary = max(sec_min, avail - primary - handle)
+            primary = max(40, avail - handle - secondary)
+        self._now_splitter.setStretchFactor(0, 0)
+        self._now_splitter.setStretchFactor(1, 0)
+        self._now_splitter.setSizes([max(1, primary), max(1, secondary)])
+        self._below_locked_primary_h = max(1, primary)
     def _primary_col_min(self) -> int:
         # Constant floor only — do not follow card minimumHeight (that feedback
         # loop grows the main window off-screen when width wraps text).
@@ -1576,8 +1580,8 @@ class CueMonitorPanel(QWidget):
                 natural = card.sizeHint().height()
             card.setMinimumHeight(min(max(floor, natural), cap))
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
-            # Keep Primary locked; do not let card-fit redistribute into Primary.
-            self._apply_below_body_to_secondary()
+            # Keep Primary locked and Cue List boundary fixed while cards reflow.
+            self._clamp_below_inner_to_now_body()
         else:
             self._fit_body_within_panel()
 

@@ -130,6 +130,35 @@ def test_body_drag_resizes_secondary_not_primary(app: QApplication) -> None:
     assert secondary_after > secondary_before
 
 
+def test_primary_secondary_drag_keeps_cue_list_boundary(app: QApplication) -> None:
+    """Dragging Primary|Secondary must not also move the Secondary↔Cue List handle."""
+    panel = CueMonitorPanel()
+    panel.set_song(Song.create("Test"))
+    panel.resize(360, 900)
+    panel.show()
+    app.processEvents()
+    panel.set_now_secondary_placement("below")
+    panel._now_splitter.setSizes([160, 100])
+    panel._body_splitter.setSizes([320, 480])
+    panel._remember_below_primary()
+    panel._apply_below_body_to_secondary()
+    app.processEvents()
+
+    body_before = list(panel._body_splitter.sizes())
+    # User grows Primary inside NOW (Secondary shrinks); body must stay put.
+    panel._now_splitter.setSizes([220, 40])
+    panel._on_now_splitter_moved()
+    app.processEvents()
+
+    body_after = list(panel._body_splitter.sizes())
+    assert body_after[0] == pytest.approx(body_before[0], abs=2)
+    assert body_after[1] == pytest.approx(body_before[1], abs=2)
+    primary, secondary = panel._now_splitter.sizes()
+    assert primary + secondary == pytest.approx(sum(panel._now_splitter.sizes()), abs=1)
+    assert primary >= panel._primary_col_min()
+    assert secondary >= _NOW_SECONDARY_COL_MIN
+
+
 def test_width_drag_does_not_grow_panel_min_height(app: QApplication) -> None:
     panel = CueMonitorPanel()
     panel.set_song(Song.create("Test"))
