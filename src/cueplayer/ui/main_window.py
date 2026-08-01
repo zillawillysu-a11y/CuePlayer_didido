@@ -7265,9 +7265,14 @@ class MainWindow(QMainWindow):
         self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
         self._refresh_marks_ui()
+        paused = False
+        if bool(getattr(lane, "pause_on_mark", False)) and self.engine.playing:
+            self.engine.pause()
+            paused = True
         lat_ms = self.engine.sync_offset_ms()
         self.status.showMessage(
             f"Marked: {lane.name} @ {mark.time_seconds:.3f}s"
+            + (" · paused" if paused else "")
             + (f" · sync offset {lat_ms:.0f}ms" if abs(lat_ms) >= 0.5 else "")
             + " · edit directly in the Note column on the right",
             2500,

@@ -57,8 +57,9 @@ _COL_CUE_LIST = 6
 _COL_CUE_ID = 7
 _COL_MIDI = 8
 _COL_MIDI_NOTE = 9
-_COL_NOW = 10
-_COL_COUNT = 11
+_COL_PAUSE = 10
+_COL_NOW = 11
+_COL_COUNT = 12
 
 _TABLE_COMBO_QSS = (
     "QComboBox {"
@@ -285,8 +286,8 @@ class MarkManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Mark Manager")
-        self.setMinimumWidth(920)
-        self.resize(1120, 560)
+        self.setMinimumWidth(980)
+        self.resize(1180, 560)
         self._song = song
         self._project = project
         self._suppress_key_prompt = False
@@ -301,6 +302,7 @@ class MarkManagerDialog(QDialog):
         hint = QLabel(
             "Set the name, shortcut, shape, color, and NOW display (Off / Primary / Secondary) for each Mark. "
             "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
+            "Pause stops playback when you place a mark of that type. "
             'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
         )
         hint.setWordWrap(True)
@@ -323,6 +325,7 @@ class MarkManagerDialog(QDialog):
                 "Cue ID",
                 "MIDI On",
                 "Note",
+                "Pause",
                 "NOW",
             ]
         )
@@ -340,6 +343,7 @@ class MarkManagerDialog(QDialog):
             _COL_CUE_ID: 76,
             _COL_MIDI: 80,
             _COL_MIDI_NOTE: 116,
+            _COL_PAUSE: 64,
             _COL_NOW: 108,
         }
         for col, width in default_widths.items():
@@ -403,6 +407,7 @@ class MarkManagerDialog(QDialog):
             _COL_CUE_LIST: "All on/off for Cue List",
             _COL_CUE_ID: "All on/off for Cue ID",
             _COL_MIDI: "All on/off for MIDI On",
+            _COL_PAUSE: "All on/off for Pause on mark",
         }
         row = self.table.rowCount()
         if self._bulk_footer_row is None:
@@ -577,6 +582,7 @@ class MarkManagerDialog(QDialog):
             cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
             midi_wrap = self.table.cellWidget(row, _COL_MIDI)
             midi_note_widget = self.table.cellWidget(row, _COL_MIDI_NOTE)
+            pause_wrap = self.table.cellWidget(row, _COL_PAUSE)
             if not all(
                 [
                     index_item,
@@ -588,6 +594,7 @@ class MarkManagerDialog(QDialog):
                     cue_list_wrap,
                     midi_wrap,
                     midi_note_widget,
+                    pause_wrap,
                 ]
             ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
@@ -618,6 +625,12 @@ class MarkManagerDialog(QDialog):
                 midi_box = midi_wrap.findChild(QCheckBox)
             if midi_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI toggle.")
+                return None
+            pause_box = pause_wrap.property("checkbox")
+            if not isinstance(pause_box, QCheckBox):
+                pause_box = pause_wrap.findChild(QCheckBox)
+            if pause_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Pause toggle.")
                 return None
             if not isinstance(midi_note_widget, NoWheelComboBox):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI note.")
@@ -657,6 +670,7 @@ class MarkManagerDialog(QDialog):
                     cue_list_enabled=cue_list_box.isChecked(),
                     midi_note_enabled=midi_box.isChecked(),
                     midi_note=midi_note,
+                    pause_on_mark=pause_box.isChecked(),
                     marker_shape=shape,  # type: ignore[arg-type]
                     show_row_color=previous.show_row_color if previous else True,
                 )
@@ -902,6 +916,19 @@ class MarkManagerDialog(QDialog):
         _style_table_combo(note_combo)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
 
+        pause = QCheckBox()
+        pause.setChecked(bool(getattr(lane, "pause_on_mark", False)))
+        pause.setToolTip(
+            "Pause playback when you place a mark of this type (shortcut or click)"
+        )
+        pause_wrap = QWidget()
+        pause_layout = QHBoxLayout(pause_wrap)
+        pause_layout.setContentsMargins(0, 0, 0, 0)
+        pause_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pause_layout.addWidget(pause)
+        pause_wrap.setProperty("checkbox", pause)
+        self.table.setCellWidget(row, _COL_PAUSE, pause_wrap)
+
         now_combo = NoWheelComboBox()
         now_combo.addItem("Off", 0)
         now_combo.addItem("Primary", 1)
@@ -916,7 +943,7 @@ class MarkManagerDialog(QDialog):
         now_combo.currentIndexChanged.connect(lambda _i: self._on_now_display_changed())
         self.table.setCellWidget(row, _COL_NOW, now_combo)
 
-        self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
+        self._connect_row_bulk_sync(visible, cue_id, cue_list, midi, pause)
         self._refresh_bulk_toggle_states()
 
     def _on_now_display_changed(self) -> None:
