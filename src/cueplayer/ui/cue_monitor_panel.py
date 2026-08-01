@@ -1022,6 +1022,7 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setStretchFactor(1, 0)
         self._now_splitter.setSizes([max(1, primary), max(1, secondary)])
         self._below_locked_primary_h = max(1, primary)
+
     def _primary_col_min(self) -> int:
         # Constant floor only — do not follow card minimumHeight (that feedback
         # loop grows the main window off-screen when width wraps text).
@@ -1315,6 +1316,10 @@ class CueMonitorPanel(QWidget):
                 # Tight vertical pad — one-line / empty Primary should hug the text.
                 font_px = min(font_px, 16)
                 pad = "4px 10px"
+        if secondary and self._now_primary_single_line:
+            # Match Primary single-line density so side-by-side cards read alike.
+            font_px = min(font_px, 16)
+            pad = "4px 10px"
         cue.setStyleSheet(
             _now_card_style(accent, secondary=secondary, font_px=font_px, pad=pad)
         )
@@ -1831,13 +1836,16 @@ class CueMonitorPanel(QWidget):
         show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
         menu.addAction(show_primary_cue_id)
 
-        single_line = QAction("Single-line Primary (Main - Cue · Note)", self)
+        single_line = QAction("Single-line NOW (Type - Cue · Note)", self)
         single_line.setCheckable(True)
         single_line.setChecked(bool(self._now_primary_single_line))
         single_line.setToolTip(
-            "Put Type, Cue ID, and Note on one line so PRIMARY stays shorter"
+            "Put Type, Cue ID, and Note on one line for PRIMARY and SECONDARY "
+            "(handy when Secondary is on the right)"
         )
-        single_line.setEnabled(bool(self._now_primary_visible))
+        single_line.setEnabled(
+            bool(self._now_primary_visible) or bool(self._now_secondary_visible)
+        )
 
         def _toggle_single_line(checked: bool) -> None:
             self._now_primary_single_line = bool(checked)
@@ -2291,20 +2299,18 @@ class CueMonitorPanel(QWidget):
         lane_name = lane.name if lane is not None else title
         track.setText(f"{title} · {lane_name}")
         track.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 600;")
+        # Single-line applies to both cards so Primary|Secondary side-by-side match.
+        use_single_line = bool(self._now_primary_single_line)
+        show_cue = bool(self._now_primary_show_cue_id)
+        if secondary and not use_single_line:
+            # Multi-line Secondary historically omitted Cue ID (Primary-only toggle).
+            show_cue = False
         cue.setText(
             mark_now_body(
                 self._song,
                 active,
-                show_cue_id=(
-                    False
-                    if secondary
-                    else bool(self._now_primary_show_cue_id)
-                ),
-                single_line=(
-                    False
-                    if secondary
-                    else bool(self._now_primary_single_line)
-                ),
+                show_cue_id=show_cue,
+                single_line=use_single_line,
             )
         )
         if secondary:
