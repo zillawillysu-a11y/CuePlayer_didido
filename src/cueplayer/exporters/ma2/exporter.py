@@ -20,6 +20,7 @@ from cueplayer.exporters.common import (
     parse_page_executor,
     sanitize_ma_name,
     split_ma_cue_number,
+    timecode_span_seconds,
 )
 from cueplayer.exporters.ma_default_dirs import resolve_ma2_pool_dirs
 from cueplayer.exporters.xml_write import (
@@ -81,13 +82,8 @@ def _rel_event_frames(plan: SongExportPlan, mark_time: float) -> int:
 
 
 def _timecode_length_frames(plan: SongExportPlan) -> int:
-    """Full song length in frames (at least last event time)."""
-    times = [cue.time_seconds for cue in plan.main_cues]
-    for lane in plan.button_lanes:
-        times.extend(lane.mark_times_seconds)
-    last_event = max(times) if times else 0.0
-    duration = max(float(plan.duration_seconds or 0.0), last_event)
-    seconds = export_event_time_seconds(duration, plan.profile)
+    """Song + tail Length in frames (past last cue so the final event can fire)."""
+    seconds = export_event_time_seconds(timecode_span_seconds(plan), plan.profile)
     return seconds_to_ma2_frames(seconds, float(ma2_timecode_frame_rate(plan.profile.fps)))
 
 
@@ -570,7 +566,12 @@ class Ma2Exporter:
     def write_install_macro(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
         """Write one-song setup Macro (Store/Assign + Timecode Offset)."""
         cmd_lines = self.install_commands_for_plan(plan)
-        cmd_lines.extend(ma2_timecode_assign_settings(plan.profile))
+        cmd_lines.extend(
+            ma2_timecode_assign_settings(
+                plan.profile,
+                length_seconds=timecode_span_seconds(plan),
+            )
+        )
         path = self._write_macro_xml(
             directory,
             basename=_install_basename(plan),
@@ -623,6 +624,7 @@ class Ma2Exporter:
                     int(plan.profile.timecode_slot),
                     int(plan.profile.sequence_pool_start),
                     *(ma2_phantom_cue_delete_range(plan) or (0, 0)),
+                    float(timecode_span_seconds(plan)),
                 )
             ],
         )
@@ -639,7 +641,7 @@ class Ma2Exporter:
         one Timecode XML per song (separate TC pools) and Assign /Offset.
         """
         cmd_lines: list[str] = []
-        tc_jobs: list[tuple[str, int, str, str, float, float, int, int, int, int]] = []
+        tc_jobs: list[tuple[str, int, str, str, float, float, int, int, int, int, float]] = []
         for plan in plans:
             if plan.profile.export_mode != "full":
                 continue
@@ -662,6 +664,7 @@ class Ma2Exporter:
                     int(plan.profile.sequence_pool_start),
                     int(phantom[0]),
                     int(phantom[1]),
+                    float(timecode_span_seconds(plan)),
                 )
             )
         paths = self._write_plugin_pair(
@@ -721,15 +724,15 @@ class Ma2Exporter:
         info_name: str,
         echo_note: str,
         timecode_jobs: list[
-            tuple[str, int, str, str, float, float, int, int, int, int]
+            tuple[str, int, str, str, float, float, int, int, int, int, float]
         ]
         | None = None,
     ) -> dict[str, Path]:
         """Write Plugin XML + Lua.
 
         timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps,
-        slot, sequence_pool, phantom_cue_lo, phantom_cue_hi)
-        — one entry per Timecode. Options + Offset are Assigned after Import.
+        slot, sequence_pool, phantom_cue_lo, phantom_cue_hi, length_seconds)
+        — one entry per Timecode. Options + Offset + Length are Assigned after Import.
         phantom_cue_lo/hi are 0 when no Delete is needed.
         """
         _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
@@ -763,6 +766,7 @@ class Ma2Exporter:
                 seq_pool,
                 phantom_lo,
                 phantom_hi,
+                length_seconds,
             ) in jobs:
                 tc_escaped = tc_xml.replace("\\", "\\\\").replace("'", "\\'")
                 label = sanitize_ma_name(tc_label, fallback=f"TC{tc_pool}")
@@ -777,7 +781,10 @@ class Ma2Exporter:
                 # empty Import is 30 FPS). Do NOT Store Timecode first — that
                 # creates an empty "Timecode N" and Import then prompts Overwrite
                 # even when the pool slot was empty.
-                assign_cmds = ma2_timecode_assign_settings(job_profile)
+                assign_cmds = ma2_timecode_assign_settings(
+                    job_profile,
+                    length_seconds=float(length_seconds),
+                )
                 assign_lines = "\n".join(
                     "    " + _lua_cmd_line(cmd).lstrip() for cmd in assign_cmds
                 )

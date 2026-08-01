@@ -117,6 +117,7 @@ def format_ma2_offset_assign(seconds: float) -> str:
     MA2 Assign Timecode /Offset=… value (settings Offset field).
 
     Official help accepts time (0s … 255h…). Prefer compact hour form when whole hours.
+    Also used for ``/Length=…``.
     """
     s = max(0.0, float(seconds))
     if abs(s - round(s / 3600.0) * 3600.0) < 1e-6 and s >= 3600.0:
@@ -126,7 +127,37 @@ def format_ma2_offset_assign(seconds: float) -> str:
     return f"{s:.2f}s"
 
 
-def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
+# Keep Length past the last cue so the final event is not clipped at the edge.
+MA_TIMECODE_TAIL_SECONDS = 1.0
+
+
+def plan_event_times_seconds(plan: "SongExportPlan") -> list[float]:
+    """Song-relative mark times for Main + Top Button events."""
+    times = [float(cue.time_seconds) for cue in plan.main_cues]
+    for lane in plan.button_lanes:
+        times.extend(float(t) for t in lane.mark_times_seconds)
+    return times
+
+
+def timecode_span_seconds(plan: "SongExportPlan") -> float:
+    """
+    Timecode Length (song-relative): full media duration, or last event + tail.
+
+    MA Import often shrinks Length to the last event time, so the final Cue sits
+    on the end edge and can miss. Always keep at least ``MA_TIMECODE_TAIL_SECONDS``
+    after the last event, and never shorter than song media length.
+    """
+    times = plan_event_times_seconds(plan)
+    last_event = max(times) if times else 0.0
+    media = max(0.0, float(plan.duration_seconds or 0.0))
+    return max(media, last_event + MA_TIMECODE_TAIL_SECONDS)
+
+
+def ma2_timecode_assign_settings(
+    plan_profile: MaExportProfile,
+    *,
+    length_seconds: float | None = None,
+) -> list[str]:
     """
     Post-Import MA2 Timecode options (match common CuePoints / show-setup prefs).
 
@@ -138,6 +169,7 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
       Record Mode=Go (Go Cue X, not Goto Cue X).
 
     Song-start LTC → ``/Offset=…``.
+    ``length_seconds`` → ``/Length=…`` (XML ``lenght`` is often ignored on Import).
 
     Important: XML ``time`` / ``lenght`` are interpreted with the Timecode's
     TimeUnit **at Import**. Changing TimeUnit afterward only changes display.
@@ -160,7 +192,7 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
         else "0s"
     )
     frame_format = ma2_timecode_frame_format(plan_profile.fps)
-    return [
+    cmds = [
         (
             f'Assign Timecode {tc} /Slot={slot_token} '
             f'/Runs="Endless Repeat" '
@@ -172,6 +204,12 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
         f'Assign Timecode {tc} /TimeUnit="{frame_format}"',
         f'Assign Timecode {tc} /RecordMode="Go"',
     ]
+    if length_seconds is not None and float(length_seconds) > 1e-6:
+        # Force Length after Import — MA often clamps to last event otherwise.
+        cmds.append(
+            f"Assign Timecode {tc} /Length={format_ma2_offset_assign(float(length_seconds))}"
+        )
+    return cmds
 
 
 def ma2_timecode_pre_import_timeunit(plan_profile: MaExportProfile) -> str:
@@ -408,6 +446,5 @@ class SongExportPlan:
     profile: MaExportProfile
     main_cues: list[ExportCue] = field(default_factory=list)
     button_lanes: list[ExportButtonLane] = field(default_factory=list)
-    # Song media length — Timecode ``lenght`` should cover the full song, not
-    # only the last cue.
+    # Song media length — Timecode Length uses max(media, last_event + tail).
     duration_seconds: float = 0.0

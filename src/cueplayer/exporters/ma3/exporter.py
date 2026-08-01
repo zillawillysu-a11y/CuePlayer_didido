@@ -15,6 +15,7 @@ from cueplayer.exporters.common import (
     ma3_timecode_set_property_commands,
     parse_page_executor,
     sanitize_ma_name,
+    timecode_span_seconds,
 )
 from cueplayer.exporters.xml_write import ma3_guid, write_xml
 
@@ -282,14 +283,8 @@ class Ma3Exporter:
 
     def write_timecode(self, plan: SongExportPlan, path: Path) -> None:
         root = self._root()
-        times = [
-            export_event_time_seconds(c.time_seconds, plan.profile) for c in plan.main_cues
-        ]
-        for lane in plan.button_lanes:
-            times.extend(
-                export_event_time_seconds(t, plan.profile) for t in lane.mark_times_seconds
-            )
-        duration = max(times) if times else 0.0
+        # Length covers media + tail past last cue (not just last event time).
+        duration = export_event_time_seconds(timecode_span_seconds(plan), plan.profile)
         offset_text = format_ma3_offset_seconds(plan.profile.start_offset_seconds)
         # TCSlot: 1..8 = external slot (user default), -1 = none/internal.
         tc_slot = int(plan.profile.timecode_slot)
