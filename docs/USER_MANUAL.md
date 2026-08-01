@@ -18,6 +18,14 @@
 | 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |
 | 分隔拉桿 | 平常接近黑色、滑鼠過去變灰色（主介面所有 QSplitter） |
 
+## 選單 View
+
+| 項目 | 說明 |
+|------|------|
+| **Show Video / LTC Tracks** | 顯示／隱藏時間軸上的 Video + LTC 軌道（Preview／Clean Output 仍會播） |
+| **Video Preview Panel** | 嵌入式預覽面板 |
+| **Clean Video Output** | 開 OBS 用乾淨輸出視窗 |
+
 ## Cue List（右側）
 
 | 操作 | 說明 |

@@ -3,7 +3,7 @@
 Fixed window title so an OBS Window Capture source keeps pointing at the
 right window. Per PRODUCT_SPEC, closing the embedded main Preview must
 not interrupt this output, so this window only hides on the close (X)
-button instead of being destroyed — re-opening from the Tools menu just
+button instead of being destroyed — re-opening from the View menu just
 shows it again with the same OBS capture target still valid.
 
 Resolution presets and the aspect-lock toggle live in the right-click
@@ -83,7 +83,7 @@ class CleanVideoOutputWindow(QWidget):
         self._ndi_name = "CuePlayer"
         self._ndi_frame_mode = "output_window"
         # Normally the X button only hides this window (see closeEvent) so
-        # that re-opening from the Tools menu keeps the same OBS capture
+        # that re-opening from the View menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
         # tear it down (and let the app quit) when the app itself closes.
         self._force_closing = False

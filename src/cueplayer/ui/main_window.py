@@ -2155,32 +2155,10 @@ class MainWindow(QMainWindow):
         bpm_menu.addAction(act_bpm_all)
 
         tools_menu.addSeparator()
-        self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
-        self._show_video_track_action.setCheckable(True)
-        self._show_video_track_action.setChecked(True)
-        self._show_video_track_action.setToolTip(
-            "Hide Video + LTC lanes after alignment to free timeline space. "
-            "Applies to the whole show (all songs). "
-            "Preview / Clean Output keep playing either way. "
-            "LTC appears under Video when a file stripe is known."
-        )
-        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
-        tools_menu.addAction(self._show_video_track_action)
-
         video_menu = tools_menu.addMenu("Vide&o")
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
         video_menu.addAction(act_add_video)
-        act_video_preview = QAction("Video &Preview Panel", self)
-        act_video_preview.setCheckable(True)
-        act_video_preview.setChecked(True)
-        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
-        video_menu.addAction(act_video_preview)
-        self._act_video_preview = act_video_preview
-        self._clean_output_action = QAction("&Clean Video Output", self)
-        self._clean_output_action.setCheckable(True)
-        self._clean_output_action.triggered.connect(self._toggle_clean_output)
-        video_menu.addAction(self._clean_output_action)
         self._ndi_output_action = QAction("&NDI Video Output", self)
         self._ndi_output_action.setCheckable(True)
         self._ndi_output_action.setChecked(
@@ -2197,6 +2175,29 @@ class MainWindow(QMainWindow):
         act_ndi_name.triggered.connect(self._prompt_ndi_name)
         video_menu.addAction(act_ndi_name)
         self._build_video_decode_quality_menu(video_menu)
+
+        view_menu = self.menuBar().addMenu("&View")
+        self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
+        self._show_video_track_action.setCheckable(True)
+        self._show_video_track_action.setChecked(True)
+        self._show_video_track_action.setToolTip(
+            "Hide Video + LTC lanes after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
+            "Preview / Clean Output keep playing either way. "
+            "LTC appears under Video when a file stripe is known."
+        )
+        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
+        view_menu.addAction(self._show_video_track_action)
+        act_video_preview = QAction("Video &Preview Panel", self)
+        act_video_preview.setCheckable(True)
+        act_video_preview.setChecked(True)
+        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
+        view_menu.addAction(act_video_preview)
+        self._act_video_preview = act_video_preview
+        self._clean_output_action = QAction("&Clean Video Output", self)
+        self._clean_output_action.setCheckable(True)
+        self._clean_output_action.triggered.connect(self._toggle_clean_output)
+        view_menu.addAction(self._clean_output_action)
 
     def _autosave_enabled(self) -> bool:
         return bool(self._settings.value(_KEY_AUTOSAVE_ENABLED, True, type=bool))
