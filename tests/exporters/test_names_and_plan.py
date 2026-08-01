@@ -29,6 +29,7 @@ def test_split_ma_cue_number_fractional() -> None:
         format_ma2_timecode_step,
         format_ma3_cue_no_attr,
         format_ma_cue_number,
+        ma2_timecode_cue_nos,
         ma3_cue_destination_handle,
         split_ma_cue_number,
     )
@@ -40,13 +41,11 @@ def test_split_ma_cue_number_fractional() -> None:
     assert format_ma3_cue_no_attr(4.1) == "4.100"
     assert ma3_cue_destination_handle(4.1) == 4100
     assert ma3_cue_destination_handle(1) == 1000
-    # Timecode XML attrs must stay decimal-free.
+    assert format_ma2_cue_link_name(14.1) == "Cue 14.1"
     assert format_ma2_timecode_step(14.0) == "14"
-    assert format_ma2_timecode_step(14.1) == "14100"
-    assert format_ma2_timecode_step(15.1) == "15100"
-    assert format_ma2_cue_link_name(14.0) == "Cue 14"
-    assert format_ma2_cue_link_name(14.1) == "Cue 14_1"
-    assert format_ma2_cue_link_name(15.1) == "Cue 15_1"
+    # Timecode Cue Nos use sequence index, not Cue ID (15th cue may be 14.1).
+    assert ma2_timecode_cue_nos(5, 15) == [1, 5, 15]
+    assert ma2_timecode_cue_nos(1, 1) == [1, 1, 1]
 
 
 def test_manual_ma_export_name_wins() -> None:
@@ -107,8 +106,8 @@ def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None
         "Store Sequence 1 Cue 15 /noconfirm",
         "Store Sequence 1 Cue 15.1 /noconfirm",
     ]
-    assert 'Label Sequence 1 Cue 14.1 "Cue 14_1"' in label
-    assert 'Label Sequence 1 Cue 15.1 "Cue 15_1"' in label
+    assert 'Label Sequence 1 Cue 14.1 "Cue 14.1"' in label
+    assert 'Label Sequence 1 Cue 15.1 "Cue 15.1"' in label
     assert not any("Cue_15" in c or "Cue_16" in c or "Cue_17" in c for c in cmds)
 
     from pathlib import Path
@@ -117,15 +116,18 @@ def test_build_export_plan_fractional_ids_do_not_fake_sequential_names() -> None
     with tempfile.TemporaryDirectory() as d:
         paths = Ma2Exporter().export_to_directory(plan, Path(d), include_plugin=True)
         tc = paths["timecode"].read_text(encoding="utf-8")
-        assert 'name="Cue 14_1"' in tc
-        assert 'name="Cue 15_1"' in tc
-        assert 'step="14100"' in tc
+        assert 'name="Cue 14.1"' in tc
+        assert 'name="Cue 15.1"' in tc
         assert 'step="14.1"' not in tc
-        assert "Cue_15" not in tc
-        # Nos include MA2 milli sub for 14.1 → 100
-        assert "<No>14</No><No>100</No>" in tc.replace("\n", "").replace(" ", "") or (
-            ">14</No>" in tc and ">100</No>" in tc
-        )
+        compact = tc.replace("\n", "").replace(" ", "")
+        # Cue 14.1 is the 2nd Store'd cue → Nos third = 2 (index), not Cue ID 14.
+        assert "<No>1</No><No>1</No><No>2</No>" in compact
+        # Cue 15 is the 3rd → index 3 (writing Cue ID 15 would wrongly hit index 15).
+        assert "<No>1</No><No>1</No><No>3</No>" in compact
+        assert 'step="2"' in tc and 'step="3"' in tc
+        lua = paths["plugin_lua"].read_text(encoding="utf-8")
+        assert "Store Timecode" not in lua
+        assert "At Timecode" in lua
 
 def test_exporter_summaries_include_target_versions() -> None:
     plan = SongExportPlan(
