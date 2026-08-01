@@ -94,24 +94,67 @@ def test_ma2_timecode_offset_via_macro_not_xml(tmp_path: Path) -> None:
     # Offset is Assign-only (golden afternoon TC has no XML offset attr).
     assert tc.get("offset") is None
     assert sum(1 for el in root.iter() if xml_tag_local(el.tag) == "Event") == 1
-    # lenght is relative centiseconds (~200 for 2s), not hour+
+    # lenght is relative FPS frames (~60 for 2s @ 30 FPS), not hour+
     assert int(tc.get("lenght", "0")) < 10_000
+    assert tc.get("frame_format") == "30 FPS"
     times = [
         int(ev.get("time", "0"))
         for ev in root.iter()
         if xml_tag_local(ev.tag) == "Event"
     ]
-    assert times == [200]  # 2.0s * 100 (1/100 Seconds), relative
+    assert times == [60]  # 2.0s * 30 FPS, relative
     macro = paths["macro_xml"].read_text(encoding="utf-8")
     assert "/Offset=1h" in macro
     lua = paths["plugin_lua"].read_text(encoding="utf-8")
     assert "/Offset=1h" in lua
-    assert 'time="200"' in lua
-    assert "frame_format=" not in lua
-    assert "/TimeUnit=0" in lua
+    assert 'time="60"' in lua
+    assert 'frame_format="30 FPS"' in lua
+    assert '/TimeUnit="30 FPS"' in lua
+    assert "/TimeUnit=0" not in lua
     assert "/Slot=1" in lua
     assert '/RecordMode="Go"' in lua
     assert 'time="108' not in lua
+
+
+def test_ma2_timecode_uses_fps_frames_not_centiseconds(tmp_path: Path) -> None:
+    """
+    Regression: XML time/lenght as centiseconds + Import default 30 FPS
+    stretched everything ×100/30 (song ~4:14 → ~14:00; cue 1.947 → 6.5).
+    """
+    plan = SongExportPlan(
+        song_name="Stretch",
+        profile=MaExportProfile(
+            console="ma2",
+            export_mode="full",
+            fps=30.0,
+            start_offset_seconds=3600.0,
+            main_sequence_file="stretch_main.xml",
+            timecode_file="stretch_timecode.xml",
+        ),
+        main_cues=[
+            ExportCue(1, "A", time_seconds=1.947),
+            ExportCue(2, "B", time_seconds=8.204),
+            ExportCue(3, "C", time_seconds=20.830),
+        ],
+        button_lanes=[],
+        duration_seconds=4 * 60 + 13.749,
+    )
+    paths = Ma2Exporter().export_to_directory(plan, tmp_path, include_plugin=True)
+    root = load_xml_root(paths["timecode"])
+    tc = next(el for el in root.iter() if xml_tag_local(el.tag) == "Timecode")
+    assert tc.get("frame_format") == "30 FPS"
+    assert int(tc.get("lenght", "0")) == 7612  # ~4:13.73 @ 30 FPS
+    times = [
+        int(ev.get("time", "0"))
+        for ev in root.iter()
+        if xml_tag_local(ev.tag) == "Event"
+    ]
+    assert times == [58, 246, 625]
+    # Must NOT be old centisecond stamps (194.7→195, etc.)
+    assert 195 not in times and 820 not in times and 2083 not in times
+    lua = paths["plugin_lua"].read_text(encoding="utf-8")
+    assert lua.index('/TimeUnit="30 FPS"') < lua.index('Import "')
+    assert "/TimeUnit=0" not in lua
 
 
 def test_ma3_timecode_all_cue_destinations_named(tmp_path: Path) -> None:

@@ -132,16 +132,17 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
       Slot=1 (or project Timecode Slot) · Runs=Endless Repeat
       Switch Off=Keep Playbacks · Status Call=Off
       When Ending=Stop · When Stopping=Rewind · AutoStart=Off
-      TimeUnit=1/100 Seconds (event times / lenght are centiseconds)
+      TimeUnit matches XML event units (24/25/30 FPS — MA default on Import)
       Record Mode=Go (Go Cue X, not Goto Cue X).
 
     Song-start LTC → ``/Offset=…``.
 
-    Note: do **not** put ``/TimeUnit="1/100 Seconds"`` in a slash-option string —
-    MA parses the ``/100`` as another option. Use numeric ``/TimeUnit=0``
-    (0 = 1/100 Seconds per MA help enum order). XML ``frame_format`` only
-    accepts ``24/25/30 FPS`` or empty (empty ≈ hundredths); omit it.
+    Important: XML ``time`` / ``lenght`` are interpreted with the Timecode's
+    TimeUnit **at Import**. Changing TimeUnit afterward only changes display.
+    Event times are therefore written as frames at this same FPS.
     """
+    from cueplayer.exporters.xml_write import ma2_timecode_frame_format
+
     tc = int(plan_profile.timecode_pool)
     slot = int(plan_profile.timecode_slot)
     # Help: Intern=-1, Link Selected=0, fixed slots=1..8. Default / UI = 1.
@@ -156,6 +157,7 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
         if plan_profile.start_offset_seconds > 1e-6
         else "0s"
     )
+    frame_format = ma2_timecode_frame_format(plan_profile.fps)
     return [
         (
             f'Assign Timecode {tc} /Slot={slot_token} '
@@ -164,10 +166,19 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
             f'/WhenEnding="Stop" /WhenStopping="Rewind" '
             f'/AutoStart="Off" /Offset={offset}'
         ),
-        # Separate cmds: slash / enum values that break combined Assign lines.
-        f"Assign Timecode {tc} /TimeUnit=0",
+        # Quoted enum — numeric /TimeUnit=0 was 1/100s and fought FPS frame times.
+        f'Assign Timecode {tc} /TimeUnit="{frame_format}"',
         f'Assign Timecode {tc} /RecordMode="Go"',
     ]
+
+
+def ma2_timecode_pre_import_timeunit(plan_profile: MaExportProfile) -> str:
+    """Set TimeUnit before Import so XML frame times decode correctly."""
+    from cueplayer.exporters.xml_write import ma2_timecode_frame_format
+
+    tc = int(plan_profile.timecode_pool)
+    frame_format = ma2_timecode_frame_format(plan_profile.fps)
+    return f'Assign Timecode {tc} /TimeUnit="{frame_format}"'
 
 
 def ma_import_filename(stem: str, *, suffix: str = ".xml") -> str:
@@ -338,3 +349,6 @@ class SongExportPlan:
     profile: MaExportProfile
     main_cues: list[ExportCue] = field(default_factory=list)
     button_lanes: list[ExportButtonLane] = field(default_factory=list)
+    # Song media length — Timecode ``lenght`` should cover the full song, not
+    # only the last cue.
+    duration_seconds: float = 0.0
