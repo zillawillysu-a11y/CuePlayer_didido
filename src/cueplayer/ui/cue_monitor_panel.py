@@ -307,8 +307,10 @@ class CueMonitorPanel(QWidget):
         self._position = 0.0
         self._current_mark_ids: set[str] = set()
         self._playhead_list_mark_id: str | None = None
-        # User scrolled Cue List away — don't yank back until seek / Follow again.
+        # User scrolled Cue List away — don't yank back until they scroll the
+        # playhead cue back into view, seek, or choose Follow playhead.
         self._cue_list_follow_suspended = False
+        self._cue_list_follow_left_viewport = False
         self._updating_table = False
         self._syncing_selection = False
         self._secondary_hold_mark_id: str | None = None
@@ -571,8 +573,8 @@ class CueMonitorPanel(QWidget):
         self._list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
         self._list_title.setToolTip(
             "Shift/Ctrl multi-select · Del to delete · click Time to jump\n"
-            "Scroll pauses auto-scroll (selection still follows playhead) — "
-            "right-click → Follow playhead to resume scrolling"
+            "Scroll away pauses auto-scroll (selection still follows). "
+            "Scroll back to the lit cue to resume — or right-click → Follow playhead"
         )
         self._list_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list_title.customContextMenuRequested.connect(self._show_cue_list_context_menu)
@@ -636,8 +638,8 @@ class CueMonitorPanel(QWidget):
         self.cue_table.viewport().installEventFilter(self)
         vbar = self.cue_table.verticalScrollBar()
         # Only real user gestures — not programmatic scrollToItem / setValue.
-        vbar.sliderPressed.connect(self._suspend_cue_list_follow)
-        vbar.actionTriggered.connect(lambda *_: self._suspend_cue_list_follow())
+        vbar.sliderPressed.connect(self._on_user_cue_list_scroll)
+        vbar.actionTriggered.connect(lambda *_: self._on_user_cue_list_scroll())
 
         # Cue List block — lives in a body splitter under NOW so raising NOW
         # height compresses Cue List instead of painting over it.
@@ -727,6 +729,7 @@ class CueMonitorPanel(QWidget):
         self._song = song
         self._playhead_list_mark_id = None
         self._cue_list_follow_suspended = False
+        self._cue_list_follow_left_viewport = False
         # Column order / NOW visibility come from global monitor UI prefs — do
         # not reload them from the song (switching songs used to reset chrome).
         self._apply_column_order(list(self._column_order))
@@ -1816,7 +1819,7 @@ class CueMonitorPanel(QWidget):
             and obj in (self.cue_table, self.cue_table.viewport())
             and event.type() == QEvent.Type.Wheel
         ):
-            self._suspend_cue_list_follow()
+            self._on_user_cue_list_scroll()
         if (
             getattr(self, "cue_table", None) is obj
             and event.type() == QEvent.Type.KeyPress
@@ -1836,7 +1839,7 @@ class CueMonitorPanel(QWidget):
                 Qt.Key.Key_End,
             ):
                 # Keyboard navigation away from the playhead row.
-                self._suspend_cue_list_follow()
+                self._on_user_cue_list_scroll()
 
         secondary = getattr(self, "secondary_track", None)
         secondary_col = getattr(self, "_secondary_now_column", None)
@@ -2125,6 +2128,7 @@ class CueMonitorPanel(QWidget):
         # Seek / scrub jump — resume follow so the new playhead cue comes into view.
         if abs(self._position - prev_pos) > 0.5:
             self._cue_list_follow_suspended = False
+            self._cue_list_follow_left_viewport = False
         prev = self.clock_label.text()
         self.clock_label.setText(format_time(self._position))
         if duration is not None:
@@ -2506,12 +2510,50 @@ class CueMonitorPanel(QWidget):
         self._schedule_now_card_fit()
         self._follow_cue_list_to_playhead()
 
+    def _on_user_cue_list_scroll(self) -> None:
+        """User moved Cue List — pause auto-scroll; resume when they scroll back to the lit cue."""
+        self._cue_list_follow_suspended = True
+        # Wheel/key scroll applies after this handler — check visibility next tick.
+        QTimer.singleShot(0, self._maybe_resume_cue_list_follow_after_user_scroll)
+
+    def _playhead_cue_row_is_visible(self) -> bool:
+        """True when the current playhead Cue List row is at least partly on screen."""
+        mark_id = self._playhead_list_mark_id
+        if not mark_id or not self.cue_table.isVisible():
+            return False
+        row = -1
+        for candidate in range(self.cue_table.rowCount()):
+            if self._mark_id_at_row(candidate) == mark_id:
+                row = candidate
+                break
+        if row < 0:
+            return False
+        index = self.cue_table.model().index(row, 0)
+        rect = self.cue_table.visualRect(index)
+        vp_h = self.cue_table.viewport().height()
+        if vp_h <= 0 or rect.height() <= 0:
+            return False
+        # Partly visible counts — user "met" the lit cue while scrolling back.
+        return rect.bottom() > 0 and rect.top() < vp_h
+
+    def _maybe_resume_cue_list_follow_after_user_scroll(self) -> None:
+        if not self._cue_list_follow_suspended:
+            return
+        visible = self._playhead_cue_row_is_visible()
+        if not visible:
+            self._cue_list_follow_left_viewport = True
+            return
+        # Scrolled back onto the lit playhead cue → resume auto-scroll / paging.
+        if self._cue_list_follow_left_viewport:
+            self._resume_cue_list_follow()
+
     def _suspend_cue_list_follow(self) -> None:
-        """User moved Cue List — stop auto-scrolling until seek / Follow playhead."""
+        """Pause auto-scrolling (tests / explicit)."""
         self._cue_list_follow_suspended = True
 
     def _resume_cue_list_follow(self) -> None:
         self._cue_list_follow_suspended = False
+        self._cue_list_follow_left_viewport = False
         self._playhead_list_mark_id = None
         self._follow_cue_list_to_playhead()
 
