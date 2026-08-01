@@ -35,8 +35,10 @@ def _prepare_short_cue_list(panel: CueMonitorPanel, app: QApplication) -> None:
     panel._apply_now_panel_visibility()  # noqa: SLF001
     panel.resize(320, 420)
     app.processEvents()
+    panel._fit_monitor_body_to_viewport()  # noqa: SLF001
+    app.processEvents()
     # Leave room for clock; Cue List still gets a usable but short viewport.
-    assert panel.cue_table.viewport().height() > 60
+    assert panel.cue_table.viewport().height() >= _ROW_HEIGHT
 
 
 def test_playhead_cue_scrolls_into_view_with_bottom_margin(app: QApplication) -> None:
@@ -62,11 +64,15 @@ def test_playhead_cue_scrolls_into_view_with_bottom_margin(app: QApplication) ->
     index = panel.cue_table.model().index(row, 0)
     rect = panel.cue_table.visualRect(index)
     vp_h = panel.cue_table.viewport().height()
-    assert vp_h > 60
+    assert vp_h >= _ROW_HEIGHT
     assert rect.height() > 0
     assert rect.top() >= 0
-    # Not flush against / past the bottom edge.
-    assert rect.bottom() <= vp_h - max(8, _ROW_HEIGHT // 4)
+    # Not flush against / past the bottom edge (when the viewport has room).
+    if vp_h >= _ROW_HEIGHT * 2:
+        assert rect.bottom() <= vp_h - max(4, _ROW_HEIGHT // 4)
+    else:
+        assert rect.bottom() <= vp_h
+        assert rect.top() < vp_h
 
 
 def test_cue_row_scroll_does_not_move_outer_monitor_scroll(app: QApplication) -> None:
@@ -109,6 +115,7 @@ def test_tiny_cue_list_keeps_playhead_row_visible(app: QApplication) -> None:
     panel.resize(300, 260)
     app.processEvents()
     panel._fit_body_within_panel()  # noqa: SLF001
+    panel._fit_monitor_body_to_viewport()  # noqa: SLF001
     app.processEvents()
 
     assert panel.cue_table.viewport().height() >= _ROW_HEIGHT - 2
@@ -137,6 +144,74 @@ def test_tiny_cue_list_keeps_playhead_row_visible(app: QApplication) -> None:
     assert rect.height() > 0
     assert rect.top() < vp_h
     assert rect.bottom() > 0
+
+
+def test_short_clock_plus_cue_list_follows_playhead(app: QApplication) -> None:
+    """Reproduce: Clock + thin Cue List; playhead at ~27s must not stay on 00:01 rows."""
+    panel = CueMonitorPanel()
+    song = Project.create("S").new_song("Song")
+    times = [
+        1.947,
+        8.204,
+        12.0,
+        15.5,
+        18.0,
+        20.0,
+        22.5,
+        25.0,
+        26.5,
+        27.0,
+        28.0,
+        30.0,
+        35.0,
+        40.0,
+    ]
+    for t in times:
+        song.add_mark(1, t)
+    panel.set_song(song)
+    panel.configure_output_timecode_clock(visible=True, color="#3dd68c")
+    panel._now_primary_visible = False  # noqa: SLF001
+    panel._now_secondary_visible = False  # noqa: SLF001
+    panel._apply_now_panel_visibility()  # noqa: SLF001
+    panel.show()
+    panel.resize(320, 360)
+    app.processEvents()
+    panel._fit_monitor_body_to_viewport()  # noqa: SLF001
+    app.processEvents()
+
+    # Park like the user: outer scroller on Clock (must stay put).
+    outer = panel._monitor_scroll.verticalScrollBar()  # noqa: SLF001
+    outer.setValue(0)
+    app.processEvents()
+
+    panel.set_position(2.0)
+    app.processEvents()
+    panel.set_position(27.072)
+    app.processEvents()
+    panel._scroll_cue_row_into_view(  # noqa: SLF001
+        song.last_cue_list_mark_at_or_before(27.072).id
+    )
+    app.processEvents()
+
+    assert outer.value() == 0
+    target = song.last_cue_list_mark_at_or_before(27.072)
+    assert target is not None
+    assert abs(target.time_seconds - 27.0) < 1e-6
+    assert panel._playhead_list_mark_id == target.id  # noqa: SLF001
+
+    visible_times: list[float] = []
+    for r in range(panel.cue_table.rowCount()):
+        rr = panel.cue_table.visualRect(panel.cue_table.model().index(r, 0))
+        vp_h = panel.cue_table.viewport().height()
+        if rr.height() <= 0 or rr.bottom() <= 0 or rr.top() >= vp_h:
+            continue
+        mid = panel._mark_id_at_row(r)  # noqa: SLF001
+        mark = song.mark_by_id(mid) if mid else None
+        if mark is not None:
+            visible_times.append(mark.time_seconds)
+    assert visible_times, "Cue List viewport should show at least one row"
+    assert any(abs(t - 27.0) < 1e-6 for t in visible_times)
+    assert not any(t < 10.0 for t in visible_times)
 
 
 def test_follow_skips_marks_hidden_from_cue_list(app: QApplication) -> None:

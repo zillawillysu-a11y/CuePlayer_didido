@@ -200,10 +200,11 @@ _NOW_SECONDARY_COL_MIN = 36
 # cannot keep the playhead cue on screen.
 _CUE_LIST_BODY_MIN = 110
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
-# Keep NOW + Cue List tall enough inside the scroll area so a short panel
-# scrolls between the display (clock/NOW) and the Cue List instead of crushing both.
-# Must leave room for a usable Cue List (title + header + ≥1 row).
-_MONITOR_BODY_SCROLL_MIN = max(280, 160 + _CUE_LIST_BODY_MIN)
+# Soft floor used only when the monitor column is tall enough that outer
+# scrolling is unnecessary. Short panels cap the body to the viewport instead
+# (see `_fit_monitor_body_to_viewport`) so Cue List table scroll matches what
+# is on screen under the Clock.
+_MONITOR_BODY_SCROLL_MIN = 280
 _CLOCK_FONT_MAX_PX = 48
 _CLOCK_FONT_MIN_PX = 16
 _TC_FONT_MAX_PX = 22
@@ -664,14 +665,18 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.setStretchFactor(0, 0)
         self._body_splitter.setStretchFactor(1, 1)
         self._body_splitter.setSizes([240, 420])
-        self._body_splitter.setMinimumHeight(_MONITOR_BODY_SCROLL_MIN)
+        # Short panels: height is capped to the viewport in
+        # `_fit_monitor_body_to_viewport` so Clock + Cue List stay on screen.
+        self._body_splitter.setMinimumHeight(_CUE_LIST_BODY_MIN)
         self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         body_handle = self._body_splitter.handle(1)
         body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
         self._sync_body_handle_tooltip()
 
-        # Short windows: scroll the right column between the display (clock/NOW)
-        # and Cue List instead of crushing both into illegible strips.
+        # Prefer Clock + NOW/Cue List in one viewport. A fixed tall body min
+        # used to force outer scrolling while the Cue List table stayed scrolled
+        # to the playhead "inside" a taller block — the window still showed the
+        # first rows. Cap the body under the clock instead (see fit helper).
         self._monitor_scroll_content = QWidget()
         self._monitor_scroll_content.setObjectName("monitorScrollContent")
         self._monitor_scroll_content.setMinimumWidth(0)
@@ -891,6 +896,7 @@ class CueMonitorPanel(QWidget):
         else:
             self._below_locked_primary_h = None
         self._sync_body_handle_tooltip()
+        self._fit_monitor_body_to_viewport()
 
     def _sync_now_section_collapsed(self, show_now: bool) -> None:
         """Show or collapse the NOW half of the body splitter."""
@@ -1058,6 +1064,52 @@ class CueMonitorPanel(QWidget):
             + handle
             + self._secondary_col_min()
         )
+
+    def _fit_monitor_body_to_viewport(self) -> None:
+        """Cap NOW/Cue List so Clock + body fit the monitor viewport when short.
+
+        Playhead follow only scrolls ``cue_table``. If the body is taller than
+        the on-screen slice under the Clock, the window keeps showing the top
+        Cue List rows even after an internal scroll. Matching table height to
+        the visible area fixes that without yanking the outer scroller.
+        """
+        if not hasattr(self, "_monitor_scroll") or not hasattr(self, "_body_splitter"):
+            return
+        vp_h = self._monitor_scroll.viewport().height()
+        if vp_h <= 0:
+            return
+        spacing = 10
+        lay = self._monitor_scroll_content.layout()
+        if lay is not None:
+            spacing = max(0, int(lay.spacing()))
+        clock_h = self._clock_frame.height()
+        if clock_h <= 0:
+            clock_h = max(1, self._clock_frame.sizeHint().height())
+        body_budget = vp_h - clock_h - spacing
+        if body_budget >= _MONITOR_BODY_SCROLL_MIN:
+            # Tall enough: let the body expand with the panel (no artificial cap).
+            self._body_splitter.setMinimumHeight(_CUE_LIST_BODY_MIN)
+            self._body_splitter.setMaximumHeight(16777215)
+            return
+        # Short panel: keep Clock fully visible and give the rest to NOW/Cue List.
+        body_h = max(_CUE_LIST_BODY_MIN, body_budget)
+        if body_budget < _CUE_LIST_BODY_MIN:
+            # Extremely short — still keep a one-row Cue List; slight outer
+            # overflow is better than a zero-height table.
+            body_h = _CUE_LIST_BODY_MIN
+        self._body_splitter.setMinimumHeight(min(_CUE_LIST_BODY_MIN, body_h))
+        self._body_splitter.setMaximumHeight(body_h)
+        # Apply the cap immediately so sizeHints cannot re-expand the scroll content.
+        total = self._body_total_height()
+        if total <= 0 or total > body_h:
+            if self._now_section.isHidden():
+                self._body_splitter.setSizes([0, body_h])
+            else:
+                self._fit_body_within_panel()
+                sizes = self._body_splitter.sizes()
+                if len(sizes) == 2 and sum(sizes) != body_h:
+                    now_h = min(sizes[0], max(0, body_h - _CUE_LIST_BODY_MIN))
+                    self._body_splitter.setSizes([now_h, max(0, body_h - now_h)])
 
     def _fit_body_within_panel(self) -> None:
         """Keep NOW/Cue List split inside the current panel height (no window grow)."""
@@ -1374,11 +1426,14 @@ class CueMonitorPanel(QWidget):
         QTimer.singleShot(0, self.ensure_now_splitter_ready)
         QTimer.singleShot(0, self._fit_clock_fonts)
         QTimer.singleShot(0, self._fit_now_chrome)
+        QTimer.singleShot(0, self._fit_monitor_body_to_viewport)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
         super().resizeEvent(event)
         self._fit_clock_fonts()
         self._fit_now_chrome()
+        self._fit_monitor_body_to_viewport()
+        QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
     @staticmethod
     def _mono_clock_font(point_px: int, *, bold: bool = True) -> QFont:
@@ -1564,6 +1619,7 @@ class CueMonitorPanel(QWidget):
         self._apply_tc_value_style()
         if self.output_quick_toggles.isVisible():
             self.output_quick_toggles._fit_to_width()  # noqa: SLF001
+        self._fit_monitor_body_to_viewport()
 
     def save_now_splitter_state(self):
         self._stash_current_splitter_state()
