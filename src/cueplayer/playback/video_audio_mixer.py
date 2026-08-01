@@ -201,8 +201,13 @@ class VideoAudioMixer:
             return out
         end_frame = start_frame + frames
         clips = [c for c in song.video_clips if not c.hidden]
+        if not clips:
+            return out
         with self._lock:
             cache_snapshot = dict(self._cache)
+        # Overlap check once per buffer — crossfade weights are expensive and
+        # unused for the common single-clip / non-overlapping case.
+        overlapping_ids = song.overlapping_video_clip_ids()
         for clip in clips:
             clip_start_frame = int(round(clip.start_seconds * sr))
             clip_end_frame = int(round(clip.end_seconds * sr))
@@ -210,12 +215,12 @@ class VideoAudioMixer:
             hi = min(end_frame, clip_end_frame)
             if hi <= lo:
                 continue
-            active = np.arange(lo, hi, dtype=np.int64)
-            offsets = active - clip_start_frame
+            n = hi - lo
+            offsets = np.arange(n, dtype=np.int64) + (lo - clip_start_frame)
             src_in = max(0.0, float(clip.source_in_seconds))
             span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
             if clip.media_kind == "still":
-                src_times = np.full(active.size, src_in, dtype=np.float64)
+                src_times = np.full(n, src_in, dtype=np.float64)
             else:
                 src_times = src_in + np.mod(offsets.astype(np.float64) / sr, span)
 
@@ -238,12 +243,18 @@ class VideoAudioMixer:
                 self._request_window(clip, float(src_times[-1]))
 
             vol = max(0.0, min(1.0, float(clip.volume)))
-            t_seconds = active.astype(np.float64) / sr
+            out_rows = np.arange(lo, hi, dtype=np.int64) - start_frame
+            if clip.id not in overlapping_ids:
+                mask = valid
+                if not np.any(mask):
+                    continue
+                out[out_rows[mask]] += pcm.samples[src_idx[mask]] * vol
+                continue
+            t_seconds = (out_rows.astype(np.float64) + start_frame) / sr
             weights = video_clip_crossfade_weights(clip, t_seconds, song.video_clips)
             mask = valid & (weights > 1e-6)
             if not np.any(mask):
                 continue
-            out_rows = (active[mask] - start_frame).astype(np.int64)
             scaled = pcm.samples[src_idx[mask]] * (vol * weights[mask])[:, np.newaxis]
-            out[out_rows] += scaled
+            out[out_rows[mask]] += scaled
         return out

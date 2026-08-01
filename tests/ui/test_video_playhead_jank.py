@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRect, QRectF
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -164,3 +164,36 @@ def test_play_paint_does_not_submit_waveform_workers(
     cache._executor.submit = _capture_submit  # type: ignore[method-assign]
     assert cache.peaks_for_paint(clip, allow_submit=False) is None
     assert submitted == []
+
+
+def test_playhead_dirty_update_when_scroll_static(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With Auto Scroll off, play ticks must not full-repaint the Video Track."""
+    song = Song.create("Dirty")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    widget.resize(800, 400)
+    widget.set_playing(True)
+    widget._auto_scroll = False
+    widget._last_playhead_paint_x = 100
+
+    clock_ns = [0]
+
+    def _fake_mono() -> int:
+        clock_ns[0] += 40_000_000
+        return clock_ns[0]
+
+    monkeypatch.setattr("cueplayer.ui.timeline_widget.monotonic_ns", _fake_mono)
+
+    regions: list[object] = []
+    original_update = widget.update
+
+    def _track_update(*args, **kwargs):  # noqa: ANN002, ANN003
+        regions.append(args[0] if args else "full")
+        return original_update(*args, **kwargs)
+
+    widget.update = _track_update  # type: ignore[method-assign]
+    widget.set_position(1.0)
+    assert regions
+    assert any(isinstance(r, QRect) for r in regions)
