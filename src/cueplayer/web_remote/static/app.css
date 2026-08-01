@@ -73,8 +73,42 @@ html, body {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(150px, 0.8fr) minmax(300px, 1.45fr) minmax(240px, 1.05fr);
-  gap: 8px;
+  grid-template-columns:
+    var(--col-setlist, 200px)
+    8px
+    minmax(0, 1fr)
+    8px
+    var(--col-monitor, 300px);
+  gap: 0;
+  column-gap: 0;
+}
+
+.splitter {
+  width: 8px;
+  margin: 0 2px;
+  border-radius: 4px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  position: relative;
+  align-self: stretch;
+}
+
+.splitter::after {
+  content: "";
+  position: absolute;
+  top: 12%;
+  bottom: 12%;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: #333;
+}
+
+.splitter:hover::after,
+.splitter:focus-visible::after,
+.splitter.active::after {
+  background: var(--ok);
 }
 
 @media (max-width: 980px) {
@@ -82,6 +116,7 @@ html, body {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 0.9fr);
   }
+  .splitter { display: none; }
   .stage { order: 1; }
   .monitor { order: 2; }
   .setlist { order: 3; }
@@ -193,6 +228,25 @@ html, body {
 
 .cue-toolbar h2 {
   margin: 0;
+  margin-right: auto;
+}
+
+.cue-item .cue-id,
+.cue-item .note {
+  cursor: text;
+  border-radius: 3px;
+}
+
+.cue-item .cue-id:active,
+.cue-item .note:active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.confirm-body {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+  white-space: pre-line;
 }
 
 .disp-form {

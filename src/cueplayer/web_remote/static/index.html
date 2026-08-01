@@ -19,17 +19,19 @@
       <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
     </header>
 
-    <main class="layout">
-      <section class="panel setlist" aria-label="Setlist">
+    <main class="layout" id="layout">
+      <section class="panel setlist" id="setlistPanel" aria-label="Setlist">
         <h2>Setlist</h2>
         <div id="songList" class="song-list"></div>
       </section>
+      <div class="splitter" id="splitSetlist" role="separator" aria-orientation="vertical" aria-label="Resize setlist" tabindex="0"></div>
 
-      <section class="panel stage" aria-label="Timeline">
+      <section class="panel stage" id="stagePanel" aria-label="Timeline">
         <div class="wave-toolbar">
           <button type="button" class="ghost tiny" id="zoomOut" title="Zoom out">−</button>
           <button type="button" class="ghost tiny" id="zoomFit" title="Fit song">Fit</button>
           <button type="button" class="ghost tiny" id="zoomIn" title="Zoom in">+</button>
+          <button type="button" class="ghost tiny" id="waveFollowBtn" title="Follow playhead" hidden>Follow</button>
           <span class="wave-range" id="waveRange"></span>
         </div>
         <div class="wave-wrap" id="waveWrap" aria-label="Waveform">
@@ -57,8 +59,9 @@
 
         <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
       </section>
+      <div class="splitter" id="splitMonitor" role="separator" aria-orientation="vertical" aria-label="Resize monitor" tabindex="0"></div>
 
-      <section class="panel monitor" aria-label="Cue monitor">
+      <section class="panel monitor" id="monitorPanel" aria-label="Cue monitor">
         <div class="monitor-clock">
           <div class="clock" id="clock">00:00.000</div>
           <div class="duration" id="duration">/ 00:00.000</div>
@@ -85,6 +88,7 @@
 
         <div class="cue-toolbar">
           <h2>Cue List</h2>
+          <button type="button" class="ghost tiny" id="renumberCueBtn" title="Renumber Cue IDs">Re#</button>
           <button type="button" class="ghost tiny" id="cueFollowBtn" hidden>Follow</button>
         </div>
         <div class="cue-head">
@@ -125,8 +129,19 @@
       <h3 id="noteDialogTitle">Mark Note</h3>
       <input type="text" id="noteInput" autocomplete="off" enterkeyhint="done" />
       <div class="auth-actions">
-        <button value="cancel" class="ghost" id="noteCancel">Skip</button>
+        <button value="cancel" class="ghost" id="noteCancel">Cancel</button>
         <button value="ok" class="primary" id="noteSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form method="dialog" class="note-form">
+      <h3 id="confirmTitle">Confirm</h3>
+      <p id="confirmBody" class="confirm-body"></p>
+      <div class="auth-actions">
+        <button value="cancel" class="ghost" id="confirmNo">No</button>
+        <button value="ok" class="primary" id="confirmYes">Yes</button>
       </div>
     </form>
   </dialog>

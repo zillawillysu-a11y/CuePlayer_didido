@@ -245,6 +245,10 @@ class WebRemoteBridge(QObject):
             return self._add_mark(command)
         if op == "set_mark_note":
             return self._set_mark_note(command)
+        if op == "set_mark_cue_id":
+            return self._set_mark_cue_id(command)
+        if op == "renumber_cue_ids":
+            return self._renumber_cue_ids(command)
         if op == "set_output_toggle":
             return self._set_output_toggle(command)
         if op == "toggle_folder":
@@ -553,14 +557,124 @@ class WebRemoteBridge(QObject):
         if mark is None:
             return {"ok": False, "error": "mark_not_found"}
         note = str(command.get("note") or "").strip()
+        old = mark.display_name or ""
+        if note == old:
+            return {"ok": True, "op": "set_mark_note", "mark_id": mark_id, "note": note}
         mark.display_name = note
-        host._refresh_marks_ui()
-        host._mark_dirty()
+        try:
+            host._on_note_changed(mark_id, old, note)
+        except Exception:  # noqa: BLE001
+            host._refresh_marks_ui()
+            host._mark_dirty()
         return {
             "ok": True,
             "op": "set_mark_note",
             "mark_id": mark_id,
             "note": note,
+        }
+
+    def _set_mark_cue_id(self, command: dict[str, Any]) -> dict[str, Any]:
+        from cueplayer.domain.main_cue_id import (
+            is_valid_main_cue_id_text,
+            main_cue_id_fits_order,
+            main_cue_id_taken,
+            normalize_main_cue_id_text,
+        )
+
+        host = self._host
+        song = host.current_song
+        mark_id = str(command.get("mark_id") or "").strip()
+        mark = song.mark_by_id(mark_id)
+        if mark is None:
+            return {"ok": False, "error": "mark_not_found"}
+        lane = song.lane_by_index(mark.lane_index)
+        if lane is None or not lane.cue_id_enabled:
+            return {"ok": False, "error": "cue_id_disabled"}
+        raw = str(command.get("cue_id") or "").strip()
+        if not is_valid_main_cue_id_text(raw):
+            return {"ok": False, "error": "Cue ID must be a positive number"}
+        new_id = normalize_main_cue_id_text(raw)
+        old_id = mark.main_cue_id or ""
+        if new_id == old_id:
+            return {
+                "ok": True,
+                "op": "set_mark_cue_id",
+                "mark_id": mark_id,
+                "cue_id": new_id,
+            }
+        if not main_cue_id_fits_order(song, mark.id, new_id):
+            if main_cue_id_taken(
+                song,
+                new_id,
+                exclude_mark_id=mark.id,
+                lane_index=mark.lane_index,
+            ):
+                return {"ok": False, "error": f"Cue ID {new_id} is already used"}
+            return {"ok": False, "error": "Cue ID is out of time order"}
+        mark.main_cue_id = new_id
+        try:
+            host._on_cue_id_changed(mark_id, old_id, new_id)
+        except Exception:  # noqa: BLE001
+            host._refresh_marks_ui()
+            host._mark_dirty()
+        return {
+            "ok": True,
+            "op": "set_mark_cue_id",
+            "mark_id": mark_id,
+            "cue_id": new_id,
+        }
+
+    def _renumber_cue_ids(self, command: dict[str, Any]) -> dict[str, Any]:
+        from cueplayer.domain.main_cue_id import (
+            capture_main_cue_ids,
+            renumber_main_cue_ids_sequential,
+            renumberable_cue_list_lanes,
+        )
+        from cueplayer.domain.undo import RenumberMainCueIdsCommand
+
+        host = self._host
+        song = host.current_song
+        lanes = renumberable_cue_list_lanes(song)
+        if not lanes:
+            return {"ok": False, "error": "no_cue_list_main_marks"}
+        lane_index = command.get("lane_index")
+        if lane_index is not None and str(lane_index).strip() != "":
+            try:
+                lane_index = int(lane_index)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "bad_lane_index"}
+            allowed = {item.index for item in lanes}
+            if lane_index not in allowed:
+                return {"ok": False, "error": "lane_not_renumberable"}
+            scope: set[int] | None = {lane_index}
+            lane = song.lane_by_index(lane_index)
+            scope_label = lane.name if lane is not None else str(lane_index)
+        else:
+            scope = None
+            scope_label = "all Cue List types"
+        before = capture_main_cue_ids(song, lane_indices=scope)
+        if not before:
+            return {"ok": False, "error": "no_main_cues"}
+        after = renumber_main_cue_ids_sequential(song, lane_indices=scope)
+        if before == after:
+            return {
+                "ok": True,
+                "op": "renumber_cue_ids",
+                "unchanged": True,
+                "count": len(before),
+                "scope": scope_label,
+            }
+        try:
+            host._push_song_undo(RenumberMainCueIdsCommand(before=before, after=after))
+        except Exception:  # noqa: BLE001
+            pass
+        host._mark_dirty()
+        host._refresh_marks_ui()
+        return {
+            "ok": True,
+            "op": "renumber_cue_ids",
+            "count": len(after),
+            "scope": scope_label,
         }
 
 

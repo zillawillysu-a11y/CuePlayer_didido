@@ -49,6 +49,16 @@
     dispTimecode: document.getElementById("dispTimecode"),
     dispToggles: document.getElementById("dispToggles"),
     cueFollowBtn: document.getElementById("cueFollowBtn"),
+    renumberCueBtn: document.getElementById("renumberCueBtn"),
+    waveFollowBtn: document.getElementById("waveFollowBtn"),
+    layout: document.getElementById("layout"),
+    splitSetlist: document.getElementById("splitSetlist"),
+    splitMonitor: document.getElementById("splitMonitor"),
+    confirmDialog: document.getElementById("confirmDialog"),
+    confirmTitle: document.getElementById("confirmTitle"),
+    confirmBody: document.getElementById("confirmBody"),
+    confirmYes: document.getElementById("confirmYes"),
+    confirmNo: document.getElementById("confirmNo"),
     nowPrimaryCard: document.querySelector(".now-card.primary"),
     nowSecondaryCard: document.querySelector(".now-card.secondary"),
   };
@@ -91,6 +101,10 @@
   let lastDrawnTc = "";
   let waveLabelFontPx = 11;
   let lastMgrLanesSig = "";
+  let waveFollowSuspended = false;
+  const LAYOUT_KEY = "cueplayer_web_remote_layout_v1";
+  let colSetlist = 200;
+  let colMonitor = 300;
 
   // Wave view window (seconds).
   let viewStart = 0;
@@ -206,6 +220,7 @@
       secondaryCleared = false;
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
+      setWaveFollowSuspended(false);
     } else if (Math.abs(nextPos - livePosition()) > 0.45) {
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
@@ -371,7 +386,7 @@
   }
 
   function renderCues(marks) {
-    const sig = JSON.stringify(marks.map((m) => [m.id, m.display_name, m.main_cue_id, m.time_display, m.color, m.lane_name]));
+    const sig = JSON.stringify(marks.map((m) => [m.id, m.display_name, m.main_cue_id, m.time_display, m.color, m.lane_name, m.cue_id_enabled]));
     if (sig === lastMarksSig) return;
     lastMarksSig = sig;
     els.cueList.innerHTML = "";
@@ -390,9 +405,23 @@
       const typeEl = btn.querySelector(".type");
       typeEl.textContent = m.lane_name || "";
       typeEl.style.color = m.color || "#aaa";
-      btn.querySelector(".cue-id").textContent = m.main_cue_id || "";
-      btn.querySelector(".note").textContent = m.display_name || "";
+      const cueEl = btn.querySelector(".cue-id");
+      cueEl.textContent = m.main_cue_id || "—";
+      cueEl.title = "Edit Cue ID";
+      const noteEl = btn.querySelector(".note");
+      noteEl.textContent = m.display_name || "—";
+      noteEl.title = "Edit Note";
       btn.style.borderLeft = `3px solid ${m.color || "#444"}`;
+      cueEl.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        editCueId(m).catch((e) => showToast(String(e.message || e)));
+      });
+      noteEl.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        editCueNote(m).catch((e) => showToast(String(e.message || e)));
+      });
       btn.addEventListener("click", () => {
         command({ op: "seek_mark", mark_id: m.id }).catch(() => {});
       });
@@ -526,19 +555,20 @@
   }
 
   function askMarkNote(laneName, initial) {
+    return askText(`Note for ${laneName || "mark"}`, initial || "");
+  }
+
+  function askText(title, initial) {
     return new Promise((resolve) => {
       if (!els.noteDialog || !els.noteDialog.showModal) {
         resolve(null);
         return;
       }
-      els.noteDialogTitle.textContent = `Note for ${laneName || "mark"}`;
+      els.noteDialogTitle.textContent = title || "Edit";
       els.noteInput.value = initial || "";
-      const finish = (value) => {
-        els.noteDialog.removeEventListener("close", onClose);
-        resolve(value);
-      };
       const onClose = () => {
-        finish(els.noteDialog.returnValue === "ok" ? els.noteInput.value : null);
+        els.noteDialog.removeEventListener("close", onClose);
+        resolve(els.noteDialog.returnValue === "ok" ? els.noteInput.value : null);
       };
       els.noteDialog.addEventListener("close", onClose, { once: true });
       els.noteDialog.showModal();
@@ -546,6 +576,23 @@
         els.noteInput.focus();
         els.noteInput.select();
       });
+    });
+  }
+
+  function askConfirm(title, body) {
+    return new Promise((resolve) => {
+      if (!els.confirmDialog || !els.confirmDialog.showModal) {
+        resolve(window.confirm(`${title}\n\n${body}`));
+        return;
+      }
+      els.confirmTitle.textContent = title || "Confirm";
+      els.confirmBody.textContent = body || "";
+      const onClose = () => {
+        els.confirmDialog.removeEventListener("close", onClose);
+        resolve(els.confirmDialog.returnValue === "ok");
+      };
+      els.confirmDialog.addEventListener("close", onClose, { once: true });
+      els.confirmDialog.showModal();
     });
   }
 
@@ -560,6 +607,47 @@
     }
     showToast(`Marked ${name}`);
     return result;
+  }
+
+  async function editCueNote(mark) {
+    const note = await askText(
+      `Note · ${mark.lane_name || "mark"}`,
+      mark.display_name || "",
+    );
+    if (note == null) return;
+    await command({ op: "set_mark_note", mark_id: mark.id, note });
+  }
+
+  async function editCueId(mark) {
+    if (!mark.cue_id_enabled) {
+      showToast("Cue ID off for this type — enable Cue ID in Marks");
+      return;
+    }
+    const cueId = await askText(
+      `Cue ID · ${mark.lane_name || "mark"}`,
+      mark.main_cue_id || "",
+    );
+    if (cueId == null) return;
+    try {
+      await command({ op: "set_mark_cue_id", mark_id: mark.id, cue_id: cueId });
+    } catch (e) {
+      showToast(String(e.message || e));
+    }
+  }
+
+  async function renumberCueIds() {
+    const ok = await askConfirm(
+      "Renumber Cue IDs",
+      "Renumber Cue IDs for all Cue List types to 1, 2, 3… in time order?\nExisting Cue IDs will be overwritten.",
+    );
+    if (!ok) return;
+    try {
+      const result = await command({ op: "renumber_cue_ids" });
+      if (result && result.unchanged) showToast("Cue IDs already 1, 2, 3…");
+      else showToast(`Renumbered ${result.count || ""} cues`);
+    } catch (e) {
+      showToast(String(e.message || e));
+    }
   }
 
   function renderMarkButtons(lanes) {
@@ -692,6 +780,25 @@
     return Math.max(0.05, viewEnd - viewStart);
   }
 
+  function setWaveFollowSuspended(on) {
+    waveFollowSuspended = Boolean(on);
+    if (els.waveFollowBtn) els.waveFollowBtn.hidden = !waveFollowSuspended;
+  }
+
+  function followWavePlayhead(pos) {
+    if (!syncPlaying || scrubbing || panning || pinching) return false;
+    if (waveFollowSuspended) return false;
+    const span = viewSpan();
+    if (span >= syncDur - 0.05) return false;
+    const margin = Math.min(span * 0.22, Math.max(0.15, span * 0.15));
+    if (pos >= viewStart + margin && pos <= viewEnd - margin) return false;
+    const half = span / 2;
+    viewStart = pos - half;
+    viewEnd = pos + half;
+    clampView();
+    return true;
+  }
+
   function clampView() {
     const span = viewSpan();
     if (span >= syncDur) {
@@ -717,6 +824,7 @@
     viewStart = anchor - next * ratio;
     viewEnd = viewStart + next;
     clampView();
+    setWaveFollowSuspended(true);
     drawWave(true);
   }
 
@@ -841,7 +949,8 @@
     }
     updateNowCards(pos);
     updateCueFollow(pos, false);
-    if (syncPlaying || scrubbing || panning) drawWave(false);
+    const waveScrolled = followWavePlayhead(pos);
+    if (syncPlaying || scrubbing || panning || waveScrolled) drawWave(false);
     requestAnimationFrame(tickFrame);
   }
 
@@ -923,6 +1032,7 @@
       els.playBtn.disabled = true;
       els.pauseBtn.disabled = false;
       els.pauseBtn.classList.add("active");
+      setWaveFollowSuspended(false);
     } else if (body.op === "pause") {
       syncPos = livePosition();
       syncPlaying = false;
@@ -954,6 +1064,8 @@
       || body.op === "set_output_toggle"
       || body.op === "set_display"
       || body.op === "set_mark_note"
+      || body.op === "set_mark_cue_id"
+      || body.op === "renumber_cue_ids"
       || body.op === "add_mark"
     ) {
       api("/api/state").then(applyState).catch(() => {});
@@ -1011,9 +1123,15 @@
     return viewStart + ratio * viewSpan();
   }
 
-  els.playBtn.addEventListener("click", () => command({ op: "play" }).catch(() => {}));
+  els.playBtn.addEventListener("click", () => {
+    setWaveFollowSuspended(false);
+    command({ op: "play" }).catch(() => {});
+  });
   els.pauseBtn.addEventListener("click", () => command({ op: "pause" }).catch(() => {}));
-  els.stopBtn.addEventListener("click", () => command({ op: "stop" }).catch(() => {}));
+  els.stopBtn.addEventListener("click", () => {
+    setWaveFollowSuspended(false);
+    command({ op: "stop" }).catch(() => {});
+  });
   els.prevSong.addEventListener("click", () => command({ op: "prev_song" }).catch(() => {}));
   els.nextSong.addEventListener("click", () => command({ op: "next_song" }).catch(() => {}));
   els.zoomIn.addEventListener("click", () => zoomAt(0.7, livePosition()));
@@ -1021,8 +1139,27 @@
   els.zoomFit.addEventListener("click", () => {
     viewStart = 0;
     viewEnd = syncDur;
+    setWaveFollowSuspended(false);
     drawWave(true);
   });
+  if (els.waveFollowBtn) {
+    els.waveFollowBtn.addEventListener("click", () => {
+      setWaveFollowSuspended(false);
+      const pos = livePosition();
+      const span = viewSpan();
+      if (span < syncDur - 0.05) {
+        viewStart = pos - span / 2;
+        viewEnd = pos + span / 2;
+        clampView();
+      }
+      drawWave(true);
+    });
+  }
+  if (els.renumberCueBtn) {
+    els.renumberCueBtn.addEventListener("click", () => {
+      renumberCueIds().catch((e) => showToast(String(e.message || e)));
+    });
+  }
 
   for (const chip of els.toggles.querySelectorAll(".chip")) {
     chip.addEventListener("click", () => {
@@ -1053,6 +1190,7 @@
     if (!scrubbing) return;
     const seconds = timeFromClientX(ev.clientX);
     scrubbing = false;
+    setWaveFollowSuspended(false);
     try { await command({ op: "seek", seconds }); } catch (_) {}
     drawWave(true);
   });
@@ -1074,6 +1212,7 @@
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
       pinching = { dist, span: viewSpan(), mid: (viewStart + viewEnd) / 2 };
       scrubbing = false;
+      setWaveFollowSuspended(true);
     }
   }, { passive: true });
   els.waveWrap.addEventListener("touchmove", (ev) => {
@@ -1090,6 +1229,100 @@
     drawWave(true);
   }, { passive: true });
   els.waveWrap.addEventListener("touchend", () => { pinching = null; });
+
+  function layoutStacked() {
+    return window.matchMedia("(max-width: 980px)").matches;
+  }
+
+  function applyLayoutCols() {
+    if (!els.layout) return;
+    els.layout.style.setProperty("--col-setlist", `${Math.round(colSetlist)}px`);
+    els.layout.style.setProperty("--col-monitor", `${Math.round(colMonitor)}px`);
+  }
+
+  function loadLayoutCols() {
+    try {
+      const raw = localStorage.getItem(LAYOUT_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Number(data.setlist) > 80) colSetlist = Number(data.setlist);
+      if (Number(data.monitor) > 160) colMonitor = Number(data.monitor);
+    } catch (_) { /* ignore */ }
+  }
+
+  function saveLayoutCols() {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+        setlist: Math.round(colSetlist),
+        monitor: Math.round(colMonitor),
+      }));
+    } catch (_) { /* ignore */ }
+  }
+
+  function bindSplitter(handle, which) {
+    if (!handle) return;
+    let drag = null;
+    const onMove = (ev) => {
+      if (!drag || layoutStacked()) return;
+      const dx = ev.clientX - drag.startX;
+      const total = els.layout.clientWidth;
+      const minSet = 120;
+      const minMon = 200;
+      const minStage = 240;
+      const splitW = 16;
+      if (which === "setlist") {
+        let next = drag.startSet + dx;
+        const maxSet = total - colMonitor - minStage - splitW;
+        next = Math.max(minSet, Math.min(maxSet, next));
+        colSetlist = next;
+      } else {
+        let next = drag.startMon - dx;
+        const maxMon = total - colSetlist - minStage - splitW;
+        next = Math.max(minMon, Math.min(maxMon, next));
+        colMonitor = next;
+      }
+      applyLayoutCols();
+      drawWave(true);
+    };
+    const onUp = () => {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("active");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      saveLayoutCols();
+      drawWave(true);
+    };
+    handle.addEventListener("pointerdown", (ev) => {
+      if (layoutStacked()) return;
+      ev.preventDefault();
+      drag = { startX: ev.clientX, startSet: colSetlist, startMon: colMonitor };
+      handle.classList.add("active");
+      handle.setPointerCapture?.(ev.pointerId);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  }
+
+  loadLayoutCols();
+  applyLayoutCols();
+  bindSplitter(els.splitSetlist, "setlist");
+  bindSplitter(els.splitMonitor, "monitor");
+
+  if (els.confirmYes) {
+    els.confirmYes.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      els.confirmDialog.close("ok");
+    });
+  }
+  if (els.confirmNo) {
+    els.confirmNo.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      els.confirmDialog.close("cancel");
+    });
+  }
 
   els.cueList.addEventListener("scroll", () => {
     if (ignoreCueScroll || cueUserScrolling) return;

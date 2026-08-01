@@ -36,12 +36,18 @@ def test_static_dir_has_index() -> None:
     assert 'id="markMgrBtn"' in html
     assert 'id="dispBtn"' in html
     assert 'id="dispDialog"' in html
-    assert 'id="cueFollowBtn"' in html
-    assert 'id="noteDialog"' in html
+    assert 'id="renumberCueBtn"' in html
+    assert 'id="waveFollowBtn"' in html
+    assert 'id="splitSetlist"' in html
+    assert 'id="confirmDialog"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
     assert "ignoreCueScroll" in js
     assert "set_display" in js
     assert "scrollCueListTo" in js
+    assert "followWavePlayhead" in js
+    assert "renumber_cue_ids" in js
+    assert "set_mark_cue_id" in js
+    assert "bindSplitter" in js
     assert "pause_on_mark" in js
     assert "prompt_note_on_mark" in js
     assert "show_note_on_wave" in js
@@ -49,12 +55,13 @@ def test_static_dir_has_index() -> None:
     assert "set_mark_note" in js
     assert "liveTimecode" in js
     assert "scrollCueListTo" in js
-    assert "Cue ID" in js or "mgr-cueid" in js
+    assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
     css = (root / "app.css").read_text(encoding="utf-8")
     assert ".now-card.primary .now-body" in css
     assert "position: relative" in css
+    assert ".splitter" in css
 
 
 def test_format_clock() -> None:
