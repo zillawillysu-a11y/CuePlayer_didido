@@ -120,7 +120,9 @@ def test_update_position_switches_clip_as_playhead_advances(
     controller.frame_changed.connect(frames.append)
 
     controller.update_position(0.5)
-    controller.update_position(2.5)
+    # Intentionally jump to the next clip — bypass seek coalesce so the
+    # test asserts the decode result, not the trailing-edge timer.
+    controller.land_frame_at(2.5)
 
     assert len(frames) == 2
     first, second = frames
@@ -298,12 +300,14 @@ def test_paused_seeks_coalesce_rapid_jumps(
 def test_playback_decode_rate_stays_near_display_refresh_cap(
     app: QApplication, red_clip_path: Path
 ) -> None:
-    """Direct proof the play path is bounded to roughly the ~30fps playback
+    """Direct proof the play path is bounded to roughly the playback
     cap (VideoSyncController._MAX_PLAY_DECODE_HZ / _MIN_PLAY_DECODE_INTERVAL)
     rather than the position-tick rate: hammer update_position() as fast as
     Python can for a fixed wall-clock window and assert the number of frames
-    actually decoded+emitted is close to `window * 30fps`, not the (much
+    actually decoded+emitted is close to `window * play_hz`, not the (much
     larger) number of calls made."""
+    from cueplayer.playback import video_sync as video_sync_mod
+
     song = Song.create("Song")
     clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
     song.add_video_clip(clip)
@@ -325,8 +329,11 @@ def test_playback_decode_rate_stays_near_display_refresh_cap(
     controller.set_playing(False)  # flush the last pending position
 
     assert calls > 100  # sanity: this really did hammer update_position()
-    max_expected_frames = int(window_seconds * 30.0) + 3  # + slack for scheduling jitter
+    play_hz = float(video_sync_mod._MAX_PLAY_DECODE_HZ)
+    max_expected_frames = int(window_seconds * play_hz) + 3  # + slack for scheduling jitter
     assert len(frames) <= max_expected_frames
+    # Cap must stay well below the audio clock (~60 Hz) so timeline paint wins.
+    assert play_hz <= 20.0
 
 
 def test_duplicate_decoded_frame_is_not_reemitted(app: QApplication, red_clip_path: Path) -> None:
@@ -370,7 +377,9 @@ def test_decode_quality_defaults_full_and_invalidates_cached_decoders(
     # next frame request reopens the container at the new one.
     assert clip.id not in controller._decoders
 
-    controller.update_position(0.1)
+    # land_frame_at bypasses seek coalesce (two update_position calls in the
+    # same tick would otherwise only queue a trailing flush).
+    controller.land_frame_at(0.1)
     assert clip.id in controller._decoders
 
 

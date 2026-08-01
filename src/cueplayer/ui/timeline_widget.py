@@ -217,6 +217,9 @@ class TimelineWidget(QWidget):
         self._video_waveform_pending_refresh = False
         self._last_play_repaint_ns = 0
         self._play_repaint_interval_ns = 33_000_000  # ~30 Hz — enough for smooth playhead
+        self._last_view_changed_ns = 0
+        # Overview / transport chrome can lag a bit behind the green line.
+        self._play_view_changed_interval_ns = 66_000_000  # ~15 Hz while playing
         self._scrub_backdrop: QPixmap | None = None
         self._scrub_backdrop_scroll = 0.0
         self._scrub_backdrop_pps = 0.0
@@ -1690,9 +1693,14 @@ class TimelineWidget(QWidget):
             if scroll_moved or now - self._last_play_repaint_ns >= interval:
                 self._last_play_repaint_ns = now
                 self.update()
+            # Overview + transport title mirror do not need 60 Hz. Scroll
+            # follow still notifies immediately so the navigator stays aligned.
+            if scroll_moved or now - self._last_view_changed_ns >= self._play_view_changed_interval_ns:
+                self._last_view_changed_ns = now
+                self.view_changed.emit()
         else:
             self.update()
-        self.view_changed.emit()
+            self.view_changed.emit()
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
         lo = self._min_pixels_per_second()
@@ -3580,7 +3588,8 @@ class TimelineWidget(QWidget):
         # on pause). Decode stays async via VideoClipWaveformCache.
         x_left = int(rect.left())
         x_right = int(rect.right())
-        if x_right - x_left < 4:
+        width_px = x_right - x_left
+        if width_px < 4:
             return
 
         duration = float(clip.duration_seconds)
@@ -3599,11 +3608,19 @@ class TimelineWidget(QWidget):
 
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
+        # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
+        # overscan while a Video Track is open) does not stall the UI thread.
+        # Visual density stays close enough for rehearsal alignment.
+        step = 1
+        if width_px > 2400 or samples_per_pixel >= 48:
+            step = 3
+        elif width_px > 1200 or samples_per_pixel >= 12:
+            step = 2
 
         try:
-            for x in range(x_left, x_right):
+            for x in range(x_left, x_right, step):
                 t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + 1)
+                t1 = self._time_for_x(x + step)
                 clip_t0 = timeline_to_clip_local(t0, clip)
                 clip_t1 = timeline_to_clip_local(t1, clip)
                 if clip_t0 is None and clip_t1 is None:
@@ -3624,7 +3641,7 @@ class TimelineWidget(QWidget):
                         clip,
                         clip_t0=clip_t0,
                         clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel,
+                        samples_per_pixel=samples_per_pixel * step,
                     )
                 painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
         except Exception:
