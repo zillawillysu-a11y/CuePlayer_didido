@@ -323,3 +323,78 @@ def test_new_mark_during_deferred_refresh_still_scrolls(app: QApplication) -> No
     assert rect.height() > 0
     assert rect.top() >= 0
     assert rect.bottom() <= vp_h
+
+
+def test_manual_cue_list_scroll_pauses_playhead_follow(app: QApplication) -> None:
+    """While playing, scrolling Cue List must not yank the viewport back."""
+    from PySide6.QtWidgets import QAbstractSlider
+
+    panel = CueMonitorPanel()
+    song = _song_with_marks(40)
+    panel.set_song(song)
+    panel.show()
+    app.processEvents()
+    _prepare_short_cue_list(panel, app)
+
+    early = song.marks[5]
+    panel.set_position(float(early.time_seconds) + 0.01)
+    app.processEvents()
+    panel._scroll_cue_row_into_view(early.id)  # noqa: SLF001
+    app.processEvents()
+    assert not panel._cue_list_follow_suspended  # noqa: SLF001
+
+    bar = panel.cue_table.verticalScrollBar()
+    parked = min(bar.maximum(), bar.value() + max(80, _ROW_HEIGHT * 8))
+    assert parked != bar.value()
+    # Simulate a user scrollbar gesture (not a bare setValue from layout code).
+    bar.triggerAction(QAbstractSlider.SliderAction.SliderMove)
+    bar.setValue(parked)
+    app.processEvents()
+    assert panel._cue_list_follow_suspended  # noqa: SLF001
+    assert bar.value() == parked
+
+    # Playhead advances during playback — must not steal the scroll position.
+    late = song.marks[30]
+    panel.set_position(float(early.time_seconds) + 0.2)  # small tick, stay suspended
+    app.processEvents()
+    assert panel._cue_list_follow_suspended  # noqa: SLF001
+    assert bar.value() == parked
+
+    # Large seek resumes follow.
+    panel.set_position(float(late.time_seconds) + 0.01)
+    app.processEvents()
+    assert not panel._cue_list_follow_suspended  # noqa: SLF001
+    panel._scroll_cue_row_into_view(late.id)  # noqa: SLF001
+    app.processEvents()
+    row = next(
+        r
+        for r in range(panel.cue_table.rowCount())
+        if panel._mark_id_at_row(r) == late.id  # noqa: SLF001
+    )
+    rect = panel.cue_table.visualRect(panel.cue_table.model().index(row, 0))
+    assert rect.height() > 0
+    assert rect.top() < panel.cue_table.viewport().height()
+
+
+def test_resume_cue_list_follow_from_menu_action(app: QApplication) -> None:
+    panel = CueMonitorPanel()
+    song = _song_with_marks(30)
+    panel.set_song(song)
+    panel.show()
+    app.processEvents()
+    _prepare_short_cue_list(panel, app)
+
+    target = song.marks[20]
+    panel.set_position(float(target.time_seconds) + 0.01)
+    app.processEvents()
+    panel._suspend_cue_list_follow()  # noqa: SLF001
+    assert panel._cue_list_follow_suspended  # noqa: SLF001
+    # Small playback tick while suspended — stay paused.
+    panel.set_position(float(target.time_seconds) + 0.05)
+    app.processEvents()
+    assert panel._cue_list_follow_suspended  # noqa: SLF001
+
+    panel._resume_cue_list_follow()  # noqa: SLF001
+    app.processEvents()
+    assert not panel._cue_list_follow_suspended  # noqa: SLF001
+    assert panel._playhead_list_mark_id == target.id  # noqa: SLF001
