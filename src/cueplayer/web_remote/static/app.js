@@ -1273,29 +1273,102 @@
     });
   }
 
+  let scrubPointerX = null;
+  let scrubEdgeRaf = null;
+
+  function stopScrubEdgeLoop() {
+    if (scrubEdgeRaf != null) {
+      cancelAnimationFrame(scrubEdgeRaf);
+      scrubEdgeRaf = null;
+    }
+  }
+
+  function scrubEdgeZone(clientX) {
+    const rect = els.waveWrap.getBoundingClientRect();
+    const w = Math.max(1, rect.width);
+    const local = clientX - rect.left;
+    const edge = Math.min(80, Math.max(40, w * 0.14));
+    return { rect, w, local, edge, left: local < edge, right: local > w - edge };
+  }
+
+  function scrubAtClientX(clientX) {
+    const zone = scrubEdgeZone(clientX);
+    const span = viewSpan();
+    let scrolled = false;
+    if (span < syncDur - 0.02) {
+      if (zone.left) {
+        // Stronger when finger is past / deep in the edge; keep moving while held.
+        const t = Math.min(1.5, Math.max(0.15, (zone.edge - zone.local) / zone.edge));
+        const delta = span * (0.035 + 0.09 * t);
+        viewStart -= delta;
+        viewEnd -= delta;
+        clampView();
+        scrolled = true;
+      } else if (zone.right) {
+        const t = Math.min(1.5, Math.max(0.15, (zone.local - (zone.w - zone.edge)) / zone.edge));
+        const delta = span * (0.035 + 0.09 * t);
+        viewStart += delta;
+        viewEnd += delta;
+        clampView();
+        scrolled = true;
+      }
+    }
+    if (scrolled) {
+      setWaveFollowSuspended(true);
+      scheduleWaveDetail();
+    }
+    const ratio = Math.min(1, Math.max(0, zone.local / zone.w));
+    const seconds = Math.min(syncDur, Math.max(0, viewStart + ratio * viewSpan()));
+    scrubbing = { seconds, clientX };
+    scrubPointerX = clientX;
+    drawWave(true);
+    return zone.left || zone.right;
+  }
+
+  function startScrubEdgeLoop() {
+    if (scrubEdgeRaf != null) return;
+    const tick = () => {
+      scrubEdgeRaf = null;
+      if (!scrubbing || scrubPointerX == null) return;
+      const zone = scrubEdgeZone(scrubPointerX);
+      if (zone.left || zone.right) {
+        scrubAtClientX(scrubPointerX);
+        scrubEdgeRaf = requestAnimationFrame(tick);
+      }
+    };
+    scrubEdgeRaf = requestAnimationFrame(tick);
+  }
+
   els.waveWrap.addEventListener("pointerdown", (ev) => {
     if (ev.pointerType === "touch" && els.waveWrap.hasPointerCapture?.(ev.pointerId)) return;
-    scrubbing = { seconds: timeFromClientX(ev.clientX) };
     panning = null;
+    pinching = null;
     els.waveWrap.setPointerCapture(ev.pointerId);
-    drawWave(true);
+    scrubAtClientX(ev.clientX);
+    startScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointermove", (ev) => {
-    if (scrubbing) {
-      scrubbing = { seconds: timeFromClientX(ev.clientX) };
-      drawWave(true);
-    }
+    if (!scrubbing) return;
+    scrubPointerX = ev.clientX;
+    const atEdge = scrubAtClientX(ev.clientX);
+    if (atEdge) startScrubEdgeLoop();
+    else stopScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointerup", async (ev) => {
     if (!scrubbing) return;
-    const seconds = timeFromClientX(ev.clientX);
+    const seconds = scrubbing.seconds != null ? Number(scrubbing.seconds) : timeFromClientX(ev.clientX);
     scrubbing = false;
+    scrubPointerX = null;
+    stopScrubEdgeLoop();
     setWaveFollowSuspended(false);
     try { await command({ op: "seek", seconds }); } catch (_) {}
+    scheduleWaveDetail();
     drawWave(true);
   });
   els.waveWrap.addEventListener("pointercancel", () => {
     scrubbing = false;
+    scrubPointerX = null;
+    stopScrubEdgeLoop();
     drawWave(true);
   });
 
@@ -1312,6 +1385,8 @@
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
       pinching = { dist, span: viewSpan(), mid: (viewStart + viewEnd) / 2 };
       scrubbing = false;
+      scrubPointerX = null;
+      stopScrubEdgeLoop();
       setWaveFollowSuspended(true);
     }
   }, { passive: true });
@@ -1322,7 +1397,7 @@
     const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
     if (pinching.dist < 1) return;
     const factor = pinching.dist / Math.max(1, dist);
-    const next = Math.min(syncDur, Math.max(0.5, pinching.span * factor));
+    const next = Math.min(syncDur, Math.max(0.12, pinching.span * factor));
     viewStart = pinching.mid - next / 2;
     viewEnd = pinching.mid + next / 2;
     clampView();
