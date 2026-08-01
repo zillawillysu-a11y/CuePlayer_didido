@@ -14,6 +14,7 @@ import numpy as np
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.audio_loader import PeakLevel, build_peak_pyramid, choose_peak_level
 from cueplayer.media.video_audio_cache import get_video_audio_mono_for_waveform
+from cueplayer.media.video_limits import clip_is_heavy
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,10 @@ class VideoClipWaveformCache:
         )
 
     def get_peaks(self, clip: VideoClip) -> ClipWaveformPeaks | None:
+        # Paint path also calls this — must skip heavy clips here, not only
+        # in preload(), or the first paint would still decode huge PCM.
+        if clip_is_heavy(clip):
+            return None
         key = self.key_for(clip)
         with self._lock:
             if key in self._peaks:
@@ -249,6 +254,10 @@ class VideoClipWaveformCache:
     def preload(self, clips: list[VideoClip]) -> None:
         for clip in clips:
             if clip.media_kind == "still":
+                continue
+            # Skip hour-long sources — decoding capped PCM still holds
+            # av_path_lock long enough to freeze Clean Output / Preview.
+            if clip_is_heavy(clip):
                 continue
             self.get_peaks(clip)
 

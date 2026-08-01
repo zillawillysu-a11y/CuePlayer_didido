@@ -16,10 +16,14 @@ import av
 import numpy as np
 
 from cueplayer.media.av_lock import av_path_lock
+from cueplayer.media.video_limits import MAX_VIDEO_AUDIO_DECODE_SECONDS
 
-# Hard ceiling so a 2-hour concert file cannot allocate multi-GB of PCM and
-# freeze the UI. Typical song-length windows are far below this.
-MAX_VIDEO_AUDIO_DECODE_SECONDS = 15 * 60.0
+# Re-export for callers / tests that import the cap from this module.
+__all__ = [
+    "MAX_VIDEO_AUDIO_DECODE_SECONDS",
+    "VideoAudioBuffer",
+    "load_video_audio",
+]
 
 
 @dataclass

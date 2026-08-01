@@ -93,6 +93,7 @@ from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
+    ChangeMarkLanesCommand,
     DeleteMarksCommand,
     DeleteVideoClipsCommand,
     EditMainCueIdCommand,
@@ -109,14 +110,26 @@ from cueplayer.domain.undo import (
 )
 from cueplayer.media.audio_disk_cache import (
     load_audio_cached,
-    load_cached_audio,
     load_all_ltc_channels,
+    load_cached_video_standin,
+    load_cached_waveform_peaks,
     save_cached_audio,
+    save_cached_video_standin,
     save_ltc_channel,
 )
-from cueplayer.media.audio_loader import AudioBuffer, ltc_waveform_display_buffer, waveform_display_buffer
+from cueplayer.media.audio_loader import (
+    AudioBuffer,
+    ltc_waveform_display_buffer,
+    probe_audio_duration,
+    waveform_display_buffer,
+)
 from cueplayer.media.video_loader import probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
+from cueplayer.media.video_limits import (
+    HEAVY_VIDEO_AUDIO_DECODE_SECONDS,
+    source_needs_long_video_warning,
+)
+from cueplayer.media.video_music_standin import build_music_standin_from_video
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
 from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
@@ -152,7 +165,7 @@ from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
-from cueplayer.ui.video_preview import VideoPreviewWidget
+from cueplayer.ui.video_preview import VideoPreviewWidget, rgb_frame_to_qimage
 
 _AUDIO_SUFFIXES = AUDIO_SUFFIXES  # re-export for tests / callers
 _MEDIA_DIALOG_FILTER = (
@@ -185,10 +198,13 @@ _KEY_NOW_PRIMARY_VISIBLE = "ui/now_primary_visible"
 _KEY_NOW_SECONDARY_VISIBLE = "ui/now_secondary_visible"
 _KEY_CUE_LIST_VISIBLE = "ui/cue_list_visible"
 _KEY_NOW_PRIMARY_SHOW_CUE_ID = "ui/now_primary_show_cue_id"
+_KEY_NOW_PRIMARY_SINGLE_LINE = "ui/now_primary_single_line"
 _KEY_CUE_LIST_SHOW_CUE_ID = "ui/cue_list_show_cue_id"
 _KEY_CUE_LIST_COLUMN_ORDER = "ui/cue_list_column_order"
 _KEY_CUE_LIST_HEADER = "ui/cue_list_header"
 _KEY_VIEW_MODE = "ui/view_mode"
+_KEY_SETLIST_VISIBLE = "ui/setlist_visible"
+_KEY_SETLIST_WIDTH = "ui/setlist_width"
 _KEY_LAST_PROJECT = "session/last_project_path"
 _KEY_LAST_SONG_ID = "session/last_song_id"
 
@@ -921,10 +937,13 @@ class MainWindow(QMainWindow):
     _setlist_ltc_cache_updated = Signal()
     _ltc_detect_finished = Signal(object, object, bool)  # cache_key, channel, ok
     _audio_prefetch_finished = Signal(object, object)  # path, buffer | Exception
+    # Cold decode: PCM ready before peak pyramid — Play can start early.
+    _audio_pcm_ready = Signal(object, object)  # path, AudioBuffer
     _bpm_detected = Signal(str, object)  # song_id, float | None
     _bpm_job_finished = Signal()  # pump next queued BPM job on the UI thread
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
     _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
+    _video_standin_finished = Signal(int, object)  # token, AudioBuffer | None | Exception
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -953,6 +972,10 @@ class MainWindow(QMainWindow):
         self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
         self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
+        self._video_standin_token = 0
+        # Display-only Music waveforms built from video audio (survive song switch).
+        self._video_standin_cache: dict[str, AudioBuffer] = {}
+        self._song_activate_gen = 0
         self._pending_audio_load: tuple | None = None
         self._audio_buffer_cache: dict[tuple[str, int, int], AudioBuffer] = {}
         self._display_waveform_cache: dict[tuple[tuple[str, int, int] | None, int | None], AudioBuffer] = {}
@@ -984,6 +1007,8 @@ class MainWindow(QMainWindow):
         self._setlist_ltc_cache_updated.connect(self._refresh_setlist_ltc_cells)
         self._ltc_detect_finished.connect(self._on_ltc_detect_finished)
         self._audio_prefetch_finished.connect(self._on_audio_prefetch_finished)
+        self._audio_pcm_ready.connect(self._on_audio_pcm_ready)
+        self._video_standin_finished.connect(self._on_video_standin_finished)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
@@ -1018,7 +1043,9 @@ class MainWindow(QMainWindow):
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
-        self.video_preview = VideoPreviewWidget()
+        self.video_preview = VideoPreviewWidget(context_menu=True)
+        self.video_preview.set_decode_quality(self.project.video_decode_quality)
+        self.video_preview.decode_quality_changed.connect(self._set_video_decode_quality)
         # Parented to MainWindow for object lifetime, but Qt.Window still makes
         # this a separate top-level capture target for OBS. Its X button only
         # hides (see CleanVideoOutputWindow.closeEvent); MainWindow.closeEvent()
@@ -1056,6 +1083,8 @@ class MainWindow(QMainWindow):
         left.setAcceptDrops(True)
         left.installEventFilter(self)
         self._setlist_panel = left
+        self._setlist_saved_width = 240
+        self._setlist_visible = True
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_title = QLabel("Setlist")
@@ -1274,6 +1303,9 @@ class MainWindow(QMainWindow):
         self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
+        self.timeline.note_rename_requested.connect(self._on_note_changed)
+        self.timeline.cue_id_edit_requested.connect(self._on_cue_id_changed)
+        self.timeline.change_type_requested.connect(self._change_mark_types)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)
         self.timeline.offset_requested.connect(self._offset_marks)
@@ -1310,9 +1342,9 @@ class MainWindow(QMainWindow):
         # audio clock's ~60Hz position ticks can't starve the UI thread the
         # timeline also lives on — see VideoSyncController.set_playing().
         self.engine.playing_changed.connect(self.video_sync.set_playing)
-        self.video_sync.frame_changed.connect(self.video_preview.set_frame)
-        self.video_sync.frame_changed.connect(self.clean_output_window.set_frame)
-        self.video_sync.frame_changed.connect(self._ndi_output.send_frame)
+        # One RGB→QImage conversion shared by Preview + Clean Output (avoids
+        # double memcpy when Clean Output is open with a video track).
+        self.video_sync.frame_changed.connect(self._on_video_frame)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
@@ -1400,6 +1432,10 @@ class MainWindow(QMainWindow):
                 traceback.print_exc()
         finally:
             self._restoring_session = False
+            # Layout/splitter sizes settle after restore — Preview visibility
+            # (and thus decode arming) can be wrong on the first tick.
+            QTimer.singleShot(0, self._ensure_video_preview_frame)
+            QTimer.singleShot(80, self._ensure_video_preview_frame)
             # Let queued splitter/layout timers settle, then tell the splash we are ready.
             def _emit_ready() -> None:
                 self.startup_session_ready = True
@@ -1502,21 +1538,95 @@ class MainWindow(QMainWindow):
         split.setSizes([new_timeline, mon_w])
 
     def _lock_main_splitter_panels(self) -> None:
-        """Prevent the Setlist / content panes from collapsing to zero width."""
+        """Prevent the Setlist / content panes from collapsing to zero width.
+
+        When Setlist is hidden via View → Set List, index 0 may stay collapsed
+        until the user shows it again — do not force it open here.
+        """
         main_split = getattr(self, "_main_splitter", None)
         if main_split is None:
             return
-        main_split.setChildrenCollapsible(False)
-        for index in range(main_split.count()):
-            main_split.setCollapsible(index, False)
-        left = main_split.widget(0)
-        if left is not None and left.minimumWidth() < 160:
-            left.setMinimumWidth(160)
+        setlist_visible = self._setlist_panel_is_visible()
+        if setlist_visible:
+            main_split.setChildrenCollapsible(False)
+            for index in range(main_split.count()):
+                main_split.setCollapsible(index, False)
+            left = main_split.widget(0)
+            if left is not None and left.minimumWidth() < 160:
+                left.setMinimumWidth(160)
+        else:
+            main_split.setChildrenCollapsible(False)
+            main_split.setCollapsible(0, True)
+            main_split.setCollapsible(1, False)
+            left = main_split.widget(0)
+            if left is not None:
+                left.setMinimumWidth(0)
         right = main_split.widget(1)
         # Keep an explicit content floor so transport sizeHints cannot freeze
         # the Setlist splitter on narrow windows (see ctor comment).
         if right is not None and right.minimumWidth() < 280:
             right.setMinimumWidth(280)
+
+    def _setlist_panel_is_visible(self) -> bool:
+        return bool(getattr(self, "_setlist_visible", True))
+
+    def _remember_setlist_width(self) -> None:
+        main_split = getattr(self, "_main_splitter", None)
+        if main_split is None:
+            return
+        sizes = main_split.sizes()
+        if sizes and sizes[0] > 0:
+            self._setlist_saved_width = int(sizes[0])
+
+    def _set_setlist_visible(self, visible: bool, *, persist: bool = True) -> None:
+        """Show or hide the left Set List panel (View menu)."""
+        panel = getattr(self, "_setlist_panel", None)
+        main_split = getattr(self, "_main_splitter", None)
+        if panel is None or main_split is None:
+            return
+        visible = bool(visible)
+        self._setlist_visible = visible
+        if visible:
+            panel.setVisible(True)
+            panel.setMinimumWidth(160)
+            main_split.setCollapsible(0, False)
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if width < 160:
+                raw = self._settings.value(_KEY_SETLIST_WIDTH, 240)
+                try:
+                    width = int(raw)
+                except (TypeError, ValueError):
+                    width = 240
+            width = max(160, width)
+            total = sum(main_split.sizes()) or max(main_split.width(), width + 280)
+            main_split.setSizes([width, max(280, total - width)])
+        else:
+            self._remember_setlist_width()
+            panel.setMinimumWidth(0)
+            main_split.setCollapsible(0, True)
+            sizes = main_split.sizes()
+            total = sum(sizes) if sizes else max(1, main_split.width())
+            main_split.setSizes([0, max(1, total)])
+            panel.setVisible(False)
+        self._lock_main_splitter_panels()
+        action = getattr(self, "_act_setlist", None)
+        if action is not None and action.isChecked() != visible:
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+        if persist and not getattr(self, "_restoring_session", False):
+            self._settings.setValue(_KEY_SETLIST_VISIBLE, visible)
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if visible:
+                sizes = main_split.sizes()
+                if sizes and sizes[0] > 0:
+                    width = int(sizes[0])
+            if width >= 160:
+                self._settings.setValue(_KEY_SETLIST_WIDTH, width)
+        self._sync_transport_layout()
+
+    def _toggle_setlist_panel(self, visible: bool) -> None:
+        self._set_setlist_visible(bool(visible))
 
     def _restore_ui_layout(self) -> None:
         geometry = self._settings.value(_KEY_MAIN_GEOMETRY)
@@ -1538,6 +1648,15 @@ class MainWindow(QMainWindow):
             # restoreState can re-enable collapse from an older session; keep
             # Setlist from vanishing into the left edge when dragged narrow.
             self._lock_main_splitter_panels()
+        raw_setlist_w = self._settings.value(_KEY_SETLIST_WIDTH, 240)
+        try:
+            self._setlist_saved_width = max(160, int(raw_setlist_w))
+        except (TypeError, ValueError):
+            self._setlist_saved_width = 240
+        setlist_visible = bool(
+            self._settings.value(_KEY_SETLIST_VISIBLE, True, type=bool)
+        )
+        self._set_setlist_visible(setlist_visible, persist=False)
         timeline_split = getattr(self, "_timeline_split", None)
         if timeline_split is not None:
             raw = self._settings.value(_KEY_TIMELINE_SPLITTER)
@@ -1589,6 +1708,10 @@ class MainWindow(QMainWindow):
             prefs["now_primary_show_cue_id"] = settings.value(
                 _KEY_NOW_PRIMARY_SHOW_CUE_ID, True, type=bool
             )
+        if settings.contains(_KEY_NOW_PRIMARY_SINGLE_LINE):
+            prefs["now_primary_single_line"] = settings.value(
+                _KEY_NOW_PRIMARY_SINGLE_LINE, False, type=bool
+            )
         if settings.contains(_KEY_CUE_LIST_SHOW_CUE_ID):
             prefs["cue_list_show_cue_id"] = settings.value(
                 _KEY_CUE_LIST_SHOW_CUE_ID, True, type=bool
@@ -1611,6 +1734,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_NOW_SECONDARY_VISIBLE, prefs["now_secondary_visible"])
         self._settings.setValue(_KEY_CUE_LIST_VISIBLE, prefs["cue_list_visible"])
         self._settings.setValue(_KEY_NOW_PRIMARY_SHOW_CUE_ID, prefs["now_primary_show_cue_id"])
+        self._settings.setValue(_KEY_NOW_PRIMARY_SINGLE_LINE, prefs["now_primary_single_line"])
         self._settings.setValue(_KEY_CUE_LIST_SHOW_CUE_ID, prefs["cue_list_show_cue_id"])
         self._settings.setValue(_KEY_CUE_LIST_COLUMN_ORDER, prefs["cue_list_column_order"])
         self._settings.setValue(_KEY_CUE_LIST_HEADER, prefs["cue_list_header"])
@@ -1624,6 +1748,7 @@ class MainWindow(QMainWindow):
             song.now_secondary_visible = bool(prefs["now_secondary_visible"])
             song.cue_list_visible = bool(prefs["cue_list_visible"])
             song.now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+            song.now_primary_single_line = bool(prefs["now_primary_single_line"])
             song.cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
             song.cue_list_column_order = list(order)
 
@@ -1641,7 +1766,15 @@ class MainWindow(QMainWindow):
         self._settings.setValue(_KEY_MAIN_STATE, self.saveState())
         main_split = getattr(self, "_main_splitter", None)
         if main_split is not None:
+            if self._setlist_panel_is_visible():
+                self._remember_setlist_width()
             self._settings.setValue(_KEY_MAIN_SPLITTER, main_split.saveState())
+            self._settings.setValue(
+                _KEY_SETLIST_VISIBLE, self._setlist_panel_is_visible()
+            )
+            width = int(getattr(self, "_setlist_saved_width", 0) or 0)
+            if width >= 160:
+                self._settings.setValue(_KEY_SETLIST_WIDTH, width)
         timeline_split = getattr(self, "_timeline_split", None)
         if timeline_split is not None:
             self._settings.setValue(_KEY_TIMELINE_SPLITTER, timeline_split.saveState())
@@ -1981,6 +2114,35 @@ class MainWindow(QMainWindow):
     def _clean_output_visible(self) -> bool:
         return self.clean_output_window.isVisible()
 
+    def _on_video_frame(self, frame) -> None:  # noqa: ANN001
+        """Fan out one decoded RGB frame to Preview / Clean / NDI sinks.
+
+        Preview + Clean share a single QImage conversion. NDI keeps the
+        ndarray. Invisible sinks are skipped so opening Clean Output does not
+        pay for a hidden Preview panel copy.
+        """
+        preview_vis = self._video_preview_visible()
+        clean_vis = self._clean_output_visible()
+        ndi_on = bool(self.project.clean_video_output.ndi_enabled)
+
+        if frame is None:
+            if preview_vis:
+                self.video_preview.set_qimage(None)
+            if clean_vis:
+                self.clean_output_window.set_qimage(None)
+            if ndi_on:
+                self._ndi_output.send_frame(None)
+            return
+
+        if preview_vis or clean_vis:
+            image = rgb_frame_to_qimage(frame)
+            if preview_vis:
+                self.video_preview.set_qimage(image)
+            if clean_vis:
+                self.clean_output_window.set_qimage(image)
+        if ndi_on:
+            self._ndi_output.send_frame(frame)
+
     def _sync_video_output_active(self) -> None:
         """Skip video decode when neither Preview, Clean Output, nor NDI needs frames."""
         if not hasattr(self, "video_preview_panel"):
@@ -1991,6 +2153,22 @@ class MainWindow(QMainWindow):
             or bool(self.project.clean_video_output.ndi_enabled)
         )
         self.video_sync.set_video_output_active(active)
+
+    def _ensure_video_preview_frame(self) -> None:
+        """Land a Preview/Clean frame after song swap or project open.
+
+        ``video_sync.set_song`` clears the picture; if output was already
+        active, ``set_video_output_active(True)`` is a no-op and Preview
+        stayed black until Clean Output forced a re-decode. Defer one tick
+        so splitter sizes (Preview visibility) settle after restore.
+        """
+        self._sync_video_output_active()
+        if not self.video_sync.video_output_active():
+            return
+        pos = float(getattr(self.engine, "position", 0.0) or 0.0)
+        # Defer: opening long video can contend with waveform workers on
+        # av_path_lock; same pattern as set_video_output_active.
+        QTimer.singleShot(0, lambda p=pos: self.video_sync.land_frame_at(p))
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -2076,32 +2254,10 @@ class MainWindow(QMainWindow):
         bpm_menu.addAction(act_bpm_all)
 
         tools_menu.addSeparator()
-        self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
-        self._show_video_track_action.setCheckable(True)
-        self._show_video_track_action.setChecked(True)
-        self._show_video_track_action.setToolTip(
-            "Hide Video + LTC lanes after alignment to free timeline space. "
-            "Applies to the whole show (all songs). "
-            "Preview / Clean Output keep playing either way. "
-            "LTC appears under Video when a file stripe is known."
-        )
-        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
-        tools_menu.addAction(self._show_video_track_action)
-
         video_menu = tools_menu.addMenu("Vide&o")
         act_add_video = QAction("Add &Video Clip…", self)
         act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
         video_menu.addAction(act_add_video)
-        act_video_preview = QAction("Video &Preview Panel", self)
-        act_video_preview.setCheckable(True)
-        act_video_preview.setChecked(True)
-        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
-        video_menu.addAction(act_video_preview)
-        self._act_video_preview = act_video_preview
-        self._clean_output_action = QAction("&Clean Video Output", self)
-        self._clean_output_action.setCheckable(True)
-        self._clean_output_action.triggered.connect(self._toggle_clean_output)
-        video_menu.addAction(self._clean_output_action)
         self._ndi_output_action = QAction("&NDI Video Output", self)
         self._ndi_output_action.setCheckable(True)
         self._ndi_output_action.setChecked(
@@ -2118,6 +2274,38 @@ class MainWindow(QMainWindow):
         act_ndi_name.triggered.connect(self._prompt_ndi_name)
         video_menu.addAction(act_ndi_name)
         self._build_video_decode_quality_menu(video_menu)
+
+        view_menu = self.menuBar().addMenu("&View")
+        act_setlist = QAction("Show &Set List", self)
+        act_setlist.setCheckable(True)
+        act_setlist.setChecked(True)
+        act_setlist.setToolTip(
+            "Show or hide the left Set List panel (song order / folders)"
+        )
+        act_setlist.triggered.connect(self._toggle_setlist_panel)
+        view_menu.addAction(act_setlist)
+        self._act_setlist = act_setlist
+        self._show_video_track_action = QAction("Show &Video / LTC Tracks", self)
+        self._show_video_track_action.setCheckable(True)
+        self._show_video_track_action.setChecked(True)
+        self._show_video_track_action.setToolTip(
+            "Hide Video + LTC lanes after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
+            "Preview / Clean Output keep playing either way. "
+            "LTC appears under Video when a file stripe is known."
+        )
+        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
+        view_menu.addAction(self._show_video_track_action)
+        act_video_preview = QAction("Video &Preview Panel", self)
+        act_video_preview.setCheckable(True)
+        act_video_preview.setChecked(True)
+        act_video_preview.triggered.connect(self._toggle_video_preview_panel)
+        view_menu.addAction(act_video_preview)
+        self._act_video_preview = act_video_preview
+        self._clean_output_action = QAction("&Clean Video Output", self)
+        self._clean_output_action.setCheckable(True)
+        self._clean_output_action.triggered.connect(self._toggle_clean_output)
+        view_menu.addAction(self._clean_output_action)
 
     def _autosave_enabled(self) -> bool:
         return bool(self._settings.value(_KEY_AUTOSAVE_ENABLED, True, type=bool))
@@ -2297,6 +2485,8 @@ class MainWindow(QMainWindow):
             action.setChecked(True)
         if hasattr(self, "clean_output_window"):
             self.clean_output_window.set_decode_quality(current)
+        if hasattr(self, "video_preview"):
+            self.video_preview.set_decode_quality(current)
 
     def _project_filter(self) -> str:
         return "CuePlayer Project (*.cueplayer.json);;JSON (*.json);;All Files (*.*)"
@@ -3079,16 +3269,20 @@ class MainWindow(QMainWindow):
 
         song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
         if draft.audio_path is not None and Path(draft.audio_path).is_file():
+            audio_path = Path(draft.audio_path)
             song.audio_tracks = [
                 AudioTrack(
                     id="main_audio",
-                    name=Path(draft.audio_path).stem,
-                    path=Path(draft.audio_path),
+                    name=audio_path.stem,
+                    path=audio_path,
                     role="main",
                 )
             ]
+            # Metadata duration now — do not wait for full waveform decode
+            # (empty project used to show 1:00 until load finished).
+            self._apply_probed_audio_duration(audio_path, song=song)
             if song.bpm is None:
-                self._schedule_bpm_detect_for_song(song, Path(draft.audio_path))
+                self._schedule_bpm_detect_for_song(song, audio_path)
         else:
             song.audio_tracks = []
         if draft.video_path is not None and Path(draft.video_path).is_file():
@@ -3140,6 +3334,12 @@ class MainWindow(QMainWindow):
         else:
             song.add_video_clip(clip)
         song.duration_seconds = max(float(song.duration_seconds), clip.end_seconds)
+        if not is_still and source_needs_long_video_warning(
+            duration_seconds=source_duration, path=path
+        ):
+            QTimer.singleShot(
+                0, lambda p=path, d=source_duration: self._warn_long_rehearsal_video(p, d)
+            )
         return clip
 
     def _next_setlist_number(self, category_id: str | None = None) -> float:
@@ -4174,6 +4374,8 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.project.songs):
             return
         self._audio_load_token += 1
+        self._song_activate_gen += 1
+        activate_gen = self._song_activate_gen
         # Tear down PortAudio + video decode before swapping song media.
         # Leaving the stream open (pause/stop alone) races PyAV close with the
         # audio callback and is a common mid-play / song-switch hard crash.
@@ -4185,9 +4387,19 @@ class MainWindow(QMainWindow):
         self._sync_loop_ui()
         self.timeline.clear_selection(emit=False)
         self.monitor.set_selected_mark_ids([])
+        # Arm Loading before set_song paints — otherwise the Music lane flashes
+        # "Open audio…" while the first long video/audio decode is still queued.
+        self._arm_timeline_audio_loading_placeholder(self.current_song)
         self.timeline.set_song(self.current_song)
         self._apply_project_mark_line_settings()
-        self.monitor.set_song(self.current_song)
+        # Cue List rebuild is relatively heavy — defer so Setlist selection
+        # + timeline swap paint first (feels like an instant song switch).
+        QTimer.singleShot(
+            0,
+            lambda g=activate_gen, song=self.current_song: self._activate_song_monitor(
+                g, song
+            ),
+        )
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         action = getattr(self, "_show_video_track_action", None)
@@ -4209,6 +4421,8 @@ class MainWindow(QMainWindow):
         )
         if main_audio is not None and Path(main_audio.path).is_file():
             audio_path = Path(main_audio.path)
+            # RAM only — never sync-load .npz on the UI thread (that hitch
+            # was the main Setlist song-switch stall after warm).
             cached = self._cached_audio_buffer(audio_path)
             if cached is not None:
                 self.timeline.set_audio_loading(False)
@@ -4222,28 +4436,53 @@ class MainWindow(QMainWindow):
             else:
                 self.engine.set_buffer(None)
                 self._timeline_ltc_exclude = None
-                self.timeline.set_audio_loading(True, audio_path.name)
+                self._apply_probed_audio_duration(audio_path, song=self.current_song)
+                # Peaks sidecar paints the Music lane immediately after restart
+                # while full PCM (or full .npz) loads for playback.
+                peaks = load_cached_waveform_peaks(audio_path)
+                if peaks is not None:
+                    self.timeline.set_audio_loading(False)
+                    self.timeline.set_audio(peaks, reset_view=False)
+                    if not self._media_warm_active:
+                        self.status.showMessage(
+                            f"Waveform ready — loading audio… ({audio_path.name})", 0
+                        )
+                else:
+                    self.timeline.set_audio_loading(True, audio_path.name)
                 self._load_audio_path(
-                    audio_path, mark_dirty=False, replace_track=False, bump_token=False
+                    audio_path,
+                    mark_dirty=False,
+                    replace_track=False,
+                    bump_token=False,
+                    keep_waveform=peaks is not None,
                 )
         else:
             self.engine.set_buffer(None)
             self._timeline_ltc_exclude = None
-            self.timeline.set_audio(None)
             self.timeline.set_ltc_audio(None)
-            self.timeline.set_audio_loading(False)
             self.engine.set_duration(self.current_song.duration_seconds)
             self.transport.set_times(0.0, self.engine.duration)
             self.monitor.set_position(0.0, self.engine.duration)
             if main_audio is not None:
+                self.timeline.set_audio(None)
+                self.timeline.set_audio_loading(False)
                 self.status.showMessage(
                     f"Audio file not found: {main_audio.path} "
                     "(File → Relink Missing Media…)",
                     5000,
                 )
+            else:
+                # No music file — show embedded video audio in the Music lane.
+                self._schedule_video_music_standin()
         self._refresh_window_title()
         self._refresh_status()
         self._sync_timeline_overview()
+        self._ensure_video_preview_frame()
+
+    def _activate_song_monitor(self, gen: int, song) -> None:  # noqa: ANN001
+        if gen != self._song_activate_gen or song is not self.current_song:
+            return
+        self.monitor.set_song(song)
 
     def _next_song_default_name(self) -> str:
         return f"Song {len(self.project.songs) + 1}"
@@ -4856,6 +5095,7 @@ class MainWindow(QMainWindow):
     def _on_note_changed(self, mark_id: str, old_name: str, new_name: str) -> None:
         self._push_song_undo(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
         self._mark_dirty()
+        self._refresh_marks_ui()
 
     def _on_cue_id_changed(self, mark_id: str, old_id: str, new_id: str) -> None:
         self._push_song_undo(
@@ -4926,6 +5166,16 @@ class MainWindow(QMainWindow):
         if not before:
             self.status.showMessage("No Main cues to renumber", 2500)
             return
+        answer = QMessageBox.question(
+            self,
+            "Renumber Cue IDs",
+            f'Renumber Cue IDs for {scope_label} to 1, 2, 3… in time order?\n'
+            f"({len(before)} cue(s) — existing Cue IDs will be overwritten.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         after = renumber_main_cue_ids_sequential(self.current_song, lane_indices=scope)
         if before == after:
             self.status.showMessage("Cue IDs already 1, 2, 3…", 2000)
@@ -4951,6 +5201,40 @@ class MainWindow(QMainWindow):
         self.monitor.set_selected_mark_ids([])
         self._refresh_marks_ui()
         self.status.showMessage(f"Deleted {removed} cue(s)", 2500)
+
+    def _change_mark_types(self, mark_ids: list, lane_index: int) -> None:
+        """Move selected marks onto another Mark Manager type (lane)."""
+        if not mark_ids:
+            return
+        lane = self.current_song.lane_by_index(int(lane_index))
+        if lane is None:
+            return
+        from cueplayer.domain.main_cue_id import assign_main_cue_id_for_mark
+
+        changes: dict[str, tuple[int, int, str, str]] = {}
+        for mark_id in mark_ids:
+            mark = self.current_song.mark_by_id(str(mark_id))
+            if mark is None or mark.lane_index == lane.index:
+                continue
+            old_lane = int(mark.lane_index)
+            old_cue = str(mark.main_cue_id)
+            mark.lane_index = int(lane.index)
+            if self.current_song.lane_has_cue_id(lane.index):
+                assign_main_cue_id_for_mark(self.current_song, mark, force=True)
+            else:
+                mark.main_cue_id = ""
+            changes[mark.id] = (old_lane, int(lane.index), old_cue, str(mark.main_cue_id))
+        if not changes:
+            return
+        self.current_song.sort_marks()
+        self._push_song_undo(ChangeMarkLanesCommand(changes=changes))
+        self._mark_dirty()
+        self._refresh_marks_ui()
+        label = lane.name
+        self.status.showMessage(
+            f"Moved {len(changes)} mark(s) to {label}",
+            2500,
+        )
 
     def _sync_loop_ui(self) -> None:
         self.transport.set_loop_status(
@@ -5100,6 +5384,7 @@ class MainWindow(QMainWindow):
             dash_off=float(p.mark_dash_off),
             waveform_color=str(p.waveform_color or "#616161"),
             playhead_color=str(getattr(p, "playhead_color", None) or "#3dd68c"),
+            wave_label_font_px=int(getattr(p, "wave_label_font_px", 10) or 10),
         )
         self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
         self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))
@@ -5291,6 +5576,7 @@ class MainWindow(QMainWindow):
         mark_dirty: bool = True,
         replace_track: bool = True,
         bump_token: bool = True,
+        keep_waveform: bool = False,
     ) -> None:
         path = Path(path)
         cached = self._cached_audio_buffer(path)
@@ -5309,9 +5595,21 @@ class MainWindow(QMainWindow):
         if bump_token:
             self._audio_load_token += 1
         token = self._audio_load_token
-        self.timeline.set_audio_loading(True, path.name)
-        if not self._media_warm_active:
+        self._apply_probed_audio_duration(path, song=self.current_song)
+        if not keep_waveform:
+            peaks = load_cached_waveform_peaks(path)
+            if peaks is not None:
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(peaks, reset_view=replace_track)
+                keep_waveform = True
+            else:
+                self.timeline.set_audio_loading(True, path.name)
+        if not self._media_warm_active and not keep_waveform:
             self.status.showMessage(f"Loading {path.name}…", 0)
+        elif not self._media_warm_active and keep_waveform:
+            self.status.showMessage(f"Waveform ready — loading audio… ({path.name})", 0)
+        # Reserve pending *before* submit so a fast PCM-ready signal can match.
+        self._pending_audio_load = (token, None, path, mark_dirty, replace_track)
         future = self._start_audio_load(path, executor=self._audio_load_executor)
         self._pending_audio_load = (token, future, path, mark_dirty, replace_track)
         if not self._audio_load_timer.isActive():
@@ -5379,18 +5677,16 @@ class MainWindow(QMainWindow):
         self._audio_ltc_cache.update(load_all_ltc_channels())
 
     def _cached_audio_buffer(self, path: Path) -> AudioBuffer | None:
-        """RAM first; on miss load the on-disk .npz (no re-decode) for instant song switch."""
+        """Return a RAM-resident buffer only — never block the UI on disk I/O.
+
+        On-disk ``.npz`` hits go through ``_load_audio_path`` /
+        ``load_audio_cached`` on a worker thread so Setlist song switches stay
+        snappy after the first warm.
+        """
         key = self._audio_cache_key(path)
         if key is None:
             return None
-        hit = self._audio_buffer_cache.get(key)
-        if hit is not None:
-            return hit
-        disk = load_cached_audio(path)
-        if disk is None:
-            return None
-        self._store_audio_cache(path, disk, write_disk=False, schedule_ltc=False)
-        return disk
+        return self._audio_buffer_cache.get(key)
 
     def _resolved_path_str(self, path: Path | None) -> str | None:
         if path is None:
@@ -5958,11 +6254,17 @@ class MainWindow(QMainWindow):
         key = self._audio_cache_key(path)
         if key is not None and key in self._audio_inflight:
             return self._audio_inflight[key]
+
         def _load() -> AudioBuffer:
             from cueplayer.util.thread_priority import lower_background_thread_priority
 
             lower_background_thread_priority()
-            return load_audio_cached(path)
+
+            def _on_pcm(buffer: AudioBuffer) -> None:
+                # Handler ignores non-pending / already-peaked (cache) buffers.
+                self._audio_pcm_ready.emit(path, buffer)
+
+            return load_audio_cached(path, on_pcm_ready=_on_pcm)
 
         future = executor.submit(_load)
         if key is not None:
@@ -5978,6 +6280,70 @@ class MainWindow(QMainWindow):
 
             future.add_done_callback(_done)
         return future
+
+    def _apply_probed_audio_duration(
+        self, path: Path, *, song: Song | None = None
+    ) -> None:
+        """Set song/engine/transport duration from file metadata (no decode)."""
+        dur = probe_audio_duration(path)
+        if dur is None:
+            return
+        target = song if song is not None else self.current_song
+        target.duration_seconds = float(dur)
+        if target is not self.current_song:
+            return
+        self.engine.set_duration(float(dur))
+        pos = float(self.engine.position)
+        self.transport.set_times(pos, self.engine.duration)
+        self.monitor.set_position(pos, self.engine.duration)
+        self.timeline.update()
+        self._sync_timeline_overview()
+
+    def _on_audio_pcm_ready(self, path: object, buffer: object) -> None:
+        """PCM decoded — arm playback before the waveform pyramid finishes."""
+        if not isinstance(path, Path) or not isinstance(buffer, AudioBuffer):
+            return
+        # Disk-cache hits already have peaks; final apply will run immediately.
+        if buffer.peak_levels:
+            return
+        pending = self._pending_audio_load
+        if pending is None:
+            return
+        token, _future, pending_path, mark_dirty, replace_track = pending
+        del mark_dirty
+        if token != self._audio_load_token:
+            return
+        try:
+            same_path = Path(pending_path).resolve() == path.resolve()
+        except OSError:
+            same_path = Path(pending_path) == path
+        if not same_path:
+            return
+        if not self._audio_path_matches_current_song(path, replace_track=replace_track):
+            return
+        if self.engine.buffer is buffer:
+            return
+        self.current_song.duration_seconds = buffer.duration_seconds
+        if replace_track:
+            self.current_song.audio_tracks = [
+                AudioTrack(
+                    id="main_audio",
+                    name=path.stem,
+                    path=path,
+                    role="main",
+                )
+            ]
+        self.engine.set_buffer(buffer)
+        self.engine.ensure_playback_ready()
+        self.transport.set_times(0.0, self.engine.duration)
+        self.monitor.set_position(0.0, self.engine.duration)
+        # Keep any peaks-sidecar waveform; otherwise show loading until peaks land.
+        if self.timeline._audio is None:
+            self.timeline.set_audio_loading(True, path.name)
+        if not self._media_warm_active:
+            self.status.showMessage(
+                f"Audio ready — decoding continues… ({path.name})", 0
+            )
 
     def _on_audio_prefetch_finished(self, path: object, result: object) -> None:
         if not isinstance(path, Path):
@@ -6067,6 +6433,171 @@ class MainWindow(QMainWindow):
         path = Path(main_audio.path)
         return path if path.is_file() else None
 
+    def _song_has_main_audio_file(self, song: Song | None = None) -> bool:
+        return self._main_audio_path_for_song(song or self.current_song) is not None
+
+    def _primary_video_clip_for_standin(self, song: Song | None = None) -> VideoClip | None:
+        song = song or self.current_song
+        for clip in song.video_clips:
+            if clip.hidden or clip.media_kind == "still":
+                continue
+            if Path(clip.path).is_file():
+                return clip
+        return None
+
+    def _video_standin_cache_key(
+        self, clip: VideoClip, *, timeline_duration: float
+    ) -> str | None:
+        path = Path(clip.path)
+        try:
+            resolved = str(path.resolve())
+            stat = path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            size = int(stat.st_size)
+        except OSError:
+            return None
+        return (
+            f"{clip.id}|{resolved}|{mtime_ns}|{size}|"
+            f"{round(float(timeline_duration), 3)}|"
+            f"{round(float(clip.start_seconds), 3)}|"
+            f"{round(float(clip.source_in_seconds), 3)}|"
+            f"{round(float(clip.source_span_seconds or clip.duration_seconds), 3)}"
+        )
+
+    def _arm_timeline_audio_loading_placeholder(self, song: Song) -> None:
+        """Show Loading immediately when a cold decode is about to start.
+
+        Avoids a frame of empty-project copy ("Open audio…") and clears a
+        previous song's waveform so we don't flash the wrong music lane.
+        Skips when RAM / peaks / stand-in disk cache will paint instantly.
+        """
+        path = self._main_audio_path_for_song(song)
+        if path is not None:
+            if self._cached_audio_buffer(path) is not None:
+                return
+            if load_cached_waveform_peaks(path) is not None:
+                return
+            self.timeline.set_audio_loading(True, path.name)
+            return
+        if song.audio_tracks:
+            # Path missing — activate will show Relink; don't pretend to load.
+            return
+        clip = self._primary_video_clip_for_standin(song)
+        if clip is None:
+            return
+        duration = float(song.duration_seconds)
+        cache_key = self._video_standin_cache_key(clip, timeline_duration=duration)
+        if cache_key is not None:
+            if cache_key in self._video_standin_cache:
+                return
+            if load_cached_video_standin(cache_key) is not None:
+                return
+        self.timeline.set_audio_loading(True, f"{clip.name} (video)")
+
+    def _schedule_video_music_standin(self) -> None:
+        """Fill the Music waveform from embedded video audio when no music file."""
+        if self._song_has_main_audio_file():
+            return
+        clip = self._primary_video_clip_for_standin()
+        if clip is None:
+            self._video_standin_token += 1
+            self.timeline.set_audio(None)
+            self.timeline.set_audio_loading(False)
+            return
+        duration = float(self.current_song.duration_seconds)
+        cache_key = self._video_standin_cache_key(clip, timeline_duration=duration)
+        if cache_key is not None:
+            cached = self._video_standin_cache.get(cache_key)
+            if cached is not None:
+                self._video_standin_token += 1
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(cached, reset_view=False)
+                self._sync_timeline_overview()
+                return
+            # Disk peaks from a previous session — paint instantly, no re-decode.
+            disk = load_cached_video_standin(cache_key)
+            if disk is not None:
+                self._video_standin_cache[cache_key] = disk
+                self._video_standin_token += 1
+                self.timeline.set_audio_loading(False)
+                self.timeline.set_audio(disk, reset_view=False)
+                self._sync_timeline_overview()
+                if not self._media_warm_active:
+                    self.status.showMessage(
+                        f"Music waveform from cache ({clip.name})", 2500
+                    )
+                return
+        self._video_standin_token += 1
+        token = self._video_standin_token
+        song_id = self.current_song.id
+        self.timeline.set_audio_loading(True, f"{clip.name} (video)")
+        clip_snapshot = clip
+
+        def _job() -> None:
+            from cueplayer.util.thread_priority import lower_background_thread_priority
+
+            lower_background_thread_priority()
+
+            def _cancel() -> bool:
+                return token != self._video_standin_token or song_id != self.current_song.id
+
+            try:
+                buffer = build_music_standin_from_video(
+                    clip_snapshot,
+                    timeline_duration=duration,
+                    cancel_check=_cancel,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._video_standin_finished.emit(token, exc)
+                return
+            # Ignore if song changed / cancelled while decoding.
+            if _cancel():
+                self._video_standin_finished.emit(token, None)
+                return
+            self._video_standin_finished.emit(token, buffer)
+
+        self._audio_load_executor.submit(_job)
+
+    def _on_video_standin_finished(self, token: int, result: object) -> None:
+        if token != self._video_standin_token:
+            return
+        if self._song_has_main_audio_file():
+            self.timeline.set_audio_loading(False)
+            return
+        self.timeline.set_audio_loading(False)
+        if isinstance(result, Exception):
+            self.timeline.set_audio(None)
+            self.status.showMessage(f"Video waveform failed: {result}", 4000)
+            return
+        if result is None:
+            self.timeline.set_audio(None)
+            if self._primary_video_clip_for_standin() is not None:
+                self.status.showMessage(
+                    "Video has no embedded audio — Music lane stays empty",
+                    4000,
+                )
+            return
+        if not isinstance(result, AudioBuffer):
+            self.timeline.set_audio(None)
+            return
+        clip = self._primary_video_clip_for_standin()
+        if clip is not None:
+            key = self._video_standin_cache_key(
+                clip, timeline_duration=float(self.current_song.duration_seconds)
+            )
+            if key is not None:
+                self._video_standin_cache[key] = result
+                self._audio_prefetch_executor.submit(
+                    save_cached_video_standin, key, result
+                )
+        # Display only — playback stays on VideoAudioMixer so we don't double.
+        self.timeline.set_audio(result, reset_view=True)
+        self._sync_timeline_overview()
+        self.status.showMessage(
+            f"Music waveform from video audio ({result.duration_seconds / 60.0:.0f} min)",
+            3500,
+        )
+
     def _prefetch_neighbor_audio(self, *, skip_path: Path | None = None) -> None:
         """Background-load the current song's neighbors (keeps song switch responsive)."""
         try:
@@ -6115,7 +6646,7 @@ class MainWindow(QMainWindow):
             self._audio_load_timer.stop()
             self.timeline.set_audio_loading(False)
             return
-        if not future.done():
+        if future is None or not future.done():
             return
         self._audio_load_timer.stop()
         self._pending_audio_load = None
@@ -6168,9 +6699,17 @@ class MainWindow(QMainWindow):
                     role="main",
                 )
             ]
-        self.engine.set_buffer(buffer)
-        if replace_track:
-            self.engine.ensure_playback_ready()
+        # Same buffer object may already be playing from _on_audio_pcm_ready
+        # (peaks filled in place / progressive tail decode). Do not set_buffer
+        # again — that seeks to 0 and cuts playback mid-stream.
+        already_armed = self.engine.buffer is buffer
+        if not already_armed:
+            self.engine.set_buffer(buffer)
+            if replace_track:
+                self.engine.ensure_playback_ready()
+        else:
+            # Progressive load: refresh resample snapshot now that PCM is complete.
+            self.engine.rebind_playback_samples()
         exclude = self._ltc_channel_for_song(self.current_song)
         self._timeline_ltc_exclude = exclude
         # Song switch (replace_track=False) keeps the current zoom scale;
@@ -6185,9 +6724,14 @@ class MainWindow(QMainWindow):
             self.timeline.set_song(self.current_song)
             self._apply_project_mark_line_settings()
             self.monitor.set_song(self.current_song)
-        self.transport.set_times(0.0, self.engine.duration)
-        self.monitor.set_position(0.0, self.engine.duration)
-        self._refresh_output_timecode_clock(0.0)
+        if already_armed:
+            pos = float(self.engine.position)
+            self.transport.set_times(pos, self.engine.duration)
+            self.monitor.set_position(pos, self.engine.duration)
+        else:
+            self.transport.set_times(0.0, self.engine.duration)
+            self.monitor.set_position(0.0, self.engine.duration)
+        self._refresh_output_timecode_clock(0.0 if not already_armed else float(self.engine.position))
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
@@ -6487,16 +7031,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Unable to Load Media", str(exc))
             return None
         is_still = info.media_kind == "still"
+        video_only = not self._song_has_main_audio_file()
         if is_still:
             duration = DEFAULT_STILL_CLIP_DURATION_SECONDS
             source_duration = 0.0
         else:
             source_duration = info.duration_seconds
-            duration = default_video_clip_duration(
-                source_duration,
-                self.current_song.duration_seconds,
-                start_seconds,
-            )
+            if video_only and source_duration > 0.05:
+                # No music bed — use the full take so rehearsal marking has
+                # the whole timeline (and Music-lane video waveform).
+                duration = max(0.02, float(source_duration))
+            else:
+                duration = default_video_clip_duration(
+                    source_duration,
+                    self.current_song.duration_seconds,
+                    start_seconds,
+                )
         start = clip_start_after_body_drag(start_seconds, 0.0)
         clip = VideoClip.create(
             name=path.stem,
@@ -6507,15 +7057,44 @@ class MainWindow(QMainWindow):
             source_duration_seconds=source_duration,
         )
         self.current_song.add_video_clip(clip)
+        # Video-only songs: song length follows the clip so the Music lane /
+        # transport cover the whole rehearsal take.
+        if video_only:
+            self.current_song.duration_seconds = max(
+                float(self.current_song.duration_seconds), float(clip.end_seconds)
+            )
         self._push_song_undo(AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(clip)]))
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.refresh_video_clip_waveforms()
         self.timeline.update()
+        # Preview follows the audio clock — without a position tick after add,
+        # the panel stays black until the user seeks/plays. Land the playhead
+        # inside the new clip when needed, then force one decode.
+        if not clip.contains(float(self.engine.position)):
+            self.engine.seek(float(clip.start_seconds))
+        else:
+            self.video_sync.update_position(float(self.engine.position))
+        if not self._song_has_main_audio_file():
+            self.engine.set_duration(self.current_song.duration_seconds)
+            self.transport.set_times(0.0, self.engine.duration)
+            self._schedule_video_music_standin()
         self._mark_dirty()
         kind_label = "still image" if is_still else "video clip"
         msg = f"Added {kind_label}: {clip.name} ({duration:.2f}s)"
-        if not is_still and source_duration > max(600.0, self.current_song.duration_seconds * 2):
+        if not is_still and source_needs_long_video_warning(
+            duration_seconds=source_duration, path=path
+        ):
+            mins = source_duration / 60.0
+            msg = (
+                f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
+                f"picture OK; waveform/scrub preload skipped; "
+                f"embedded audio uses {HEAVY_VIDEO_AUDIO_DECODE_SECONDS:.0f}s windows"
+            )
+            self._warn_long_rehearsal_video(path, source_duration)
+        elif not is_still and source_duration > max(
+            600.0, self.current_song.duration_seconds * 2
+        ):
             mins = source_duration / 60.0
             msg = (
                 f"Added long video ({mins:.0f} min source) as {duration:.1f}s clip — "
@@ -6524,6 +7103,22 @@ class MainWindow(QMainWindow):
             )
         self.status.showMessage(msg, 5000)
         return clip
+
+    def _warn_long_rehearsal_video(self, path: Path, source_duration: float) -> None:
+        mins = max(1.0, source_duration / 60.0)
+        QMessageBox.information(
+            self,
+            "Long video loaded",
+            (
+                f"\"{path.name}\" is about {mins:.0f} minutes.\n\n"
+                "CuePlayer will show picture + embedded audio for marking.\n"
+                "Heavy waveform / scrub preload is skipped on long rehearsal "
+                "files so opening Clean Output does not freeze the computer.\n\n"
+                "Tip: Save the project (and MA work) before opening Clean Output "
+                "on very large files. If picture looks soft, try Decode Quality "
+                "Full; if the app feels heavy, use 720p."
+            ),
+        )
 
     def _add_video_clips_from_paths(self, paths: list, drop_seconds: object) -> None:
         t = float(drop_seconds)  # type: ignore[arg-type]
@@ -6547,6 +7142,8 @@ class MainWindow(QMainWindow):
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.update()
+        if not self._song_has_main_audio_file():
+            self._schedule_video_music_standin()
         self._mark_dirty()
         self.status.showMessage(f"Deleted {removed} video clip(s)", 2500)
 
@@ -6718,9 +7315,33 @@ class MainWindow(QMainWindow):
         self._push_song_undo(AddMarksCommand(marks=[MarkSnapshot.from_mark(mark)]))
         self._mark_dirty()
         self._refresh_marks_ui()
+        paused = False
+        if bool(getattr(lane, "pause_on_mark", False)) and self.engine.playing:
+            self.engine.pause()
+            paused = True
+        if bool(getattr(lane, "prompt_note_on_mark", False)):
+            text, ok = QInputDialog.getText(
+                self,
+                "Mark Note",
+                f"Note for {lane.name}:",
+                text=mark.display_name,
+            )
+            if ok:
+                new_name = text.strip()
+                if new_name != mark.display_name:
+                    old_name = mark.display_name
+                    mark.display_name = new_name
+                    self._push_song_undo(
+                        RenameMarkCommand(
+                            mark_id=mark.id, old_name=old_name, new_name=new_name
+                        )
+                    )
+                    self._mark_dirty()
+                    self._refresh_marks_ui()
         lat_ms = self.engine.sync_offset_ms()
         self.status.showMessage(
             f"Marked: {lane.name} @ {mark.time_seconds:.3f}s"
+            + (" · paused" if paused else "")
             + (f" · sync offset {lat_ms:.0f}ms" if abs(lat_ms) >= 0.5 else "")
             + " · edit directly in the Note column on the right",
             2500,

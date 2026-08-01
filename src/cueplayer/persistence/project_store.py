@@ -462,6 +462,7 @@ def project_to_dict(
         "mark_dash_on": project.mark_dash_on,
         "mark_dash_off": project.mark_dash_off,
         "mark_line_width": project.mark_line_width,
+        "wave_label_font_px": int(getattr(project, "wave_label_font_px", 10) or 10),
         "waveform_color": project.waveform_color,
         "playhead_color": project.playhead_color,
         "mark_lane_height": float(project.mark_lane_height),
@@ -555,6 +556,16 @@ def project_to_dict(
                         "cue_list_enabled": lane.cue_list_enabled,
                         "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
                         "midi_note": int(getattr(lane, "midi_note", 0) or 0),
+                        "pause_on_mark": bool(getattr(lane, "pause_on_mark", False)),
+                        "prompt_note_on_mark": bool(
+                            getattr(lane, "prompt_note_on_mark", False)
+                        ),
+                        "show_note_on_wave": bool(
+                            getattr(lane, "show_note_on_wave", False)
+                        ),
+                        "show_cue_id_on_wave": bool(
+                            getattr(lane, "show_cue_id_on_wave", False)
+                        ),
                         "marker_shape": lane.marker_shape,
                         "show_row_color": bool(getattr(lane, "show_row_color", True)),
                     }
@@ -583,6 +594,7 @@ def project_to_dict(
                 "cue_list_column_order": list(song.cue_list_column_order),
                 "cue_list_show_cue_id": bool(song.cue_list_show_cue_id),
                 "now_primary_show_cue_id": bool(song.now_primary_show_cue_id),
+                "now_primary_single_line": bool(song.now_primary_single_line),
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -663,6 +675,10 @@ def project_from_dict(
                     ),
                     midi_note_enabled=bool(lane.get("midi_note_enabled", False)),
                     midi_note=int(lane.get("midi_note", 0) or 0),
+                    pause_on_mark=bool(lane.get("pause_on_mark", False)),
+                    prompt_note_on_mark=bool(lane.get("prompt_note_on_mark", False)),
+                    show_note_on_wave=bool(lane.get("show_note_on_wave", False)),
+                    show_cue_id_on_wave=bool(lane.get("show_cue_id_on_wave", False)),
                     marker_shape=shape,
                     show_row_color=bool(lane.get("show_row_color", True)),
                 )
@@ -746,6 +762,7 @@ def project_from_dict(
                 ),
                 cue_list_show_cue_id=bool(song_data.get("cue_list_show_cue_id", True)),
                 now_primary_show_cue_id=bool(song_data.get("now_primary_show_cue_id", True)),
+                now_primary_single_line=bool(song_data.get("now_primary_single_line", False)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),
@@ -791,6 +808,10 @@ def project_from_dict(
         mark_line_width=line_width,
         mark_dash_on=dash_on,
         mark_dash_off=dash_off,
+        wave_label_font_px=max(
+            8,
+            min(28, int(data.get("wave_label_font_px", 10) or 10)),
+        ),
         waveform_color=wave_color,
         playhead_color=playhead_color,
         mark_lane_height=mark_lane_height,

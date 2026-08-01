@@ -3,7 +3,7 @@
 Fixed window title so an OBS Window Capture source keeps pointing at the
 right window. Per PRODUCT_SPEC, closing the embedded main Preview must
 not interrupt this output, so this window only hides on the close (X)
-button instead of being destroyed — re-opening from the Tools menu just
+button instead of being destroyed — re-opening from the View menu just
 shows it again with the same OBS capture target still valid.
 
 Resolution presets and the aspect-lock toggle live in the right-click
@@ -83,7 +83,7 @@ class CleanVideoOutputWindow(QWidget):
         self._ndi_name = "CuePlayer"
         self._ndi_frame_mode = "output_window"
         # Normally the X button only hides this window (see closeEvent) so
-        # that re-opening from the Tools menu keeps the same OBS capture
+        # that re-opening from the View menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
         # tear it down (and let the app quit) when the app itself closes.
         self._force_closing = False
@@ -97,7 +97,12 @@ class CleanVideoOutputWindow(QWidget):
         layout.setSpacing(0)
         # No placeholder text here: unplayed regions must stay pure black
         # for the OBS capture, with no debug text baked into the frame.
-        self.preview = VideoPreviewWidget(self, placeholder_text="")
+        # Keep smooth scaling — nearest-neighbor made 1080p Clean Output look
+        # far softer/blockier than the Decode Quality setting. Decode caps +
+        # long-video preload skips are the primary jank controls now.
+        self.preview = VideoPreviewWidget(
+            self, placeholder_text="", smooth_scale=True
+        )
         layout.addWidget(self.preview)
         self.resize(1920, 1080)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -105,6 +110,9 @@ class CleanVideoOutputWindow(QWidget):
 
     def set_frame(self, frame) -> None:  # noqa: ANN001
         self.preview.set_frame(frame)
+
+    def set_qimage(self, image) -> None:  # noqa: ANN001
+        self.preview.set_qimage(image)
 
     # -- resolution / aspect lock --------------------------------------
 

@@ -34,6 +34,14 @@ def lanes_to_dicts(lanes: list[MarkLane]) -> list[dict[str, Any]]:
                 "cue_list_enabled": bool(lane.cue_list_enabled),
                 "midi_note_enabled": bool(getattr(lane, "midi_note_enabled", False)),
                 "midi_note": int(getattr(lane, "midi_note", 0) or 0),
+                "pause_on_mark": bool(getattr(lane, "pause_on_mark", False)),
+                "prompt_note_on_mark": bool(
+                    getattr(lane, "prompt_note_on_mark", False)
+                ),
+                "show_note_on_wave": bool(getattr(lane, "show_note_on_wave", False)),
+                "show_cue_id_on_wave": bool(
+                    getattr(lane, "show_cue_id_on_wave", False)
+                ),
                 "marker_shape": lane.marker_shape,
                 "show_row_color": bool(getattr(lane, "show_row_color", True)),
             }
@@ -76,6 +84,10 @@ def dicts_to_lanes(raw: list[Any]) -> list[MarkLane]:
                 ),
                 midi_note_enabled=bool(item.get("midi_note_enabled", False)),
                 midi_note=int(item.get("midi_note", 0) or 0),
+                pause_on_mark=bool(item.get("pause_on_mark", False)),
+                prompt_note_on_mark=bool(item.get("prompt_note_on_mark", False)),
+                show_note_on_wave=bool(item.get("show_note_on_wave", False)),
+                show_cue_id_on_wave=bool(item.get("show_cue_id_on_wave", False)),
                 marker_shape=shape,  # type: ignore[arg-type]
                 show_row_color=bool(item.get("show_row_color", True)),
             )

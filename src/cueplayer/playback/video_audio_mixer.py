@@ -4,20 +4,34 @@ CuePlayer has exactly one playback clock: `AudioEngine`'s sample position (see
 `cueplayer.playback.video_sync` module docstring). This mixer never runs its
 own timer for *playback* — `AudioEngine`'s realtime callback asks it for a
 chunk at an explicit song-timeline *frame* range on every audio buffer.
-Per-clip audio is decoded in a background thread for the clip's trim window
-only (never a multi-hour whole file), then resampled to the engine rate.
+Per-clip audio is decoded in a background thread in capped windows (never a
+multi-hour whole file), then resampled to the engine rate. Long rehearsal
+clips use a sliding window so audio continues past the first minute.
+
+Rapid seek/scrub only keeps *one* decode job per clip; later requests while a
+job is running stash the latest source time and run after the current job —
+stale mid-queue 30–120s decodes must not pile up under ``av_path_lock``.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import threading
 
 import numpy as np
 
 from cueplayer.domain.models import Song, VideoClip, video_clip_crossfade_weights
-from cueplayer.media.video_audio_cache import get_video_audio_for_clip
+from cueplayer.media.video_audio_cache import get_video_audio
+from cueplayer.media.video_limits import audio_decode_cap_for_clip
 from cueplayer.playback.resample import resample_linear
+
+
+@dataclass
+class _CachedPcm:
+    samples: np.ndarray  # (frames, 2) float32 at playback rate
+    origin_seconds: float  # source-media time of samples[0]
+    key: tuple
 
 
 class VideoAudioMixer:
@@ -32,10 +46,11 @@ class VideoAudioMixer:
         self._song: Song | None = None
         self._playback_rate = 48000
         self.muted = False
-        # clip.id -> (frames, 2) float32 at self._playback_rate, or None for
-        # "decoded, but silent". Buffer index 0 == clip.source_in_seconds.
-        self._cache: dict[str, np.ndarray | None] = {}
-        self._cache_key: dict[str, tuple] = {}
+        self._cache: dict[str, _CachedPcm] = {}
+        # clip_id -> key of the job currently running (at most one per clip).
+        self._inflight: dict[str, tuple] = {}
+        # Latest source_time requested while a job was already busy.
+        self._pending_need: dict[str, float] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vid-audio")
 
@@ -51,57 +66,126 @@ class VideoAudioMixer:
             self._playback_rate = rate
             with self._lock:
                 self._cache.clear()
-                self._cache_key.clear()
+                self._inflight.clear()
+                self._pending_need.clear()
 
     def preload(self, clips: list[VideoClip]) -> None:
         """
-        Kick background decode for each clip's trim window. Safe to call from
-        the UI thread — returns immediately; ``chunk_at`` yields silence until
-        each job finishes.
+        Kick background decode for each clip near its source_in. Safe to call
+        from the UI thread — returns immediately; ``chunk_at`` yields silence
+        until each job finishes. Long clips only decode a capped window; the
+        playhead later slides that window forward.
         """
         valid_ids = {clip.id for clip in clips}
         with self._lock:
             for stale_id in [cid for cid in self._cache if cid not in valid_ids]:
                 self._cache.pop(stale_id, None)
-                self._cache_key.pop(stale_id, None)
+                self._inflight.pop(stale_id, None)
+                self._pending_need.pop(stale_id, None)
         for clip in clips:
-            key = self._key_for(clip)
-            with self._lock:
-                if self._cache_key.get(clip.id) == key and clip.id in self._cache:
-                    continue
-                # Reserve the key so duplicate preload calls don't queue twice.
-                self._cache_key[clip.id] = key
-            self._executor.submit(self._decode_async, clip.id, key, clip)
+            if clip.media_kind == "still":
+                continue
+            self._request_window(clip, float(clip.source_in_seconds))
 
-    def _key_for(self, clip: VideoClip) -> tuple:
-        return (
+    def _window_for(self, clip: VideoClip, source_time: float) -> tuple[float, float]:
+        """Return (start_seconds, duration_seconds) covering ``source_time``."""
+        cap = audio_decode_cap_for_clip(clip)
+        src_in = max(0.0, float(clip.source_in_seconds))
+        span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
+        src_out = src_in + span
+        # Small lookback so scrubbing slightly backward still hits the buffer.
+        start = max(src_in, float(source_time) - 2.0)
+        if start + cap > src_out and span > cap:
+            start = max(src_in, src_out - cap)
+        dur = min(cap, max(0.05, src_out - start))
+        return start, dur
+
+    def _request_window(self, clip: VideoClip, source_time: float) -> None:
+        start, dur = self._window_for(clip, source_time)
+        key = (
             str(clip.path),
             self._playback_rate,
-            round(float(clip.source_in_seconds), 3),
-            round(float(clip.source_span_seconds or clip.duration_seconds), 3),
+            round(start, 2),
+            round(dur, 2),
         )
+        with self._lock:
+            cached = self._cache.get(clip.id)
+            if cached is not None and cached.key == key:
+                self._pending_need.pop(clip.id, None)
+                return
+            if self._inflight.get(clip.id) == key:
+                self._pending_need.pop(clip.id, None)
+                return
+            if clip.id in self._inflight:
+                # One job already running — keep only the latest need; do not
+                # queue another decode that would hold av_path_lock for minutes.
+                self._pending_need[clip.id] = float(source_time)
+                return
+            self._inflight[clip.id] = key
+            self._pending_need.pop(clip.id, None)
+        self._executor.submit(self._decode_window, clip.id, key, clip, start, dur)
 
-    def _decode_async(self, clip_id: str, key: tuple, clip: VideoClip) -> None:
+    def _decode_window(
+        self,
+        clip_id: str,
+        key: tuple,
+        clip: VideoClip,
+        start: float,
+        dur: float,
+    ) -> None:
         samples: np.ndarray | None
+        origin = float(start)
         try:
-            buf = get_video_audio_for_clip(clip)
+            buf = get_video_audio(
+                clip.path, start_seconds=start, max_duration_seconds=dur
+            )
         except Exception:
             buf = None
         if buf is None or buf.frames == 0:
             samples = None
         else:
+            origin = float(buf.origin_seconds)
             data = buf.samples
-            if data.shape[1] == 1:
+            if data.ndim == 1:
+                data = np.stack([data, data], axis=1)
+            elif data.shape[1] == 1:
                 data = np.repeat(data, 2, axis=1)
             elif data.shape[1] > 2:
                 data = data[:, :2]
             if int(buf.sample_rate) != int(self._playback_rate):
                 data = resample_linear(data, buf.sample_rate, self._playback_rate)
             samples = np.ascontiguousarray(data, dtype=np.float32)
+
+        follow_up: float | None = None
         with self._lock:
-            if self._cache_key.get(clip_id) != key:
-                return  # stale job
-            self._cache[clip_id] = samples
+            if self._inflight.get(clip_id) != key:
+                # Should not happen with coalesce; drop safely.
+                return
+            self._inflight.pop(clip_id, None)
+            if samples is None:
+                self._cache.pop(clip_id, None)
+            else:
+                self._cache[clip_id] = _CachedPcm(
+                    samples=samples, origin_seconds=origin, key=key
+                )
+            follow_up = self._pending_need.pop(clip_id, None)
+            # If the just-finished window already covers the pending need,
+            # skip another decode.
+            if follow_up is not None and samples is not None:
+                pcm = self._cache.get(clip_id)
+                if pcm is not None and self._covers(pcm, follow_up):
+                    follow_up = None
+
+        if follow_up is not None:
+            self._request_window(clip, follow_up)
+
+    def _covers(self, pcm: _CachedPcm, source_time: float) -> bool:
+        n = int(pcm.samples.shape[0])
+        if n <= 0:
+            return False
+        end = pcm.origin_seconds + (n / float(self._playback_rate))
+        # Require a little headroom so we reload before running off the end.
+        return pcm.origin_seconds - 1e-3 <= source_time < end - 0.25
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:
         """
@@ -118,7 +202,7 @@ class VideoAudioMixer:
         end_frame = start_frame + frames
         clips = [c for c in song.video_clips if not c.hidden]
         with self._lock:
-            cache_snapshot = {cid: self._cache.get(cid) for cid in self._cache}
+            cache_snapshot = dict(self._cache)
         for clip in clips:
             clip_start_frame = int(round(clip.start_seconds * sr))
             clip_end_frame = int(round(clip.end_seconds * sr))
@@ -126,26 +210,40 @@ class VideoAudioMixer:
             hi = min(end_frame, clip_end_frame)
             if hi <= lo:
                 continue
-            samples = cache_snapshot.get(clip.id)
-            if samples is None or samples.shape[0] <= 0:
-                continue
-            buf_frames = int(samples.shape[0])
-            span_frames = max(1, min(buf_frames, int(round(clip.source_span_seconds * sr))))
-            vol = max(0.0, min(1.0, float(clip.volume)))
             active = np.arange(lo, hi, dtype=np.int64)
             offsets = active - clip_start_frame
+            src_in = max(0.0, float(clip.source_in_seconds))
+            span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
             if clip.media_kind == "still":
-                src_idx = np.zeros(active.size, dtype=np.int64)
+                src_times = np.full(active.size, src_in, dtype=np.float64)
             else:
-                src_idx = np.mod(offsets, span_frames)
-            src_idx = np.clip(src_idx, 0, buf_frames - 1)
+                src_times = src_in + np.mod(offsets.astype(np.float64) / sr, span)
+
+            pcm = cache_snapshot.get(clip.id)
+            need_t = float(src_times[0])
+            if pcm is None or not self._covers(pcm, need_t):
+                # Realtime-safe: schedule a window, stay silent until ready.
+                self._request_window(clip, need_t)
+                continue
+
+            buf_frames = int(pcm.samples.shape[0])
+            origin = float(pcm.origin_seconds)
+            src_idx = np.round((src_times - origin) * sr).astype(np.int64)
+            valid = (src_idx >= 0) & (src_idx < buf_frames)
+            if not np.any(valid):
+                self._request_window(clip, need_t)
+                continue
+            # If the chunk runs past the cached window, ask for the next one.
+            if not bool(valid[-1]):
+                self._request_window(clip, float(src_times[-1]))
+
+            vol = max(0.0, min(1.0, float(clip.volume)))
             t_seconds = active.astype(np.float64) / sr
             weights = video_clip_crossfade_weights(clip, t_seconds, song.video_clips)
-            mask = weights > 1e-6
+            mask = valid & (weights > 1e-6)
             if not np.any(mask):
                 continue
             out_rows = (active[mask] - start_frame).astype(np.int64)
-            scaled = samples[src_idx[mask]] * (vol * weights[mask])[:, np.newaxis]
+            scaled = pcm.samples[src_idx[mask]] * (vol * weights[mask])[:, np.newaxis]
             out[out_rows] += scaled
-        np.clip(out, -1.0, 1.0, out=out)
         return out

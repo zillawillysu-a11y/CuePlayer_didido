@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +26,57 @@ def audio_cache_key(path: Path) -> tuple[str, int, int] | None:
         return None
 
 
-def _cache_file(key: tuple[str, int, int]) -> Path:
+def _digest_for_key(key: tuple[str, int, int]) -> str:
     path_str, mtime_ns, size = key
-    digest = hashlib.sha256(f"{path_str}\0{mtime_ns}\0{size}".encode("utf-8")).hexdigest()[:32]
-    return _CACHE_DIR / f"{digest}.npz"
+    return hashlib.sha256(f"{path_str}\0{mtime_ns}\0{size}".encode("utf-8")).hexdigest()[:32]
+
+
+def _cache_file(key: tuple[str, int, int]) -> Path:
+    return _CACHE_DIR / f"{_digest_for_key(key)}.npz"
+
+
+def _peaks_cache_file(key: tuple[str, int, int]) -> Path:
+    return _CACHE_DIR / f"{_digest_for_key(key)}.peaks.npz"
+
+
+def _standin_cache_file(cache_key: str) -> Path:
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:32]
+    return _CACHE_DIR / f"standin_{digest}.npz"
+
+
+# Compressing multi-hundred-MB float32 PCM is extremely slow and often never
+# finishes before quit — long songs then re-decode every launch. Uncompressed
+# npz writes much faster for large buffers.
+_COMPRESS_PCM_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _peak_arrays(buffer: AudioBuffer) -> dict[str, np.ndarray]:
+    arrays: dict[str, np.ndarray] = {
+        "sample_rate": np.int32(buffer.sample_rate),
+        "frames": np.int64(buffer.frames),
+        "channels": np.int32(buffer.channels),
+        "mono": buffer.mono.astype(np.float32, copy=False),
+        "n_peaks": np.int32(len(buffer.peak_levels)),
+    }
+    for i, level in enumerate(buffer.peak_levels):
+        arrays[f"peak_{i}_spb"] = np.int32(level.samples_per_bucket)
+        arrays[f"peak_{i}_mins"] = level.mins.astype(np.float32, copy=False)
+        arrays[f"peak_{i}_maxs"] = level.maxs.astype(np.float32, copy=False)
+    return arrays
+
+
+def _levels_from_npz(data: np.lib.npyio.NpzFile) -> list[PeakLevel]:
+    n_peaks = int(data["n_peaks"])
+    levels: list[PeakLevel] = []
+    for i in range(n_peaks):
+        levels.append(
+            PeakLevel(
+                samples_per_bucket=int(data[f"peak_{i}_spb"]),
+                mins=np.asarray(data[f"peak_{i}_mins"], dtype=np.float32),
+                maxs=np.asarray(data[f"peak_{i}_maxs"], dtype=np.float32),
+            )
+        )
+    return levels
 
 
 def load_cached_audio(path: Path) -> AudioBuffer | None:
@@ -44,16 +92,42 @@ def load_cached_audio(path: Path) -> AudioBuffer | None:
             sample_rate = int(data["sample_rate"])
             samples = np.asarray(data["samples"], dtype=np.float32)
             mono = np.asarray(data["mono"], dtype=np.float32)
-            n_peaks = int(data["n_peaks"])
-            levels: list[PeakLevel] = []
-            for i in range(n_peaks):
-                levels.append(
-                    PeakLevel(
-                        samples_per_bucket=int(data[f"peak_{i}_spb"]),
-                        mins=np.asarray(data[f"peak_{i}_mins"], dtype=np.float32),
-                        maxs=np.asarray(data[f"peak_{i}_maxs"], dtype=np.float32),
-                    )
-                )
+            levels = _levels_from_npz(data)
+        return AudioBuffer(
+            path=path,
+            sample_rate=sample_rate,
+            samples=samples,
+            mono=mono,
+            peak_levels=levels,
+        )
+    except Exception:
+        try:
+            cache_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def load_cached_waveform_peaks(path: Path) -> AudioBuffer | None:
+    """Small peaks-only cache for instant Music-lane paint after restart.
+
+    ``samples`` are zeros of the correct length so duration/UI work; the
+    engine still needs a full PCM load (or full ``.npz`` hit) for sound.
+    """
+    key = audio_cache_key(path)
+    if key is None:
+        return None
+    cache_path = _peaks_cache_file(key)
+    if not cache_path.is_file():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as data:
+            sample_rate = int(data["sample_rate"])
+            frames = int(data["frames"])
+            channels = max(1, int(data["channels"]))
+            mono = np.asarray(data["mono"], dtype=np.float32)
+            levels = _levels_from_npz(data)
+        samples = np.zeros((max(1, frames), channels), dtype=np.float32)
         return AudioBuffer(
             path=path,
             sample_rate=sample_rate,
@@ -70,11 +144,25 @@ def load_cached_audio(path: Path) -> AudioBuffer | None:
 
 
 def save_cached_audio(path: Path, buffer: AudioBuffer) -> None:
+    """Persist peaks (always) + full PCM (when possible) for next launch."""
     key = audio_cache_key(path)
     if key is None:
         return
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    # Peaks sidecar first — tiny, so waveform survives even if PCM write fails.
+    try:
+        peaks_path = _peaks_cache_file(key)
+        tmp_peaks = peaks_path.with_name(peaks_path.stem + ".tmp")
+        np.savez(str(tmp_peaks), **_peak_arrays(buffer))
+        Path(str(tmp_peaks) + ".npz").replace(peaks_path)
+    except Exception:
+        pass
+
+    try:
         arrays: dict[str, np.ndarray] = {
             "sample_rate": np.int32(buffer.sample_rate),
             "samples": buffer.samples.astype(np.float32, copy=False),
@@ -86,21 +174,88 @@ def save_cached_audio(path: Path, buffer: AudioBuffer) -> None:
             arrays[f"peak_{i}_mins"] = level.mins.astype(np.float32, copy=False)
             arrays[f"peak_{i}_maxs"] = level.maxs.astype(np.float32, copy=False)
         tmp_base = _cache_file(key).with_name(_cache_file(key).stem + ".tmp")
-        np.savez_compressed(str(tmp_base), **arrays)
+        nbytes = int(buffer.samples.nbytes)
+        if nbytes > _COMPRESS_PCM_MAX_BYTES:
+            np.savez(str(tmp_base), **arrays)
+        else:
+            np.savez_compressed(str(tmp_base), **arrays)
         tmp_file = Path(str(tmp_base) + ".npz")
         tmp_file.replace(_cache_file(key))
-    except OSError:
+    except Exception:
         pass
 
 
-def load_audio_cached(path: Path) -> AudioBuffer:
-    """Disk cache hit when possible; otherwise decode from the media file."""
+def load_audio_cached(
+    path: Path,
+    *,
+    on_pcm_ready: Callable[[AudioBuffer], None] | None = None,
+) -> AudioBuffer:
+    """Disk cache hit when possible; otherwise decode from the media file.
+
+    ``on_pcm_ready`` is forwarded on cold decode so playback can start before
+    the peak pyramid finishes. Cache hits call it with the full buffer.
+    """
     cached = load_cached_audio(path)
     if cached is not None:
+        if on_pcm_ready is not None:
+            on_pcm_ready(cached)
         return cached
-    buffer = load_audio(path)
+    buffer = load_audio(path, on_pcm_ready=on_pcm_ready)
     save_cached_audio(path, buffer)
     return buffer
+
+
+def load_cached_video_standin(cache_key: str) -> AudioBuffer | None:
+    """Display-only Music-lane stand-in from video audio (peaks persisted).
+
+    Full PCM is not stored — playback uses VideoAudioMixer; the Music lane
+    only needs the peak pyramid. Zeroed ``samples`` keep duration/UI correct.
+    """
+    cache_path = _standin_cache_file(cache_key)
+    if not cache_path.is_file():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as data:
+            sample_rate = int(data["sample_rate"])
+            frames = int(data["frames"]) if "frames" in data else int(
+                np.asarray(data["mono"]).shape[0]
+            )
+            channels = max(1, int(data["channels"])) if "channels" in data else 1
+            mono = np.asarray(data["mono"], dtype=np.float32)
+            levels = _levels_from_npz(data)
+            path_str = str(data["path"]) if "path" in data else ""
+            # Legacy full-PCM standin files still load (samples present).
+            if "samples" in data:
+                samples = np.asarray(data["samples"], dtype=np.float32)
+            else:
+                samples = np.zeros((max(1, frames), channels), dtype=np.float32)
+        return AudioBuffer(
+            path=Path(path_str) if path_str else Path("standin"),
+            sample_rate=sample_rate,
+            samples=samples,
+            mono=mono,
+            peak_levels=levels,
+        )
+    except Exception:
+        try:
+            cache_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def save_cached_video_standin(cache_key: str, buffer: AudioBuffer) -> None:
+    """Persist peaks-only stand-in (tiny) so long videos reopen without re-decode."""
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _standin_cache_file(cache_key)
+        arrays = _peak_arrays(buffer)
+        arrays["path"] = np.asarray(str(buffer.path))
+        tmp_base = cache_path.with_name(cache_path.stem + ".tmp")
+        np.savez(str(tmp_base), **arrays)
+        Path(str(tmp_base) + ".npz").replace(cache_path)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -195,16 +350,34 @@ def clone_caches_for_copied_file(source: Path, dest: Path) -> bool:
         return True
 
     cloned_wave = False
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
     old_npz = _cache_file(old_key)
     new_npz = _cache_file(new_key)
     if old_npz.is_file():
         try:
-            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
             if (
                 not new_npz.is_file()
                 or new_npz.stat().st_size != old_npz.stat().st_size
             ):
                 shutil.copy2(old_npz, new_npz)
+            cloned_wave = True
+        except OSError:
+            pass
+
+    # Peaks sidecar — waveform paint after restart without waiting on full PCM.
+    old_peaks = _peaks_cache_file(old_key)
+    new_peaks = _peaks_cache_file(new_key)
+    if old_peaks.is_file():
+        try:
+            if (
+                not new_peaks.is_file()
+                or new_peaks.stat().st_size != old_peaks.stat().st_size
+            ):
+                shutil.copy2(old_peaks, new_peaks)
             cloned_wave = True
         except OSError:
             pass
@@ -269,10 +442,11 @@ def adopt_caches_for_path(
                 break
 
     # Waveform-only: synthesize the old key from the known former path + new
-    # file's mtime/size (move preserves those).
+    # file's mtime/size (move preserves those). Peaks sidecar alone is enough
+    # for Music-lane paint after restart.
     if donor is None and former_norm is not None:
         synthetic = (former_norm, mtime_ns, size)
-        if _cache_file(synthetic).is_file():
+        if _cache_file(synthetic).is_file() or _peaks_cache_file(synthetic).is_file():
             donor = synthetic
 
     if donor is None:
@@ -281,16 +455,33 @@ def adopt_caches_for_path(
         return True
 
     cloned_wave = False
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
     old_npz = _cache_file(donor)
     new_npz = _cache_file(new_key)
     if old_npz.is_file():
         try:
-            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
             if (
                 not new_npz.is_file()
                 or new_npz.stat().st_size != old_npz.stat().st_size
             ):
                 shutil.copy2(old_npz, new_npz)
+            cloned_wave = True
+        except OSError:
+            pass
+
+    old_peaks = _peaks_cache_file(donor)
+    new_peaks = _peaks_cache_file(new_key)
+    if old_peaks.is_file():
+        try:
+            if (
+                not new_peaks.is_file()
+                or new_peaks.stat().st_size != old_peaks.stat().st_size
+            ):
+                shutil.copy2(old_peaks, new_peaks)
             cloned_wave = True
         except OSError:
             pass

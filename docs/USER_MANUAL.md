@@ -13,10 +13,25 @@
 | **Space** | Play / Pause |
 | **← / →** | 微調 playhead（配合修飾鍵可改秒數／Frame） |
 | **1–9** | 在 playhead 打對應 Mark |
+| 波形上 Mark **右鍵** | 刪除、Rename Note、Edit Cue ID、換成其他 Type；也可 Offset Time |
+| Mark Manager **Pause** | 勾選後，打該 Type（快捷鍵或點軌道）會暫停播放 |
+| Mark Manager **Ask Note** | 勾選後，打標（常搭配 Pause）會跳出 Note 輸入框 |
+| Mark Manager **Wave Note** | 勾選後，波形上標記線頂端右側顯示該標的 Note |
+| Mark Manager **Wave Cue** | 勾選後，波形上標記線頂端右側顯示 Cue ID（需該 Type 開 Cue ID） |
+| **Display Settings → Wave Label Size** | 同步調整波形旁 Cue ID／Note 字級（整專案） |
 | 軌道由上到下 | **Music → Video → LTC → Marks**（拉開 Music／Video 高度可把 Marks 往下擠；往下捲可看到 Marks） |
 | Music／Video 底部分隔線 | 上下拖可改高度；對齊完可用眼睛隱藏 Video+LTC |
 | 下方細時間軸 | 整首歌總覽；拖曳可跳轉，亮區＝目前主時間軸可視範圍 |
 | 分隔拉桿 | 平常接近黑色、滑鼠過去變灰色（主介面所有 QSplitter） |
+
+## 選單 View
+
+| 項目 | 說明 |
+|------|------|
+| **Show Set List** | 顯示／隱藏左側 Set List（歌單／資料夾） |
+| **Show Video / LTC Tracks** | 顯示／隱藏時間軸上的 Video + LTC 軌道（Preview／Clean Output 仍會播） |
+| **Video Preview Panel** | 嵌入式預覽面板 |
+| **Clean Video Output** | 開 OBS 用乾淨輸出視窗 |
 
 ## Cue List（右側）
 
@@ -25,8 +40,8 @@
 | **Shift / Ctrl** | 多選 |
 | **Del / Backspace** | 刪除選取 |
 | 點 **Time** | 跳到該 Mark |
-| 右鍵 Cue List | 顯示／隱藏 Cue List |
-| 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID 行（如 Cue 2）；也可顯示／隱藏 Primary／Secondary |
+| 右鍵 Cue List | 顯示／隱藏 Cue List；**Renumber**＝依時間重編 Cue ID（會先確認） |
+| 右鍵 PRIMARY NOW | **Show Cue ID**＝開關主顯示上的 Cue ID；**Single-line NOW**＝Primary／Secondary 的 Type / Cue / Note 同一行（並排時兩邊一致）；**Secondary on the right / below**＝Secondary 在右或下方；也可顯示／隱藏 Primary／Secondary |
 
 ## 左側 Setlist
 
@@ -34,7 +49,8 @@
 |------|------|
 | 雙擊 **No. / Name / BPM** | 編輯 |
 | 拖欄寬 | 調整欄位寬度 |
-| 右鍵 | 資料夾、完整編輯、欄位顯示（Song English / BPM / LTC·Video Output Status） |
+| 右鍵 | 資料夾、完整編輯、欄位顯示（Song English / BPM / LTC·Video Output Status）；選取後可 Renumber（會先確認） |
+| **Renumber** 按鈕 | 依區段／全部重編 No.（會先確認） |
 | 拖歌曲 | 排序，或拖到 Folder |
 | 拖 Folder 標題 | 整夾（含歌曲）上下移動 |
 | 拖入音訊／影片 | 新增多首歌 |

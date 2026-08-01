@@ -103,7 +103,10 @@ class VideoDecoder:
             if self._stream is None:
                 self._container.close()
                 raise ValueError(f"No video stream found in {self._path.name}")
-            self._stream.thread_type = "AUTO"
+            # FRAME (not AUTO): fewer internal FFmpeg worker threads. AUTO
+            # plus a second open on the same path (waveform/Clean) has
+            # hard-crashed / frozen machines on long rehearsal files.
+            self._stream.thread_type = "FRAME"
             self._time_base = float(self._stream.time_base) if self._stream.time_base else 0.0
             self._iterator = self._container.decode(self._stream)
         self._last_frame = None

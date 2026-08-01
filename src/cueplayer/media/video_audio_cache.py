@@ -10,10 +10,10 @@ import numpy as np
 
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.av_lock import av_path_lock
-from cueplayer.media.video_audio_loader import (
+from cueplayer.media.video_audio_loader import VideoAudioBuffer, load_video_audio
+from cueplayer.media.video_limits import (
     MAX_VIDEO_AUDIO_DECODE_SECONDS,
-    VideoAudioBuffer,
-    load_video_audio,
+    audio_decode_cap_for_clip,
 )
 
 _cache: dict[tuple, VideoAudioBuffer | None] = {}
@@ -34,12 +34,12 @@ def audio_window_for_clip(clip: VideoClip) -> tuple[float, float]:
     """
     (start_seconds, duration_seconds) of source audio needed for this clip.
 
-    Caps at ``MAX_VIDEO_AUDIO_DECODE_SECONDS`` so multi-hour files never fully
-    decode into RAM.
+    Caps at ``MAX_VIDEO_AUDIO_DECODE_SECONDS`` (or a tighter heavy-clip cap)
+    so multi-hour rehearsal files never fully decode into RAM.
     """
     start = max(0.0, float(clip.source_in_seconds))
     span = max(0.05, float(clip.source_span_seconds) or float(clip.duration_seconds))
-    span = min(span, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+    span = min(span, audio_decode_cap_for_clip(clip))
     return start, span
 
 
@@ -139,7 +139,7 @@ def audio_window_for_waveform(clip: VideoClip) -> tuple[float, float]:
         float(clip.source_in_seconds)
         + float(clip.source_span_seconds or clip.duration_seconds),
     )
-    span = min(end, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+    span = min(end, audio_decode_cap_for_clip(clip))
     return 0.0, span
 
 

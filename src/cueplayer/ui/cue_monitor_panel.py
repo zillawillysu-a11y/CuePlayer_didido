@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal, QEvent
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -53,6 +53,18 @@ from cueplayer.ui.theme import BG_SELECTED, SPLITTER_HOVER, SPLITTER_IDLE, TEXT
 from cueplayer.ui.transport_bar import format_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
+# Cue List QSS: ``padding: 8px 8px`` on items. Keep height/paint in sync so the
+# last wrapped Note line is never clipped into an ellipsis.
+_NOTE_PAD_X = 8
+_NOTE_PAD_Y = 8
+_NOTE_WRAP_FLAGS = int(
+    Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere
+)
+_NOTE_PAINT_FLAGS = int(
+    _NOTE_WRAP_FLAGS
+    | Qt.AlignmentFlag.AlignLeft
+    | Qt.AlignmentFlag.AlignVCenter
+)
 _ROW_HEIGHT = 34
 
 
@@ -79,15 +91,44 @@ class _RevealLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
+def _note_inner_width(column_width: int) -> int:
+    return max(24, int(column_width) - (2 * _NOTE_PAD_X))
+
+
+def _note_text_height(fm: QFontMetrics, text: str, column_width: int) -> int:
+    """Full wrapped Note height including cell padding (no elide).
+
+    Single-line / empty Notes stay at the compact default row height so the
+    Cue List keeps dense. Only multi-line Notes grow; a few px of slack stops
+    the last CJK glyphs from clipping without adding a whole empty line.
+    """
+    text = text or ""
+    if not text.strip():
+        return _ROW_HEIGHT
+    inner = _note_inner_width(column_width)
+    br = fm.boundingRect(0, 0, inner, 100000, _NOTE_WRAP_FLAGS, text)
+    content_h = int(br.height())
+    # One line of text fits in the default band (QSS pad 8+8 inside 34px).
+    if content_h <= fm.lineSpacing() + 2:
+        return _ROW_HEIGHT
+    return max(_ROW_HEIGHT, content_h + (2 * _NOTE_PAD_Y) + 4)
+
+
 class _PaddedItemDelegate(QStyledItemDelegate):
     """Extra vertical padding so edited text is not clipped.
 
     Selection keeps each cell's own foreground (Mark Type lane colors) instead
     of the global stylesheet forcing selected rows to pure white.
+    Note column paints with the same wrap metrics used for row height so the
+    last CJK characters are never replaced by an ellipsis.
     """
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
+            self._paint_note(painter, opt, index)
+            return
         opt.rect = opt.rect.adjusted(0, 2, 0, -2)
         if opt.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(opt.rect, QColor(BG_SELECTED))
@@ -107,6 +148,29 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
         super().paint(painter, opt, index)
 
+    def _paint_note(self, painter, opt: QStyleOptionViewItem, index) -> None:  # noqa: ANN001
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor(BG_SELECTED))
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        if not text:
+            return
+        text_rect = opt.rect.adjusted(_NOTE_PAD_X, _NOTE_PAD_Y, -_NOTE_PAD_X, -_NOTE_PAD_Y)
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setPen(QColor(TEXT))
+        # Vertically center the wrapped block in the cell (row already sized
+        # with slack so the last CJK glyphs are not clipped into "…").
+        painter.drawText(text_rect, _NOTE_PAINT_FLAGS, text)
+        painter.restore()
+
+    def sizeHint(self, option, index):  # noqa: ANN001
+        if index.column() == LOGICAL_INDEX_BY_FIELD["note"]:
+            text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            width = option.rect.width() if option.rect.width() > 0 else 140
+            height = _note_text_height(option.fontMetrics, text, width)
+            return QSize(width, height)
+        return super().sizeHint(option, index)
+
     def createEditor(self, parent, option, index):  # noqa: ANN001
         editor = super().createEditor(parent, option, index)
         if editor is not None:
@@ -125,10 +189,12 @@ def mark_now_text(song: Song, mark: Mark) -> str:
 
 
 _MIME_NOW_SECONDARY = "application/x-cueplayer-now-secondary"
-_NOW_CARD_MIN_H = 56
-_NOW_CARD_MIN_H_BELOW = 44
-_NOW_PRIMARY_COL_MIN = 56
-_NOW_SECONDARY_COL_MIN = 48
+# Compact floors — single-line Primary hugs text; multi-line still needs room.
+_NOW_CARD_MIN_H = 40
+_NOW_CARD_MIN_H_BELOW = 32
+_NOW_CARD_MIN_H_SINGLE = 28
+_NOW_PRIMARY_COL_MIN = 40
+_NOW_SECONDARY_COL_MIN = 36
 _CUE_LIST_BODY_MIN = 56
 _NOW_TITLE_CHROME = 28  # NOW label + layout spacing/margins
 # Keep NOW + Cue List tall enough inside the scroll area so a short panel
@@ -158,7 +224,7 @@ def _now_card_style(
     padding = pad if pad is not None else ("10px 10px" if secondary else "12px 12px")
     return (
         f"color: #e4e4e7; font-size: {size}px; font-weight: 600;"
-        f"padding: {padding}; line-height: 1.3;"
+        f"padding: {padding}; line-height: 1.25;"
         f"background-color: #141416;"
         # Qt only rounds reliably when all sides are set (not border-left alone).
         f"border: 1px solid #1f1f22;"
@@ -167,17 +233,37 @@ def _now_card_style(
     )
 
 
-def mark_now_body(song: Song, mark: Mark, *, show_cue_id: bool = False) -> str:
+def mark_now_body(
+    song: Song,
+    mark: Mark,
+    *,
+    show_cue_id: bool = False,
+    single_line: bool = False,
+) -> str:
     lane = song.lane_by_index(mark.lane_index)
     lane_bit = lane.name if lane is not None else f"Type {mark.lane_index}"
     note = mark.display_name.strip()
+    cue_bit = ""
+    if show_cue_id and lane is not None and lane.cue_id_enabled:
+        cue_id = mark.main_cue_id.strip()
+        if cue_id:
+            cue_bit = f"Cue {cue_id}"
+
+    if single_line:
+        # Compact: "Main - Cue 1 · NOTE" so PRIMARY can stay short.
+        tail: list[str] = []
+        if cue_bit:
+            tail.append(cue_bit)
+        if note:
+            tail.append(note)
+        if not tail:
+            return lane_bit
+        return f"{lane_bit} - " + " · ".join(tail)
 
     if show_cue_id:
         detail_lines: list[str] = []
-        if lane is not None and lane.cue_id_enabled:
-            cue_id = mark.main_cue_id.strip()
-            if cue_id:
-                detail_lines.append(f"Cue {cue_id}")
+        if cue_bit:
+            detail_lines.append(cue_bit)
         if note:
             detail_lines.append(note)
         if detail_lines:
@@ -232,12 +318,17 @@ class CueMonitorPanel(QWidget):
         self._now_secondary_visible = True
         self._cue_list_visible = True
         self._now_primary_show_cue_id = True
+        self._now_primary_single_line = False
         self._cue_list_show_cue_id = True
         self._now_placement = "right"  # "right" | "below"
         self._splitter_state_right: QByteArray | None = None
         self._splitter_state_below: QByteArray | None = None
         self._body_splitter_state: QByteArray | None = None
         self._secondary_drag_origin: QPoint | None = None
+        # Below mode: Primary height locked while the NOW↔Cue List handle
+        # resizes Secondary. Qt otherwise redistributes the inner splitter and
+        # makes that handle feel like it is dragging Primary.
+        self._below_locked_primary_h: int | None = None
 
         # Compact floor so the main Setlist splitter can grow on narrow windows;
         # clock / NOW already reflow and the body scrolls when short.
@@ -489,12 +580,18 @@ class CueMonitorPanel(QWidget):
         self.cue_table.verticalHeader().setVisible(False)
         self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.cue_table.setShowGrid(False)
+        self.cue_table.setWordWrap(True)
+        self.cue_table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.cue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.cue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.cue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # Smooth scrubbing — no row/column “notches” while panning the list.
         self.cue_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.cue_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # Rows grow with wrapped Note text (not a fixed one-line band).
+        self.cue_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
         header = self.cue_table.horizontalHeader()
         header.setSectionsMovable(True)
         header.setFirstSectionMovable(True)
@@ -567,7 +664,7 @@ class CueMonitorPanel(QWidget):
         self._body_splitter.splitterMoved.connect(self._on_body_splitter_moved)
         body_handle = self._body_splitter.handle(1)
         body_handle.setCursor(Qt.CursorShape.SizeVerCursor)
-        body_handle.setToolTip("Drag to resize Secondary vs Cue List")
+        self._sync_body_handle_tooltip()
 
         # Short windows: scroll the right column between the display (clock/NOW)
         # and Cue List instead of crushing both into illegible strips.
@@ -667,10 +764,28 @@ class CueMonitorPanel(QWidget):
         self.cue_list_layout_changed.emit()
 
     def _on_header_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
-        del logical_index, old_size, new_size
+        del old_size, new_size
         if self._reordering_header or self._resizing_header:
             return
+        # Note column width drives wrap → reflow every row height.
+        if logical_index == LOGICAL_INDEX_BY_FIELD["note"]:
+            self._reflow_note_row_heights()
         self.cue_list_layout_changed.emit()
+
+    def _note_row_height_for_text(self, text: str, column_width: int) -> int:
+        """Height so the full Note is visible (wrap + CJK without spaces)."""
+        fm = QFontMetrics(self.cue_table.font())
+        return _note_text_height(fm, text, column_width)
+
+    def _reflow_note_row_heights(self) -> None:
+        note_col = self._col_for_field("note")
+        width = int(self.cue_table.columnWidth(note_col))
+        if width <= 0:
+            width = 140
+        for row in range(self.cue_table.rowCount()):
+            item = self.cue_table.item(row, note_col)
+            text = item.text() if item is not None else ""
+            self.cue_table.setRowHeight(row, self._note_row_height_for_text(text, width))
 
     def save_cue_list_header_state(self) -> QByteArray:
         return QByteArray(self.cue_table.horizontalHeader().saveState())
@@ -704,6 +819,7 @@ class CueMonitorPanel(QWidget):
             "now_secondary_visible": bool(self._now_secondary_visible),
             "cue_list_visible": bool(self._cue_list_visible),
             "now_primary_show_cue_id": bool(self._now_primary_show_cue_id),
+            "now_primary_single_line": bool(self._now_primary_single_line),
             "cue_list_show_cue_id": bool(self._cue_list_show_cue_id),
             "cue_list_column_order": list(self._column_order),
             "cue_list_header": bytes(self.save_cue_list_header_state()),
@@ -720,6 +836,8 @@ class CueMonitorPanel(QWidget):
             self._cue_list_visible = bool(prefs["cue_list_visible"])
         if "now_primary_show_cue_id" in prefs:
             self._now_primary_show_cue_id = bool(prefs["now_primary_show_cue_id"])
+        if "now_primary_single_line" in prefs:
+            self._now_primary_single_line = bool(prefs["now_primary_single_line"])
         if "cue_list_show_cue_id" in prefs:
             self._cue_list_show_cue_id = bool(prefs["cue_list_show_cue_id"])
         order = prefs.get("cue_list_column_order")
@@ -731,6 +849,7 @@ class CueMonitorPanel(QWidget):
         self._apply_now_panel_visibility()
         self._apply_cue_list_visibility()
         self._apply_cue_list_column_visibility()
+        self._sync_primary_card_alignment()
         self._sync_current(force_now=True)
 
     def _mark_id_at_row(self, row: int) -> str | None:
@@ -763,6 +882,11 @@ class CueMonitorPanel(QWidget):
         # Both cards off → hide the whole NOW chrome (title + empty pane) so
         # Cue List can use the body splitter space.
         self._sync_now_section_collapsed(show_primary or show_secondary)
+        if show_secondary and self._now_placement == "below":
+            self._remember_below_primary()
+        else:
+            self._below_locked_primary_h = None
+        self._sync_body_handle_tooltip()
 
     def _sync_now_section_collapsed(self, show_now: bool) -> None:
         """Show or collapse the NOW half of the body splitter."""
@@ -835,9 +959,14 @@ class CueMonitorPanel(QWidget):
         menu.addAction(show_secondary)
 
     def _on_now_splitter_moved(self, *_args) -> None:
+        # User dragged Primary|Secondary — lock Primary for later body drags.
+        # Keep the NOW↔Cue List boundary fixed; only redistribute inside NOW.
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            self._remember_below_primary()
+            self._clamp_below_inner_to_now_body()
+        else:
+            self._fit_body_within_panel()
         self._schedule_now_card_fit()
-        # Redistribute inside the current panel only — never grow the window.
-        self._fit_body_within_panel()
         self.now_layout_changed.emit()
 
     def _on_body_splitter_moved(self, *_args) -> None:
@@ -850,9 +979,56 @@ class CueMonitorPanel(QWidget):
         # Only nudge the Cue List table — never the outer monitor scroller.
         QTimer.singleShot(0, self._ensure_playhead_cue_visible)
 
+    def _sync_body_handle_tooltip(self) -> None:
+        if not hasattr(self, "_body_splitter"):
+            return
+        handle = self._body_splitter.handle(1)
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            handle.setToolTip("Drag to resize Secondary height (vs Cue List)")
+        else:
+            handle.setToolTip("Drag to resize NOW vs Cue List")
+
+    def _remember_below_primary(self) -> None:
+        if self._now_placement != "below" or not self._secondary_now_column.isVisible():
+            return
+        sizes = self._now_splitter.sizes()
+        if len(sizes) == 2:
+            self._below_locked_primary_h = max(self._primary_col_min(), int(sizes[0]))
+
+    def _clamp_below_inner_to_now_body(self) -> None:
+        """Fit Primary|Secondary inside the current NOW body — do not move Cue List."""
+        if not hasattr(self, "_body_splitter"):
+            return
+        body = self._body_splitter.sizes()
+        if len(body) != 2:
+            return
+        now_h = int(body[0])
+        avail = max(0, now_h - self._now_chrome_height())
+        handle = max(8, self._now_splitter.handleWidth())
+        sec_min = self._secondary_col_min()
+        if self._below_locked_primary_h is not None:
+            primary = int(self._below_locked_primary_h)
+        else:
+            sizes = self._now_splitter.sizes()
+            primary = int(sizes[0]) if len(sizes) == 2 else self._primary_col_min()
+        primary = max(self._primary_col_min(), primary)
+        if primary + handle + sec_min > avail:
+            primary = max(40, avail - handle - sec_min)
+        secondary = max(sec_min, avail - primary - handle)
+        if primary + handle + secondary > avail:
+            secondary = max(sec_min, avail - primary - handle)
+            primary = max(40, avail - handle - secondary)
+        self._now_splitter.setStretchFactor(0, 0)
+        self._now_splitter.setStretchFactor(1, 0)
+        self._now_splitter.setSizes([max(1, primary), max(1, secondary)])
+        self._below_locked_primary_h = max(1, primary)
+
     def _primary_col_min(self) -> int:
         # Constant floor only — do not follow card minimumHeight (that feedback
         # loop grows the main window off-screen when width wraps text).
+        if self._now_primary_single_line:
+            # Track label (~14) + gap + compact single-line card.
+            return max(32, _NOW_CARD_MIN_H_SINGLE + 14)
         return _NOW_PRIMARY_COL_MIN
 
     def _secondary_col_min(self) -> int:
@@ -910,6 +1086,11 @@ class CueMonitorPanel(QWidget):
         When Secondary is below Primary, dragging NOW↔Cue List resizes Secondary
         (Primary stays) and squeezes Cue List — Secondary never disappears.
         All math stays inside the current body total (window cannot grow).
+
+        Important: do not trust ``_now_splitter.sizes()[0]`` after a body drag —
+        Qt redistributes the inner splitter and may have already grown Primary.
+        Use ``_below_locked_primary_h`` so the handle under Secondary only
+        changes Secondary height.
         """
         body = self._body_splitter.sizes()
         if len(body) != 2:
@@ -918,7 +1099,12 @@ class CueMonitorPanel(QWidget):
         if total <= 0:
             return
         inner = self._now_splitter.sizes()
-        primary = inner[0] if len(inner) == 2 else 180
+        if self._below_locked_primary_h is not None:
+            primary = int(self._below_locked_primary_h)
+        elif len(inner) == 2:
+            primary = int(inner[0])
+        else:
+            primary = 180
         primary = max(self._primary_col_min(), min(primary, total))
         handle = max(8, self._now_splitter.handleWidth())
         sec_min = self._secondary_col_min()
@@ -927,7 +1113,7 @@ class CueMonitorPanel(QWidget):
         # Ideal NOW height from the drag, clamped so Cue List keeps a sliver
         # and Secondary keeps its floor — never increase `total`.
         max_now = max(sec_min + self._now_chrome_height(), total - max(40, _CUE_LIST_BODY_MIN // 2))
-        now_h = min(max(body[0], min(now_floor, max_now)), max_now)
+        now_h = min(max(int(body[0]), min(now_floor, max_now)), max_now)
         if now_h < now_floor and now_floor <= max_now:
             now_h = now_floor
         # If the panel is too short for full floors, shrink Primary so Secondary lives.
@@ -946,7 +1132,10 @@ class CueMonitorPanel(QWidget):
         self._now_splitter.setMinimumHeight(0)
         self._now_splitter.setMaximumHeight(16777215)
         self._now_splitter.setSizes([max(1, primary), max(1, secondary)])
+        # Keep lock in sync (including emergency shrink).
+        self._below_locked_primary_h = max(1, primary)
         self._now_section.setMinimumHeight(_NOW_TITLE_CHROME + _NOW_PRIMARY_COL_MIN)
+        self._sync_body_handle_tooltip()
 
     def now_secondary_placement(self) -> str:
         return self._now_placement
@@ -1008,9 +1197,13 @@ class CueMonitorPanel(QWidget):
         self._refresh_splitter_handles()
         self._schedule_now_card_fit()
         if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            self._remember_below_primary()
             self._apply_below_body_to_secondary()
         else:
+            self._below_locked_primary_h = None
             self._fit_body_within_panel()
+        self._sync_body_handle_tooltip()
+
     def _sync_now_splitter_visibility(self) -> None:
         show_secondary = self._secondary_now_column.isVisible()
         handle = self._now_splitter.handle(1)
@@ -1119,6 +1312,14 @@ class CueMonitorPanel(QWidget):
             self._primary_card_accent = accent
             font_px = int(getattr(self, "_now_primary_font_px", 20))
             pad = getattr(self, "_now_card_pad", "12px 12px")
+            if self._now_primary_single_line or self._primary_should_hug():
+                # Tight vertical pad — one-line / empty Primary should hug the text.
+                font_px = min(font_px, 16)
+                pad = "4px 10px"
+        if secondary and self._now_primary_single_line:
+            # Match Primary single-line density so side-by-side cards read alike.
+            font_px = min(font_px, 16)
+            pad = "4px 10px"
         cue.setStyleSheet(
             _now_card_style(accent, secondary=secondary, font_px=font_px, pad=pad)
         )
@@ -1400,24 +1601,48 @@ class CueMonitorPanel(QWidget):
     def _schedule_now_card_fit(self) -> None:
         QTimer.singleShot(0, self._fit_now_cards)
 
+    def _primary_should_hug(self) -> bool:
+        """True when Primary uses a compact content min-height (still grows on drag)."""
+        if self._now_primary_single_line:
+            return True
+        text = self.primary_cue.text() if hasattr(self, "primary_cue") else ""
+        return "\n" not in (text or "")
+
     def _fit_now_cards(self) -> None:
         """Keep a modest card floor; never raise mins enough to grow the window."""
         below = self._now_placement == "below"
-        floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
-        # Cap by currently allocated card height so width-wrap cannot inflate
-        # minimumHeight and push the main window off-screen.
+        hug_primary = self._primary_should_hug()
         for card in (self.primary_cue, self.secondary_cue):
             if not card.isVisible():
-                card.setMinimumHeight(floor)
+                if card is self.primary_cue and hug_primary:
+                    # Compact floor only — max stays open so a tall Primary column can grow the card.
+                    card.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
+                    card.setMaximumHeight(16777215)
+                else:
+                    floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
+                    card.setMaximumHeight(16777215)
+                    card.setMinimumHeight(floor)
                 continue
-            allocated = card.height()
-            cap = allocated if allocated > floor else floor
             width = max(40, card.width())
             natural = card.heightForWidth(width)
             if natural <= 0:
                 natural = card.sizeHint().height()
+            if card is self.primary_cue and hug_primary:
+                # Min hugs one-line text; max unlimited so dragging Primary taller grows the card.
+                floor = _NOW_CARD_MIN_H_SINGLE
+                card.setMinimumHeight(max(floor, int(natural)))
+                card.setMaximumHeight(16777215)
+                continue
+            floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
+            card.setMaximumHeight(16777215)
+            allocated = card.height()
+            cap = allocated if allocated > floor else floor
             card.setMinimumHeight(min(max(floor, natural), cap))
-        self._fit_body_within_panel()
+        if self._now_placement == "below" and self._secondary_now_column.isVisible():
+            # Keep Primary locked and Cue List boundary fixed while cards reflow.
+            self._clamp_below_inner_to_now_body()
+        else:
+            self._fit_body_within_panel()
 
     def _now_content_min_height(self) -> int:
         """Preferred NOW height from constant floors (not escalating card mins)."""
@@ -1610,6 +1835,27 @@ class CueMonitorPanel(QWidget):
 
         show_primary_cue_id.toggled.connect(_toggle_primary_cue_id)
         menu.addAction(show_primary_cue_id)
+
+        single_line = QAction("Single-line NOW (Type - Cue · Note)", self)
+        single_line.setCheckable(True)
+        single_line.setChecked(bool(self._now_primary_single_line))
+        single_line.setToolTip(
+            "Put Type, Cue ID, and Note on one line for PRIMARY and SECONDARY "
+            "(handy when Secondary is on the right)"
+        )
+        single_line.setEnabled(
+            bool(self._now_primary_visible) or bool(self._now_secondary_visible)
+        )
+
+        def _toggle_single_line(checked: bool) -> None:
+            self._now_primary_single_line = bool(checked)
+            self._sync_primary_card_alignment()
+            self._sync_current(force_now=True)
+            self._schedule_now_card_fit()
+            self.now_visibility_changed.emit()
+
+        single_line.toggled.connect(_toggle_single_line)
+        menu.addAction(single_line)
         menu.addSeparator()
 
         self._append_now_display_actions(menu)
@@ -1686,11 +1932,13 @@ class CueMonitorPanel(QWidget):
                         continue
                     row = self.cue_table.rowCount()
                     self.cue_table.insertRow(row)
-                    self.cue_table.setRowHeight(row, _ROW_HEIGHT)
 
                     time_item = QTableWidgetItem(format_time(mark.time_seconds))
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
+                    time_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+                    )
                     self.cue_table.setItem(row, time_col, time_item)
 
                     cue_id_text = cue_ids.get(mark.id, "")
@@ -1706,13 +1954,18 @@ class CueMonitorPanel(QWidget):
                         cue_id_item.setToolTip("Click to edit Cue ID")
                     else:
                         cue_id_item.setFlags(cue_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    cue_id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    cue_id_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+                    )
                     self.cue_table.setItem(row, cue_id_col, cue_id_item)
 
                     lane_name = lane.name
                     lane_item = QTableWidgetItem(lane_name)
                     lane_item.setFlags(lane_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     lane_item.setForeground(QColor(lane.color))
+                    lane_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+                    )
                     self.cue_table.setItem(row, type_col, lane_item)
 
                     note_item = QTableWidgetItem(mark.display_name)
@@ -1722,8 +1975,14 @@ class CueMonitorPanel(QWidget):
                         | Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
                     )
-                    note_item.setToolTip("Click to type a Note directly (e.g. Verse / Chorus)")
+                    note_item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    note_item.setToolTip(
+                        "Click to edit Note — long text wraps and grows the row"
+                    )
                     self.cue_table.setItem(row, note_col, note_item)
+            self._reflow_note_row_heights()
         finally:
             self.cue_table.blockSignals(False)
             self._updating_table = False
@@ -1908,6 +2167,13 @@ class CueMonitorPanel(QWidget):
             self._updating_table = True
             item.setText(new_name)
             self._updating_table = False
+        # Always reflow — wrap height can change even when text is unchanged
+        # after an edit session that only added trailing spaces (now stripped).
+        note_col = self._col_for_field("note")
+        width = int(self.cue_table.columnWidth(note_col)) or 140
+        self.cue_table.setRowHeight(
+            item.row(), self._note_row_height_for_text(new_name, width)
+        )
         if new_name == old_name:
             return
         mark.display_name = new_name
@@ -2022,7 +2288,10 @@ class CueMonitorPanel(QWidget):
             track.setText(title)
             track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             cue.setText("—")
-            self._apply_card_style(cue, "#3f3f46", secondary=secondary)
+            if secondary:
+                self._apply_card_style(cue, "#3f3f46", secondary=True)
+            else:
+                self._sync_primary_card_alignment()
             return None
 
         lane = self._song.lane_by_index(active.lane_index)
@@ -2030,20 +2299,57 @@ class CueMonitorPanel(QWidget):
         lane_name = lane.name if lane is not None else title
         track.setText(f"{title} · {lane_name}")
         track.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 600;")
+        # Single-line applies to both cards so Primary|Secondary side-by-side match.
+        use_single_line = bool(self._now_primary_single_line)
+        show_cue = bool(self._now_primary_show_cue_id)
+        if secondary and not use_single_line:
+            # Multi-line Secondary historically omitted Cue ID (Primary-only toggle).
+            show_cue = False
         cue.setText(
             mark_now_body(
                 self._song,
                 active,
-                show_cue_id=(
-                    False
-                    if secondary
-                    else bool(self._now_primary_show_cue_id)
-                ),
+                show_cue_id=show_cue,
+                single_line=use_single_line,
             )
         )
-        self._apply_card_style(cue, accent, secondary=secondary)
+        if secondary:
+            self._apply_card_style(cue, accent, secondary=True)
+        else:
+            self._sync_primary_card_alignment()
         active_ids.add(active.id)
         return active.id
+
+    def _sync_primary_card_alignment(self) -> None:
+        if not hasattr(self, "primary_cue"):
+            return
+        lay = self._primary_now_column.layout()
+        hug = self._primary_should_hug()
+        # Always fill the Primary column so dragging taller grows the card.
+        # Hug mode: compact min-height + VCenter text; multi-line: Top + normal floor.
+        self.primary_cue.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
+        self.primary_cue.setMaximumHeight(16777215)
+        if lay is not None:
+            lay.setStretchFactor(self.primary_cue, 1)
+            while lay.count() > 2:
+                item = lay.takeAt(lay.count() - 1)
+                if item is None:
+                    break
+                del item
+        if hug:
+            self.primary_cue.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
+        else:
+            self.primary_cue.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+            )
+            self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
+        accent = getattr(self, "_primary_card_accent", "#ff5a5f")
+        self._apply_card_style(self.primary_cue, accent)
 
     def _sync_current(self, *, force_now: bool = False) -> None:
         del force_now
@@ -2052,7 +2358,7 @@ class CueMonitorPanel(QWidget):
             self.primary_track.setText("PRIMARY")
             self.primary_track.setStyleSheet("color: #a1a1aa; font-size: 11px; font-weight: 600;")
             self.primary_cue.setText("—")
-            self._apply_card_style(self.primary_cue, "#ff5a5f")
+            self._sync_primary_card_alignment()
             self._primary_now_column.show()
             self.secondary_track.hide()
             self.secondary_cue.hide()

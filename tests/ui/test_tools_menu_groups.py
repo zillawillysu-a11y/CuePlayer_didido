@@ -1,4 +1,4 @@
-"""Tools menu groups BPM and Video items into submenus."""
+"""Tools keeps BPM/Video; View holds preview / track / clean output toggles."""
 
 from __future__ import annotations
 
@@ -41,15 +41,24 @@ def _menu_titles(window: MainWindow, path: list[str]) -> list[str]:
     ]
 
 
+def _top_level_titles(window: MainWindow) -> list[str]:
+    return [
+        a.text().replace("&", "")
+        for a in window.menuBar().actions()
+        if a.menu() is not None
+    ]
+
+
 def test_tools_bpm_and_video_are_submenus(app: QApplication) -> None:
     window = MainWindow(Project.create("Tools"))
     top_titles = _menu_titles(window, ["Tools"])
     assert "BPM" in top_titles
     assert "Video" in top_titles
-    assert "Show Video / LTC Tracks" in top_titles
+    assert "Show Video / LTC Tracks" not in top_titles
     assert "Detect BPM (songs without BPM)" not in top_titles
     assert "Add Video Clip…" not in top_titles
     assert "Clean Video Output" not in top_titles
+    assert "Video Preview Panel" not in top_titles
 
     bpm_titles = _menu_titles(window, ["Tools", "BPM"])
     assert "Detect BPM (songs without BPM)" in bpm_titles
@@ -57,8 +66,48 @@ def test_tools_bpm_and_video_are_submenus(app: QApplication) -> None:
 
     video_titles = _menu_titles(window, ["Tools", "Video"])
     assert "Add Video Clip…" in video_titles
-    assert "Video Preview Panel" in video_titles
-    assert "Clean Video Output" in video_titles
+    assert "Video Preview Panel" not in video_titles
+    assert "Clean Video Output" not in video_titles
     assert "NDI Video Output" in video_titles
     assert "NDI Source Name…" in video_titles
     assert "Video Decode Quality" in video_titles
+
+
+def test_view_menu_holds_preview_track_clean(app: QApplication) -> None:
+    window = MainWindow(Project.create("View"))
+    assert _top_level_titles(window) == ["File", "Tools", "View"]
+
+    view_titles = _menu_titles(window, ["View"])
+    assert view_titles == [
+        "Show Set List",
+        "Show Video / LTC Tracks",
+        "Video Preview Panel",
+        "Clean Video Output",
+    ]
+
+
+def test_view_can_hide_and_show_setlist(app: QApplication) -> None:
+    window = MainWindow(Project.create("SetListToggle"))
+    window.resize(1200, 700)
+    window.show()
+    app.processEvents()
+
+    assert window._setlist_panel_is_visible() is True
+    assert window._act_setlist.isChecked() is True
+    left_before = window._main_splitter.sizes()[0]
+    assert left_before >= 160
+
+    window._set_setlist_visible(False)
+    app.processEvents()
+    assert window._setlist_panel_is_visible() is False
+    assert window._setlist_panel.isVisible() is False
+    assert window._act_setlist.isChecked() is False
+    assert window._main_splitter.sizes()[0] == 0
+    assert window._main_splitter.sizes()[1] >= 280
+
+    window._set_setlist_visible(True)
+    app.processEvents()
+    assert window._setlist_panel_is_visible() is True
+    assert window._setlist_panel.isVisible() is True
+    assert window._act_setlist.isChecked() is True
+    assert window._main_splitter.sizes()[0] >= 160

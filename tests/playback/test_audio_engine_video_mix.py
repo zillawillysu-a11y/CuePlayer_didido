@@ -83,10 +83,16 @@ def _song_with_clip(volume: float = 1.0, muted: bool = False) -> tuple[Song, Vid
 
 
 def _inject_fake_clip_audio(engine: AudioEngine, clip: VideoClip, value: float) -> None:
+    from cueplayer.playback.video_audio_mixer import _CachedPcm
+
     n = int(2.0 * engine._playback_rate)
     samples = np.full((n, 2), value, dtype=np.float32)
-    engine._video_mixer._cache[clip.id] = samples
-    engine._video_mixer._cache_key[clip.id] = (str(clip.path), engine._playback_rate)
+    origin = float(clip.source_in_seconds)
+    dur = n / float(engine._playback_rate)
+    key = (str(clip.path), engine._playback_rate, round(origin, 2), round(dur, 2))
+    engine._video_mixer._cache[clip.id] = _CachedPcm(
+        samples=samples, origin_seconds=origin, key=key
+    )
 
 
 def test_engine_mixes_video_clip_audio_into_output(engine: AudioEngine) -> None:

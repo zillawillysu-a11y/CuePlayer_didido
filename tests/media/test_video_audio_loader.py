@@ -131,7 +131,7 @@ def test_load_video_audio_respects_max_duration_window(tmp_path: Path) -> None:
 def test_audio_window_for_clip_caps_long_source() -> None:
     from cueplayer.domain.models import VideoClip
     from cueplayer.media.video_audio_cache import audio_window_for_clip
-    from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
+    from cueplayer.media.video_limits import HEAVY_VIDEO_AUDIO_DECODE_SECONDS
 
     clip = VideoClip.create(
         name="long",
@@ -142,5 +142,6 @@ def test_audio_window_for_clip_caps_long_source() -> None:
     clip.source_out_seconds = clip.source_in_seconds + 7200.0
     start, dur = audio_window_for_clip(clip)
     assert start == 0.0
-    assert dur == MAX_VIDEO_AUDIO_DECODE_SECONDS
+    # Heavy rehearsal sources use the tighter embedded-audio cap.
+    assert dur == HEAVY_VIDEO_AUDIO_DECODE_SECONDS
 

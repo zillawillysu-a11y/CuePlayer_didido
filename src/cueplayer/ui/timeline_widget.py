@@ -63,6 +63,9 @@ class TimelineWidget(QWidget):
     marks_changed = Signal()
     marks_moved = Signal(object)  # dict[str, tuple[float, float]]
     offset_requested = Signal(list, float)  # mark ids, delta seconds
+    note_rename_requested = Signal(str, str, str)  # mark_id, old_name, new_name
+    cue_id_edit_requested = Signal(str, str, str)  # mark_id, old_id, new_id
+    change_type_requested = Signal(list, int)  # mark ids, new lane_index
     loop_changed = Signal(object, object)  # loop_a, loop_b
     auto_scroll_changed = Signal(bool)
 
@@ -150,6 +153,7 @@ class TimelineWidget(QWidget):
         self._mark_dash_on = 4.0
         self._mark_dash_off = 4.0
         self._mark_line_width = 1.0
+        self._wave_label_font_px = 10
         self._waveform_color = "#616161"
         self._playhead_color = "#3dd68c"
         self._loop_a: float | None = None
@@ -741,6 +745,7 @@ class TimelineWidget(QWidget):
         dash_off: float,
         waveform_color: str | None = None,
         playhead_color: str | None = None,
+        wave_label_font_px: int | None = None,
     ) -> None:
         """Project-global mark line look + waveform / playhead colors."""
         if style not in ("solid", "dash", "dot"):
@@ -749,6 +754,8 @@ class TimelineWidget(QWidget):
         self._mark_line_width = max(1.0, min(12.0, float(width)))
         self._mark_dash_on = max(1.0, min(40.0, float(dash_on)))
         self._mark_dash_off = max(1.0, min(40.0, float(dash_off)))
+        if wave_label_font_px is not None:
+            self._wave_label_font_px = max(8, min(28, int(wave_label_font_px)))
         if waveform_color is not None:
             q = QColor(waveform_color)
             self._waveform_color = q.name() if q.isValid() else "#616161"
@@ -1491,7 +1498,13 @@ class TimelineWidget(QWidget):
             self._ltc_audio = None
             self._ltc_channel = None
             self._layout_video_track_overlay()
+        # Play/scrub uses a cached backdrop — must rebuild or the loading
+        # text vanishes the moment transport starts.
+        self._invalidate_scrub_backdrop()
         self.update()
+
+    def audio_loading(self) -> bool:
+        return bool(self._audio_loading)
 
     def set_auto_scroll(self, enabled: bool) -> None:
         self._auto_scroll = bool(enabled)
@@ -1706,9 +1719,15 @@ class TimelineWidget(QWidget):
     def fit_to_view(self) -> None:
         """Zoom out so the whole song fits in one screen."""
         self._view_pinned = False
+        # Ensure header leaves a waveform strip before measuring min zoom —
+        # min-size windows often still carry a wide header from a previous layout.
+        hw = self._clamp_header_width(self._header_width)
+        if hw != int(self._header_width):
+            self._header_width = hw
         self._pixels_per_second = self._min_pixels_per_second()
         self._scroll_x = 0.0
         self._invalidate_scrub_backdrop()
+        self._layout_zoom_overlay()
         self.update()
         self.view_changed.emit()
 
@@ -1750,10 +1769,20 @@ class TimelineWidget(QWidget):
             self.header_width_changed.emit(new_w)
 
     def _clamp_header_width(self, width: int | float) -> int:
-        # Leave room for the waveform scrub zone when the timeline is narrow.
-        room = max(self._header_width_min, int(self.width()) - 120) if self.width() > 0 else self._header_width_max
-        hi = min(self._header_width_max, room)
-        return max(self._header_width_min, min(hi, int(round(float(width)))))
+        # Leave a usable waveform scrub strip when the timeline is narrow.
+        # Soft floor is 72px, but we shrink below that rather than letting the
+        # header swallow the whole pane (fit-to-view while playing at min window
+        # used to paint with content_w==0 / empty peak slices → flash quit).
+        min_wave = 48
+        if self.width() <= 0:
+            return max(
+                self._header_width_min,
+                min(self._header_width_max, int(round(float(width)))),
+            )
+        hard_max = max(24, int(self.width()) - min_wave)
+        soft_min = min(self._header_width_min, hard_max)
+        hi = min(self._header_width_max, hard_max)
+        return max(soft_min, min(hi, int(round(float(width)))))
 
     def _near_header_split(self, x: float) -> bool:
         return abs(float(x) - float(self._header_width)) <= self._header_split_hit
@@ -1890,6 +1919,13 @@ class TimelineWidget(QWidget):
         # calling ``resize()`` so height clamping does not re-enter — that used
         # to skip overlay layout entirely, leaving A/zoom/fit stuck mid-widget
         # until something else (e.g. Video eye toggle) re-laid them out.
+        # Always clamp the header even on the busy path — otherwise a min-size
+        # window keeps a 140px header on a ~180px timeline and fit-to-view
+        # while playing can hit empty paint ranges / zero content width.
+        hw_clamped = self._clamp_header_width(self._header_width)
+        if hw_clamped != int(self._header_width):
+            self._header_width = hw_clamped
+            self._invalidate_scrub_backdrop()
         if getattr(self, "_layout_heights_busy", False):
             self._layout_zoom_overlay()
             self._layout_video_track_overlay()
@@ -1904,10 +1940,6 @@ class TimelineWidget(QWidget):
                 self._video_lane_base_height = lane_clamped
                 if self._song is not None:
                     self._song.video_lane_height = lane_clamped
-            hw_clamped = self._clamp_header_width(self._header_width)
-            if hw_clamped != int(self._header_width):
-                self._header_width = hw_clamped
-                self._invalidate_scrub_backdrop()
             self._apply_layout_heights()
             self._layout_zoom_overlay()
             self._layout_video_track_overlay()
@@ -2092,19 +2124,31 @@ class TimelineWidget(QWidget):
         h = self.height()
         hw = int(self._header_width)
         content_w = max(0, w - hw)
+        painter.fillRect(0, 0, w, h, QColor(BG_APP))
+        dpr = max(1.0, float(pm.devicePixelRatio()))
+
+        def _dev(logical: float) -> int:
+            return int(round(float(logical) * dpr))
+
+        # Header column stays fixed (baked at x=0 in the cache).
+        header_blit_w = min(hw, w, pm.width())
+        if header_blit_w > 0 and h > 0:
+            painter.save()
+            painter.setClipRect(0, 0, header_blit_w, h)
+            painter.drawPixmap(
+                0, 0, header_blit_w, h, pm, 0, 0, _dev(header_blit_w), _dev(h)
+            )
+            painter.restore()
+
+        if content_w <= 0 or h <= 0:
+            return True
+
         src_x = hw + overscan + delta
         # QPainter.drawPixmap(int sx/sy/sw/sh) treats the source rect as *device*
         # pixels. Our cache is sized with setDevicePixelRatio(dpr) and painted in
         # logical coords — so multiply source by dpr. Without this, 125%/150%
         # Windows scaling shifts the waveform vs live marks/playhead (and the
         # offset grows with overscan + scroll delta).
-        dpr = max(1.0, float(pm.devicePixelRatio()))
-
-        def _dev(logical: float) -> int:
-            return int(round(float(logical) * dpr))
-
-        painter.fillRect(0, 0, w, h, QColor(BG_APP))
-        # Content region — sample the matching strip from the wide cache.
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
@@ -2118,11 +2162,6 @@ class TimelineWidget(QWidget):
             _dev(content_w),
             _dev(h),
         )
-        painter.restore()
-        # Header column stays fixed (baked at x=0 in the cache).
-        painter.save()
-        painter.setClipRect(0, 0, hw, h)
-        painter.drawPixmap(0, 0, hw, h, pm, 0, 0, _dev(hw), _dev(h))
         painter.restore()
         return True
 
@@ -3076,8 +3115,15 @@ class TimelineWidget(QWidget):
             return
         x = float(pos.x())
         y = float(pos.y())
+        # Marks (including waveform stems) win over wave-gain / lane menus.
+        hit_id = self._hit_mark_at(x, y)
+        if hit_id is not None:
+            if hit_id not in self._selected_mark_ids:
+                self.set_selected_mark_ids([hit_id])
+            self._show_mark_item_context_menu(pos, list(self._selected_mark_ids))
+            return
         lane_idx = self._lane_index_at(x, y)
-        if lane_idx is not None and self._hit_mark_at(x, y) is None:
+        if lane_idx is not None:
             self._show_mark_lane_context_menu(pos, lane_idx)
             return
         if x < self._header_width:
@@ -3091,23 +3137,62 @@ class TimelineWidget(QWidget):
         if self._in_ltc_waveform(x, y):
             self._show_ltc_gain_context_menu(pos)
             return
-        if self._in_mark_tracks(x, y) and self._hit_mark_at(x, y) is None:
+        if self._in_mark_tracks(x, y):
             self._show_mark_tracks_area_menu(pos)
             return
-        hit_id = self._hit_mark_at(x, y)
-        if hit_id is not None and hit_id not in self._selected_mark_ids:
-            self.set_selected_mark_ids([hit_id])
-        ids = list(self._selected_mark_ids)
-        menu = QMenu(self)
-        if not ids:
-            menu.addAction("(Select a Mark or right-click on one first)").setEnabled(False)
-            menu.exec(self.mapToGlobal(pos))
-            return
 
+    def _show_mark_item_context_menu(self, pos, ids: list[str]) -> None:  # noqa: ANN001
+        if self._song is None or not ids:
+            return
+        menu = QMenu(self)
         n = len(ids)
-        delete_action = menu.addAction(f"Delete Mark(s) ({n})")
-        offset_action = menu.addAction("Offset Time…")
+        delete_action = menu.addAction(
+            "Delete Mark" if n == 1 else f"Delete Marks ({n})"
+        )
+        rename_action = menu.addAction("Rename Note…")
+        rename_action.setEnabled(n == 1)
+        rename_action.setToolTip(
+            "Edit the Note for this mark"
+            if n == 1
+            else "Select a single mark to rename its Note"
+        )
+        edit_cue_action = menu.addAction("Edit Cue ID…")
+        edit_cue_action.setEnabled(False)
+        if n == 1:
+            only = self._song.mark_by_id(ids[0])
+            only_lane = (
+                self._song.lane_by_index(only.lane_index) if only is not None else None
+            )
+            if only_lane is not None and only_lane.cue_id_enabled:
+                edit_cue_action.setEnabled(True)
+                edit_cue_action.setToolTip("Edit the Cue ID for this mark")
+            else:
+                edit_cue_action.setToolTip(
+                    "Cue ID is only available on types with Cue ID enabled"
+                )
+        else:
+            edit_cue_action.setToolTip("Select a single mark to edit its Cue ID")
+
+        type_menu = menu.addMenu("Change Type")
+        type_actions: list[tuple[object, int]] = []
+        current_lanes = {
+            mark.lane_index
+            for mid in ids
+            if (mark := self._song.mark_by_id(mid)) is not None
+        }
+        for lane in sorted(self._song.mark_lanes, key=lambda item: item.index):
+            shortcut = (lane.shortcut or "").strip()
+            label = lane.name
+            if shortcut:
+                label = f"{shortcut} · {lane.name}"
+            act = type_menu.addAction(label)
+            # Disable if every selected mark is already on this type.
+            if current_lanes == {lane.index}:
+                act.setEnabled(False)
+            type_actions.append((act, lane.index))
+
         menu.addSeparator()
+        offset_action = menu.addAction("Offset Time…")
         quick: list[tuple[object, float]] = []
         for label, delta in (
             ("+0.010s", 0.01),
@@ -3119,11 +3204,35 @@ class TimelineWidget(QWidget):
         ):
             act = menu.addAction(label)
             quick.append((act, delta))
+
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
         if chosen is delete_action:
             self.delete_requested.emit(ids)
+            return
+        if chosen is rename_action and n == 1:
+            mark = self._song.mark_by_id(ids[0])
+            if mark is None:
+                return
+            text, ok = QInputDialog.getText(
+                self,
+                "Rename Note",
+                "Note:",
+                text=mark.display_name,
+            )
+            if not ok:
+                return
+            new_name = text.strip()
+            if new_name == mark.display_name:
+                return
+            old_name = mark.display_name
+            mark.display_name = new_name
+            self.note_rename_requested.emit(mark.id, old_name, new_name)
+            self.update()
+            return
+        if chosen is edit_cue_action and n == 1:
+            self._prompt_edit_cue_id(ids[0])
             return
         if chosen is offset_action:
             seconds, ok = QInputDialog.getDouble(
@@ -3138,10 +3247,67 @@ class TimelineWidget(QWidget):
             if ok and abs(seconds) >= 1e-6:
                 self.offset_requested.emit(ids, float(seconds))
             return
+        for act, lane_index in type_actions:
+            if chosen is act:
+                self.change_type_requested.emit(ids, int(lane_index))
+                return
         for act, delta in quick:
             if chosen is act:
                 self.offset_requested.emit(ids, float(delta))
                 return
+
+    def _prompt_edit_cue_id(self, mark_id: str) -> None:
+        if self._song is None:
+            return
+        mark = self._song.mark_by_id(mark_id)
+        if mark is None:
+            return
+        lane = self._song.lane_by_index(mark.lane_index)
+        if lane is None or not lane.cue_id_enabled:
+            return
+        from cueplayer.domain.main_cue_id import (
+            is_valid_main_cue_id_text,
+            main_cue_id_fits_order,
+            main_cue_id_order_hint,
+            main_cue_id_taken,
+            normalize_main_cue_id_text,
+        )
+
+        text, ok = QInputDialog.getText(
+            self,
+            "Edit Cue ID",
+            "Cue ID:",
+            text=mark.main_cue_id,
+        )
+        if not ok:
+            return
+        raw = text.strip()
+        if not is_valid_main_cue_id_text(raw):
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Edit Cue ID", "Cue ID must be a positive number.")
+            return
+        new_id = normalize_main_cue_id_text(raw)
+        if new_id == mark.main_cue_id:
+            return
+        if not main_cue_id_fits_order(self._song, mark.id, new_id):
+            from PySide6.QtWidgets import QMessageBox
+
+            if main_cue_id_taken(
+                self._song,
+                new_id,
+                exclude_mark_id=mark.id,
+                lane_index=mark.lane_index,
+            ):
+                msg = f"Cue ID {new_id!r} is already used"
+            else:
+                msg = main_cue_id_order_hint(self._song, mark.id)
+            QMessageBox.warning(self, "Edit Cue ID", msg)
+            return
+        old_id = mark.main_cue_id
+        mark.main_cue_id = new_id
+        self.cue_id_edit_requested.emit(mark.id, old_id, new_id)
+        self.update()
 
     def wheelEvent(self, event) -> None:  # noqa: ANN001
         pixel = event.pixelDelta()
@@ -3220,6 +3386,8 @@ class TimelineWidget(QWidget):
                 self._paint_video_selection_live(painter)
                 self._paint_loop_region(painter)
                 self._paint_selection_box(painter)
+                # Loading copy under the playhead — never dim the green line.
+                self._paint_audio_loading_overlay(painter)
                 self._paint_playhead(painter)
                 self._paint_audio_gain_overlays(painter)
                 self._paint_drag_guides(painter)
@@ -3231,6 +3399,8 @@ class TimelineWidget(QWidget):
         self._paint_marks_live(painter)
         self._paint_loop_region(painter)
         self._paint_selection_box(painter)
+        # Loading may also paint inside _paint_waveform; playhead stays last.
+        self._paint_audio_loading_overlay(painter)
         self._paint_playhead(painter)
         self._paint_audio_gain_overlays(painter)
         self._paint_drag_guides(painter)
@@ -3684,20 +3854,68 @@ class TimelineWidget(QWidget):
             return f"{minutes:02d}:{seconds:04.1f}"
         return f"{minutes:02d}:{int(seconds):02d}"
 
+    def _song_expects_waveform(self) -> bool:
+        """True when the song has media that should fill the Music lane."""
+        song = self._song
+        if song is None:
+            return False
+        if song.audio_tracks:
+            return True
+        return bool(song.video_clips)
+
+    def _paint_audio_loading_overlay(self, painter: QPainter) -> None:
+        """Corner loading copy — no full-band dim (that washed out the playhead)."""
+        if not self._audio_loading and not (
+            self._audio is None and self._song_expects_waveform()
+        ):
+            return
+        if self._audio is not None and not self._audio_loading:
+            return
+        y0 = self._ruler_height
+        label = self._audio_loading_label
+        if self._audio_loading:
+            line1 = "Loading audio…"
+            line2 = label if label else "Reading file"
+        else:
+            # Song already has media; avoid the empty-project "Open audio…" flash
+            # between set_song and the async load arming.
+            line1 = "Loading audio…"
+            if self._song is not None and self._song.video_clips and not self._song.audio_tracks:
+                line2 = f"{self._song.video_clips[0].name} (video)"
+            elif self._song is not None and self._song.audio_tracks:
+                line2 = Path(self._song.audio_tracks[0].path).name
+            else:
+                line2 = "Reading file"
+        # Soft label plate only — leave the rest of the wave band clear so the
+        # green playhead stays fully saturated across the timeline.
+        fm = painter.fontMetrics()
+        pad_x, pad_y = 10, 8
+        text_w = max(fm.horizontalAdvance(line1), fm.horizontalAdvance(line2))
+        plate_w = text_w + pad_x * 2
+        plate_h = fm.height() * 2 + pad_y * 2 + 4
+        plate_x = self._header_width + 12
+        plate_y = y0 + max(8, (self._wave_height - plate_h) // 2)
+        painter.fillRect(
+            plate_x, plate_y, plate_w, plate_h, QColor(9, 9, 11, 160)
+        )
+        painter.setPen(QColor("#a1a1aa"))
+        painter.drawText(plate_x + pad_x, plate_y + pad_y + fm.ascent(), line1)
+        painter.setPen(QColor("#71717a"))
+        painter.drawText(
+            plate_x + pad_x,
+            plate_y + pad_y + fm.height() + 4 + fm.ascent(),
+            line2,
+        )
+
     def _paint_waveform(self, painter: QPainter) -> int:
         y0 = self._ruler_height
         y1 = y0 + self._wave_height
         right = self._paint_right()
         painter.fillRect(self._header_width, y0, right, self._wave_height, QColor("#09090b"))
 
-        if self._audio_loading:
-            painter.setPen(QColor("#a1a1aa"))
-            label = self._audio_loading_label
-            line1 = "Loading waveform…"
-            line2 = label if label else "Reading audio file"
-            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
-            painter.setPen(QColor("#71717a"))
-            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
+        if self._audio_loading or (self._audio is None and self._song_expects_waveform()):
+            # Loading copy is painted live (after static layers) so the playhead
+            # can sit on top — only draw the wave band background here.
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y1 - 1, right, y1 - 1)
             return y1
@@ -3707,7 +3925,7 @@ class TimelineWidget(QWidget):
             painter.drawText(
                 self._header_width + 16,
                 y0 + self._wave_height // 2,
-                "Open audio to see a detailed waveform here (zoom in a lot to line up beats)",
+                "Open audio — or drop a video — to see a waveform here",
             )
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y1 - 1, right, y1 - 1)
@@ -3806,6 +4024,8 @@ class TimelineWidget(QWidget):
             s1 = int(t1 * audio.sample_rate)
             b0 = max(0, s0 // level.samples_per_bucket)
             b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+            if b0 >= b1 or b0 >= level.maxs.size:
+                continue
             lo = float(level.mins[b0:b1].min())
             hi = float(level.maxs[b0:b1].max())
             peak = max(abs(lo), abs(hi))
@@ -3865,6 +4085,8 @@ class TimelineWidget(QWidget):
             s1 = int(t1 * audio.sample_rate)
             b0 = max(0, s0 // level.samples_per_bucket)
             b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+            if b0 >= b1 or b0 >= level.maxs.size:
+                continue
             lo = float(level.mins[b0:b1].min())
             hi = float(level.maxs[b0:b1].max())
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
@@ -3885,9 +4107,11 @@ class TimelineWidget(QWidget):
             t1 = self._time_for_x(x + 1)
             s0 = max(0, int(t0 * sr))
             s1 = min(mono.size, max(s0 + 1, int(t1 * sr)))
-            if s0 >= mono.size:
+            if s0 >= mono.size or s0 >= s1:
                 continue
             segment = mono[s0:s1]
+            if segment.size == 0:
+                continue
             lo = float(segment.min())
             hi = float(segment.max())
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
@@ -3975,6 +4199,37 @@ class TimelineWidget(QWidget):
                 else:
                     painter.setPen(self._mark_overlay_pen(color))
                 painter.drawLine(QPointF(x, self._ruler_height), QPointF(x, start_y))
+                # Optional Cue ID / Note labels at the top of the stem (right of the line).
+                if lane is not None:
+                    show_cue = bool(getattr(lane, "show_cue_id_on_wave", False))
+                    show_note = bool(getattr(lane, "show_note_on_wave", False))
+                    cue_text = ""
+                    if show_cue and bool(getattr(lane, "cue_id_enabled", False)):
+                        cue_text = (mark.main_cue_id or "").strip()
+                    note_text = (mark.display_name or "").strip() if show_note else ""
+                    if cue_text or note_text:
+                        label_color = (
+                            color.lighter(140) if (selected or hovered) else color
+                        )
+                        painter.setPen(label_color)
+                        font = painter.font()
+                        font.setBold(True)
+                        font.setPointSize(int(self._wave_label_font_px))
+                        painter.setFont(font)
+                        fm = painter.fontMetrics()
+                        text_y = self._ruler_height + fm.ascent() + 2
+                        if cue_text:
+                            cue_label = f"Cue {cue_text}"
+                            elided = fm.elidedText(
+                                cue_label, Qt.TextElideMode.ElideRight, 100
+                            )
+                            painter.drawText(QPointF(x + 5, text_y), elided)
+                            text_y += fm.height()
+                        if note_text:
+                            elided = fm.elidedText(
+                                note_text, Qt.TextElideMode.ElideRight, 140
+                            )
+                            painter.drawText(QPointF(x + 5, text_y), elided)
 
             if not lane_shapes:
                 continue

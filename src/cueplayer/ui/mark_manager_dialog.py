@@ -57,8 +57,57 @@ _COL_CUE_LIST = 6
 _COL_CUE_ID = 7
 _COL_MIDI = 8
 _COL_MIDI_NOTE = 9
-_COL_NOW = 10
-_COL_COUNT = 11
+_COL_PAUSE = 10
+_COL_ASK_NOTE = 11
+_COL_WAVE_NOTE = 12
+_COL_WAVE_CUE = 13
+_COL_NOW = 14
+_COL_COUNT = 15
+
+_HEADER_LABELS = (
+    "#",
+    "Name",
+    "Shortcut",
+    "Shape",
+    "Color",
+    "Visible",
+    "Cue List",
+    "Cue ID",
+    "MIDI On",
+    "Note",
+    "Pause",
+    "Ask Note",
+    "Wave Note",
+    "Wave Cue",
+    "NOW",
+)
+
+# Floors so headers and combo text (Secondary / auto (36)) are not clipped.
+_COLUMN_MIN_WIDTHS = {
+    _COL_INDEX: 44,
+    _COL_NAME: 140,
+    _COL_KEY: 80,
+    _COL_SHAPE: 140,
+    _COL_COLOR: 72,
+    _COL_VISIBLE: 78,
+    _COL_CUE_LIST: 86,
+    _COL_CUE_ID: 78,
+    _COL_MIDI: 82,
+    _COL_MIDI_NOTE: 128,
+    _COL_PAUSE: 72,
+    _COL_ASK_NOTE: 96,
+    _COL_WAVE_NOTE: 104,
+    _COL_WAVE_CUE: 100,
+    _COL_NOW: 128,
+}
+
+# Extra room for combo arrow + padding when sizing from sample cell text.
+_COMBO_CELL_SAMPLES = {
+    _COL_SHAPE: "Triangle ▲",
+    _COL_MIDI_NOTE: "auto (127)",
+    _COL_NOW: "Secondary",
+}
+_COMBO_CHROME_PX = 36
 
 _TABLE_COMBO_QSS = (
     "QComboBox {"
@@ -285,8 +334,10 @@ class MarkManagerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Mark Manager")
-        self.setMinimumWidth(920)
-        self.resize(1120, 560)
+        # Wide enough for every header + combos without squeezing columns.
+        total_cols = sum(_COLUMN_MIN_WIDTHS.values()) + 48
+        self.setMinimumWidth(max(1280, total_cols))
+        self.resize(max(1480, total_cols + 40), 580)
         self._song = song
         self._project = project
         self._suppress_key_prompt = False
@@ -301,7 +352,10 @@ class MarkManagerDialog(QDialog):
         hint = QLabel(
             "Set the name, shortcut, shape, color, and NOW display (Off / Primary / Secondary) for each Mark. "
             "MIDI On + Note (auto or 1–127) control which note is sent when playback crosses marks. "
-            'Use "Save Settings" to write a file you can later load and apply to a song or as the show default.'
+            "Pause stops playback when you place a mark of that type; Ask Note opens a Note dialog after placing; "
+            "Wave Note / Wave Cue show the Note or Cue ID next to the mark line on the waveform. "
+            'Use "Save Settings" to write a file you can later load and apply to a song or as the show default. '
+            "Scroll horizontally if needed — columns keep their full labels."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
@@ -311,41 +365,17 @@ class MarkManagerDialog(QDialog):
         layout.addWidget(self.preview)
 
         self.table = QTableWidget(0, _COL_COUNT)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "#",
-                "Name",
-                "Shortcut",
-                "Shape",
-                "Color",
-                "Visible",
-                "Cue List",
-                "Cue ID",
-                "MIDI On",
-                "Note",
-                "NOW",
-            ]
-        )
+        self.table.setHorizontalHeaderLabels(list(_HEADER_LABELS))
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setMinimumSectionSize(36)
-        default_widths = {
-            _COL_INDEX: 44,
-            _COL_NAME: 140,
-            _COL_KEY: 72,
-            _COL_SHAPE: 132,
-            _COL_COLOR: 72,
-            _COL_VISIBLE: 60,
-            _COL_CUE_LIST: 80,
-            _COL_CUE_ID: 76,
-            _COL_MIDI: 80,
-            _COL_MIDI_NOTE: 116,
-            _COL_NOW: 108,
-        }
-        for col, width in default_widths.items():
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(col, width)
+        header.setMinimumSectionSize(44)
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+        header.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -382,10 +412,25 @@ class MarkManagerDialog(QDialog):
         self.load_template_btn.clicked.connect(self._load_template)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self._load_from_song()
+        self._apply_column_widths()
         if self._lane_row_count() > 0:
             self.table.selectRow(0)
         self._refresh_preview()
         self._refresh_bulk_toggle_states()
+
+    def _apply_column_widths(self) -> None:
+        """Size columns so headers and typical combo text are not clipped."""
+        header = self.table.horizontalHeader()
+        metrics = self.table.fontMetrics()
+        for col, label in enumerate(_HEADER_LABELS):
+            text_w = metrics.horizontalAdvance(label) + 28
+            sample = _COMBO_CELL_SAMPLES.get(col)
+            cell_w = (
+                metrics.horizontalAdvance(sample) + _COMBO_CHROME_PX if sample else 0
+            )
+            width = max(_COLUMN_MIN_WIDTHS[col], text_w, cell_w)
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(col, width)
 
     def _lane_row_count(self) -> int:
         count = self.table.rowCount()
@@ -403,6 +448,10 @@ class MarkManagerDialog(QDialog):
             _COL_CUE_LIST: "All on/off for Cue List",
             _COL_CUE_ID: "All on/off for Cue ID",
             _COL_MIDI: "All on/off for MIDI On",
+            _COL_PAUSE: "All on/off for Pause on mark",
+            _COL_ASK_NOTE: "All on/off for Ask Note after mark",
+            _COL_WAVE_NOTE: "All on/off for Wave Note labels",
+            _COL_WAVE_CUE: "All on/off for Wave Cue ID labels",
         }
         row = self.table.rowCount()
         if self._bulk_footer_row is None:
@@ -577,6 +626,10 @@ class MarkManagerDialog(QDialog):
             cue_list_wrap = self.table.cellWidget(row, _COL_CUE_LIST)
             midi_wrap = self.table.cellWidget(row, _COL_MIDI)
             midi_note_widget = self.table.cellWidget(row, _COL_MIDI_NOTE)
+            pause_wrap = self.table.cellWidget(row, _COL_PAUSE)
+            ask_note_wrap = self.table.cellWidget(row, _COL_ASK_NOTE)
+            wave_note_wrap = self.table.cellWidget(row, _COL_WAVE_NOTE)
+            wave_cue_wrap = self.table.cellWidget(row, _COL_WAVE_CUE)
             if not all(
                 [
                     index_item,
@@ -588,6 +641,10 @@ class MarkManagerDialog(QDialog):
                     cue_list_wrap,
                     midi_wrap,
                     midi_note_widget,
+                    pause_wrap,
+                    ask_note_wrap,
+                    wave_note_wrap,
+                    wave_cue_wrap,
                 ]
             ):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} has incomplete data.")
@@ -618,6 +675,30 @@ class MarkManagerDialog(QDialog):
                 midi_box = midi_wrap.findChild(QCheckBox)
             if midi_box is None:
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI toggle.")
+                return None
+            pause_box = pause_wrap.property("checkbox")
+            if not isinstance(pause_box, QCheckBox):
+                pause_box = pause_wrap.findChild(QCheckBox)
+            if pause_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Pause toggle.")
+                return None
+            ask_note_box = ask_note_wrap.property("checkbox")
+            if not isinstance(ask_note_box, QCheckBox):
+                ask_note_box = ask_note_wrap.findChild(QCheckBox)
+            if ask_note_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Ask Note toggle.")
+                return None
+            wave_note_box = wave_note_wrap.property("checkbox")
+            if not isinstance(wave_note_box, QCheckBox):
+                wave_note_box = wave_note_wrap.findChild(QCheckBox)
+            if wave_note_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Wave Note toggle.")
+                return None
+            wave_cue_box = wave_cue_wrap.property("checkbox")
+            if not isinstance(wave_cue_box, QCheckBox):
+                wave_cue_box = wave_cue_wrap.findChild(QCheckBox)
+            if wave_cue_box is None:
+                QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its Wave Cue toggle.")
                 return None
             if not isinstance(midi_note_widget, NoWheelComboBox):
                 QMessageBox.warning(self, "Mark Manager", f"Row {row + 1} is missing its MIDI note.")
@@ -657,6 +738,10 @@ class MarkManagerDialog(QDialog):
                     cue_list_enabled=cue_list_box.isChecked(),
                     midi_note_enabled=midi_box.isChecked(),
                     midi_note=midi_note,
+                    pause_on_mark=pause_box.isChecked(),
+                    prompt_note_on_mark=ask_note_box.isChecked(),
+                    show_note_on_wave=wave_note_box.isChecked(),
+                    show_cue_id_on_wave=wave_cue_box.isChecked(),
                     marker_shape=shape,  # type: ignore[arg-type]
                     show_row_color=previous.show_row_color if previous else True,
                 )
@@ -838,6 +923,7 @@ class MarkManagerDialog(QDialog):
         shape_idx = shape.findData(lane.marker_shape)
         shape.setCurrentIndex(shape_idx if shape_idx >= 0 else 0)
         shape.currentIndexChanged.connect(lambda _i, r=row: self._on_shape_or_color_changed(r))
+        shape.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_SHAPE] - 8)
         _style_table_combo(shape)
         self.table.setCellWidget(row, _COL_SHAPE, shape)
 
@@ -899,8 +985,63 @@ class MarkManagerDialog(QDialog):
 
         default_note = self._default_note_for_lane(lane)
         note_combo = self._make_note_combo(lane, default_note)
+        note_combo.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_MIDI_NOTE] - 8)
         _style_table_combo(note_combo)
         self.table.setCellWidget(row, _COL_MIDI_NOTE, note_combo)
+
+        pause = QCheckBox()
+        pause.setChecked(bool(getattr(lane, "pause_on_mark", False)))
+        pause.setToolTip(
+            "Pause playback when you place a mark of this type (shortcut or click)"
+        )
+        pause_wrap = QWidget()
+        pause_layout = QHBoxLayout(pause_wrap)
+        pause_layout.setContentsMargins(0, 0, 0, 0)
+        pause_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pause_layout.addWidget(pause)
+        pause_wrap.setProperty("checkbox", pause)
+        self.table.setCellWidget(row, _COL_PAUSE, pause_wrap)
+
+        ask_note = QCheckBox()
+        ask_note.setChecked(bool(getattr(lane, "prompt_note_on_mark", False)))
+        ask_note.setToolTip(
+            "After placing a mark of this type, open a dialog to type the Note "
+            "(works well with Pause)"
+        )
+        ask_note_wrap = QWidget()
+        ask_note_layout = QHBoxLayout(ask_note_wrap)
+        ask_note_layout.setContentsMargins(0, 0, 0, 0)
+        ask_note_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ask_note_layout.addWidget(ask_note)
+        ask_note_wrap.setProperty("checkbox", ask_note)
+        self.table.setCellWidget(row, _COL_ASK_NOTE, ask_note_wrap)
+
+        wave_note = QCheckBox()
+        wave_note.setChecked(bool(getattr(lane, "show_note_on_wave", False)))
+        wave_note.setToolTip(
+            "Show the Note text next to the mark line on the waveform (top of the stem)"
+        )
+        wave_note_wrap = QWidget()
+        wave_note_layout = QHBoxLayout(wave_note_wrap)
+        wave_note_layout.setContentsMargins(0, 0, 0, 0)
+        wave_note_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wave_note_layout.addWidget(wave_note)
+        wave_note_wrap.setProperty("checkbox", wave_note)
+        self.table.setCellWidget(row, _COL_WAVE_NOTE, wave_note_wrap)
+
+        wave_cue = QCheckBox()
+        wave_cue.setChecked(bool(getattr(lane, "show_cue_id_on_wave", False)))
+        wave_cue.setToolTip(
+            "Show the Cue ID next to the mark line on the waveform "
+            "(requires Cue ID enabled for this type)"
+        )
+        wave_cue_wrap = QWidget()
+        wave_cue_layout = QHBoxLayout(wave_cue_wrap)
+        wave_cue_layout.setContentsMargins(0, 0, 0, 0)
+        wave_cue_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wave_cue_layout.addWidget(wave_cue)
+        wave_cue_wrap.setProperty("checkbox", wave_cue)
+        self.table.setCellWidget(row, _COL_WAVE_CUE, wave_cue_wrap)
 
         now_combo = NoWheelComboBox()
         now_combo.addItem("Off", 0)
@@ -912,11 +1053,14 @@ class MarkManagerDialog(QDialog):
         now_combo.setToolTip(
             "NOW monitor assignment: Off screen, Primary display, or Secondary display"
         )
+        now_combo.setMinimumWidth(_COLUMN_MIN_WIDTHS[_COL_NOW] - 8)
         _style_table_combo(now_combo)
         now_combo.currentIndexChanged.connect(lambda _i: self._on_now_display_changed())
         self.table.setCellWidget(row, _COL_NOW, now_combo)
 
-        self._connect_row_bulk_sync(visible, cue_id, cue_list, midi)
+        self._connect_row_bulk_sync(
+            visible, cue_id, cue_list, midi, pause, ask_note, wave_note, wave_cue
+        )
         self._refresh_bulk_toggle_states()
 
     def _on_now_display_changed(self) -> None:
@@ -968,6 +1112,8 @@ class MarkManagerDialog(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: ANN001
         super().showEvent(event)
+        # Re-measure after the dialog is shown (font metrics can differ offscreen).
+        self._apply_column_widths()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)

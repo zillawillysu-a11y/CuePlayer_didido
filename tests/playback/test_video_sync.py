@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import av
 import numpy as np
@@ -185,10 +186,10 @@ def test_refresh_closes_decoders_for_removed_clips(app: QApplication, red_clip_p
 
 
 def test_scrubbing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path) -> None:
-    """Outside a scrub, every call decodes immediately (unthrottled) — this is what
-    keeps normal playback frame-accurate. While scrubbing, rapid-fire calls (as the
-    timeline emits on every mouse-move) should collapse to far fewer actual decodes,
-    which is the fix for drag lag once a video clip is on the timeline."""
+    """While scrubbing, rapid-fire calls (as the timeline emits on every
+    mouse-move) should collapse to far fewer actual decodes — the fix for
+    drag lag once a video clip is on the timeline. Idle/paused seeks use a
+    lighter trailing-edge throttle (see test_paused_seeks_coalesce)."""
     song = Song.create("Song")
     clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
     song.add_video_clip(clip)
@@ -258,6 +259,40 @@ def test_playing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path)
 
     controller.set_playing(False)  # flush: the last requested position must land.
     assert len(frames) >= 1
+
+
+def test_paused_seeks_coalesce_rapid_jumps(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    """Rapid click-seeks while paused must not decode every intermediate land
+    frame — only the latest after the trailing-edge flush."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.update_position(0.1)  # first land: immediate
+    for t in (0.5, 1.0, 1.5, 2.5):
+        controller.update_position(t)
+    assert len(frames) < 5
+    assert controller._pending_seconds == pytest.approx(2.5)
+
+    # Flush timer lands the latest jump (blue).
+    app.processEvents()
+    if controller._flush_timer.isActive():
+        controller._flush_timer.stop()
+        controller._flush_pending()
+    last = frames[-1]
+    assert last is not None
+    assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
 
 
 def test_playback_decode_rate_stays_near_display_refresh_cap(
@@ -376,6 +411,7 @@ def test_video_output_inactive_skips_decode(app: QApplication, red_clip_path: Pa
     assert clip.id not in controller._decoders
 
     controller.set_video_output_active(True)
+    app.processEvents()  # deferred first-frame decode after Clean Output show
     assert len(frames) == 1
     assert isinstance(frames[0], np.ndarray)
 
@@ -399,11 +435,65 @@ def test_video_output_reenable_uses_last_position(
     frames: list[object] = []
     controller.frame_changed.connect(frames.append)
     controller.set_video_output_active(True)
+    app.processEvents()  # deferred first-frame decode after Clean Output show
 
     assert len(frames) == 1
     frame = frames[0]
     assert isinstance(frame, np.ndarray)
     assert frame.mean(axis=(0, 1))[2] > frame.mean(axis=(0, 1))[0]
+
+
+def test_set_song_does_not_preload_scrub_cache(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Opening/switching songs must not start scrub PyAV while Clean Output
+    may also be decoding — that contended on av_path_lock and stalled the UI."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_song(song)
+    preload.assert_not_called()
+    assert not controller._scrub_cache.ready(clip.id)
+
+
+def test_set_video_output_active_does_not_preload_scrub(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.update_position(0.5)
+    controller.set_video_output_active(False)
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_video_output_active(True)
+    preload.assert_not_called()
+
+
+def test_click_seek_scrub_does_not_start_preload(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Press+release seek must not kick scrub PyAV (Clean Output crash race)."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_playing(True)
+    controller.update_position(0.2)
+
+    with patch.object(controller._scrub_cache, "preload") as preload:
+        controller.set_scrubbing(True)
+        controller.update_position(1.0)
+        controller.set_scrubbing(False)
+        app.processEvents()
+        preload.assert_not_called()
 
 
 def test_scrubbing_uses_preloaded_cache_without_live_decoder(
@@ -417,6 +507,7 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
 
     controller = VideoSyncController()
     controller.set_song(song)
+    controller._scrub_cache.preload(list(song.video_clips))
 
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not controller._scrub_cache.ready(clip.id):
@@ -430,6 +521,8 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
     frames: list[object] = []
     controller.frame_changed.connect(frames.append)
     controller.set_scrubbing(True)
+    # Pretend preload already ran (deferred timer would normally do this).
+    controller._scrub_preload_timer.stop()
     controller.update_position(0.3)
     controller.update_position(1.2)
 
@@ -441,3 +534,29 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
     controller.set_scrubbing(False)
     # Mouse-up flush may open the live decoder for the exact land frame.
     assert clip.id in controller._decoders
+
+
+def test_land_frame_after_set_song_while_already_active(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Preview must not stay black after set_song when output stays active."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.update_position(0.4)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    # Mimic activate: clear picture, output flag unchanged (already True).
+    controller.set_song(song)
+    assert frames[-1] is None
+    controller.set_video_output_active(True)  # no-op — early return
+    assert frames[-1] is None
+
+    controller.land_frame_at(0.4)
+    assert isinstance(frames[-1], np.ndarray)

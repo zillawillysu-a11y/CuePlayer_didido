@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from cueplayer.domain.models import VideoClip
+from cueplayer.media.video_limits import clip_is_heavy
 from cueplayer.media.video_loader import open_media_decoder
 
 # Sparse scrub ladder — enough to feel continuous at ~12–24 Hz drag updates.
@@ -29,7 +30,7 @@ _SCRUB_FPS = 10.0
 _SCRUB_MAX_HEIGHT = 360
 # Soft caps: ~36s @ 10fps per clip, or coarser step for longer clips.
 _MAX_FRAMES_PER_CLIP = 360
-_MAX_TOTAL_BYTES = 220 * 1024 * 1024
+_MAX_TOTAL_BYTES = 120 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,10 @@ class ScrubFrameCache:
     def ensure(self, clip: VideoClip) -> None:
         if clip.media_kind == "still":
             return
+        # Hour-long rehearsal clips: scrub ladder would thrash av_path_lock
+        # (hundreds of seeks) while Preview/Clean need the same file.
+        if clip_is_heavy(clip):
+            return
         key = _clip_key(clip)
         with self._lock:
             existing = self._clips.get(clip.id)
@@ -215,9 +220,8 @@ class ScrubFrameCache:
                 victim = self._clips.pop(victim_id)
                 self._total_bytes = max(0, self._total_bytes - victim.nbytes)
             if self._total_bytes + built.nbytes > _MAX_TOTAL_BYTES:
-                # Still too big alone — keep it anyway if it's the only entry;
-                # otherwise skip to avoid blowing RAM on one huge clip.
-                if self._clips:
-                    return
+                # Never keep a ladder that alone blows the budget — long
+                # rehearsal posters were a RAM spike before Clean Output open.
+                return
             self._clips[key.clip_id] = built
             self._total_bytes += built.nbytes

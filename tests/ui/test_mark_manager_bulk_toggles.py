@@ -16,10 +16,14 @@ from PySide6.QtWidgets import QApplication
 from cueplayer.domain.models import Song
 from cueplayer.ui.mark_manager_dialog import (
     MarkManagerDialog,
+    _COL_ASK_NOTE,
     _COL_CUE_ID,
     _COL_CUE_LIST,
     _COL_MIDI,
+    _COL_PAUSE,
     _COL_VISIBLE,
+    _COL_WAVE_CUE,
+    _COL_WAVE_NOTE,
 )
 
 
@@ -29,7 +33,16 @@ def app() -> QApplication:
 
 
 def _bulk_columns() -> tuple[int, ...]:
-    return (_COL_VISIBLE, _COL_CUE_LIST, _COL_CUE_ID, _COL_MIDI)
+    return (
+        _COL_VISIBLE,
+        _COL_CUE_LIST,
+        _COL_CUE_ID,
+        _COL_MIDI,
+        _COL_PAUSE,
+        _COL_ASK_NOTE,
+        _COL_WAVE_NOTE,
+        _COL_WAVE_CUE,
+    )
 
 
 def test_bulk_visible_toggle_sets_all_lane_rows(app: QApplication) -> None:

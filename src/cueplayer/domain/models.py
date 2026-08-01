@@ -104,6 +104,14 @@ class MarkLane:
     midi_note_enabled: bool = False
     # 1–127 overrides the default note; 0 = auto from Main/Button base + lane index.
     midi_note: int = 0
+    # When True, placing a mark on this lane (shortcut or click) pauses playback.
+    pause_on_mark: bool = False
+    # When True, after placing a mark, open a dialog to type the Note.
+    prompt_note_on_mark: bool = False
+    # When True, draw the Note text next to the mark line on the waveform.
+    show_note_on_wave: bool = False
+    # When True, draw the Cue ID next to the mark line on the waveform.
+    show_cue_id_on_wave: bool = False
     marker_shape: MarkerShape = "triangle_up"
     # Tinted row in the timeline (right of the header); header stays neutral.
     # Deprecated — track tint is project-global (show_mark_track_colors).
@@ -335,6 +343,8 @@ class Song:
     cue_list_show_cue_id: bool = True
     # When False, PRIMARY NOW card hides Cue ID lines (right-click NOW to toggle).
     now_primary_show_cue_id: bool = True
+    # When True, PRIMARY NOW puts Type / Cue / Note on one line (saves height).
+    now_primary_single_line: bool = False
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -540,6 +550,7 @@ class Song:
             cue_list_column_order=list(self.cue_list_column_order),
             cue_list_show_cue_id=self.cue_list_show_cue_id,
             now_primary_show_cue_id=self.now_primary_show_cue_id,
+            now_primary_single_line=self.now_primary_single_line,
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
         dup.audio_tracks = [
@@ -985,6 +996,8 @@ class Project:
     mark_dash_on: float = 4.0
     mark_dash_off: float = 4.0
     mark_line_width: float = 1.0
+    # Font size (pt) for Wave Cue / Wave Note labels on the waveform — project-global.
+    wave_label_font_px: int = 10
     waveform_color: str = "#616161"
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#3dd68c"
