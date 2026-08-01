@@ -1308,13 +1308,13 @@
     const zone = scrubEdgeZone(clientX);
     const span = viewSpan();
     if (!(span < syncDur - 0.02) || dt <= 0) return zone.left || zone.right;
-    // ~8%–28% of the visible window per second (was ~200%+/s and flew to the end).
+    // ~22%–75% of the visible window per second (between “too fast” and “too slow”).
     let t = 0;
     if (zone.left) t = Math.min(1, Math.max(0, (zone.edge - zone.local) / zone.edge));
     else if (zone.right) t = Math.min(1, Math.max(0, (zone.local - (zone.w - zone.edge)) / zone.edge));
     else return false;
-    const viewportsPerSec = 0.08 + 0.20 * t;
-    const delta = Math.min(span * 0.08, span * viewportsPerSec * dt);
+    const viewportsPerSec = 0.22 + 0.53 * t;
+    const delta = Math.min(span * 0.05, span * viewportsPerSec * dt);
     if (zone.left) {
       viewStart -= delta;
       viewEnd -= delta;
