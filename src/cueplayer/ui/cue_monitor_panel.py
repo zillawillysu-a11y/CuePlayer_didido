@@ -1989,6 +1989,10 @@ class CueMonitorPanel(QWidget):
         self._apply_now_highlight()
         if selected:
             self.set_selected_mark_ids(selected)
+        # Table rows were rebuilt — forget the last followed id so playhead
+        # follow re-scrolls (otherwise a mark added during the deferred refresh
+        # window caches the new id before its row exists, then skips scroll).
+        self._playhead_list_mark_id = None
         self._sync_current()
 
     def selected_mark_ids(self) -> list[str]:
@@ -2404,9 +2408,12 @@ class CueMonitorPanel(QWidget):
         if mark is None:
             return
         if mark.id == self._playhead_list_mark_id:
+            # Same cue as last follow — still re-scroll if the row drifted out
+            # of view (e.g. after a deferred list rebuild or viewport resize).
+            self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
             return
-        self._playhead_list_mark_id = mark.id
-        self._select_mark_row(mark.id, scroll=True, emit_selection=True)
+        if self._select_mark_row(mark.id, scroll=True, emit_selection=True):
+            self._playhead_list_mark_id = mark.id
 
     def _ensure_playhead_cue_visible(self) -> None:
         """Re-scroll the playhead cue after layout changes (NOW collapse, resize)."""
@@ -2420,8 +2427,8 @@ class CueMonitorPanel(QWidget):
         mark = self._song.last_mark_at_or_before(self._position)
         if mark is None:
             return
-        self._playhead_list_mark_id = mark.id
-        self._select_mark_row(mark.id, scroll=True, emit_selection=False)
+        if self._select_mark_row(mark.id, scroll=True, emit_selection=False):
+            self._playhead_list_mark_id = mark.id
 
     def _scroll_cue_row_into_view(
         self,
@@ -2467,13 +2474,16 @@ class CueMonitorPanel(QWidget):
         # Do NOT touch `_monitor_scroll` here — yanking the outer scroller would
         # lock the user on Cue List when they scrolled up to the Timecode clock.
 
-    def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> None:
+    def _select_mark_row(self, mark_id: str, *, scroll: bool, emit_selection: bool) -> bool:
+        """Select the cue row for ``mark_id``. Returns False if the row is missing."""
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
+        found = False
         for row in range(self.cue_table.rowCount()):
             if self._mark_id_at_row(row) != mark_id:
                 continue
+            found = True
             model.select(
                 self.cue_table.model().index(row, 0),
                 model.SelectionFlag.Select | model.SelectionFlag.Rows,
@@ -2485,5 +2495,6 @@ class CueMonitorPanel(QWidget):
                 )
             break
         self._syncing_selection = False
-        if emit_selection:
+        if found and emit_selection:
             self.selection_changed.emit([mark_id])
+        return found

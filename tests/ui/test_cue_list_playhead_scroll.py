@@ -126,3 +126,50 @@ def test_layout_change_rescrolls_obscured_playhead_cue(app: QApplication) -> Non
     assert vp_h > 0
     assert rect.top() >= 0
     assert rect.bottom() <= vp_h
+
+
+def test_new_mark_during_deferred_refresh_still_scrolls(app: QApplication) -> None:
+    """Reproduce: mark added while Cue List refresh is pending must still scroll.
+
+    Follow used to cache the new mark id before the row existed, then skip
+    scrolling after refresh_list rebuilt the table.
+    """
+    panel = CueMonitorPanel()
+    song = _song_with_marks(30)
+    panel.set_song(song)
+    panel.show()
+    app.processEvents()
+    _prepare_short_cue_list(panel, app)
+
+    # Playhead past the last existing mark.
+    last = song.marks[-1]
+    panel.set_position(float(last.time_seconds) + 0.5)
+    app.processEvents()
+    assert panel._playhead_list_mark_id == last.id  # noqa: SLF001
+
+    # Simulate the race: song already has the new mark, but the table has not
+    # been rebuilt yet — follow caches the id and cannot find a row.
+    new_mark = song.add_mark(1, float(last.time_seconds) + 0.25)
+    panel.set_position(float(new_mark.time_seconds) + 0.01)
+    app.processEvents()
+    # Row missing → must NOT stick the playhead cache on the new id.
+    assert panel._playhead_list_mark_id != new_mark.id  # noqa: SLF001
+
+    # Deferred refresh rebuilds rows; follow must scroll to the new cue.
+    panel.refresh_list()
+    app.processEvents()
+    assert panel._playhead_list_mark_id == new_mark.id  # noqa: SLF001
+
+    row = next(
+        r
+        for r in range(panel.cue_table.rowCount())
+        if panel._mark_id_at_row(r) == new_mark.id  # noqa: SLF001
+    )
+    # Force the deferred scrollTo from _select_mark_row.
+    panel._scroll_cue_row_into_view(new_mark.id)  # noqa: SLF001
+    app.processEvents()
+    rect = panel.cue_table.visualRect(panel.cue_table.model().index(row, 0))
+    vp_h = panel.cue_table.viewport().height()
+    assert rect.height() > 0
+    assert rect.top() >= 0
+    assert rect.bottom() <= vp_h
