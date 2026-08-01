@@ -22,6 +22,20 @@ except Exception:  # noqa: BLE001
     pass
 
 
+def _configure_stdio() -> None:
+    """Avoid UnicodeEncodeError on Windows consoles (cp950 / cp1252, etc.)."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _boot_log_path() -> Path:
     # Always writable on Windows; also copy hint into cwd when possible.
     return Path(tempfile.gettempdir()) / "cueplayer_startup.log"
@@ -29,7 +43,16 @@ def _boot_log_path() -> Path:
 
 def _boot_log(message: str) -> None:
     line = f"{datetime.now(timezone.utc).isoformat()}  {message}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:  # noqa: BLE001 — e.g. cp950 can't encode 个 / emoji
+        try:
+            buf = getattr(sys.stdout, "buffer", None)
+            if buf is not None:
+                buf.write((line + "\n").encode("utf-8", errors="replace"))
+                buf.flush()
+        except Exception:  # noqa: BLE001
+            pass
     path = _boot_log_path()
     try:
         with path.open("a", encoding="utf-8") as fh:
@@ -46,14 +69,17 @@ def _boot_log(message: str) -> None:
 
 
 def main() -> int:
-    _boot_log(f"CuePlayer boot start  python={sys.executable}  cwd={Path.cwd()}")
-    _boot_log(f"argv={sys.argv!r}")
-
-    # Headless BPM worker for frozen builds (parent UI stays alive if this aborts).
+    # Headless BPM worker must run before any console logging — song paths may
+    # contain characters (e.g. 个 U+4E2A) that Windows cp950 cannot print, and
+    # a failed print used to abort detect with an unhandled exception dialog.
     if len(sys.argv) >= 2 and sys.argv[1] == "--bpm-detect":
         from cueplayer.media.bpm_analyzer import run_bpm_detect_cli
 
         return int(run_bpm_detect_cli(sys.argv[1:]))
+
+    _configure_stdio()
+    _boot_log(f"CuePlayer boot start  python={sys.executable}  cwd={Path.cwd()}")
+    _boot_log(f"argv={sys.argv!r}")
 
     try:
         import cueplayer
