@@ -286,6 +286,14 @@ def build_state(
             ),
             "primary_lanes": list(primary_lanes),
             "secondary_lanes": list(secondary_lanes),
+            "primary_visible": bool(getattr(song, "now_primary_visible", True)),
+            "secondary_visible": bool(getattr(song, "now_secondary_visible", True)),
+        },
+        "display": {
+            "primary": bool(getattr(song, "now_primary_visible", True)),
+            "secondary": bool(getattr(song, "now_secondary_visible", True)),
+            "timecode": bool(getattr(project, "show_output_timecode_clock", True)),
+            "toggles": bool(getattr(project, "show_output_quick_toggles", True)),
         },
     }
 

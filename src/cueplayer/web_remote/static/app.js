@@ -36,6 +36,16 @@
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
     markMgrBody: document.getElementById("markMgrBody"),
+    dispBtn: document.getElementById("dispBtn"),
+    dispDialog: document.getElementById("dispDialog"),
+    dispClose: document.getElementById("dispClose"),
+    dispPrimary: document.getElementById("dispPrimary"),
+    dispSecondary: document.getElementById("dispSecondary"),
+    dispTimecode: document.getElementById("dispTimecode"),
+    dispToggles: document.getElementById("dispToggles"),
+    cueFollowBtn: document.getElementById("cueFollowBtn"),
+    nowPrimaryCard: document.querySelector(".now-card.primary"),
+    nowSecondaryCard: document.querySelector(".now-card.secondary"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -62,7 +72,14 @@
   let cueFollowSuspended = false;
   let cueFollowLeftViewport = false;
   let cueUserScrolling = false;
+  let ignoreCueScroll = false;
   let lastWaveDrawMs = 0;
+  let displayPrefs = {
+    primary: true,
+    secondary: true,
+    timecode: true,
+    toggles: true,
+  };
 
   // Wave view window (seconds).
   let viewStart = 0;
@@ -129,17 +146,16 @@
     const songChanged = songId && songId !== syncSongId;
     if (songChanged) {
       syncSongId = songId;
-      cueFollowSuspended = false;
-      cueFollowLeftViewport = false;
       lastPlayheadCueId = "";
       viewStart = 0;
       viewEnd = nextDur;
       clearSecondaryTimer();
       secondaryHoldId = null;
       secondaryCleared = false;
-    }
-    if (Math.abs(nextPos - livePosition()) > 0.45) {
-      cueFollowSuspended = false;
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+    } else if (Math.abs(nextPos - livePosition()) > 0.45) {
+      setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
     }
     syncPlaying = Boolean(playing);
@@ -336,11 +352,43 @@
 
   function cueRowVisible(el) {
     const list = els.cueList;
+    if (!list || !el) return false;
     const top = el.offsetTop;
     const bottom = top + el.offsetHeight;
     const viewTop = list.scrollTop;
     const viewBottom = viewTop + list.clientHeight;
-    return bottom > viewTop && top < viewBottom;
+    return bottom > viewTop + 1 && top < viewBottom - 1;
+  }
+
+  function setCueFollowSuspended(on) {
+    cueFollowSuspended = Boolean(on);
+    if (els.cueFollowBtn) {
+      els.cueFollowBtn.hidden = !cueFollowSuspended;
+    }
+  }
+
+  function scrollCueListTo(el, { force = false } = {}) {
+    const list = els.cueList;
+    if (!list || !el) return;
+    const margin = Math.min(28, Math.max(8, list.clientHeight * 0.18));
+    const top = el.offsetTop;
+    const bottom = top + el.offsetHeight;
+    const viewTop = list.scrollTop;
+    const viewBottom = viewTop + list.clientHeight;
+    let target = null;
+    if (force || top < viewTop + margin) {
+      target = Math.max(0, top - margin);
+    } else if (bottom > viewBottom - margin) {
+      target = Math.max(0, bottom - list.clientHeight + margin);
+    }
+    if (target == null) return;
+    const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+    ignoreCueScroll = true;
+    list.scrollTop = Math.min(maxScroll, target);
+    clearTimeout(scrollCueListTo._clearIgnore);
+    scrollCueListTo._clearIgnore = setTimeout(() => {
+      ignoreCueScroll = false;
+    }, 150);
   }
 
   function updateCueFollow(position, forceScroll) {
@@ -359,18 +407,58 @@
     }
     if (cueFollowSuspended) {
       if (cueRowVisible(currentEl) && cueFollowLeftViewport) {
-        cueFollowSuspended = false;
+        setCueFollowSuspended(false);
         cueFollowLeftViewport = false;
       } else if (!cueRowVisible(currentEl)) {
         cueFollowLeftViewport = true;
       }
+      lastPlayheadCueId = id;
+      return;
     }
     const changed = id !== lastPlayheadCueId;
     lastPlayheadCueId = id;
-    if (!cueFollowSuspended && (changed || forceScroll)) {
-      // nearest keeps the page from jumping; only the cue list scrolls.
-      currentEl.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+    if (changed || forceScroll || !cueRowVisible(currentEl)) {
+      scrollCueListTo(currentEl, { force: changed || forceScroll });
     }
+  }
+
+  function applyDisplayPrefs(prefs) {
+    const src = prefs || {};
+    displayPrefs = {
+      primary: src.primary !== false && src.primary_visible !== false,
+      secondary: src.secondary !== false && src.secondary_visible !== false,
+      timecode: src.timecode !== false,
+      toggles: src.toggles !== false,
+    };
+    if (els.nowPrimaryCard) {
+      els.nowPrimaryCard.classList.toggle("hidden-panel", !displayPrefs.primary);
+    }
+    if (els.nowSecondaryCard) {
+      els.nowSecondaryCard.classList.toggle("hidden-panel", !displayPrefs.secondary);
+    }
+    const showTc = displayPrefs.timecode;
+    if (els.tcStatus) els.tcStatus.classList.toggle("hidden-panel", !showTc);
+    if (els.timecode) els.timecode.classList.toggle("hidden-panel", !showTc);
+    if (els.toggles) els.toggles.classList.toggle("hidden-panel", !displayPrefs.toggles);
+    if (els.dispPrimary) els.dispPrimary.checked = displayPrefs.primary;
+    if (els.dispSecondary) els.dispSecondary.checked = displayPrefs.secondary;
+    if (els.dispTimecode) els.dispTimecode.checked = displayPrefs.timecode;
+    if (els.dispToggles) els.dispToggles.checked = displayPrefs.toggles;
+  }
+
+  function openDisp() {
+    applyDisplayPrefs(displayPrefs);
+    if (els.dispDialog && els.dispDialog.showModal) els.dispDialog.showModal();
+  }
+
+  function saveDispField(key, checked) {
+    applyDisplayPrefs({ ...displayPrefs, [key]: checked });
+    const payload = { op: "set_display", [key]: checked };
+    command(payload)
+      .then((r) => {
+        if (r && r.display) applyDisplayPrefs(r.display);
+      })
+      .catch((e) => showToast(String(e.message || e)));
   }
 
   function renderMarkButtons(lanes) {
@@ -622,6 +710,7 @@
     els.timecode.style.color = tcAccent;
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
+    applyDisplayPrefs(state.display || state.now || displayPrefs);
     updateNowCards(livePosition());
 
     renderToggles(state.output_toggles);
@@ -668,13 +757,23 @@
       els.playBtn.disabled = false;
       els.pauseBtn.disabled = true;
       els.pauseBtn.classList.remove("active");
-      cueFollowSuspended = false;
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
     } else if (body.op === "seek" && body.seconds != null) {
       syncPos = Number(body.seconds);
       syncEpochMs = performance.now();
-      cueFollowSuspended = false;
-    } else if (body.op === "seek_mark" || body.op === "toggle_folder" || body.op === "update_lane" || body.op === "set_output_toggle") {
-      // Full state poll will refresh; nudge a quick refresh.
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+    } else if (body.op === "seek_mark") {
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+      api("/api/state").then(applyState).catch(() => {});
+    } else if (
+      body.op === "toggle_folder"
+      || body.op === "update_lane"
+      || body.op === "set_output_toggle"
+      || body.op === "set_display"
+    ) {
       api("/api/state").then(applyState).catch(() => {});
     } else if (body.op === "toggle") {
       if (syncPlaying) {
@@ -805,19 +904,44 @@
   els.waveWrap.addEventListener("touchend", () => { pinching = null; });
 
   els.cueList.addEventListener("scroll", () => {
-    if (cueUserScrolling) return;
+    if (ignoreCueScroll || cueUserScrolling) return;
     cueUserScrolling = true;
-    cueFollowSuspended = true;
+    setCueFollowSuspended(true);
     requestAnimationFrame(() => {
       const current = els.cueList.querySelector(".cue-item.current");
       if (current && !cueRowVisible(current)) cueFollowLeftViewport = true;
       else if (current && cueRowVisible(current) && cueFollowLeftViewport) {
-        cueFollowSuspended = false;
+        setCueFollowSuspended(false);
         cueFollowLeftViewport = false;
       }
       cueUserScrolling = false;
     });
   }, { passive: true });
+
+  if (els.cueFollowBtn) {
+    els.cueFollowBtn.addEventListener("click", () => {
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+      updateCueFollow(livePosition(), true);
+    });
+  }
+
+  if (els.dispBtn) {
+    els.dispBtn.addEventListener("click", openDisp);
+  }
+  if (els.dispClose) {
+    els.dispClose.addEventListener("click", () => els.dispDialog.close());
+  }
+  const dispBindings = [
+    [els.dispPrimary, "primary"],
+    [els.dispSecondary, "secondary"],
+    [els.dispTimecode, "timecode"],
+    [els.dispToggles, "toggles"],
+  ];
+  for (const [input, key] of dispBindings) {
+    if (!input) continue;
+    input.addEventListener("change", () => saveDispField(key, input.checked));
+  }
 
   els.markMgrBtn.addEventListener("click", () => {
     renderMarkManager((stateCache && stateCache.lanes) || []);

@@ -14,6 +14,7 @@
     <header class="top">
       <div class="brand">CuePlayer</div>
       <div class="song-chip" id="songTitle">—</div>
+      <button type="button" class="ghost" id="dispBtn" title="Display">Disp</button>
       <button type="button" class="ghost" id="markMgrBtn">Marks</button>
       <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
     </header>
@@ -82,7 +83,10 @@
           </div>
         </div>
 
-        <h2>Cue List</h2>
+        <div class="cue-toolbar">
+          <h2>Cue List</h2>
+          <button type="button" class="ghost tiny" id="cueFollowBtn" hidden>Follow</button>
+        </div>
         <div class="cue-head">
           <span>Time</span><span>Type</span><span>Cue</span><span>Note</span>
         </div>
@@ -92,6 +96,19 @@
   </div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <dialog id="dispDialog">
+    <form method="dialog" class="disp-form">
+      <header>
+        <h3>Display</h3>
+        <button type="button" class="ghost" id="dispClose">Done</button>
+      </header>
+      <label class="disp-row"><input type="checkbox" id="dispPrimary" /> PRIMARY</label>
+      <label class="disp-row"><input type="checkbox" id="dispSecondary" /> SECONDARY</label>
+      <label class="disp-row"><input type="checkbox" id="dispTimecode" /> Timecode clock</label>
+      <label class="disp-row"><input type="checkbox" id="dispToggles" /> TC buttons (TRANS / Note / MTC / LTC)</label>
+    </form>
+  </dialog>
 
   <dialog id="markMgrDialog">
     <form method="dialog" class="mgr-form">

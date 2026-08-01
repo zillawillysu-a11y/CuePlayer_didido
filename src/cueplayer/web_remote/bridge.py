@@ -218,7 +218,58 @@ class WebRemoteBridge(QObject):
             return self._toggle_folder(command)
         if op == "update_lane":
             return self._update_lane(command)
+        if op == "set_display":
+            return self._set_display(command)
         return {"ok": False, "error": f"unknown_op:{op}"}
+
+    def _set_display(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        song = host.current_song
+        project = host.project
+        changed = False
+        if "primary" in command:
+            song.now_primary_visible = bool(command.get("primary"))
+            changed = True
+        if "secondary" in command:
+            song.now_secondary_visible = bool(command.get("secondary"))
+            changed = True
+        if "timecode" in command:
+            project.show_output_timecode_clock = bool(command.get("timecode"))
+            changed = True
+        if "toggles" in command:
+            project.show_output_quick_toggles = bool(command.get("toggles"))
+            changed = True
+        if not changed:
+            return {"ok": False, "error": "no_display_fields"}
+
+        try:
+            host.monitor.apply_now_display_settings()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            host.monitor.configure_output_timecode_clock(
+                visible=bool(project.show_output_timecode_clock),
+                color=str(
+                    getattr(project, "output_timecode_clock_color", "") or "#3dd68c"
+                ),
+            )
+            host.monitor.configure_output_quick_toggles(
+                visible=bool(project.show_output_quick_toggles),
+            )
+            host._refresh_output_timecode_clock()
+        except Exception:  # noqa: BLE001
+            pass
+        host._mark_dirty()
+        return {
+            "ok": True,
+            "op": "set_display",
+            "display": {
+                "primary": bool(song.now_primary_visible),
+                "secondary": bool(song.now_secondary_visible),
+                "timecode": bool(project.show_output_timecode_clock),
+                "toggles": bool(project.show_output_quick_toggles),
+            },
+        }
 
     def _set_output_toggle(self, command: dict[str, Any]) -> dict[str, Any]:
         host = self._host

@@ -34,6 +34,13 @@ def test_static_dir_has_index() -> None:
     assert 'id="pauseBtn"' in html
     assert 'id="toggles"' in html
     assert 'id="markMgrBtn"' in html
+    assert 'id="dispBtn"' in html
+    assert 'id="dispDialog"' in html
+    assert 'id="cueFollowBtn"' in html
+    js = (root / "app.js").read_text(encoding="utf-8")
+    assert "ignoreCueScroll" in js
+    assert "set_display" in js
+    assert "scrollCueListTo" in js
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
 
@@ -87,6 +94,17 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert "output_toggles" in state
     assert "translate" in state["output_toggles"]
     assert "setlist" in state
+    assert state["display"]["primary"] is True
+    assert state["display"]["secondary"] is True
+    assert state["display"]["timecode"] is True
+    assert state["display"]["toggles"] is True
+    song.now_primary_visible = False
+    project.show_output_timecode_clock = False
+    project.show_output_quick_toggles = False
+    hidden = build_state(project=project, song=song, engine=_FakeEngine(position=3.0))
+    assert hidden["display"]["primary"] is False
+    assert hidden["display"]["timecode"] is False
+    assert hidden["display"]["toggles"] is False
 
 
 def test_setlist_includes_collapsible_folders() -> None:

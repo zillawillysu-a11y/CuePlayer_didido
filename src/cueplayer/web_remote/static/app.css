@@ -48,7 +48,7 @@ html, body {
 
 .top {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   gap: 8px;
   align-items: center;
   min-height: 36px;
@@ -181,6 +181,43 @@ html, body {
 .monitor > h2 {
   margin-top: 2px;
 }
+
+.cue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.cue-toolbar h2 {
+  margin: 0;
+}
+
+.disp-form {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.disp-form header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.disp-form h3 { margin: 0; }
+
+.disp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  font-weight: 600;
+}
+
+.hidden-panel { display: none !important; }
 
 .monitor-clock {
   text-align: center;
