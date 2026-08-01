@@ -9,6 +9,7 @@ if sys.platform == "win32":
     os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -89,6 +90,12 @@ class AudioEngine(QObject):
         super().__init__(parent)
         self._buffer: AudioBuffer | None = None
         self._position_frame = 0
+        # Wall-clock stamp of the last write-head update (audio callback / seek).
+        # Used to interpolate UI/mark time between PortAudio buffers — without
+        # this, a typical 10ms WASAPI period makes every displayed ms end on the
+        # same digit as the seek point (e.g. start at .227 → forever *.?7).
+        self._pos_epoch_frame = 0
+        self._pos_epoch_mono = 0.0
         self._duration_seconds = 60.0
         self._playing = False
         self._scrubbing = False
@@ -486,8 +493,26 @@ class AudioEngine(QObject):
 
     @property
     def raw_position(self) -> float:
-        """Write-head time (no sync offset). Used for calibration math."""
-        return self._frame_to_seconds(self._position_frame)
+        """Write-head time (no sync offset). Used for calibration math.
+
+        While playing, extrapolates between PortAudio callbacks so the UI clock
+        and mark placement are not stuck on the audio-block grid (often 10ms).
+        """
+        with self._lock:
+            frame = int(self._position_frame)
+            epoch_frame = int(self._pos_epoch_frame)
+            epoch_mono = float(self._pos_epoch_mono)
+            playing = bool(self._playing)
+            scrubbing = bool(self._scrubbing)
+            sr = float(self._playback_rate)
+        if sr <= 0.0:
+            return 0.0
+        if playing and not scrubbing and epoch_mono > 0.0:
+            elapsed = time.monotonic() - epoch_mono
+            if elapsed > 0.0:
+                # Cap runaway if the callback stalls; ~one long WASAPI buffer.
+                return max(0.0, (epoch_frame / sr) + min(elapsed, 0.08))
+        return frame / sr
 
     @property
     def position(self) -> float:
@@ -496,6 +521,16 @@ class AudioEngine(QObject):
         if self._playing and self._stream is not None and not self._scrubbing:
             return max(0.0, raw - self.sync_offset_seconds)
         return raw
+
+    def _stamp_write_head_unlocked(self) -> None:
+        """Record write-head + wall clock. Caller must hold ``self._lock``."""
+        self._pos_epoch_frame = int(self._position_frame)
+        self._pos_epoch_mono = time.monotonic()
+
+    def _clear_write_head_stamp_unlocked(self) -> None:
+        """Stop interpolating (pause / scrub / end). Caller holds ``self._lock``."""
+        self._pos_epoch_frame = int(self._position_frame)
+        self._pos_epoch_mono = 0.0
 
     @property
     def duration(self) -> float:
@@ -985,10 +1020,14 @@ class AudioEngine(QObject):
                 return
             self._wait_for_playback_samples()
             self._playing = True
+            with self._lock:
+                self._stamp_write_head_unlocked()
             self._poll.start()
             self._silent_timer.stop()
         else:
             self._playing = True
+            with self._lock:
+                self._stamp_write_head_unlocked()
             self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
@@ -1017,7 +1056,10 @@ class AudioEngine(QObject):
                 lat_frames = int(lat * self._sample_rate())
                 with self._lock:
                     self._position_frame = max(0, self._position_frame - lat_frames)
+                    self._clear_write_head_stamp_unlocked()
         self._playing = False
+        with self._lock:
+            self._clear_write_head_stamp_unlocked()
         self._silent_timer.stop()
         self._poll.stop()
         self._mtc_timer.stop()
@@ -1082,10 +1124,14 @@ class AudioEngine(QObject):
         seconds = min(max(0.0, seconds), self.duration)
         sr = self._sample_rate()
         with self._lock:
-            self._position_frame = int(seconds * sr)
+            self._position_frame = int(round(float(seconds) * sr))
             # Update under lock so the audio callback cannot wrap to A
             # after a seek that intentionally left the A–B region.
             self._refresh_loop_engage()
+            if self._playing and not self._scrubbing:
+                self._stamp_write_head_unlocked()
+            else:
+                self._clear_write_head_stamp_unlocked()
         self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
         self._midi_cues.on_seek(self.position)
@@ -1134,6 +1180,7 @@ class AudioEngine(QObject):
     def _silent_tick(self) -> None:
         with self._lock:
             self._position_frame += int(0.016 * self._sample_rate())
+            self._stamp_write_head_unlocked()
             pos = self._frame_to_seconds(self._position_frame)
         bounds = self._loop_bounds()
         if self.loop_enabled and bounds is not None:
@@ -1147,7 +1194,7 @@ class AudioEngine(QObject):
             self.seek(self._duration_seconds)
             self.pause()
             return
-        self.position_changed.emit(pos)
+        self.position_changed.emit(self.position)
 
     def _mix_clicks(self, music: np.ndarray, start: int) -> None:
         click = self._click_waveform
@@ -1865,6 +1912,7 @@ class AudioEngine(QObject):
                 # or File-LTC remaps speakers onto that bus.
                 sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
                 routed = apply_routing(sources, self._route, self._output_channel_count)
+                self._stamp_write_head_unlocked()
             outdata[:] = routed
 
         return callback
