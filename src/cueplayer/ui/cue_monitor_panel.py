@@ -1597,7 +1597,7 @@ class CueMonitorPanel(QWidget):
         QTimer.singleShot(0, self._fit_now_cards)
 
     def _primary_should_hug(self) -> bool:
-        """True when Primary should hug text instead of expanding into empty pad."""
+        """True when Primary uses a compact content min-height (still grows on drag)."""
         if self._now_primary_single_line:
             return True
         text = self.primary_cue.text() if hasattr(self, "primary_cue") else ""
@@ -1610,8 +1610,9 @@ class CueMonitorPanel(QWidget):
         for card in (self.primary_cue, self.secondary_cue):
             if not card.isVisible():
                 if card is self.primary_cue and hug_primary:
+                    # Compact floor only — max stays open so a tall Primary column can grow the card.
                     card.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
-                    card.setMaximumHeight(_NOW_CARD_MIN_H_SINGLE)
+                    card.setMaximumHeight(16777215)
                 else:
                     floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
                     card.setMaximumHeight(16777215)
@@ -1622,11 +1623,10 @@ class CueMonitorPanel(QWidget):
             if natural <= 0:
                 natural = card.sizeHint().height()
             if card is self.primary_cue and hug_primary:
-                # Hug one-line / empty Primary — spare height stays below the card.
+                # Min hugs one-line text; max unlimited so dragging Primary taller grows the card.
                 floor = _NOW_CARD_MIN_H_SINGLE
-                h = max(floor, int(natural))
-                card.setMinimumHeight(h)
-                card.setMaximumHeight(h)
+                card.setMinimumHeight(max(floor, int(natural)))
+                card.setMaximumHeight(16777215)
                 continue
             floor = _NOW_CARD_MIN_H_BELOW if below else _NOW_CARD_MIN_H
             card.setMaximumHeight(16777215)
@@ -2319,35 +2319,29 @@ class CueMonitorPanel(QWidget):
             return
         lay = self._primary_now_column.layout()
         hug = self._primary_should_hug()
+        # Always fill the Primary column so dragging taller grows the card.
+        # Hug mode: compact min-height + VCenter text; multi-line: Top + normal floor.
+        self.primary_cue.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
+        self.primary_cue.setMaximumHeight(16777215)
+        if lay is not None:
+            lay.setStretchFactor(self.primary_cue, 1)
+            while lay.count() > 2:
+                item = lay.takeAt(lay.count() - 1)
+                if item is None:
+                    break
+                del item
         if hug:
             self.primary_cue.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
-            # Content-sized card; spare column height stays below (not inside).
-            self.primary_cue.setSizePolicy(
-                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum
-            )
-            if lay is not None:
-                lay.setStretchFactor(self.primary_cue, 0)
-                if lay.count() == 2:
-                    lay.addStretch(1)
             self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H_SINGLE)
         else:
             self.primary_cue.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
             )
-            self.primary_cue.setSizePolicy(
-                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
-            )
-            self.primary_cue.setMaximumHeight(16777215)
             self.primary_cue.setMinimumHeight(_NOW_CARD_MIN_H)
-            if lay is not None:
-                lay.setStretchFactor(self.primary_cue, 1)
-                while lay.count() > 2:
-                    item = lay.takeAt(lay.count() - 1)
-                    if item is None:
-                        break
-                    del item
         accent = getattr(self, "_primary_card_accent", "#ff5a5f")
         self._apply_card_style(self.primary_cue, accent)
 
