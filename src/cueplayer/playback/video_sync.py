@@ -10,6 +10,7 @@ widgets to paint. No independent video clock, no second player.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 
@@ -123,6 +124,13 @@ class VideoSyncController(QObject):
         self._scrub_preload_timer.setSingleShot(True)
         self._scrub_preload_timer.setInterval(100)
         self._scrub_preload_timer.timeout.connect(self._maybe_preload_scrub)
+        # When True, skip live PyAV during play so VideoAudioMixer can own
+        # ``av_path_lock`` without a rising Preview stutter before each seam.
+        self._defer_live_decode: Callable[[], bool] | None = None
+
+    def set_defer_live_decode(self, check: Callable[[], bool] | None) -> None:
+        """Optional gate: skip play-time frame decode while ``check()`` is True."""
+        self._defer_live_decode = check
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -353,6 +361,17 @@ class VideoSyncController(QObject):
                     remaining_ms = max(1, int((min_interval - elapsed) * 1000))
                     self._flush_timer.start(remaining_ms)
                 return
+
+        # Mixer window decode in flight: keep the last frame instead of
+        # fighting for ``av_path_lock`` (felt as gradually rising卡顿).
+        if self._playing and self._defer_live_decode is not None:
+            try:
+                if bool(self._defer_live_decode()):
+                    self._pending_clip = primary
+                    self._pending_seconds = seconds
+                    return
+            except Exception:
+                pass
 
         self._decode_and_emit(song, seconds)
 

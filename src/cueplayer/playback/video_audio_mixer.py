@@ -8,12 +8,12 @@ chunk at an explicit song-timeline *frame* range on every audio buffer.
 Design notes (playback smoothness):
 - Each decode is one open→seek→read→close under ``av_path_lock`` (no mid-demux
   yield — that corrupted ~30s buffers on real files).
-- Non-heavy clips decode **one** capped window covering the trim — no mid-play
-  PyAV thrash.
-- Heavy hour-long clips use ~60s sliding windows with a single early prefetch
-  (not a continuous short-window pipeline — that made Preview 一卡一卡).
-- Overlapping windows composite with **older-wins** so a new window cannot
-  punch silence into good audio.
+- Non-heavy clips decode **one** capped window covering the trim.
+- Heavy clips use **short** (~12s) windows, keep ~36s buffered ahead, and
+  **sleep after each decode** so Preview is not starved into a rising卡顿
+  then a hard cut (user: 2:45 / 3:20 after start at 2:00).
+- Overlapping windows composite with **older-wins**.
+- Resample/copy yields the GIL in chunks (see ``resample_linear_yielding``).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import threading
+import time
 
 import numpy as np
 
@@ -32,13 +33,15 @@ from cueplayer.media.video_limits import (
 )
 from cueplayer.playback.resample import ascontiguous_yielding, resample_linear_yielding
 
-# Heavy sliding window — fewer / rarer prefeches = fewer GIL hitches.
-_HEAVY_WINDOW_SECONDS = 90.0
-_HEAVY_LOOKBACK_SECONDS = 12.0
-# Start next window early so decode finishes before the seam; hitch (if any)
-# happens while plenty of PCM remains.
-_HEAVY_PREFETCH_LEAD_SECONDS = 40.0
-_MAX_WINDOWS_PER_CLIP = 3
+# Short heavy windows: lock hold stays brief. Long 60–90s decodes caused a
+# multi-second "rising stutter" before each mute.
+_HEAVY_WINDOW_SECONDS = 12.0
+_HEAVY_LOOKBACK_SECONDS = 3.0
+# Only decode when coverage ahead of the playhead drops below this.
+_HEAVY_MIN_AHEAD_SECONDS = 36.0
+# Let Preview paint several frames before the next PyAV open.
+_HEAVY_POST_DECODE_SLEEP = 0.08
+_MAX_WINDOWS_PER_CLIP = 8
 
 
 @dataclass
@@ -72,6 +75,11 @@ class VideoAudioMixer:
     def set_muted(self, muted: bool) -> None:
         self.muted = bool(muted)
 
+    def is_decoding(self) -> bool:
+        """True while a background window decode holds / will hold ``av_path_lock``."""
+        with self._lock:
+            return bool(self._inflight)
+
     def set_playback_rate(self, rate: int) -> None:
         rate = max(1, int(rate))
         if rate != self._playback_rate:
@@ -82,7 +90,7 @@ class VideoAudioMixer:
                 self._pending_need.clear()
 
     def preload(self, clips: list[VideoClip]) -> None:
-        """Kick one background decode per clip near source_in (non-blocking)."""
+        """Kick background decode near source_in; warm a second heavy slice."""
         valid_ids = {clip.id for clip in clips}
         with self._lock:
             for stale_id in [cid for cid in self._cache if cid not in valid_ids]:
@@ -93,6 +101,13 @@ class VideoAudioMixer:
             if clip.media_kind == "still":
                 continue
             self._request_window(clip, float(clip.source_in_seconds))
+            if clip_is_heavy(clip):
+                self._request_window(
+                    clip,
+                    float(clip.source_in_seconds)
+                    + _HEAVY_WINDOW_SECONDS
+                    - _HEAVY_LOOKBACK_SECONDS,
+                )
 
     def _window_for(self, clip: VideoClip, source_time: float) -> tuple[float, float]:
         """Return (start_seconds, duration_seconds) covering ``source_time``."""
@@ -101,7 +116,6 @@ class VideoAudioMixer:
         src_out = src_in + span
 
         if not clip_is_heavy(clip):
-            # One window for the whole trim (capped) — smooth play, no seams.
             start = src_in
             dur = min(MAX_VIDEO_AUDIO_DECODE_SECONDS, max(0.05, src_out - start))
             return start, dur
@@ -147,6 +161,7 @@ class VideoAudioMixer:
     ) -> None:
         samples: np.ndarray | None
         origin = float(start)
+        heavy = clip_is_heavy(clip)
         try:
             buf = get_video_audio(
                 clip.path, start_seconds=start, max_duration_seconds=dur
@@ -164,8 +179,6 @@ class VideoAudioMixer:
                 data = np.repeat(data, 2, axis=1)
             elif data.shape[1] > 2:
                 data = data[:, :2]
-            # Resample / contig copy outside av_path_lock, yielding the GIL so
-            # PortAudio + Preview do not hitch for ~0.5s on each prefetch.
             if int(buf.sample_rate) != int(self._playback_rate):
                 data = resample_linear_yielding(
                     data, buf.sample_rate, self._playback_rate
@@ -187,7 +200,18 @@ class VideoAudioMixer:
             follow_up = self._pending_need.pop(clip_id, None)
             if follow_up is not None and samples is not None:
                 if self._has_sample_locked(clip_id, follow_up):
-                    follow_up = None
+                    cov = [
+                        self._window_end(w)
+                        for w in (self._cache.get(clip_id) or [])
+                    ]
+                    follow_up = (
+                        max(cov) - _HEAVY_LOOKBACK_SECONDS * 0.5 if cov else None
+                    )
+
+        # Preview needs wall time with the path lock free — do this before
+        # chaining the next slice so the user does not feel a rising stutter.
+        if heavy:
+            time.sleep(_HEAVY_POST_DECODE_SLEEP)
 
         if follow_up is not None:
             self._request_window(clip, follow_up)
@@ -195,6 +219,15 @@ class VideoAudioMixer:
     def _install_window(self, clip_id: str, pcm: _CachedPcm) -> None:
         windows = [w for w in (self._cache.get(clip_id) or []) if w.key != pcm.key]
         windows.append(pcm)
+        if windows:
+            newest_origin = float(windows[-1].origin_seconds)
+            kept = [
+                w
+                for w in windows
+                if self._window_end(w) >= newest_origin - _HEAVY_MIN_AHEAD_SECONDS
+            ]
+            if kept:
+                windows = kept
         self._cache[clip_id] = windows[-_MAX_WINDOWS_PER_CLIP:]
 
     def _window_end(self, pcm: _CachedPcm) -> float:
@@ -247,20 +280,28 @@ class VideoAudioMixer:
             valid[mask] = True
         return out, valid
 
+    def _coverage_end(self, clip_id: str) -> float | None:
+        with self._lock:
+            windows = list(self._cache.get(clip_id) or [])
+        if not windows:
+            return None
+        return max(self._window_end(w) for w in windows)
+
     def _maybe_prefetch(self, clip: VideoClip, source_time: float) -> None:
-        """For heavy clips only: decode the next 60s window once, early."""
+        """Keep ~``_HEAVY_MIN_AHEAD_SECONDS`` buffered; idle when ahead is healthy."""
         if not clip_is_heavy(clip):
             return
-        pcm = self._find_covering(clip.id, source_time)
-        if pcm is None:
+        # One job at a time; do not re-queue every audio callback.
+        if self.is_decoding():
+            return
+        cov = self._coverage_end(clip.id)
+        if cov is None or self._find_covering(clip.id, source_time) is None:
             self._request_window(clip, source_time)
             return
-        remaining = self._window_end(pcm) - float(source_time)
-        if remaining >= _HEAVY_PREFETCH_LEAD_SECONDS:
+        ahead = float(cov) - float(source_time)
+        if ahead >= _HEAVY_MIN_AHEAD_SECONDS:
             return
-        # One request aimed past the seam; lookback keeps overlap with current.
-        ahead = float(source_time) + max(20.0, remaining * 0.5 + 18.0)
-        self._request_window(clip, ahead)
+        self._request_window(clip, float(cov) - _HEAVY_LOOKBACK_SECONDS * 0.5)
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:
         """

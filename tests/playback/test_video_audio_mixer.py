@@ -257,12 +257,12 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (heavy lookback = 12s).
-    assert decode_calls[1] == pytest.approx(288.0, abs=0.05)
+    # Follow-up window starts near the latest need (heavy lookback = 3s).
+    assert decode_calls[1] == pytest.approx(297.0, abs=0.05)
 
 
-def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Heavy clip: near the end of a 90s window, schedule the next decode."""
+def test_chunk_at_prefetches_when_ahead_is_low(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Heavy clip: when coverage ahead is thin, extend from the tip."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c",
@@ -276,7 +276,8 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    _inject(mixer, clip, _constant(90.0, 0.4))
+    # 12s window from 0 — at t=0 ahead is only 12s (< 36s min ahead).
+    _inject(mixer, clip, _constant(12.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -284,11 +285,42 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(55.0 * SR)  # 35s remain < 40s lead
+    at = int(1.0 * SR)
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
-    assert requested, "expected heavy-window prefetch"
-    assert max(requested) > 55.0
+    assert requested, "expected refill when ahead is below min"
+    assert max(requested) >= 10.0
+
+
+def test_heavy_idle_when_ahead_is_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Do not thrash PyAV while plenty of PCM remains ahead of the playhead."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    # Simulate several short windows covering 0..48s (ahead from t=5 is 43s).
+    for origin in (0.0, 9.0, 18.0, 27.0, 36.0):
+        mixer._install_window(
+            clip.id,
+            _CachedPcm(
+                samples=_constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    requested: list[float] = []
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    out = mixer.chunk_at(int(5.0 * SR), 256)
+    assert float(np.max(np.abs(out))) > 0.0
+    assert requested == []
 
 
 def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> None:

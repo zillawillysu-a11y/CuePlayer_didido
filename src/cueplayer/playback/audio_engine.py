@@ -617,6 +617,10 @@ class AudioEngine(QObject):
         clips = list(self._song.video_clips) if self._song is not None else []
         self._video_mixer.preload(clips)
 
+    def video_audio_decoding(self) -> bool:
+        """True while embedded video-audio is decoding (holds ``av_path_lock``)."""
+        return bool(self._video_mixer.is_decoding())
+
     def set_song_timebase(self, start_timecode: str, fps: float) -> None:
         self._song_start_tc = start_timecode or "01:00:00:00"
         self._song_fps = float(fps) if fps > 0 else 30.0

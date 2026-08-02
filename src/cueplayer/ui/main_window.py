@@ -1054,6 +1054,9 @@ class MainWindow(QMainWindow):
         self.video_sync = VideoSyncController(self)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_timeline_video_heavy(bool(self.project.show_video_track))
+        # While mixer decodes the next audio window, hold the last video frame
+        # instead of fighting for av_path_lock (rising stutter → hard cut).
+        self.video_sync.set_defer_live_decode(self.engine.video_audio_decoding)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         self.video_preview = VideoPreviewWidget(context_menu=True, smooth_scale=False)
