@@ -111,6 +111,31 @@ dialog textarea,
   column-gap: 0;
 }
 
+.layout.hide-setlist {
+  grid-template-columns:
+    minmax(0, 1fr)
+    8px
+    var(--col-monitor, 300px);
+}
+
+.layout.hide-monitor {
+  grid-template-columns:
+    var(--col-setlist, 200px)
+    8px
+    minmax(0, 1fr);
+}
+
+.layout.hide-setlist.hide-monitor {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.layout.hide-setlist #setlistPanel,
+.layout.hide-setlist #splitSetlist,
+.layout.hide-monitor #monitorPanel,
+.layout.hide-monitor #splitMonitor {
+  display: none !important;
+}
+
 .splitter {
   border-radius: 4px;
   background: transparent;
@@ -481,6 +506,24 @@ dialog textarea,
 }
 
 .hidden-panel { display: none !important; }
+
+.song-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.cue-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+}
+
+.cue-block .cue-list {
+  flex: 1 1 auto;
+}
 
 .monitor-clock {
   text-align: center;

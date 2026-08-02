@@ -52,16 +52,25 @@
     dispBtn: document.getElementById("dispBtn"),
     dispDialog: document.getElementById("dispDialog"),
     dispClose: document.getElementById("dispClose"),
+    dispSetlist: document.getElementById("dispSetlist"),
+    dispClock: document.getElementById("dispClock"),
     dispPrimary: document.getElementById("dispPrimary"),
     dispSecondary: document.getElementById("dispSecondary"),
     dispTimecode: document.getElementById("dispTimecode"),
     dispToggles: document.getElementById("dispToggles"),
+    dispCueList: document.getElementById("dispCueList"),
     cueFollowBtn: document.getElementById("cueFollowBtn"),
     renumberCueBtn: document.getElementById("renumberCueBtn"),
     waveFollowBtn: document.getElementById("waveFollowBtn"),
     waveSetupBtn: document.getElementById("waveSetupBtn"),
     deleteMarkBtn: document.getElementById("deleteMarkBtn"),
     layout: document.getElementById("layout"),
+    setlistPanel: document.getElementById("setlistPanel"),
+    monitorPanel: document.getElementById("monitorPanel"),
+    songClockBlock: document.getElementById("songClockBlock"),
+    monitorClock: document.getElementById("monitorClock"),
+    nowStack: document.getElementById("nowStack"),
+    cueListBlock: document.getElementById("cueListBlock"),
     splitSetlist: document.getElementById("splitSetlist"),
     splitMonitor: document.getElementById("splitMonitor"),
     stagePanel: document.getElementById("stagePanel"),
@@ -110,11 +119,15 @@
   let cueUserScrolling = false;
   let ignoreCueScroll = false;
   let lastWaveDrawMs = 0;
+  const PANEL_KEY = "cueplayer_web_remote_panels_v1";
   let displayPrefs = {
+    setlist: true,
+    clock: true,
     primary: true,
     secondary: true,
     timecode: true,
     toggles: true,
+    cue_list: true,
   };
   let tcSyncCode = "00:00:00:00";
   let tcSyncPos = 0;
@@ -1274,14 +1287,61 @@
     }
   }
 
+  function loadPanelPrefs() {
+    try {
+      const raw = localStorage.getItem(PANEL_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      for (const key of ["setlist", "clock", "cue_list"]) {
+        if (typeof data[key] === "boolean") displayPrefs[key] = data[key];
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function savePanelPrefs() {
+    try {
+      localStorage.setItem(PANEL_KEY, JSON.stringify({
+        setlist: displayPrefs.setlist !== false,
+        clock: displayPrefs.clock !== false,
+        cue_list: displayPrefs.cue_list !== false,
+      }));
+    } catch (_) { /* ignore */ }
+  }
+
+  function monitorColumnWanted() {
+    return (
+      displayPrefs.clock !== false
+      || displayPrefs.primary !== false
+      || displayPrefs.secondary !== false
+      || displayPrefs.timecode !== false
+      || displayPrefs.toggles !== false
+      || displayPrefs.cue_list !== false
+    );
+  }
+
+  function applyLayoutPanelVisibility() {
+    if (!els.layout) return;
+    const showSetlist = displayPrefs.setlist !== false;
+    const showMonitor = monitorColumnWanted();
+    els.layout.classList.toggle("hide-setlist", !showSetlist);
+    els.layout.classList.toggle("hide-monitor", !showMonitor);
+    requestAnimationFrame(() => drawWave(true));
+  }
+
   function applyDisplayPrefs(prefs) {
     const src = prefs || {};
     displayPrefs = {
+      setlist: src.setlist !== false,
+      clock: src.clock !== false,
       primary: src.primary !== false && src.primary_visible !== false,
       secondary: src.secondary !== false && src.secondary_visible !== false,
       timecode: src.timecode !== false,
       toggles: src.toggles !== false,
+      cue_list: src.cue_list !== false,
     };
+    if (els.songClockBlock) {
+      els.songClockBlock.classList.toggle("hidden-panel", !displayPrefs.clock);
+    }
     if (els.nowPrimaryCard) {
       els.nowPrimaryCard.classList.toggle("hidden-panel", !displayPrefs.primary);
     }
@@ -1292,10 +1352,27 @@
     if (els.tcStatus) els.tcStatus.classList.toggle("hidden-panel", !showTc);
     if (els.timecode) els.timecode.classList.toggle("hidden-panel", !showTc);
     if (els.toggles) els.toggles.classList.toggle("hidden-panel", !displayPrefs.toggles);
+    if (els.monitorClock) {
+      const clockChrome = displayPrefs.clock || showTc || displayPrefs.toggles;
+      els.monitorClock.classList.toggle("hidden-panel", !clockChrome);
+    }
+    if (els.nowStack) {
+      els.nowStack.classList.toggle(
+        "hidden-panel",
+        !displayPrefs.primary && !displayPrefs.secondary,
+      );
+    }
+    if (els.cueListBlock) {
+      els.cueListBlock.classList.toggle("hidden-panel", !displayPrefs.cue_list);
+    }
+    if (els.dispSetlist) els.dispSetlist.checked = displayPrefs.setlist;
+    if (els.dispClock) els.dispClock.checked = displayPrefs.clock;
     if (els.dispPrimary) els.dispPrimary.checked = displayPrefs.primary;
     if (els.dispSecondary) els.dispSecondary.checked = displayPrefs.secondary;
     if (els.dispTimecode) els.dispTimecode.checked = displayPrefs.timecode;
     if (els.dispToggles) els.dispToggles.checked = displayPrefs.toggles;
+    if (els.dispCueList) els.dispCueList.checked = displayPrefs.cue_list;
+    applyLayoutPanelVisibility();
   }
 
   function openDisp() {
@@ -1305,10 +1382,22 @@
 
   function saveDispField(key, checked) {
     applyDisplayPrefs({ ...displayPrefs, [key]: checked });
+    if (key === "setlist" || key === "clock" || key === "cue_list") {
+      savePanelPrefs();
+      return;
+    }
     const payload = { op: "set_display", [key]: checked };
     command(payload)
       .then((r) => {
-        if (r && r.display) applyDisplayPrefs(r.display);
+        if (r && r.display) {
+          applyDisplayPrefs({
+            ...displayPrefs,
+            ...r.display,
+            setlist: displayPrefs.setlist,
+            clock: displayPrefs.clock,
+            cue_list: displayPrefs.cue_list,
+          });
+        }
       })
       .catch((e) => showToast(String(e.message || e)));
   }
@@ -2046,7 +2135,18 @@
       pcMuted = Boolean(state.pc_muted);
       updateMutePcBtn();
     }
-    applyDisplayPrefs(state.display || state.now || displayPrefs);
+    {
+      const localPanels = {
+        setlist: displayPrefs.setlist,
+        clock: displayPrefs.clock,
+        cue_list: displayPrefs.cue_list,
+      };
+      applyDisplayPrefs({
+        ...localPanels,
+        ...(state.display || state.now || {}),
+        ...localPanels,
+      });
+    }
     updateNowCards(livePosition());
 
     renderToggles(state.output_toggles);
@@ -2740,6 +2840,8 @@
   loadLayoutCols();
   applyLayoutCols();
   applyWavePreviewFlex();
+  loadPanelPrefs();
+  applyDisplayPrefs(displayPrefs);
   bindSplitter(els.splitSetlist, "setlist");
   bindSplitter(els.splitMonitor, "monitor");
   bindWavePreviewSplitter(els.splitWavePreview);
@@ -2814,10 +2916,13 @@
     els.dispClose.addEventListener("click", () => els.dispDialog.close());
   }
   const dispBindings = [
+    [els.dispSetlist, "setlist"],
+    [els.dispClock, "clock"],
     [els.dispPrimary, "primary"],
     [els.dispSecondary, "secondary"],
     [els.dispTimecode, "timecode"],
     [els.dispToggles, "toggles"],
+    [els.dispCueList, "cue_list"],
   ];
   for (const [input, key] of dispBindings) {
     if (!input) continue;

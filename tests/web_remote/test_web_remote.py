@@ -44,6 +44,10 @@ def test_static_dir_has_index() -> None:
     assert 'id="markMgrBtn"' in html
     assert 'id="dispBtn"' in html
     assert 'id="dispDialog"' in html
+    assert 'id="dispSetlist"' in html
+    assert 'id="dispClock"' in html
+    assert 'id="dispCueList"' in html
+    assert 'id="cueListBlock"' in html
     assert 'id="renumberCueBtn"' in html
     assert 'id="waveFollowBtn"' in html
     assert 'id="waveSetupBtn"' in html
@@ -94,6 +98,8 @@ def test_static_dir_has_index() -> None:
     assert "updateWaveSetupBtn" in js
     assert "bindWavePreviewSplitter" in js
     assert "applyWavePreviewFlex" in js
+    assert "applyLayoutPanelVisibility" in js
+    assert "loadPanelPrefs" in js
     assert "setPcMute" in js
     assert "deleteSelectedMark" in js
     assert "setSelectedMark" in js
@@ -128,6 +134,8 @@ def test_static_dir_has_index() -> None:
     assert ".stage-body" in css
     assert ".splitter-h" in css
     assert ".stage-media.preview-on" in css
+    assert ".layout.hide-setlist" in css
+    assert ".layout.hide-monitor" in css
     assert "#mutePcBtn.on" in css
     assert ".ghost.tiny.danger" in css
     assert ".cue-item.selected-mark" in css
