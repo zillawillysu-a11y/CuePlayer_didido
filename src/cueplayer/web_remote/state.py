@@ -235,8 +235,10 @@ def build_state(
 
     fps = float(song.fps) if song.fps > 0 else 30.0
     output = _output_payload(project, engine, position)
-    # Prefer engine output TC (file LTC / MTC); fall back to song-start + position.
-    if not output["outputs"] or output["timecode"] in ("—", "", None):
+    # Desktop parity: no LTC/MTC/Notes outputs → show em-dash, not a fake running TC.
+    if not output["outputs"]:
+        output["timecode"] = "—"
+    elif output["timecode"] in ("—", "", None):
         output["timecode"] = seconds_to_timecode(
             timecode_to_abs_seconds(song.start_timecode, fps) + position,
             fps,
@@ -256,6 +258,7 @@ def build_state(
         "timecode": output["timecode"],
         "tc_status": output["status"],
         "tc_sending": output["sending"],
+        "tc_active": bool(output["outputs"]),
         "tc_accent": output["accent"],
         "output_toggles": output["toggles"],
         "playhead_color": playhead,

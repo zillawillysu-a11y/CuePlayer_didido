@@ -42,6 +42,12 @@ class WebRemoteBridge(QObject):
         self._wave_cache: dict[str, Any] | None = None
         self._wave_detail_key: tuple[Any, ...] | None = None
         self._wave_detail_cache: dict[str, Any] | None = None
+        # WebRTC listen: cached music-only mono + continuous read cursor.
+        self._mon_cache_key: tuple[Any, ...] | None = None
+        self._mon_mono: Any | None = None
+        self._mon_sr: int = 0
+        self._mon_cursor: float = 0.0
+        self._mon_was_playing: bool = False
         self._pump = QTimer(self)
         self._pump.setInterval(16)
         self._pump.timeout.connect(self._drain_commands)
@@ -157,7 +163,10 @@ class WebRemoteBridge(QObject):
         except Exception:  # noqa: BLE001
             timecode = ""
             outputs = []
-        if not timecode or timecode in ("—",):
+        # Match desktop Cue Monitor: no active outputs → "—", not a synthetic clock.
+        if not outputs:
+            timecode = "—"
+        elif not timecode or timecode in ("—",):
             timecode = seconds_to_timecode(
                 timecode_to_abs_seconds(song.start_timecode, fps) + position,
                 fps,
@@ -172,7 +181,8 @@ class WebRemoteBridge(QObject):
             "timecode": timecode,
             "fps": fps,
             "start_timecode": str(song.start_timecode or "00:00:00:00"),
-            "tc_status": " · ".join(outputs) if outputs else "",
+            "tc_status": " · ".join(outputs) if outputs else "TC off",
+            "tc_active": bool(outputs),
             "tc_accent": str(
                 getattr(project, "output_timecode_clock_color", "") or "#3dd68c"
             ),
@@ -295,46 +305,88 @@ class WebRemoteBridge(QObject):
         return self._webrtc.handle(payload if isinstance(payload, dict) else {})
 
     def _live_monitor_pcm(self, n_samples: int, sample_rate: int) -> Any:
-        """Int16 mono slice at the live playhead for the WebRTC audio track."""
+        """Int16 mono for WebRTC — continuous cursor (no per-frame playhead snap).
+
+        Snapping every 20 ms frame to ``engine.position`` skips/repeats samples
+        whenever the sender jitters, which sounds like heavy stutter. Advance a
+        stream cursor by exactly ``n_samples`` and only hard-resync on seek /
+        play-start.
+
+        Cache music-only mono at the **file** sample rate; resample only the
+        small outgoing slice so the first Listen frame stays cheap.
+        """
         import numpy as np
 
         from cueplayer.playback.resample import resample_linear
 
         n = max(1, int(n_samples))
-        sr = max(8000, int(sample_rate) or 48000)
+        out_sr = max(8000, int(sample_rate) or 48000)
         silence = np.zeros(n, dtype=np.int16)
         host = self._host
         engine = host.engine
-        if not bool(getattr(engine, "playing", False)):
+        playing = bool(getattr(engine, "playing", False))
+        if not playing:
+            self._mon_was_playing = False
             return silence
+
         buf = getattr(engine, "buffer", None)
         if buf is None or int(getattr(buf, "frames", 0) or 0) <= 0:
+            self._mon_was_playing = False
             return silence
+
         try:
             exclude = self._ltc_exclude_for_cache()
-            mono = music_mono_samples(buf, exclude_channel=exclude)
         except Exception:  # noqa: BLE001
+            exclude = None
+        frames = int(getattr(buf, "frames", 0) or 0)
+        src_sr = int(getattr(buf, "sample_rate", 0) or 0)
+        key = (id(buf), frames, src_sr, exclude)
+        if self._mon_mono is None or self._mon_cache_key != key:
+            try:
+                mono = music_mono_samples(buf, exclude_channel=exclude)
+            except Exception:  # noqa: BLE001
+                self._mon_was_playing = False
+                return silence
+            if mono.size == 0 or src_sr <= 0:
+                self._mon_was_playing = False
+                return silence
+            self._mon_mono = np.asarray(mono, dtype=np.float32)
+            self._mon_sr = src_sr
+            self._mon_cache_key = key
+
+        mono = self._mon_mono
+        src_sr = int(self._mon_sr)
+        if mono is None or mono.size == 0 or src_sr <= 0:
             return silence
-        if mono.size == 0:
-            return silence
-        src_sr = float(getattr(buf, "sample_rate", 0) or 0)
-        if src_sr <= 0:
-            return silence
-        t0 = float(engine.position)
-        i0 = int(max(0, min(mono.size, round(t0 * src_sr))))
-        need = int(max(1, round(n * src_sr / float(sr))))
-        i1 = min(mono.size, i0 + need)
+
+        pos = float(engine.position)
+        if not self._mon_was_playing:
+            self._mon_cursor = max(0.0, pos)
+            self._mon_was_playing = True
+        else:
+            # Hard seek / big drift only — small jitter must NOT snap (that chops).
+            if abs(self._mon_cursor - pos) > 0.25:
+                self._mon_cursor = max(0.0, pos)
+
+        # Pull enough native samples to cover n output samples after resample.
+        need_native = n
+        if abs(float(src_sr) - float(out_sr)) > 0.5:
+            need_native = int(max(1, round(n * float(src_sr) / float(out_sr)))) + 2
+        i0 = int(max(0, min(mono.size, round(self._mon_cursor * float(src_sr)))))
+        i1 = min(mono.size, i0 + need_native)
         chunk = mono[i0:i1]
-        if chunk.size < need:
+        if chunk.size < need_native:
             chunk = np.concatenate(
-                [chunk, np.zeros(need - chunk.size, dtype=np.float32)]
+                [chunk, np.zeros(need_native - chunk.size, dtype=np.float32)]
             )
-        if abs(src_sr - float(sr)) > 0.5:
-            chunk = resample_linear(chunk, src_sr, float(sr))
+        if abs(float(src_sr) - float(out_sr)) > 0.5:
+            chunk = resample_linear(chunk, float(src_sr), float(out_sr))
         if chunk.size < n:
             chunk = np.concatenate([chunk, np.zeros(n - chunk.size, dtype=np.float32)])
         elif chunk.size > n:
             chunk = chunk[:n]
+        # Advance by exact output duration so Opus frames stay contiguous.
+        self._mon_cursor += float(n) / float(out_sr)
         chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
         return (chunk * 32767.0).astype(np.int16)
 

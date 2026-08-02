@@ -77,6 +77,7 @@ def test_static_dir_has_index() -> None:
     assert "scheduleListenBuffer" in js
     assert "unlockListenAudio" in js
     assert "fallbackListenHttp" in js
+    assert "tcActive" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -247,6 +248,21 @@ def test_monitor_pcm_music_only_strips_ltc() -> None:
     wrapped = pcm16_le_to_wav(pcm, sample_rate=24000, channels=1)
     assert wrapped[:4] == b"RIFF"
     assert len(wrapped) == 44 + len(pcm)
+
+
+def test_tc_off_shows_em_dash_not_running_clock() -> None:
+    """Web Remote must not invent a running SMPTE clock when MTC/LTC are off."""
+    project = Project.create("TC", with_song=False)
+    song = Song.create("A")
+    song.start_timecode = "01:00:00:00"
+    project.songs.append(song)
+    project.audio_output.ltc_enabled = False
+    project.audio_output.mtc_enabled = False
+    project.audio_output.midi_enabled = False
+    state = build_state(project=project, song=song, engine=_FakeEngine(position=12.0))
+    assert state["tc_status"] == "TC off"
+    assert state["tc_active"] is False
+    assert state["timecode"] == "—"
 
 
 def test_build_state_includes_unicode_song_and_marks() -> None:

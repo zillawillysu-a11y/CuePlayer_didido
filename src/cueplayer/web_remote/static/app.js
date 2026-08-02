@@ -104,6 +104,7 @@
   let tcSyncCode = "00:00:00:00";
   let tcSyncPos = 0;
   let tcFps = 30;
+  let tcActive = false;
   let lastDrawnTc = "";
   let waveLabelFontPx = 11;
   let lastMgrLanesSig = "";
@@ -194,13 +195,23 @@
     return `${p(hours)}:${p(mins)}:${p(secs)}:${p(frames)}`;
   }
 
-  function syncTimecode(timecode, position, fps) {
-    if (timecode && timecode !== "—") tcSyncCode = String(timecode);
+  function syncTimecode(timecode, position, fps, active) {
+    if (active != null) tcActive = Boolean(active);
+    if (!tcActive || !timecode || timecode === "—") {
+      tcActive = false;
+      tcSyncCode = "—";
+      if (position != null && Number.isFinite(Number(position))) tcSyncPos = Number(position);
+      if (fps != null && Number(fps) > 0) tcFps = Number(fps);
+      return;
+    }
+    tcActive = true;
+    tcSyncCode = String(timecode);
     if (position != null && Number.isFinite(Number(position))) tcSyncPos = Number(position);
     if (fps != null && Number(fps) > 0) tcFps = Number(fps);
   }
 
   function liveTimecode() {
+    if (!tcActive || !tcSyncCode || tcSyncCode === "—") return "—";
     const base = parseTimecodeSeconds(tcSyncCode, tcFps);
     return formatSmpte(base + (livePosition() - tcSyncPos), tcFps);
   }
@@ -1592,14 +1603,17 @@
     const song = state.song || {};
     els.songTitle.textContent = song.in_setlist === false || song.index < 0 ? "(no song)" : (song.name || "—");
     syncFromServer(state.position, state.duration, state.playing, song.id || "");
-    syncTimecode(state.timecode, state.position, song.fps);
+    const tcOn = state.tc_active != null
+      ? Boolean(state.tc_active)
+      : Boolean(state.tc_status && state.tc_status !== "TC off");
+    syncTimecode(state.timecode, state.position, song.fps, tcOn);
     els.duration.textContent = `/ ${state.duration_clock || formatClock(state.duration)}`;
     els.tcStatus.textContent = state.tc_status || "TC off";
     els.timecode.textContent = liveTimecode();
     lastDrawnTc = els.timecode.textContent;
     tcAccent = state.tc_accent || state.playhead_color || "#3dd68c";
     document.documentElement.style.setProperty("--ok", tcAccent);
-    els.timecode.style.color = tcAccent;
+    els.timecode.style.color = tcActive ? tcAccent : "#52525b";
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
     waveLabelFontPx = Number(state.wave_label_font_px) || 11;
@@ -1706,12 +1720,16 @@
       const clock = await api("/api/clock");
       if (clock && clock.ok !== false) {
         syncFromServer(clock.position, clock.duration, clock.playing, clock.song_id || syncSongId);
-        syncTimecode(clock.timecode, clock.position, clock.fps);
+        const tcOn = clock.tc_active != null
+          ? Boolean(clock.tc_active)
+          : Boolean(clock.tc_status && clock.tc_status !== "TC off");
+        syncTimecode(clock.timecode, clock.position, clock.fps, tcOn);
         if (clock.tc_status) els.tcStatus.textContent = clock.tc_status;
+        else if (clock.tc_active === false) els.tcStatus.textContent = "TC off";
         if (clock.tc_accent) {
           tcAccent = clock.tc_accent;
-          els.timecode.style.color = tcAccent;
         }
+        els.timecode.style.color = tcActive ? tcAccent : "#52525b";
         const playing = Boolean(clock.playing);
         els.playBtn.disabled = playing;
         els.pauseBtn.disabled = !playing;
