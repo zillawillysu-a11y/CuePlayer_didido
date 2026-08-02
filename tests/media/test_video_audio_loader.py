@@ -118,3 +118,45 @@ def test_load_video_audio_returns_none_when_no_audio_stream(tmp_path: Path) -> N
     path = tmp_path / "silent.mp4"
     _make_silent_clip(path)
     assert load_video_audio(path) is None
+
+
+def test_load_video_audio_respects_max_duration_window(tmp_path: Path) -> None:
+    path = tmp_path / "longish.mp4"
+    _make_clip_with_tone(path, seconds=2.0)
+    buf = load_video_audio(path, start_seconds=0.0, max_duration_seconds=0.4)
+    assert buf is not None
+    assert buf.frames / buf.sample_rate == pytest.approx(0.4, abs=0.15)
+
+
+def test_load_video_audio_long_window_is_contiguous(tmp_path: Path) -> None:
+    """A single open/seek/close decode must return contiguous PCM (no gaps)."""
+    path = tmp_path / "long_window.mp4"
+    _make_clip_with_tone(path, seconds=12.0, audio_rate=48000)
+    buf = load_video_audio(path, start_seconds=0.0, max_duration_seconds=10.0)
+    assert buf is not None
+    assert buf.sample_rate == 48000
+    assert buf.frames / buf.sample_rate == pytest.approx(10.0, abs=0.35)
+    sr = buf.sample_rate
+    for t in (1.0, 4.0, 7.0, 9.0):
+        i0 = int(t * sr)
+        mid = buf.samples[i0 : i0 + sr // 10]
+        assert float(np.max(np.abs(mid))) > 0.05, f"silence near t={t}"
+
+
+def test_audio_window_for_clip_caps_long_source() -> None:
+    from cueplayer.domain.models import VideoClip
+    from cueplayer.media.video_audio_cache import audio_window_for_clip
+    from cueplayer.media.video_limits import HEAVY_VIDEO_AUDIO_DECODE_SECONDS
+
+    clip = VideoClip.create(
+        name="long",
+        path=Path("x.mp4"),
+        duration_seconds=180.0,
+        source_duration_seconds=7200.0,
+    )
+    clip.source_out_seconds = clip.source_in_seconds + 7200.0
+    start, dur = audio_window_for_clip(clip)
+    assert start == 0.0
+    # Heavy rehearsal sources use the tighter embedded-audio cap.
+    assert dur == HEAVY_VIDEO_AUDIO_DECODE_SECONDS
+

@@ -11,15 +11,24 @@ from cueplayer.exporters.common import (
     MaExportProfile,
     SongExportPlan,
     export_event_time_seconds,
+    format_ma2_cue_link_name,
+    format_ma_cue_number,
+    ma2_phantom_cue_delete_range,
     ma2_timecode_assign_settings,
+    ma2_timecode_cue_nos,
+    MA2_TC_STEP_NONE,
     parse_page_executor,
     sanitize_ma_name,
+    split_ma_cue_number,
+    timecode_span_seconds,
 )
 from cueplayer.exporters.ma_default_dirs import resolve_ma2_pool_dirs
 from cueplayer.exporters.xml_write import (
     MA2_NS,
     MA2_XSI,
-    seconds_to_ma2_centiseconds,
+    ma2_timecode_frame_format,
+    ma2_timecode_frame_rate,
+    seconds_to_ma2_frames,
     write_xml,
 )
 
@@ -60,14 +69,22 @@ def _ma2_store_cue_label(cue: ExportCue) -> str:
     return cue.cue_name_for_export() or ""
 
 
-def _rel_event_centiseconds(plan: SongExportPlan, mark_time: float) -> int:
+def _rel_event_frames(plan: SongExportPlan, mark_time: float) -> int:
     """
-    Timecode timeline event time in 1/100 seconds (song-relative).
+    Timecode timeline event time in frames at the profile FPS (song-relative).
 
-    Song start LTC is applied via ``Assign Timecode /Offset=…`` after Import,
-    not baked into each event (matches MA3 OffsetTCSlot behaviour).
+    MA2 Import decodes XML ``time`` with the Timecode TimeUnit active at import
+    (default 30 FPS). Changing TimeUnit later only changes display — so we write
+    frames that match that default / ``frame_format``, not centiseconds.
     """
-    return seconds_to_ma2_centiseconds(export_event_time_seconds(mark_time, plan.profile))
+    seconds = export_event_time_seconds(mark_time, plan.profile)
+    return seconds_to_ma2_frames(seconds, float(ma2_timecode_frame_rate(plan.profile.fps)))
+
+
+def _timecode_length_frames(plan: SongExportPlan) -> int:
+    """Song + tail Length in frames (past last cue so the final event can fire)."""
+    seconds = export_event_time_seconds(timecode_span_seconds(plan), plan.profile)
+    return seconds_to_ma2_frames(seconds, float(ma2_timecode_frame_rate(plan.profile.fps)))
 
 
 class Ma2Exporter:
@@ -208,12 +225,13 @@ class Ma2Exporter:
             },
         )
         ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"NIL_PLACEHOLDER": "true"})
-        for cue in plan.main_cues:
-            cue_el = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(int(cue.cue_number))})
+        for index, cue in enumerate(plan.main_cues, start=1):
+            major, sub = split_ma_cue_number(cue.cue_number)
+            cue_el = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(index)})
             ET.SubElement(
                 cue_el,
                 f"{{{MA2_NS}}}Number",
-                {"number": str(int(cue.cue_number)), "sub_number": "0"},
+                {"number": str(major), "sub_number": str(sub)},
             )
             # Golden MA2 Seq XML has bare CuePart — CuePart/@name can fail Import
             # and leave an empty Sequence. Cue labels stay out of MA2 XML.
@@ -293,13 +311,8 @@ class Ma2Exporter:
         root = self._root()
         self._info(root, plan.song_name)
 
-        event_cs: list[int] = []
-        for cue in plan.main_cues:
-            event_cs.append(_rel_event_centiseconds(plan, cue.time_seconds))
-        for lane in plan.button_lanes:
-            for t in lane.mark_times_seconds:
-                event_cs.append(_rel_event_centiseconds(plan, t))
-        length = max(event_cs) if event_cs else 0
+        length = _timecode_length_frames(plan)
+        frame_format = ma2_timecode_frame_format(plan.profile.fps)
 
         # CuePoints Timecode shape (from their live Plugin export):
         # - Object name = sequence name only
@@ -307,13 +320,13 @@ class Ma2Exporter:
         # - Cue Nos = 1, sequence_pool, cue_number
         # - Top events have no step=; no Master SubTrack
         # @index always 0 — Import At Timecode N sets the pool (CuePoints style).
-        # Event times + lenght are centiseconds. Omit frame_format: MA2 XML only
-        # accepts "24/25/30 FPS" or empty; empty/missing ≈ 1/100 Seconds display.
+        # Event times + lenght are FPS frames (MA default TimeUnit on Import).
         # record_mode=Go → Timecode Options «Record Mode» = Go (not Goto).
         tc_attrs = {
             "index": "0",
             "name": plan.profile.timecode_name,
             "lenght": str(length),
+            "frame_format": frame_format,
             "stop_status": "Rewind",
             "no_switch_off": "true",
             "no_status_call": "true",
@@ -340,24 +353,23 @@ class Ma2Exporter:
             no.text = str(value)
 
         main_sub = ET.SubElement(main_track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
-        for idx, cue in enumerate(plan.main_cues):
-            cs = _rel_event_centiseconds(plan, cue.time_seconds)
-            cue_no = int(cue.cue_number)
+        for idx, cue in enumerate(plan.main_cues, start=1):
+            frames = _rel_event_frames(plan, cue.time_seconds)
+            link_name = format_ma2_cue_link_name(cue.cue_number)
             event = ET.SubElement(
                 main_sub,
                 f"{{{MA2_NS}}}Event",
                 {
-                    "index": str(idx),
-                    "time": str(cs),
+                    "index": str(idx - 1),
+                    "time": str(frames),
                     "command": "Go",
                     "pressed": "true",
-                    "step": str(cue_no),
+                    # Do not put Store-order index in step — Import invents Cue 45…N.
+                    "step": MA2_TC_STEP_NONE,
                 },
             )
-            # MA2 Main XML has no note labels — TC Cue name must stay "Cue N"
-            # or events fail to resolve (only Cue 1 appeared linked).
-            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": f"Cue {cue_no}"})
-            for value in (1, main_seq, cue_no):
+            cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": link_name})
+            for value in ma2_timecode_cue_nos(main_seq, idx):
                 no = ET.SubElement(cue_el, f"{{{MA2_NS}}}No")
                 no.text = str(value)
 
@@ -375,13 +387,13 @@ class Ma2Exporter:
                 no.text = str(value)
             sub = ET.SubElement(track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
             for event_i, t in enumerate(lane.mark_times_seconds):
-                cs = _rel_event_centiseconds(plan, t)
+                frames = _rel_event_frames(plan, t)
                 ET.SubElement(
                     sub,
                     f"{{{MA2_NS}}}Event",
                     {
                         "index": str(event_i),
-                        "time": str(cs),
+                        "time": str(frames),
                         "command": "Top",
                         "pressed": "true",
                     },
@@ -422,11 +434,23 @@ class Ma2Exporter:
 
         # Main cues — Store like CuePoints (not Import XML).
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
+            cue_label_no = format_ma_cue_number(cue.cue_number)
             label = _ma2_store_cue_label(cue)
-            cmd_lines.append(
-                f'Store Sequence {main_seq} Cue {cue_no} "{label}" /noconfirm'
-            )
+            link_name = format_ma2_cue_link_name(cue.cue_number)
+            if label:
+                cmd_lines.append(
+                    f'Store Sequence {main_seq} Cue {cue_label_no} "{label}" /noconfirm'
+                )
+            else:
+                # Empty "" clears the default name; Timecode Event looks up
+                # Cue name=link_name and will not link if the cue is unnamed
+                # or wrongly titled Cue_15 from a sequential placeholder.
+                cmd_lines.append(
+                    f"Store Sequence {main_seq} Cue {cue_label_no} /noconfirm"
+                )
+                cmd_lines.append(
+                    f'Label Sequence {main_seq} Cue {cue_label_no} "{link_name}"'
+                )
         cmd_lines.extend(
             [
                 f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
@@ -464,33 +488,36 @@ class Ma2Exporter:
         CuePoints-style Timecode XML string for one or more plans.
 
         Show install uses one plan per call (one Timecode pool per song).
-        Event times are song-relative centiseconds (1/100 s); song start LTC
+        Event times are song-relative frames at profile FPS; song start LTC
         is applied later via Assign /Offset. Object Nos = 30,1,page,exec.
-        Cue Nos = 1,seq,cue.
+        Cue Nos = 1, seq, cue_index (1-based Store order — not Cue ID).
         """
         full = [p for p in plans if p.profile.export_mode == "full"]
         if not full:
             return ""
         page_pool = 1
         track_i = 0
-        max_cs = 0
+        max_frames = 0
         tracks: list[str] = []
+        # All plans in one XML share one frame format (first plan wins).
+        frame_format = ma2_timecode_frame_format(full[0].profile.fps)
 
         for plan in full:
             main_page, main_exec = parse_page_executor(plan.profile.main_executor)
             main_seq = int(plan.profile.sequence_pool_start)
             seq_name = _xml_esc(plan.profile.main_sequence_name)
             events: list[str] = []
-            for idx, cue in enumerate(plan.main_cues):
-                cs = _rel_event_centiseconds(plan, cue.time_seconds)
-                max_cs = max(max_cs, cs)
-                cue_no = int(cue.cue_number)
-                label = _xml_esc(_ma2_store_cue_label(cue))
+            for idx, cue in enumerate(plan.main_cues, start=1):
+                frames = _rel_event_frames(plan, cue.time_seconds)
+                max_frames = max(max_frames, frames)
+                link_name = _xml_esc(format_ma2_cue_link_name(cue.cue_number))
+                nos = "".join(
+                    f"<No>{value}</No>" for value in ma2_timecode_cue_nos(main_seq, idx)
+                )
                 events.append(
-                    f'<Event index="{idx}" time="{cs}" command="Go" '
-                    f'pressed="true" step="{cue_no}">'
-                    f'<Cue name="{label}"><No>1</No><No>{main_seq}</No>'
-                    f"<No>{cue_no}</No></Cue></Event>"
+                    f'<Event index="{idx - 1}" time="{frames}" command="Go" '
+                    f'pressed="true" step="{MA2_TC_STEP_NONE}">'
+                    f'<Cue name="{link_name}">{nos}</Cue></Event>'
                 )
             tracks.append(
                 f'<Track index="{track_i}" active="true" expanded="true">'
@@ -499,16 +526,17 @@ class Ma2Exporter:
                 f'<SubTrack index="0">{"".join(events)}</SubTrack></Track>'
             )
             track_i += 1
+            max_frames = max(max_frames, _timecode_length_frames(plan))
 
             for lane in plan.button_lanes:
                 b_page, b_exec = parse_page_executor(lane.executor)
                 b_name = _xml_esc(lane.sequence_name or lane.resolved_ma_name())
                 bevents: list[str] = []
                 for event_i, t in enumerate(lane.mark_times_seconds):
-                    cs = _rel_event_centiseconds(plan, t)
-                    max_cs = max(max_cs, cs)
+                    frames = _rel_event_frames(plan, t)
+                    max_frames = max(max_frames, frames)
                     bevents.append(
-                        f'<Event index="{event_i}" time="{cs}" '
+                        f'<Event index="{event_i}" time="{frames}" '
                         f'command="Top" pressed="true"/>'
                     )
                 tracks.append(
@@ -519,7 +547,6 @@ class Ma2Exporter:
                 )
                 track_i += 1
 
-        # Match write_timecode: lenght in centiseconds; omit frame_format (1/100).
         tc_name = _xml_esc(name)
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -530,7 +557,8 @@ class Ma2Exporter:
             f'<Info datetime="{datetime.now().replace(microsecond=0).isoformat()}" '
             f'showfile="{tc_name}"/>'
             f'<Timecode index="0" name="{tc_name}" '
-            f'lenght="{max_cs}" stop_status="Rewind" no_switch_off="true" '
+            f'lenght="{max_frames}" frame_format="{frame_format}" '
+            f'stop_status="Rewind" no_switch_off="true" '
             f'no_status_call="true" record_mode="Go">'
             f'{"".join(tracks)}</Timecode></MA>'
         )
@@ -538,7 +566,12 @@ class Ma2Exporter:
     def write_install_macro(self, plan: SongExportPlan, directory: Path) -> dict[str, Path]:
         """Write one-song setup Macro (Store/Assign + Timecode Offset)."""
         cmd_lines = self.install_commands_for_plan(plan)
-        cmd_lines.extend(ma2_timecode_assign_settings(plan.profile))
+        cmd_lines.extend(
+            ma2_timecode_assign_settings(
+                plan.profile,
+                length_seconds=timecode_span_seconds(plan),
+            )
+        )
         path = self._write_macro_xml(
             directory,
             basename=_install_basename(plan),
@@ -589,6 +622,9 @@ class Ma2Exporter:
                     float(plan.profile.start_offset_seconds),
                     float(plan.profile.fps or 30.0),
                     int(plan.profile.timecode_slot),
+                    int(plan.profile.sequence_pool_start),
+                    *(ma2_phantom_cue_delete_range(plan) or (0, 0)),
+                    float(timecode_span_seconds(plan)),
                 )
             ],
         )
@@ -605,7 +641,7 @@ class Ma2Exporter:
         one Timecode XML per song (separate TC pools) and Assign /Offset.
         """
         cmd_lines: list[str] = []
-        tc_jobs: list[tuple[str, int, str, str, float, float, int]] = []
+        tc_jobs: list[tuple[str, int, str, str, float, float, int, int, int, int, float]] = []
         for plan in plans:
             if plan.profile.export_mode != "full":
                 continue
@@ -615,6 +651,7 @@ class Ma2Exporter:
                 Path(plan.profile.timecode_file).stem or plan.song_name or "TC",
                 fallback=f"TC{plan.profile.timecode_pool}",
             ).replace(" ", "_")
+            phantom = ma2_phantom_cue_delete_range(plan) or (0, 0)
             tc_jobs.append(
                 (
                     self.build_show_timecode_xml([plan], name=tc_label),
@@ -624,6 +661,10 @@ class Ma2Exporter:
                     float(plan.profile.start_offset_seconds),
                     float(plan.profile.fps or 30.0),
                     int(plan.profile.timecode_slot),
+                    int(plan.profile.sequence_pool_start),
+                    int(phantom[0]),
+                    int(phantom[1]),
+                    float(timecode_span_seconds(plan)),
                 )
             )
         paths = self._write_plugin_pair(
@@ -682,12 +723,17 @@ class Ma2Exporter:
         cmd_lines: list[str],
         info_name: str,
         echo_note: str,
-        timecode_jobs: list[tuple[str, int, str, str, float, float, int]] | None = None,
+        timecode_jobs: list[
+            tuple[str, int, str, str, float, float, int, int, int, int, float]
+        ]
+        | None = None,
     ) -> dict[str, Path]:
         """Write Plugin XML + Lua.
 
-        timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps, slot)
-        — one entry per Timecode. Options + Offset are Assigned after Import.
+        timecode_jobs: (xml, pool, import_stem, label, start_offset_seconds, fps,
+        slot, sequence_pool, phantom_cue_lo, phantom_cue_hi, length_seconds)
+        — one entry per Timecode. Options + Offset + Length are Assigned after Import.
+        phantom_cue_lo/hi are 0 when no Delete is needed.
         """
         _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
         plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -709,21 +755,45 @@ class Ma2Exporter:
                 "  local slash = package.config:sub(1,1)",
                 "  local ie = path..slash..'importexport'..slash",
             ]
-            for tc_xml, tc_pool, tc_stem, tc_label, start_offset, fps, tc_slot in jobs:
+            for (
+                tc_xml,
+                tc_pool,
+                tc_stem,
+                tc_label,
+                start_offset,
+                fps,
+                tc_slot,
+                seq_pool,
+                phantom_lo,
+                phantom_hi,
+                length_seconds,
+            ) in jobs:
                 tc_escaped = tc_xml.replace("\\", "\\\\").replace("'", "\\'")
                 label = sanitize_ma_name(tc_label, fallback=f"TC{tc_pool}")
+                job_profile = MaExportProfile(
+                    console="ma2",
+                    timecode_pool=int(tc_pool),
+                    timecode_slot=int(tc_slot),
+                    start_offset_seconds=float(start_offset),
+                    fps=float(fps),
+                )
+                # TimeUnit after Import is fine for FPS frame XML (MA default on
+                # empty Import is 30 FPS). Do NOT Store Timecode first — that
+                # creates an empty "Timecode N" and Import then prompts Overwrite
+                # even when the pool slot was empty.
                 assign_cmds = ma2_timecode_assign_settings(
-                    MaExportProfile(
-                        console="ma2",
-                        timecode_pool=int(tc_pool),
-                        timecode_slot=int(tc_slot),
-                        start_offset_seconds=float(start_offset),
-                        fps=float(fps),
-                    )
+                    job_profile,
+                    length_seconds=float(length_seconds),
                 )
                 assign_lines = "\n".join(
                     "    " + _lua_cmd_line(cmd).lstrip() for cmd in assign_cmds
                 )
+                phantom_lines = ""
+                if int(phantom_lo) > 0 and int(phantom_hi) >= int(phantom_lo):
+                    phantom_lines = (
+                        f"\n    gma.cmd('Delete Sequence {int(seq_pool)} "
+                        f"Cue {int(phantom_lo)} Thru {int(phantom_hi)} /nc')"
+                    )
                 parts.append(
                     f"""
   do
@@ -732,11 +802,12 @@ class Ma2Exporter:
     local tcxml = io.open(tcfile, 'w')
     tcxml:write('{tc_escaped}')
     tcxml:close()
+    -- Import into the pool slot directly (no Store — avoids Overwrite on empty).
     gma.cmd('Import "'..tcname..'" At Timecode {int(tc_pool)}')
     gma.sleep(0.5)
     os.remove(tcfile)
     gma.cmd('Label Timecode {int(tc_pool)} "{_lua_str(label)}"')
-{assign_lines}
+{assign_lines}{phantom_lines}
   end"""
                 )
             tc_block = "\n".join(parts)

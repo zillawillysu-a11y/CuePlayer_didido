@@ -13,6 +13,13 @@ ExportMode = Literal["full", "timecode_only"]
 _SAFE_RE = re.compile(r"[^A-Za-z0-9 _.-]+")
 _SPACE_RE = re.compile(r"\s+")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+# Auto / placeholder cue titles — not real Notes (also catches Cue_15 after sanitize).
+_CUE_PLACEHOLDER_RE = re.compile(r"^cue[_\s]*[\d.]+$", re.IGNORECASE)
+
+
+def ma_export_name_from_display(display_name: str) -> str:
+    """Always produce a non-empty MA/English label from a display name (Chinese → pinyin)."""
+    return sanitize_ma_name(display_name.strip() or "Song", fallback="Song")
 
 
 def chinese_to_pinyin_ascii(text: str) -> str:
@@ -110,6 +117,7 @@ def format_ma2_offset_assign(seconds: float) -> str:
     MA2 Assign Timecode /Offset=… value (settings Offset field).
 
     Official help accepts time (0s … 255h…). Prefer compact hour form when whole hours.
+    Also used for ``/Length=…``.
     """
     s = max(0.0, float(seconds))
     if abs(s - round(s / 3600.0) * 3600.0) < 1e-6 and s >= 3600.0:
@@ -119,7 +127,37 @@ def format_ma2_offset_assign(seconds: float) -> str:
     return f"{s:.2f}s"
 
 
-def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
+# Keep Length past the last cue so the final event is not clipped at the edge.
+MA_TIMECODE_TAIL_SECONDS = 1.0
+
+
+def plan_event_times_seconds(plan: "SongExportPlan") -> list[float]:
+    """Song-relative mark times for Main + Top Button events."""
+    times = [float(cue.time_seconds) for cue in plan.main_cues]
+    for lane in plan.button_lanes:
+        times.extend(float(t) for t in lane.mark_times_seconds)
+    return times
+
+
+def timecode_span_seconds(plan: "SongExportPlan") -> float:
+    """
+    Timecode Length (song-relative): full media duration, or last event + tail.
+
+    MA Import often shrinks Length to the last event time, so the final Cue sits
+    on the end edge and can miss. Always keep at least ``MA_TIMECODE_TAIL_SECONDS``
+    after the last event, and never shorter than song media length.
+    """
+    times = plan_event_times_seconds(plan)
+    last_event = max(times) if times else 0.0
+    media = max(0.0, float(plan.duration_seconds or 0.0))
+    return max(media, last_event + MA_TIMECODE_TAIL_SECONDS)
+
+
+def ma2_timecode_assign_settings(
+    plan_profile: MaExportProfile,
+    *,
+    length_seconds: float | None = None,
+) -> list[str]:
     """
     Post-Import MA2 Timecode options (match common CuePoints / show-setup prefs).
 
@@ -127,16 +165,18 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
       Slot=1 (or project Timecode Slot) · Runs=Endless Repeat
       Switch Off=Keep Playbacks · Status Call=Off
       When Ending=Stop · When Stopping=Rewind · AutoStart=Off
-      TimeUnit=1/100 Seconds (event times / lenght are centiseconds)
+      TimeUnit matches XML event units (24/25/30 FPS — MA default on Import)
       Record Mode=Go (Go Cue X, not Goto Cue X).
 
     Song-start LTC → ``/Offset=…``.
+    ``length_seconds`` → ``/Length=…`` (XML ``lenght`` is often ignored on Import).
 
-    Note: do **not** put ``/TimeUnit="1/100 Seconds"`` in a slash-option string —
-    MA parses the ``/100`` as another option. Use numeric ``/TimeUnit=0``
-    (0 = 1/100 Seconds per MA help enum order). XML ``frame_format`` only
-    accepts ``24/25/30 FPS`` or empty (empty ≈ hundredths); omit it.
+    Important: XML ``time`` / ``lenght`` are interpreted with the Timecode's
+    TimeUnit **at Import**. Changing TimeUnit afterward only changes display.
+    Event times are therefore written as frames at this same FPS.
     """
+    from cueplayer.exporters.xml_write import ma2_timecode_frame_format
+
     tc = int(plan_profile.timecode_pool)
     slot = int(plan_profile.timecode_slot)
     # Help: Intern=-1, Link Selected=0, fixed slots=1..8. Default / UI = 1.
@@ -151,7 +191,8 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
         if plan_profile.start_offset_seconds > 1e-6
         else "0s"
     )
-    return [
+    frame_format = ma2_timecode_frame_format(plan_profile.fps)
+    cmds = [
         (
             f'Assign Timecode {tc} /Slot={slot_token} '
             f'/Runs="Endless Repeat" '
@@ -159,10 +200,25 @@ def ma2_timecode_assign_settings(plan_profile: MaExportProfile) -> list[str]:
             f'/WhenEnding="Stop" /WhenStopping="Rewind" '
             f'/AutoStart="Off" /Offset={offset}'
         ),
-        # Separate cmds: slash / enum values that break combined Assign lines.
-        f"Assign Timecode {tc} /TimeUnit=0",
+        # Quoted enum — numeric /TimeUnit=0 was 1/100s and fought FPS frame times.
+        f'Assign Timecode {tc} /TimeUnit="{frame_format}"',
         f'Assign Timecode {tc} /RecordMode="Go"',
     ]
+    if length_seconds is not None and float(length_seconds) > 1e-6:
+        # Force Length after Import — MA often clamps to last event otherwise.
+        cmds.append(
+            f"Assign Timecode {tc} /Length={format_ma2_offset_assign(float(length_seconds))}"
+        )
+    return cmds
+
+
+def ma2_timecode_pre_import_timeunit(plan_profile: MaExportProfile) -> str:
+    """Set TimeUnit before Import so XML frame times decode correctly."""
+    from cueplayer.exporters.xml_write import ma2_timecode_frame_format
+
+    tc = int(plan_profile.timecode_pool)
+    frame_format = ma2_timecode_frame_format(plan_profile.fps)
+    return f'Assign Timecode {tc} /TimeUnit="{frame_format}"'
 
 
 def ma_import_filename(stem: str, *, suffix: str = ".xml") -> str:
@@ -207,6 +263,92 @@ def ma3_timecode_set_property_commands(plan_profile: MaExportProfile) -> list[st
     ]
 
 
+def format_ma_cue_number(cue_number: float) -> str:
+    """Command-line / display cue id (4, 4.1, 4.01) without trailing zeros."""
+    from decimal import Decimal
+
+    text = format(Decimal(str(cue_number)).normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def split_ma_cue_number(cue_number: float) -> tuple[int, int]:
+    """MA2 Number fields: cue 4.1 → (4, 100) because MA stores three decimals."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    quantized = Decimal(str(cue_number)).quantize(
+        Decimal("0.001"), rounding=ROUND_HALF_UP
+    )
+    major = int(quantized)
+    frac = quantized - Decimal(major)
+    sub = int((frac * Decimal(1000)).to_integral_value(rounding=ROUND_HALF_UP))
+    return major, max(0, sub)
+
+
+def format_ma2_timecode_step(cue_number: float) -> str:
+    """
+    Deprecated: Main Timecode events should use ``MA2_TC_STEP_NONE`` so Import
+    does not create phantom Cue numbers from sequence indices.
+    """
+    major, sub = split_ma_cue_number(cue_number)
+    if sub:
+        return str(major * 1000 + sub)
+    return str(major)
+
+
+# Same sentinel Top events use — "no step". Using the Store-order index as
+# step (45, 46, …) made MA Timecode Import invent Cue 45…N when Cue IDs only
+# went to 44 because of fractional inserts.
+MA2_TC_STEP_NONE = "4294967295"
+
+
+def format_ma2_cue_link_name(cue_number: float) -> str:
+    """Timecode ``Cue name=`` / Sequence Label — matches MA Store default ``Cue N``."""
+    return f"Cue {format_ma_cue_number(cue_number)}"
+
+
+def ma2_timecode_cue_nos(sequence_pool: int, cue_index: int) -> list[int]:
+    """
+    MA2 Timecode Event Cue ``<No>`` list.
+
+    Third value is the 1-based **index** of the cue inside the sequence (the
+    order cues were Store'd), not the Cue ID number. When Cue IDs are 1…N with
+    no fractions, index == number so old exports looked fine — but after
+    ``14.1`` the next cue id ``15`` is index 16, and writing ``15`` made MA
+    fire Cue 14.1 (the 15th cue) instead.
+    """
+    return [1, int(sequence_pool), max(1, int(cue_index))]
+
+
+def ma2_phantom_cue_delete_range(plan: "SongExportPlan") -> tuple[int, int] | None:
+    """
+    If Timecode Import still spawned Cue (max_id+1)…(cue_count), return that
+    inclusive Delete range. Example: 44 IDs + 9 fractions → 53 Stores, max ID
+    44 → delete Cue 45 Thru 53.
+    """
+    if not plan.main_cues:
+        return None
+    max_major = max(split_ma_cue_number(c.cue_number)[0] for c in plan.main_cues)
+    count = len(plan.main_cues)
+    if count > max_major:
+        return max_major + 1, count
+    return None
+
+
+def ma3_cue_destination_handle(cue_number: float) -> int:
+    """MA3 ValCueDestination milli-handle: cue 1 → 1000, cue 4.1 → 4100."""
+    return int(round(float(cue_number) * 1000))
+
+
+def format_ma3_cue_no_attr(cue_number: float) -> str:
+    """MA3 Cue/@No text (right-padded whole numbers; decimals keep three places)."""
+    major, sub = split_ma_cue_number(cue_number)
+    if sub == 0:
+        return f"{major:3d}"
+    return f"{major}.{sub:03d}"
+
+
 @dataclass
 class ExportCue:
     cue_number: float
@@ -215,9 +357,10 @@ class ExportCue:
     time_seconds: float = 0.0
 
     def resolved_ma_name(self) -> str:
+        label = format_ma_cue_number(self.cue_number)
         if self.ma_export_name and self.ma_export_name.strip():
-            return sanitize_ma_name(self.ma_export_name, fallback=f"Cue{self.cue_number:g}")
-        return sanitize_ma_name(self.display_name, fallback=f"Cue{self.cue_number:g}")
+            return sanitize_ma_name(self.ma_export_name, fallback=f"Cue{label}")
+        return sanitize_ma_name(self.display_name, fallback=f"Cue{label}")
 
     def cue_name_for_export(self) -> str | None:
         """
@@ -225,23 +368,30 @@ class ExportCue:
 
         Returns None when there is no real note (leave cue numbered only).
         Chinese notes become pinyin (MA Label rejects / drops CJK).
+
+        Any ``Cue 14`` / ``Cue_15`` / ``Cue 14.1`` style title is treated as a
+        placeholder — never Store that as the MA cue name. Timecode events
+        resolve ``Cue name="Cue 14.1"``; a mismatched ``Cue_15`` breaks the link.
         """
         if self.ma_export_name and self.ma_export_name.strip():
             cleaned = sanitize_ma_name(self.ma_export_name, fallback="")
-            return cleaned or None
+            if cleaned and not _CUE_PLACEHOLDER_RE.match(cleaned):
+                return cleaned
+            return None
         raw = (self.display_name or "").strip()
         if not raw:
             return None
-        # plan_from_song defaults empty notes to "Cue N" — treat as unnamed.
-        cue_no = int(self.cue_number)
-        if raw.casefold() in {f"cue {cue_no}", f"cue{cue_no}"}:
+        if _CUE_PLACEHOLDER_RE.match(raw):
             return None
         for ch in '\\"$&*?,.;^{|}~':
             raw = raw.replace(ch, "")
         raw = " ".join(raw.split())
         if not raw:
             return None
-        return sanitize_ma_name(raw, fallback="") or None
+        cleaned = sanitize_ma_name(raw, fallback="") or None
+        if cleaned and _CUE_PLACEHOLDER_RE.match(cleaned):
+            return None
+        return cleaned
 
 
 @dataclass
@@ -296,3 +446,5 @@ class SongExportPlan:
     profile: MaExportProfile
     main_cues: list[ExportCue] = field(default_factory=list)
     button_lanes: list[ExportButtonLane] = field(default_factory=list)
+    # Song media length — Timecode Length uses max(media, last_event + tail).
+    duration_seconds: float = 0.0

@@ -16,7 +16,15 @@ from cueplayer.persistence.mark_template import (
 
 def _sample_lanes() -> list[MarkLane]:
     return [
-        MarkLane(index=1, name="Go", lane_type="main", color="#E74C3C", shortcut="1"),
+        MarkLane(
+            index=1,
+            name="Go",
+            lane_type="main",
+            color="#E74C3C",
+            shortcut="1",
+            midi_note_enabled=True,
+            midi_note=36,
+        ),
         MarkLane(
             index=2,
             name="Spot",
@@ -24,6 +32,7 @@ def _sample_lanes() -> list[MarkLane]:
             color="#3498DB",
             shortcut="2",
             marker_shape="diamond",
+            midi_note_enabled=False,
         ),
     ]
 
@@ -43,7 +52,10 @@ def test_template_roundtrip(tmp_path: Path) -> None:
     restored = dicts_to_lanes(loaded["mark_lanes"])
     assert len(restored) == 2
     assert restored[0].name == "Go"
+    assert restored[0].midi_note_enabled is True
+    assert restored[0].midi_note == 36
     assert restored[1].marker_shape == "diamond"
+    assert restored[1].midi_note_enabled is False
     assert loaded["now_primary_lanes"] == [1]
 
 

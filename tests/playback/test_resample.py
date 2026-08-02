@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cueplayer.playback.resample import resample_linear
+from cueplayer.playback.resample import resample_linear, resample_linear_yielding
 
 
 def test_resample_linear_noop_when_rates_match() -> None:
@@ -50,3 +50,12 @@ def test_resample_linear_empty_input_is_safe() -> None:
     samples = np.zeros((0, 2), dtype=np.float32)
     out = resample_linear(samples, 44100, 48000)
     assert out.shape[0] == 0
+
+
+def test_resample_linear_yielding_matches_duration() -> None:
+    sr_src, sr_dst = 44100, 48000
+    samples = np.random.rand(sr_src * 2, 2).astype(np.float32)  # 2s
+    out = resample_linear_yielding(samples, sr_src, sr_dst, chunk_seconds=0.25)
+    assert out.shape == (sr_dst * 2, 2)
+    direct = resample_linear(samples, sr_src, sr_dst)
+    assert out.shape == direct.shape

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cueplayer"
-version = "0.1.0"
+version = "1.0.6"
 description = "Timeline tool for lighting programming: multi-audio, LTC, VJ clips, and grandMA export"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -16,16 +16,28 @@ dependencies = [
   "soundfile>=0.12",
   "pypinyin>=0.51",
   "mido>=1.3",
-  # MIDI out on Windows: pygame backend works without a C toolchain.
-  # Prefer python-rtmidi when a wheel/compiler is available (optional).
-  "pygame>=2.5",
+  # BPM auto-detect (setlist). Lazy-imported on first detect job.
+  "librosa>=0.10",
   # Video clip decode (Timeline video clips milestone): FFmpeg bindings.
   "av>=13.0",
+  # Web Remote low-latency Listen (Safari / iPad): Opus over WebRTC.
+  "aiortc>=1.9",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+]
+# Optional MIDI via mido pygame backend. Prefer pygame-ce on Python 3.14+
+# (official pygame often has no wheel). On Windows, CuePlayer also uses
+# built-in winmm.dll and does not require this extra for MTC.
+midi = [
+  "pygame-ce>=2.5",
+]
+# Optional NDI sender for Clean Video Output (Depence / other receivers).
+# Also requires NDI Tools / Runtime from ndi.video on the machine.
+ndi = [
+  "cyndilib>=0.0.7",
 ]
 
 [project.scripts]
@@ -33,6 +45,9 @@ cueplayer = "cueplayer.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+cueplayer = ["ui/assets/*", "web_remote/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

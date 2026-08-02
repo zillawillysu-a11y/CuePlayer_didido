@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -21,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from cueplayer.exporters.common import sanitize_ma_name
+from cueplayer.ui.drag_drop import AUDIO_SUFFIXES, VIDEO_SUFFIXES
 
 _FPS_CHOICES: list[tuple[str, float]] = [
     ("24", 24.0),
@@ -35,7 +42,9 @@ _COL_MA = 2
 _COL_BPM = 3
 _COL_TC = 4
 _COL_FPS = 5
-_COL_FILE = 6
+_COL_LEFT_LTC = 6
+_COL_FILE = 7
+_COL_COUNT = 8
 
 
 _EDIT_STYLE = "QLineEdit { border-radius: 3px; }"
@@ -50,7 +59,21 @@ class SongDraft:
     start_timecode: str = "01:00:00:00"
     fps: float = 30.0
     audio_path: Path | None = None
+    video_path: Path | None = None
     song_id: str | None = None
+    # off | left | right | auto — send that file channel to Settings LTC Ch.
+    file_ltc_side: str = "auto"
+    # True when the Edit Song file cell Clear button wiped media.
+    media_cleared: bool = False
+
+
+def _same_media_path(a: Path | None, b: Path | None) -> bool:
+    if a is None or b is None:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return Path(a) == Path(b)
 
 
 def format_bpm(value: float | None) -> str:
@@ -109,8 +132,10 @@ def normalize_timecode(text: str, *, fps: float = 30.0) -> str | None:
 
 
 def suggest_ma_export_name(display_name: str) -> str:
-    """Keep ASCII-ish names; leave blank when the display name is Chinese-only."""
-    return sanitize_ma_name(display_name, fallback="")
+    """English / MA name: Chinese → pinyin; never blank."""
+    from cueplayer.exporters.common import ma_export_name_from_display
+
+    return ma_export_name_from_display(display_name)
 
 
 def _fps_label(fps: float) -> str:
@@ -120,6 +145,13 @@ def _fps_label(fps: float) -> str:
     return f"{fps:g}"
 
 
+_MEDIA_BROWSE_FILTER = (
+    "Media (*.wav *.mp3 *.flac *.ogg *.aiff *.aif *.m4a *.aac *.wma *.opus "
+    "*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
+    "All Files (*.*)"
+)
+
+
 def _line_edit(text: str) -> QLineEdit:
     """Real line edit so drag-select works (native table editors leave ghost text)."""
     edit = QLineEdit(text)
@@ -127,6 +159,80 @@ def _line_edit(text: str) -> QLineEdit:
     edit.setClearButtonEnabled(True)
     edit.setCursorPosition(0)
     return edit
+
+
+class _AudioFileCell(QWidget):
+    """Rightmost Add/Edit Song column: path label + Browse… (+ Clear)."""
+
+    def __init__(self, path: Path | None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._path = Path(path) if path is not None else None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(6)
+        # Ignored horizontal policy lets the label shrink so Browse/Clear stay visible
+        # (default Preferred sizeHint fights Stretch siblings and overlaps buttons).
+        self._label = QLabel()
+        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._label.setMinimumWidth(0)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
+        browse = QPushButton("Browse…")
+        browse.setFixedWidth(78)
+        browse.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        browse.setToolTip("Choose an audio or video file for this song")
+        browse.clicked.connect(self._browse)
+        clear = QPushButton("X")
+        clear.setFixedWidth(28)
+        clear.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        clear.setToolTip("Clear media file")
+        clear.clicked.connect(self._clear)
+        layout.addWidget(self._label, stretch=1)
+        layout.addWidget(browse, stretch=0)
+        layout.addWidget(clear, stretch=0)
+        self._refresh_label()
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_label()
+
+    def _full_label_text(self) -> str:
+        return self._path.name if self._path is not None else "—"
+
+    def _refresh_label(self) -> None:
+        full = self._full_label_text()
+        tip = str(self._path) if self._path is not None else "No media file"
+        self._label.setToolTip(tip)
+        width = max(0, self._label.width())
+        if width <= 0:
+            self._label.setText(full)
+            return
+        elided = self._label.fontMetrics().elidedText(
+            full, Qt.TextElideMode.ElideMiddle, width
+        )
+        self._label.setText(elided)
+
+    def _browse(self) -> None:
+        start = str(self._path.parent) if self._path is not None else ""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose Media File",
+            start,
+            _MEDIA_BROWSE_FILTER,
+        )
+        if not path_str:
+            return
+        self._path = Path(path_str)
+        self._refresh_label()
+
+    def _clear(self) -> None:
+        self._path = None
+        self._refresh_label()
 
 
 class SongEditDialog(QDialog):
@@ -143,8 +249,9 @@ class SongEditDialog(QDialog):
         if not drafts:
             raise ValueError("SongEditDialog requires at least one draft")
         self.setWindowTitle(title)
-        width = 1020 if len(drafts) > 1 else 820
+        width = 1200 if len(drafts) > 1 else 1040
         self.resize(width, min(480, 180 + 44 * len(drafts)))
+        self.setMinimumWidth(900)
         self._drafts = [
             SongDraft(
                 name=d.name,
@@ -154,7 +261,9 @@ class SongEditDialog(QDialog):
                 start_timecode=d.start_timecode,
                 fps=d.fps,
                 audio_path=d.audio_path,
+                video_path=d.video_path,
                 song_id=d.song_id,
+                file_ltc_side=str(d.file_ltc_side or "auto"),
             )
             for d in drafts
         ]
@@ -163,15 +272,26 @@ class SongEditDialog(QDialog):
         hint = QLabel(
             "Numbers can be customized (e.g. 0.5 for an interlude). After editing, use "
             '"Sort by Number" in the Setlist. Names can be Chinese; English/MA should use '
-            "pinyin or letters/numbers; BPM can be left blank."
+            "pinyin or letters/numbers; BPM can be left blank. "
+            "File LTC: send Left/Right (or Auto-detect) striped timecode to the LTC "
+            "channel in Audio / Midi / Timecode settings; that side is removed from speakers."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #888; margin-bottom: 4px;")
         root.addWidget(hint)
 
-        self.table = QTableWidget(len(self._drafts), 7)
+        self.table = QTableWidget(len(self._drafts), _COL_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["Number", "Song Name", "English / MA", "BPM", "Start Timecode", "FPS", "Audio File"]
+            [
+                "Number",
+                "Song Name",
+                "English / MA",
+                "BPM",
+                "Start Timecode",
+                "FPS",
+                "File LTC",
+                "Media File",
+            ]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
@@ -191,8 +311,12 @@ class SongEditDialog(QDialog):
         header.setSectionResizeMode(_COL_TC, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(_COL_TC, 130)
         header.setSectionResizeMode(_COL_FPS, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(_COL_FPS, 90)
-        header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(_COL_FPS, 72)
+        header.setSectionResizeMode(_COL_LEFT_LTC, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(_COL_LEFT_LTC, 78)
+        header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(_COL_FILE, 260)
+        header.setMinimumSectionSize(40)
 
         for row, draft in enumerate(self._drafts):
             num_edit = _line_edit(format_setlist_number(draft.setlist_number))
@@ -205,12 +329,18 @@ class SongEditDialog(QDialog):
             name_edit.setToolTip("Name shown in the Setlist (Chinese allowed)")
             self.table.setCellWidget(row, _COL_NAME, name_edit)
 
-            ma_edit = _line_edit(draft.ma_export_name)
-            ma_edit.setToolTip("Pinyin or English; leave blank to fill in later at export time")
+            ma_initial = (draft.ma_export_name or "").strip() or suggest_ma_export_name(draft.name)
+            ma_edit = _line_edit(ma_initial)
+            ma_edit.setToolTip(
+                "Pinyin or English for MA export. Leave blank to auto-fill pinyin from the song name."
+            )
             self.table.setCellWidget(row, _COL_MA, ma_edit)
 
             bpm_edit = _line_edit(format_bpm(draft.bpm))
-            bpm_edit.setToolTip("Can be left blank; e.g. 120, 128.5")
+            bpm_edit.setToolTip(
+                "Can be left blank. If blank with audio attached, CuePlayer auto-fills "
+                "a gray <BPM> estimate you can override."
+            )
             bpm_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
             bpm_edit.setClearButtonEnabled(False)
             self.table.setCellWidget(row, _COL_BPM, bpm_edit)
@@ -226,12 +356,26 @@ class SongEditDialog(QDialog):
             fps_combo.setCurrentIndex(idx if idx >= 0 else fps_combo.findText("30"))
             self.table.setCellWidget(row, _COL_FPS, fps_combo)
 
-            file_text = draft.audio_path.name if draft.audio_path is not None else "—"
-            file_item = QTableWidgetItem(file_text)
-            file_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if draft.audio_path is not None:
-                file_item.setToolTip(str(draft.audio_path))
-            self.table.setItem(row, _COL_FILE, file_item)
+            ltc_combo = QComboBox()
+            for label, value in (
+                ("Auto", "auto"),
+                ("Left", "left"),
+                ("Right", "right"),
+                ("Off", "off"),
+            ):
+                ltc_combo.addItem(label, value)
+            side = str(draft.file_ltc_side or "auto")
+            idx = ltc_combo.findData(side)
+            ltc_combo.setCurrentIndex(idx if idx >= 0 else ltc_combo.findData("auto"))
+            ltc_combo.setToolTip(
+                "Send this song’s Left or Right (or Auto-detect) channel to the LTC "
+                "Channel in Audio / Midi / Timecode settings. That side is stripped from "
+                "speaker Music Source so LTC stays clean."
+            )
+            self.table.setCellWidget(row, _COL_LEFT_LTC, ltc_combo)
+
+            file_cell = _AudioFileCell(draft.audio_path or draft.video_path)
+            self.table.setCellWidget(row, _COL_FILE, file_cell)
 
         root.addWidget(self.table, stretch=1)
 
@@ -269,6 +413,12 @@ class SongEditDialog(QDialog):
                 return 30.0
         return 30.0
 
+    def _file_ltc_side_at_row(self, row: int) -> str:
+        widget = self.table.cellWidget(row, _COL_LEFT_LTC)
+        if isinstance(widget, QComboBox):
+            return str(widget.currentData() or "auto")
+        return "auto"
+
     def _accept(self) -> None:
         updated: list[SongDraft] = []
         for row in range(self.table.rowCount()):
@@ -291,18 +441,23 @@ class SongEditDialog(QDialog):
                     widget.setFocus()
                 return
             ma_raw = self._edit_text(row, _COL_MA).strip()
-            ma_name = sanitize_ma_name(ma_raw, fallback="") if ma_raw else ""
-            if ma_raw and not ma_name:
-                QMessageBox.warning(
-                    self,
-                    "Invalid English / MA Name",
-                    f'Row {row + 1}: "English / MA" must use pinyin or letters/numbers '
-                    "(cannot be Chinese-only or symbols).",
-                )
-                widget = self.table.cellWidget(row, _COL_MA)
-                if isinstance(widget, QLineEdit):
-                    widget.setFocus()
-                return
+            if ma_raw:
+                ma_name = sanitize_ma_name(ma_raw, fallback="")
+                if not ma_name:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid English / MA Name",
+                        f'Row {row + 1}: "English / MA" must use pinyin or letters/numbers '
+                        "(spaces, _ . - allowed). Leave blank to auto-fill pinyin from the song name.",
+                    )
+                    widget = self.table.cellWidget(row, _COL_MA)
+                    if isinstance(widget, QLineEdit):
+                        widget.setFocus()
+                    return
+            else:
+                from cueplayer.exporters.common import ma_export_name_from_display
+
+                ma_name = ma_export_name_from_display(name)
             bpm = parse_bpm(self._edit_text(row, _COL_BPM))
             if bpm is False:
                 QMessageBox.warning(
@@ -327,6 +482,37 @@ class SongEditDialog(QDialog):
                 if isinstance(widget, QLineEdit):
                     widget.setFocus()
                 return
+            file_widget = self.table.cellWidget(row, _COL_FILE)
+            media_path = (
+                file_widget.path
+                if isinstance(file_widget, _AudioFileCell)
+                else (self._drafts[row].audio_path or self._drafts[row].video_path)
+            )
+            prior = self._drafts[row]
+            prior_audio = prior.audio_path
+            prior_video = prior.video_path
+            # One file cell shows audio OR video. Renaming the song must not
+            # drop the other media — keep both when the cell is unchanged.
+            audio_path = None
+            video_path = None
+            media_cleared = False
+            if media_path is None:
+                if prior_audio is not None or prior_video is not None:
+                    media_cleared = True
+            elif _same_media_path(media_path, prior_audio) or _same_media_path(
+                media_path, prior_video
+            ):
+                audio_path = prior_audio
+                video_path = prior_video
+            else:
+                suf = media_path.suffix.lower()
+                if suf in VIDEO_SUFFIXES:
+                    # New video still keeps an existing music file.
+                    audio_path = prior_audio
+                    video_path = media_path
+                elif suf in AUDIO_SUFFIXES:
+                    audio_path = media_path
+                    video_path = prior_video
             updated.append(
                 SongDraft(
                     name=name,
@@ -335,8 +521,11 @@ class SongEditDialog(QDialog):
                     bpm=bpm if isinstance(bpm, float) else None,
                     start_timecode=tc,
                     fps=fps,
-                    audio_path=self._drafts[row].audio_path,
+                    audio_path=audio_path,
+                    video_path=video_path,
                     song_id=self._drafts[row].song_id,
+                    file_ltc_side=self._file_ltc_side_at_row(row),
+                    media_cleared=media_cleared,
                 )
             )
         self._drafts = updated

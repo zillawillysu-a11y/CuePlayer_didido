@@ -142,18 +142,19 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert lua.count("At Timecode") == 2
     assert "Show_Install_TC_" in lua
     assert "At Timecode 1" in lua and "At Timecode 2" in lua
-    # Song-relative centiseconds on the TC timeline (not hour+ absolute).
+    # Song-relative FPS frames on the TC timeline (not hour+ absolute).
     assert 'time="108' not in lua
     assert "/Offset=1h" in lua
     assert 'Runs="Endless Repeat"' in lua
     assert 'SwitchOff="Keep Playbacks"' in lua
     assert 'StatusCall="Off"' in lua
     assert 'TimeUnit="1/100 Seconds"' not in lua
-    assert "/TimeUnit=0" in lua
+    assert '/TimeUnit="30 FPS"' in lua
+    assert "/TimeUnit=0" not in lua
     assert "/Slot=1" in lua
     assert '/RecordMode="Go"' in lua
     assert 'record_mode="Go"' in lua
-    assert "frame_format=" not in lua
+    assert 'frame_format="30 FPS"' in lua
     assert lua.count("/Offset=") == 2
     assert "<No>30</No><No>1</No><No>1</No><No>102</No>" in lua
     assert "<No>30</No><No>1</No><No>2</No><No>101</No>" in lua
@@ -171,6 +172,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
 
     tc_a = load_xml_root(paths["SongA:timecode"])
     tc_el = next(el for el in tc_a.iter() if xml_tag_local(el.tag) == "Timecode")
+    assert tc_el.get("frame_format") == "30 FPS"
     assert int(tc_el.get("lenght", "0")) < 10_000
     times = [
         int(ev.get("time", "0"))

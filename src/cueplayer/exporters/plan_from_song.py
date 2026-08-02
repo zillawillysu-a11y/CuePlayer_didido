@@ -10,6 +10,7 @@ from cueplayer.exporters.common import (
     ExportMode,
     MaExportProfile,
     SongExportPlan,
+    format_ma_cue_number,
     parse_page_executor,
     sanitize_ma_name,
 )
@@ -69,18 +70,34 @@ def build_export_plan(
     base = _song_ascii_base(song)
     file_base = base.replace(" ", "_")
 
-    main_lane = next((lane for lane in song.mark_lanes if lane.lane_type == "main"), None)
-    main_index = main_lane.index if main_lane is not None else 1
+    id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}
+    # Timecode events must stay in time order; Cue numbers come from Cue ID.
+    from cueplayer.domain.main_cue_id import mark_time_sort_key
+
     main_marks = sorted(
-        (m for m in song.marks if m.lane_index == main_index),
-        key=lambda m: m.time_seconds,
+        (m for m in song.marks if m.lane_index in id_lanes),
+        key=mark_time_sort_key,
     )
     main_cues: list[ExportCue] = []
     for i, mark in enumerate(main_marks, start=1):
-        display = (mark.display_name or "").strip() or f"Cue {i}"
+        raw_id = (mark.main_cue_id or "").strip()
+        if raw_id:
+            try:
+                cue_number = float(raw_id)
+            except ValueError:
+                cue_number = float(i)
+        else:
+            cue_number = float(i)
+        if cue_number <= 0:
+            cue_number = float(i)
+        # Never invent "Cue {index}" — that drifts from Cue ID when fractions
+        # exist (14, 14.1 → fake Cue 15) and MA Store labels break Timecode links.
+        display = (mark.display_name or "").strip()
+        if not display:
+            display = f"Cue {format_ma_cue_number(cue_number)}"
         main_cues.append(
             ExportCue(
-                cue_number=float(i),
+                cue_number=cue_number,
                 display_name=display,
                 ma_export_name=mark.ma_export_name,
                 time_seconds=float(mark.time_seconds),
@@ -96,7 +113,7 @@ def build_export_plan(
     button_lanes: list[ExportButtonLane] = []
     button_i = 0
     for lane in sorted(song.mark_lanes, key=lambda item: item.index):
-        if lane.lane_type != "top_button" or not lane.export_enabled:
+        if lane.cue_id_enabled or not lane.export_enabled:
             continue
         times = sorted(
             m.time_seconds for m in song.marks if m.lane_index == lane.index
@@ -160,6 +177,7 @@ def build_export_plan(
         profile=profile,
         main_cues=main_cues,
         button_lanes=button_lanes,
+        duration_seconds=max(0.0, float(song.duration_seconds or 0.0)),
     )
 
 

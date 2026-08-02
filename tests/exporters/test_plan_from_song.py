@@ -31,6 +31,8 @@ def test_build_export_plan_from_song(tmp_path) -> None:
     assert plan.profile.page_name == "TestSong"
     assert len(plan.main_cues) == 2
     assert plan.main_cues[0].time_seconds == 1.5
+    assert plan.main_cues[0].cue_number == 1.0
+    assert plan.main_cues[1].cue_number == 2.0
     assert abs(plan.profile.start_offset_seconds - 3600.0) < 1e-6
     assert len(plan.button_lanes) == 1
     assert plan.button_lanes[0].executor == "1.201"
@@ -44,3 +46,18 @@ def test_build_export_plan_from_song(tmp_path) -> None:
     macro = paths["macro_xml"].read_text(encoding="utf-8")
     assert 'Label Page 1 "TestSong"' in macro
     assert "/Offset=1h" in macro
+
+
+def test_build_export_plan_uses_main_cue_ids() -> None:
+    """MA Sequence/Timecode must keep the user's Cue IDs (including fractions)."""
+    song = Song.create("Song")
+    a = song.add_mark(1, 1.0, "A")
+    b = song.add_mark(1, 2.0, "B")
+    c = song.add_mark(1, 3.0, "C")
+    a.main_cue_id = "1"
+    b.main_cue_id = "4.1"
+    c.main_cue_id = "5"
+    # Gap (deleted 2/3/4) must survive export — do not renumber 1,2,3.
+    plan = build_export_plan(song, console="ma3")
+    assert [cue.cue_number for cue in plan.main_cues] == [1.0, 4.1, 5.0]
+    assert [cue.time_seconds for cue in plan.main_cues] == [1.0, 2.0, 3.0]

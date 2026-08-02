@@ -8,10 +8,14 @@ import xml.etree.ElementTree as ET
 from cueplayer.exporters.common import (
     SongExportPlan,
     export_event_time_seconds,
+    format_ma3_cue_no_attr,
     format_ma3_offset_seconds,
+    format_ma_cue_number,
+    ma3_cue_destination_handle,
     ma3_timecode_set_property_commands,
     parse_page_executor,
     sanitize_ma_name,
+    timecode_span_seconds,
 )
 from cueplayer.exporters.xml_write import ma3_guid, write_xml
 
@@ -206,13 +210,12 @@ class Ma3Exporter:
         self._cue_part(zero)
 
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
             # Name before No (matches CueZero pattern) so Import keeps the label.
             attrs: dict[str, str] = {}
             label = cue.cue_name_for_export()
             if label:
                 attrs["Name"] = label
-            attrs["No"] = f"{cue_no:3d}"
+            attrs["No"] = format_ma3_cue_no_attr(cue.cue_number)
             attrs["AllowDuplicates"] = ""
             cue_el = ET.SubElement(sequ, "Cue", attrs)
             part = self._cue_part(cue_el)
@@ -280,14 +283,8 @@ class Ma3Exporter:
 
     def write_timecode(self, plan: SongExportPlan, path: Path) -> None:
         root = self._root()
-        times = [
-            export_event_time_seconds(c.time_seconds, plan.profile) for c in plan.main_cues
-        ]
-        for lane in plan.button_lanes:
-            times.extend(
-                export_event_time_seconds(t, plan.profile) for t in lane.mark_times_seconds
-            )
-        duration = max(times) if times else 0.0
+        # Length covers media + tail past last cue (not just last event time).
+        duration = export_event_time_seconds(timecode_span_seconds(plan), plan.profile)
         offset_text = format_ma3_offset_seconds(plan.profile.start_offset_seconds)
         # TCSlot: 1..8 = external slot (user default), -1 = none/internal.
         tc_slot = int(plan.profile.timecode_slot)
@@ -348,7 +345,8 @@ class Ma3Exporter:
         # in Object/ValCueDestination fail to resolve Cue destinations on import).
         main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
         for cue in plan.main_cues:
-            cue_no = int(cue.cue_number)
+            cue_label = format_ma_cue_number(cue.cue_number)
+            dest_handle = ma3_cue_destination_handle(cue.cue_number)
             t = export_event_time_seconds(cue.time_seconds, plan.profile)
             event = ET.SubElement(
                 main_cmds,
@@ -356,7 +354,7 @@ class Ma3Exporter:
                 {
                     "Name": "Go+",
                     "Time": f"{t:.3f}",
-                    "CueDestination": f"Cue {cue_no}",
+                    "CueDestination": f"Cue {cue_label}",
                 },
             )
             ET.SubElement(
@@ -383,7 +381,7 @@ class Ma3Exporter:
                     "IsExecXFade": "0",
                     "Object": f"13.13.0.5.{main_seq_idx}",
                     "ExecToken": "Go+",
-                    "ValCueDestination": f"0.5.{main_seq_idx}.{cue_no * 1000}",
+                    "ValCueDestination": f"0.5.{main_seq_idx}.{dest_handle}",
                 },
             )
 
