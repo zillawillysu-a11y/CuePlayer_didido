@@ -12,13 +12,15 @@ Rapid seek/scrub only keeps *one* decode job per clip; later requests while a
 job is running stash the latest source time and run after the current job —
 stale mid-queue 30–120s decodes must not pile up under ``av_path_lock``.
 
-Heavy-clip seams used to click every ~30s because:
+Heavy-clip seams used to click every ~30–45s because:
 1. Coverage treated the last 0.25s of a window as "missing" → forced silence.
-2. Each callback used only one window, so samples past that window were zero
-   even when the previous/next buffer still had them.
+2. Each callback used only one window past its end.
+3. The next window held ``av_path_lock`` for the whole decode while Preview
+   also needed it — prefetch finished after the playhead ran dry.
 
-Now we composite from all cached windows, prefetch earlier, and use longer
-heavy windows so decode has time to finish before the playhead arrives.
+Now we composite cached windows, prefetch ~two-thirds of a window early (plus
+a far horizon), keep more overlaps, and decode long windows in short lock
+segments so Preview can interleave.
 """
 
 from __future__ import annotations
@@ -34,11 +36,11 @@ from cueplayer.media.video_audio_cache import get_video_audio
 from cueplayer.media.video_limits import audio_decode_cap_for_clip
 from cueplayer.playback.resample import resample_linear
 
-# Start decoding the next window when this much audio remains. Mid-file PyAV
-# seeks under ``av_path_lock`` (Preview/Clean) can take well over 10s.
-_PREFETCH_LEAD_SECONDS = 30.0
+# Start decoding the next window when this much audio remains. Contended
+# Preview decode used to finish the next 75s window too late (~45s seams).
+_PREFETCH_LEAD_SECONDS = 55.0
 # Keep recent windows so the playhead can cross a seam without silence.
-_MAX_WINDOWS_PER_CLIP = 3
+_MAX_WINDOWS_PER_CLIP = 5
 
 
 @dataclass
@@ -250,20 +252,33 @@ class VideoAudioMixer:
             valid |= mask
         return out, valid
 
+    def _coverage_end(self, clip_id: str) -> float | None:
+        """Latest source time covered by any cached window, or None."""
+        with self._lock:
+            windows = list(self._cache.get(clip_id) or [])
+        if not windows:
+            return None
+        return max(self._window_end(w) for w in windows)
+
     def _maybe_prefetch(self, clip: VideoClip, source_time: float) -> None:
-        """Kick the next window early so decode finishes before we run dry."""
+        """Keep decoded audio well ahead of the playhead (often two windows)."""
         pcm = self._find_covering(clip.id, source_time)
         if pcm is None:
             self._request_window(clip, source_time)
             return
         remaining = self._window_end(pcm) - float(source_time)
         cap = audio_decode_cap_for_clip(clip)
-        lead = min(_PREFETCH_LEAD_SECONDS, max(18.0, cap * 0.40))
-        if remaining >= lead:
-            return
-        # Aim ahead of the playhead; lookback in ``_window_for`` keeps overlap.
-        ahead = float(source_time) + max(10.0, lead * 0.60)
-        self._request_window(clip, ahead)
+        # Prefetch when ~2/3 of the current window is still ahead — not only
+        # in the last 30s (that matched the ~45s dropout the user heard).
+        lead = min(_PREFETCH_LEAD_SECONDS, max(28.0, cap * 0.72))
+        if remaining < lead:
+            ahead = float(source_time) + max(12.0, lead * 0.55)
+            self._request_window(clip, ahead)
+        # Second horizon: ensure coverage past playhead + ~one full window.
+        cov_end = self._coverage_end(clip.id)
+        horizon = float(source_time) + max(lead, cap * 0.85)
+        if cov_end is None or cov_end < horizon - 0.5:
+            self._request_window(clip, horizon)
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:
         """

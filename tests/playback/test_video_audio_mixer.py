@@ -279,8 +279,8 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # 40s window starting at 0 — playhead near end should prefetch.
-    _inject(mixer, clip, _constant(40.0, 0.4))
+    # 90s window starting at 0 — playhead early should still prefetch (long lead).
+    _inject(mixer, clip, _constant(90.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -288,11 +288,11 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(15.0 * SR)
+    at = int(40.0 * SR)
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
-    assert requested, "expected prefetch near end of window"
-    assert requested[0] > 15.0
+    assert requested, "expected early prefetch / horizon coverage"
+    assert max(requested) > 40.0
 
 
 def test_double_buffer_keeps_previous_window_while_sliding() -> None:
