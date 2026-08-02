@@ -1416,6 +1416,7 @@ class MainWindow(QMainWindow):
         self.engine.playing_changed.connect(
             lambda _playing: self._refresh_output_timecode_clock()
         )
+        self.engine.playing_changed.connect(self._on_playing_changed_video_standin)
         self._refresh_timecode_status()
         self._sync_output_timecode_clock_ui()
         self._refresh_output_timecode_clock()
@@ -6692,9 +6693,34 @@ class MainWindow(QMainWindow):
                 return
         self.timeline.set_audio_loading(True, f"{clip.name} (video)")
 
+    def _on_playing_changed_video_standin(self, playing: bool) -> None:
+        """While playing video-only, let VideoAudioMixer own ``av_path_lock``.
+
+        Standin overview builds used to hold the lock for minutes on long
+        rehearsal files, leaving Web Remote Listen / desktop video audio silent.
+        Cancel an in-flight standin on Play; resume after Pause/Stop if the
+        Music lane still has no peaks.
+        """
+        if self._song_has_main_audio_file():
+            return
+        if playing:
+            if self.timeline.audio_loading():
+                self._video_standin_token += 1
+                # Keep the loading flag so remote knows peaks are pending; the
+                # job itself stops so mixer windows can decode.
+            return
+        if (
+            getattr(self.timeline, "_audio", None) is None
+            and self._primary_video_clip_for_standin() is not None
+        ):
+            self._schedule_video_music_standin()
+
     def _schedule_video_music_standin(self) -> None:
         """Fill the Music waveform from embedded video audio when no music file."""
         if self._song_has_main_audio_file():
+            return
+        # Prefer audible playback / Listen over overview peaks while playing.
+        if bool(getattr(self.engine, "playing", False)):
             return
         clip = self._primary_video_clip_for_standin()
         if clip is None:
@@ -6737,7 +6763,11 @@ class MainWindow(QMainWindow):
             lower_background_thread_priority()
 
             def _cancel() -> bool:
-                return token != self._video_standin_token or song_id != self.current_song.id
+                return (
+                    token != self._video_standin_token
+                    or song_id != self.current_song.id
+                    or bool(getattr(self.engine, "playing", False))
+                )
 
             try:
                 buffer = build_music_standin_from_video(
@@ -6750,9 +6780,9 @@ class MainWindow(QMainWindow):
                 return
             # Ignore if song changed / cancelled while decoding.
             if _cancel():
-                self._video_standin_finished.emit(token, None)
+                self._video_standin_finished.emit(token, False)  # cancelled
                 return
-            self._video_standin_finished.emit(token, buffer)
+            self._video_standin_finished.emit(token, buffer)  # None = no audio stream
 
         self._audio_load_executor.submit(_job)
 
@@ -6762,12 +6792,19 @@ class MainWindow(QMainWindow):
         if self._song_has_main_audio_file():
             self.timeline.set_audio_loading(False)
             return
-        self.timeline.set_audio_loading(False)
         if isinstance(result, Exception):
+            self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
             self.status.showMessage(f"Video waveform failed: {result}", 4000)
             return
+        if result is False:
+            # Cancelled for Play / newer token — keep loading until Pause resumes.
+            clip = self._primary_video_clip_for_standin()
+            if clip is not None and getattr(self.timeline, "_audio", None) is None:
+                self.timeline.set_audio_loading(True, f"{clip.name} (video)")
+            return
         if result is None:
+            self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
             if self._primary_video_clip_for_standin() is not None:
                 self.status.showMessage(
@@ -6776,8 +6813,10 @@ class MainWindow(QMainWindow):
                 )
             return
         if not isinstance(result, AudioBuffer):
+            self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
             return
+        self.timeline.set_audio_loading(False)
         clip = self._primary_video_clip_for_standin()
         if clip is not None:
             key = self._video_standin_cache_key(

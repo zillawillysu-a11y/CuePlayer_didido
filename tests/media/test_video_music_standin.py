@@ -77,3 +77,46 @@ def test_build_music_standin_honors_cancel_check(tmp_path: Path) -> None:
     assert build_music_standin_from_video(
         clip, timeline_duration=0.5, cancel_check=lambda: True
     ) is None
+
+
+def test_heavy_standin_uses_sparse_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multi-hour clips must not decode every contiguous 10s window."""
+    from cueplayer.media import video_music_standin as standin_mod
+    from cueplayer.media.video_audio_loader import VideoAudioBuffer
+
+    path = tmp_path / "long.mp4"
+    path.write_bytes(b"fake")
+    clip = VideoClip.create(
+        name="long",
+        path=path,
+        start_seconds=0.0,
+        duration_seconds=7200.0,
+        source_duration_seconds=7200.0,
+    )
+    calls: list[float] = []
+
+    def _fake_load(
+        p: Path,
+        *,
+        start_seconds: float = 0.0,
+        max_duration_seconds: float | None = None,
+    ) -> VideoAudioBuffer:
+        del p
+        calls.append(float(start_seconds))
+        sr = 1000
+        n = max(1, int(round(float(max_duration_seconds or 1.0) * sr)))
+        samples = np.full((n, 2), 0.2, dtype=np.float32)
+        return VideoAudioBuffer(
+            path=path,
+            sample_rate=sr,
+            samples=samples,
+            origin_seconds=float(start_seconds),
+        )
+
+    monkeypatch.setattr(standin_mod, "load_video_audio", _fake_load)
+    monkeypatch.setattr(standin_mod, "time", type("T", (), {"sleep": staticmethod(lambda _s: None)})())
+    buf = build_music_standin_from_video(clip, timeline_duration=7200.0)
+    assert buf is not None
+    # Contiguous 10s windows would be ~720 calls; sparse stays near probe cap.
+    assert 40 <= len(calls) <= 400
+    assert calls[0] == pytest.approx(0.0, abs=0.05)

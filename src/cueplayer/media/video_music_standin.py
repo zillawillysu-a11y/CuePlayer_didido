@@ -4,10 +4,15 @@ Used when a song has video but no separate music file — the main waveform
 should still show something useful for marking (rehearsal videos, etc.).
 Long sources are downsampled into an overview buffer so we never allocate
 full-rate PCM for a multi-hour file.
+
+Heavy / multi-hour clips use a *sparse* probe pattern (short seeks with large
+gaps) so the build finishes quickly and yields ``av_path_lock`` often enough
+for Preview + VideoAudioMixer (Web Remote Listen) to keep decoding.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,9 +26,15 @@ from cueplayer.media.video_limits import clip_is_heavy
 # Overview rate for long videos — enough for timeline marking when zoomed out,
 # ~1.6 MB mono per hour.
 _OVERVIEW_HZ = 400
-# Decode this much source audio per background pass when building overviews.
+# Dense overview (non-heavy): decode this much source audio per pass.
 # Shorter windows release ``av_path_lock`` more often so Preview/seek stay alive.
 _OVERVIEW_WINDOW_SECONDS = 10.0
+# Heavy clips: short probe + large step so a 2h file does not monopolize PyAV.
+_HEAVY_PROBE_SECONDS = 1.25
+_HEAVY_MAX_PROBES = 360
+_HEAVY_MIN_STEP_SECONDS = 12.0
+# Yield the path lock between probes so mixer / Preview can run.
+_HEAVY_YIELD_SECONDS = 0.04
 
 
 def _buffer_from_stereo(
@@ -168,7 +179,16 @@ def build_music_standin_from_video(
     total_frames = max(1, int(round(timeline_duration * overview_hz)))
     overview = np.zeros(total_frames, dtype=np.float32)
 
-    window = min(_OVERVIEW_WINDOW_SECONDS, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+    heavy = clip_is_heavy(clip)
+    if heavy:
+        # Cap probe count so multi-hour files finish without starving Listen.
+        probes = min(_HEAVY_MAX_PROBES, max(48, int(span / _HEAVY_MIN_STEP_SECONDS) + 1))
+        step = max(_HEAVY_MIN_STEP_SECONDS, span / float(probes))
+        window = min(_HEAVY_PROBE_SECONDS, step * 0.45, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+    else:
+        step = 0.0  # contiguous advance from decode length
+        window = min(_OVERVIEW_WINDOW_SECONDS, MAX_VIDEO_AUDIO_DECODE_SECONDS)
+
     t = src_in
     end = src_in + span
     while t < end - 1e-6:
@@ -178,7 +198,9 @@ def build_music_standin_from_video(
             path, start_seconds=t, max_duration_seconds=min(window, end - t)
         )
         if chunk is None or chunk.frames <= 0:
-            t += window
+            t += step if heavy else window
+            if heavy:
+                time.sleep(_HEAVY_YIELD_SECONDS)
             continue
         peaks = _downsample_to_overview(chunk.samples, chunk.sample_rate, overview_hz)
         # Map chunk origin → timeline via clip.start + (src - src_in).
@@ -194,9 +216,13 @@ def build_music_standin_from_video(
                 # Keep the stronger signed peak (not abs-max → unipolar).
                 if abs(float(peak)) > abs(float(overview[idx])):
                     overview[idx] = float(peak)
-        t = origin + (chunk.frames / float(chunk.sample_rate))
-        if t <= origin + 1e-3:
-            t += window
+        if heavy:
+            t = origin + step
+            time.sleep(_HEAVY_YIELD_SECONDS)
+        else:
+            t = origin + (chunk.frames / float(chunk.sample_rate))
+            if t <= origin + 1e-3:
+                t += window
 
     if _cancelled():
         return None

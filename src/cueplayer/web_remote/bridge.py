@@ -253,9 +253,33 @@ class WebRemoteBridge(QObject):
         display = self._timeline_display_audio()
         if display is not None:
             return display
+        # RAM standin may exist before timeline paint catches up.
+        try:
+            cache = getattr(host, "_video_standin_cache", None)
+            clip_fn = getattr(host, "_primary_video_clip_for_standin", None)
+            key_fn = getattr(host, "_video_standin_cache_key", None)
+            if cache and callable(clip_fn) and callable(key_fn):
+                clip = clip_fn()
+                if clip is not None:
+                    key = key_fn(
+                        clip,
+                        timeline_duration=float(host.current_song.duration_seconds),
+                    )
+                    if key is not None and key in cache:
+                        return cache[key]
+        except Exception:  # noqa: BLE001
+            pass
         engine = host.engine
         buf = getattr(engine, "buffer", None)
         if buf is None:
+            # Nudge desktop to start / resume video-audio standin for remote wave.
+            if not self._has_main_music_file() and hasattr(
+                host, "_schedule_video_music_standin"
+            ):
+                try:
+                    host._schedule_video_music_standin()
+                except Exception:  # noqa: BLE001
+                    pass
             return None
         try:
             song = host.current_song
@@ -268,6 +292,21 @@ class WebRemoteBridge(QObject):
             return waveform_display_buffer(buf, exclude_channel=exclude)
         except Exception:  # noqa: BLE001
             return buf
+
+    def _waveform_loading(self) -> bool:
+        host = self._host
+        try:
+            timeline = getattr(host, "timeline", None)
+            loader = getattr(timeline, "audio_loading", None) if timeline is not None else None
+            if callable(loader) and bool(loader()):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        if self._has_main_music_file():
+            return False
+        song = getattr(host, "current_song", None)
+        clips = list(getattr(song, "video_clips", None) or []) if song is not None else []
+        return bool(clips) and self._timeline_display_audio() is None
 
     def _ltc_exclude_for_cache(self) -> int | None:
         try:
@@ -289,9 +328,10 @@ class WebRemoteBridge(QObject):
         duration = float(engine.duration)
         song_id = str(song.id)
         exclude = self._ltc_exclude_for_cache()
+        loading = buf is None and self._waveform_loading()
 
         if start is None and end is None:
-            key = (song_id, frames, int(round(duration * 1000)), exclude)
+            key = (song_id, frames, int(round(duration * 1000)), exclude, loading)
             if self._wave_cache is not None and self._wave_cache_key == key:
                 return self._wave_cache
             payload = build_waveform_overview(
@@ -300,6 +340,9 @@ class WebRemoteBridge(QObject):
                 duration=duration,
                 buckets=int(buckets) if buckets else 3200,
             )
+            if loading and not payload.get("ready"):
+                payload["source"] = "loading"
+                payload["loading"] = True
             self._wave_cache_key = key
             self._wave_cache = payload
             return payload
@@ -310,7 +353,7 @@ class WebRemoteBridge(QObject):
         # Quantize cache key so tiny pan deltas reuse the last detail slice.
         q0 = round(t0 * 40) / 40.0
         q1 = round(t1 * 40) / 40.0
-        dkey = (song_id, frames, q0, q1, n, exclude)
+        dkey = (song_id, frames, q0, q1, n, exclude, loading)
         if self._wave_detail_cache is not None and self._wave_detail_key == dkey:
             return self._wave_detail_cache
         payload = build_waveform_window(
@@ -321,6 +364,9 @@ class WebRemoteBridge(QObject):
             end=t1,
             buckets=n,
         )
+        if loading and not payload.get("ready"):
+            payload["source"] = "loading"
+            payload["loading"] = True
         self._wave_detail_key = dkey
         self._wave_detail_cache = payload
         return payload
@@ -391,12 +437,25 @@ class WebRemoteBridge(QObject):
         )
         pcm = (np.clip(mixed, -1.0, 1.0) * 32767.0).astype(np.int16)
         raw = pcm.tobytes(order="C")
-        ready = bool(video is not None) and float(np.max(np.abs(mixed))) > 1e-6
+        energy = float(np.max(np.abs(mixed))) if mixed is not None else 0.0
+        ready = bool(video is not None) and energy > 1e-6
+        reason = ""
+        if not ready:
+            mixer = getattr(engine, "_video_mixer", None)
+            song = getattr(engine, "_song", None)
+            has_clips = bool(getattr(song, "video_clips", None) or [])
+            if mixer is not None and bool(getattr(mixer, "muted", False)):
+                reason = "video_muted"
+            elif not has_clips:
+                reason = "no_video"
+            else:
+                reason = "decoding_video"
         meta.update(
             {
                 "ready": ready,
                 "frames": int(pcm.size),
                 "seconds": float(pcm.size) / float(out_sr) if out_sr else 0.0,
+                "reason": reason,
             }
         )
         if as_wav:

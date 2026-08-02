@@ -384,6 +384,9 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("X-CuePlayer-Ready", "1" if meta.get("ready") else "0")
             self.send_header("X-CuePlayer-Frames", str(int(meta.get("frames") or 0)))
             self.send_header("X-CuePlayer-Format", "wav" if is_wav else "s16le")
+            reason = str(meta.get("reason") or "").strip()
+            if reason:
+                self.send_header("X-CuePlayer-Reason", reason)
             self.end_headers()
             if pcm:
                 self.wfile.write(pcm)

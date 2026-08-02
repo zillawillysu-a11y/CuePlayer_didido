@@ -523,8 +523,9 @@
     const chunkSec = Number(res.headers.get("X-CuePlayer-Seconds") || 0);
     const songId = res.headers.get("X-CuePlayer-Song-Id") || "";
     const frames = Number(res.headers.get("X-CuePlayer-Frames") || 0);
+    const reason = res.headers.get("X-CuePlayer-Reason") || "";
     const ab = await res.arrayBuffer();
-    return { ready, rate, chunkStart, chunkSec, songId, frames, ab };
+    return { ready, rate, chunkStart, chunkSec, songId, frames, reason, ab };
   }
 
   function pcm16ToAudioBuffer(ab, rate) {
@@ -632,8 +633,16 @@
           return;
         }
         if (!chunk.ready || !chunk.ab || chunk.ab.byteLength < 2 || chunk.frames < 32) {
-          listenToastOnce("No music buffer on PC yet — open a song with audio");
-          listenCursor += LISTEN_CHUNK;
+          const why = String(chunk.reason || "");
+          if (why === "decoding_video") {
+            listenToastOnce("Decoding video audio on PC…");
+            // Stay on this cursor — mixer window is still warming up.
+          } else if (why === "video_muted") {
+            listenToastOnce("Video Track is muted on PC");
+            listenCursor += LISTEN_CHUNK;
+          } else {
+            listenToastOnce("Waiting for audio on PC (music file, or video audio)");
+          }
           break;
         }
         const audioBuf = pcm16ToAudioBuffer(chunk.ab, chunk.rate || listenSampleRate());
@@ -2098,6 +2107,13 @@
       const data = await api("/api/waveform?buckets=3200");
       waveOverview = data;
       wave = data;
+      if (els.waveEmpty) {
+        if (data.loading || data.source === "loading") {
+          els.waveEmpty.textContent = "Loading video waveform…";
+        } else if (!data.ready) {
+          els.waveEmpty.textContent = "No waveform yet";
+        }
+      }
       if (!data.ready) {
         setTimeout(() => {
           if (lastSongId === songId) {
@@ -2105,7 +2121,7 @@
             wave = null;
             ensureWaveform(songId);
           }
-        }, 1200);
+        }, data.loading || data.source === "loading" ? 900 : 1200);
       } else {
         scheduleWaveDetail();
       }
