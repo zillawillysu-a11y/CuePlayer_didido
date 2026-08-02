@@ -20,6 +20,8 @@ dependencies = [
   "librosa>=0.10",
   # Video clip decode (Timeline video clips milestone): FFmpeg bindings.
   "av>=13.0",
+  # Web Remote low-latency Listen (Safari / iPad): Opus over WebRTC.
+  "aiortc>=1.9",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +47,7 @@ cueplayer = "cueplayer.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cueplayer = ["ui/assets/*"]
+cueplayer = ["ui/assets/*", "web_remote/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

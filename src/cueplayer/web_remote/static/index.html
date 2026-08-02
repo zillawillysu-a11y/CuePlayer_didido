@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, minimum-scale=1, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#050505" />
+  <title>CuePlayer Remote</title>
+  <link rel="stylesheet" href="/app.css?v=listen12" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">CuePlayer</div>
+      <div class="song-chip" id="songTitle">—</div>
+      <button type="button" class="ghost" id="listenBtn" title="Listen (music only)">Listen</button>
+      <button type="button" class="ghost" id="mutePcBtn" title="Mute PC music speakers (LTC stays)">Mute PC</button>
+      <button type="button" class="ghost" id="dispBtn" title="Display">Disp</button>
+      <button type="button" class="ghost" id="markMgrBtn">Marks</button>
+      <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
+    </header>
+
+    <main class="layout" id="layout">
+      <section class="panel setlist" id="setlistPanel" aria-label="Setlist">
+        <h2>Setlist</h2>
+        <div id="songList" class="song-list"></div>
+      </section>
+      <div class="splitter" id="splitSetlist" role="separator" aria-orientation="vertical" aria-label="Resize setlist" tabindex="0"></div>
+
+      <section class="panel stage" id="stagePanel" aria-label="Timeline">
+        <div class="wave-toolbar">
+          <button type="button" class="ghost tiny" id="zoomOut" title="Zoom out">−</button>
+          <button type="button" class="ghost tiny" id="zoomFit" title="Fit song">Fit</button>
+          <button type="button" class="ghost tiny" id="zoomIn" title="Zoom in">+</button>
+          <button type="button" class="ghost tiny" id="waveFollowBtn" title="Follow playhead" hidden>Follow</button>
+          <button type="button" class="ghost tiny danger" id="deleteMarkBtn" title="Delete selected mark" hidden>Delete</button>
+          <span class="wave-range" id="waveRange"></span>
+        </div>
+        <div class="wave-wrap" id="waveWrap" aria-label="Waveform">
+          <canvas id="waveCanvas" width="900" height="120"></canvas>
+          <div class="wave-empty" id="waveEmpty">No waveform yet</div>
+        </div>
+
+        <div class="transport" role="group" aria-label="Transport">
+          <button type="button" class="icon-btn" id="prevSong" aria-label="Previous song" title="Previous song">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M20 7 L11 15 L20 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="playBtn" aria-label="Play" title="Play">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M12 7 L12 23 L25 15 Z" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="pauseBtn" aria-label="Pause" title="Pause">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/><rect x="18.5" y="7" width="5.5" height="16" rx="1.2" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="stopBtn" aria-label="Stop" title="Stop">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><rect x="10" y="8" width="14" height="14" rx="1.5" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="nextSong" aria-label="Next song" title="Next song">
+            <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M14 7 L23 15 L14 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+
+        <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
+      </section>
+      <div class="splitter" id="splitMonitor" role="separator" aria-orientation="vertical" aria-label="Resize monitor" tabindex="0"></div>
+
+      <section class="panel monitor" id="monitorPanel" aria-label="Cue monitor">
+        <div class="monitor-clock">
+          <div class="clock" id="clock">00:00.000</div>
+          <div class="duration" id="duration">/ 00:00.000</div>
+          <div class="tc-status" id="tcStatus">TC off</div>
+          <div class="timecode" id="timecode">—</div>
+          <div class="toggles" id="toggles" role="group" aria-label="Output toggles">
+            <button type="button" class="chip" data-key="translate">TRANS</button>
+            <button type="button" class="chip" data-key="note">Note</button>
+            <button type="button" class="chip" data-key="mtc">MTC</button>
+            <button type="button" class="chip" data-key="ltc">LTC</button>
+          </div>
+        </div>
+
+        <div class="now-stack">
+          <div class="now-card primary">
+            <div class="now-label" id="nowPrimaryLabel">PRIMARY</div>
+            <div class="now-body" id="nowPrimary">—</div>
+          </div>
+          <div class="now-card secondary">
+            <div class="now-label" id="nowSecondaryLabel">SECONDARY</div>
+            <div class="now-body" id="nowSecondary">—</div>
+          </div>
+        </div>
+
+        <div class="cue-toolbar">
+          <h2>Cue List</h2>
+          <button type="button" class="ghost tiny" id="renumberCueBtn" title="Renumber Cue IDs">Re#</button>
+          <button type="button" class="ghost tiny" id="cueFollowBtn" hidden>Follow</button>
+        </div>
+        <div class="cue-head">
+          <span>Time</span><span>Type</span><span>Cue</span><span>Note</span>
+        </div>
+        <div id="cueList" class="cue-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <dialog id="dispDialog">
+    <form method="dialog" class="disp-form">
+      <header>
+        <h3>Display</h3>
+        <button type="button" class="ghost" id="dispClose">Done</button>
+      </header>
+      <label class="disp-row"><input type="checkbox" id="dispPrimary" /> PRIMARY</label>
+      <label class="disp-row"><input type="checkbox" id="dispSecondary" /> SECONDARY</label>
+      <label class="disp-row"><input type="checkbox" id="dispTimecode" /> Timecode clock</label>
+      <label class="disp-row"><input type="checkbox" id="dispToggles" /> TC buttons (TRANS / Note / MTC / LTC)</label>
+    </form>
+  </dialog>
+
+  <dialog id="markMgrDialog">
+    <form method="dialog" class="mgr-form">
+      <header>
+        <h3>Mark Manager</h3>
+        <button type="button" class="ghost" id="markMgrClose" value="cancel">Done</button>
+      </header>
+      <div id="markMgrBody" class="mgr-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="noteDialog">
+    <form method="dialog" class="note-form">
+      <h3 id="noteDialogTitle">Mark Note</h3>
+      <input type="text" id="noteInput" autocomplete="off" enterkeyhint="done" />
+      <div class="auth-actions">
+        <button value="cancel" class="ghost" id="noteCancel">Cancel</button>
+        <button value="ok" class="primary" id="noteSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form method="dialog" class="note-form">
+      <h3 id="confirmTitle">Confirm</h3>
+      <p id="confirmBody" class="confirm-body"></p>
+      <div class="auth-actions">
+        <button value="cancel" class="ghost" id="confirmNo">No</button>
+        <button value="ok" class="primary" id="confirmYes">Yes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="cueActionDialog">
+    <form method="dialog" class="cue-action-form">
+      <h3 id="cueActionTitle">Mark</h3>
+      <p id="cueActionBody" class="confirm-body"></p>
+      <div class="cue-action-list" id="cueActionList"></div>
+      <div class="auth-actions">
+        <button value="cancel" class="ghost" id="cueActionCancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="authDialog">
+    <form method="dialog" class="auth-form">
+      <h3>Remote password</h3>
+      <p>Same password as Tools → Web Remote on the PC.</p>
+      <input type="password" id="passwordInput" autocomplete="current-password" />
+      <div class="auth-actions">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button value="ok" class="primary" id="savePassword">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js?v=listen12"></script>
+</body>
+</html>
