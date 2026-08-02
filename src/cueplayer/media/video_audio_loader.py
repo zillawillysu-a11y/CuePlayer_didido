@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 import av
 import numpy as np
@@ -30,8 +31,11 @@ __all__ = [
 ]
 
 # Hold ``av_path_lock`` only for this much source audio at a time, then close
-# the container so Preview can run before the next seek/decode.
-_LOCK_SEGMENT_SECONDS = 8.0
+# the container so Preview can paint. ~8s segments still caused a visible
+# video hitch right before each audio seam; keep these short.
+_LOCK_SEGMENT_SECONDS = 2.5
+# After releasing the path lock, pause so VideoDecoder can acquire it.
+_SEGMENT_YIELD_SECONDS = 0.02
 
 
 @dataclass
@@ -95,6 +99,9 @@ def load_video_audio(
         part = _load_video_audio_once(
             path, start_seconds=cursor, max_duration_seconds=seg_dur
         )
+        # Let Preview / Clean grab ``av_path_lock`` before the next segment.
+        # Without this, the mixer worker re-acquires immediately and video lags.
+        time.sleep(_SEGMENT_YIELD_SECONDS)
         if part is None or part.frames == 0:
             # Nothing at this seek — skip forward; avoid tight empty loops.
             cursor += max(0.25, seg_dur)

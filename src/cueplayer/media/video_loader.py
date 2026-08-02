@@ -154,7 +154,12 @@ class VideoDecoder:
             self._cached_ndarray_source = None
 
     def frame_at(self, seconds: float) -> np.ndarray | None:
-        """RGB24 (H, W, 3) array for the frame active at `seconds`, or None."""
+        """RGB24 (H, W, 3) array for the frame active at `seconds`, or None.
+
+        If the mixer is holding ``av_path_lock`` for an audio-window decode,
+        wait briefly then reuse the last good frame instead of blocking the UI
+        thread (that hitch is what users see right before an audio seam).
+        """
         if self._closed:
             return None
         seconds = max(0.0, float(seconds))
@@ -163,7 +168,17 @@ class VideoDecoder:
         if not needs_seek and self._last_pts_seconds is not None:
             needs_seek = seconds - self._last_pts_seconds > self._MAX_FORWARD_SKIP_SECONDS
 
-        with av_path_lock(self._path):
+        lock = av_path_lock(self._path)
+        stale = self._cached_ndarray
+        # Cold start: must block. Otherwise prefer a short wait + hold-last-frame.
+        if stale is None:
+            lock.acquire()
+            got = True
+        else:
+            got = lock.acquire(timeout=0.04)
+        if not got:
+            return stale
+        try:
             if self._closed:
                 return None
             if needs_seek:
@@ -196,6 +211,8 @@ class VideoDecoder:
                 break
 
             return self._convert_cached(result)
+        finally:
+            lock.release()
 
     def _seek(self, seconds: float) -> None:
         with av_path_lock(self._path):
