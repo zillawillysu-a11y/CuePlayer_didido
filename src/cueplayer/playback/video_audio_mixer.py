@@ -11,6 +11,12 @@ clips use a sliding window so audio continues past the first minute.
 Rapid seek/scrub only keeps *one* decode job per clip; later requests while a
 job is running stash the latest source time and run after the current job —
 stale mid-queue 30–120s decodes must not pile up under ``av_path_lock``.
+
+Heavy clips keep a short sliding window (~30s). To avoid a silence glitch every
+time that window rolls forward, we:
+1. Prefetch the next window several seconds before the current one ends.
+2. Keep the previous window alongside the new one until the playhead is fully
+   covered by the newer buffer (double-buffer).
 """
 
 from __future__ import annotations
@@ -25,6 +31,12 @@ from cueplayer.domain.models import Song, VideoClip, video_clip_crossfade_weight
 from cueplayer.media.video_audio_cache import get_video_audio
 from cueplayer.media.video_limits import audio_decode_cap_for_clip
 from cueplayer.playback.resample import resample_linear
+
+# Start decoding the next window when this much audio remains in the current
+# one. Heavy windows are ~30s — ~10s lead absorbs typical PyAV seek+decode.
+_PREFETCH_LEAD_SECONDS = 10.0
+# Keep at most this many decoded windows per clip (current + previous).
+_MAX_WINDOWS_PER_CLIP = 2
 
 
 @dataclass
@@ -46,7 +58,8 @@ class VideoAudioMixer:
         self._song: Song | None = None
         self._playback_rate = 48000
         self.muted = False
-        self._cache: dict[str, _CachedPcm] = {}
+        # clip_id -> newest-last list of windows (double-buffer while sliding).
+        self._cache: dict[str, list[_CachedPcm]] = {}
         # clip_id -> key of the job currently running (at most one per clip).
         self._inflight: dict[str, tuple] = {}
         # Latest source_time requested while a job was already busy.
@@ -109,8 +122,8 @@ class VideoAudioMixer:
             round(dur, 2),
         )
         with self._lock:
-            cached = self._cache.get(clip.id)
-            if cached is not None and cached.key == key:
+            windows = self._cache.get(clip.id) or []
+            if any(cached.key == key for cached in windows):
                 self._pending_need.pop(clip.id, None)
                 return
             if self._inflight.get(clip.id) == key:
@@ -162,30 +175,66 @@ class VideoAudioMixer:
                 # Should not happen with coalesce; drop safely.
                 return
             self._inflight.pop(clip_id, None)
-            if samples is None:
-                self._cache.pop(clip_id, None)
-            else:
-                self._cache[clip_id] = _CachedPcm(
-                    samples=samples, origin_seconds=origin, key=key
+            if samples is not None:
+                self._install_window(
+                    clip_id,
+                    _CachedPcm(samples=samples, origin_seconds=origin, key=key),
                 )
             follow_up = self._pending_need.pop(clip_id, None)
             # If the just-finished window already covers the pending need,
             # skip another decode.
             if follow_up is not None and samples is not None:
-                pcm = self._cache.get(clip_id)
-                if pcm is not None and self._covers(pcm, follow_up):
+                if self._find_covering_locked(clip_id, follow_up) is not None:
                     follow_up = None
 
         if follow_up is not None:
             self._request_window(clip, follow_up)
 
+    def _install_window(self, clip_id: str, pcm: _CachedPcm) -> None:
+        """Append a decoded window, keeping the previous one for overlap."""
+        windows = [w for w in (self._cache.get(clip_id) or []) if w.key != pcm.key]
+        windows.append(pcm)
+        self._cache[clip_id] = windows[-_MAX_WINDOWS_PER_CLIP:]
+
+    def _window_end(self, pcm: _CachedPcm) -> float:
+        n = int(pcm.samples.shape[0])
+        if n <= 0:
+            return float(pcm.origin_seconds)
+        return float(pcm.origin_seconds) + (n / float(self._playback_rate))
+
     def _covers(self, pcm: _CachedPcm, source_time: float) -> bool:
         n = int(pcm.samples.shape[0])
         if n <= 0:
             return False
-        end = pcm.origin_seconds + (n / float(self._playback_rate))
+        end = self._window_end(pcm)
         # Require a little headroom so we reload before running off the end.
         return pcm.origin_seconds - 1e-3 <= source_time < end - 0.25
+
+    def _find_covering_locked(self, clip_id: str, source_time: float) -> _CachedPcm | None:
+        windows = self._cache.get(clip_id) or []
+        # Newest first — prefer the sliding window we just fetched.
+        for pcm in reversed(windows):
+            if self._covers(pcm, source_time):
+                return pcm
+        return None
+
+    def _find_covering(self, clip_id: str, source_time: float) -> _CachedPcm | None:
+        with self._lock:
+            windows = list(self._cache.get(clip_id) or [])
+        for pcm in reversed(windows):
+            if self._covers(pcm, source_time):
+                return pcm
+        return None
+
+    def _maybe_prefetch(self, clip: VideoClip, pcm: _CachedPcm, source_time: float) -> None:
+        """Kick the next window early so decode finishes before we run dry."""
+        remaining = self._window_end(pcm) - float(source_time)
+        if remaining >= _PREFETCH_LEAD_SECONDS:
+            return
+        cap = audio_decode_cap_for_clip(clip)
+        # Aim the next window ahead of the playhead, still overlapping current.
+        ahead = float(source_time) + min(_PREFETCH_LEAD_SECONDS * 0.7, max(4.0, cap * 0.25))
+        self._request_window(clip, ahead)
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:
         """
@@ -203,8 +252,6 @@ class VideoAudioMixer:
         clips = [c for c in song.video_clips if not c.hidden]
         if not clips:
             return out
-        with self._lock:
-            cache_snapshot = dict(self._cache)
         # Overlap check once per buffer — crossfade weights are expensive and
         # unused for the common single-clip / non-overlapping case.
         overlapping_ids = song.overlapping_video_clip_ids()
@@ -224,20 +271,34 @@ class VideoAudioMixer:
             else:
                 src_times = src_in + np.mod(offsets.astype(np.float64) / sr, span)
 
-            pcm = cache_snapshot.get(clip.id)
             need_t = float(src_times[0])
-            if pcm is None or not self._covers(pcm, need_t):
+            pcm = self._find_covering(clip.id, need_t)
+            if pcm is None:
                 # Realtime-safe: schedule a window, stay silent until ready.
                 self._request_window(clip, need_t)
                 continue
+
+            # Sliding window: decode the next slice before this one ends.
+            self._maybe_prefetch(clip, pcm, float(src_times[-1]))
 
             buf_frames = int(pcm.samples.shape[0])
             origin = float(pcm.origin_seconds)
             src_idx = np.round((src_times - origin) * sr).astype(np.int64)
             valid = (src_idx >= 0) & (src_idx < buf_frames)
             if not np.any(valid):
-                self._request_window(clip, need_t)
-                continue
+                # Try any other buffered window (previous) before going silent.
+                alt = self._find_covering(clip.id, float(src_times[-1]))
+                if alt is None or alt is pcm:
+                    self._request_window(clip, need_t)
+                    continue
+                pcm = alt
+                buf_frames = int(pcm.samples.shape[0])
+                origin = float(pcm.origin_seconds)
+                src_idx = np.round((src_times - origin) * sr).astype(np.int64)
+                valid = (src_idx >= 0) & (src_idx < buf_frames)
+                if not np.any(valid):
+                    self._request_window(clip, need_t)
+                    continue
             # If the chunk runs past the cached window, ask for the next one.
             if not bool(valid[-1]):
                 self._request_window(clip, float(src_times[-1]))

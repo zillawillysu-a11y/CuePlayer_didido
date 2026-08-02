@@ -31,9 +31,9 @@ def _inject(mixer: VideoAudioMixer, clip: VideoClip, samples: np.ndarray) -> Non
         round(origin, 2),
         round(dur, 2),
     )
-    mixer._cache[clip.id] = _CachedPcm(
-        samples=samples, origin_seconds=origin, key=key
-    )
+    mixer._cache[clip.id] = [
+        _CachedPcm(samples=samples, origin_seconds=origin, key=key)
+    ]
 
 
 def _constant(seconds: float, value: float) -> np.ndarray:
@@ -259,3 +259,56 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     assert len(decode_calls) == 2
     # Follow-up window starts near the latest need (lookback 2s).
     assert decode_calls[1] == pytest.approx(298.0, abs=0.05)
+
+
+def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Near the end of a cached window, schedule the next decode early."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+
+    # 30s window starting at 0 — playhead near 22s should prefetch.
+    _inject(mixer, clip, _constant(30.0, 0.4))
+    requested: list[float] = []
+
+    def _capture(c: VideoClip, source_time: float) -> None:
+        requested.append(float(source_time))
+
+    monkeypatch.setattr(mixer, "_request_window", _capture)
+
+    at = int(22.0 * SR)
+    out = mixer.chunk_at(at, 256)
+    assert float(np.max(np.abs(out))) > 0.0
+    assert requested, "expected prefetch near end of window"
+    assert requested[0] > 22.0
+
+
+def test_double_buffer_keeps_previous_window_while_sliding() -> None:
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip = VideoClip.create(name="c", path=Path("c.mp4"), duration_seconds=120.0)
+    first = _CachedPcm(
+        samples=_constant(30.0, 0.5),
+        origin_seconds=0.0,
+        key=("c.mp4", SR, 0.0, 30.0),
+    )
+    second = _CachedPcm(
+        samples=_constant(30.0, 0.5),
+        origin_seconds=20.0,
+        key=("c.mp4", SR, 20.0, 30.0),
+    )
+    mixer._install_window(clip.id, first)
+    mixer._install_window(clip.id, second)
+    assert len(mixer._cache[clip.id]) == 2
+    # Still covered by the older window while the new one starts later.
+    assert mixer._find_covering(clip.id, 5.0) is first
+    assert mixer._find_covering(clip.id, 25.0) is second
