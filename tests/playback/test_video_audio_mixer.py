@@ -257,12 +257,12 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (mixer lookback = 3s).
-    assert decode_calls[1] == pytest.approx(297.0, abs=0.05)
+    # Follow-up window starts near the latest need (heavy lookback = 10s).
+    assert decode_calls[1] == pytest.approx(290.0, abs=0.05)
 
 
 def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Near the end of a cached window, schedule the next decode early."""
+    """Heavy clip: near the end of a 60s window, schedule the next decode."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c",
@@ -276,8 +276,7 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # 12s mixer window — playhead near the end should prefetch.
-    _inject(mixer, clip, _constant(12.0, 0.4))
+    _inject(mixer, clip, _constant(60.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -285,11 +284,33 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(5.0 * SR)
+    at = int(40.0 * SR)  # 20s remain < 25s lead
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
-    assert requested, "expected prefetch / horizon coverage"
-    assert max(requested) > 5.0
+    assert requested, "expected heavy-window prefetch"
+    assert max(requested) > 40.0
+
+
+def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Short clips use one window — mid-play must not keep kicking PyAV."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=180.0,
+        source_duration_seconds=180.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    _inject(mixer, clip, _constant(180.0, 0.4))
+    requested: list[float] = []
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    out = mixer.chunk_at(int(60.0 * SR), 256)
+    assert float(np.max(np.abs(out))) > 0.0
+    assert requested == []
 
 
 def test_double_buffer_keeps_previous_window_while_sliding() -> None:

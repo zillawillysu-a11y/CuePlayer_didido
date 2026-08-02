@@ -7,10 +7,9 @@ is a multi-hour recording. `AudioEngine` / `VideoAudioMixer` then slice frames
 out of that buffer. No independent decode timer, no second player.
 
 Keep each decode as one open→seek→read→close under ``av_path_lock``. Yielding
-the lock while a demux stays open (so Preview can run) corrupted long reads on
-real rehearsal files — buffers stopped around ~30s and the mixer went silent
-for a couple of seconds at each seam. The mixer instead uses short windows and
-overlaps them.
+the lock while a demux stays open corrupted long reads (~30s mute islands).
+The mixer prefers fewer, longer windows so Preview is not thrashed every few
+seconds.
 """
 
 from __future__ import annotations
