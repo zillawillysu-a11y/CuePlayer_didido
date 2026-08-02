@@ -337,7 +337,7 @@ def _make_handler(server: WebRemoteServer) -> type[BaseHTTPRequestHandler]:
                 "X-CuePlayer-Sample-Rate, X-CuePlayer-Channels, X-CuePlayer-Start, "
                 "X-CuePlayer-Seconds, X-CuePlayer-Song-Id, X-CuePlayer-Playing, "
                 "X-CuePlayer-Position, X-CuePlayer-Duration, X-CuePlayer-Ready, "
-                "X-CuePlayer-Frames, X-CuePlayer-Format",
+                "X-CuePlayer-Frames, X-CuePlayer-Format, X-CuePlayer-Reason",
             )
 
         def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
