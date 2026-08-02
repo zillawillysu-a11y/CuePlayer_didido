@@ -131,8 +131,19 @@ def test_static_dir_has_index() -> None:
     assert ".preview-wrap" in css
     assert ".wave-setup" in css
     assert ".wave-setup.on" in css
-    assert ".stage-body" in css
+    assert ".transport-row" in css
+    assert ".ab-loop" in css
+    assert ".ab-btn" in css
     assert ".splitter-h" in css
+    assert 'id="loopABtn"' in html
+    assert 'id="loopBBtn"' in html
+    assert 'id="loopToggleBtn"' in html
+    assert 'id="loopClearBtn"' in html
+    assert "set_loop_a" in js
+    assert "set_loop_b" in js
+    assert "clear_loop" in js
+    assert "set_loop_enabled" in js
+    assert "applyLoopState" in js
     assert ".stage-media.preview-on" in css
     assert ".layout.hide-setlist" in css
     assert ".layout.hide-monitor" in css
@@ -817,5 +828,24 @@ def test_web_remote_bridge_dispatch_marks() -> None:
     assert abs(window.engine.position - 4.0) < 0.05
     out = bridge._dispatch({"op": "stop"})
     assert out["ok"] is True
+    out = bridge._dispatch({"op": "seek", "seconds": 1.0})
+    assert out["ok"] is True
+    out = bridge._dispatch({"op": "set_loop_a"})
+    assert out["ok"] is True
+    assert out["loop"]["a"] is not None
+    out = bridge._dispatch({"op": "seek", "seconds": 3.0})
+    assert out["ok"] is True
+    out = bridge._dispatch({"op": "set_loop_b"})
+    assert out["ok"] is True
+    assert out["loop"]["b"] is not None
+    assert out["loop"]["enabled"] is True
+    out = bridge._dispatch({"op": "set_loop_enabled", "enabled": False})
+    assert out["ok"] is True
+    assert out["loop"]["enabled"] is False
+    out = bridge._dispatch({"op": "clear_loop"})
+    assert out["ok"] is True
+    assert out["loop"]["a"] is None
+    assert out["loop"]["b"] is None
+    assert out["loop"]["enabled"] is False
     window._web_remote.stop()
     # Do not call window.close() — closeEvent quits the QApplication.

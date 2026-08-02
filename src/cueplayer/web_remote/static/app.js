@@ -20,6 +20,10 @@
     stopBtn: document.getElementById("stopBtn"),
     prevSong: document.getElementById("prevSong"),
     nextSong: document.getElementById("nextSong"),
+    loopABtn: document.getElementById("loopABtn"),
+    loopBBtn: document.getElementById("loopBBtn"),
+    loopToggleBtn: document.getElementById("loopToggleBtn"),
+    loopClearBtn: document.getElementById("loopClearBtn"),
     waveWrap: document.getElementById("waveWrap"),
     waveCanvas: document.getElementById("waveCanvas"),
     waveEmpty: document.getElementById("waveEmpty"),
@@ -112,6 +116,7 @@
   let syncDur = 1;
   let syncEpochMs = performance.now();
   let syncSongId = "";
+  let loopState = { a: null, b: null, enabled: false };
   let lastDrawnClock = "";
   let lastPlayheadCueId = "";
   let cueFollowSuspended = false;
@@ -1927,8 +1932,42 @@
     }
     ctx.fill();
 
-    const marks = (stateCache && stateCache.marks) || [];
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const loopA = loopState && loopState.a != null ? Number(loopState.a) : null;
+    const loopB = loopState && loopState.b != null ? Number(loopState.b) : null;
+    if (loopA != null && loopB != null && Math.abs(loopB - loopA) >= 0.01) {
+      const la = Math.min(loopA, loopB);
+      const lb = Math.max(loopA, loopB);
+      const x0 = ((Math.max(la, v0) - v0) / viewSpanSec) * w;
+      const x1 = ((Math.min(lb, v1) - v0) / viewSpanSec) * w;
+      if (x1 > x0) {
+        ctx.fillStyle = loopState.enabled
+          ? "rgba(61, 214, 140, 0.18)"
+          : "rgba(61, 214, 140, 0.10)";
+        ctx.fillRect(x0, 0, x1 - x0, h);
+      }
+    }
+    for (const [label, t, color] of [
+      ["A", loopA, "#3dd68c"],
+      ["B", loopB, "#f0c14a"],
+    ]) {
+      if (t == null || t < v0 || t > v1) continue;
+      const x = ((t - v0) / viewSpanSec) * w;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = Math.max(1.5, w / 700);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = color;
+      ctx.font = `700 ${Math.max(10, Math.round(11 * dpr))}px "Segoe UI", "Helvetica Neue", sans-serif`;
+      ctx.textBaseline = "top";
+      ctx.fillText(label, x + 4 * dpr, 3 * dpr);
+    }
+
+    const marks = (stateCache && stateCache.marks) || [];
     const labelPx = Math.max(9, Math.round((waveLabelFontPx || 11) * dpr));
     ctx.textBaseline = "top";
     ctx.font = `700 ${labelPx}px "Segoe UI", "Helvetica Neue", sans-serif`;
@@ -2150,6 +2189,7 @@
     updateNowCards(livePosition());
 
     renderToggles(state.output_toggles);
+    if (state.loop) applyLoopState(state.loop);
     const playing = Boolean(state.playing);
     els.playBtn.disabled = playing;
     els.pauseBtn.disabled = !playing;
@@ -2226,7 +2266,12 @@
       || body.op === "set_pc_mute"
       || body.op === "renumber_cue_ids"
       || body.op === "add_mark"
+      || body.op === "set_loop_a"
+      || body.op === "set_loop_b"
+      || body.op === "clear_loop"
+      || body.op === "set_loop_enabled"
     ) {
+      if (result && result.loop) applyLoopState(result.loop);
       api("/api/state").then(applyState).catch(() => {});
     } else if (body.op === "toggle") {
       if (syncPlaying) {
@@ -2267,6 +2312,7 @@
         if (clock.tc_accent) {
           tcAccent = clock.tc_accent;
         }
+        if (clock.loop) applyLoopState(clock.loop);
         els.timecode.style.color = tcActive ? tcAccent : "#52525b";
         const playing = Boolean(clock.playing);
         els.playBtn.disabled = playing;
@@ -2354,6 +2400,30 @@
     }
   }
 
+  function applyLoopState(loop) {
+    const next = {
+      a: loop && loop.a != null ? Number(loop.a) : null,
+      b: loop && loop.b != null ? Number(loop.b) : null,
+      enabled: Boolean(loop && loop.enabled),
+    };
+    const changed = (
+      next.a !== loopState.a
+      || next.b !== loopState.b
+      || next.enabled !== loopState.enabled
+    );
+    loopState = next;
+    if (els.loopABtn) els.loopABtn.classList.toggle("set", next.a != null);
+    if (els.loopBBtn) els.loopBBtn.classList.toggle("set", next.b != null);
+    if (els.loopToggleBtn) {
+      els.loopToggleBtn.classList.toggle("on", next.enabled);
+      els.loopToggleBtn.classList.toggle(
+        "set",
+        next.a != null && next.b != null && Math.abs(next.b - next.a) >= 0.01,
+      );
+    }
+    if (changed) drawWave(true);
+  }
+
   els.playBtn.addEventListener("click", () => {
     setWaveFollowSuspended(false);
     command({ op: "play" }).catch(() => {});
@@ -2363,6 +2433,20 @@
     setWaveFollowSuspended(false);
     command({ op: "stop" }).catch(() => {});
   });
+  if (els.loopABtn) {
+    els.loopABtn.addEventListener("click", () => command({ op: "set_loop_a" }).catch(() => {}));
+  }
+  if (els.loopBBtn) {
+    els.loopBBtn.addEventListener("click", () => command({ op: "set_loop_b" }).catch(() => {}));
+  }
+  if (els.loopClearBtn) {
+    els.loopClearBtn.addEventListener("click", () => command({ op: "clear_loop" }).catch(() => {}));
+  }
+  if (els.loopToggleBtn) {
+    els.loopToggleBtn.addEventListener("click", () => {
+      command({ op: "set_loop_enabled", enabled: !loopState.enabled }).catch(() => {});
+    });
+  }
   els.prevSong.addEventListener("click", () => command({ op: "prev_song" }).catch(() => {}));
   els.nextSong.addEventListener("click", () => command({ op: "next_song" }).catch(() => {}));
   els.zoomIn.addEventListener("click", () => zoomAt(0.7, livePosition()));

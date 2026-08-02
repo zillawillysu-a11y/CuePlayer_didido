@@ -221,11 +221,15 @@ dialog textarea,
     min-height: 110px;
   }
   .marks {
-    width: 64px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
   .mbtn {
     min-height: 40px;
     padding: 4px 6px;
+  }
+  .transport-row {
+    flex-wrap: wrap;
+    justify-content: center;
   }
   .wave-wrap {
     min-height: 72px;
@@ -352,13 +356,6 @@ dialog textarea,
 .stage {
   gap: 8px;
   min-height: 0;
-}
-
-.stage-body {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  gap: 6px;
 }
 
 .stage-media {
@@ -772,14 +769,48 @@ dialog textarea,
 
 .wave-empty.hidden { display: none; }
 
+.transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.ab-loop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.ab-btn {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+
+.ab-btn.set {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+
+.ab-btn.on {
+  background: color-mix(in srgb, var(--ok) 16%, #111);
+  border-color: transparent;
+  color: var(--ok);
+}
+
 .transport {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 4px;
   max-width: 360px;
-  margin: 0 auto;
-  width: 100%;
-  flex: 0 0 auto;
+  width: min(360px, 100%);
+  flex: 1 1 220px;
 }
 
 .icon-btn {
@@ -801,18 +832,12 @@ dialog textarea,
 .icon-btn:disabled { color: #555; background: transparent; cursor: default; }
 
 .marks {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 4px;
   flex: 0 0 auto;
-  width: 76px;
-  min-width: 64px;
-  max-width: 96px;
+  width: 100%;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
 }
 
 .mbtn {
@@ -825,12 +850,11 @@ dialog textarea,
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  padding: 6px 8px;
+  padding: 6px 6px;
   min-height: 44px;
   gap: 2px;
   cursor: pointer;
-  flex: 0 0 auto;
-  width: 100%;
+  min-width: 0;
 }
 
 .mbtn .key {
@@ -841,7 +865,7 @@ dialog textarea,
 
 .mbtn .label {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -191,6 +191,8 @@ class WebRemoteBridge(QObject):
                 timecode_to_abs_seconds(song.start_timecode, fps) + position,
                 fps,
             ).format()
+        a = getattr(engine, "loop_a", None)
+        b = getattr(engine, "loop_b", None)
         return {
             "ok": True,
             "song_id": str(song.id),
@@ -206,6 +208,11 @@ class WebRemoteBridge(QObject):
             "tc_accent": str(
                 getattr(project, "output_timecode_clock_color", "") or "#3dd68c"
             ),
+            "loop": {
+                "a": None if a is None else float(a),
+                "b": None if b is None else float(b),
+                "enabled": bool(getattr(engine, "loop_enabled", False)),
+            },
         }
 
     def _music_waveform_buffer(self) -> Any:
@@ -532,7 +539,58 @@ class WebRemoteBridge(QObject):
             return self._update_lane(command)
         if op == "set_display":
             return self._set_display(command)
+        if op == "set_loop_a":
+            return self._set_loop_a(command)
+        if op == "set_loop_b":
+            return self._set_loop_b(command)
+        if op == "clear_loop":
+            return self._clear_loop(command)
+        if op == "set_loop_enabled":
+            return self._set_loop_enabled(command)
         return {"ok": False, "error": f"unknown_op:{op}"}
+
+    def _loop_payload(self) -> dict[str, Any]:
+        engine = self._host.engine
+        a = getattr(engine, "loop_a", None)
+        b = getattr(engine, "loop_b", None)
+        return {
+            "a": None if a is None else float(a),
+            "b": None if b is None else float(b),
+            "enabled": bool(getattr(engine, "loop_enabled", False)),
+        }
+
+    def _set_loop_a(self, _command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        if hasattr(host, "_set_loop_a"):
+            host._set_loop_a()
+        else:
+            return {"ok": False, "error": "loop_unavailable"}
+        return {"ok": True, "op": "set_loop_a", "loop": self._loop_payload()}
+
+    def _set_loop_b(self, _command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        if hasattr(host, "_set_loop_b"):
+            host._set_loop_b()
+        else:
+            return {"ok": False, "error": "loop_unavailable"}
+        return {"ok": True, "op": "set_loop_b", "loop": self._loop_payload()}
+
+    def _clear_loop(self, _command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        if hasattr(host, "_clear_loop"):
+            host._clear_loop()
+        else:
+            return {"ok": False, "error": "loop_unavailable"}
+        return {"ok": True, "op": "clear_loop", "loop": self._loop_payload()}
+
+    def _set_loop_enabled(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        enabled = bool(command.get("enabled"))
+        if hasattr(host, "_set_loop_enabled"):
+            host._set_loop_enabled(enabled)
+        else:
+            return {"ok": False, "error": "loop_unavailable"}
+        return {"ok": True, "op": "set_loop_enabled", "loop": self._loop_payload()}
 
     def _set_display(self, command: dict[str, Any]) -> dict[str, Any]:
         host = self._host

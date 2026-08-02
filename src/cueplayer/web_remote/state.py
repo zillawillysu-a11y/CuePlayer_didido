@@ -279,6 +279,8 @@ def build_state(
     playhead = str(getattr(project, "playhead_color", "") or "#3dd68c")
     waveform_color = str(getattr(project, "waveform_color", "") or "#616161")
     active_id = song.id if song_index >= 0 else ""
+    loop_a = getattr(engine, "loop_a", None)
+    loop_b = getattr(engine, "loop_b", None)
 
     return {
         "project_name": project.name,
@@ -294,6 +296,11 @@ def build_state(
         "tc_accent": output["accent"],
         "pc_muted": bool(getattr(engine, "music_muted", False)),
         "output_toggles": output["toggles"],
+        "loop": {
+            "a": None if loop_a is None else float(loop_a),
+            "b": None if loop_b is None else float(loop_b),
+            "enabled": bool(getattr(engine, "loop_enabled", False)),
+        },
         "playhead_color": playhead,
         "waveform_color": waveform_color,
         "wave_label_font_px": int(getattr(project, "wave_label_font_px", 11) or 11),
