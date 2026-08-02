@@ -351,5 +351,27 @@ def test_chunk_at_composites_across_window_seam() -> None:
     at = int(29.5 * SR)
     out = mixer.chunk_at(at, int(1.0 * SR))
     assert float(np.min(np.abs(out))) > 0.0
-    # Past the first window, prefer the newer buffer's amplitude.
+    # Overlap keeps the older window; past A's end uses B.
+    assert out[0, 0] == pytest.approx(0.5, abs=1e-4)
     assert out[-1, 0] == pytest.approx(0.7, abs=1e-4)
+
+
+def test_gather_prefers_older_window_over_newer_silence() -> None:
+    """A new window with a silent head must not punch a hole into good audio."""
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    good = _constant(30.0, 0.5)
+    bad = _constant(30.0, 0.0)  # e.g. seek-pad zeros in a newer window
+    mixer._install_window(
+        clip_id,
+        _CachedPcm(samples=good, origin_seconds=0.0, key=("a", SR, 0.0, 30.0)),
+    )
+    mixer._install_window(
+        clip_id,
+        _CachedPcm(samples=bad, origin_seconds=20.0, key=("b", SR, 20.0, 30.0)),
+    )
+    t = np.full(64, 25.0, dtype=np.float64)
+    out, valid = mixer._gather_samples(clip_id, t)
+    assert bool(np.all(valid))
+    assert float(np.min(np.abs(out))) == pytest.approx(0.5, abs=1e-4)

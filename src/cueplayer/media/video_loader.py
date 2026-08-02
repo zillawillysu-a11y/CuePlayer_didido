@@ -175,7 +175,8 @@ class VideoDecoder:
             lock.acquire()
             got = True
         else:
-            got = lock.acquire(timeout=0.04)
+            # ~1–2 preview frames; long enough to usually win between mixer yields.
+            got = lock.acquire(timeout=0.08)
         if not got:
             return stale
         try:

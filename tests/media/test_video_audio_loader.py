@@ -128,18 +128,20 @@ def test_load_video_audio_respects_max_duration_window(tmp_path: Path) -> None:
     assert buf.frames / buf.sample_rate == pytest.approx(0.4, abs=0.15)
 
 
-def test_load_video_audio_stitches_lock_segments(tmp_path: Path) -> None:
-    """Windows longer than one lock segment must still return contiguous PCM."""
-    path = tmp_path / "segmented.mp4"
+def test_load_video_audio_yielding_keeps_contiguous_pcm(tmp_path: Path) -> None:
+    """Long windows yield the path lock but must not insert silence gaps."""
+    path = tmp_path / "yielding.mp4"
     _make_clip_with_tone(path, seconds=12.0, audio_rate=48000)
     buf = load_video_audio(path, start_seconds=0.0, max_duration_seconds=10.0)
     assert buf is not None
     assert buf.sample_rate == 48000
-    # Two+ 8s lock segments stitched; allow AAC priming slack.
     assert buf.frames / buf.sample_rate == pytest.approx(10.0, abs=0.35)
-    # No long silence hole in the middle of the stitched window.
-    mid = buf.samples[buf.frames // 2 : buf.frames // 2 + 4800]
-    assert float(np.max(np.abs(mid))) > 0.05
+    # Spot-check several regions — no multi-second zero pads from re-seeks.
+    sr = buf.sample_rate
+    for t in (1.0, 4.0, 7.0, 9.0):
+        i0 = int(t * sr)
+        mid = buf.samples[i0 : i0 + sr // 10]
+        assert float(np.max(np.abs(mid))) > 0.05, f"silence near t={t}"
 
 
 def test_audio_window_for_clip_caps_long_source() -> None:

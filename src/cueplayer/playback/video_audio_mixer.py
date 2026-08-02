@@ -231,25 +231,29 @@ class VideoAudioMixer:
     def _gather_samples(
         self, clip_id: str, src_times: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Composite stereo samples for ``src_times`` from every cached window."""
+        """Composite stereo samples for ``src_times`` from every cached window.
+
+        Older windows fill first; newer windows only cover holes. A freshly
+        decoded window must not punch silence (seek pads / cold start) into
+        audio that the previous window already had.
+        """
         n = int(src_times.shape[0])
         out = np.zeros((n, 2), dtype=np.float32)
         valid = np.zeros(n, dtype=bool)
         sr = float(self._playback_rate)
         with self._lock:
             windows = list(self._cache.get(clip_id) or [])
-        # Older → newer so a fresher overlapping window wins.
         for pcm in windows:
             buf_frames = int(pcm.samples.shape[0])
             if buf_frames <= 0:
                 continue
             origin = float(pcm.origin_seconds)
             idx = np.round((src_times - origin) * sr).astype(np.int64)
-            mask = (idx >= 0) & (idx < buf_frames)
+            mask = (idx >= 0) & (idx < buf_frames) & (~valid)
             if not np.any(mask):
                 continue
             out[mask] = pcm.samples[idx[mask]]
-            valid |= mask
+            valid[mask] = True
         return out, valid
 
     def _coverage_end(self, clip_id: str) -> float | None:
