@@ -146,7 +146,12 @@ class WebRemoteBridge(QObject):
         project = host.project
         song = host.current_song
         engine = host.engine
-        return build_state(project=project, song=song, engine=engine)
+        return build_state(
+            project=project,
+            song=song,
+            engine=engine,
+            ltc_channel_for_song=getattr(host, "_ltc_channel_for_song", None),
+        )
 
     def _safe_clock(self) -> dict[str, Any]:
         """Lightweight position tick for smooth remote clock correction."""

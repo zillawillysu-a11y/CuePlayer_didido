@@ -93,6 +93,9 @@ def test_static_dir_has_index() -> None:
     assert "showCueActionsForMark" in js
     assert "cue_list_enabled" in js
     assert "mgr-cuelist" in js
+    assert "song-badges" in js
+    assert "has_video" in js
+    assert "ltc_channel" in js
     assert "lastTouchEnd" in js
     assert "gesturestart" in js
     assert "seek_mark" in js
@@ -117,6 +120,8 @@ def test_static_dir_has_index() -> None:
     assert "-webkit-touch-callout: none" in css
     assert "max-height: min(26vh, 220px)" in css
     assert "max-height: min(170px, 26vh)" in css
+    assert ".song-badges" in css
+    assert ".song-badges .b.v.on" in css
     assert "pace_monitor_timeline" in (root / ".." / "webrtc_listen.py").read_text(encoding="utf-8")
     assert "playbackRate = 1" in js
 
@@ -374,6 +379,42 @@ def test_setlist_includes_collapsible_folders() -> None:
     kinds2 = [row["kind"] for row in state2["setlist"]]
     assert kinds2 == ["song", "folder"]
     assert state2["setlist"][1]["collapsed"] is True
+
+
+def test_setlist_includes_video_and_ltc_badges() -> None:
+    from pathlib import Path
+
+    from cueplayer.domain.models import VideoClip
+
+    project = Project.create("Badges", with_song=False)
+    song = Song.create("ClipSong")
+    song.file_ltc_side = "left"
+    song.add_video_clip(VideoClip.create("v", Path("clip.mp4"), duration_seconds=2.0))
+    project.songs.append(song)
+
+    def _ltc(_song: Song) -> int:
+        return 0
+
+    state = build_state(
+        project=project,
+        song=song,
+        engine=_FakeEngine(),
+        ltc_channel_for_song=_ltc,
+    )
+    row = state["setlist"][0]
+    assert row["has_video"] is True
+    assert row["ltc_channel"] == 0
+
+    project.setlist_show_video_badge = False
+    project.setlist_show_ltc_badge = False
+    hidden = build_state(
+        project=project,
+        song=song,
+        engine=_FakeEngine(),
+        ltc_channel_for_song=_ltc,
+    )
+    assert hidden["setlist"][0]["has_video"] is False
+    assert hidden["setlist"][0]["ltc_channel"] is None
 
 
 def test_now_secondary_is_single_active_mark() -> None:

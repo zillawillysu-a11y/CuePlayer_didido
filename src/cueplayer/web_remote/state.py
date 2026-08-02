@@ -94,23 +94,63 @@ def _now_for_lanes(
     return _now_slot(song, position, lane_indices, lanes)
 
 
-def _setlist_rows(project: Project, active_song_id: str) -> list[dict[str, Any]]:
+def _song_media_badges(
+    project: Project,
+    song: Song,
+    *,
+    ltc_channel_for_song: Any | None = None,
+) -> dict[str, Any]:
+    """Desktop Set List parity: V / LTC / L / R indicators."""
+    show_video = bool(getattr(project, "setlist_show_video_badge", True))
+    show_ltc = bool(getattr(project, "setlist_show_ltc_badge", True))
+    has_video = bool(getattr(song, "video_clips", None))
+    ltc_channel: int | None = None
+    if show_ltc and ltc_channel_for_song is not None:
+        try:
+            raw = ltc_channel_for_song(song)
+            if raw is not None:
+                side = int(raw)
+                if side in (0, 1):
+                    ltc_channel = side
+        except Exception:  # noqa: BLE001
+            ltc_channel = None
+    return {
+        "has_video": bool(show_video and has_video),
+        "ltc_channel": ltc_channel if show_ltc else None,
+    }
+
+
+def _setlist_rows(
+    project: Project,
+    active_song_id: str,
+    *,
+    ltc_channel_for_song: Any | None = None,
+) -> list[dict[str, Any]]:
     """Flat display rows: uncategorized songs, then folders + children."""
     rows: list[dict[str, Any]] = []
+
+    def _song_row(i: int, song: Song, *, category_id: str) -> dict[str, Any]:
+        badges = _song_media_badges(
+            project,
+            song,
+            ltc_channel_for_song=ltc_channel_for_song,
+        )
+        return {
+            "kind": "song",
+            "index": i,
+            "id": song.id,
+            "name": song.name,
+            "setlist_number": float(song.setlist_number),
+            "category_id": category_id,
+            "active": song.id == active_song_id,
+            "has_video": badges["has_video"],
+            "ltc_channel": badges["ltc_channel"],
+        }
+
     for i, song in enumerate(project.songs):
         if song.category_id:
             continue
-        rows.append(
-            {
-                "kind": "song",
-                "index": i,
-                "id": song.id,
-                "name": song.name,
-                "setlist_number": float(song.setlist_number),
-                "category_id": "",
-                "active": song.id == active_song_id,
-            }
-        )
+        rows.append(_song_row(i, song, category_id=""))
     for category in project.setlist_categories:
         rows.append(
             {
@@ -125,17 +165,7 @@ def _setlist_rows(project: Project, active_song_id: str) -> list[dict[str, Any]]
         for i, song in enumerate(project.songs):
             if song.category_id != category.id:
                 continue
-            rows.append(
-                {
-                    "kind": "song",
-                    "index": i,
-                    "id": song.id,
-                    "name": song.name,
-                    "setlist_number": float(song.setlist_number),
-                    "category_id": category.id,
-                    "active": song.id == active_song_id,
-                }
-            )
+            rows.append(_song_row(i, song, category_id=category.id))
     return rows
 
 
@@ -181,6 +211,7 @@ def build_state(
     project: Project,
     song: Song,
     engine: _EngineView,
+    ltc_channel_for_song: Any | None = None,
 ) -> dict[str, Any]:
     songs = list(project.songs)
     try:
@@ -276,7 +307,11 @@ def build_state(
             "fps": fps,
             "in_setlist": song_index >= 0,
         },
-        "setlist": _setlist_rows(project, active_id),
+        "setlist": _setlist_rows(
+            project,
+            active_id,
+            ltc_channel_for_song=ltc_channel_for_song,
+        ),
         # Back-compat for older remote JS.
         "songs": [
             {
@@ -287,6 +322,11 @@ def build_state(
                 "category": "",
                 "duration_seconds": float(s.duration_seconds),
                 "active": i == song_index,
+                **_song_media_badges(
+                    project,
+                    s,
+                    ltc_channel_for_song=ltc_channel_for_song,
+                ),
             }
             for i, s in enumerate(songs)
         ],

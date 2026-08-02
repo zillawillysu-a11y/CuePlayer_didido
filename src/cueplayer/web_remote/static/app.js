@@ -927,9 +927,38 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "song-item" + (row.active ? " active" : "") + (row.category_id ? " nested" : "");
-      btn.innerHTML = `<span class="num"></span><span class="name"></span>`;
+      btn.innerHTML =
+        `<span class="num"></span>` +
+        `<span class="name"></span>` +
+        `<span class="song-badges" aria-hidden="true"></span>`;
       btn.querySelector(".num").textContent = Number(row.setlist_number);
       btn.querySelector(".name").textContent = row.name;
+      const badges = btn.querySelector(".song-badges");
+      if (row.has_video) {
+        const v = document.createElement("span");
+        v.className = "b v on";
+        v.textContent = "V";
+        v.title = "Has video clip(s)";
+        badges.appendChild(v);
+      }
+      if (row.ltc_channel === 0 || row.ltc_channel === 1) {
+        const wrap = document.createElement("span");
+        wrap.className = "ltc-group";
+        wrap.title = row.ltc_channel === 0
+          ? "Striped LTC on Left"
+          : "Striped LTC on Right";
+        for (const [label, on] of [
+          ["LTC", true],
+          ["L", row.ltc_channel === 0],
+          ["R", row.ltc_channel === 1],
+        ]) {
+          const el = document.createElement("span");
+          el.className = "b" + (on ? " on" : "");
+          el.textContent = label;
+          wrap.appendChild(el);
+        }
+        badges.appendChild(wrap);
+      }
       btn.addEventListener("click", () => {
         command({ op: "select_song", index: row.index }).catch(() => {});
       });

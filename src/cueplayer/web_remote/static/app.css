@@ -249,8 +249,9 @@ dialog textarea,
 }
 
 .song-item {
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 2px 8px;
+  align-items: center;
 }
 
 .song-item.nested { padding-left: 18px; }
@@ -264,11 +265,45 @@ dialog textarea,
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   font-size: 0.78rem;
-  grid-row: 1 / span 2;
   align-self: center;
 }
 
-.song-item .name { font-weight: 600; }
+.song-item .name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.song-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.song-badges .ltc-group {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.song-badges .b {
+  color: #4a4a4a;
+}
+
+.song-badges .b.on {
+  color: #e0b85a;
+}
+
+.song-badges .b.v.on {
+  color: #8b9cff;
+}
 
 .stage {
   gap: 8px;
