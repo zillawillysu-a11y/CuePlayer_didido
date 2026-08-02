@@ -89,6 +89,8 @@ def test_static_dir_has_index() -> None:
     assert "setSelectedMark" in js
     assert "lastTouchEnd" in js
     assert "gesturestart" in js
+    assert "seek_mark" in js
+    assert "mark_id: tapId" in js or 'mark_id: tapId' in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()

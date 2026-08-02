@@ -2097,14 +2097,12 @@
     if (markPointer && markPointer.pointerId === ev.pointerId && !markDragging) {
       const tapId = markPointer.id;
       markPointer = null;
-      // Tap: select / deselect. Second tap on same mark keeps it selected.
-      if (selectedMarkId === tapId) {
-        // keep selected (ready for Delete)
-        setSelectedMark(tapId);
-        showToast("Mark selected — tap Delete to remove");
-      } else {
-        setSelectedMark(tapId);
-      }
+      // Tap: jump to mark time + select (Delete stays available).
+      setSelectedMark(tapId);
+      setWaveFollowSuspended(false);
+      try {
+        await command({ op: "seek_mark", mark_id: tapId });
+      } catch (_) { /* ignore */ }
       drawWave(true);
       return;
     }
