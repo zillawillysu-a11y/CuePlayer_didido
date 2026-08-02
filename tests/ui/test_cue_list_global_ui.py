@@ -83,7 +83,21 @@ def test_volume_rail_stays_visible_when_narrow(app: QApplication) -> None:
     app.processEvents()
     assert bar._right_rail.width() >= bar._volume_rail_min
     assert bar.volume_slider.isVisible()
+    assert bar.music_mute_button.isVisible()
     assert bar.volume_slider.width() >= 48
+
+
+def test_music_mute_button_toggles_and_syncs(app: QApplication) -> None:
+    bar = BottomTransportBar()
+    seen: list[bool] = []
+    bar.music_mute_toggled.connect(seen.append)
+    bar.music_mute_button.click()
+    app.processEvents()
+    assert seen == [True]
+    assert bar._music_muted is True
+    bar.set_music_muted(False)
+    assert bar._music_muted is False
+    assert bar.music_mute_button._active is False
 
 
 def test_main_window_syncs_monitor_prefs_to_all_songs(app: QApplication) -> None:

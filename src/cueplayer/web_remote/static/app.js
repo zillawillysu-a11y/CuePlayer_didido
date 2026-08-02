@@ -116,6 +116,7 @@
   let syncDur = 1;
   let syncEpochMs = performance.now();
   let syncSongId = "";
+  let pendingSeek = null; // { seconds, atMs } — ignore stale clock until ack
   let loopState = { a: null, b: null, enabled: false };
   let lastDrawnClock = "";
   let lastPlayheadCueId = "";
@@ -253,9 +254,30 @@
 
   function livePosition() {
     if (scrubbing && scrubbing.seconds != null) return scrubbing.seconds;
+    if (pendingSeek && pendingSeek.seconds != null) return Number(pendingSeek.seconds);
     if (!syncPlaying) return syncPos;
     const elapsed = (performance.now() - syncEpochMs) / 1000;
     return Math.min(syncDur, Math.max(0, syncPos + elapsed));
+  }
+
+  function beginPendingSeek(seconds) {
+    const t = Math.min(syncDur, Math.max(0, Number(seconds) || 0));
+    pendingSeek = { seconds: t, atMs: performance.now() };
+    syncPos = t;
+    syncEpochMs = performance.now();
+    return t;
+  }
+
+  function resolvePendingSeek(serverPos) {
+    if (!pendingSeek) return false;
+    const target = Number(pendingSeek.seconds);
+    const age = performance.now() - pendingSeek.atMs;
+    if (Math.abs(Number(serverPos) - target) < 0.35 || age > 1600) {
+      pendingSeek = null;
+      return false;
+    }
+    // Stale server tick still at the old playhead — keep local seek.
+    return true;
   }
 
   // --- LAN music-only listen + video preview (WebRTC; HTTP audio fallback) ---
@@ -943,10 +965,8 @@
     const nextPos = Math.max(0, Number(position) || 0);
     const nextDur = Math.max(0.1, Number(duration) || 0.1);
     const songChanged = songId && songId !== syncSongId;
-    const posDelta = Math.abs(nextPos - livePosition());
-    const seekJump = !songChanged && posDelta > 0.45;
-    const listenHardSeek = Boolean(songChanged) || (!songChanged && posDelta > 1.0);
     if (songChanged) {
+      pendingSeek = null;
       syncSongId = songId;
       lastPlayheadCueId = "";
       viewStart = 0;
@@ -959,14 +979,19 @@
       setWaveFollowSuspended(false);
       selectedMarkId = "";
       if (els.deleteMarkBtn) els.deleteMarkBtn.hidden = true;
-    } else if (seekJump) {
+    }
+    const holdSeek = !songChanged && resolvePendingSeek(nextPos);
+    const appliedPos = holdSeek && pendingSeek ? Number(pendingSeek.seconds) : nextPos;
+    const seekJump = !songChanged && !holdSeek && Math.abs(nextPos - syncPos) > 0.45;
+    const listenHardSeek = Boolean(songChanged) || (!songChanged && !holdSeek && Math.abs(nextPos - syncPos) > 1.0);
+    if (seekJump) {
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
     }
     syncPlaying = Boolean(playing);
-    syncPos = nextPos;
+    syncPos = appliedPos;
     syncDur = nextDur;
-    syncEpochMs = performance.now();
+    if (!holdSeek) syncEpochMs = performance.now();
     if (viewEnd <= viewStart + 0.05 || viewEnd > nextDur + 0.5) {
       viewStart = 0;
       viewEnd = nextDur;
@@ -975,9 +1000,9 @@
       viewStart = Math.max(0, Math.min(viewStart, viewEnd - 0.05));
     }
     if (listenHardSeek) {
-      listenResync(nextPos);
-    } else {
-      listenOnTransport(Boolean(playing), nextPos);
+      listenResync(appliedPos);
+    } else if (!holdSeek) {
+      listenOnTransport(Boolean(playing), appliedPos);
     }
   }
 
@@ -2221,6 +2246,22 @@
   }
 
   async function command(body) {
+    // Optimistic seek before the round-trip so pollClock cannot paint the old playhead.
+    if (body.op === "seek" && body.seconds != null) {
+      beginPendingSeek(body.seconds);
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+    } else if (body.op === "seek_mark" && body.mark_id && stateCache && stateCache.marks) {
+      const m = stateCache.marks.find((x) => x.id === body.mark_id);
+      if (m) beginPendingSeek(m.time_seconds);
+      setCueFollowSuspended(false);
+      cueFollowLeftViewport = false;
+    } else if (body.op === "stop") {
+      pendingSeek = null;
+      syncPlaying = false;
+      syncPos = 0;
+      syncEpochMs = performance.now();
+    }
     const result = await api("/api/command", { method: "POST", body: JSON.stringify(body) });
     if (body.op === "play") {
       syncPlaying = true;
@@ -2245,14 +2286,7 @@
       els.pauseBtn.classList.remove("active");
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
-    } else if (body.op === "seek" && body.seconds != null) {
-      syncPos = Number(body.seconds);
-      syncEpochMs = performance.now();
-      setCueFollowSuspended(false);
-      cueFollowLeftViewport = false;
     } else if (body.op === "seek_mark") {
-      setCueFollowSuspended(false);
-      cueFollowLeftViewport = false;
       api("/api/state").then(applyState).catch(() => {});
     } else if (
       body.op === "toggle_folder"
@@ -2450,12 +2484,19 @@
   els.prevSong.addEventListener("click", () => command({ op: "prev_song" }).catch(() => {}));
   els.nextSong.addEventListener("click", () => command({ op: "next_song" }).catch(() => {}));
   els.zoomIn.addEventListener("click", () => zoomAt(0.7, livePosition()));
-  els.zoomOut.addEventListener("click", () => zoomAt(1.4, livePosition()));
+  els.zoomOut.addEventListener("click", () => {
+    const span = viewSpan();
+    // Deep zoom needs bigger steps so Fit/− can recover from a pinch.
+    const factor = span < syncDur / 8 ? 4 : (span < syncDur / 3 ? 2.4 : 1.5);
+    zoomAt(factor, livePosition());
+  });
   els.zoomFit.addEventListener("click", () => {
     viewStart = 0;
-    viewEnd = syncDur;
+    viewEnd = Math.max(0.1, syncDur);
+    clampView();
     setWaveFollowSuspended(false);
     waveDetail = null;
+    scheduleWaveDetail();
     drawWave(true);
   });
   if (els.waveFollowBtn) {
@@ -2701,10 +2742,12 @@
     }
     if (!scrubbing) return;
     const seconds = scrubbing.seconds != null ? Number(scrubbing.seconds) : timeFromClientX(ev.clientX);
+    beginPendingSeek(seconds);
     scrubbing = false;
     scrubPointerX = null;
     stopScrubEdgeLoop();
     setWaveFollowSuspended(false);
+    drawWave(true);
     try { await command({ op: "seek", seconds }); } catch (_) {}
     scheduleWaveDetail();
     drawWave(true);
@@ -2745,6 +2788,7 @@
         span: viewSpan(),
         // Time under the finger midpoint — keep this fixed while zooming.
         anchor: timeFromClientX(midX),
+        active: false, // ignore tiny two-finger jitter until pinch moves enough
       };
       scrubbing = false;
       scrubPointerX = null;
@@ -2757,6 +2801,12 @@
     const a = ev.touches[0];
     const b = ev.touches[1];
     const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const ratioDist = dist / Math.max(1, pinching.dist);
+    if (!pinching.active) {
+      // Require ~8% finger distance change before treating as a pinch zoom.
+      if (ratioDist > 0.92 && ratioDist < 1.08) return;
+      pinching.active = true;
+    }
     const midX = (a.clientX + b.clientX) / 2;
     const factor = pinching.dist / Math.max(1, dist);
     const next = Math.min(syncDur, Math.max(0.12, pinching.span * factor));

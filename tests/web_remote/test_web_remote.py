@@ -144,6 +144,9 @@ def test_static_dir_has_index() -> None:
     assert "clear_loop" in js
     assert "set_loop_enabled" in js
     assert "applyLoopState" in js
+    assert "beginPendingSeek" in js
+    assert "pendingSeek" in js
+    assert "justify-content: flex-end" in css
     assert ".stage-media.preview-on" in css
     assert ".layout.hide-setlist" in css
     assert ".layout.hide-monitor" in css
@@ -820,9 +823,17 @@ def test_web_remote_bridge_dispatch_marks() -> None:
     assert out["ok"] is True
     assert out["muted"] is True
     assert window.engine.music_muted is True
+    app.processEvents()
+    assert window.transport._music_muted is True
     out = bridge._dispatch({"op": "set_pc_mute", "muted": False})
     assert out["ok"] is True
     assert window.engine.music_muted is False
+    app.processEvents()
+    assert window.transport._music_muted is False
+    window.transport.music_mute_button.click()
+    app.processEvents()
+    assert window.engine.music_muted is True
+    assert window.transport._music_muted is True
     out = bridge._dispatch({"op": "seek", "seconds": 4.0})
     assert out["ok"] is True
     assert abs(window.engine.position - 4.0) < 0.05

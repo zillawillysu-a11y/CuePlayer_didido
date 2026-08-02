@@ -143,6 +143,7 @@ class BottomTransportBar(QWidget):
     clear_loop_clicked = Signal()
     loop_toggled = Signal(bool)
     volume_changed = Signal(float)  # 0.0 … 1.0
+    music_mute_toggled = Signal(bool)  # PC music mute (same as Web Remote Mute PC)
     seek_requested = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -202,6 +203,14 @@ class BottomTransportBar(QWidget):
             button.setDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        self.music_mute_button = IconButton(
+            "speaker_mute",
+            "Mute PC music (LTC stays; same as Web Remote Mute PC)",
+            size=QSize(36, 36),
+            overlay=True,
+        )
+        self._music_muted = False
+
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
@@ -222,8 +231,9 @@ class BottomTransportBar(QWidget):
         self.tc_status.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; min-width: 72px;")
         self.tc_status.setToolTip("Generated LTC / MTC status (Tools → Audio / Midi / Timecode)")
         self.tc_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._volume_rail_min = 48 + 6 + 40  # slim slider + gap + "100%"
-        self._volume_rail_pref = 120 + 6 + 40
+        self._mute_btn_w = 36 + 6  # mute + gap before slider
+        self._volume_rail_min = self._mute_btn_w + 48 + 6 + 40  # mute + slim slider + %
+        self._volume_rail_pref = self._mute_btn_w + 120 + 6 + 40
         self._tc_rail_extra = 72 + 6
 
         self._center_anchor: QWidget | None = None
@@ -251,6 +261,7 @@ class BottomTransportBar(QWidget):
         right.setSpacing(6)
         right.addStretch(1)
         right.addWidget(self.tc_status)
+        right.addWidget(self.music_mute_button)
         right.addWidget(self.volume_slider)
         right.addWidget(self.volume_value)
         right_host = QWidget()
@@ -280,6 +291,7 @@ class BottomTransportBar(QWidget):
         self.loop_b_button.clicked.connect(self.set_loop_b_clicked.emit)
         self.loop_clear_button.clicked.connect(self.clear_loop_clicked.emit)
         self.loop_button.toggled.connect(self.loop_toggled.emit)
+        self.music_mute_button.clicked.connect(self._on_music_mute_clicked)
         self.volume_slider.valueChanged.connect(self._on_volume_slider)
         self.overview.seek_requested.connect(self.seek_requested.emit)
 
@@ -459,6 +471,8 @@ class BottomTransportBar(QWidget):
         if self.volume_slider.isVisible() != show_volume:
             self.volume_slider.setVisible(show_volume)
             self.volume_value.setVisible(show_volume)
+        if self.music_mute_button.isVisible() != show_volume:
+            self.music_mute_button.setVisible(show_volume)
         if not show_volume:
             vol_min = 0
 
@@ -473,8 +487,9 @@ class BottomTransportBar(QWidget):
             self.tc_status.setVisible(show_tc)
         if show_volume:
             slider_w = 120
+            mute_gap = int(getattr(self, "_mute_btn_w", 42))
             if right_budget < self._volume_rail_pref:
-                slider_w = max(48, right_budget - 6 - 40)
+                slider_w = max(48, right_budget - mute_gap - 6 - 40)
             if self.volume_slider.width() != slider_w:
                 self.volume_slider.setFixedWidth(slider_w)
 
@@ -577,6 +592,8 @@ class BottomTransportBar(QWidget):
                     if self.volume_slider.isVisible():
                         self.volume_slider.setVisible(False)
                         self.volume_value.setVisible(False)
+                    if self.music_mute_button.isVisible():
+                        self.music_mute_button.setVisible(False)
                 if self._left_rail.width() != left_w:
                     self._left_rail.setFixedWidth(left_w)
                 if self._right_rail.width() != right_w:
@@ -625,6 +642,21 @@ class BottomTransportBar(QWidget):
     def _on_volume_slider(self, value: int) -> None:
         self.volume_value.setText(f"{int(value)}%")
         self.volume_changed.emit(value / 100.0)
+
+    def _on_music_mute_clicked(self) -> None:
+        muted = not self._music_muted
+        self.set_music_muted(muted)
+        self.music_mute_toggled.emit(muted)
+
+    def set_music_muted(self, muted: bool) -> None:
+        """Sync mute chip from engine / Web Remote (does not re-emit)."""
+        self._music_muted = bool(muted)
+        self.music_mute_button.set_active(self._music_muted)
+        self.music_mute_button.setToolTip(
+            "Unmute PC music (LTC never muted; same as Web Remote Mute PC)"
+            if self._music_muted
+            else "Mute PC music (LTC stays; same as Web Remote Mute PC)"
+        )
 
     def set_volume(self, volume: float) -> None:
         """Set slider from 0.0…1.0 without re-emitting if unchanged."""

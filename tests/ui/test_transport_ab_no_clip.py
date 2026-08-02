@@ -89,6 +89,8 @@ def test_ab_cluster_uses_minimal_density_when_very_narrow(app: QApplication) -> 
     _assert_no_horizontal_overlap(bar.loop_button, bar.loop_clear_button)
     if bar.volume_slider.isVisible():
         _assert_no_horizontal_overlap(bar.loop_clear_button, bar.volume_slider)
+    if bar.music_mute_button.isVisible():
+        _assert_no_horizontal_overlap(bar.loop_clear_button, bar.music_mute_button)
     # Overview stays inside its host (end time not cropped off-widget).
     ov = bar.overview
     host = bar._overview_host

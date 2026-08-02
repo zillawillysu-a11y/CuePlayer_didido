@@ -1317,6 +1317,8 @@ class MainWindow(QMainWindow):
         self.transport.clear_loop_clicked.connect(self._clear_loop)
         self.transport.loop_toggled.connect(self._set_loop_enabled)
         self.transport.volume_changed.connect(self.engine.set_volume)
+        self.transport.music_mute_toggled.connect(self._set_music_muted_from_ui)
+        self.engine.music_muted_changed.connect(self.transport.set_music_muted)
         self.timeline.seek_requested.connect(self.engine.seek)
         self.transport.seek_requested.connect(self.engine.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
@@ -5495,6 +5497,14 @@ class MainWindow(QMainWindow):
             return
         self.engine.set_loop_enabled(enabled)
         self._sync_loop_ui()
+
+    def _set_music_muted_from_ui(self, muted: bool) -> None:
+        """Transport mute chip — same engine flag as Web Remote Mute PC."""
+        self.engine.set_music_muted(bool(muted))
+        self.status.showMessage(
+            "PC music muted (LTC stays)" if muted else "PC music unmuted",
+            2500,
+        )
 
     def _set_view_mode(self, mode: str) -> None:
         if mode == "ma_patch":

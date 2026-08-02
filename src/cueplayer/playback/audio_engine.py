@@ -83,6 +83,7 @@ class AudioEngine(QObject):
     position_changed = Signal(float)
     playing_changed = Signal(bool)
     timecode_status_changed = Signal()  # LTC/MTC toggles / warnings
+    music_muted_changed = Signal(bool)  # PC music mute (LTC unaffected)
     # Worker → UI: (detect generation token, detected channel or None)
     _ltc_detect_finished = Signal(int, object)
 
@@ -553,8 +554,12 @@ class AudioEngine(QObject):
 
     def set_music_muted(self, muted: bool) -> None:
         """Silence music/video beds (LTC output is unaffected)."""
+        muted = bool(muted)
         with self._lock:
-            self._mute_music = bool(muted)
+            if self._mute_music == muted:
+                return
+            self._mute_music = muted
+        self.music_muted_changed.emit(muted)
 
     @property
     def music_muted(self) -> bool:
