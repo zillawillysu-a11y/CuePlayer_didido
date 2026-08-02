@@ -318,8 +318,8 @@
     els.listenBtn.classList.toggle("on", listenOn);
     els.listenBtn.textContent = listenOn ? "Listening" : "Listen";
     els.listenBtn.title = listenOn
-      ? "Stop music-only listen (LAN latency)"
-      : "Listen music only on this device (no LTC)";
+      ? "Stop listen (LAN latency)"
+      : "Listen on this device — music, or video audio if no music file (no LTC)";
     if (els.mutePcBtn) {
       els.mutePcBtn.hidden = false;
       els.mutePcBtn.disabled = false;

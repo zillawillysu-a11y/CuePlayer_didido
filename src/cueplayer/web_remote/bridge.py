@@ -16,6 +16,7 @@ from cueplayer.web_remote.state import (
     build_state,
     build_waveform_overview,
     build_waveform_window,
+    mix_listen_mono,
     music_mono_samples,
     seconds_to_timecode,
     timecode_to_abs_seconds,
@@ -215,16 +216,10 @@ class WebRemoteBridge(QObject):
             },
         }
 
-    def _music_waveform_buffer(self) -> Any:
-        """Music-only display buffer (LTC channel stripped), matching the timeline."""
-        host = self._host
-        engine = host.engine
-        buf = getattr(engine, "buffer", None)
-        if buf is None:
-            return None
-        # Prefer the same peaks the desktop Music lane is already painting.
+    def _timeline_display_audio(self) -> Any:
+        """Desktop Music-lane buffer (real music, or video-audio standin)."""
         try:
-            timeline = getattr(host, "timeline", None)
+            timeline = getattr(self._host, "timeline", None)
             display = getattr(timeline, "_audio", None) if timeline is not None else None
             if (
                 display is not None
@@ -233,7 +228,35 @@ class WebRemoteBridge(QObject):
             ):
                 return display
         except Exception:  # noqa: BLE001
-            pass
+            return None
+        return None
+
+    def _has_main_music_file(self) -> bool:
+        host = self._host
+        if hasattr(host, "_song_has_main_audio_file"):
+            try:
+                return bool(host._song_has_main_audio_file())
+            except Exception:  # noqa: BLE001
+                pass
+        buf = getattr(host.engine, "buffer", None)
+        return buf is not None and int(getattr(buf, "frames", 0) or 0) > 0
+
+    def _music_waveform_buffer(self) -> Any:
+        """Music-lane display buffer matching the desktop timeline.
+
+        Prefer ``timeline._audio`` first so video-only songs (no music file)
+        expose the same video-audio standin waveform the desktop Music lane
+        paints. When a main music file exists, fall back to the engine buffer
+        with LTC stripped.
+        """
+        host = self._host
+        display = self._timeline_display_audio()
+        if display is not None:
+            return display
+        engine = host.engine
+        buf = getattr(engine, "buffer", None)
+        if buf is None:
+            return None
         try:
             song = host.current_song
             exclude = host._ltc_channel_for_song(song)
@@ -309,24 +332,112 @@ class WebRemoteBridge(QObject):
         rate: int | None = None,
         as_wav: bool = False,
     ) -> tuple[dict[str, Any], bytes]:
-        """Music-only PCM/WAV chunk for iPad / Safari listen-along (no LTC)."""
+        """Listen PCM/WAV: main music when present, else video-clip audio (no LTC)."""
+        import numpy as np
+
+        from cueplayer.web_remote.state import pcm16_le_to_wav
+
         host = self._host
         song = host.current_song
         engine = host.engine
-        buf = getattr(engine, "buffer", None)
-        exclude = self._ltc_exclude_for_cache()
-        return build_monitor_pcm(
-            buf,
-            song_id=str(song.id),
-            position=float(engine.position),
-            playing=bool(engine.playing),
-            duration=float(engine.duration),
-            start=start,
-            seconds=float(seconds) if seconds is not None else 0.35,
-            out_rate=int(rate) if rate else 24000,
-            exclude_channel=exclude,
-            as_wav=bool(as_wav),
+        out_rate = int(rate) if rate else 24000
+        want = float(seconds) if seconds is not None else 0.35
+        t0 = float(engine.position if start is None else start)
+
+        # Music + Video Track → music bed only (desktop Music-lane parity).
+        if self._has_main_music_file():
+            buf = getattr(engine, "buffer", None)
+            exclude = self._ltc_exclude_for_cache()
+            return build_monitor_pcm(
+                buf,
+                song_id=str(song.id),
+                position=float(engine.position),
+                playing=bool(engine.playing),
+                duration=float(engine.duration),
+                start=t0,
+                seconds=want,
+                out_rate=out_rate,
+                exclude_channel=exclude,
+                as_wav=bool(as_wav),
+            )
+
+        # Pure video: stream embedded clip audio from the same mixer as desktop.
+        out_sr = max(8000, min(48000, int(out_rate) if out_rate else 24000))
+        want = min(1.0, max(0.05, want))
+        n = max(1, int(round(want * out_sr)))
+        meta: dict[str, Any] = {
+            "ok": True,
+            "song_id": str(song.id),
+            "playing": bool(engine.playing),
+            "position": float(engine.position),
+            "duration": float(engine.duration),
+            "start": t0,
+            "seconds": 0.0,
+            "sample_rate": out_sr,
+            "channels": 1,
+            "format": "wav" if as_wav else "s16le",
+            "ready": False,
+            "frames": 0,
+        }
+        video = self._video_listen_stereo(t0, n, out_sr)
+        play_sr = int(getattr(engine, "_playback_rate", 0) or out_sr)
+        mixed = mix_listen_mono(
+            music_mono=None,
+            music_rate=out_sr,
+            video_stereo=video,
+            video_rate=play_sr if video is not None else out_sr,
+            out_rate=out_sr,
+            out_frames=n,
         )
+        pcm = (np.clip(mixed, -1.0, 1.0) * 32767.0).astype(np.int16)
+        raw = pcm.tobytes(order="C")
+        ready = bool(video is not None) and float(np.max(np.abs(mixed))) > 1e-6
+        meta.update(
+            {
+                "ready": ready,
+                "frames": int(pcm.size),
+                "seconds": float(pcm.size) / float(out_sr) if out_sr else 0.0,
+            }
+        )
+        if as_wav:
+            return meta, pcm16_le_to_wav(raw, sample_rate=out_sr, channels=1)
+        return meta, raw
+
+    def _video_listen_stereo(
+        self, start_seconds: float, out_frames: int, out_rate: int
+    ) -> Any:
+        """Video-clip stereo at engine playback rate covering ``out_frames`` @ ``out_rate``.
+
+        Same ``VideoAudioMixer`` as desktop (sample-locked; no second decoder).
+        Used only when there is no main music file. Bypasses PC Mute; respects
+        Video Track mute.
+        """
+        import numpy as np
+
+        engine = self._host.engine
+        mixer = getattr(engine, "_video_mixer", None)
+        if mixer is None or bool(getattr(mixer, "muted", False)):
+            return None
+        song = getattr(engine, "_song", None)
+        clips = list(getattr(song, "video_clips", None) or []) if song is not None else []
+        if not clips:
+            return None
+        play_sr = int(getattr(engine, "_playback_rate", 0) or 0)
+        if play_sr <= 0:
+            play_sr = max(1, int(out_rate))
+        dur = float(out_frames) / float(max(1, int(out_rate)))
+        n_play = int(max(1, round(dur * float(play_sr))))
+        start_frame = int(max(0, round(float(start_seconds) * float(play_sr))))
+        try:
+            stereo = mixer.chunk_at(start_frame, n_play)
+        except Exception:  # noqa: BLE001
+            return None
+        if stereo is None:
+            return None
+        arr = np.asarray(stereo, dtype=np.float32)
+        if arr.size == 0:
+            return None
+        return arr
 
     def _safe_webrtc(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._webrtc.handle(payload if isinstance(payload, dict) else {})
@@ -375,8 +486,10 @@ class WebRemoteBridge(QObject):
         stream cursor by exactly ``n_samples`` and only hard-resync on seek /
         play-start / sender lag-skip.
 
-        Cache music-only mono at the **file** sample rate; resample only the
-        small outgoing slice so the first Listen frame stays cheap.
+        Source selection matches the Music lane:
+        - main music file present → music only (LTC stripped; ignore video audio)
+        - pure video song → video-clip audio via ``VideoAudioMixer``
+        PC Mute does not silence this stream.
         """
         import numpy as np
 
@@ -393,68 +506,87 @@ class WebRemoteBridge(QObject):
             self._mon_force_resync = False
             return silence
 
-        buf = getattr(engine, "buffer", None)
-        if buf is None or int(getattr(buf, "frames", 0) or 0) <= 0:
+        has_music = self._has_main_music_file()
+        song = getattr(engine, "_song", None)
+        has_video = bool(getattr(song, "video_clips", None) or [])
+        if not has_music and not has_video:
             self._mon_was_playing = False
-            return silence
-
-        try:
-            exclude = self._ltc_exclude_for_cache()
-        except Exception:  # noqa: BLE001
-            exclude = None
-        frames = int(getattr(buf, "frames", 0) or 0)
-        src_sr = int(getattr(buf, "sample_rate", 0) or 0)
-        key = (id(buf), frames, src_sr, exclude)
-        if self._mon_mono is None or self._mon_cache_key != key:
-            try:
-                mono = music_mono_samples(buf, exclude_channel=exclude)
-            except Exception:  # noqa: BLE001
-                self._mon_was_playing = False
-                return silence
-            if mono.size == 0 or src_sr <= 0:
-                self._mon_was_playing = False
-                return silence
-            self._mon_mono = np.asarray(mono, dtype=np.float32)
-            self._mon_sr = src_sr
-            self._mon_cache_key = key
-
-        mono = self._mon_mono
-        src_sr = int(self._mon_sr)
-        if mono is None or mono.size == 0 or src_sr <= 0:
             return silence
 
         pos = float(engine.position)
         force = bool(self._mon_force_resync)
         self._mon_force_resync = False
         if force or not self._mon_was_playing:
-            # Play-start / lag-skip / seek: jump once. Never burst frames to catch up.
             self._mon_cursor = max(0.0, pos)
             self._mon_was_playing = True
         elif abs(self._mon_cursor - pos) > 0.45:
-            # Large intentional seek only — small jitter must NOT snap (that chops).
             self._mon_cursor = max(0.0, pos)
 
-        # Pull enough native samples to cover n output samples after resample.
-        need_native = n
-        if abs(float(src_sr) - float(out_sr)) > 0.5:
-            need_native = int(max(1, round(n * float(src_sr) / float(out_sr)))) + 2
-        i0 = int(max(0, min(mono.size, round(self._mon_cursor * float(src_sr)))))
-        i1 = min(mono.size, i0 + need_native)
-        chunk = mono[i0:i1]
-        if chunk.size < need_native:
-            chunk = np.concatenate(
-                [chunk, np.zeros(need_native - chunk.size, dtype=np.float32)]
-            )
-        if abs(float(src_sr) - float(out_sr)) > 0.5:
-            chunk = resample_linear(chunk, float(src_sr), float(out_sr))
-        if chunk.size < n:
-            chunk = np.concatenate([chunk, np.zeros(n - chunk.size, dtype=np.float32)])
-        elif chunk.size > n:
-            chunk = chunk[:n]
-        # Advance by exact output duration so Opus frames stay contiguous.
-        self._mon_cursor += float(n) / float(out_sr)
-        chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
-        return (chunk * 32767.0).astype(np.int16)
+        cursor = float(self._mon_cursor)
+
+        if has_music:
+            buf = getattr(engine, "buffer", None)
+            if buf is None or int(getattr(buf, "frames", 0) or 0) <= 0:
+                self._mon_cursor = cursor + float(n) / float(out_sr)
+                return silence
+            try:
+                exclude = self._ltc_exclude_for_cache()
+            except Exception:  # noqa: BLE001
+                exclude = None
+            frames = int(getattr(buf, "frames", 0) or 0)
+            src_sr = int(getattr(buf, "sample_rate", 0) or 0)
+            key = (id(buf), frames, src_sr, exclude)
+            if self._mon_mono is None or self._mon_cache_key != key:
+                try:
+                    mono = music_mono_samples(buf, exclude_channel=exclude)
+                except Exception:  # noqa: BLE001
+                    self._mon_cursor = cursor + float(n) / float(out_sr)
+                    return silence
+                if mono.size == 0 or src_sr <= 0:
+                    self._mon_cursor = cursor + float(n) / float(out_sr)
+                    return silence
+                self._mon_mono = np.asarray(mono, dtype=np.float32)
+                self._mon_sr = src_sr
+                self._mon_cache_key = key
+
+            mono = self._mon_mono
+            src_sr = int(self._mon_sr)
+            if mono is None or mono.size == 0 or src_sr <= 0:
+                self._mon_cursor = cursor + float(n) / float(out_sr)
+                return silence
+            need_native = n
+            if abs(float(src_sr) - float(out_sr)) > 0.5:
+                need_native = int(max(1, round(n * float(src_sr) / float(out_sr)))) + 2
+            i0 = int(max(0, min(mono.size, round(cursor * float(src_sr)))))
+            i1 = min(mono.size, i0 + need_native)
+            chunk = mono[i0:i1]
+            if chunk.size < need_native:
+                chunk = np.concatenate(
+                    [chunk, np.zeros(need_native - chunk.size, dtype=np.float32)]
+                )
+            if abs(float(src_sr) - float(out_sr)) > 0.5:
+                chunk = resample_linear(chunk, float(src_sr), float(out_sr))
+            if chunk.size < n:
+                chunk = np.concatenate([chunk, np.zeros(n - chunk.size, dtype=np.float32)])
+            elif chunk.size > n:
+                chunk = chunk[:n]
+            self._mon_cursor = cursor + float(n) / float(out_sr)
+            chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32, copy=False)
+            return (chunk * 32767.0).astype(np.int16)
+
+        # Pure video — no main music file.
+        video = self._video_listen_stereo(cursor, n, out_sr)
+        play_sr = int(getattr(engine, "_playback_rate", 0) or out_sr)
+        mixed = mix_listen_mono(
+            music_mono=None,
+            music_rate=out_sr,
+            video_stereo=video,
+            video_rate=play_sr if video is not None else out_sr,
+            out_rate=out_sr,
+            out_frames=n,
+        )
+        self._mon_cursor = cursor + float(n) / float(out_sr)
+        return (mixed * 32767.0).astype(np.int16)
 
     def _enqueue_command(self, command: dict[str, Any]) -> dict[str, Any]:
         reply: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)

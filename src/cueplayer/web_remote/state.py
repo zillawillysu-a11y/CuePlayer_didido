@@ -574,7 +574,8 @@ def timecode_to_abs_seconds(timecode: str, fps: float) -> float:
     return float(timecode_to_seconds(timecode, fps))
 
 
-# LAN monitor stream: music-only mono PCM for Safari / iPad listen-along.
+# LAN monitor stream for Safari / iPad Listen (no LTC):
+# main music when present; otherwise video-clip embedded audio.
 MONITOR_SAMPLE_RATE = 24000
 MONITOR_MAX_SECONDS = 1.0
 
@@ -602,6 +603,60 @@ def music_mono_samples(
     if len(keep) == 1:
         return samples[:, keep[0]].astype(np.float32)
     return samples[:, keep].mean(axis=1).astype(np.float32)
+
+
+def _to_out_mono(
+    samples: np.ndarray | None,
+    *,
+    src_rate: int,
+    out_rate: int,
+    out_frames: int,
+) -> np.ndarray:
+    """Resample / pad / trim float audio to mono length ``out_frames`` at ``out_rate``."""
+    from cueplayer.playback.resample import resample_linear
+
+    n = max(1, int(out_frames))
+    if samples is None:
+        return np.zeros(n, dtype=np.float32)
+    arr = np.asarray(samples, dtype=np.float32)
+    if arr.size == 0:
+        return np.zeros(n, dtype=np.float32)
+    if arr.ndim == 2:
+        arr = arr.mean(axis=1).astype(np.float32)
+    else:
+        arr = arr.reshape(-1)
+    sr = max(1, int(src_rate))
+    orate = max(1, int(out_rate))
+    if abs(float(sr) - float(orate)) > 0.5:
+        arr = resample_linear(arr, float(sr), float(orate))
+    if arr.size < n:
+        arr = np.concatenate([arr, np.zeros(n - arr.size, dtype=np.float32)])
+    elif arr.size > n:
+        arr = arr[:n]
+    return np.asarray(arr, dtype=np.float32)
+
+
+def mix_listen_mono(
+    *,
+    music_mono: np.ndarray | None,
+    music_rate: int,
+    video_stereo: np.ndarray | None,
+    video_rate: int,
+    out_rate: int,
+    out_frames: int,
+) -> np.ndarray:
+    """Resample beds to mono float32 for Web Remote Listen.
+
+    Callers choose the source: music-only when a main file exists, or
+    video-only for pure-video songs. Passing both mixes them (tests).
+    """
+    music = _to_out_mono(
+        music_mono, src_rate=music_rate, out_rate=out_rate, out_frames=out_frames
+    )
+    video = _to_out_mono(
+        video_stereo, src_rate=video_rate, out_rate=out_rate, out_frames=out_frames
+    )
+    return np.clip(music + video, -1.0, 1.0).astype(np.float32, copy=False)
 
 
 def pcm16_le_to_wav(pcm: bytes, *, sample_rate: int, channels: int = 1) -> bytes:

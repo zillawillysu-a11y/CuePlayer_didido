@@ -20,6 +20,7 @@ from cueplayer.web_remote.state import (
     build_waveform_overview,
     build_waveform_window,
     format_clock,
+    mix_listen_mono,
     music_mono_samples,
     pcm16_le_to_wav,
 )
@@ -109,6 +110,15 @@ def test_static_dir_has_index() -> None:
     assert "showCueActionsForMark" in js
     assert "clearCueSelectionOnPlayheadAdvance" in js
     assert "cueActionUiBusy" in js
+    assert "_has_main_music_file" in (
+        root / ".." / "bridge.py"
+    ).read_text(encoding="utf-8")
+    assert "_timeline_display_audio" in (
+        root / ".." / "bridge.py"
+    ).read_text(encoding="utf-8")
+    assert "mix_listen_mono" in (
+        root / ".." / "bridge.py"
+    ).read_text(encoding="utf-8")
     assert "cue_list_enabled" in js
     assert "mgr-cuelist" in js
     assert "song-badges" in js
@@ -270,6 +280,33 @@ def test_waveform_strips_ltc_channel_energy() -> None:
     )
     assert clean_wave["ready"] is True
     assert max(abs(v) for v in clean_wave["maxs"]) > 0.05
+
+
+def test_mix_listen_mono_video_only_and_music_only() -> None:
+    """Helpers used when Listen falls back to video audio (no music file)."""
+    sr = 48000
+    n = 4800
+    music = np.full(n, 0.2, dtype=np.float32)
+    video = np.full((n, 2), 0.3, dtype=np.float32)
+    out = mix_listen_mono(
+        music_mono=None,
+        music_rate=sr,
+        video_stereo=video,
+        video_rate=sr,
+        out_rate=sr,
+        out_frames=n,
+    )
+    assert out.shape == (n,)
+    assert float(np.mean(out)) == pytest.approx(0.3, abs=1e-3)
+    music_only = mix_listen_mono(
+        music_mono=music,
+        music_rate=sr,
+        video_stereo=None,
+        video_rate=sr,
+        out_rate=sr,
+        out_frames=n,
+    )
+    assert float(np.mean(music_only)) == pytest.approx(0.2, abs=1e-3)
 
 
 def test_monitor_pcm_music_only_strips_ltc() -> None:
