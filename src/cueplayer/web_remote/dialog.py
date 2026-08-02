@@ -50,7 +50,7 @@ class WebRemoteDialog(QDialog):
         blurb = QLabel(
             "Control CuePlayer from Safari on the same LAN (iPad / phone). "
             "Playback, setlist, and marks run on this PC — LTC stays here. "
-            "Monitor audio streaming comes later."
+            "Remote Listen / Preview use WebRTC (low latency) on the same Wi‑Fi."
         )
         blurb.setWordWrap(True)
         blurb.setObjectName("webRemoteBlurb")

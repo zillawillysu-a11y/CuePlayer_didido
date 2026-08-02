@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#050505" />
   <title>CuePlayer Remote</title>
-  <link rel="stylesheet" href="/app.css?v=listen13" />
+  <link rel="stylesheet" href="/app.css?v=listen14" />
 </head>
 <body>
   <div class="app">
@@ -16,6 +16,7 @@
       <div class="song-chip" id="songTitle">—</div>
       <button type="button" class="ghost" id="listenBtn" title="Listen (music only)">Listen</button>
       <button type="button" class="ghost" id="mutePcBtn" title="Mute PC music speakers (LTC stays)">Mute PC</button>
+      <button type="button" class="ghost" id="previewBtn" title="Video Preview (low latency)">Preview</button>
       <button type="button" class="ghost" id="dispBtn" title="Display">Disp</button>
       <button type="button" class="ghost" id="markMgrBtn">Marks</button>
       <button type="button" class="ghost" id="authBtn" title="Password">Key</button>
@@ -65,6 +66,10 @@
       <div class="splitter" id="splitMonitor" role="separator" aria-orientation="vertical" aria-label="Resize monitor" tabindex="0"></div>
 
       <section class="panel monitor" id="monitorPanel" aria-label="Cue monitor">
+        <div class="preview-wrap" id="previewWrap" hidden>
+          <video id="previewVideo" playsinline muted autoplay></video>
+          <div class="preview-empty" id="previewEmpty">Preview off</div>
+        </div>
         <div class="monitor-clock">
           <div class="clock" id="clock">00:00.000</div>
           <div class="duration" id="duration">/ 00:00.000</div>
@@ -172,6 +177,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=listen13"></script>
+  <script src="/app.js?v=listen14"></script>
 </body>
 </html>

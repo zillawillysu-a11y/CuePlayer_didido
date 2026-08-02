@@ -34,6 +34,10 @@
     savePassword: document.getElementById("savePassword"),
     listenBtn: document.getElementById("listenBtn"),
     mutePcBtn: document.getElementById("mutePcBtn"),
+    previewBtn: document.getElementById("previewBtn"),
+    previewWrap: document.getElementById("previewWrap"),
+    previewVideo: document.getElementById("previewVideo"),
+    previewEmpty: document.getElementById("previewEmpty"),
     markMgrBtn: document.getElementById("markMgrBtn"),
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
@@ -230,8 +234,9 @@
     return Math.min(syncDur, Math.max(0, syncPos + elapsed));
   }
 
-  // --- LAN music-only listen (WebRTC low-latency primary; HTTP chunk fallback) ---
+  // --- LAN music-only listen + video preview (WebRTC; HTTP audio fallback) ---
   let listenOn = false;
+  let previewOn = false;
   let listenMode = ""; // "webrtc" | "http" | ""
   let listenCursor = 0;
   let listenBusy = false;
@@ -248,6 +253,8 @@
   let listenOriginAt = 0;
   let listenPc = null;
   let listenRtcAudio = null;
+  let webrtcWantAudio = false;
+  let webrtcWantVideo = false;
   let pcMuted = false;
   let markDragging = null; // { id, startSeconds, liveSeconds, pointerId }
   let markPointer = null; // pending tap vs drag: { id, startX, startY, startSeconds, pointerId }
@@ -268,6 +275,20 @@
     if (els.mutePcBtn) {
       els.mutePcBtn.hidden = false;
       els.mutePcBtn.disabled = false;
+    }
+  }
+
+  function updatePreviewBtn() {
+    if (!els.previewBtn) return;
+    els.previewBtn.classList.toggle("on", previewOn);
+    els.previewBtn.textContent = previewOn ? "Preview On" : "Preview";
+    els.previewBtn.title = previewOn
+      ? "Stop low-latency video preview"
+      : "Show desktop video preview (WebRTC · low latency)";
+    if (els.previewWrap) els.previewWrap.hidden = !previewOn;
+    if (els.previewEmpty) {
+      els.previewEmpty.textContent = previewOn ? "Waiting for video…" : "Preview off";
+      els.previewEmpty.classList.toggle("hidden", false);
     }
   }
 
@@ -612,6 +633,8 @@
   async function stopWebRtcListen() {
     const pc = listenPc;
     listenPc = null;
+    webrtcWantAudio = false;
+    webrtcWantVideo = false;
     if (pc) {
       try { pc.ontrack = null; } catch (_) { /* noop */ }
       try { pc.close(); } catch (_) { /* noop */ }
@@ -621,6 +644,10 @@
       try { listenRtcAudio.srcObject = null; } catch (_) { /* noop */ }
       listenRtcAudio = null;
     }
+    if (els.previewVideo) {
+      try { els.previewVideo.pause(); } catch (_) { /* noop */ }
+      try { els.previewVideo.srcObject = null; } catch (_) { /* noop */ }
+    }
     try {
       await api("/api/webrtc", {
         method: "POST",
@@ -629,7 +656,22 @@
     } catch (_) { /* offline / already down */ }
   }
 
-  async function startWebRtcListen() {
+  async function startWebRtcSession({ audio = false, video = false } = {}) {
+    const wantAudio = Boolean(audio);
+    const wantVideo = Boolean(video);
+    if (!wantAudio && !wantVideo) {
+      await stopWebRtcListen();
+      return;
+    }
+    if (
+      listenPc
+      && webrtcWantAudio === wantAudio
+      && webrtcWantVideo === wantVideo
+      && listenPc.connectionState !== "failed"
+      && listenPc.connectionState !== "closed"
+    ) {
+      return;
+    }
     if (typeof RTCPeerConnection !== "function") {
       throw new Error("RTCPeerConnection unsupported");
     }
@@ -640,6 +682,9 @@
     if (!caps || !caps.webrtc) {
       throw new Error(caps && caps.error ? caps.error : "webrtc_unavailable");
     }
+    if (wantVideo && caps.video === false) {
+      throw new Error("video_unavailable");
+    }
 
     await stopWebRtcListen();
 
@@ -648,37 +693,67 @@
       bundlePolicy: "max-bundle",
     });
     listenPc = pc;
-    pc.addTransceiver("audio", { direction: "recvonly" });
+    webrtcWantAudio = wantAudio;
+    webrtcWantVideo = wantVideo;
+    if (wantAudio) pc.addTransceiver("audio", { direction: "recvonly" });
+    if (wantVideo) pc.addTransceiver("video", { direction: "recvonly" });
 
-    const audioEl = new Audio();
-    audioEl.playsInline = true;
-    audioEl.setAttribute("playsinline", "true");
-    audioEl.autoplay = true;
-    // Never allow Safari to "catch up" by changing playback speed.
-    try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
-    try { audioEl.defaultPlaybackRate = 1; } catch (_) { /* noop */ }
-    listenRtcAudio = audioEl;
+    let audioEl = null;
+    if (wantAudio) {
+      audioEl = new Audio();
+      audioEl.playsInline = true;
+      audioEl.setAttribute("playsinline", "true");
+      audioEl.autoplay = true;
+      try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
+      try { audioEl.defaultPlaybackRate = 1; } catch (_) { /* noop */ }
+      listenRtcAudio = audioEl;
+    }
 
     pc.ontrack = (ev) => {
       const stream = (ev.streams && ev.streams[0])
         ? ev.streams[0]
         : new MediaStream([ev.track]);
-      audioEl.srcObject = stream;
-      try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
-      audioEl.play().catch(() => {});
+      if (ev.track && ev.track.kind === "video") {
+        if (els.previewVideo) {
+          els.previewVideo.srcObject = stream;
+          els.previewVideo.muted = true;
+          els.previewVideo.playsInline = true;
+          els.previewVideo.setAttribute("playsinline", "true");
+          els.previewVideo.play().catch(() => {});
+          if (els.previewEmpty) els.previewEmpty.classList.add("hidden");
+        }
+        return;
+      }
+      if (audioEl && ev.track && ev.track.kind === "audio") {
+        audioEl.srcObject = stream;
+        try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
+        audioEl.play().catch(() => {});
+      }
     };
     pc.onconnectionstatechange = () => {
-      if (!listenOn || listenMode !== "webrtc") return;
-      if (pc.connectionState === "failed") {
+      if (pc.connectionState !== "failed") return;
+      if (listenOn && listenMode === "webrtc") {
         listenToastOnce("WebRTC failed — falling back");
         fallbackListenHttp();
+        return;
+      }
+      if (previewOn) {
+        listenToastOnce("Preview WebRTC failed");
+        setPreviewOn(false).catch(() => {});
       }
     };
 
-    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    const offer = await pc.createOffer({
+      offerToReceiveAudio: wantAudio,
+      offerToReceiveVideo: wantVideo,
+    });
     await pc.setLocalDescription(offer);
     await waitIceComplete(pc, 4000);
-    if (!listenOn || !listenPc) throw new Error("listen_cancelled");
+    if (!listenPc) throw new Error("webrtc_cancelled");
+    // User may have toggled off while negotiating.
+    if (!(wantAudio && listenOn) && !(wantVideo && previewOn)) {
+      throw new Error("webrtc_cancelled");
+    }
 
     const answer = await api("/api/webrtc", {
       method: "POST",
@@ -686,6 +761,8 @@
         op: "offer",
         type: pc.localDescription.type,
         sdp: pc.localDescription.sdp,
+        audio: wantAudio,
+        video: wantVideo,
       }),
     });
     if (!answer || !answer.ok || !answer.sdp) {
@@ -695,19 +772,79 @@
       type: answer.type || "answer",
       sdp: answer.sdp,
     });
-    if (audioEl.srcObject) {
+    if (audioEl && audioEl.srcObject) {
       await audioEl.play();
     }
+    if (wantVideo && els.previewVideo && els.previewVideo.srcObject) {
+      await els.previewVideo.play();
+    }
+  }
+
+  async function refreshWebRtcMedia() {
+    const wantVideo = previewOn;
+    const wantAudio = listenOn && listenMode !== "http";
+    if (!wantAudio && !wantVideo) {
+      await stopWebRtcListen();
+      return;
+    }
+    await startWebRtcSession({ audio: wantAudio, video: wantVideo });
   }
 
   async function fallbackListenHttp() {
     if (!listenOn) return;
-    await stopWebRtcListen();
     listenMode = "http";
+    // Keep / rebuild WebRTC for Preview-only if needed.
+    try {
+      if (previewOn) {
+        await startWebRtcSession({ audio: false, video: true });
+      } else {
+        await stopWebRtcListen();
+      }
+    } catch (_) {
+      await stopWebRtcListen();
+    }
     listenWasPlaying = syncPlaying;
     listenFlush(livePosition());
     showToast("Listening (HTTP fallback)");
     scheduleListenPump(0);
+  }
+
+  async function setPreviewOn(on) {
+    previewOn = Boolean(on);
+    updatePreviewBtn();
+    if (!previewOn) {
+      if (els.previewVideo) {
+        try { els.previewVideo.pause(); } catch (_) { /* noop */ }
+        try { els.previewVideo.srcObject = null; } catch (_) { /* noop */ }
+      }
+      try {
+        if (listenOn && listenMode === "webrtc") {
+          await startWebRtcSession({ audio: true, video: false });
+        } else if (listenOn && listenMode === "http") {
+          await stopWebRtcListen();
+        } else {
+          await stopWebRtcListen();
+        }
+      } catch (e) {
+        showToast(String(e.message || e));
+      }
+      showToast("Preview off");
+      return;
+    }
+    try {
+      if (listenOn && listenMode === "webrtc") {
+        await startWebRtcSession({ audio: true, video: true });
+      } else if (listenOn && listenMode === "http") {
+        await startWebRtcSession({ audio: false, video: true });
+      } else {
+        await startWebRtcSession({ audio: false, video: true });
+      }
+      showToast("Preview on (WebRTC · low latency)");
+    } catch (err) {
+      previewOn = false;
+      updatePreviewBtn();
+      showToast(`Preview failed: ${err && err.message ? err.message : "error"}`);
+    }
   }
 
   async function setListenOn(on) {
@@ -724,7 +861,15 @@
       if (listenElement) {
         try { listenElement.pause(); } catch (_) { /* noop */ }
       }
-      await stopWebRtcListen();
+      try {
+        if (previewOn) {
+          await startWebRtcSession({ audio: false, video: true });
+        } else {
+          await stopWebRtcListen();
+        }
+      } catch (_) {
+        await stopWebRtcListen();
+      }
       if (pcMuted) {
         try { await setPcMute(false); } catch (_) { /* keep */ }
       }
@@ -744,7 +889,7 @@
 
     // Prefer Sunshine-class WebRTC (Opus/UDP). Fall back to HTTP chunks.
     try {
-      await startWebRtcListen();
+      await startWebRtcSession({ audio: true, video: previewOn });
       listenMode = "webrtc";
       listenWasPlaying = syncPlaying;
       if (!syncPlaying) {
@@ -2551,6 +2696,12 @@
     updateListenBtn();
     els.listenBtn.addEventListener("click", () => {
       setListenOn(!listenOn);
+    });
+  }
+  if (els.previewBtn) {
+    updatePreviewBtn();
+    els.previewBtn.addEventListener("click", () => {
+      setPreviewOn(!previewOn);
     });
   }
   if (els.mutePcBtn) {

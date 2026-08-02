@@ -2145,15 +2145,17 @@ class MainWindow(QMainWindow):
         return self.clean_output_window.isVisible()
 
     def _on_video_frame(self, frame) -> None:  # noqa: ANN001
-        """Fan out one decoded RGB frame to Preview / Clean / NDI sinks.
+        """Fan out one decoded RGB frame to Preview / Clean / NDI / Web Remote.
 
         Preview + Clean share a single QImage conversion. NDI keeps the
         ndarray. Invisible sinks are skipped so opening Clean Output does not
-        pay for a hidden Preview panel copy.
+        pay for a hidden Preview panel copy. Web Remote copies RGB for WebRTC.
         """
         preview_vis = self._video_preview_visible()
         clean_vis = self._clean_output_visible()
         ndi_on = bool(self.project.clean_video_output.ndi_enabled)
+        remote = getattr(self, "_web_remote", None)
+        remote_prev = bool(remote is not None and remote.remote_preview_wanted)
 
         if frame is None:
             if preview_vis:
@@ -2162,6 +2164,8 @@ class MainWindow(QMainWindow):
                 self.clean_output_window.set_qimage(None)
             if ndi_on:
                 self._ndi_output.send_frame(None)
+            if remote_prev and remote is not None:
+                remote.push_preview_frame(None)
             return
 
         if preview_vis or clean_vis:
@@ -2172,15 +2176,20 @@ class MainWindow(QMainWindow):
                 self.clean_output_window.set_qimage(image)
         if ndi_on:
             self._ndi_output.send_frame(frame)
+        if remote_prev and remote is not None:
+            remote.push_preview_frame(frame)
 
     def _sync_video_output_active(self) -> None:
-        """Skip video decode when neither Preview, Clean Output, nor NDI needs frames."""
+        """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""
         if not hasattr(self, "video_preview_panel"):
             return
+        remote = getattr(self, "_web_remote", None)
+        remote_prev = bool(remote is not None and remote.remote_preview_wanted)
         active = (
             self._video_preview_visible()
             or self._clean_output_visible()
             or bool(self.project.clean_video_output.ndi_enabled)
+            or remote_prev
         )
         self.video_sync.set_video_output_active(active)
 

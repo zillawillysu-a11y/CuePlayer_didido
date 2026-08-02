@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 import time
 from typing import Any
 
@@ -36,6 +37,8 @@ class WebRemoteBridge(QObject):
         self._webrtc = WebRTCListenHub(
             self._live_monitor_pcm,
             on_lag_skip=self._on_listen_lag_skip,
+            get_video_frame=self._latest_preview_rgb,
+            on_preview_active=self._on_remote_preview_active,
         )
         self._prefs = WebRemotePrefs()
         self._cmd_queue: queue.Queue[tuple[dict[str, Any], queue.Queue[dict[str, Any]]]] = (
@@ -52,9 +55,17 @@ class WebRemoteBridge(QObject):
         self._mon_cursor: float = 0.0
         self._mon_was_playing: bool = False
         self._mon_force_resync: bool = False
+        # WebRTC video preview: copy of latest desktop RGB24 frame.
+        self._preview_lock = threading.Lock()
+        self._preview_rgb: Any | None = None
+        self._remote_preview_wanted = False
         self._pump = QTimer(self)
         self._pump.setInterval(16)
         self._pump.timeout.connect(self._drain_commands)
+
+    @property
+    def remote_preview_wanted(self) -> bool:
+        return bool(self._remote_preview_wanted)
 
     @property
     def prefs(self) -> WebRemotePrefs:
@@ -113,7 +124,7 @@ class WebRemoteBridge(QObject):
             self._pump.start()
         msg = f"Web Remote on :{port}"
         if self._webrtc.available:
-            msg += " · WebRTC listen"
+            msg += " · WebRTC listen/preview"
         self.status_changed.emit(msg)
         self.started.emit()
         return None
@@ -316,6 +327,38 @@ class WebRemoteBridge(QObject):
     def _on_listen_lag_skip(self) -> None:
         """WebRTC sender fell behind wall clock — snap PCM on next frame (no speed-up)."""
         self._mon_force_resync = True
+
+    def _on_remote_preview_active(self, active: bool) -> None:
+        """WebRTC video track started/stopped — keep desktop decode alive while wanted."""
+        self._remote_preview_wanted = bool(active)
+        if not active:
+            with self._preview_lock:
+                self._preview_rgb = None
+        host = self._host
+        sync = getattr(host, "_sync_video_output_active", None)
+        if callable(sync):
+            QTimer.singleShot(0, sync)
+
+    def push_preview_frame(self, frame: Any) -> None:
+        """Copy latest RGB24 frame from MainWindow fan-out (UI thread)."""
+        if not self._remote_preview_wanted:
+            return
+        import numpy as np
+
+        with self._preview_lock:
+            if frame is None:
+                self._preview_rgb = None
+                return
+            arr = np.asarray(frame)
+            if arr.ndim != 3 or arr.shape[2] < 3:
+                self._preview_rgb = None
+                return
+            # Decoder may reuse the buffer — must copy for the WebRTC thread.
+            self._preview_rgb = np.ascontiguousarray(arr[:, :, :3])
+
+    def _latest_preview_rgb(self) -> Any:
+        with self._preview_lock:
+            return self._preview_rgb
 
     def _live_monitor_pcm(self, n_samples: int, sample_rate: int) -> Any:
         """Int16 mono for WebRTC — continuous cursor (no per-frame playhead snap).

@@ -498,10 +498,53 @@ dialog textarea,
   color: var(--ok);
 }
 
+#previewBtn.on {
+  background: color-mix(in srgb, #8b9cff 18%, #111);
+  border-color: transparent;
+  color: #8b9cff;
+}
+
 #mutePcBtn.on {
   background: color-mix(in srgb, #e11d48 18%, #111);
   border-color: transparent;
   color: #fb7185;
+}
+
+.preview-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: min(28vh, 220px);
+  background: #000;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.preview-wrap[hidden] {
+  display: none !important;
+}
+
+.preview-wrap video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.preview-empty.hidden {
+  display: none;
 }
 
 .now-stack {

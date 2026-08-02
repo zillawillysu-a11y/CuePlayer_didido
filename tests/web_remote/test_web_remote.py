@@ -48,6 +48,8 @@ def test_static_dir_has_index() -> None:
     assert 'id="waveFollowBtn"' in html
     assert 'id="listenBtn"' in html
     assert 'id="mutePcBtn"' in html
+    assert 'id="previewBtn"' in html
+    assert 'id="previewVideo"' in html
     assert 'id="deleteMarkBtn"' in html
     assert 'id="splitSetlist"' in html
     assert 'id="confirmDialog"' in html
@@ -74,7 +76,8 @@ def test_static_dir_has_index() -> None:
     assert "setListenOn" in js
     assert "/api/monitor" in js
     assert "/api/webrtc" in js
-    assert "startWebRtcListen" in js
+    assert "startWebRtcSession" in js
+    assert "setPreviewOn" in js
     assert "fetchMonitorPcm" in js
     assert "scheduleListenBuffer" in js
     assert "unlockListenAudio" in js
@@ -111,6 +114,8 @@ def test_static_dir_has_index() -> None:
     assert "position: relative" in css
     assert ".splitter" in css
     assert "#listenBtn.on" in css
+    assert "#previewBtn.on" in css
+    assert ".preview-wrap" in css
     assert "#mutePcBtn.on" in css
     assert ".ghost.tiny.danger" in css
     assert ".cue-item.selected-mark" in css
@@ -669,6 +674,38 @@ def test_pace_monitor_timeline_skips_instead_of_burst() -> None:
     assert sleep == 0.0
     assert ts >= int(0.25 * SAMPLE_RATE) - SAMPLES_PER_FRAME
     assert LAG_SKIP_SECONDS > 0
+
+
+def test_downscale_rgb24_and_video_pace() -> None:
+    from cueplayer.web_remote.webrtc_listen import (
+        VIDEO_CLOCK_RATE,
+        VIDEO_PTS_STEP,
+        downscale_rgb24,
+        pace_video_timeline,
+    )
+
+    big = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    big[:, :, 0] = 255
+    small = downscale_rgb24(big, max_width=960)
+    assert small.shape == (540, 960, 3)
+    assert small.dtype == np.uint8
+
+    start = 50.0
+    _s, ts, sleep, skipped = pace_video_timeline(
+        start=start,
+        timestamp=0,
+        now=start,
+    )
+    assert skipped is False
+    assert ts == VIDEO_PTS_STEP
+    assert abs(sleep - (VIDEO_PTS_STEP / VIDEO_CLOCK_RATE)) < 1e-6
+    _s, ts, sleep, skipped = pace_video_timeline(
+        start=start,
+        timestamp=0,
+        now=start + 0.5,
+    )
+    assert skipped is True
+    assert sleep == 0.0
 
 
 def test_webrtc_listen_hub_offer_answer() -> None:

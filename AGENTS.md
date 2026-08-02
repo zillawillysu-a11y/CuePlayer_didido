@@ -54,8 +54,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 **1.0.6 highlights (since 1.0.5):**
 - Tools → Web Remote… — LAN control from Safari / iPad
 - Listen (music-only WebRTC, HTTP fallback) + Mute PC music
+- Video Preview on remote (same decode path as desktop, WebRTC · low latency)
 - Wave scrub / pinch-zoom / mark select+drag+delete; Cue List long-press actions
-- Mark Manager on remote (incl. Cue List toggle); iPad portrait layout + Listen lag fix
+- Mark Manager on remote (incl. Cue List toggle); Set List V/LTC/L/R badges
+- iPad portrait layout + Listen lag fix
 
 **Still open after 1.0.6 (next priorities when you ask):**
 1. Multi-audio version comparison + Align Anchors
