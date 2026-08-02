@@ -87,6 +87,8 @@ def test_static_dir_has_index() -> None:
     assert "setPcMute" in js
     assert "deleteSelectedMark" in js
     assert "setSelectedMark" in js
+    assert "lastTouchEnd" in js
+    assert "gesturestart" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -98,6 +100,8 @@ def test_static_dir_has_index() -> None:
     assert "#mutePcBtn.on" in css
     assert ".ghost.tiny.danger" in css
     assert ".cue-item.selected-mark" in css
+    assert "touch-action: manipulation" in css
+    assert "-webkit-touch-callout: none" in css
 
 
 def test_format_clock() -> None:

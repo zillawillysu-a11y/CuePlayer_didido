@@ -2434,6 +2434,33 @@
   });
 
   window.addEventListener("resize", () => drawWave(true));
+
+  // iPad Safari: suppress long-press callout / text selection chrome,
+  // and block accidental double-tap page zoom outside text fields.
+  document.addEventListener("contextmenu", (ev) => {
+    const t = ev.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    ev.preventDefault();
+  });
+  document.addEventListener("selectstart", (ev) => {
+    const t = ev.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    ev.preventDefault();
+  });
+  let lastTouchEnd = 0;
+  document.addEventListener("touchend", (ev) => {
+    const t = ev.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    const now = Date.now();
+    if (now - lastTouchEnd < 320) {
+      ev.preventDefault();
+    }
+    lastTouchEnd = now;
+  }, { passive: false });
+  document.addEventListener("gesturestart", (ev) => ev.preventDefault());
+  document.addEventListener("gesturechange", (ev) => ev.preventDefault());
+  document.addEventListener("gestureend", (ev) => ev.preventDefault());
+
   requestAnimationFrame(tickFrame);
   pollState();
   pollClock();
