@@ -12,11 +12,13 @@ Rapid seek/scrub only keeps *one* decode job per clip; later requests while a
 job is running stash the latest source time and run after the current job —
 stale mid-queue 30–120s decodes must not pile up under ``av_path_lock``.
 
-Heavy clips keep a short sliding window (~30s). To avoid a silence glitch every
-time that window rolls forward, we:
-1. Prefetch the next window several seconds before the current one ends.
-2. Keep the previous window alongside the new one until the playhead is fully
-   covered by the newer buffer (double-buffer).
+Heavy-clip seams used to click every ~30s because:
+1. Coverage treated the last 0.25s of a window as "missing" → forced silence.
+2. Each callback used only one window, so samples past that window were zero
+   even when the previous/next buffer still had them.
+
+Now we composite from all cached windows, prefetch earlier, and use longer
+heavy windows so decode has time to finish before the playhead arrives.
 """
 
 from __future__ import annotations
@@ -32,11 +34,11 @@ from cueplayer.media.video_audio_cache import get_video_audio
 from cueplayer.media.video_limits import audio_decode_cap_for_clip
 from cueplayer.playback.resample import resample_linear
 
-# Start decoding the next window when this much audio remains in the current
-# one. Heavy windows are ~30s — ~10s lead absorbs typical PyAV seek+decode.
-_PREFETCH_LEAD_SECONDS = 10.0
-# Keep at most this many decoded windows per clip (current + previous).
-_MAX_WINDOWS_PER_CLIP = 2
+# Start decoding the next window when this much audio remains. Mid-file PyAV
+# seeks under ``av_path_lock`` (Preview/Clean) can take well over 10s.
+_PREFETCH_LEAD_SECONDS = 30.0
+# Keep recent windows so the playhead can cross a seam without silence.
+_MAX_WINDOWS_PER_CLIP = 3
 
 
 @dataclass
@@ -106,8 +108,9 @@ class VideoAudioMixer:
         src_in = max(0.0, float(clip.source_in_seconds))
         span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
         src_out = src_in + span
-        # Small lookback so scrubbing slightly backward still hits the buffer.
-        start = max(src_in, float(source_time) - 2.0)
+        # Lookback so the new window overlaps the previous one while sliding.
+        lookback = min(8.0, max(2.0, cap * 0.12))
+        start = max(src_in, float(source_time) - lookback)
         if start + cap > src_out and span > cap:
             start = max(src_in, src_out - cap)
         dur = min(cap, max(0.05, src_out - start))
@@ -181,17 +184,16 @@ class VideoAudioMixer:
                     _CachedPcm(samples=samples, origin_seconds=origin, key=key),
                 )
             follow_up = self._pending_need.pop(clip_id, None)
-            # If the just-finished window already covers the pending need,
-            # skip another decode.
+            # If any cached window already covers the pending need, skip.
             if follow_up is not None and samples is not None:
-                if self._find_covering_locked(clip_id, follow_up) is not None:
+                if self._has_sample_locked(clip_id, follow_up):
                     follow_up = None
 
         if follow_up is not None:
             self._request_window(clip, follow_up)
 
     def _install_window(self, clip_id: str, pcm: _CachedPcm) -> None:
-        """Append a decoded window, keeping the previous one for overlap."""
+        """Append a decoded window; keep a few prior ones for seam coverage."""
         windows = [w for w in (self._cache.get(clip_id) or []) if w.key != pcm.key]
         windows.append(pcm)
         self._cache[clip_id] = windows[-_MAX_WINDOWS_PER_CLIP:]
@@ -202,38 +204,65 @@ class VideoAudioMixer:
             return float(pcm.origin_seconds)
         return float(pcm.origin_seconds) + (n / float(self._playback_rate))
 
-    def _covers(self, pcm: _CachedPcm, source_time: float) -> bool:
+    def _has_sample(self, pcm: _CachedPcm, source_time: float) -> bool:
+        """True if ``source_time`` falls inside the PCM (no artificial headroom)."""
         n = int(pcm.samples.shape[0])
         if n <= 0:
             return False
         end = self._window_end(pcm)
-        # Require a little headroom so we reload before running off the end.
-        return pcm.origin_seconds - 1e-3 <= source_time < end - 0.25
+        return pcm.origin_seconds - 1e-4 <= source_time < end - 1e-6
 
-    def _find_covering_locked(self, clip_id: str, source_time: float) -> _CachedPcm | None:
-        windows = self._cache.get(clip_id) or []
-        # Newest first — prefer the sliding window we just fetched.
-        for pcm in reversed(windows):
-            if self._covers(pcm, source_time):
-                return pcm
-        return None
+    def _has_sample_locked(self, clip_id: str, source_time: float) -> bool:
+        for pcm in self._cache.get(clip_id) or []:
+            if self._has_sample(pcm, source_time):
+                return True
+        return False
 
     def _find_covering(self, clip_id: str, source_time: float) -> _CachedPcm | None:
         with self._lock:
             windows = list(self._cache.get(clip_id) or [])
         for pcm in reversed(windows):
-            if self._covers(pcm, source_time):
+            if self._has_sample(pcm, source_time):
                 return pcm
         return None
 
-    def _maybe_prefetch(self, clip: VideoClip, pcm: _CachedPcm, source_time: float) -> None:
+    def _gather_samples(
+        self, clip_id: str, src_times: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Composite stereo samples for ``src_times`` from every cached window."""
+        n = int(src_times.shape[0])
+        out = np.zeros((n, 2), dtype=np.float32)
+        valid = np.zeros(n, dtype=bool)
+        sr = float(self._playback_rate)
+        with self._lock:
+            windows = list(self._cache.get(clip_id) or [])
+        # Older → newer so a fresher overlapping window wins.
+        for pcm in windows:
+            buf_frames = int(pcm.samples.shape[0])
+            if buf_frames <= 0:
+                continue
+            origin = float(pcm.origin_seconds)
+            idx = np.round((src_times - origin) * sr).astype(np.int64)
+            mask = (idx >= 0) & (idx < buf_frames)
+            if not np.any(mask):
+                continue
+            out[mask] = pcm.samples[idx[mask]]
+            valid |= mask
+        return out, valid
+
+    def _maybe_prefetch(self, clip: VideoClip, source_time: float) -> None:
         """Kick the next window early so decode finishes before we run dry."""
-        remaining = self._window_end(pcm) - float(source_time)
-        if remaining >= _PREFETCH_LEAD_SECONDS:
+        pcm = self._find_covering(clip.id, source_time)
+        if pcm is None:
+            self._request_window(clip, source_time)
             return
+        remaining = self._window_end(pcm) - float(source_time)
         cap = audio_decode_cap_for_clip(clip)
-        # Aim the next window ahead of the playhead, still overlapping current.
-        ahead = float(source_time) + min(_PREFETCH_LEAD_SECONDS * 0.7, max(4.0, cap * 0.25))
+        lead = min(_PREFETCH_LEAD_SECONDS, max(18.0, cap * 0.40))
+        if remaining >= lead:
+            return
+        # Aim ahead of the playhead; lookback in ``_window_for`` keeps overlap.
+        ahead = float(source_time) + max(10.0, lead * 0.60)
         self._request_window(clip, ahead)
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:
@@ -272,50 +301,30 @@ class VideoAudioMixer:
                 src_times = src_in + np.mod(offsets.astype(np.float64) / sr, span)
 
             need_t = float(src_times[0])
-            pcm = self._find_covering(clip.id, need_t)
-            if pcm is None:
+            end_t = float(src_times[-1])
+            gathered, valid = self._gather_samples(clip.id, src_times)
+            if not np.any(valid):
                 # Realtime-safe: schedule a window, stay silent until ready.
                 self._request_window(clip, need_t)
                 continue
 
             # Sliding window: decode the next slice before this one ends.
-            self._maybe_prefetch(clip, pcm, float(src_times[-1]))
-
-            buf_frames = int(pcm.samples.shape[0])
-            origin = float(pcm.origin_seconds)
-            src_idx = np.round((src_times - origin) * sr).astype(np.int64)
-            valid = (src_idx >= 0) & (src_idx < buf_frames)
-            if not np.any(valid):
-                # Try any other buffered window (previous) before going silent.
-                alt = self._find_covering(clip.id, float(src_times[-1]))
-                if alt is None or alt is pcm:
-                    self._request_window(clip, need_t)
-                    continue
-                pcm = alt
-                buf_frames = int(pcm.samples.shape[0])
-                origin = float(pcm.origin_seconds)
-                src_idx = np.round((src_times - origin) * sr).astype(np.int64)
-                valid = (src_idx >= 0) & (src_idx < buf_frames)
-                if not np.any(valid):
-                    self._request_window(clip, need_t)
-                    continue
-            # If the chunk runs past the cached window, ask for the next one.
+            self._maybe_prefetch(clip, end_t)
             if not bool(valid[-1]):
-                self._request_window(clip, float(src_times[-1]))
+                self._request_window(clip, end_t)
 
             vol = max(0.0, min(1.0, float(clip.volume)))
             out_rows = np.arange(lo, hi, dtype=np.int64) - start_frame
             if clip.id not in overlapping_ids:
-                mask = valid
-                if not np.any(mask):
+                if not np.any(valid):
                     continue
-                out[out_rows[mask]] += pcm.samples[src_idx[mask]] * vol
+                out[out_rows[valid]] += gathered[valid] * vol
                 continue
             t_seconds = (out_rows.astype(np.float64) + start_frame) / sr
             weights = video_clip_crossfade_weights(clip, t_seconds, song.video_clips)
             mask = valid & (weights > 1e-6)
             if not np.any(mask):
                 continue
-            scaled = pcm.samples[src_idx[mask]] * (vol * weights[mask])[:, np.newaxis]
+            scaled = gathered[mask] * (vol * weights[mask])[:, np.newaxis]
             out[out_rows[mask]] += scaled
         return out

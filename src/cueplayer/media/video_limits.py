@@ -23,10 +23,10 @@ HEAVY_VIDEO_SECONDS = 10 * 60.0
 MAX_VIDEO_AUDIO_DECODE_SECONDS = 5 * 60.0
 
 # Sliding-window size for heavy rehearsal clips (mixer advances this as the
-# playhead moves so audio is not limited to the first minute). Keep short:
-# rapid mouse seeks used to queue many 120s decodes under ``av_path_lock``
-# and freeze Preview + the UI audio poll.
-HEAVY_VIDEO_AUDIO_DECODE_SECONDS = 30.0
+# playhead moves so audio is not limited to the first minute). Longer windows
+# + early prefetch leave enough time for mid-file PyAV seeks under
+# ``av_path_lock``; rapid seeks still coalesce to one in-flight job per clip.
+HEAVY_VIDEO_AUDIO_DECODE_SECONDS = 75.0
 
 # Warn (and prefer safer preview) when the file itself is this long.
 LONG_SOURCE_WARN_SECONDS = 30 * 60.0

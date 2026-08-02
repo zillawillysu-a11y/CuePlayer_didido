@@ -257,8 +257,11 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (lookback 2s).
-    assert decode_calls[1] == pytest.approx(298.0, abs=0.05)
+    # Follow-up window starts near the latest need (lookback capped at 8s).
+    from cueplayer.media.video_limits import HEAVY_VIDEO_AUDIO_DECODE_SECONDS
+
+    lookback = min(8.0, max(2.0, HEAVY_VIDEO_AUDIO_DECODE_SECONDS * 0.12))
+    assert decode_calls[1] == pytest.approx(300.0 - lookback, abs=0.05)
 
 
 def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,8 +279,8 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # 30s window starting at 0 — playhead near 22s should prefetch.
-    _inject(mixer, clip, _constant(30.0, 0.4))
+    # 40s window starting at 0 — playhead near end should prefetch.
+    _inject(mixer, clip, _constant(40.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -285,11 +288,11 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(22.0 * SR)
+    at = int(15.0 * SR)
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
     assert requested, "expected prefetch near end of window"
-    assert requested[0] > 22.0
+    assert requested[0] > 15.0
 
 
 def test_double_buffer_keeps_previous_window_while_sliding() -> None:
@@ -312,3 +315,41 @@ def test_double_buffer_keeps_previous_window_while_sliding() -> None:
     # Still covered by the older window while the new one starts later.
     assert mixer._find_covering(clip.id, 5.0) is first
     assert mixer._find_covering(clip.id, 25.0) is second
+
+
+def test_chunk_at_composites_across_window_seam() -> None:
+    """Playhead can cross from window A into B without a silent gap."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=120.0,
+        source_duration_seconds=120.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    mixer._install_window(
+        clip.id,
+        _CachedPcm(
+            samples=_constant(30.0, 0.5),
+            origin_seconds=0.0,
+            key=("c.mp4", SR, 0.0, 30.0),
+        ),
+    )
+    mixer._install_window(
+        clip.id,
+        _CachedPcm(
+            samples=_constant(30.0, 0.7),
+            origin_seconds=20.0,
+            key=("c.mp4", SR, 20.0, 30.0),
+        ),
+    )
+    # Straddle the first window's end (t=30); second window covers 20..50.
+    at = int(29.5 * SR)
+    out = mixer.chunk_at(at, int(1.0 * SR))
+    assert float(np.min(np.abs(out))) > 0.0
+    # Past the first window, prefer the newer buffer's amplitude.
+    assert out[-1, 0] == pytest.approx(0.7, abs=1e-4)
