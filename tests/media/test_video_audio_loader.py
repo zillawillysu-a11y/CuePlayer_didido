@@ -128,15 +128,14 @@ def test_load_video_audio_respects_max_duration_window(tmp_path: Path) -> None:
     assert buf.frames / buf.sample_rate == pytest.approx(0.4, abs=0.15)
 
 
-def test_load_video_audio_yielding_keeps_contiguous_pcm(tmp_path: Path) -> None:
-    """Long windows yield the path lock but must not insert silence gaps."""
-    path = tmp_path / "yielding.mp4"
+def test_load_video_audio_long_window_is_contiguous(tmp_path: Path) -> None:
+    """A single open/seek/close decode must return contiguous PCM (no gaps)."""
+    path = tmp_path / "long_window.mp4"
     _make_clip_with_tone(path, seconds=12.0, audio_rate=48000)
     buf = load_video_audio(path, start_seconds=0.0, max_duration_seconds=10.0)
     assert buf is not None
     assert buf.sample_rate == 48000
     assert buf.frames / buf.sample_rate == pytest.approx(10.0, abs=0.35)
-    # Spot-check several regions — no multi-second zero pads from re-seeks.
     sr = buf.sample_rate
     for t in (1.0, 4.0, 7.0, 9.0):
         i0 = int(t * sr)

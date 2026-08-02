@@ -22,9 +22,8 @@ HEAVY_VIDEO_SECONDS = 10 * 60.0
 # allocate ~300MB+ float32 while the UI needs the same path for Preview.
 MAX_VIDEO_AUDIO_DECODE_SECONDS = 5 * 60.0
 
-# Sliding-window size for heavy rehearsal clips (mixer advances this as the
-# playhead moves). Decoded in ~8s lock segments so Preview can interleave;
-# rapid seeks still coalesce to one in-flight job per clip in the mixer.
+# Cap for heavy-clip waveform / cache peeks (mixer uses its own short sliding
+# windows in ``video_audio_mixer`` — do not couple those sizes here).
 HEAVY_VIDEO_AUDIO_DECODE_SECONDS = 90.0
 
 # Warn (and prefer safer preview) when the file itself is this long.

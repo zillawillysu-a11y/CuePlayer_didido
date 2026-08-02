@@ -257,11 +257,8 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (lookback capped at 8s).
-    from cueplayer.media.video_limits import HEAVY_VIDEO_AUDIO_DECODE_SECONDS
-
-    lookback = min(8.0, max(2.0, HEAVY_VIDEO_AUDIO_DECODE_SECONDS * 0.12))
-    assert decode_calls[1] == pytest.approx(300.0 - lookback, abs=0.05)
+    # Follow-up window starts near the latest need (mixer lookback = 3s).
+    assert decode_calls[1] == pytest.approx(297.0, abs=0.05)
 
 
 def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,8 +276,8 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # 90s window starting at 0 — playhead early should still prefetch (long lead).
-    _inject(mixer, clip, _constant(90.0, 0.4))
+    # 12s mixer window — playhead near the end should prefetch.
+    _inject(mixer, clip, _constant(12.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -288,11 +285,11 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(40.0 * SR)
+    at = int(5.0 * SR)
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
-    assert requested, "expected early prefetch / horizon coverage"
-    assert max(requested) > 40.0
+    assert requested, "expected prefetch / horizon coverage"
+    assert max(requested) > 5.0
 
 
 def test_double_buffer_keeps_previous_window_while_sliding() -> None:
