@@ -107,6 +107,8 @@ def test_static_dir_has_index() -> None:
     assert "bindCueItemLongPress" in js
     assert "CUE_LONG_PRESS_MS" in js
     assert "showCueActionsForMark" in js
+    assert "clearCueSelectionOnPlayheadAdvance" in js
+    assert "cueActionUiBusy" in js
     assert "cue_list_enabled" in js
     assert "mgr-cuelist" in js
     assert "song-badges" in js

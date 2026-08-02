@@ -305,6 +305,7 @@
   let markDragging = null; // { id, startSeconds, liveSeconds, pointerId }
   let markPointer = null; // pending tap vs drag: { id, startX, startY, startSeconds, pointerId }
   let selectedMarkId = "";
+  let cueLongPressTimer = null;
   let waveSetupOn = false; // desktop "S" — must be on to drag marks
   const LISTEN_CHUNK = 0.55;
   const LISTEN_AHEAD = 1.25;
@@ -1250,6 +1251,22 @@
     }
   }
 
+  function cueActionUiBusy() {
+    // Keep the red selection while the user is mid long-press / action sheet / edit.
+    if (cueLongPressTimer) return true;
+    if (els.cueActionDialog && els.cueActionDialog.open) return true;
+    if (els.noteDialog && els.noteDialog.open) return true;
+    if (els.confirmDialog && els.confirmDialog.open) return true;
+    return false;
+  }
+
+  function clearCueSelectionOnPlayheadAdvance(nextCueId) {
+    if (!selectedMarkId) return;
+    if (!nextCueId || selectedMarkId === nextCueId) return;
+    if (cueActionUiBusy()) return;
+    setSelectedMark("");
+  }
+
   function scrollCueListTo(el, { force = false } = {}) {
     const list = els.cueList;
     if (!list || !el) return;
@@ -1296,6 +1313,10 @@
       row.classList.toggle("current", on);
       if (on) currentEl = row;
     }
+    const changed = id !== lastPlayheadCueId;
+    // Auto-follow advanced past a tapped/selected cue → drop the red highlight
+    // so the list can keep rolling (unless a long-press sheet is open).
+    if (changed) clearCueSelectionOnPlayheadAdvance(id);
     if (!id || !currentEl) {
       lastPlayheadCueId = id;
       return;
@@ -1308,9 +1329,10 @@
         cueFollowLeftViewport = true;
       }
       lastPlayheadCueId = id;
-      return;
+      // If follow just resumed because the current cue scrolled back into view,
+      // continue into the scroll path below.
+      if (cueFollowSuspended) return;
     }
-    const changed = id !== lastPlayheadCueId;
     lastPlayheadCueId = id;
     if (changed || forceScroll || !cueRowVisible(currentEl)) {
       scrollCueListTo(currentEl, { force: changed || forceScroll });
@@ -1515,7 +1537,6 @@
 
   const CUE_LONG_PRESS_MS = 480;
   const CUE_LONG_PRESS_MOVE_PX = 12;
-  let cueLongPressTimer = null;
   let cueSuppressClick = false;
 
   function clearCueLongPress(btn) {
