@@ -47,6 +47,7 @@ def mark_payload(mark: Mark, lane: MarkLane | None) -> dict[str, Any]:
         "shortcut": lane.shortcut if lane is not None else "",
         "cue_list_enabled": bool(lane.cue_list_enabled) if lane is not None else True,
         "lane_visible": bool(lane.visible) if lane is not None else True,
+        "lane_locked": bool(lane.locked) if lane is not None else False,
         "cue_id_enabled": bool(lane.cue_id_enabled) if lane is not None else False,
         "show_note_on_wave": (
             bool(getattr(lane, "show_note_on_wave", False)) if lane is not None else False
@@ -260,6 +261,7 @@ def build_state(
         "tc_sending": output["sending"],
         "tc_active": bool(output["outputs"]),
         "tc_accent": output["accent"],
+        "pc_muted": bool(getattr(engine, "music_muted", False)),
         "output_toggles": output["toggles"],
         "playhead_color": playhead,
         "waveform_color": waveform_color,

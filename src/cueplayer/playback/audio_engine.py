@@ -552,9 +552,14 @@ class AudioEngine(QObject):
         return self.sync_offset_seconds * 1000.0
 
     def set_music_muted(self, muted: bool) -> None:
-        """Silence the loaded track (clicks / metronome still audible)."""
+        """Silence music/video beds (LTC output is unaffected)."""
         with self._lock:
             self._mute_music = bool(muted)
+
+    @property
+    def music_muted(self) -> bool:
+        with self._lock:
+            return bool(self._mute_music)
 
     def set_volume(self, volume: float) -> None:
         """Master music gain (0.0 … 1.0). Does not affect generated LTC."""

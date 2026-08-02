@@ -47,6 +47,7 @@ def test_static_dir_has_index() -> None:
     assert 'id="renumberCueBtn"' in html
     assert 'id="waveFollowBtn"' in html
     assert 'id="listenBtn"' in html
+    assert 'id="mutePcBtn"' in html
     assert 'id="splitSetlist"' in html
     assert 'id="confirmDialog"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -78,6 +79,10 @@ def test_static_dir_has_index() -> None:
     assert "unlockListenAudio" in js
     assert "fallbackListenHttp" in js
     assert "tcActive" in js
+    assert "set_pc_mute" in js
+    assert "move_mark" in js
+    assert "hitTestMark" in js
+    assert "setPcMute" in js
     assert ("Cue ID" in js) or ("mgr-cueid" in js)
     assert (root / "app.js").is_file()
     assert (root / "app.css").is_file()
@@ -86,6 +91,7 @@ def test_static_dir_has_index() -> None:
     assert "position: relative" in css
     assert ".splitter" in css
     assert "#listenBtn.on" in css
+    assert "#mutePcBtn.on" in css
 
 
 def test_format_clock() -> None:
@@ -607,6 +613,17 @@ def test_web_remote_bridge_dispatch_marks() -> None:
     out = bridge._dispatch({"op": "add_mark", "shortcut": "1"})
     assert out["ok"] is True
     assert len(window.current_song.marks) == 1
+    mark_id = window.current_song.marks[0].id
+    out = bridge._dispatch({"op": "move_mark", "mark_id": mark_id, "seconds": 3.25})
+    assert out["ok"] is True
+    assert abs(window.current_song.marks[0].time_seconds - 3.25) < 1e-6
+    out = bridge._dispatch({"op": "set_pc_mute", "muted": True})
+    assert out["ok"] is True
+    assert out["muted"] is True
+    assert window.engine.music_muted is True
+    out = bridge._dispatch({"op": "set_pc_mute", "muted": False})
+    assert out["ok"] is True
+    assert window.engine.music_muted is False
     out = bridge._dispatch({"op": "seek", "seconds": 4.0})
     assert out["ok"] is True
     assert abs(window.engine.position - 4.0) < 0.05

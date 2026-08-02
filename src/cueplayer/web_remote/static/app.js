@@ -33,6 +33,7 @@
     passwordInput: document.getElementById("passwordInput"),
     savePassword: document.getElementById("savePassword"),
     listenBtn: document.getElementById("listenBtn"),
+    mutePcBtn: document.getElementById("mutePcBtn"),
     markMgrBtn: document.getElementById("markMgrBtn"),
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
@@ -241,6 +242,8 @@
   let listenOriginAt = 0;
   let listenPc = null;
   let listenRtcAudio = null;
+  let pcMuted = false;
+  let markDragging = null; // { id, startSeconds, liveSeconds, pointerId }
   const LISTEN_CHUNK = 0.55;
   const LISTEN_AHEAD = 1.25;
   const LISTEN_LEAD = 0.28;
@@ -254,6 +257,27 @@
     els.listenBtn.title = listenOn
       ? "Stop music-only listen (LAN latency)"
       : "Listen music only on this device (no LTC)";
+    if (els.mutePcBtn) {
+      els.mutePcBtn.hidden = false;
+      els.mutePcBtn.disabled = false;
+    }
+  }
+
+  function updateMutePcBtn() {
+    if (!els.mutePcBtn) return;
+    els.mutePcBtn.classList.toggle("on", pcMuted);
+    els.mutePcBtn.textContent = pcMuted ? "PC Muted" : "Mute PC";
+    els.mutePcBtn.title = pcMuted
+      ? "Unmute PC music speakers (LTC never muted)"
+      : "Mute PC music speakers while Listening (LTC stays)";
+  }
+
+  async function setPcMute(muted) {
+    const result = await command({ op: "set_pc_mute", muted: Boolean(muted) });
+    pcMuted = Boolean(result && result.muted);
+    updateMutePcBtn();
+    if (stateCache) stateCache.pc_muted = pcMuted;
+    return pcMuted;
   }
 
   function listenToastOnce(msg, everyMs = 4000) {
@@ -689,6 +713,9 @@
         try { listenElement.pause(); } catch (_) { /* noop */ }
       }
       await stopWebRtcListen();
+      if (pcMuted) {
+        try { await setPcMute(false); } catch (_) { /* keep */ }
+      }
       showToast("Listen off");
       return;
     }
@@ -1446,12 +1473,16 @@
     ctx.textBaseline = "top";
     ctx.font = `700 ${labelPx}px "Segoe UI", "Helvetica Neue", sans-serif`;
     for (const m of marks) {
-      const t = Number(m.time_seconds);
+      let t = Number(m.time_seconds);
+      if (markDragging && markDragging.id === m.id && markDragging.liveSeconds != null) {
+        t = Number(markDragging.liveSeconds);
+      }
       if (t < v0 || t > v1) continue;
       const x = ((t - v0) / viewSpanSec) * w;
+      const dragging = markDragging && markDragging.id === m.id;
       ctx.strokeStyle = m.color || "#888";
-      ctx.globalAlpha = 0.9;
-      ctx.lineWidth = Math.max(1, w / 900);
+      ctx.globalAlpha = dragging ? 1 : 0.9;
+      ctx.lineWidth = Math.max(dragging ? 2.5 : 1, w / (dragging ? 500 : 900));
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
@@ -1462,7 +1493,7 @@
       const showCue = Boolean(m.show_cue_id_on_wave) && Boolean(m.cue_id_enabled);
       const cueLabel = showCue ? String(m.main_cue_id || "").trim() : "";
       const noteText = showNote ? String(m.display_name || "").trim() : "";
-      if (!cueLabel && !noteText) continue;
+      if (!cueLabel && !noteText && !dragging) continue;
       ctx.fillStyle = m.color || "#ccc";
       let textY = 4 * dpr;
       const maxW = Math.max(40 * dpr, Math.min(160 * dpr, w - x - 8 * dpr));
@@ -1472,6 +1503,10 @@
       }
       if (noteText) {
         ctx.fillText(noteText, x + 5 * dpr, textY, maxW);
+        textY += labelPx + 2 * dpr;
+      }
+      if (dragging) {
+        ctx.fillText(formatClock(t), x + 5 * dpr, textY, maxW);
       }
     }
 
@@ -1594,12 +1629,20 @@
     updateNowCards(pos);
     updateCueFollow(pos, false);
     const waveScrolled = followWavePlayhead(pos);
-    if (syncPlaying || scrubbing || panning || waveScrolled) drawWave(false);
+    if (syncPlaying || scrubbing || panning || waveScrolled || markDragging) drawWave(false);
     requestAnimationFrame(tickFrame);
   }
 
   function applyState(state) {
+    const drag = markDragging;
     stateCache = state;
+    if (drag && stateCache && stateCache.marks) {
+      const m = stateCache.marks.find((x) => x.id === drag.id);
+      if (m && drag.liveSeconds != null) {
+        m.time_seconds = Number(drag.liveSeconds);
+        m.time_display = formatClock(drag.liveSeconds);
+      }
+    }
     const song = state.song || {};
     els.songTitle.textContent = song.in_setlist === false || song.index < 0 ? "(no song)" : (song.name || "—");
     syncFromServer(state.position, state.duration, state.playing, song.id || "");
@@ -1617,6 +1660,10 @@
     playheadColor = state.playhead_color || "#3dd68c";
     waveColor = state.waveform_color || "#616161";
     waveLabelFontPx = Number(state.wave_label_font_px) || 11;
+    if (state.pc_muted != null) {
+      pcMuted = Boolean(state.pc_muted);
+      updateMutePcBtn();
+    }
     applyDisplayPrefs(state.display || state.now || displayPrefs);
     updateNowCards(livePosition());
 
@@ -1686,6 +1733,8 @@
       || body.op === "set_display"
       || body.op === "set_mark_note"
       || body.op === "set_mark_cue_id"
+      || body.op === "move_mark"
+      || body.op === "set_pc_mute"
       || body.op === "renumber_cue_ids"
       || body.op === "add_mark"
     ) {
@@ -1746,6 +1795,28 @@
     const rect = els.waveWrap.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
     return viewStart + ratio * viewSpan();
+  }
+
+  function hitTestMark(clientX) {
+    const marks = (stateCache && stateCache.marks) || [];
+    if (!marks.length) return null;
+    const rect = els.waveWrap.getBoundingClientRect();
+    const span = viewSpan();
+    const pxPerSec = rect.width / Math.max(0.05, span);
+    const hitSlop = Math.max(0.025, 16 / Math.max(1, pxPerSec)); // ~16 CSS px
+    const t = timeFromClientX(clientX);
+    let best = null;
+    let bestDist = hitSlop;
+    for (const m of marks) {
+      if (m.lane_visible === false) continue;
+      if (m.lane_locked) continue;
+      const d = Math.abs(Number(m.time_seconds) - t);
+      if (d <= bestDist) {
+        best = m;
+        bestDist = d;
+      }
+    }
+    return best;
   }
 
   els.playBtn.addEventListener("click", () => {
@@ -1881,13 +1952,46 @@
 
   els.waveWrap.addEventListener("pointerdown", (ev) => {
     if (ev.pointerType === "touch" && els.waveWrap.hasPointerCapture?.(ev.pointerId)) return;
+    // Two-finger gestures handled in touchstart.
+    if (ev.isPrimary === false) return;
     panning = null;
     pinching = null;
+    const hit = hitTestMark(ev.clientX);
+    if (hit) {
+      markDragging = {
+        id: hit.id,
+        startSeconds: Number(hit.time_seconds),
+        liveSeconds: Number(hit.time_seconds),
+        pointerId: ev.pointerId,
+      };
+      scrubbing = false;
+      scrubPointerX = null;
+      stopScrubEdgeLoop();
+      els.waveWrap.setPointerCapture(ev.pointerId);
+      setWaveFollowSuspended(true);
+      drawWave(true);
+      return;
+    }
+    markDragging = null;
     els.waveWrap.setPointerCapture(ev.pointerId);
     const zone = updateScrubPlayhead(ev.clientX);
     if (zone.left || zone.right) startScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointermove", (ev) => {
+    if (markDragging && markDragging.pointerId === ev.pointerId) {
+      const seconds = Math.min(syncDur, Math.max(0, timeFromClientX(ev.clientX)));
+      markDragging.liveSeconds = seconds;
+      // Optimistic local update so cue list / NOW feel live while dragging.
+      if (stateCache && stateCache.marks) {
+        const m = stateCache.marks.find((x) => x.id === markDragging.id);
+        if (m) {
+          m.time_seconds = seconds;
+          m.time_display = formatClock(seconds);
+        }
+      }
+      drawWave(true);
+      return;
+    }
     if (!scrubbing) return;
     scrubPointerX = ev.clientX;
     const zone = updateScrubPlayhead(ev.clientX);
@@ -1895,6 +1999,31 @@
     else stopScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointerup", async (ev) => {
+    if (markDragging && markDragging.pointerId === ev.pointerId) {
+      const drag = markDragging;
+      markDragging = null;
+      const seconds = Math.min(
+        syncDur,
+        Math.max(0, drag.liveSeconds != null ? Number(drag.liveSeconds) : timeFromClientX(ev.clientX)),
+      );
+      try {
+        await command({ op: "move_mark", mark_id: drag.id, seconds });
+      } catch (err) {
+        // Revert optimistic time on failure.
+        if (stateCache && stateCache.marks) {
+          const m = stateCache.marks.find((x) => x.id === drag.id);
+          if (m) {
+            m.time_seconds = drag.startSeconds;
+            m.time_display = formatClock(drag.startSeconds);
+          }
+        }
+        showToast(String(err.message || err));
+      }
+      setWaveFollowSuspended(false);
+      scheduleWaveDetail();
+      drawWave(true);
+      return;
+    }
     if (!scrubbing) return;
     const seconds = scrubbing.seconds != null ? Number(scrubbing.seconds) : timeFromClientX(ev.clientX);
     scrubbing = false;
@@ -1906,6 +2035,17 @@
     drawWave(true);
   });
   els.waveWrap.addEventListener("pointercancel", () => {
+    if (markDragging) {
+      const drag = markDragging;
+      markDragging = null;
+      if (stateCache && stateCache.marks) {
+        const m = stateCache.marks.find((x) => x.id === drag.id);
+        if (m) {
+          m.time_seconds = drag.startSeconds;
+          m.time_display = formatClock(drag.startSeconds);
+        }
+      }
+    }
     scrubbing = false;
     scrubPointerX = null;
     stopScrubEdgeLoop();
@@ -2097,6 +2237,14 @@
     updateListenBtn();
     els.listenBtn.addEventListener("click", () => {
       setListenOn(!listenOn);
+    });
+  }
+  if (els.mutePcBtn) {
+    updateMutePcBtn();
+    els.mutePcBtn.addEventListener("click", () => {
+      setPcMute(!pcMuted)
+        .then((muted) => showToast(muted ? "PC music muted" : "PC music unmuted"))
+        .catch((e) => showToast(String(e.message || e)));
     });
   }
   if (els.dispClose) {

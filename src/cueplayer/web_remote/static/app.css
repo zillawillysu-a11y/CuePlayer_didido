@@ -47,8 +47,8 @@ html, body {
 }
 
 .top {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   min-height: 36px;
@@ -59,6 +59,7 @@ html, body {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   font-size: 0.95rem;
+  flex: 0 0 auto;
 }
 
 .song-chip {
@@ -67,6 +68,8 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.92rem;
+  flex: 1 1 120px;
+  min-width: 0;
 }
 
 .layout {
@@ -343,6 +346,12 @@ html, body {
   background: color-mix(in srgb, var(--ok) 16%, #111);
   border-color: transparent;
   color: var(--ok);
+}
+
+#mutePcBtn.on {
+  background: color-mix(in srgb, #e11d48 18%, #111);
+  border-color: transparent;
+  color: #fb7185;
 }
 
 .now-stack {

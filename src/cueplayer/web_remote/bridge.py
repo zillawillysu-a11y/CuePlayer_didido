@@ -457,6 +457,10 @@ class WebRemoteBridge(QObject):
             return self._set_mark_note(command)
         if op == "set_mark_cue_id":
             return self._set_mark_cue_id(command)
+        if op == "move_mark":
+            return self._move_mark(command)
+        if op == "set_pc_mute":
+            return self._set_pc_mute(command)
         if op == "renumber_cue_ids":
             return self._renumber_cue_ids(command)
         if op == "set_output_toggle":
@@ -833,6 +837,73 @@ class WebRemoteBridge(QObject):
             "mark_id": mark_id,
             "cue_id": new_id,
         }
+
+    def _move_mark(self, command: dict[str, Any]) -> dict[str, Any]:
+        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+        from cueplayer.domain.undo import MoveMarksCommand
+
+        host = self._host
+        song = host.current_song
+        mark_id = str(command.get("mark_id") or "").strip()
+        mark = song.mark_by_id(mark_id)
+        if mark is None:
+            return {"ok": False, "error": "mark_not_found"}
+        lane = song.lane_by_index(mark.lane_index)
+        if lane is not None and lane.locked:
+            return {"ok": False, "error": "lane_locked"}
+        try:
+            seconds = float(command.get("seconds"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "bad_seconds"}
+        duration = float(getattr(song, "duration_seconds", 0.0) or host.engine.duration or 0.0)
+        new_t = min(max(0.0, seconds), max(0.0, duration))
+        old_t = float(mark.time_seconds)
+        if abs(new_t - old_t) < 1e-6:
+            return {
+                "ok": True,
+                "op": "move_mark",
+                "mark_id": mark_id,
+                "seconds": new_t,
+            }
+        mark.time_seconds = new_t
+        song.sort_marks()
+        refresh_main_cue_ids(song, mark_ids={mark.id})
+        try:
+            host._push_song_undo(
+                MoveMarksCommand(times={mark.id: (old_t, new_t)}, label="Move Mark")
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            host._refresh_marks_ui()
+            host._mark_dirty()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "ok": True,
+            "op": "move_mark",
+            "mark_id": mark_id,
+            "seconds": new_t,
+            "old_seconds": old_t,
+        }
+
+    def _set_pc_mute(self, command: dict[str, Any]) -> dict[str, Any]:
+        """Mute PC music speakers (LTC untouched). Used while Listening on iPad."""
+        host = self._host
+        if "muted" in command:
+            muted = bool(command.get("muted"))
+        else:
+            current = bool(getattr(host.engine, "music_muted", False))
+            muted = not current
+        host.engine.set_music_muted(muted)
+        try:
+            host.status.showMessage(
+                "PC music muted (remote Listen)" if muted else "PC music unmuted",
+                2500,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": True, "op": "set_pc_mute", "muted": muted}
 
     def _renumber_cue_ids(self, command: dict[str, Any]) -> dict[str, Any]:
         from cueplayer.domain.main_cue_id import (
