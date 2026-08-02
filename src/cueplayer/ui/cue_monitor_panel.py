@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QPalette,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
     QFrame,
@@ -177,7 +178,77 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             editor.setStyleSheet(
                 "padding: 4px 6px; margin: 0; min-height: 1.4em;"
             )
+            # Remember the cell — currentIndex() is not always set when edit
+            # starts from editItem() (tests / some focus paths).
+            editor.setProperty("_cueplayer_edit_row", int(index.row()))
+            editor.setProperty("_cueplayer_edit_col", int(index.column()))
         return editor
+
+    def eventFilter(self, editor, event) -> bool:  # noqa: ANN001, N802
+        """↓ / ↑ while editing Note (or Cue ID) commits and opens the next row."""
+        if event.type() == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Down,
+            Qt.Key.Key_Up,
+        ):
+            # Plain arrows only — leave modified chords to the line edit / OS.
+            if event.modifiers() & (
+                Qt.KeyboardModifier.ShiftModifier
+                | Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            ):
+                return super().eventFilter(editor, event)
+            table = self.parent()
+            if isinstance(table, QTableWidget):
+                row = editor.property("_cueplayer_edit_row")
+                col = editor.property("_cueplayer_edit_col")
+                if row is None or col is None:
+                    index = table.currentIndex()
+                    if index.isValid():
+                        row, col = index.row(), index.column()
+                try:
+                    row_i = int(row)
+                    col_i = int(col)
+                except (TypeError, ValueError):
+                    return super().eventFilter(editor, event)
+                item = table.item(row_i, col_i)
+                if item is not None and (
+                    item.flags() & Qt.ItemFlag.ItemIsEditable
+                ):
+                    delta = 1 if event.key() == Qt.Key.Key_Down else -1
+                    self.commitData.emit(editor)
+                    self.closeEditor.emit(
+                        editor, QAbstractItemDelegate.EndEditHint.NoHint
+                    )
+                    next_row = row_i + delta
+                    target_row = -1
+                    while 0 <= next_row < table.rowCount():
+                        nxt = table.item(next_row, col_i)
+                        if nxt is not None and (
+                            nxt.flags() & Qt.ItemFlag.ItemIsEditable
+                        ):
+                            target_row = next_row
+                            break
+                        next_row += delta
+                    if target_row >= 0:
+                        # Let closeEditor finish before opening the next cell.
+                        QTimer.singleShot(
+                            0,
+                            lambda r=target_row, c=col_i: _edit_cue_list_cell(
+                                table, r, c
+                            ),
+                        )
+                    return True
+        return super().eventFilter(editor, event)
+
+
+def _edit_cue_list_cell(table: QTableWidget, row: int, column: int) -> None:
+    """Open the inline editor for ``table[row, column]`` if still editable."""
+    item = table.item(row, column)
+    if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
+        return
+    table.setCurrentCell(row, column)
+    table.editItem(item)
 
 
 def mark_now_text(song: Song, mark: Mark) -> str:
@@ -2086,7 +2157,8 @@ class CueMonitorPanel(QWidget):
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                     )
                     note_item.setToolTip(
-                        "Click to edit Note — long text wraps and grows the row"
+                        "Click to edit Note — long text wraps and grows the row\n"
+                        "↓ / ↑ while editing jumps to the next / previous Note"
                     )
                     self.cue_table.setItem(row, note_col, note_item)
             self._reflow_note_row_heights()
