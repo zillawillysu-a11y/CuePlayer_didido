@@ -660,6 +660,8 @@ class WebRemoteBridge(QObject):
             lane.show_cue_id_on_wave = bool(command.get("show_cue_id_on_wave"))
         if "cue_id_enabled" in command:
             lane.cue_id_enabled = bool(command.get("cue_id_enabled"))
+        if "cue_list_enabled" in command:
+            lane.cue_list_enabled = bool(command.get("cue_list_enabled"))
 
         host._rebuild_digit_shortcuts()
         host.timeline.apply_song_display_settings()

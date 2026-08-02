@@ -91,6 +91,8 @@ def test_static_dir_has_index() -> None:
     assert "bindCueItemLongPress" in js
     assert "CUE_LONG_PRESS_MS" in js
     assert "showCueActionsForMark" in js
+    assert "cue_list_enabled" in js
+    assert "mgr-cuelist" in js
     assert "lastTouchEnd" in js
     assert "gesturestart" in js
     assert "seek_mark" in js
@@ -339,10 +341,17 @@ def test_build_state_includes_unicode_song_and_marks() -> None:
     assert row["prompt_note_on_mark"] is True
     assert row["show_note_on_wave"] is True
     assert row["show_cue_id_on_wave"] is True
+    assert "cue_list_enabled" in row
     mark_row = flagged["marks"][0]
     assert "show_note_on_wave" in mark_row
     assert "show_cue_id_on_wave" in mark_row
     assert "cue_id_enabled" in mark_row
+    assert "cue_list_enabled" in mark_row
+    song.mark_lanes[1].cue_list_enabled = False
+    filtered = build_state(project=project, song=song, engine=_FakeEngine(position=4.0))
+    assert len(filtered["marks"]) == 2
+    assert len(filtered["cue_list"]) == 1
+    assert filtered["cue_list"][0]["lane_index"] == song.mark_lanes[0].index
 
 
 def test_setlist_includes_collapsible_folders() -> None:
@@ -646,6 +655,15 @@ def test_web_remote_bridge_dispatch_marks() -> None:
     assert out["ok"] is True
     assert out["removed"] == 1
     assert all(m.id != delete_id for m in window.current_song.marks)
+    lane2 = next(l for l in window.current_song.mark_lanes if l.index == 2)
+    assert lane2.cue_list_enabled is True
+    out = bridge._dispatch({
+        "op": "update_lane",
+        "lane_index": 2,
+        "cue_list_enabled": False,
+    })
+    assert out["ok"] is True
+    assert lane2.cue_list_enabled is False
     out = bridge._dispatch({"op": "set_pc_mute", "muted": True})
     assert out["ok"] is True
     assert out["muted"] is True

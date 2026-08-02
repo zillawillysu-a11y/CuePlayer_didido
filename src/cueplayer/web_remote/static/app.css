@@ -739,8 +739,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
 .mgr-flags {
   grid-column: 2 / -1;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .mgr-flags {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .mgr-flag {

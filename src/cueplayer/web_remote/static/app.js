@@ -1408,7 +1408,7 @@
   function renderMarkManager(lanes) {
     const list = lanes || [];
     const sig = JSON.stringify(list.map((l) => [
-      l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled,
+      l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled, l.cue_list_enabled,
       l.pause_on_mark, l.prompt_note_on_mark, l.show_note_on_wave, l.show_cue_id_on_wave, l.color,
     ]));
     if (sig === lastMgrLanesSig && els.markMgrBody.children.length) return;
@@ -1424,6 +1424,7 @@
         `<select class="mgr-now"><option value="off">Off</option><option value="primary">Primary</option><option value="secondary">Secondary</option></select>` +
         `<select class="mgr-key"><option value="">—</option>${[1,2,3,4,5,6,7,8,9].map((n) => `<option value="${n}">${n}</option>`).join("")}</select>` +
         `<div class="mgr-flags">` +
+          `<label class="mgr-flag" title="Show marks in Cue List">Cue List<input type="checkbox" class="mgr-cuelist" /></label>` +
           `<label class="mgr-flag">Cue ID<input type="checkbox" class="mgr-cueid" /></label>` +
           `<label class="mgr-flag">Pause<input type="checkbox" class="mgr-pause" /></label>` +
           `<label class="mgr-flag">Ask Note<input type="checkbox" class="mgr-ask" /></label>` +
@@ -1439,6 +1440,8 @@
       now.value = lane.now || "off";
       const key = row.querySelector(".mgr-key");
       key.value = lane.shortcut || "";
+      const cueList = row.querySelector(".mgr-cuelist");
+      cueList.checked = lane.cue_list_enabled !== false;
       const cueId = row.querySelector(".mgr-cueid");
       cueId.checked = Boolean(lane.cue_id_enabled);
       const pause = row.querySelector(".mgr-pause");
@@ -1458,6 +1461,7 @@
           visible: vis.checked,
           now: now.value,
           shortcut: key.value,
+          cue_list_enabled: cueList.checked,
           cue_id_enabled: cueId.checked,
           pause_on_mark: pause.checked,
           prompt_note_on_mark: ask.checked,
@@ -1468,13 +1472,14 @@
         lane.visible = vis.checked;
         lane.now = now.value;
         lane.shortcut = key.value;
+        lane.cue_list_enabled = cueList.checked;
         lane.cue_id_enabled = cueId.checked;
         lane.pause_on_mark = pause.checked;
         lane.prompt_note_on_mark = ask.checked;
         lane.show_note_on_wave = wnote.checked;
         lane.show_cue_id_on_wave = wcue.checked;
         lastMgrLanesSig = JSON.stringify((stateCache && stateCache.lanes || list).map((l) => [
-          l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled,
+          l.index, l.name, l.visible, l.now, l.shortcut, l.cue_id_enabled, l.cue_list_enabled,
           l.pause_on_mark, l.prompt_note_on_mark, l.show_note_on_wave, l.show_cue_id_on_wave, l.color,
         ]));
         command(payload).catch((e) => showToast(String(e.message || e)));
@@ -1483,6 +1488,7 @@
       vis.addEventListener("change", save);
       now.addEventListener("change", save);
       key.addEventListener("change", save);
+      cueList.addEventListener("change", save);
       cueId.addEventListener("change", save);
       pause.addEventListener("change", save);
       ask.addEventListener("change", save);
