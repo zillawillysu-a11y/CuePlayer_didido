@@ -23,7 +23,8 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 3. MA2 / MA3 golden XML fixtures + exporters — **done**
 4. Timeline UI, marks, video clips — **done (usable 1.0.4)**
 5. UX polish + Mark Manager / NOW / Clean Output — **done (1.0.5)**
-6. Follow-ups (not required to start using 1.0.5): multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview / naming polish
+6. LAN Web Remote (Safari / iPad) — **done (1.0.6)**
+7. Follow-ups (not required to start using 1.0.6): multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview / naming polish
 
 ## Architecture
 
@@ -37,28 +38,26 @@ Playback Engine is the only playback clock source.
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 - **Employee installs (no Git):** build on Windows with `packaging/build_windows.ps1` — see `docs/DISTRIBUTION.md`.
 
-## Recent handoff (2026-08-01) — **1.0.5**
+## Recent handoff (2026-08-02) — **1.0.6**
 
-**Ship tip:** `cursor/release-1-0-5-028d` (integrate into `master` when ready)
+**Ship tip:** `cursor/release-1-0-6-028d` (integrate into `master` when ready)
 
 ```powershell
 git fetch origin
-git checkout cursor/release-1-0-5-028d
+git checkout cursor/release-1-0-6-028d
 git pull
 powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
 ```
 
-**Version:** `1.0.5` (`pyproject.toml` / `cueplayer.__version__` / Inno default).
+**Version:** `1.0.6` (`pyproject.toml` / `cueplayer.__version__` / Inno default).
 
-**1.0.5 highlights (since 1.0.4):**
-- View menu: Show Set List, Video/LTC tracks, Preview, Clean Output
-- Single-line NOW (Primary + Secondary); Primary card can grow taller
-- Mark Manager: Pause / Ask Note / Wave Note / Wave Cue; readable column widths
-- Wave Label Size in Display Settings; mark RMB (Delete / Note / Cue ID / Type)
-- Cue List & Set List Renumber confirmation
-- Clean Output + setlist song-switch / long-video playback hardening
+**1.0.6 highlights (since 1.0.5):**
+- Tools → Web Remote… — LAN control from Safari / iPad
+- Listen (music-only WebRTC, HTTP fallback) + Mute PC music
+- Wave scrub / pinch-zoom / mark select+drag+delete; Cue List long-press actions
+- Mark Manager on remote (incl. Cue List toggle); iPad portrait layout + Listen lag fix
 
-**Still open after 1.0.5 (next priorities when you ask):**
+**Still open after 1.0.6 (next priorities when you ask):**
 1. Multi-audio version comparison + Align Anchors
 2. Missing Media Relink
 3. MA Export Preview / Cue ID English-pinyin naming UI
