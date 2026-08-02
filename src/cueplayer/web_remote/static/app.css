@@ -625,6 +625,35 @@ dialog textarea,
   -webkit-touch-callout: none;
 }
 
+.wave-setup {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 6;
+  width: 30px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: rgba(18, 18, 18, 0.92);
+  color: #9a9a9a;
+  font: 700 0.85rem/1 var(--mono);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.wave-setup.on {
+  background: color-mix(in srgb, var(--ok) 18%, #151515);
+  border-color: transparent;
+  color: var(--ok);
+}
+
+.wave-setup:active {
+  background: #242424;
+}
+
 .wave-wrap canvas {
   display: block;
   width: 100%;

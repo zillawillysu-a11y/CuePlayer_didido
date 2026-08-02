@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#050505" />
   <title>CuePlayer Remote</title>
-  <link rel="stylesheet" href="/app.css?v=listen14" />
+  <link rel="stylesheet" href="/app.css?v=listen15" />
 </head>
 <body>
   <div class="app">
@@ -39,6 +39,7 @@
           <span class="wave-range" id="waveRange"></span>
         </div>
         <div class="wave-wrap" id="waveWrap" aria-label="Waveform">
+          <button type="button" class="wave-setup" id="waveSetupBtn" title="Setup (enable to drag Marks)">S</button>
           <canvas id="waveCanvas" width="900" height="120"></canvas>
           <div class="wave-empty" id="waveEmpty">No waveform yet</div>
         </div>
@@ -177,6 +178,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=listen14"></script>
+  <script src="/app.js?v=listen15"></script>
 </body>
 </html>

@@ -46,6 +46,7 @@ def test_static_dir_has_index() -> None:
     assert 'id="dispDialog"' in html
     assert 'id="renumberCueBtn"' in html
     assert 'id="waveFollowBtn"' in html
+    assert 'id="waveSetupBtn"' in html
     assert 'id="listenBtn"' in html
     assert 'id="mutePcBtn"' in html
     assert 'id="previewBtn"' in html
@@ -87,6 +88,8 @@ def test_static_dir_has_index() -> None:
     assert "move_mark" in js
     assert "delete_marks" in js
     assert "hitTestMark" in js
+    assert "waveSetupOn" in js
+    assert "updateWaveSetupBtn" in js
     assert "setPcMute" in js
     assert "deleteSelectedMark" in js
     assert "setSelectedMark" in js
@@ -116,6 +119,8 @@ def test_static_dir_has_index() -> None:
     assert "#listenBtn.on" in css
     assert "#previewBtn.on" in css
     assert ".preview-wrap" in css
+    assert ".wave-setup" in css
+    assert ".wave-setup.on" in css
     assert "#mutePcBtn.on" in css
     assert ".ghost.tiny.danger" in css
     assert ".cue-item.selected-mark" in css

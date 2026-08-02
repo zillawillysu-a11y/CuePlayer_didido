@@ -57,6 +57,7 @@
     cueFollowBtn: document.getElementById("cueFollowBtn"),
     renumberCueBtn: document.getElementById("renumberCueBtn"),
     waveFollowBtn: document.getElementById("waveFollowBtn"),
+    waveSetupBtn: document.getElementById("waveSetupBtn"),
     deleteMarkBtn: document.getElementById("deleteMarkBtn"),
     layout: document.getElementById("layout"),
     splitSetlist: document.getElementById("splitSetlist"),
@@ -259,6 +260,7 @@
   let markDragging = null; // { id, startSeconds, liveSeconds, pointerId }
   let markPointer = null; // pending tap vs drag: { id, startX, startY, startSeconds, pointerId }
   let selectedMarkId = "";
+  let waveSetupOn = false; // desktop "S" — must be on to drag marks
   const LISTEN_CHUNK = 0.55;
   const LISTEN_AHEAD = 1.25;
   const LISTEN_LEAD = 0.28;
@@ -1685,6 +1687,15 @@
     if (els.waveFollowBtn) els.waveFollowBtn.hidden = !waveFollowSuspended;
   }
 
+  function updateWaveSetupBtn() {
+    if (!els.waveSetupBtn) return;
+    els.waveSetupBtn.classList.toggle("on", waveSetupOn);
+    els.waveSetupBtn.setAttribute("aria-pressed", waveSetupOn ? "true" : "false");
+    els.waveSetupBtn.title = waveSetupOn
+      ? "Setup ON — drag Marks on the wave (click to turn off)"
+      : "Setup (enable to drag Marks)";
+  }
+
   function followWavePlayhead(pos) {
     if (!syncPlaying || scrubbing || panning || pinching) return false;
     if (waveFollowSuspended) return false;
@@ -2265,6 +2276,19 @@
       drawWave(true);
     });
   }
+  if (els.waveSetupBtn) {
+    updateWaveSetupBtn();
+    els.waveSetupBtn.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+    });
+    els.waveSetupBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      waveSetupOn = !waveSetupOn;
+      updateWaveSetupBtn();
+      showToast(waveSetupOn ? "Setup ON — drag Marks" : "Setup OFF");
+    });
+  }
   if (els.deleteMarkBtn) {
     els.deleteMarkBtn.hidden = true;
     els.deleteMarkBtn.addEventListener("click", () => {
@@ -2401,6 +2425,10 @@
     if (markPointer && markPointer.pointerId === ev.pointerId && !markDragging) {
       const dist = Math.hypot(ev.clientX - markPointer.startX, ev.clientY - markPointer.startY);
       if (dist >= 10) {
+        // Desktop parity: only Setup (S) arms time dragging.
+        if (!waveSetupOn) {
+          return;
+        }
         // Promote tap to drag once the finger moves enough.
         markDragging = {
           id: markPointer.id,
