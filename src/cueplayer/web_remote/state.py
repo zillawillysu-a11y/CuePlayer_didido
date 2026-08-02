@@ -25,10 +25,13 @@ class _EngineView(Protocol):
 
 
 def format_clock(seconds: float) -> str:
-    """Match desktop Cue Monitor ``format_time``: ``MM:SS.mmm``."""
+    """Match desktop Cue Monitor ``format_time``: ``MM:SS.mmm`` / ``H:MM:SS.mmm``."""
     total_ms = int(round(max(0.0, float(seconds)) * 1000.0))
-    mins, rem_ms = divmod(total_ms, 60_000)
+    hours, rem_ms = divmod(total_ms, 3_600_000)
+    mins, rem_ms = divmod(rem_ms, 60_000)
     secs, ms = divmod(rem_ms, 1000)
+    if hours > 0:
+        return f"{hours}:{mins:02d}:{secs:02d}.{ms:03d}"
     return f"{mins:02d}:{secs:02d}.{ms:03d}"
 
 

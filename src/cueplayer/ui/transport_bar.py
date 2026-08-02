@@ -20,9 +20,13 @@ from cueplayer.ui.timeline_overview import TimelineOverviewBar
 
 
 def format_time(seconds: float) -> str:
-    total_ms = int(round(seconds * 1000))
-    mins, rem_ms = divmod(total_ms, 60_000)
+    """Song clock: ``MM:SS.mmm``, or ``H:MM:SS.mmm`` when ≥ 1 hour."""
+    total_ms = int(round(max(0.0, float(seconds)) * 1000.0))
+    hours, rem_ms = divmod(total_ms, 3_600_000)
+    mins, rem_ms = divmod(rem_ms, 60_000)
     secs, ms = divmod(rem_ms, 1000)
+    if hours > 0:
+        return f"{hours}:{mins:02d}:{secs:02d}.{ms:03d}"
     return f"{mins:02d}:{secs:02d}.{ms:03d}"
 
 

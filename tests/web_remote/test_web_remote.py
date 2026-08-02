@@ -176,6 +176,9 @@ def test_static_dir_has_index() -> None:
     assert "touch-action: manipulation" in css
     assert "-webkit-touch-callout: none" in css
     assert "max-height: min(26vh, 220px)" in css
+    assert "max-width: 1100px" in css
+    assert "layoutStacked" in js
+    assert "max-width: 1100px" in js
     assert ".song-badges" in css
     assert ".song-badges .b.v.on" in css
     assert "pace_monitor_timeline" in (root / ".." / "webrtc_listen.py").read_text(encoding="utf-8")
@@ -186,6 +189,8 @@ def test_format_clock() -> None:
     assert format_clock(0) == "00:00.000"
     assert format_clock(65.25) == "01:05.250"
     assert format_clock(1.89) == "00:01.890"
+    assert format_clock(3661.5) == "1:01:01.500"
+    assert format_clock(4595.075) == "1:16:35.075"
 
 
 def test_build_waveform_overview_from_peaks() -> None:

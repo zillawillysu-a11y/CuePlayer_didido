@@ -1576,8 +1576,10 @@ class CueMonitorPanel(QWidget):
                 layout.setContentsMargins(12, 16, 12, 16)
         budget = self._clock_text_budget()
         clock_text = self.clock_label.text() or "00:00.000"
-        # Keep room for typical mm:ss.mmm even when current text is shorter.
-        clock_sample = clock_text if len(clock_text) >= len("00:00.000") else "00:00.000"
+        # Keep room for mm:ss.mmm / h:mm:ss.mmm even when current text is shorter.
+        clock_body = clock_text.split(".", 1)[0]
+        clock_floor = "0:00:00.000" if clock_body.count(":") >= 2 else "00:00.000"
+        clock_sample = clock_text if len(clock_text) >= len(clock_floor) else clock_floor
         clock_max = 36 if self._tc_output_block.isVisible() else _CLOCK_FONT_MAX_PX
         clock_px = self._font_px_for_text(
             clock_sample,

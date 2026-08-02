@@ -194,11 +194,17 @@
 
   function formatClock(seconds) {
     const totalMs = Math.max(0, Math.round(Number(seconds) * 1000));
-    const mins = Math.floor(totalMs / 60000);
-    const rem = totalMs % 60000;
+    const hours = Math.floor(totalMs / 3600000);
+    const remH = totalMs % 3600000;
+    const mins = Math.floor(remH / 60000);
+    const rem = remH % 60000;
     const secs = Math.floor(rem / 1000);
     const ms = rem % 1000;
-    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+    const mm = String(mins).padStart(2, "0");
+    const ss = String(secs).padStart(2, "0");
+    const mmm = String(ms).padStart(3, "0");
+    if (hours > 0) return `${hours}:${mm}:${ss}.${mmm}`;
+    return `${mm}:${ss}.${mmm}`;
   }
 
   function tcFrameRate(fps) {
@@ -2877,11 +2883,17 @@
   });
 
   function layoutStacked() {
-    return window.matchMedia("(max-width: 980px)").matches;
+    return window.matchMedia("(max-width: 1100px)").matches;
   }
 
   function applyLayoutCols() {
     if (!els.layout) return;
+    // In stacked (portrait) mode column vars must not fight flex width:100%.
+    if (layoutStacked()) {
+      els.layout.style.removeProperty("--col-setlist");
+      els.layout.style.removeProperty("--col-monitor");
+      return;
+    }
     els.layout.style.setProperty("--col-setlist", `${Math.round(colSetlist)}px`);
     els.layout.style.setProperty("--col-monitor", `${Math.round(colMonitor)}px`);
   }
