@@ -53,6 +53,8 @@ def test_static_dir_has_index() -> None:
     assert 'id="previewVideo"' in html
     assert 'id="deleteMarkBtn"' in html
     assert 'id="splitSetlist"' in html
+    assert 'id="splitWavePreview"' in html
+    assert 'id="stageMedia"' in html
     assert 'id="confirmDialog"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
     assert "ignoreCueScroll" in js
@@ -90,6 +92,8 @@ def test_static_dir_has_index() -> None:
     assert "hitTestMark" in js
     assert "waveSetupOn" in js
     assert "updateWaveSetupBtn" in js
+    assert "bindWavePreviewSplitter" in js
+    assert "applyWavePreviewFlex" in js
     assert "setPcMute" in js
     assert "deleteSelectedMark" in js
     assert "setSelectedMark" in js
@@ -121,6 +125,9 @@ def test_static_dir_has_index() -> None:
     assert ".preview-wrap" in css
     assert ".wave-setup" in css
     assert ".wave-setup.on" in css
+    assert ".stage-body" in css
+    assert ".splitter-h" in css
+    assert ".stage-media.preview-on" in css
     assert "#mutePcBtn.on" in css
     assert ".ghost.tiny.danger" in css
     assert ".cue-item.selected-mark" in css
@@ -129,7 +136,6 @@ def test_static_dir_has_index() -> None:
     assert "touch-action: manipulation" in css
     assert "-webkit-touch-callout: none" in css
     assert "max-height: min(26vh, 220px)" in css
-    assert "max-height: min(170px, 26vh)" in css
     assert ".song-badges" in css
     assert ".song-badges .b.v.on" in css
     assert "pace_monitor_timeline" in (root / ".." / "webrtc_listen.py").read_text(encoding="utf-8")

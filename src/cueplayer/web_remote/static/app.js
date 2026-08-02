@@ -38,6 +38,8 @@
     previewWrap: document.getElementById("previewWrap"),
     previewVideo: document.getElementById("previewVideo"),
     previewEmpty: document.getElementById("previewEmpty"),
+    stageMedia: document.getElementById("stageMedia"),
+    splitWavePreview: document.getElementById("splitWavePreview"),
     markMgrBtn: document.getElementById("markMgrBtn"),
     markMgrDialog: document.getElementById("markMgrDialog"),
     markMgrClose: document.getElementById("markMgrClose"),
@@ -62,6 +64,7 @@
     layout: document.getElementById("layout"),
     splitSetlist: document.getElementById("splitSetlist"),
     splitMonitor: document.getElementById("splitMonitor"),
+    stagePanel: document.getElementById("stagePanel"),
     confirmDialog: document.getElementById("confirmDialog"),
     confirmTitle: document.getElementById("confirmTitle"),
     confirmBody: document.getElementById("confirmBody"),
@@ -121,9 +124,11 @@
   let waveLabelFontPx = 11;
   let lastMgrLanesSig = "";
   let waveFollowSuspended = false;
-  const LAYOUT_KEY = "cueplayer_web_remote_layout_v1";
+  const LAYOUT_KEY = "cueplayer_web_remote_layout_v2";
   let colSetlist = 200;
   let colMonitor = 300;
+  let waveFlex = 1.25;
+  let previewFlex = 1.0;
 
   // Wave view window (seconds).
   let viewStart = 0;
@@ -288,10 +293,17 @@
       ? "Stop low-latency video preview"
       : "Show desktop video preview (WebRTC · low latency)";
     if (els.previewWrap) els.previewWrap.hidden = !previewOn;
+    if (els.splitWavePreview) els.splitWavePreview.hidden = !previewOn;
+    if (els.stageMedia) {
+      els.stageMedia.classList.toggle("preview-on", previewOn);
+      els.stageMedia.classList.toggle("preview-off", !previewOn);
+    }
     if (els.previewEmpty) {
       els.previewEmpty.textContent = previewOn ? "Waiting for video…" : "Preview off";
       els.previewEmpty.classList.toggle("hidden", false);
     }
+    applyWavePreviewFlex();
+    requestAnimationFrame(() => drawWave(true));
   }
 
   function updateMutePcBtn() {
@@ -2603,13 +2615,22 @@
     els.layout.style.setProperty("--col-monitor", `${Math.round(colMonitor)}px`);
   }
 
+  function applyWavePreviewFlex() {
+    if (!els.stageMedia) return;
+    els.stageMedia.style.setProperty("--wave-flex", String(waveFlex));
+    els.stageMedia.style.setProperty("--preview-flex", String(previewFlex));
+  }
+
   function loadLayoutCols() {
     try {
-      const raw = localStorage.getItem(LAYOUT_KEY);
+      const raw = localStorage.getItem(LAYOUT_KEY)
+        || localStorage.getItem("cueplayer_web_remote_layout_v1");
       if (!raw) return;
       const data = JSON.parse(raw);
       if (Number(data.setlist) > 80) colSetlist = Number(data.setlist);
       if (Number(data.monitor) > 160) colMonitor = Number(data.monitor);
+      if (Number(data.waveFlex) > 0.2) waveFlex = Number(data.waveFlex);
+      if (Number(data.previewFlex) > 0.2) previewFlex = Number(data.previewFlex);
     } catch (_) { /* ignore */ }
   }
 
@@ -2618,6 +2639,8 @@
       localStorage.setItem(LAYOUT_KEY, JSON.stringify({
         setlist: Math.round(colSetlist),
         monitor: Math.round(colMonitor),
+        waveFlex: Math.round(waveFlex * 100) / 100,
+        previewFlex: Math.round(previewFlex * 100) / 100,
       }));
     } catch (_) { /* ignore */ }
   }
@@ -2669,10 +2692,57 @@
     });
   }
 
+  function bindWavePreviewSplitter(handle) {
+    if (!handle) return;
+    let drag = null;
+    const onMove = (ev) => {
+      if (!drag || !previewOn || !els.stageMedia) return;
+      const media = els.stageMedia;
+      const rect = media.getBoundingClientRect();
+      const splitH = handle.offsetHeight || 8;
+      const usable = Math.max(1, rect.height - splitH);
+      const y = ev.clientY - rect.top;
+      const minPx = 72;
+      let wavePx = Math.max(minPx, Math.min(usable - minPx, y - splitH / 2));
+      const previewPx = usable - wavePx;
+      waveFlex = Math.max(0.25, wavePx / usable);
+      previewFlex = Math.max(0.25, previewPx / usable);
+      // Normalize so flex sums stay ~2 for stable feel.
+      const sum = waveFlex + previewFlex;
+      waveFlex = (waveFlex / sum) * 2;
+      previewFlex = (previewFlex / sum) * 2;
+      applyWavePreviewFlex();
+      drawWave(true);
+    };
+    const onUp = () => {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("active");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      saveLayoutCols();
+      drawWave(true);
+    };
+    handle.addEventListener("pointerdown", (ev) => {
+      if (!previewOn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      drag = { startY: ev.clientY };
+      handle.classList.add("active");
+      handle.setPointerCapture?.(ev.pointerId);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  }
+
   loadLayoutCols();
   applyLayoutCols();
+  applyWavePreviewFlex();
   bindSplitter(els.splitSetlist, "setlist");
   bindSplitter(els.splitMonitor, "monitor");
+  bindWavePreviewSplitter(els.splitWavePreview);
 
   if (els.confirmYes) {
     els.confirmYes.addEventListener("click", (ev) => {
