@@ -148,7 +148,7 @@ def test_static_dir_has_index() -> None:
     assert "applyLoopState" in js
     assert "beginPendingSeek" in js
     assert "pendingSeek" in js
-    assert "justify-content: flex-end" in css
+    assert "justify-content: center" in css
     assert ".stage-media.preview-on" in css
     assert ".layout.hide-setlist" in css
     assert ".layout.hide-monitor" in css
