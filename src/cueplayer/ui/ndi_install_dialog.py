@@ -1,4 +1,4 @@
-"""Dialog prompting the user to install NDI Tools / Runtime."""
+"""Dialog prompting the user to install NDI Tools / Runtime or cyndilib."""
 
 from __future__ import annotations
 
@@ -14,31 +14,62 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueplayer.playback.ndi_output import NDI_RUNTIME_URL, NDI_TOOLS_URL
+from cueplayer.playback.ndi_output import (
+    NDI_RUNTIME_URL,
+    NDI_TOOLS_URL,
+    NdiFailureKind,
+    ndi_failure_kind,
+)
 
 
 class NdiInstallDialog(QDialog):
-    """Explain that NDI Tools/Runtime is required; offer clickable download links."""
+    """Explain NDI setup failure; offer download links and/or pip guidance."""
 
-    def __init__(self, parent: QWidget | None = None, *, detail: str = "") -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        detail: str = "",
+        kind: NdiFailureKind | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("NDI Video Output")
         self.setModal(True)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
 
+        resolved = kind or ndi_failure_kind(detail)
         root = QVBoxLayout(self)
         root.setSpacing(12)
 
-        title = QLabel("NDI Tools / Runtime is required")
+        if resolved == "missing_package":
+            title_text = "CuePlayer needs the cyndilib package"
+            body_text = (
+                "NDI Tools / Runtime on this PC is not enough by itself when you "
+                "run CuePlayer from Python (dev / source).\n\n"
+                "Install the Python NDI library, keep NDI Tools installed, then "
+                "restart CuePlayer and turn NDI Output on again.\n\n"
+                "In the same Python env you use to launch CuePlayer:\n"
+                "  py -m pip install \"cyndilib>=0.0.7\"\n"
+                "Or from the repo folder:\n"
+                "  py -m pip install -e \".[ndi]\"\n\n"
+                "If you use CuePlayer.exe instead, install a full employee build "
+                "(packaged with NDI) — do not expect pip inside the .exe."
+            )
+        else:
+            title_text = "NDI Tools / Runtime is required"
+            body_text = (
+                "CuePlayer’s NDI Output needs NDI installed on this PC.\n"
+                "If you have not installed NDI Tools (or NDI Runtime), download it below, "
+                "install it, then fully quit and restart CuePlayer (so PATH picks up "
+                "the Runtime DLL) and turn NDI Output on again."
+            )
+
+        title = QLabel(title_text)
         title.setObjectName("ndiInstallTitle")
         title.setStyleSheet("font-size: 15px; font-weight: 600;")
         root.addWidget(title)
 
-        body = QLabel(
-            "CuePlayer’s NDI Output needs NDI installed on this PC.\n"
-            "If you have not installed NDI Tools (or NDI Runtime), download it below, "
-            "install it, then restart CuePlayer and turn NDI Output on again."
-        )
+        body = QLabel(body_text)
         body.setObjectName("ndiInstallBody")
         body.setWordWrap(True)
         body.setStyleSheet("color: #c8c8c8;")
@@ -85,6 +116,7 @@ def show_ndi_install_dialog(
     parent: QWidget | None,
     *,
     detail: str = "",
+    kind: NdiFailureKind | None = None,
 ) -> None:
     """Show the NDI install dialog (modal)."""
-    NdiInstallDialog(parent, detail=detail).exec()
+    NdiInstallDialog(parent, detail=detail, kind=kind).exec()

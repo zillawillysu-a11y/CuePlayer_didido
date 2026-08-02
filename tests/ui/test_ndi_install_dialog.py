@@ -31,10 +31,24 @@ def test_ndi_install_dialog_has_links(app: QApplication) -> None:
     from cueplayer.playback.ndi_output import NDI_RUNTIME_URL, NDI_TOOLS_URL
     from cueplayer.ui.ndi_install_dialog import NdiInstallDialog
 
-    dlg = NdiInstallDialog(detail="DLL load failed")
+    dlg = NdiInstallDialog(detail="DLL load failed", kind="missing_runtime")
     joined = "\n".join(lb.text() for lb in dlg.findChildren(QLabel))
     assert NDI_TOOLS_URL in joined
     assert NDI_RUNTIME_URL in joined
     assert "ndi.video" in joined
     assert "DLL load failed" in joined
+    assert "NDI Tools / Runtime is required" in joined
+    dlg.close()
+
+
+def test_ndi_install_dialog_package_copy(app: QApplication) -> None:
+    from cueplayer.ui.ndi_install_dialog import NdiInstallDialog
+
+    dlg = NdiInstallDialog(
+        detail="No module named 'cyndilib'", kind="missing_package"
+    )
+    joined = "\n".join(lb.text() for lb in dlg.findChildren(QLabel))
+    assert "cyndilib" in joined
+    assert "pip install" in joined
+    assert "NDI Tools alone is not enough" in joined or "not enough" in joined.lower()
     dlg.close()

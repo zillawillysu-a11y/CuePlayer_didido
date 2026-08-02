@@ -6,7 +6,10 @@ background worker so the UI / audio clock thread stays responsive.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
+import os
+from pathlib import Path
 import sys
 import threading
 from fractions import Fraction
@@ -17,6 +20,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 NdiFrameMode = Literal["video", "output_window"]
+NdiFailureKind = Literal["ok", "missing_package", "missing_runtime", "other"]
 
 _DEFAULT_W = 1920
 _DEFAULT_H = 1080
@@ -25,41 +29,209 @@ _DEFAULT_H = 1080
 NDI_TOOLS_URL = "https://ndi.video/tools/"
 NDI_RUNTIME_URL = "https://ndi.link/NDIRedistV6"
 
+_NDI_DLL_NAME = "Processing.NDI.Lib.x64.dll"
+_ndi_path_prepared = False
+_probe_ok_cached = False
 
-def ndi_available() -> bool:
+
+@dataclass(frozen=True)
+class NdiProbe:
+    available: bool
+    kind: NdiFailureKind
+    detail: str
+
+
+def _program_files_roots() -> list[Path]:
+    roots: list[Path] = []
+    for key in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        raw = os.environ.get(key)
+        if raw:
+            p = Path(raw)
+            if p not in roots:
+                roots.append(p)
+    if not roots:
+        roots.append(Path(r"C:\Program Files"))
+    return roots
+
+
+def _candidate_ndi_runtime_dirs() -> list[Path]:
+    """Folders that commonly contain Processing.NDI.Lib.x64.dll on Windows."""
+    dirs: list[Path] = []
+    for key in (
+        "NDI_RUNTIME_DIR_V6",
+        "NDI_RUNTIME_DIR_V5",
+        "NDI_RUNTIME_DIR_V4",
+        "NDILIB_REDIST_FOLDER",
+    ):
+        raw = (os.environ.get(key) or "").strip().strip('"')
+        if raw:
+            dirs.append(Path(raw))
+    for root in _program_files_roots():
+        ndi_root = root / "NDI"
+        if not ndi_root.is_dir():
+            continue
+        # Known layout + any "*Runtime*" / "*SDK*" folder one level down.
+        for rel in (
+            Path("NDI 6 Runtime") / "v6",
+            Path("NDI 5 Runtime") / "v5",
+            Path("NDI 6 Runtime"),
+            Path("NDI 5 Runtime"),
+            Path("NDI 6 SDK") / "Bin" / "x64",
+            Path("NDI 5 SDK") / "Bin" / "x64",
+        ):
+            dirs.append(ndi_root / rel)
+        try:
+            for child in ndi_root.iterdir():
+                name = child.name.lower()
+                if child.is_dir() and ("runtime" in name or "sdk" in name or "tools" in name):
+                    dirs.append(child)
+                    dirs.append(child / "v6")
+                    dirs.append(child / "v5")
+                    dirs.append(child / "Bin" / "x64")
+        except OSError:
+            pass
+    # Preserve order, drop dupes.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for d in dirs:
+        key = str(d).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def ensure_ndi_runtime_search_path() -> list[str]:
+    """Make NDI Runtime DLLs discoverable for ``import cyndilib`` on Windows.
+
+    Installing NDI Tools sets machine env vars, but apps launched from an IDE /
+    shortcut often keep a stale PATH. Adding the Runtime folder via
+    ``os.add_dll_directory`` fixes "Tools installed but CuePlayer still fails".
+    """
+    global _ndi_path_prepared
+    if sys.platform != "win32":
+        return []
+    added: list[str] = []
+    for folder in _candidate_ndi_runtime_dirs():
+        dll = folder / _NDI_DLL_NAME
+        if not dll.is_file():
+            continue
+        parent = str(dll.parent.resolve())
+        if parent in added:
+            continue
+        try:
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(parent)
+        except (OSError, ValueError) as exc:
+            log.debug("NDI add_dll_directory(%s) failed: %s", parent, exc)
+        path_now = os.environ.get("PATH", "")
+        if parent.lower() not in path_now.lower():
+            os.environ["PATH"] = parent + os.pathsep + path_now
+        added.append(parent)
+    _ndi_path_prepared = True
+    if added:
+        log.info("NDI Runtime DLL search path: %s", "; ".join(added))
+    return added
+
+
+def ndi_probe(*, force: bool = False) -> NdiProbe:
+    """Import cyndilib after ensuring Runtime DLL dirs are on the search path."""
+    global _probe_ok_cached
+    if _probe_ok_cached and not force:
+        return NdiProbe(True, "ok", "cyndilib ready")
+    if force:
+        _probe_ok_cached = False
+    ensure_ndi_runtime_search_path()
     try:
         import cyndilib  # noqa: F401
 
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+        _probe_ok_cached = True
+        return NdiProbe(True, "ok", "cyndilib ready")
+    except ModuleNotFoundError as exc:
+        name = str(getattr(exc, "name", "") or "")
+        msg = str(exc)
+        if "cyndilib" in name.lower() or "cyndilib" in msg.lower():
+            return NdiProbe(False, "missing_package", msg)
+        return NdiProbe(False, "other", msg)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        low = msg.lower()
+        runtimeish = any(
+            n in low
+            for n in (
+                "dll",
+                "processing.ndi",
+                "ndi.lib",
+                "shared library",
+                "cannot load",
+                "failed to load",
+                "not found",
+            )
+        )
+        return NdiProbe(False, "missing_runtime" if runtimeish else "other", msg)
+
+
+def ndi_available() -> bool:
+    return ndi_probe().available
+
+
+def ndi_failure_kind(error: str | None = None) -> NdiFailureKind:
+    """Classify an NDI error for dialog copy (package vs Runtime)."""
+    probe = ndi_probe()
+    if probe.available:
+        if not error:
+            return "ok"
+        low = error.lower()
+        if any(
+            n in low
+            for n in (
+                "runtime",
+                "ndi tools",
+                "processing.ndi",
+                "dll",
+                "shared library",
+                "cannot load",
+                "failed to load",
+            )
+        ):
+            return "missing_runtime"
+        return "other"
+    return probe.kind
 
 
 def ndi_status() -> str:
-    if ndi_available():
+    probe = ndi_probe()
+    if probe.available:
         return "NDI: cyndilib ready (requires NDI Tools / Runtime on this machine)"
     frozen = bool(getattr(sys, "frozen", False))
-    if frozen:
+    if probe.kind == "missing_package":
+        if frozen:
+            return (
+                "This CuePlayer build is missing the bundled NDI library (cyndilib).\n"
+                "Please install a full employee build (packaged with the ndi extra), "
+                "or re-run packaging\\build_windows.ps1 on a PC that can import cyndilib.\n"
+                f"Detail: {probe.detail}"
+            )
         return (
-            "NDI Tools / Runtime is not installed on this PC "
-            "(or this build is missing cyndilib).\n"
-            f"Install NDI Tools: {NDI_TOOLS_URL}\n"
-            f"Or Runtime only: {NDI_RUNTIME_URL}\n"
-            "Then restart CuePlayer."
+            "CuePlayer needs the Python package cyndilib (NDI Tools alone is not enough).\n"
+            "Install with:\n"
+            "  py -m pip install \"cyndilib>=0.0.7\"\n"
+            "Or from the repo:\n"
+            "  py -m pip install -e \".[ndi]\"\n"
+            f"Also keep NDI Tools / Runtime installed, then restart CuePlayer.\n"
+            f"Detail: {probe.detail}"
         )
-    return (
-        "NDI library not installed. Install with:\n"
-        "  py -m pip install cyndilib\n"
-        f"Also install NDI Tools ({NDI_TOOLS_URL}) or Runtime "
-        f"({NDI_RUNTIME_URL}), then restart CuePlayer."
-    )
+    # Runtime / DLL load problems (Tools may be installed but not on PATH yet).
+    return ndi_runtime_missing_message(probe.detail)
 
 
 def ndi_install_required(error: str | None) -> bool:
-    """True when the user should install NDI Tools / Runtime (show install dialog)."""
+    """True when we should show the NDI help dialog (package or Runtime)."""
     if not error:
         return False
-    if not ndi_available():
+    kind = ndi_failure_kind(error)
+    if kind in ("missing_package", "missing_runtime"):
         return True
     low = error.lower()
     needles = (
@@ -84,7 +256,9 @@ def ndi_runtime_missing_message(detail: str = "") -> str:
     detail = (detail or "").strip()
     base = (
         "NDI Tools / Runtime is not installed (or could not be loaded) on this PC.\n"
-        "Please install NDI, then restart CuePlayer and try NDI Output again."
+        "Please install NDI, then restart CuePlayer and try NDI Output again.\n"
+        f"Install NDI Tools: {NDI_TOOLS_URL}\n"
+        f"Or Runtime only: {NDI_RUNTIME_URL}"
     )
     if detail:
         return f"{base}\n\nDetail: {detail}"
@@ -209,7 +383,9 @@ class NdiVideoOutput:
             if not self._enabled:
                 self._last_error = ""
                 return None
-            if not ndi_available():
+            # Re-probe every enable: PATH may change after user installs Runtime.
+            probe = ndi_probe(force=True)
+            if not probe.available:
                 self._enabled = False
                 self._last_error = ndi_status()
                 return self._last_error

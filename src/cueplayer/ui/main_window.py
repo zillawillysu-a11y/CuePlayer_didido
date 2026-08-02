@@ -132,7 +132,11 @@ from cueplayer.media.video_limits import (
 from cueplayer.media.video_music_standin import build_music_standin_from_video
 from cueplayer.playback.audio_engine import AudioEngine
 from cueplayer.playback.jog import hold_step_frames
-from cueplayer.playback.ndi_output import NdiVideoOutput, ndi_install_required
+from cueplayer.playback.ndi_output import (
+    NdiVideoOutput,
+    ndi_failure_kind,
+    ndi_install_required,
+)
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
@@ -7059,7 +7063,9 @@ class MainWindow(QMainWindow):
         self._sync_video_output_active()
         if err and show_errors:
             if ndi_install_required(err):
-                show_ndi_install_dialog(self, detail=err)
+                show_ndi_install_dialog(
+                    self, detail=err, kind=ndi_failure_kind(err)
+                )
             else:
                 QMessageBox.warning(self, "NDI Video Output", err)
         return err
