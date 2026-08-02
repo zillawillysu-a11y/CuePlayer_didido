@@ -188,6 +188,12 @@
   }
 
   function openAuth() {
+    // Polling hits 401 every ~0.5s while the password is wrong/empty. If we
+    // re-show the dialog and reset the field each time, keystrokes get wiped
+    // (user: typed password keeps being deleted).
+    if (els.authDialog.open) {
+      return;
+    }
     els.passwordInput.value = token;
     if (els.authDialog.showModal) els.authDialog.showModal();
   }
