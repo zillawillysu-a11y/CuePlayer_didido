@@ -139,6 +139,8 @@ def test_static_dir_has_index() -> None:
     assert 'id="loopBBtn"' in html
     assert 'id="loopToggleBtn"' in html
     assert 'id="loopClearBtn"' in html
+    # Play/Pause cluster sits left of A/B/Loop/X (desktop parity).
+    assert html.index('id="playBtn"') < html.index('id="loopABtn"')
     assert "set_loop_a" in js
     assert "set_loop_b" in js
     assert "clear_loop" in js

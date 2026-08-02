@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#050505" />
   <title>CuePlayer Remote</title>
-  <link rel="stylesheet" href="/app.css?v=listen20" />
+  <link rel="stylesheet" href="/app.css?v=listen21" />
 </head>
 <body>
   <div class="app">
@@ -54,12 +54,6 @@
         <div class="marks" id="markButtons" aria-label="Mark shortcuts"></div>
 
         <div class="transport-row">
-          <div class="ab-loop" role="group" aria-label="A-B loop">
-            <button type="button" class="chip ab-btn" id="loopABtn" title="Set point A">A</button>
-            <button type="button" class="chip ab-btn" id="loopBBtn" title="Set point B">B</button>
-            <button type="button" class="chip ab-btn" id="loopToggleBtn" title="Loop between A and B">Loop</button>
-            <button type="button" class="chip ab-btn" id="loopClearBtn" title="Clear A / B">X</button>
-          </div>
           <div class="transport" role="group" aria-label="Transport">
             <button type="button" class="icon-btn" id="prevSong" aria-label="Previous song" title="Previous song">
               <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M20 7 L11 15 L20 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
@@ -76,6 +70,12 @@
             <button type="button" class="icon-btn" id="nextSong" aria-label="Next song" title="Next song">
               <svg viewBox="0 0 34 30" aria-hidden="true"><path d="M14 7 L23 15 L14 23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 7 V23" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
             </button>
+          </div>
+          <div class="ab-loop" role="group" aria-label="A-B loop">
+            <button type="button" class="chip ab-btn" id="loopABtn" title="Set point A">A</button>
+            <button type="button" class="chip ab-btn" id="loopBBtn" title="Set point B">B</button>
+            <button type="button" class="chip ab-btn" id="loopToggleBtn" title="Loop between A and B">Loop</button>
+            <button type="button" class="chip ab-btn" id="loopClearBtn" title="Clear A / B">X</button>
           </div>
         </div>
       </section>
@@ -196,6 +196,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=listen20"></script>
+  <script src="/app.js?v=listen21"></script>
 </body>
 </html>
