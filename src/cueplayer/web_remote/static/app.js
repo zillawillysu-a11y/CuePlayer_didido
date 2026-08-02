@@ -207,6 +207,97 @@
     return `${mm}:${ss}.${mmm}`;
   }
 
+  // --- Monitor clock: shrink digits to the right-panel width (desktop parity) ---
+  const CLOCK_PX_MAX = 44;
+  const CLOCK_PX_MIN = 14;
+  const DURATION_PX_MAX = 16;
+  const DURATION_PX_MIN = 10;
+  const TC_PX_MAX = 30;
+  const TC_PX_MIN = 12;
+  const TC_STATUS_PX_MAX = 13;
+  const TC_STATUS_PX_MIN = 9;
+  let clockMeasureCtx = null;
+  let lastClockFitKey = "";
+  let clockFitRaf = 0;
+
+  function monoTextWidth(text, px, weight) {
+    if (!clockMeasureCtx) {
+      const canvas = document.createElement("canvas");
+      clockMeasureCtx = canvas.getContext("2d");
+    }
+    const ctx = clockMeasureCtx;
+    if (!ctx) return String(text || "").length * px * 0.62;
+    const family = (els.clock && getComputedStyle(els.clock).fontFamily)
+      || getComputedStyle(document.body).fontFamily
+      || "monospace";
+    ctx.font = `${weight || 600} ${px}px ${family}`;
+    return ctx.measureText(String(text || "")).width;
+  }
+
+  function fontPxForText(text, available, maxPx, minPx, weight) {
+    let lo = minPx;
+    let hi = maxPx;
+    let best = minPx;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (monoTextWidth(text, mid, weight) <= available) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return best;
+  }
+
+  function fitMonitorClock() {
+    const host = els.monitorClock;
+    if (!host || host.classList.contains("hidden-panel")) return;
+    const budget = Math.max(36, host.clientWidth - 8);
+    if (budget < 36) return;
+
+    const clockText = (els.clock && els.clock.textContent) || "00:00.000";
+    const clockBody = clockText.split(".", 1)[0];
+    const clockFloor = clockBody.split(":").length >= 3 ? "0:00:00.000" : "00:00.000";
+    const clockSample = clockText.length >= clockFloor.length ? clockText : clockFloor;
+    const showTc = displayPrefs.timecode !== false
+      && els.timecode
+      && !els.timecode.classList.contains("hidden-panel");
+    const clockMax = showTc ? 36 : CLOCK_PX_MAX;
+    const clockPx = fontPxForText(clockSample, budget, clockMax, CLOCK_PX_MIN, 600);
+
+    const durationText = (els.duration && els.duration.textContent) || "/ 00:00.000";
+    const durationPx = fontPxForText(
+      durationText, budget, DURATION_PX_MAX, DURATION_PX_MIN, 400
+    );
+
+    const tcText = (els.timecode && els.timecode.textContent) || "01:00:00:00";
+    const tcSample = tcText.length >= 11 ? tcText : "01:00:00:00";
+    const tcPx = fontPxForText(tcSample, budget, TC_PX_MAX, TC_PX_MIN, 600);
+
+    const statusText = (els.tcStatus && els.tcStatus.textContent) || "TC off";
+    const statusPx = fontPxForText(
+      statusText, budget, TC_STATUS_PX_MAX, TC_STATUS_PX_MIN, 600
+    );
+
+    const key = `${budget}|${clockSample}|${durationText}|${tcSample}|${statusText}|${showTc}`;
+    if (key === lastClockFitKey) return;
+    lastClockFitKey = key;
+
+    host.style.setProperty("--clock-px", `${clockPx}px`);
+    host.style.setProperty("--duration-px", `${durationPx}px`);
+    host.style.setProperty("--tc-px", `${tcPx}px`);
+    host.style.setProperty("--tc-status-px", `${statusPx}px`);
+  }
+
+  function scheduleFitMonitorClock() {
+    if (clockFitRaf) return;
+    clockFitRaf = requestAnimationFrame(() => {
+      clockFitRaf = 0;
+      fitMonitorClock();
+    });
+  }
+
   function tcFrameRate(fps) {
     const f = Number(fps) || 30;
     if (Math.abs(f - 29.97) < 0.02) return 30;
@@ -1440,6 +1531,7 @@
     if (els.dispToggles) els.dispToggles.checked = displayPrefs.toggles;
     if (els.dispCueList) els.dispCueList.checked = displayPrefs.cue_list;
     applyLayoutPanelVisibility();
+    scheduleFitMonitorClock();
   }
 
   function openDisp() {
@@ -2194,8 +2286,10 @@
     const pos = livePosition();
     const clock = formatClock(pos);
     if (clock !== lastDrawnClock) {
+      const grew = clock.length !== lastDrawnClock.length;
       lastDrawnClock = clock;
       els.clock.textContent = clock;
+      if (grew) scheduleFitMonitorClock();
     }
     if (displayPrefs.timecode !== false) {
       const tc = liveTimecode();
@@ -2232,6 +2326,7 @@
     els.tcStatus.textContent = state.tc_status || "TC off";
     els.timecode.textContent = liveTimecode();
     lastDrawnTc = els.timecode.textContent;
+    scheduleFitMonitorClock();
     tcAccent = state.tc_accent || state.playhead_color || "#3dd68c";
     document.documentElement.style.setProperty("--ok", tcAccent);
     els.timecode.style.color = tcActive ? tcAccent : "#52525b";
@@ -2936,7 +3031,7 @@
       const dx = ev.clientX - drag.startX;
       const total = els.layout.clientWidth;
       const minSet = 120;
-      const minMon = 200;
+      const minMon = 160;
       const minStage = 240;
       const splitW = 16;
       if (which === "setlist") {
@@ -2951,6 +3046,7 @@
         colMonitor = next;
       }
       applyLayoutCols();
+      scheduleFitMonitorClock();
       drawWave(true);
     };
     const onUp = () => {
@@ -2961,6 +3057,7 @@
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       saveLayoutCols();
+      scheduleFitMonitorClock();
       drawWave(true);
     };
     handle.addEventListener("pointerdown", (ev) => {
@@ -3028,6 +3125,13 @@
   bindSplitter(els.splitSetlist, "setlist");
   bindSplitter(els.splitMonitor, "monitor");
   bindWavePreviewSplitter(els.splitWavePreview);
+  if (typeof ResizeObserver !== "undefined" && els.monitorPanel) {
+    const ro = new ResizeObserver(() => scheduleFitMonitorClock());
+    ro.observe(els.monitorPanel);
+    if (els.monitorClock) ro.observe(els.monitorClock);
+  }
+  window.addEventListener("resize", scheduleFitMonitorClock);
+  scheduleFitMonitorClock();
 
   if (els.confirmYes) {
     els.confirmYes.addEventListener("click", (ev) => {

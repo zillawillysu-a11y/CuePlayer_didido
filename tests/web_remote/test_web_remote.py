@@ -74,6 +74,9 @@ def test_static_dir_has_index() -> None:
     assert "renumber_cue_ids" in js
     assert "set_mark_cue_id" in js
     assert "bindSplitter" in js
+    assert "fitMonitorClock" in js
+    assert "scheduleFitMonitorClock" in js
+    assert "--clock-px" in js
     assert "pause_on_mark" in js
     assert "prompt_note_on_mark" in js
     assert "show_note_on_wave" in js
@@ -151,6 +154,8 @@ def test_static_dir_has_index() -> None:
     assert ".ab-loop" in css
     assert ".ab-btn" in css
     assert ".splitter-h" in css
+    assert "--clock-px" in css
+    assert "var(--clock-px" in css
     assert 'id="loopABtn"' in html
     assert 'id="loopBBtn"' in html
     assert 'id="loopToggleBtn"' in html
