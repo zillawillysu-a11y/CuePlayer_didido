@@ -257,12 +257,12 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (heavy lookback = 10s).
-    assert decode_calls[1] == pytest.approx(290.0, abs=0.05)
+    # Follow-up window starts near the latest need (heavy lookback = 12s).
+    assert decode_calls[1] == pytest.approx(288.0, abs=0.05)
 
 
 def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Heavy clip: near the end of a 60s window, schedule the next decode."""
+    """Heavy clip: near the end of a 90s window, schedule the next decode."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c",
@@ -276,7 +276,7 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    _inject(mixer, clip, _constant(60.0, 0.4))
+    _inject(mixer, clip, _constant(90.0, 0.4))
     requested: list[float] = []
 
     def _capture(c: VideoClip, source_time: float) -> None:
@@ -284,11 +284,11 @@ def test_chunk_at_prefetches_before_window_ends(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(40.0 * SR)  # 20s remain < 25s lead
+    at = int(55.0 * SR)  # 35s remain < 40s lead
     out = mixer.chunk_at(at, 256)
     assert float(np.max(np.abs(out))) > 0.0
     assert requested, "expected heavy-window prefetch"
-    assert max(requested) > 40.0
+    assert max(requested) > 55.0
 
 
 def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> None:

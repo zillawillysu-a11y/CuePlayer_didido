@@ -30,14 +30,14 @@ from cueplayer.media.video_limits import (
     MAX_VIDEO_AUDIO_DECODE_SECONDS,
     clip_is_heavy,
 )
-from cueplayer.playback.resample import resample_linear
+from cueplayer.playback.resample import ascontiguous_yielding, resample_linear_yielding
 
-# Heavy sliding window — long enough that Prefetch is rare; short enough that
-# one decode does not freeze Preview for a minute.
-_HEAVY_WINDOW_SECONDS = 60.0
-_HEAVY_LOOKBACK_SECONDS = 10.0
-# Start the next heavy window when this much remains (decode usually << this).
-_HEAVY_PREFETCH_LEAD_SECONDS = 25.0
+# Heavy sliding window — fewer / rarer prefeches = fewer GIL hitches.
+_HEAVY_WINDOW_SECONDS = 90.0
+_HEAVY_LOOKBACK_SECONDS = 12.0
+# Start next window early so decode finishes before the seam; hitch (if any)
+# happens while plenty of PCM remains.
+_HEAVY_PREFETCH_LEAD_SECONDS = 40.0
 _MAX_WINDOWS_PER_CLIP = 3
 
 
@@ -164,9 +164,15 @@ class VideoAudioMixer:
                 data = np.repeat(data, 2, axis=1)
             elif data.shape[1] > 2:
                 data = data[:, :2]
+            # Resample / contig copy outside av_path_lock, yielding the GIL so
+            # PortAudio + Preview do not hitch for ~0.5s on each prefetch.
             if int(buf.sample_rate) != int(self._playback_rate):
-                data = resample_linear(data, buf.sample_rate, self._playback_rate)
-            samples = np.ascontiguousarray(data, dtype=np.float32)
+                data = resample_linear_yielding(
+                    data, buf.sample_rate, self._playback_rate
+                )
+            samples = ascontiguous_yielding(
+                data, sample_rate=float(self._playback_rate)
+            )
 
         follow_up: float | None = None
         with self._lock:
@@ -253,7 +259,7 @@ class VideoAudioMixer:
         if remaining >= _HEAVY_PREFETCH_LEAD_SECONDS:
             return
         # One request aimed past the seam; lookback keeps overlap with current.
-        ahead = float(source_time) + max(15.0, remaining * 0.5 + 12.0)
+        ahead = float(source_time) + max(20.0, remaining * 0.5 + 18.0)
         self._request_window(clip, ahead)
 
     def chunk_at(self, start_frame: int, frames: int) -> np.ndarray:

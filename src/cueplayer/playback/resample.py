@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 
@@ -28,6 +30,63 @@ def resample_linear(samples: np.ndarray, src_rate: float, dst_rate: float) -> np
     out = np.empty((n_dst, src.shape[1]), dtype=np.float32)
     for ch in range(src.shape[1]):
         out[:, ch] = np.interp(dst_t, src_t, src[:, ch])
+    return out
+
+
+def resample_linear_yielding(
+    samples: np.ndarray,
+    src_rate: float,
+    dst_rate: float,
+    *,
+    chunk_seconds: float = 0.25,
+) -> np.ndarray:
+    """Like ``resample_linear``, but yields the GIL between chunks.
+
+    Background video-audio window installs used to run one giant ``np.interp``
+    over 30–60s of stereo PCM, starving the PortAudio callback and Preview
+    for ~0.5s every window prefetch. Chunk + ``sleep(0)`` keeps playback alive.
+    """
+    src = np.asarray(samples, dtype=np.float32)
+    n_src = int(src.shape[0])
+    if n_src == 0 or src_rate <= 0 or dst_rate <= 0 or int(src_rate) == int(dst_rate):
+        return src
+    chunk = max(1, int(round(float(chunk_seconds) * float(src_rate))))
+    if n_src <= chunk:
+        return resample_linear(src, src_rate, dst_rate)
+    pieces: list[np.ndarray] = []
+    i = 0
+    while i < n_src:
+        j = min(n_src, i + chunk)
+        pieces.append(resample_linear(src[i:j], src_rate, dst_rate))
+        i = j
+        time.sleep(0)
+    return np.concatenate(pieces, axis=0)
+
+
+def ascontiguous_yielding(
+    samples: np.ndarray,
+    *,
+    chunk_seconds: float = 0.5,
+    sample_rate: float = 48000.0,
+) -> np.ndarray:
+    """``ascontiguousarray`` in slices so a huge copy cannot freeze the audio callback."""
+    src = np.asarray(samples, dtype=np.float32)
+    if src.size == 0 or src.flags.c_contiguous:
+        return np.ascontiguousarray(src, dtype=np.float32)
+    n = int(src.shape[0])
+    chunk = max(1, int(round(float(chunk_seconds) * float(sample_rate))))
+    if n <= chunk:
+        return np.ascontiguousarray(src, dtype=np.float32)
+    if src.ndim == 1:
+        out = np.empty(n, dtype=np.float32)
+    else:
+        out = np.empty((n, src.shape[1]), dtype=np.float32)
+    i = 0
+    while i < n:
+        j = min(n, i + chunk)
+        out[i:j] = src[i:j]
+        i = j
+        time.sleep(0)
     return out
 
 
