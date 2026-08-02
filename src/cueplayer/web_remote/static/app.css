@@ -277,6 +277,55 @@ dialog textarea,
   white-space: pre-line;
 }
 
+.cue-action-form {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  min-width: min(92vw, 360px);
+}
+
+.cue-action-form h3 {
+  margin: 0;
+}
+
+.cue-action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cue-action-btn {
+  width: 100%;
+  text-align: center;
+  justify-content: center;
+  padding: 12px 14px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: #1a1a1a;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cue-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cue-action-btn:active:not(:disabled) {
+  background: #242424;
+}
+
+.cue-action-btn.danger {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(127, 29, 29, 0.35);
+}
+
+.cue-item.pressing {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .disp-form {
   padding: 14px;
   display: grid;

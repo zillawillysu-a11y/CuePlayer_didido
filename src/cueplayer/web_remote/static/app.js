@@ -62,6 +62,11 @@
     confirmBody: document.getElementById("confirmBody"),
     confirmYes: document.getElementById("confirmYes"),
     confirmNo: document.getElementById("confirmNo"),
+    cueActionDialog: document.getElementById("cueActionDialog"),
+    cueActionTitle: document.getElementById("cueActionTitle"),
+    cueActionBody: document.getElementById("cueActionBody"),
+    cueActionList: document.getElementById("cueActionList"),
+    cueActionCancel: document.getElementById("cueActionCancel"),
     nowPrimaryCard: document.querySelector(".now-card.primary"),
     nowSecondaryCard: document.querySelector(".now-card.secondary"),
   };
@@ -970,19 +975,23 @@
       noteEl.title = "Edit Note";
       btn.style.borderLeft = `3px solid ${m.color || "#444"}`;
       cueEl.addEventListener("click", (ev) => {
+        if (consumeCueSuppressClick(ev)) return;
         ev.preventDefault();
         ev.stopPropagation();
         editCueId(m).catch((e) => showToast(String(e.message || e)));
       });
       noteEl.addEventListener("click", (ev) => {
+        if (consumeCueSuppressClick(ev)) return;
         ev.preventDefault();
         ev.stopPropagation();
         editCueNote(m).catch((e) => showToast(String(e.message || e)));
       });
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", (ev) => {
+        if (consumeCueSuppressClick(ev)) return;
         setSelectedMark(m.id);
         command({ op: "seek_mark", mark_id: m.id }).catch(() => {});
       });
+      bindCueItemLongPress(btn, m);
       els.cueList.appendChild(btn);
     }
     lastPlayheadCueId = "";
@@ -1191,6 +1200,155 @@
     } catch (e) {
       showToast(String(e.message || e));
     }
+  }
+
+  const CUE_LONG_PRESS_MS = 480;
+  const CUE_LONG_PRESS_MOVE_PX = 12;
+  let cueLongPressTimer = null;
+  let cueSuppressClick = false;
+
+  function clearCueLongPress(btn) {
+    if (cueLongPressTimer) {
+      clearTimeout(cueLongPressTimer);
+      cueLongPressTimer = null;
+    }
+    if (btn) btn.classList.remove("pressing");
+  }
+
+  function openCueActions(mark) {
+    return new Promise((resolve) => {
+      if (!els.cueActionDialog || !els.cueActionDialog.showModal) {
+        resolve(null);
+        return;
+      }
+      const label = mark.display_name || mark.main_cue_id || mark.lane_name || "mark";
+      els.cueActionTitle.textContent = mark.lane_name || "Mark";
+      els.cueActionBody.textContent =
+        `${mark.time_display || formatClock(mark.time_seconds)} · ${label}`;
+      els.cueActionList.innerHTML = "";
+      const actions = [
+        { id: "jump", label: "Jump" },
+        { id: "note", label: "Edit Note" },
+        {
+          id: "cue_id",
+          label: "Edit Cue ID",
+          disabled: !mark.cue_id_enabled,
+          title: mark.cue_id_enabled ? "" : "Cue ID off for this type",
+        },
+        { id: "delete", label: "Delete", danger: true },
+      ];
+      for (const a of actions) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "cue-action-btn" + (a.danger ? " danger" : "");
+        b.textContent = a.label;
+        if (a.disabled) {
+          b.disabled = true;
+          if (a.title) b.title = a.title;
+        }
+        b.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          els.cueActionDialog.close(a.id);
+        });
+        els.cueActionList.appendChild(b);
+      }
+      const onClose = () => {
+        els.cueActionDialog.removeEventListener("close", onClose);
+        const v = els.cueActionDialog.returnValue;
+        resolve(v && v !== "cancel" ? v : null);
+      };
+      els.cueActionDialog.addEventListener("close", onClose, { once: true });
+      els.cueActionDialog.showModal();
+    });
+  }
+
+  async function runCueAction(mark, action) {
+    if (!mark || !action) return;
+    if (action === "jump") {
+      setSelectedMark(mark.id);
+      await command({ op: "seek_mark", mark_id: mark.id });
+      return;
+    }
+    if (action === "note") {
+      await editCueNote(mark);
+      return;
+    }
+    if (action === "cue_id") {
+      await editCueId(mark);
+      return;
+    }
+    if (action === "delete") {
+      setSelectedMark(mark.id);
+      await deleteSelectedMark();
+    }
+  }
+
+  function showCueActionsForMark(mark) {
+    setSelectedMark(mark.id);
+    openCueActions(mark)
+      .then((action) => runCueAction(mark, action))
+      .catch((e) => showToast(String(e.message || e)));
+  }
+
+  function bindCueItemLongPress(btn, mark) {
+    let startX = 0;
+    let startY = 0;
+    const onDown = (ev) => {
+      if (ev.pointerType === "mouse" && ev.button !== 0) return;
+      clearCueLongPress(btn);
+      startX = ev.clientX;
+      startY = ev.clientY;
+      btn.classList.add("pressing");
+      cueLongPressTimer = setTimeout(() => {
+        cueLongPressTimer = null;
+        btn.classList.remove("pressing");
+        cueSuppressClick = true;
+        clearTimeout(consumeCueSuppressClick._clear);
+        consumeCueSuppressClick._clear = setTimeout(() => {
+          cueSuppressClick = false;
+        }, 450);
+        try {
+          navigator.vibrate?.(12);
+        } catch (_) {
+          /* ignore */
+        }
+        showCueActionsForMark(mark);
+      }, CUE_LONG_PRESS_MS);
+    };
+    const onMove = (ev) => {
+      if (!cueLongPressTimer) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if ((dx * dx) + (dy * dy) > CUE_LONG_PRESS_MOVE_PX * CUE_LONG_PRESS_MOVE_PX) {
+        clearCueLongPress(btn);
+      }
+    };
+    const onUp = () => clearCueLongPress(btn);
+    btn.addEventListener("pointerdown", onDown);
+    btn.addEventListener("pointermove", onMove);
+    btn.addEventListener("pointerup", onUp);
+    btn.addEventListener("pointercancel", onUp);
+    btn.addEventListener("lostpointercapture", onUp);
+    btn.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      cueSuppressClick = true;
+      clearTimeout(consumeCueSuppressClick._clear);
+      consumeCueSuppressClick._clear = setTimeout(() => {
+        cueSuppressClick = false;
+      }, 450);
+      clearCueLongPress(btn);
+      showCueActionsForMark(mark);
+    });
+  }
+
+  function consumeCueSuppressClick(ev) {
+    if (!cueSuppressClick) return false;
+    ev.preventDefault();
+    ev.stopPropagation();
+    cueSuppressClick = false;
+    clearTimeout(consumeCueSuppressClick._clear);
+    return true;
   }
 
   async function renumberCueIds() {
@@ -2316,8 +2474,15 @@
       els.confirmDialog.close("cancel");
     });
   }
+  if (els.cueActionCancel) {
+    els.cueActionCancel.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      els.cueActionDialog.close("cancel");
+    });
+  }
 
   els.cueList.addEventListener("scroll", () => {
+    clearCueLongPress(els.cueList.querySelector(".cue-item.pressing"));
     if (ignoreCueScroll || cueUserScrolling) return;
     cueUserScrolling = true;
     setCueFollowSuspended(true);
