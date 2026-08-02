@@ -19,6 +19,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 GetPcmFrameFn = Callable[[int, int], np.ndarray]
+LagSkipFn = Callable[[], None]
 
 try:
     from aiortc import (
@@ -41,6 +42,43 @@ except Exception:  # noqa: BLE001
 
 SAMPLE_RATE = 48000
 SAMPLES_PER_FRAME = 960  # 20 ms — Opus / WebRTC friendly
+# If the sender falls more than this behind wall clock, jump the timeline
+# instead of emitting a burst of frames (Safari plays those as speed-up).
+LAG_SKIP_SECONDS = 0.06
+
+
+def pace_monitor_timeline(
+    *,
+    start: float | None,
+    timestamp: int,
+    now: float,
+    frame_samples: int = SAMPLES_PER_FRAME,
+    sample_rate: int = SAMPLE_RATE,
+    lag_skip_seconds: float = LAG_SKIP_SECONDS,
+) -> tuple[float, int, float, bool]:
+    """Advance the monitor presentation clock.
+
+    Returns ``(start, timestamp, sleep_seconds, lag_skipped)``.
+    When lag-skipped, the caller should resync the PCM cursor to the engine
+    playhead — never dump frames at max rate to "catch up".
+    """
+    if start is None:
+        return now, 0, 0.0, False
+
+    timestamp = int(timestamp) + int(frame_samples)
+    due = start + (timestamp / float(sample_rate))
+    wait = due - now
+    if wait >= 0.0:
+        return start, timestamp, wait, False
+    if wait > -float(lag_skip_seconds):
+        return start, timestamp, 0.0, False
+
+    jumped = int(round((now - start) * float(sample_rate)))
+    rem = jumped % int(frame_samples)
+    if rem:
+        jumped += int(frame_samples) - rem
+    timestamp = max(timestamp, jumped)
+    return start, timestamp, 0.0, True
 
 
 class EngineMonitorTrack(MediaStreamTrack):
@@ -48,9 +86,14 @@ class EngineMonitorTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, get_pcm_frame: GetPcmFrameFn) -> None:
+    def __init__(
+        self,
+        get_pcm_frame: GetPcmFrameFn,
+        on_lag_skip: LagSkipFn | None = None,
+    ) -> None:
         super().__init__()
         self._get_pcm_frame = get_pcm_frame
+        self._on_lag_skip = on_lag_skip
         self._timestamp = 0
         self._start: float | None = None
 
@@ -58,14 +101,19 @@ class EngineMonitorTrack(MediaStreamTrack):
         if self.readyState != "live":
             raise MediaStreamError
 
-        if self._start is None:
-            self._start = time.time()
-            self._timestamp = 0
-        else:
-            self._timestamp += SAMPLES_PER_FRAME
-            wait = self._start + (self._timestamp / SAMPLE_RATE) - time.time()
-            if wait > 0:
-                await asyncio.sleep(wait)
+        now = time.time()
+        self._start, self._timestamp, wait, skipped = pace_monitor_timeline(
+            start=self._start,
+            timestamp=self._timestamp,
+            now=now,
+        )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        if skipped and self._on_lag_skip is not None:
+            try:
+                self._on_lag_skip()
+            except Exception:  # noqa: BLE001
+                log.exception("listen lag-skip callback failed")
 
         try:
             pcm = self._get_pcm_frame(SAMPLES_PER_FRAME, SAMPLE_RATE)
@@ -91,8 +139,13 @@ class EngineMonitorTrack(MediaStreamTrack):
 class WebRTCListenHub:
     """One active peer connection; runs an asyncio loop in a daemon thread."""
 
-    def __init__(self, get_pcm_frame: GetPcmFrameFn) -> None:
+    def __init__(
+        self,
+        get_pcm_frame: GetPcmFrameFn,
+        on_lag_skip: LagSkipFn | None = None,
+    ) -> None:
         self._get_pcm_frame = get_pcm_frame
+        self._on_lag_skip = on_lag_skip
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._pc: Any | None = None
@@ -215,7 +268,7 @@ class WebRTCListenHub:
         # LAN-only: no public STUN required for same-WiFi iPad ↔ PC.
         config = RTCConfiguration(iceServers=[])
         pc = RTCPeerConnection(configuration=config)
-        track = EngineMonitorTrack(self._get_pcm_frame)
+        track = EngineMonitorTrack(self._get_pcm_frame, on_lag_skip=self._on_lag_skip)
         pc.addTrack(track)
         self._pc = pc
         self._track = track

@@ -33,7 +33,10 @@ class WebRemoteBridge(QObject):
         super().__init__(parent)
         self._host = host_window
         self._server: WebRemoteServer | None = None
-        self._webrtc = WebRTCListenHub(self._live_monitor_pcm)
+        self._webrtc = WebRTCListenHub(
+            self._live_monitor_pcm,
+            on_lag_skip=self._on_listen_lag_skip,
+        )
         self._prefs = WebRemotePrefs()
         self._cmd_queue: queue.Queue[tuple[dict[str, Any], queue.Queue[dict[str, Any]]]] = (
             queue.Queue()
@@ -48,6 +51,7 @@ class WebRemoteBridge(QObject):
         self._mon_sr: int = 0
         self._mon_cursor: float = 0.0
         self._mon_was_playing: bool = False
+        self._mon_force_resync: bool = False
         self._pump = QTimer(self)
         self._pump.setInterval(16)
         self._pump.timeout.connect(self._drain_commands)
@@ -304,13 +308,17 @@ class WebRemoteBridge(QObject):
     def _safe_webrtc(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._webrtc.handle(payload if isinstance(payload, dict) else {})
 
+    def _on_listen_lag_skip(self) -> None:
+        """WebRTC sender fell behind wall clock — snap PCM on next frame (no speed-up)."""
+        self._mon_force_resync = True
+
     def _live_monitor_pcm(self, n_samples: int, sample_rate: int) -> Any:
         """Int16 mono for WebRTC — continuous cursor (no per-frame playhead snap).
 
         Snapping every 20 ms frame to ``engine.position`` skips/repeats samples
         whenever the sender jitters, which sounds like heavy stutter. Advance a
         stream cursor by exactly ``n_samples`` and only hard-resync on seek /
-        play-start.
+        play-start / sender lag-skip.
 
         Cache music-only mono at the **file** sample rate; resample only the
         small outgoing slice so the first Listen frame stays cheap.
@@ -327,6 +335,7 @@ class WebRemoteBridge(QObject):
         playing = bool(getattr(engine, "playing", False))
         if not playing:
             self._mon_was_playing = False
+            self._mon_force_resync = False
             return silence
 
         buf = getattr(engine, "buffer", None)
@@ -360,13 +369,15 @@ class WebRemoteBridge(QObject):
             return silence
 
         pos = float(engine.position)
-        if not self._mon_was_playing:
+        force = bool(self._mon_force_resync)
+        self._mon_force_resync = False
+        if force or not self._mon_was_playing:
+            # Play-start / lag-skip / seek: jump once. Never burst frames to catch up.
             self._mon_cursor = max(0.0, pos)
             self._mon_was_playing = True
-        else:
-            # Hard seek / big drift only — small jitter must NOT snap (that chops).
-            if abs(self._mon_cursor - pos) > 0.25:
-                self._mon_cursor = max(0.0, pos)
+        elif abs(self._mon_cursor - pos) > 0.45:
+            # Large intentional seek only — small jitter must NOT snap (that chops).
+            self._mon_cursor = max(0.0, pos)
 
         # Pull enough native samples to cover n output samples after resample.
         need_native = n

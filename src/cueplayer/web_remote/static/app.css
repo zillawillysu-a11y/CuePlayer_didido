@@ -139,15 +139,56 @@ dialog textarea,
   background: var(--ok);
 }
 
+/* iPad portrait / narrow: stack panels without clipping marks or Cue List. */
 @media (max-width: 980px) {
   .layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 0.9fr);
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: none;
+    grid-template-rows: none;
+    gap: 8px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
   .splitter { display: none; }
-  .stage { order: 1; }
-  .monitor { order: 2; }
-  .setlist { order: 3; }
+  .stage {
+    order: 1;
+    flex: 1 1 38%;
+    min-height: 240px;
+  }
+  .monitor {
+    order: 2;
+    flex: 1 1 42%;
+    min-height: 220px;
+  }
+  .setlist {
+    order: 3;
+    flex: 0 0 auto;
+    height: min(26vh, 220px);
+    max-height: min(26vh, 220px);
+    min-height: 110px;
+  }
+  .marks {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: min(170px, 26vh);
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  .mbtn {
+    min-height: 46px;
+    padding: 6px 8px;
+  }
+  .wave-wrap {
+    min-height: 72px;
+  }
+  .cue-list {
+    min-height: 80px;
+  }
 }
 
 .panel {

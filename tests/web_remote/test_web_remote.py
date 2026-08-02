@@ -115,6 +115,10 @@ def test_static_dir_has_index() -> None:
     assert ".cue-item.pressing" in css
     assert "touch-action: manipulation" in css
     assert "-webkit-touch-callout: none" in css
+    assert "max-height: min(26vh, 220px)" in css
+    assert "max-height: min(170px, 26vh)" in css
+    assert "pace_monitor_timeline" in (root / ".." / "webrtc_listen.py").read_text(encoding="utf-8")
+    assert "playbackRate = 1" in js
 
 
 def test_format_clock() -> None:
@@ -584,6 +588,46 @@ def test_web_remote_server_auth_and_command() -> None:
             assert resp.status == 200
     finally:
         server.stop()
+
+
+def test_pace_monitor_timeline_skips_instead_of_burst() -> None:
+    from cueplayer.web_remote.webrtc_listen import (
+        LAG_SKIP_SECONDS,
+        SAMPLE_RATE,
+        SAMPLES_PER_FRAME,
+        pace_monitor_timeline,
+    )
+
+    start = 1000.0
+    # On time: ask to sleep ~20ms.
+    _s, ts, sleep, skipped = pace_monitor_timeline(
+        start=start,
+        timestamp=0,
+        now=start,
+    )
+    assert skipped is False
+    assert ts == SAMPLES_PER_FRAME
+    assert abs(sleep - (SAMPLES_PER_FRAME / SAMPLE_RATE)) < 1e-6
+
+    # Slightly late: emit immediately, do not jump.
+    _s, ts, sleep, skipped = pace_monitor_timeline(
+        start=start,
+        timestamp=0,
+        now=start + 0.03,
+    )
+    assert skipped is False
+    assert sleep == 0.0
+
+    # Far behind: jump timeline (no burst catch-up).
+    _s, ts, sleep, skipped = pace_monitor_timeline(
+        start=start,
+        timestamp=0,
+        now=start + 0.25,
+    )
+    assert skipped is True
+    assert sleep == 0.0
+    assert ts >= int(0.25 * SAMPLE_RATE) - SAMPLES_PER_FRAME
+    assert LAG_SKIP_SECONDS > 0
 
 
 def test_webrtc_listen_hub_offer_answer() -> None:

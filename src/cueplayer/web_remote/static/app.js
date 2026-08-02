@@ -654,6 +654,9 @@
     audioEl.playsInline = true;
     audioEl.setAttribute("playsinline", "true");
     audioEl.autoplay = true;
+    // Never allow Safari to "catch up" by changing playback speed.
+    try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
+    try { audioEl.defaultPlaybackRate = 1; } catch (_) { /* noop */ }
     listenRtcAudio = audioEl;
 
     pc.ontrack = (ev) => {
@@ -661,6 +664,7 @@
         ? ev.streams[0]
         : new MediaStream([ev.track]);
       audioEl.srcObject = stream;
+      try { audioEl.playbackRate = 1; } catch (_) { /* noop */ }
       audioEl.play().catch(() => {});
     };
     pc.onconnectionstatechange = () => {
