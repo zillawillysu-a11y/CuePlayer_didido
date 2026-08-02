@@ -53,6 +53,7 @@
     cueFollowBtn: document.getElementById("cueFollowBtn"),
     renumberCueBtn: document.getElementById("renumberCueBtn"),
     waveFollowBtn: document.getElementById("waveFollowBtn"),
+    deleteMarkBtn: document.getElementById("deleteMarkBtn"),
     layout: document.getElementById("layout"),
     splitSetlist: document.getElementById("splitSetlist"),
     splitMonitor: document.getElementById("splitMonitor"),
@@ -244,6 +245,8 @@
   let listenRtcAudio = null;
   let pcMuted = false;
   let markDragging = null; // { id, startSeconds, liveSeconds, pointerId }
+  let markPointer = null; // pending tap vs drag: { id, startX, startY, startSeconds, pointerId }
+  let selectedMarkId = "";
   const LISTEN_CHUNK = 0.55;
   const LISTEN_AHEAD = 1.25;
   const LISTEN_LEAD = 0.28;
@@ -768,6 +771,8 @@
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
       setWaveFollowSuspended(false);
+      selectedMarkId = "";
+      if (els.deleteMarkBtn) els.deleteMarkBtn.hidden = true;
     } else if (seekJump) {
       setCueFollowSuspended(false);
       cueFollowLeftViewport = false;
@@ -975,6 +980,7 @@
         editCueNote(m).catch((e) => showToast(String(e.message || e)));
       });
       btn.addEventListener("click", () => {
+        setSelectedMark(m.id);
         command({ op: "seek_mark", mark_id: m.id }).catch(() => {});
       });
       els.cueList.appendChild(btn);
@@ -1480,14 +1486,25 @@
       if (t < v0 || t > v1) continue;
       const x = ((t - v0) / viewSpanSec) * w;
       const dragging = markDragging && markDragging.id === m.id;
+      const selected = selectedMarkId && selectedMarkId === m.id;
       ctx.strokeStyle = m.color || "#888";
-      ctx.globalAlpha = dragging ? 1 : 0.9;
-      ctx.lineWidth = Math.max(dragging ? 2.5 : 1, w / (dragging ? 500 : 900));
+      ctx.globalAlpha = dragging || selected ? 1 : 0.9;
+      ctx.lineWidth = Math.max(
+        dragging || selected ? 2.8 : 1,
+        w / (dragging || selected ? 480 : 900),
+      );
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
-      ctx.globalAlpha = 1;
+      if (selected && !dragging) {
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = m.color || "#888";
+        ctx.fillRect(x - 4 * dpr, 0, 8 * dpr, h);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.globalAlpha = 1;
+      }
 
       const showNote = Boolean(m.show_note_on_wave);
       const showCue = Boolean(m.show_cue_id_on_wave) && Boolean(m.cue_id_enabled);
@@ -1687,6 +1704,12 @@
     renderSetlist(state.setlist || []);
     renderCues(cueListMarks(state));
     renderMarkButtons(state.lanes || []);
+    // Drop selection if that mark no longer exists after a refresh/delete.
+    if (selectedMarkId) {
+      const still = (state.marks || []).some((m) => m.id === selectedMarkId);
+      if (!still) setSelectedMark("");
+      else setSelectedMark(selectedMarkId);
+    }
     // Never rebuild Mark Manager while open — native <select> pickers close on DOM replace.
     if (!els.markMgrDialog.open) lastMgrLanesSig = "";
     drawWave(true);
@@ -1734,6 +1757,7 @@
       || body.op === "set_mark_note"
       || body.op === "set_mark_cue_id"
       || body.op === "move_mark"
+      || body.op === "delete_marks"
       || body.op === "set_pc_mute"
       || body.op === "renumber_cue_ids"
       || body.op === "add_mark"
@@ -1810,13 +1834,59 @@
     for (const m of marks) {
       if (m.lane_visible === false) continue;
       if (m.lane_locked) continue;
-      const d = Math.abs(Number(m.time_seconds) - t);
+      const liveT = (markDragging && markDragging.id === m.id && markDragging.liveSeconds != null)
+        ? Number(markDragging.liveSeconds)
+        : Number(m.time_seconds);
+      const d = Math.abs(liveT - t);
       if (d <= bestDist) {
         best = m;
         bestDist = d;
       }
     }
     return best;
+  }
+
+  function selectedMark() {
+    if (!selectedMarkId || !stateCache || !stateCache.marks) return null;
+    return stateCache.marks.find((m) => m.id === selectedMarkId) || null;
+  }
+
+  function setSelectedMark(markId) {
+    selectedMarkId = markId ? String(markId) : "";
+    if (els.deleteMarkBtn) {
+      els.deleteMarkBtn.hidden = !selectedMarkId;
+    }
+    // Highlight matching cue-list row when present.
+    if (els.cueList) {
+      for (const row of els.cueList.querySelectorAll(".cue-item")) {
+        row.classList.toggle("selected-mark", Boolean(selectedMarkId) && row.dataset.markId === selectedMarkId);
+      }
+    }
+    drawWave(true);
+  }
+
+  async function deleteSelectedMark() {
+    const mark = selectedMark();
+    if (!mark) {
+      showToast("Select a mark on the wave first");
+      return;
+    }
+    const label = mark.display_name || mark.main_cue_id || mark.lane_name || "mark";
+    const ok = await askConfirm(
+      "Delete Mark",
+      `Delete this mark?\n${mark.time_display || formatClock(mark.time_seconds)} · ${label}`,
+    );
+    if (!ok) return;
+    try {
+      const result = await command({
+        op: "delete_marks",
+        mark_ids: [mark.id],
+      });
+      setSelectedMark("");
+      showToast(`Deleted ${result.removed || 1} mark`);
+    } catch (e) {
+      showToast(String(e.message || e));
+    }
   }
 
   els.playBtn.addEventListener("click", () => {
@@ -1851,6 +1921,12 @@
       }
       scheduleWaveDetail();
       drawWave(true);
+    });
+  }
+  if (els.deleteMarkBtn) {
+    els.deleteMarkBtn.hidden = true;
+    els.deleteMarkBtn.addEventListener("click", () => {
+      deleteSelectedMark().catch((e) => showToast(String(e.message || e)));
     });
   }
   if (els.renumberCueBtn) {
@@ -1958,26 +2034,45 @@
     pinching = null;
     const hit = hitTestMark(ev.clientX);
     if (hit) {
-      markDragging = {
+      markPointer = {
         id: hit.id,
+        startX: ev.clientX,
+        startY: ev.clientY,
         startSeconds: Number(hit.time_seconds),
-        liveSeconds: Number(hit.time_seconds),
         pointerId: ev.pointerId,
       };
+      markDragging = null;
       scrubbing = false;
       scrubPointerX = null;
       stopScrubEdgeLoop();
       els.waveWrap.setPointerCapture(ev.pointerId);
-      setWaveFollowSuspended(true);
-      drawWave(true);
       return;
     }
+    markPointer = null;
     markDragging = null;
+    if (selectedMarkId) setSelectedMark("");
     els.waveWrap.setPointerCapture(ev.pointerId);
     const zone = updateScrubPlayhead(ev.clientX);
     if (zone.left || zone.right) startScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointermove", (ev) => {
+    if (markPointer && markPointer.pointerId === ev.pointerId && !markDragging) {
+      const dist = Math.hypot(ev.clientX - markPointer.startX, ev.clientY - markPointer.startY);
+      if (dist >= 10) {
+        // Promote tap to drag once the finger moves enough.
+        markDragging = {
+          id: markPointer.id,
+          startSeconds: markPointer.startSeconds,
+          liveSeconds: markPointer.startSeconds,
+          pointerId: markPointer.pointerId,
+        };
+        markPointer = null;
+        setSelectedMark(markDragging.id);
+        setWaveFollowSuspended(true);
+      } else {
+        return;
+      }
+    }
     if (markDragging && markDragging.pointerId === ev.pointerId) {
       const seconds = Math.min(syncDur, Math.max(0, timeFromClientX(ev.clientX)));
       markDragging.liveSeconds = seconds;
@@ -1999,15 +2094,31 @@
     else stopScrubEdgeLoop();
   });
   els.waveWrap.addEventListener("pointerup", async (ev) => {
+    if (markPointer && markPointer.pointerId === ev.pointerId && !markDragging) {
+      const tapId = markPointer.id;
+      markPointer = null;
+      // Tap: select / deselect. Second tap on same mark keeps it selected.
+      if (selectedMarkId === tapId) {
+        // keep selected (ready for Delete)
+        setSelectedMark(tapId);
+        showToast("Mark selected — tap Delete to remove");
+      } else {
+        setSelectedMark(tapId);
+      }
+      drawWave(true);
+      return;
+    }
     if (markDragging && markDragging.pointerId === ev.pointerId) {
       const drag = markDragging;
       markDragging = null;
+      markPointer = null;
       const seconds = Math.min(
         syncDur,
         Math.max(0, drag.liveSeconds != null ? Number(drag.liveSeconds) : timeFromClientX(ev.clientX)),
       );
       try {
         await command({ op: "move_mark", mark_id: drag.id, seconds });
+        setSelectedMark(drag.id);
       } catch (err) {
         // Revert optimistic time on failure.
         if (stateCache && stateCache.marks) {
@@ -2046,6 +2157,7 @@
         }
       }
     }
+    markPointer = null;
     scrubbing = false;
     scrubPointerX = null;
     stopScrubEdgeLoop();

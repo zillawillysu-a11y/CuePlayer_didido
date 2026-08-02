@@ -459,6 +459,8 @@ class WebRemoteBridge(QObject):
             return self._set_mark_cue_id(command)
         if op == "move_mark":
             return self._move_mark(command)
+        if op == "delete_marks":
+            return self._delete_marks(command)
         if op == "set_pc_mute":
             return self._set_pc_mute(command)
         if op == "renumber_cue_ids":
@@ -885,6 +887,49 @@ class WebRemoteBridge(QObject):
             "mark_id": mark_id,
             "seconds": new_t,
             "old_seconds": old_t,
+        }
+
+    def _delete_marks(self, command: dict[str, Any]) -> dict[str, Any]:
+        host = self._host
+        song = host.current_song
+        raw_ids = command.get("mark_ids")
+        if raw_ids is None and command.get("mark_id"):
+            raw_ids = [command.get("mark_id")]
+        if not isinstance(raw_ids, (list, tuple, set)):
+            return {"ok": False, "error": "mark_ids_required"}
+        mark_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+        if not mark_ids:
+            return {"ok": False, "error": "mark_ids_required"}
+        before_ids = {m.id for m in song.marks}
+        wanted = [mid for mid in mark_ids if mid in before_ids]
+        if not wanted:
+            return {"ok": False, "error": "mark_not_found"}
+        try:
+            host._delete_marks(wanted)
+        except Exception:  # noqa: BLE001
+            from cueplayer.domain.undo import DeleteMarksCommand, MarkSnapshot
+
+            snapshots = [MarkSnapshot.from_mark(m) for m in song.marks if m.id in set(wanted)]
+            removed_n = song.remove_marks_by_ids(wanted)
+            if removed_n <= 0:
+                return {"ok": False, "error": "mark_not_found"}
+            try:
+                host._push_song_undo(DeleteMarksCommand(marks=snapshots))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                host._refresh_marks_ui()
+                host._mark_dirty()
+            except Exception:  # noqa: BLE001
+                pass
+        removed = len(before_ids) - len({m.id for m in song.marks})
+        if removed <= 0:
+            return {"ok": False, "error": "mark_not_found"}
+        return {
+            "ok": True,
+            "op": "delete_marks",
+            "removed": int(removed),
+            "mark_ids": wanted,
         }
 
     def _set_pc_mute(self, command: dict[str, Any]) -> dict[str, Any]:
