@@ -47,9 +47,13 @@ hiddenimports += [
     "cueplayer.web_remote",
     "cueplayer.web_remote.server",
     "cueplayer.web_remote.bridge",
+    "cueplayer.web_remote.webrtc_listen",
+    "aiortc",
+    "aioice",
+    "av.audio.resampler",
 ]
 
-for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib"):
+for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib", "aiortc", "aioice"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
