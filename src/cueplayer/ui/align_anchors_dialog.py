@@ -1,13 +1,17 @@
-"""Align Anchors dialog shell (Sprint 5 Task 3).
+"""Align Anchors dialog — draft computation (Sprint 5 Task 4).
 
-Scaffolding only: layout, variant selector, anchor fields, preview placeholder,
-and button/shortcut hooks. Does **not** compute or apply ``anchor_offset``,
-and does not change playback or Timeline behavior.
+Owns temporary draft state only. Does **not** write ``SongVariant.anchor_offset``,
+does not seek/play, and does not redesign Timeline.
+
+Draft offset uses ``domain.anchor_mapping.offset_from_anchors`` exclusively
+(``draft = song_anchor − variant_anchor``).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+import math
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -19,59 +23,73 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from cueplayer.domain.anchor_mapping import (
+    coerce_anchor_offset,
+    offset_from_anchors,
+    song_to_variant_time,
+    variant_to_song_time,
+)
 from cueplayer.domain.models import Song
 from cueplayer.domain.song_variant import SongVariant
 from cueplayer.ui.transport_bar import format_time
 
-_SHELL_STATUS = "Shell only — anchor computation / Apply in the next task."
+_APPLY_DEFERRED = "Apply is deferred — draft only; project offset unchanged."
 
 
 class AlignAnchorsDialog(QDialog):
-    """Modal Align Anchors shell matching ``docs/song_variant_design.md`` §19.
+    """Modal Align Anchors dialog with draft-only offset computation.
 
-    Widget responsibilities
-    -----------------------
-    ``variant_combo``
-        Select which ``SongVariant`` the future Apply will edit.
-    ``song_anchor_label`` / capture buttons
-        Display + future capture of Song Time anchor (playhead / mark).
-    ``variant_anchor_label`` / capture button
-        Display + future capture of Variant (media) Time anchor.
-    ``draft_offset_spin`` / nudge buttons
-        Future draft offset editor (disabled computation this task).
-    ``preview_area``
-        Placeholder for duration chips / preview status.
-    ``preview_btn`` / ``reset_btn`` / ``apply_btn`` / ``cancel_btn``
-        Action hooks; Apply/Reset/Preview are no-ops; Cancel closes.
+    Temporary state model
+    ---------------------
+    ``_song_anchor`` / ``_variant_anchor``
+        Optional captured times (Song Time / Variant Time).
+    ``_draft_offset``
+        Working offset shown in the spin box; never written to the project.
+    ``applied`` (read-only display)
+        Current ``SongVariant.anchor_offset`` for the selected variant.
 
-    Planned integration points (Task 4+)
-    ------------------------------------
-    - Capture Song/Variant anchors from PlaybackService playheads
-    - ``draft = song_anchor - variant_anchor`` via ``domain.anchor_mapping``
-    - Preview session: temporary draft offset without persisting
-    - Apply → ``SongVariant.anchor_offset`` + dirty/undo
+    Draft lifecycle
+    ---------------
+    1. Open / variant change → draft initialized from applied offset.
+    2. Capture both anchors → draft = ``offset_from_anchors`` (live).
+    3. Nudge / type draft → draft updates; anchors kept as last capture.
+    4. Reset → draft = 0.0 (still not persisted).
+    5. Apply → no-op (Task 5); Cancel → discard dialog (no project write).
     """
 
-    def __init__(self, song: Song, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        song: Song,
+        parent: QWidget | None = None,
+        *,
+        get_song_playhead: Callable[[], float] | None = None,
+        get_media_playhead: Callable[[], float] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Align Anchors")
         self.setModal(True)
-        self.resize(560, 420)
+        self.resize(560, 460)
         self._song = song
+        self._get_song_playhead = get_song_playhead
+        self._get_media_playhead = get_media_playhead
         self._song_anchor: float | None = None
         self._variant_anchor: float | None = None
+        self._draft_offset = 0.0
+        self._updating_draft_ui = False
 
         root = QVBoxLayout(self)
 
         intro = QLabel(
             "Cues stay fixed on Song Time — only the mix shifts.\n"
-            "This dialog is a shell: Preview / Apply / Reset are not wired yet."
+            "Draft offset is temporary until Apply (Apply not wired yet)."
         )
         intro.setWordWrap(True)
         intro.setObjectName("alignAnchorsIntro")
@@ -139,7 +157,7 @@ class AlignAnchorsDialog(QDialog):
         self.draft_offset_spin.setRange(-3600.0, 3600.0)
         self.draft_offset_spin.setSingleStep(0.01)
         self.draft_offset_spin.setSuffix(" s")
-        self.draft_offset_spin.setEnabled(False)  # computation later
+        self.draft_offset_spin.setEnabled(True)
         offset_layout.addRow("Draft offset:", self.draft_offset_spin)
         self.applied_offset_label = QLabel("+0.000 s")
         self.applied_offset_label.setObjectName("alignAppliedOffset")
@@ -156,28 +174,26 @@ class AlignAnchorsDialog(QDialog):
             self.nudge_plus_10ms,
             self.nudge_plus_1f,
         ):
-            btn.setEnabled(False)
+            btn.setEnabled(True)
             nudge.addWidget(btn)
         offset_layout.addRow("Nudge:", nudge)
         root.addWidget(offset_box)
 
-        # --- preview placeholder --------------------------------------------
+        # --- preview (live draft values; no playback) -----------------------
         preview_box = QGroupBox("Preview")
         preview_layout = QVBoxLayout(preview_box)
-        self.preview_area = QLabel(
-            "Preview placeholder\n"
-            "Song / media / audible-span duration chips will appear here."
-        )
+        self.preview_area = QLabel("")
         self.preview_area.setObjectName("alignPreviewArea")
-        self.preview_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_area.setMinimumHeight(72)
+        self.preview_area.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.preview_area.setMinimumHeight(88)
+        self.preview_area.setWordWrap(True)
         self.preview_area.setStyleSheet(
-            "background: #1a1d23; border: 1px dashed #3d4450; color: #8b949e; padding: 12px;"
+            "background: #1a1d23; border: 1px dashed #3d4450; color: #c5cddb; padding: 12px;"
         )
         preview_layout.addWidget(self.preview_area)
         root.addWidget(preview_box)
 
-        self.shell_status = QLabel(_SHELL_STATUS)
+        self.shell_status = QLabel(_APPLY_DEFERRED)
         self.shell_status.setObjectName("alignShellStatus")
         self.shell_status.setWordWrap(True)
         self.shell_status.setStyleSheet("color: #c9a227;")
@@ -203,7 +219,6 @@ class AlignAnchorsDialog(QDialog):
             "Cancel", QDialogButtonBox.ButtonRole.RejectRole
         )
         self.cancel_btn.setObjectName("alignCancelBtn")
-        # AcceptRole would close on Apply — keep Apply as no-op shell action.
         self.apply_btn.setAutoDefault(False)
         self.apply_btn.setDefault(False)
         buttons.rejected.connect(self.reject)
@@ -213,17 +228,22 @@ class AlignAnchorsDialog(QDialog):
         self.variant_combo.currentIndexChanged.connect(self._on_variant_index_changed)
         self._on_variant_index_changed(self.variant_combo.currentIndex())
 
-        # Capture / action hooks — stubs only (no playback / offset writes).
-        self.use_playhead_btn.clicked.connect(self._stub_capture_song_playhead)
-        self.use_mark_btn.clicked.connect(self._stub_capture_song_mark)
-        self.use_media_playhead_btn.clicked.connect(self._stub_capture_media_playhead)
-        self.preview_btn.clicked.connect(self._stub_preview)
-        self.reset_btn.clicked.connect(self._stub_reset)
-        self.apply_btn.clicked.connect(self._stub_apply)
+        self.use_playhead_btn.clicked.connect(self._capture_song_playhead)
+        self.use_mark_btn.clicked.connect(self._capture_song_mark)
+        self.use_media_playhead_btn.clicked.connect(self._capture_media_playhead)
+        self.preview_btn.clicked.connect(self._refresh_preview)
+        self.reset_btn.clicked.connect(self._reset_draft)
+        self.apply_btn.clicked.connect(self._on_apply_stub)
+        self.draft_offset_spin.valueChanged.connect(self._on_draft_spin_changed)
+        self.nudge_minus_1f.clicked.connect(lambda: self._nudge_draft(-self._frame_seconds()))
+        self.nudge_plus_1f.clicked.connect(lambda: self._nudge_draft(self._frame_seconds()))
+        self.nudge_minus_10ms.clicked.connect(lambda: self._nudge_draft(-0.01))
+        self.nudge_plus_10ms.clicked.connect(lambda: self._nudge_draft(0.01))
 
         self._install_shortcuts()
+        self._refresh_preview()
 
-    # --- public helpers (tests / future wiring) ------------------------------
+    # --- public helpers ------------------------------------------------------
 
     def selected_variant(self) -> SongVariant | None:
         data = self.variant_combo.currentData()
@@ -236,6 +256,18 @@ class AlignAnchorsDialog(QDialog):
 
     def variant_anchor_seconds(self) -> float | None:
         return self._variant_anchor
+
+    def draft_offset(self) -> float:
+        return float(self._draft_offset)
+
+    def applied_offset(self) -> float:
+        variant = self.selected_variant()
+        if variant is None:
+            return 0.0
+        return coerce_anchor_offset(variant.anchor_offset)
+
+    def is_draft_dirty(self) -> bool:
+        return abs(self.draft_offset() - self.applied_offset()) > 1e-9
 
     # --- populate ------------------------------------------------------------
 
@@ -263,6 +295,10 @@ class AlignAnchorsDialog(QDialog):
             self.path_label.setText("")
             self.status_label.setText("No variant")
             self.applied_offset_label.setText("+0.000 s")
+            self._set_draft_offset(0.0, recompute_from_anchors=False)
+            self._set_song_anchor(None)
+            self._set_variant_anchor(None)
+            self._refresh_preview()
             return
         path_text = str(variant.path) if variant.has_resolvable_path() else "(no path)"
         self.path_label.setText(path_text)
@@ -274,74 +310,210 @@ class AlignAnchorsDialog(QDialog):
             self.status_label.setText("Missing file")
         else:
             self.status_label.setText("Ready")
-        applied = float(variant.anchor_offset)
+        applied = coerce_anchor_offset(variant.anchor_offset)
         sign = "+" if applied >= 0 else ""
         self.applied_offset_label.setText(f"{sign}{applied:.3f} s")
-        # Display only — do not write draft computation yet.
-        self.draft_offset_spin.blockSignals(True)
-        self.draft_offset_spin.setValue(applied)
-        self.draft_offset_spin.blockSignals(False)
+        # New variant selection: reset draft to applied (no project write).
+        self._set_song_anchor(None)
+        self._set_variant_anchor(None)
+        self._set_draft_offset(applied, recompute_from_anchors=False)
+        self._refresh_preview()
 
-    def _set_song_anchor_display(self, seconds: float | None) -> None:
-        self._song_anchor = seconds
-        if seconds is None:
+    def _frame_seconds(self) -> float:
+        fps = float(getattr(self._song, "fps", 0.0) or 0.0)
+        if fps <= 0:
+            fps = 30.0
+        return 1.0 / fps
+
+    # --- draft model ---------------------------------------------------------
+
+    def _set_draft_offset(self, value: float, *, recompute_from_anchors: bool) -> None:
+        del recompute_from_anchors  # reserved for call-site clarity
+        self._draft_offset = coerce_anchor_offset(value)
+        self._updating_draft_ui = True
+        try:
+            self.draft_offset_spin.setValue(self._draft_offset)
+        finally:
+            self._updating_draft_ui = False
+
+    def _on_draft_spin_changed(self, value: float) -> None:
+        if self._updating_draft_ui:
+            return
+        self._draft_offset = coerce_anchor_offset(value)
+        self._refresh_preview()
+        self._set_status("Draft edited (typed)")
+
+    def _nudge_draft(self, delta: float) -> None:
+        self._set_draft_offset(self._draft_offset + float(delta), recompute_from_anchors=False)
+        self._refresh_preview()
+        self._set_status(f"Draft nudged {delta:+.4f}s")
+
+    def _reset_draft(self) -> None:
+        self._set_draft_offset(0.0, recompute_from_anchors=False)
+        self._refresh_preview()
+        self._set_status("Draft reset to 0.000 s (not applied)")
+
+    def _recompute_draft_from_anchors(self) -> bool:
+        if self._song_anchor is None or self._variant_anchor is None:
+            self._set_status("Set both anchors to compute draft")
+            return False
+        draft = offset_from_anchors(self._song_anchor, self._variant_anchor)
+        self._set_draft_offset(draft, recompute_from_anchors=True)
+        self._refresh_preview()
+        self._set_status("Draft computed from anchors")
+        return True
+
+    def _set_song_anchor(self, seconds: float | None) -> None:
+        self._song_anchor = None if seconds is None else float(seconds)
+        if self._song_anchor is None:
             self.song_anchor_label.setText("—")
         else:
-            self.song_anchor_label.setText(format_time(seconds))
+            self.song_anchor_label.setText(format_time(self._song_anchor))
 
-    def _set_variant_anchor_display(self, seconds: float | None) -> None:
-        self._variant_anchor = seconds
-        if seconds is None:
+    def _set_variant_anchor(self, seconds: float | None) -> None:
+        self._variant_anchor = None if seconds is None else float(seconds)
+        if self._variant_anchor is None:
             self.variant_anchor_label.setText("—")
         else:
-            self.variant_anchor_label.setText(format_time(seconds))
+            self.variant_anchor_label.setText(format_time(self._variant_anchor))
 
-    # --- stubs (Task 4 will replace) -----------------------------------------
+    def _set_status(self, message: str) -> None:
+        self.shell_status.setText(f"{message}. {_APPLY_DEFERRED}")
 
-    def _note_shell(self, action: str) -> None:
-        self.shell_status.setText(f"{_SHELL_STATUS} ({action})")
+    # --- capture -------------------------------------------------------------
 
-    def _stub_capture_song_playhead(self) -> None:
-        self._note_shell("Use playhead")
+    def _capture_song_playhead(self) -> None:
+        if self._get_song_playhead is None:
+            self._set_status("Song playhead source not available")
+            return
+        try:
+            t = float(self._get_song_playhead())
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"Could not read song playhead ({exc})")
+            return
+        if not _finite(t):
+            self._set_status("Song playhead invalid")
+            return
+        self._set_song_anchor(t)
+        self._recompute_draft_from_anchors()
+        if self._variant_anchor is None:
+            self._refresh_preview()
+            self._set_status(f"Song anchor = {format_time(t)}")
 
-    def _stub_capture_song_mark(self) -> None:
-        self._note_shell("Use mark")
+    def _capture_media_playhead(self) -> None:
+        if self._get_media_playhead is None:
+            self._set_status("Media playhead source not available")
+            return
+        try:
+            t = float(self._get_media_playhead())
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"Could not read media playhead ({exc})")
+            return
+        if not _finite(t):
+            self._set_status("Media playhead invalid")
+            return
+        self._set_variant_anchor(t)
+        self._recompute_draft_from_anchors()
+        if self._song_anchor is None:
+            self._refresh_preview()
+            self._set_status(f"Variant anchor = {format_time(t)}")
 
-    def _stub_capture_media_playhead(self) -> None:
-        self._note_shell("Use media playhead")
+    def _capture_song_mark(self) -> None:
+        marks = sorted(self._song.marks, key=lambda m: (m.time_seconds, m.lane_index))
+        if not marks:
+            QMessageBox.information(self, "Align Anchors", "No marks on this song.")
+            return
+        labels = [
+            f"{format_time(m.time_seconds)}  ·  L{m.lane_index}  ·  "
+            f"{(m.display_name or m.main_cue_id or m.id)}"
+            for m in marks
+        ]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Use mark",
+            "Song Anchor from mark:",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        index = labels.index(choice)
+        self._set_song_anchor(float(marks[index].time_seconds))
+        self._recompute_draft_from_anchors()
+        if self._variant_anchor is None:
+            self._refresh_preview()
+            self._set_status("Song anchor from mark")
 
-    def _stub_preview(self) -> None:
-        self._note_shell("Preview")
+    # --- preview (values only) -----------------------------------------------
 
-    def _stub_reset(self) -> None:
-        self._note_shell("Reset")
+    def _refresh_preview(self) -> None:
+        draft = self.draft_offset()
+        applied = self.applied_offset()
+        song_dur = float(getattr(self._song, "duration_seconds", 0.0) or 0.0)
+        lines = [
+            f"Draft offset:  {draft:+.3f} s",
+            f"Applied:       {applied:+.3f} s"
+            + ("  (dirty)" if self.is_draft_dirty() else "  (clean)"),
+            f"Song duration: {format_time(song_dur)}",
+        ]
+        if self._song_anchor is not None:
+            lines.append(f"Song anchor:   {format_time(self._song_anchor)}")
+            lines.append(
+                f"  → maps to media {format_time(song_to_variant_time(self._song_anchor, draft))}"
+            )
+        else:
+            lines.append("Song anchor:   —")
+        if self._variant_anchor is not None:
+            lines.append(f"Variant anchor:{format_time(self._variant_anchor)}")
+            lines.append(
+                f"  → maps to song {format_time(variant_to_song_time(self._variant_anchor, draft))}"
+            )
+        else:
+            lines.append("Variant anchor:—")
+        if self._song_anchor is None or self._variant_anchor is None:
+            lines.append("")
+            lines.append("Set both anchors to recompute draft from the pair.")
+        self.preview_area.setText("\n".join(lines))
 
-    def _stub_apply(self) -> None:
-        self._note_shell("Apply")
-        # Do not accept()/persist — shell only.
-
-    def _stub_nudge(self, label: str) -> None:
-        self._note_shell(f"Nudge {label}")
+    def _on_apply_stub(self) -> None:
+        # Non-destructive: never mutates SongVariant.anchor_offset.
+        self._refresh_preview()
+        self._set_status("Apply deferred (draft only)")
 
     # --- shortcuts (§19.5) ---------------------------------------------------
 
     def _install_shortcuts(self) -> None:
-        # Esc → reject is built into QDialog.
-        QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self._stub_preview)
-        QShortcut(QKeySequence(Qt.Key.Key_Enter), self, activated=self._stub_preview)
+        QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self._refresh_preview)
+        QShortcut(QKeySequence(Qt.Key.Key_Enter), self, activated=self._refresh_preview)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._on_apply_stub)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._on_apply_stub)
         QShortcut(
-            QKeySequence("Ctrl+Return"), self, activated=self._stub_apply
-        )
-        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._stub_apply)
-        QShortcut(QKeySequence("["), self, activated=lambda: self._stub_nudge("−1f"))
-        QShortcut(QKeySequence("]"), self, activated=lambda: self._stub_nudge("+1f"))
-        QShortcut(
-            QKeySequence("Shift+["), self, activated=lambda: self._stub_nudge("−10f")
+            QKeySequence("["),
+            self,
+            activated=lambda: self._nudge_draft(-self._frame_seconds()),
         )
         QShortcut(
-            QKeySequence("Shift+]"), self, activated=lambda: self._stub_nudge("+10f")
+            QKeySequence("]"),
+            self,
+            activated=lambda: self._nudge_draft(self._frame_seconds()),
         )
-        QShortcut(QKeySequence("A"), self, activated=self._stub_capture_song_playhead)
         QShortcut(
-            QKeySequence("Shift+A"), self, activated=self._stub_capture_media_playhead
+            QKeySequence("Shift+["),
+            self,
+            activated=lambda: self._nudge_draft(-10.0 * self._frame_seconds()),
         )
+        QShortcut(
+            QKeySequence("Shift+]"),
+            self,
+            activated=lambda: self._nudge_draft(10.0 * self._frame_seconds()),
+        )
+        QShortcut(QKeySequence("A"), self, activated=self._capture_song_playhead)
+        QShortcut(QKeySequence("Shift+A"), self, activated=self._capture_media_playhead)
+
+
+def _finite(value: float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False

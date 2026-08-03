@@ -1,12 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 5 Task 2 complete (Align Anchors UX Design — docs only)  
+**Status:** Sprint 5 Task 4 complete (Anchor Computation — draft only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint5-align-anchors-ux-028d`  
+**Scope tip:** `cursor/sprint5-anchor-computation-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md)
 
-**Sprint 5 Task 2 constraint:** UX / interaction design only. No production
-runtime code, no Playback/Timeline redesign, no automatic alignment.
+**Sprint 5 Task 4 constraint:** Draft computation only. No Apply/persistence,
+no playback changes, no Timeline redesign.
 
 ---
 
@@ -1163,4 +1163,74 @@ MainWindow Tools → Align Anchors…
 
 ---
 
-## READY FOR ANCHOR COMPUTATION
+## 21. Sprint 5 Task 4 — Anchor Computation (draft only, done)
+
+**Scope tip:** `cursor/sprint5-anchor-computation-028d`
+
+### 21.1 Draft computation flow
+
+```text
+Capture Song Anchor (playhead / mark)     → temporary _song_anchor
+Capture Variant Anchor (media playhead) → temporary _variant_anchor
+        │
+        ▼
+domain.anchor_mapping.offset_from_anchors(song, variant)
+        = song_anchor − variant_anchor
+        │
+        ▼
+Dialog draft_offset (spin + preview panel)
+        │
+        ├── Nudge / type → update draft only
+        ├── Reset → draft = 0.0
+        └── Apply → still non-destructive (Task 5)
+```
+
+MainWindow supplies read-only playhead callbacks (`playback.position`, `engine.position`); dialog never seeks.
+
+### 21.2 Temporary state model
+
+| Field | Lifetime | Persisted? |
+|-------|----------|------------|
+| `_song_anchor` | Dialog session | No |
+| `_variant_anchor` | Dialog session | No |
+| `_draft_offset` | Dialog session | No |
+| `SongVariant.anchor_offset` | Project | Unchanged this task |
+
+### 21.3 Validation rules (draft)
+
+- Finite offsets via `coerce_anchor_offset`
+- Both anchors required to recompute from pair; typed/nudged draft always allowed
+- Missing playhead source → status message, no crash
+- Apply never mutates project
+
+### 21.4 Remaining Apply workflow (Task 5)
+
+- Persist `draft_offset` → selected `SongVariant.anchor_offset`
+- Dirty + undo
+- Optional Preview session that temporarily drives PlaybackService mapping
+- Cancel restore if preview session was active
+- Confirm on dirty Cancel / variant switch
+
+### 21.5 Test coverage
+
+- `offset_from_anchors` round-trip with mapping
+- Capture both anchors → draft; variant unchanged
+- Nudge / Reset draft-only
+- Apply stub non-mutating
+- Use mark capture
+
+### 21.6 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Operators expect Apply to stick | Status: “Apply deferred” |
+| Media vs Song playhead confusion | Labels + callbacks documented |
+| Draft lost on close | Expected until Apply |
+
+### 21.7 Recommendation for Task 5
+
+**Anchor Apply / Commit** — write draft to `SongVariant.anchor_offset` with dirty/undo; keep marks fixed; optional playback preview session using existing Song-Time façade.
+
+---
+
+## READY FOR ANCHOR APPLY

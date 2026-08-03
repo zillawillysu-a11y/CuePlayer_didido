@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 5 Task 3 complete (Align Anchors Dialog Shell)  
+**Status:** Sprint 5 Task 4 complete (Anchor Computation — draft only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint5-align-anchors-shell-028d`
+**Scope tip:** `cursor/sprint5-anchor-computation-028d`
 **Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -204,7 +204,8 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | **Sprint 5 · Task 1 — Song-Time Façade** | ✅ Done — Remote + MainWindow through PlaybackService |
 | **Sprint 5 · Task 2 — Align Anchors UX Design** | ✅ Done — `song_variant_design.md` §19 (docs only) |
 | **Sprint 5 · Task 3 — Align Anchors Dialog Shell** | ✅ Done — `ui/align_anchors_dialog.py` (no apply) |
-| Sprint 5 · Task 4 — Anchor Computation | **Next** |
+| **Sprint 5 · Task 4 — Anchor Computation** | ✅ Done — draft only via `offset_from_anchors` |
+| Sprint 5 · Task 5 — Anchor Apply / Commit | **Next** |
 
 ---
 
@@ -223,6 +224,7 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | Sprint 5 Task 1 | Close Remote/MainWindow Song-Time bypasses; no Align UI yet |
 | Sprint 5 Task 2 | Align UX design only; draft vs applied; marks never move |
 | Sprint 5 Task 3 | Dialog shell only; Apply/Preview stubs; no playback change |
+| Sprint 5 Task 4 | Draft computation only; Apply still non-destructive |
 | Explicitly deferred this slice | NDI, overlay, plugin system, EventBus-as-feature, auto-align |
 
 ---
@@ -235,14 +237,15 @@ Full checklist and debt tables: [`song_variant_design.md`](song_variant_design.m
 |---------|--------|
 | Ready | Legacy / offset-0 / single-bed desktop workflows (run on-site checklist) |
 | Conditional → improved | Non-zero offset: desktop + remote transport façade closed in Sprint 5 Task 1 |
-| Not ready | Align Apply (shell only §20); variant CRUD; waveform offset paint |
+| Not ready | Align Apply (draft only §21); variant CRUD; waveform offset paint |
 
-**Next priority:** Anchor Computation (Task 4).
+**Next priority:** Anchor Apply / Commit (Task 5).
 
 - Façade graph: [`song_variant_design.md`](song_variant_design.md) §18  
 - Align UX: [`song_variant_design.md`](song_variant_design.md) §19  
 - Dialog shell: [`song_variant_design.md`](song_variant_design.md) §20  
+- Draft compute: [`song_variant_design.md`](song_variant_design.md) §21  
 
 ---
 
-## READY FOR ANCHOR COMPUTATION
+## READY FOR ANCHOR APPLY
