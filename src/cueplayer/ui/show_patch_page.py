@@ -646,6 +646,23 @@ class ShowPatchPage(QWidget):
             QMessageBox.warning(self, "Unable to Create Folder", str(exc))
             return
 
+        # Fresh MA Preflight every export — exporters never validate.
+        from cueplayer.application.ma_preflight_export_gate import (
+            evaluate_ma_preflight_for_export,
+        )
+        from cueplayer.ui.ma_preflight_dialog import present_export_preflight_gate
+
+        navigate = None
+        host = self.window()
+        handler = getattr(host, "_on_preflight_navigate", None)
+        if callable(handler):
+            navigate = handler
+        gate = evaluate_ma_preflight_for_export(self._project)
+        if not present_export_preflight_gate(
+            gate, self, on_navigate=navigate
+        ):
+            return
+
         empty = [s for s in self._slots if s.main_cue_count == 0]
         if empty and self._project.ma_export.export_mode == "full":
             names = ", ".join(s.display_name for s in empty[:5])

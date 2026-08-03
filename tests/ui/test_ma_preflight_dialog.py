@@ -153,9 +153,80 @@ def test_dialog_read_only_project_unchanged(qapp: QApplication) -> None:
     assert song.ma_export_name == before_export
 
 
-def test_dialog_module_has_no_exporter_or_rule_runner_imports() -> None:
-    import cueplayer.ui.ma_preflight_dialog as mod
+def test_dialog_export_gate_blocks_continue_on_errors(qapp: QApplication) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    report = _sample_report()
+    assert report.has_errors is True
+    dialog = MaPreflightDialog(report, mode="export_gate", can_continue=False)
+    assert dialog.windowTitle() == "MA Preflight — Export"
+    assert dialog.continue_btn is None
+    hint = dialog.findChild(QLabel, "preflightHint")
+    assert hint is not None
+    assert "blocked" in hint.text().lower()
+    dialog.close()
+
+
+def test_dialog_export_gate_continue_when_allowed(qapp: QApplication) -> None:
+    from cueplayer.domain.validation import ValidationReport, build_preflight_report, make_issue
+
+    raw = ValidationReport(context_label="Demo", rule_set_id="ma-preflight")
+    raw.extend(
+        [
+            make_issue(
+                "MA050",
+                "warning",
+                "empty seq",
+                subject="sequence:s1:main",
+                details={"song_id": "s1"},
+            ),
+            make_issue(
+                "MA150",
+                "information",
+                "Total songs: 1",
+                subject="project:songs",
+            ),
+        ]
+    )
+    report = build_preflight_report(raw, title="Demo")
+    dialog = MaPreflightDialog(report, mode="export_gate", can_continue=True)
+    assert dialog.continue_btn is not None
+    assert dialog.continue_btn.text() == "Continue Export"
+    dialog.close()
+
+
+def test_present_export_preflight_gate_policy(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cueplayer.application.ma_preflight_export_gate import (
+        evaluate_ma_preflight_for_export,
+    )
+    from cueplayer.ui.ma_preflight_dialog import (
+        MaPreflightDialog,
+        present_export_preflight_gate,
+    )
+
+    project = Project.create("Show")
+    project.songs.clear()
+    song = Song.create("開場")
+    song.ma_export_name = ""
+    project.songs.append(song)
+    gate = evaluate_ma_preflight_for_export(project)
+    assert gate.allow_export is False
+
+    monkeypatch.setattr(
+        MaPreflightDialog,
+        "exec",
+        lambda self: int(MaPreflightDialog.DialogCode.Accepted),
+    )
+    # Even if dialog somehow Accepted, errors still block.
+    assert present_export_preflight_gate(gate) is False
+
+
+def test_dialog_module_has_no_exporter_imports() -> None:
     import inspect
+
+    import cueplayer.ui.ma_preflight_dialog as mod
 
     src = inspect.getsource(mod)
     assert "cueplayer.exporters" not in src

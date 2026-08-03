@@ -1,9 +1,9 @@
 # MA Preflight — Validation Domain
 
-**Status:** Sprint 6 Feature Task 4 complete (Preflight UI MVP)  
+**Status:** Sprint 6 Feature Task 5 complete (Export Integration)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint6-preflight-ui-028d`  
-**Package:** `cueplayer.domain.validation` + `cueplayer.ui.ma_preflight_dialog`
+**Scope tip:** `cursor/sprint6-preflight-export-028d`  
+**Package:** `cueplayer.domain.validation` + `cueplayer.application.ma_preflight_export_gate` + `cueplayer.ui.ma_preflight_dialog`
 
 ---
 
@@ -308,7 +308,7 @@ Signal: `navigate_requested(song_id, object_kind, object_id)`.
 | Keep dialog open while jumping | Modal today; modeless later if needed |
 | Highlight mark after seek | Timeline selection set; cue-list scroll polish later |
 | Filter / search | Explicitly out of MVP |
-| Export integration | Task 5 |
+| Export integration | ✅ Task 5 |
 
 ### Risks
 
@@ -318,13 +318,81 @@ Signal: `navigate_requested(song_id, object_kind, object_id)`.
 | Missing `song_id` on some issues | `navigation_target` returns `None`; no jump |
 | Operators expect auto-fix | Hint text + no Fix buttons |
 
-### Recommendation for Task 5 (Export Integration)
+---
 
-1. Before Export / Show Patch write: `report = build_preflight_report_for_project(project)`.  
-2. If `report.has_errors`: block export **or** confirm (“Export anyway?”) — product choice.  
-3. Optionally open `MaPreflightDialog(report)` from the Export path when blocked.  
-4. Warnings: soft confirm only.  
-5. Still **no** auto-fix; still **no** rule execution inside the dialog.
+## Sprint 6 Task 5 — Export Integration (done)
+
+**Scope tip:** `cursor/sprint6-preflight-export-028d`  
+**Application:** `cueplayer.application.ma_preflight_export_gate`  
+**UI present:** `present_export_preflight_gate` · wired from `ShowPatchPage._export`
+
+### Export workflow
+
+```text
+Show Patch → Export Checked Songs…
+  1. Write UI → MaExportSettings
+  2. Validate folder
+  3. evaluate_ma_preflight_for_export(project)   # fresh ValidationReport every time
+  4. present_export_preflight_gate(gate)         # dialog if any issues
+  5. If gate denies → stop (exporters never called)
+  6. Existing empty-main-cues confirm (unchanged)
+  7. Ma2Exporter / Ma3Exporter.export_show_to_directory  # export only
+```
+
+Layers:
+
+| Layer | Responsibility |
+|-------|----------------|
+| Validation engine | Produce `ValidationReport` (independent) |
+| Application gate | Fresh evaluate + allow/deny from **ValidationReport only** |
+| UI | Present `PreflightReport`; Continue / Cancel |
+| Exporters | Write XML only — **no** validation |
+
+### Error / Warning behavior
+
+| Severity | Dialog | Continue Export |
+|----------|--------|-----------------|
+| **Error** | Shown | **Blocked** (Close / Cancel only) |
+| **Warning** | Shown | Allowed (Continue Export) |
+| **Information** | Always included when dialog shown | Allowed |
+
+- Dialog appears whenever `ValidationReport` has any issues (info totals count).
+- Even if the dialog were accepted, `present_export_preflight_gate` still returns `False` when `validation.has_errors`.
+- No result caching — every export re-runs rules.
+
+### Coverage
+
+- Application: `tests/application/test_ma_preflight_export_gate.py`
+- UI gate mode: `tests/ui/test_ma_preflight_dialog.py`
+- Integration: `tests/ui/test_ma_preflight_export_integration.py`
+
+### Remaining UX improvements
+
+| Item | Notes |
+|------|-------|
+| Force-export override | Not in MVP (errors hard-block) |
+| Skip dialog when info-only | Optional preference later |
+| Modeless jump-from-export | Modal today |
+| CLI preflight before headless export | Reuse application gate |
+| Auto-fix | Still deferred |
+
+### Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Info rules always open dialog | Intentional review; preference later |
+| Settings not flushed before gate | Gate runs after `_write_ui_to_settings` |
+| Operators want force-export | Documented hard block; Sprint 7 if needed |
+
+### Recommendation for Sprint 7
+
+1. **Production soak** — real show files through Preflight → Export on MA2/MA3.  
+2. Optional **force-export** (hold modifier / confirm) if operators need it.  
+3. Deeper rules (cue-level required names, pool ranges, TC mode).  
+4. Optional CLI: `evaluate_ma_preflight_for_export` + `format_text()`.  
+5. Do **not** put validation inside exporters; keep the gate.
+
+Still **no** auto-fix.
 
 ---
 
@@ -332,11 +400,11 @@ Signal: `navigate_requested(song_id, object_kind, object_id)`.
 
 | Extension | Approach |
 |-----------|----------|
-| Task 5 Export Integration | Gate Export on `PreflightReport.has_errors` |
+| Sprint 7 polish / soak | Prefer prefs + deeper rules over exporter rewrites |
 | Export-intent fidelity | Keep `MaPreflightContext` aligned with Show Patch fields |
 | Auto-fix (later) | Separate command layer; never inside `evaluate` or report builder |
 | Non-MA packs | New prefixes + rule sets; reuse `build_preflight_report` |
 
 ---
 
-## READY FOR MA PREFLIGHT INTEGRATION
+## READY FOR MA PREFLIGHT PRODUCTION

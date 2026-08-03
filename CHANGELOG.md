@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 6 — Task 5: MA Preflight Export Integration (2026-08-03)
+
+- Show Patch export runs a fresh Preflight gate: errors block; warnings allow Continue; info always shown.
+- `application/ma_preflight_export_gate` decides from `ValidationReport` only; exporters unchanged / no auto-fix.
+- Docs: `docs/ma_preflight.md`.
+
 ### Sprint 6 — Task 4: Preflight UI (MVP) (2026-08-03)
 
 - Tools → **MA Preflight…** — `MaPreflightDialog` over `PreflightReport` (summary + issue table).
