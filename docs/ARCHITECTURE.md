@@ -3,12 +3,13 @@
 Current intended layer diagram (aspirational). For a full as-built review and the
 incremental target layout, see:
 
-- [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review
+- [`architecture_overview.md`](architecture_overview.md) — **Sprint 3.5 snapshot** (maps, risks, roadmap)
+- [`current_architecture.md`](current_architecture.md) — living as-built assessment + sprint notes
+- [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review (ZH; partially stale)
 - [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) — strangler / one-module-at-a-time plan
 - [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) — **permanent** allowed/forbidden dependencies
 - [`MIGRATION_RULES.md`](MIGRATION_RULES.md) — **permanent** how to move one module safely
 - [`SPRINT_0_REVIEW.md`](SPRINT_0_REVIEW.md) — Sprint 0 retrospective (foundation complete)
-- [`current_architecture.md`](current_architecture.md) — **Sprint 1 baseline** as-built assessment + Sprint 1 task plan
 
 AI agents: follow [`.ai/WORKFLOW.md`](../.ai/WORKFLOW.md) end-to-end (plan → implement → [`.ai/REPORT.md`](../.ai/REPORT.md) + handoff → stop). Active task: [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md). Read boundary + migration rules before any architecture move.
 

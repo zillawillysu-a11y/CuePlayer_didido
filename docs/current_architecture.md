@@ -1,21 +1,22 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 3 · Task 3 complete (Event Bus foundation)  
+**Status:** Sprint 3.5 complete (architecture snapshot — docs only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint3-event-bus-foundation-028d`  
-**Constraint (Task 3):** In-process EventBus infrastructure only — no service migration, no UI changes, no Qt-signal replacement, no second clock.
+**Scope tip:** `cursor/sprint35-architecture-snapshot-028d`  
+**Constraint (3.5):** Documentation only — no runtime code changes.
 
 Related docs (do not treat as identical):
 
 | Doc | Role |
 |-----|------|
+| [`architecture_overview.md`](architecture_overview.md) | **Sprint 3.5 snapshot** — layers, maps, risks, Sprint 4 + Feature candidates |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Short aspirational layer diagram |
 | [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | Earlier as-built review (ZH); partially stale |
 | [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) | Strangler target layout |
 | [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) / [`MIGRATION_RULES.md`](MIGRATION_RULES.md) | Permanent law |
 | [`SPRINT_0_REVIEW.md`](SPRINT_0_REVIEW.md) | Foundation retrospective |
 | [`CHANGELOG.md`](../CHANGELOG.md) | Release / sprint notes |
-| **This file** | Living English as-built snapshot |
+| **This file** | Living English as-built assessment + per-task notes |
 
 ---
 
@@ -348,6 +349,19 @@ EventBus.publish(event)                   # sync; handlers in order; exact type 
 [not wired] Web Remote
 [forbidden] position / playing as bus events (clock rule)
 ```
+
+---
+
+## Sprint 3.5 — Architecture snapshot (done)
+
+Docs-only checkpoint after Sprint 3 Task 3. **No runtime code changes.**
+
+Canonical snapshot: [`architecture_overview.md`](architecture_overview.md)
+
+Includes: layer diagram, dependency graph, service / repository / protocol maps,
+EventBus as-built + planned taxonomy, MainWindow responsibilities, debt map,
+migration progress (Sprint 0→3), Sprint 4 roadmap, Feature Sprint candidates,
+architecture decisions log.
 
 ---
 ## 1. Current folder structure
@@ -795,12 +809,13 @@ Machine State and Project State must remain separate — SettingsService never o
 
 - Missing in-process EventBus primitive (now `core.EventBus`; not yet adopted)
 
-### P0 — Next (Playback events)
+### P0 — Planning / next architecture spine
 
-1. **Playback events on EventBus** — narrow transport/chrome notifications only; do **not** put sample position on the bus.
-2. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
-3. Optional: route remote transport/loop exclusively through PlaybackService.
-4. Optional SettingsService fold-in for remaining machine prefs.
+1. **Feature Sprint Planning** — choose product candidates (see `architecture_overview.md`).
+2. **Playback events on EventBus** — discrete transport/chrome only; no sample position on the bus.
+3. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
+4. Optional: route remote transport/loop exclusively through PlaybackService.
+5. Optional SettingsService fold-in for remaining machine prefs.
 
 ### P1 — Structural risk (product-visible)
 
@@ -849,23 +864,18 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Sprint 3 · 1 | ✅ Done | Explicit `ports.ShowHost` |
 | Sprint 3 · 2 | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
 | **Sprint 3 · 3** Event Bus foundation | ✅ Done | `core.EventBus` (subscribe/unsubscribe/publish); no adopters yet |
-| **Sprint 3 · 4** Playback events | **Next** | First EventBus adoption for playback-related chrome (not the clock) |
+| **Sprint 3.5** Architecture snapshot | ✅ Done | `docs/architecture_overview.md` (docs only) |
+| **Next** Feature Sprint Planning | **Queued** | Product candidates + Sprint 4 arch spine |
+| Sprint 4 · Playback events | Recommended early | First EventBus adoption (not the clock) |
 
-### Recommended Sprint 3 Task 4 — Playback events
+### After Sprint 3.5
 
-- Define a small set of playback-related event types (e.g. playing changed, song bound) — **not** continuous playhead ticks.
-- Have `PlaybackService` (or a thin adapter) publish; keep `AudioEngine` as sole sample clock.
-- Optionally subscribe one UI chrome path; do not replace Qt signals wholesale.
-- Do not migrate ShowSession / Project / Settings in the same task.
+Prefer **Feature Sprint Planning** next (product candidates in
+`architecture_overview.md` §4), while keeping **Playback events** as the first
+architecture step inside Sprint 4.
 
-### Risks for Task 4
-
-| Risk | Mitigation |
-|------|------------|
-| Bus becomes a second clock | Forbid position/frame events; clock stays AudioEngine |
-| Over-broad event catalog | Start with 2–4 playback chrome events only |
-| Double-refresh with Qt signals | Adopt one path at a time; keep signals until proven |
+Do **not** auto-start Feature or Playback work until the user continues.
 
 ---
 
-## READY FOR PLAYBACK EVENTS
+## READY FOR FEATURE SPRINT PLANNING

@@ -1,42 +1,28 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint3-event-bus-foundation-028d`  
+**Branch:** `cursor/sprint35-architecture-snapshot-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 3 · Task 3 — **Event Bus Foundation**: lightweight in-process EventBus
-as infrastructure only (no adoption / no UI / no behavior change).
+Sprint 3.5 — **Architecture Snapshot**: complete as-built documentation after
+Sprint 3 Task 3. Docs only — no runtime code changes.
 
-## What was implemented
+## What was produced
 
-- `src/cueplayer/core/event_bus.py` — `EventBus.subscribe` / `unsubscribe` / `publish`
-- `src/cueplayer/core/__init__.py` — package export
-- `tests/core/test_event_bus.py` — unit coverage
-- Docs: `docs/current_architecture.md`, `CHANGELOG.md`
+- `docs/architecture_overview.md` — full snapshot (layers, graphs, maps, EventBus,
+  taxonomy, MainWindow, debt, Sprint 0→3 progress, Sprint 4 + Feature candidates,
+  decisions)
+- Updated `docs/current_architecture.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`
 
-## EventBus API
+## Runtime code
 
-```text
-subscribe(event_type, handler)    # exact type; dup ignored
-unsubscribe(event_type, handler)  # no-op if missing
-publish(event)                    # sync; order preserved; exact type only
-```
+**Unchanged.**
 
-## Not done (intentional)
+## Suggested next
 
-- No wiring into Playback / ShowSession / Project / Settings
-- No Qt signal replacement
-- No playhead / position events (clock rule)
-
-## Suggested next task
-
-Sprint 3 Task 4 — Playback events (READY FOR PLAYBACK EVENTS).
-
-## Tests
-
-- `tests/core/test_event_bus.py`: 10 passed
-- Full suite: **929 passed**, **16 failed** (same pre-existing / Linux env set)
+Feature Sprint Planning (READY FOR FEATURE SPRINT PLANNING).  
+Playback events remain the recommended first architecture step inside Sprint 4.
