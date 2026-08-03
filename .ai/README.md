@@ -36,7 +36,8 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 - **Clock:** `AudioEngine` sample position is the only playback clock; video Preview / Clean / NDI share one decode path.
 - **Remote:** `origin` → `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (auto-push after commits; see `.cursor/rules/auto-push.mdc`).
 - **Architecture debt:** UI-centric hub (`ui/main_window.py`); planned migration is **one module per PR**, behavior-preserving shims — see `ARCHITECTURE_TARGET.md`.
-- **Ports package (step 0 done):** `src/cueplayer/ports/` — Protocol interfaces only; next is step 1 (`cue_list_columns` → domain).
+- **Ports package (step 0 done):** `src/cueplayer/ports/` — Protocol interfaces only.
+- **Step 1 done:** `cue_list_columns` lives in `domain/`; `ui.cue_list_columns` is a shim; persistence imports domain. Next: step 2 (`RemoteHost`).
 
 ## Start every agent session
 

@@ -32,7 +32,7 @@ from cueplayer.persistence.media_paths import (
     to_storage_path,
 )
 from cueplayer.exporters.common import ma_export_name_from_display
-from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order
+from cueplayer.domain.cue_list_columns import normalize_cue_list_column_order
 
 
 def _coerce_setlist_name_mode(data: dict[str, Any]) -> SetlistNameMode:

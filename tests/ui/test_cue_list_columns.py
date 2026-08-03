@@ -1,7 +1,7 @@
-"""Cue List column order helpers — behavior lock for domain migration.
+"""Cue List column order helpers — behavior lock after domain migration.
 
-These tests freeze the pure API of ``cueplayer.ui.cue_list_columns`` so Step 1
-(move to ``domain/`` + shims) can prove identical results. No Qt required.
+Imports via the **UI shim** keep backward compatibility. Domain is the source
+of truth; shim must re-export identical objects.
 """
 
 from __future__ import annotations
@@ -15,6 +15,14 @@ from cueplayer.ui.cue_list_columns import (
     DEFAULT_CUE_LIST_COLUMN_ORDER,
     LOGICAL_INDEX_BY_FIELD,
     normalize_cue_list_column_order,
+)
+
+_PUBLIC = (
+    "CUE_LIST_FIELDS",
+    "DEFAULT_CUE_LIST_COLUMN_ORDER",
+    "CUE_LIST_FIELD_LABELS",
+    "LOGICAL_INDEX_BY_FIELD",
+    "normalize_cue_list_column_order",
 )
 
 
@@ -104,17 +112,40 @@ def test_normalize_always_returns_full_permutation() -> None:
         assert sorted(out) == sorted(CUE_LIST_FIELDS)
 
 
-def test_module_has_no_ui_toolkit_imports() -> None:
-    """Leaf helper must stay Qt-free so it can live under domain/."""
-    mod = importlib.import_module("cueplayer.ui.cue_list_columns")
+def test_domain_module_has_no_ui_toolkit_imports() -> None:
+    """Domain leaf must stay Qt-free."""
+    mod = importlib.import_module("cueplayer.domain.cue_list_columns")
     source = inspect.getsource(mod)
     for banned in ("PySide6", "PyQt", "QtWidgets", "QtCore", "QtGui"):
         assert banned not in source
 
 
-def test_project_store_currently_imports_normalize_from_ui() -> None:
-    """Documents the forbidden persistence→ui edge Step 1 must remove."""
+def test_ui_shim_reexports_identical_objects() -> None:
+    ui_mod = importlib.import_module("cueplayer.ui.cue_list_columns")
+    dom_mod = importlib.import_module("cueplayer.domain.cue_list_columns")
+    for name in _PUBLIC:
+        assert getattr(ui_mod, name) is getattr(dom_mod, name)
+    assert set(ui_mod.__all__) == set(_PUBLIC)
+
+
+def test_domain_public_api_matches_shim() -> None:
+    from cueplayer.domain import cue_list_columns as dom
+
+    assert dom.normalize_cue_list_column_order(["note"]) == [
+        "note",
+        "time",
+        "type",
+        "cue_id",
+    ]
+
+
+def test_project_store_imports_normalize_from_domain_not_ui() -> None:
+    """Step 1 clears forbidden persistence→ui edge."""
     source = inspect.getsource(
         importlib.import_module("cueplayer.persistence.project_store")
     )
-    assert "from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order" in source
+    assert (
+        "from cueplayer.domain.cue_list_columns import normalize_cue_list_column_order"
+        in source
+    )
+    assert "from cueplayer.ui.cue_list_columns import" not in source

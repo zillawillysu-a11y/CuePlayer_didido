@@ -1,61 +1,79 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/cue-list-columns-safety-net-028d` (from release tip + architecture docs overlay)  
+**Branch:** `cursor/cue-list-columns-domain-migrate-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Build a **migration safety net** for `ui/cue_list_columns` before Step 1 relocate:
-review implementation, expand automated tests without changing behavior, map
-dependencies, and document migration risks. **Do not move the module.**
+Execute **ARCHITECTURE_TARGET Step 1**: migrate `ui/cue_list_columns` into
+`domain/` with a UI shim and retarget persistence to domain, preserving 100%
+behavior and public API.
 
 ## What was implemented
 
-- Reviewed `src/cueplayer/ui/cue_list_columns.py` (pure constants + `normalize_cue_list_column_order`; Qt-free).
-- Expanded `tests/ui/test_cue_list_columns.py` (constants, labels, logical indices, normalize edge cases, idempotence, Qt-free source guard, persistence→ui import sentinel).
-- Added `tests/persistence/test_cue_list_column_order_load.py` (load_project normalizes dirty/missing `cue_list_column_order`, including Unicode project/song names).
-- Documented dependency graph + risks in this report and the handoff.
-- Marked step **1S** in `ARCHITECTURE_TARGET.md` / `MIGRATION_RULES.md`; `NEXT_TASK` → real Step 1 migrate.
+- `git mv` → `src/cueplayer/domain/cue_list_columns.py` (same logic; domain docstring).
+- `src/cueplayer/ui/cue_list_columns.py` became an explicit shim re-exporting all public symbols (`__all__`).
+- `persistence/project_store.py` imports `normalize_cue_list_column_order` from **domain** (not ui).
+- Tests: flipped persistence→ui sentinel; added shim identity + domain API checks.
+- Docs: ARCHITECTURE_TARGET step 1 ✅; BOUNDARY_RULES note cleared edge; MIGRATION_RULES backlog.
 
 ## Files changed
 
 | Path | Change |
 |------|--------|
-| `tests/ui/test_cue_list_columns.py` | Expanded behavior lock (no prod edits) |
-| `tests/persistence/test_cue_list_column_order_load.py` | **New** load-path normalize tests |
-| `docs/ARCHITECTURE_TARGET.md` | Step **1S** safety net |
-| `docs/MIGRATION_RULES.md` | Note 1S |
-| `.ai/NEXT_TASK.md` | Points at Step 1 migrate |
+| `src/cueplayer/domain/cue_list_columns.py` | **New home** (moved) |
+| `src/cueplayer/ui/cue_list_columns.py` | Shim re-export |
+| `src/cueplayer/persistence/project_store.py` | Import domain |
+| `tests/ui/test_cue_list_columns.py` | Migration assertions |
+| `docs/ARCHITECTURE_TARGET.md` | Step 1 done |
+| `docs/BOUNDARY_RULES.md` | Edge cleared note |
+| `docs/MIGRATION_RULES.md` | Backlog ✅ |
+| `.ai/NEXT_TASK.md` | Step 2 |
 | `.ai/REPORT.md` | This report |
-| `.ai/handoffs/2026-08-03_CueListColumnsSafetyNet.md` | Archive |
-| `.ai/` + architecture docs | Brought onto release-based branch for continuity |
-
-**Unchanged production module:** `src/cueplayer/ui/cue_list_columns.py`
+| `.ai/handoffs/2026-08-03_CueListColumnsDomainMigrate.md` | Archive |
 
 ## Architecture decisions
 
-- Safety net runs on **release tip** (where the module exists). Older architecture-only tips lacked this file.
-- Pure-function tests are the primary lock; persistence load tests lock the **forbidden** `persistence → ui` call site behavior consumers rely on.
-- UI header drag/reorder in `CueMonitorPanel` is integration-heavy; existing `test_cue_list_global_ui.py` covers Interactive/movable header via `LOGICAL_INDEX_BY_FIELD`. Not duplicated here — see risks.
-- Sentinel test that `project_store` imports from `ui` is intentional: it must **flip** after Step 1 (update that assertion when migrating).
+- Domain owns the Qt-free helper; UI path remains for `cue_monitor_panel` and tests via shim (no mass import rewrite required this step).
+- Persistence→domain is an **allowed** adapter→domain edge; removes forbidden persistence→ui.
+- No new dependency directions introduced (ui→domain via shim is fine; domain still has no ui/persistence imports).
 
 ## Tests performed
 
-- `pytest tests/ui/test_cue_list_columns.py tests/persistence/test_cue_list_column_order_load.py` → **15 passed**
+- `pytest tests/ui/test_cue_list_columns.py tests/persistence/test_cue_list_column_order_load.py tests/ui/test_cue_list_global_ui.py` → **23 passed**
 
-## Remaining issues / migration risks
+## Remaining issues
 
-See handoff for full graph. Highlights:
-
-1. **Forbidden edge:** `persistence.project_store` imports `ui.cue_list_columns` — Step 1 must retarget to domain + keep load normalize identical.
-2. **Wide UI consumer:** `cue_monitor_panel.py` imports all symbols; shim must re-export everything (`CUE_LIST_FIELDS`, labels, logical map, normalize, defaults).
-3. **Prefs / header state:** column order also flows through monitor UI prefs + header restore; moving the helper must not change normalize results used after drag-reorder.
-4. **Sentinel test update required** in Step 1 (`test_project_store_currently_imports_normalize_from_ui`).
-5. Architecture stack PRs (ports/guardrails) and this release-based safety net need careful merge order.
+- `ui.cue_list_columns` shim still present (intentional; delete in a later task after callers optionally switch).
+- `cue_monitor_panel` still imports the ui shim path (OK).
+- Step 2 (`RemoteHost`) not started; ports package may need merge onto this release line if missing.
 
 ## Suggested next task
 
-**Step 1 migrate:** `ui/cue_list_columns` → `domain/cue_list_columns` + ui shim; persistence imports domain; all safety-net tests green (adjust import sentinel); REPORT + handoff + stop.
+Step 2: Web Remote uses `ports.RemoteHost` only (no MainWindow private `_` access).
+
+## Migration Checklist
+
+- [x] Old tests pass (safety-net + global UI + persistence load)
+- [x] Public API unchanged (same symbol names/values via shim `is` identity)
+- [x] Shim verified (`test_ui_shim_reexports_identical_objects`)
+- [x] Dependency direction improved (`persistence` → `domain`, not `ui`)
+- [x] No behavior changes (normalize logic byte-identical aside from docstring)
+
+## Rollback Plan
+
+If this migration must be reverted:
+
+1. On this branch (or a revert PR): restore `src/cueplayer/ui/cue_list_columns.py` to the full implementation from pre-migrate commit (`d30a8ba` / parent before migrate), **or** `git revert` the Step 1 commit.
+2. Delete `src/cueplayer/domain/cue_list_columns.py` if reverting via file restore.
+3. Change `project_store.py` import back to:
+   `from cueplayer.ui.cue_list_columns import normalize_cue_list_column_order`
+4. Restore `tests/ui/test_cue_list_columns.py` sentinel
+   `test_project_store_currently_imports_normalize_from_ui` (remove domain/shim-only tests if needed).
+5. Revert docs step-1 ✅ markers in `ARCHITECTURE_TARGET.md` / `BOUNDARY_RULES.md` / `MIGRATION_RULES.md`.
+6. Run:
+   `pytest tests/ui/test_cue_list_columns.py tests/persistence/test_cue_list_column_order_load.py tests/ui/test_cue_list_global_ui.py`
+7. Prefer `git revert <step1_sha>` as the single clean rollback when the migrate is one commit.
