@@ -3,6 +3,7 @@
 **性質：** 設計文件；描述目標資料夾與「一次搬一個 Module」的順序。  
 **約束：** 不能影響目前功能；所有功能必須可逐步搬移；不要一次重寫。  
 **相關：** 現況分析見 [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md)；現行簡圖見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。  
+**AI 執行：** 每次只做 [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md) 寫的那一步；流程見 [`.ai/WORKFLOW.md`](../.ai/WORKFLOW.md)。  
 **日期：** 2026-08
 
 ---

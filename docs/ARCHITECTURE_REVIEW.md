@@ -3,7 +3,7 @@
 **範圍：** `src/cueplayer` 現況（約 106 支 `.py`、~44k LOC）  
 **性質：** 只分析、不修改程式  
 **日期：** 2026-08  
-**相關：** 現行目標見 [`ARCHITECTURE.md`](ARCHITECTURE.md)；漸進目標架構見 [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md)
+**相關：** 現行目標見 [`ARCHITECTURE.md`](ARCHITECTURE.md)；漸進目標架構見 [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md)；代理工作流見 [`.ai/README.md`](../.ai/README.md)
 
 ---
 

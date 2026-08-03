@@ -2,6 +2,8 @@
 
 Read `docs/PRODUCT_SPEC.md` before implementing features.
 
+**AI workflow (Cursor / cloud):** start at [`.ai/README.md`](.ai/README.md) → [`.ai/NEXT_TASK.md`](.ai/NEXT_TASK.md) → [`.ai/WORKFLOW.md`](.ai/WORKFLOW.md). System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md).
+
 ## Non-negotiables
 
 - Full Unicode / Chinese support for project names, folders, and media paths from day one.

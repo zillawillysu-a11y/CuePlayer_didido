@@ -6,6 +6,8 @@ incremental target layout, see:
 - [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review
 - [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) — strangler / one-module-at-a-time plan
 
+AI agents: follow [`.ai/WORKFLOW.md`](../.ai/WORKFLOW.md) and the single active task in [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md).
+
 ## Layers
 
 ```text
