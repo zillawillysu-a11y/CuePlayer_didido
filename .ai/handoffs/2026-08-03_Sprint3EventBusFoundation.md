@@ -21,6 +21,11 @@
 
 Sprint 3 Task 4 — Playback events.
 
+## Suite
+
+- EventBus unit: **10 passed**
+- Full: **929 passed**, **16 failed** (pre-existing Linux/env; unchanged failure set)
+
 ## Marker
 
 READY FOR PLAYBACK EVENTS
