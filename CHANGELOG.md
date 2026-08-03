@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 5 — Align Anchors Beta Stabilization (2026-08-03)
+
+- Preview entry snapshot + Cancel `restore_entry` (position / loops / playing).
+- Preview re-enter replaces offset (no accumulate); song-switch ends Preview safely.
+- Dialog: Preview banner, variant lock while previewing, Apply re-entrancy + dirty enablement.
+- Expanded playback + UI regression tests. No architecture / persistence / engine redesign.
+
 ### Sprint 5 — Task 6: Align Anchors Preview Session (2026-08-03)
 
 - PlaybackService ephemeral `begin/update/end_anchor_preview` — never mutates project or undo.

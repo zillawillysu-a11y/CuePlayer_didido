@@ -59,6 +59,13 @@ class PlaybackService:
         self._session = session
         # Ephemeral Align Anchors preview — never written to SongVariant.
         self._preview_anchor_offset: float | None = None
+        # Snapshot at first Preview enter (for Cancel restore). Not stacked.
+        self._preview_entry_song_position: float | None = None
+        self._preview_entry_playing: bool = False
+        self._preview_entry_loop_a: float | None = None
+        self._preview_entry_loop_b: float | None = None
+        self._preview_entry_loop_enabled: bool = False
+        self._preview_generation: int = 0
 
     @property
     def engine(self) -> AudioEngine:
@@ -115,36 +122,87 @@ class PlaybackService:
             return None
         return coerce_anchor_offset(self._preview_anchor_offset)
 
+    @property
+    def preview_generation(self) -> int:
+        """Increments on each new Preview enter (not on refresh). Detects duplicates."""
+        return int(self._preview_generation)
+
     def begin_anchor_preview(self, offset: float) -> None:
         """Start (or refresh) temporary mapping with ``offset`` — no project write.
 
-        Preserves Song Time playhead and rematerializes A–B loop Song Times.
+        Re-entering Preview replaces the ephemeral offset (never accumulates).
+        First enter snapshots Song Time position / transport for Cancel restore.
         """
+        entering = self._preview_anchor_offset is None
+        if entering:
+            self._preview_generation += 1
+            self._preview_entry_song_position = float(self.position)
+            self._preview_entry_playing = bool(self.playing)
+            self._preview_entry_loop_a = self.loop_a
+            self._preview_entry_loop_b = self.loop_b
+            self._preview_entry_loop_enabled = bool(self.loop_enabled)
+
+        # While refreshing an active session, keep the operator's current Song Time.
         song_pos = float(self.position)
         loop_a = self.loop_a
         loop_b = self.loop_b
         loop_enabled = bool(self.loop_enabled)
+        was_playing = bool(self.playing)
+        # Replace — never add to a previous preview offset.
         self._preview_anchor_offset = coerce_anchor_offset(offset)
         self._rematerialize_song_transport(
             song_pos, loop_a, loop_b, loop_enabled=loop_enabled
         )
+        self._restore_playing_state(was_playing)
 
     def update_anchor_preview(self, offset: float) -> None:
         """Update active preview offset; starts a session if none is active."""
         self.begin_anchor_preview(offset)
 
-    def end_anchor_preview(self) -> None:
-        """Exit preview and restore committed-offset mapping — no project write."""
+    def end_anchor_preview(self, *, restore_entry: bool = False) -> None:
+        """Exit preview and restore committed-offset mapping — no project write.
+
+        ``restore_entry=True`` (Cancel): restore Song Time / loops / playing from
+        the snapshot taken when Preview was first entered.
+        ``restore_entry=False`` (Apply / song-switch safety): keep current Song
+        Time playhead under the committed mapping.
+        """
         if self._preview_anchor_offset is None:
             return
-        song_pos = float(self.position)
-        loop_a = self.loop_a
-        loop_b = self.loop_b
-        loop_enabled = bool(self.loop_enabled)
+
+        if restore_entry and self._preview_entry_song_position is not None:
+            song_pos = float(self._preview_entry_song_position)
+            loop_a = self._preview_entry_loop_a
+            loop_b = self._preview_entry_loop_b
+            loop_enabled = bool(self._preview_entry_loop_enabled)
+            was_playing = bool(self._preview_entry_playing)
+        else:
+            song_pos = float(self.position)
+            loop_a = self.loop_a
+            loop_b = self.loop_b
+            loop_enabled = bool(self.loop_enabled)
+            was_playing = bool(self.playing)
+
         self._preview_anchor_offset = None
+        self._clear_preview_entry_snapshot()
         self._rematerialize_song_transport(
             song_pos, loop_a, loop_b, loop_enabled=loop_enabled
         )
+        self._restore_playing_state(was_playing)
+
+    def _clear_preview_entry_snapshot(self) -> None:
+        self._preview_entry_song_position = None
+        self._preview_entry_playing = False
+        self._preview_entry_loop_a = None
+        self._preview_entry_loop_b = None
+        self._preview_entry_loop_enabled = False
+
+    def _restore_playing_state(self, was_playing: bool) -> None:
+        """Keep transport playing/paused consistent across rematerialize."""
+        if was_playing and not self.playing:
+            self.play()
+        elif not was_playing and self.playing:
+            self.pause()
 
     def _rematerialize_song_transport(
         self,
@@ -163,6 +221,10 @@ class PlaybackService:
             elif self._complete_loop_pair():
                 self._engine.set_loop_enabled(True)
                 self._engine.engage_ab_loop(seek_if_outside=False)
+        elif loop_a is None and loop_b is None and not loop_enabled:
+            # Ensure stale engine loops are not left mapped under a new offset.
+            if self._engine.loop_a is not None or self._engine.loop_b is not None:
+                self.clear_loop()
         self.seek(float(song_position))
 
     def song_to_engine_time(self, song_time: float, song: Song | None = None) -> float:
@@ -328,7 +390,12 @@ class PlaybackService:
     # --- session mirrors -----------------------------------------------------
 
     def set_current_song(self, song: Song | None) -> None:
-        """Update session current song only (engine ``set_song`` stays with activate)."""
+        """Update session current song only (engine ``set_song`` stays with activate).
+
+        Safely ends any Align Anchors preview so offsets cannot leak across songs.
+        """
+        if self.anchor_preview_active:
+            self.end_anchor_preview(restore_entry=False)
         self._session.set_song(song)
 
     def sync_from_engine(self) -> None:

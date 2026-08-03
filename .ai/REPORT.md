@@ -1,38 +1,29 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint5-align-preview-028d`  
+**Branch:** `cursor/sprint5-align-beta-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 5 Task 6 — Align Anchors Preview Session.
+Sprint 5 — Align Anchors Beta Stabilization (no new features).
 
-## What was implemented
+## What was hardened
 
-1. **Preview lifecycle** — `PlaybackService.begin/update/end_anchor_preview` (ephemeral `_preview_anchor_offset`)
-2. **State transitions** — Preview → live draft updates → Apply ends + commits; Cancel restores committed mapping
-3. Dialog Preview button + Enter; MainWindow wires playback callbacks
-4. No project mutation / undo during preview; Apply still sole commit
+1. Preview lifecycle — replace-not-accumulate; generation; entry snapshot
+2. Cancel — `restore_entry=True` restores position / loops / playing
+3. Apply — re-entrancy guard; one command; exits Preview cleanly
+4. Song switch — ends Preview in ShowSession + PlaybackService
+5. UI — banner, variant lock, dirty Apply enablement
+6. Regression tests — playback + UI beta suites
 
 ## Tests
 
-playback_service + align_anchors_dialog + variant_anchor_undo + anchor_mapping → **38 passed**
-
-## Remaining UX work
-
-Duration chips, missing-media enablement, optional seek-to-anchor, waveform indicator
-
-## Risks
-
-Preview leak after crash (mitigated by dialog finished + MainWindow safety end); loop rematerialize edges
-
-## Recommendation for Beta Stabilization
-
-On-desk checklist + duration/missing-media polish; freeze preview/Apply API.
+application + UI align suites → green
 
 ## Marker
 
-READY FOR ALIGN ANCHORS BETA
+READY FOR SPRINT 6  
+Align Anchors Production Complete

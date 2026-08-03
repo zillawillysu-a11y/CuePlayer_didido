@@ -1369,4 +1369,46 @@ Song Time remains canonical; PlaybackService is the only playback owner; `anchor
 
 ---
 
-## READY FOR ALIGN ANCHORS BETA
+## 24. Sprint 5 — Align Anchors Beta Stabilization (done)
+
+**Scope tip:** `cursor/sprint5-align-beta-028d`
+
+### 24.1 Stabilization summary
+
+No new features. Hardened Preview / Cancel / Apply so Align Anchors is production-stable.
+
+| Area | Hardening |
+|------|-----------|
+| Preview lifecycle | Re-enter **replaces** offset (no accumulate); generation counter; entry snapshot |
+| Cancel | `end_anchor_preview(restore_entry=True)` restores entry Song Time / loops / playing |
+| Apply | Re-entrancy guard; one command; `restore_entry=False`; exits Preview |
+| Song switch | `activate_song_at` + `set_current_song` end Preview safely |
+| UI | Preview banner; variant combo locked while previewing; Apply enable = dirty only |
+
+### 24.2 Production checklist
+
+- [ ] Preview → nudge → Update Preview → Cancel restores position + applied offset
+- [ ] Preview while playing / paused / stopped
+- [ ] Rapid Preview↔Cancel; Preview→Apply
+- [ ] Apply → Undo → Redo; marks unchanged
+- [ ] Repeated Apply; double-click Apply emits once
+- [ ] Variant combo disabled in Preview; unlocked after end
+- [ ] Unicode song/variant names; Song Time canonical
+
+### 24.3 Remaining (non-blocking)
+
+Duration chips / missing-media enablement (§19.6); optional waveform draft indicator; variant CRUD UI; auto-correlate.
+
+### 24.4 Risks (residual)
+
+| Risk | Status |
+|------|--------|
+| Preview leak after crash | Mitigated (finished + MainWindow + song-switch) |
+| Loop rematerialize edges | Covered by unit tests |
+| Modal dialog blocks setlist | Expected; song-switch path still hardened |
+
+---
+
+## READY FOR SPRINT 6
+
+**Align Anchors Production Complete**

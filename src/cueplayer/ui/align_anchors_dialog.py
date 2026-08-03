@@ -46,6 +46,7 @@ from cueplayer.domain.undo import SetVariantAnchorOffsetCommand
 from cueplayer.ui.transport_bar import format_time
 
 _STATUS_HINT = "Preview is temporary; Apply commits (marks unchanged)."
+_PREVIEW_BANNER = "PREVIEW MODE — ephemeral mapping (not saved until Apply)"
 
 
 class AlignAnchorsDialog(QDialog):
@@ -70,7 +71,7 @@ class AlignAnchorsDialog(QDialog):
     4. Reset → draft = 0.0 (still not persisted until Apply).
     5. Preview → temporary PlaybackService mapping (no project write).
     6. Apply → ``SetVariantAnchorOffsetCommand.redo``; emit ``offset_committed``.
-    7. Cancel → end preview + discard draft; no project write.
+    7. Cancel → end preview (restore entry transport) + discard draft; no project write.
     """
 
     #: Emitted after Apply mutates the song via the undo command.
@@ -85,13 +86,13 @@ class AlignAnchorsDialog(QDialog):
         get_song_playhead: Callable[[], float] | None = None,
         get_media_playhead: Callable[[], float] | None = None,
         begin_preview: Callable[[float], None] | None = None,
-        end_preview: Callable[[], None] | None = None,
+        end_preview: Callable[..., None] | None = None,
         is_preview_active: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Align Anchors")
         self.setModal(True)
-        self.resize(560, 460)
+        self.resize(560, 500)
         self._song = song
         self._get_song_playhead = get_song_playhead
         self._get_media_playhead = get_media_playhead
@@ -103,6 +104,7 @@ class AlignAnchorsDialog(QDialog):
         self._draft_offset = 0.0
         self._updating_draft_ui = False
         self._suppress_variant_change = False
+        self._apply_in_progress = False
 
         root = QVBoxLayout(self)
 
@@ -113,6 +115,16 @@ class AlignAnchorsDialog(QDialog):
         intro.setWordWrap(True)
         intro.setObjectName("alignAnchorsIntro")
         root.addWidget(intro)
+
+        self.preview_banner = QLabel("")
+        self.preview_banner.setObjectName("alignPreviewBanner")
+        self.preview_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_banner.setVisible(False)
+        self.preview_banner.setStyleSheet(
+            "background: #1f3a5f; color: #79c0ff; font-weight: 600; "
+            "padding: 6px 10px; border: 1px solid #388bfd;"
+        )
+        root.addWidget(self.preview_banner)
 
         # --- variant selector ------------------------------------------------
         variant_row = QHBoxLayout()
@@ -258,10 +270,13 @@ class AlignAnchorsDialog(QDialog):
         self.nudge_plus_1f.clicked.connect(lambda: self._nudge_draft(self._frame_seconds()))
         self.nudge_minus_10ms.clicked.connect(lambda: self._nudge_draft(-0.01))
         self.nudge_plus_10ms.clicked.connect(lambda: self._nudge_draft(0.01))
-        self.finished.connect(lambda *_: self._end_preview_session())
+        self.finished.connect(
+            lambda *_: self._end_preview_session(restore_entry=True)
+        )
 
         self._install_shortcuts()
         self._refresh_preview_panel()
+        self._update_chrome()
 
     # --- public helpers ------------------------------------------------------
 
@@ -342,7 +357,7 @@ class AlignAnchorsDialog(QDialog):
                     self._suppress_variant_change = False
                 return
         if previous is not None and previous != index:
-            self._end_preview_session()
+            self._end_preview_session(restore_entry=True)
         self._last_variant_index = index
         variant = self.selected_variant()
         if variant is None:
@@ -353,6 +368,7 @@ class AlignAnchorsDialog(QDialog):
             self._set_song_anchor(None)
             self._set_variant_anchor(None)
             self._refresh_preview_panel()
+            self._update_chrome()
             return
         path_text = str(variant.path) if variant.has_resolvable_path() else "(no path)"
         self.path_label.setText(path_text)
@@ -370,6 +386,7 @@ class AlignAnchorsDialog(QDialog):
         self._set_variant_anchor(None)
         self._set_draft_offset(self.applied_offset(), recompute_from_anchors=False)
         self._refresh_preview_panel()
+        self._update_chrome()
 
     def _refresh_applied_label(self) -> None:
         applied = self.applied_offset()
@@ -399,18 +416,21 @@ class AlignAnchorsDialog(QDialog):
         self._draft_offset = coerce_anchor_offset(value)
         self._sync_live_preview()
         self._refresh_preview_panel()
+        self._update_chrome()
         self._set_status("Draft edited (typed)")
 
     def _nudge_draft(self, delta: float) -> None:
         self._set_draft_offset(self._draft_offset + float(delta), recompute_from_anchors=False)
         self._sync_live_preview()
         self._refresh_preview_panel()
+        self._update_chrome()
         self._set_status(f"Draft nudged {delta:+.4f}s")
 
     def _reset_draft(self) -> None:
         self._set_draft_offset(0.0, recompute_from_anchors=False)
         self._sync_live_preview()
         self._refresh_preview_panel()
+        self._update_chrome()
         self._set_status("Draft reset to 0.000 s (not applied)")
 
     def _recompute_draft_from_anchors(self) -> bool:
@@ -421,6 +441,7 @@ class AlignAnchorsDialog(QDialog):
         self._set_draft_offset(draft, recompute_from_anchors=True)
         self._sync_live_preview()
         self._refresh_preview_panel()
+        self._update_chrome()
         self._set_status("Draft computed from anchors")
         return True
 
@@ -441,11 +462,33 @@ class AlignAnchorsDialog(QDialog):
     def _set_status(self, message: str) -> None:
         hint = _STATUS_HINT
         if self.is_preview_session_active():
-            hint = "Previewing — Cancel restores applied mapping."
+            hint = "Previewing — Cancel restores entry transport + applied mapping."
             self.shell_status.setStyleSheet("color: #58a6ff;")
         else:
             self.shell_status.setStyleSheet("color: #8b949e;")
         self.shell_status.setText(f"{message}. {hint}")
+
+    def _update_chrome(self) -> None:
+        """Button enablement + Preview banner; no project mutation."""
+        previewing = self.is_preview_session_active()
+        has_variant = self.selected_variant() is not None
+        dirty = self.is_draft_dirty()
+        can_preview = has_variant and self._begin_preview is not None
+
+        self.preview_banner.setVisible(previewing)
+        self.preview_banner.setText(_PREVIEW_BANNER if previewing else "")
+
+        # Lock variant switching while previewing to avoid duplicate sessions.
+        self.variant_combo.setEnabled(has_variant and not previewing)
+
+        self.preview_btn.setEnabled(can_preview)
+        self.preview_btn.setText("Update Preview" if previewing else "Preview")
+        self.apply_btn.setEnabled(has_variant and dirty and not self._apply_in_progress)
+        self.reset_btn.setEnabled(has_variant)
+        self.cancel_btn.setEnabled(True)
+
+        # Conflicting capture actions remain available (draft/preview update),
+        # but mark picker is fine; nothing else opens nested destructive dialogs.
 
     # --- capture -------------------------------------------------------------
 
@@ -549,14 +592,20 @@ class AlignAnchorsDialog(QDialog):
         """Start/refresh ephemeral playback mapping with current draft."""
         if self._begin_preview is None:
             self._refresh_preview_panel()
+            self._update_chrome()
             self._set_status("Preview playback not available in this context")
+            return
+        if self.selected_variant() is None:
+            self._set_status("No variant selected")
             return
         try:
             self._begin_preview(self.draft_offset())
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"Could not preview ({exc})")
+            self._update_chrome()
             return
         self._refresh_preview_panel()
+        self._update_chrome()
         self._set_status(f"Previewing draft {self.draft_offset():+.3f} s")
 
     def _sync_live_preview(self) -> None:
@@ -570,17 +619,23 @@ class AlignAnchorsDialog(QDialog):
         except Exception:  # noqa: BLE001
             return
 
-    def _end_preview_session(self) -> None:
+    def _end_preview_session(self, *, restore_entry: bool = False) -> None:
         """Restore committed mapping — never touches project / undo."""
         if self._end_preview is None:
             return
         try:
+            self._end_preview(restore_entry=restore_entry)
+        except TypeError:
+            # Test doubles / older callables without kwargs.
             self._end_preview()
         except Exception:  # noqa: BLE001
             return
+        self._update_chrome()
 
     def _on_apply(self) -> None:
         """Commit draft_offset → SongVariant.anchor_offset via undo command."""
+        if self._apply_in_progress:
+            return
         variant = self.selected_variant()
         if variant is None:
             self._set_status("No variant selected")
@@ -588,32 +643,39 @@ class AlignAnchorsDialog(QDialog):
         new_offset = coerce_anchor_offset(self.draft_offset())
         old_offset = coerce_anchor_offset(variant.anchor_offset)
         if abs(new_offset - old_offset) <= 1e-9:
-            self._end_preview_session()
+            self._end_preview_session(restore_entry=False)
             self._refresh_preview_panel()
+            self._update_chrome()
             self._set_status("Draft already matches applied")
             return
 
-        command = SetVariantAnchorOffsetCommand(
-            variant_id=variant.id,
-            old_offset=old_offset,
-            new_offset=new_offset,
-        )
-        # Commit is the only mutation point — redo applies to the live song.
-        command.redo(self._song)
-        # End preview so playback uses the newly committed offset (same value).
-        self._end_preview_session()
-        self._refresh_applied_label()
-        self._refresh_preview_panel()
-        self._set_status(f"Applied {new_offset:+.3f} s")
-        self.shell_status.setStyleSheet("color: #3fb950;")
-        self.offset_committed.emit(command)
+        self._apply_in_progress = True
+        self._update_chrome()
+        try:
+            command = SetVariantAnchorOffsetCommand(
+                variant_id=variant.id,
+                old_offset=old_offset,
+                new_offset=new_offset,
+            )
+            # Commit is the only mutation point — redo applies to the live song.
+            command.redo(self._song)
+            # End preview under committed mapping; keep current Song Time.
+            self._end_preview_session(restore_entry=False)
+            self._refresh_applied_label()
+            self._refresh_preview_panel()
+            self._set_status(f"Applied {new_offset:+.3f} s")
+            self.shell_status.setStyleSheet("color: #3fb950;")
+            self.offset_committed.emit(command)
+        finally:
+            self._apply_in_progress = False
+            self._update_chrome()
         # Keep dialog open so the user can refine (UX §19).
 
     def reject(self) -> None:
-        """Discard draft; end preview; no SongVariant write."""
+        """Discard draft; end preview with entry restore; no SongVariant write."""
         if not self._confirm_discard_draft():
             return
-        self._end_preview_session()
+        self._end_preview_session(restore_entry=True)
         super().reject()
 
     def _confirm_discard_draft(self) -> bool:

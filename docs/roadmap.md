@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 5 Task 6 complete (Align Anchors Preview Session)  
+**Status:** Sprint 5 Align Anchors Beta complete — production-ready  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint5-align-preview-028d`
+**Scope tip:** `cursor/sprint5-align-beta-028d`
 **Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -207,7 +207,8 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | **Sprint 5 · Task 4 — Anchor Computation** | ✅ Done — draft only via `offset_from_anchors` |
 | **Sprint 5 · Task 5 — Anchor Apply / Commit** | ✅ Done — undoable `anchor_offset` write |
 | **Sprint 5 · Task 6 — Align Anchors Preview** | ✅ Done — ephemeral PlaybackService preview |
-| Align Anchors Beta Stabilization | **Next** — checklist + UX polish |
+| **Sprint 5 · Align Anchors Beta** | ✅ Done — lifecycle / Cancel / Apply / regressions |
+| Sprint 6 | **Next** |
 
 ---
 
