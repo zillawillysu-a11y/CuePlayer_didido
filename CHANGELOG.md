@@ -4,6 +4,11 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 6 — Product Planning (2026-08-03)
+
+- Updated `docs/roadmap.md`: post–Align Anchors Top 10, Sprint 6 pick **MA Export Preview / Validation**.
+- Docs only — no runtime code.
+
 ### Sprint 5 — Align Anchors Beta Stabilization (2026-08-03)
 
 - Preview entry snapshot + Cancel `restore_entry` (position / loops / playing).

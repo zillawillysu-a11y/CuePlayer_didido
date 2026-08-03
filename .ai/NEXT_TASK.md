@@ -1,20 +1,32 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Sprint 6 planning / next feature  
+**Type:** Feature — MA Export Preview / Validation  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 5 — Align Anchors Beta Stabilization  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint5AlignBeta.md`  
-Baseline: `docs/song_variant_design.md` §24 (ends READY FOR SPRINT 6)
+**Previous:** Sprint 6 Product Planning  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6ProductPlanning.md`  
+Baseline: `docs/roadmap.md` (ends READY FOR SPRINT 6 FEATURE)
 
 ---
 
 ## Current task
 
-### Sprint 6 — (awaiting pick)
+### Sprint 6 Feature: MA Export Preview / Validation (MVP)
 
 **Do not auto-start until the user explicitly continues.**
 
-Align Anchors is production-complete. Choose next Feature Sprint from `docs/roadmap.md`.
+### Goal
+
+Preview Sequences / Executors / Cue MA labels and validate before XML write. Edit MA Export Names; never write Chinese into MA labels. No exporter schema rewrite.
+
+### Read first
+
+1. `docs/roadmap.md` — Sprint 6 recommendation + phases  
+2. `docs/PRODUCT_SPEC.md` — P1 Export Preview  
+3. `exporters/plan_from_song.py`, Show Patch, Export dialog  
+
+### Done when
+
+- Preview + validation MVP; tests green; REPORT + handoff; STOP
