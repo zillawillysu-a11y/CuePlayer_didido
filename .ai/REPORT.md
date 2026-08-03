@@ -1,42 +1,42 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint3-remote-boundary-028d`  
+**Branch:** `cursor/sprint3-event-bus-foundation-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 3 · Task 2 — **Remote Boundary Foundation**: Web Remote talks only
-through `ports.RemoteHost`; no MainWindow private duck-typing in the bridge.
+Sprint 3 · Task 3 — **Event Bus Foundation**: lightweight in-process EventBus
+as infrastructure only (no adoption / no UI / no behavior change).
 
 ## What was implemented
 
-- Expanded `ports/remote_host.py` (`RemoteHost` + `RemoteEnginePort`) with member docs
-- Added `web_remote/main_window_remote_host.py` adapter (all `_` access here)
-- Retargeted `web_remote/bridge.py` to public RemoteHost API only
-- MainWindow wires `WebRemoteBridge(MainWindowRemoteHost(self), …)`
-- Boundary tests + ports export for `RemoteEnginePort`
+- `src/cueplayer/core/event_bus.py` — `EventBus.subscribe` / `unsubscribe` / `publish`
+- `src/cueplayer/core/__init__.py` — package export
+- `tests/core/test_event_bus.py` — unit coverage
 - Docs: `docs/current_architecture.md`, `CHANGELOG.md`
 
-## Remaining MainWindow private access from Web Remote
+## EventBus API
 
-- None in `bridge.py`
-- Adapter still calls MainWindow / engine privates (intentional transitional)
+```text
+subscribe(event_type, handler)    # exact type; dup ignored
+unsubscribe(event_type, handler)  # no-op if missing
+publish(event)                    # sync; order preserved; exact type only
+```
 
-## Remaining duck-typed / protocol debt
+## Not done (intentional)
 
-- Adapter `window: Any`
-- Engine mixer / playback-rate privates inside adapter for video listen
-- Remote transport/loop not exclusively via PlaybackService
-- `push_song_undo(Any)`
-
-## Tests
-
-- Boundary + ports + web_remote targeted: green
-- Full suite: **919 passed**, **16 failed** (same pre-existing / Linux env set as prior tip)
+- No wiring into Playback / ShowSession / Project / Settings
+- No Qt signal replacement
+- No playhead / position events (clock rule)
 
 ## Suggested next task
 
-Sprint 3 Task 3 — Event Bus foundation (READY FOR EVENT BUS FOUNDATION).
+Sprint 3 Task 4 — Playback events (READY FOR PLAYBACK EVENTS).
+
+## Tests
+
+- `tests/core/test_event_bus.py`: 10 passed
+- Full suite: **929 passed**, **16 failed** (same pre-existing / Linux env set)

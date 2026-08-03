@@ -1,46 +1,48 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Event Bus foundation  
+**Type:** Architecture / Playback events on EventBus  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 3 Task 2 — Remote Boundary Foundation  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint3RemoteBoundary.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR EVENT BUS FOUNDATION)
+**Previous:** Sprint 3 Task 3 — Event Bus Foundation  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint3EventBusFoundation.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR PLAYBACK EVENTS)
 
 ---
 
 ## Current task
 
-### Sprint 3 — Task 3: Event Bus foundation
+### Sprint 3 — Task 4: Playback events
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Introduce a narrow typed Event Bus for UI fan-out (chrome / dirty / marks).
-Do **not** replace `AudioEngine` as the playback clock.
-Do **not** redesign Remote features or networking.
+First EventBus adoption for a **narrow** set of playback-related events
+(chrome / playing-changed style). Do **not** put continuous playhead ticks
+on the bus. `AudioEngine` remains the sole sample clock.
 
 ### Read first
 
 1. `docs/current_architecture.md`
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. `.ai/handoffs/2026-08-03_Sprint3RemoteBoundary.md`
+3. `core/event_bus.py`
+4. `application/playback_service.py`
 
 ### In scope
 
-- Event Bus type + minimal publishers/subscribers for a small chrome set
+- Small event types + publish from PlaybackService (or thin adapter)
+- Optional one UI subscriber path
 - Tests + docs
 
 ### Out of scope
 
-- Second clock / position bus
-- Remote feature redesign
-- MainWindow god-object rewrite
+- Position/frame clock on the bus
+- ShowSession / Project / Settings migration
+- Replacing all Qt signals
 
 ### Done when
 
-- Bus exists and is used for a narrow fan-out path without clock semantics;
-  REPORT + handoff; STOP
+- At least one playback-related event published via EventBus without
+  changing clock semantics; REPORT + handoff; STOP
