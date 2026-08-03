@@ -90,6 +90,16 @@ def test_clamp_and_in_media_helpers() -> None:
     assert variant_time_in_media(0.0, media_duration=0.0) is True
 
 
+def test_offset_from_anchors_round_trip() -> None:
+    from cueplayer.domain.anchor_mapping import offset_from_anchors
+
+    offset = offset_from_anchors(10.0, 9.5)
+    assert offset == pytest.approx(0.5)
+    assert song_to_variant_time(10.0, offset) == pytest.approx(9.5)
+    assert variant_to_song_time(9.5, offset) == pytest.approx(10.0)
+    assert offset_from_anchors(0.0, 0.25) == pytest.approx(-0.25)
+
+
 def test_anchor_mapping_module_has_no_runtime_coupling_imports() -> None:
     import ast
 

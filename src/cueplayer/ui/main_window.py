@@ -4987,8 +4987,13 @@ class MainWindow(QMainWindow):
         self._sync_timeline_overview()
 
     def _open_align_anchors(self) -> None:
-        """Tools → Align Anchors… — shell dialog (no offset apply yet)."""
-        dialog = AlignAnchorsDialog(self.current_song, self)
+        """Tools → Align Anchors… — draft computation only (Apply deferred)."""
+        dialog = AlignAnchorsDialog(
+            self.current_song,
+            self,
+            get_song_playhead=lambda: float(self.playback.position),
+            get_media_playhead=lambda: float(self.engine.position),
+        )
         dialog.exec()
 
     def _open_mark_manager(self) -> None:

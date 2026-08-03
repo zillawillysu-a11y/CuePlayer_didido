@@ -86,6 +86,19 @@ def variant_to_song_time(
     return float(variant_time) + resolve_anchor_offset(offset, variant=variant)
 
 
+def offset_from_anchors(song_anchor: float, variant_anchor: float) -> float:
+    """Compute ``anchor_offset`` so ``variant_anchor`` aligns with ``song_anchor``.
+
+    Inverse of the mapping convention::
+
+        variant_time = song_time - offset
+        ⇒ offset = song_anchor - variant_anchor
+
+    Result is coerced to a finite float (same rules as ``coerce_anchor_offset``).
+    """
+    return coerce_anchor_offset(float(song_anchor) - float(variant_anchor))
+
+
 def clamp_non_negative(time_seconds: float) -> float:
     """Utility for future playback: reject times before media/song origin."""
     return max(0.0, float(time_seconds))
