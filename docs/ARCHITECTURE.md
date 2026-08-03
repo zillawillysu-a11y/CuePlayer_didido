@@ -1,5 +1,15 @@
 # CuePlayer Architecture
 
+Current intended layer diagram (aspirational). For a full as-built review and the
+incremental target layout, see:
+
+- [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review
+- [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) — strangler / one-module-at-a-time plan
+- [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) — **permanent** allowed/forbidden dependencies
+- [`MIGRATION_RULES.md`](MIGRATION_RULES.md) — **permanent** how to move one module safely
+
+AI agents: follow [`.ai/WORKFLOW.md`](../.ai/WORKFLOW.md) end-to-end (plan → implement → [`.ai/REPORT.md`](../.ai/REPORT.md) + handoff → stop). Active task: [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md). Read boundary + migration rules before any architecture move.
+
 ## Layers
 
 ```text
