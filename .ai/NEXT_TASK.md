@@ -1,46 +1,44 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Playback service  
+**Type:** Architecture / Settings service  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 1 Task 4 — `ProjectRepository`  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint1ProjectRepository.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR PLAYBACK SERVICE)
+**Previous:** Sprint 2 Task 5 — Playback Foundation  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2PlaybackFoundation.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR SETTINGS SERVICE)
 
 ---
 
 ## Current task
 
-### Sprint 1 — Task 5: Playback service foundation
+### Sprint 2 — Task 6: Settings service foundation
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Extract a thin application playback / song-session service for orchestration
-currently in `MainWindow` (song activate refresh order, transport helpers)
-**without** changing `AudioEngine` internals, sample-clock rules, or UI design.
+Introduce `application/settings_service.py` for machine-global / shared settings
+orchestration currently scattered across MainWindow and `persistence.audio_prefs`,
+without changing preference schemas or UI behavior.
 
 ### Read first
 
-1. `docs/current_architecture.md` (playback flow §13, plan Task 5)
+1. `docs/current_architecture.md` (§14 settings flow, plan Task 6)
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. `AGENTS.md` clock non-negotiables
-4. `MainWindow._activate_song` + engine wiring
+3. `persistence/audio_prefs.py`, ProjectService autosave keys
 
 ### In scope
 
-- New application service module
-- MainWindow delegates orchestration calls
-- Tests for song switch / transport smoke where practical
+- Settings service façade
+- Wire high-value call sites (audio prefs / apply-to-project) if safe
+- Tests
 
 ### Out of scope
 
-- Redesigning AudioEngine / mixer / av_path_lock policy
-- RemoteHost, Repository expansions, features
+- Redesigning QSettings keys, RemoteHost, AudioEngine, Timeline
 
 ### Done when
 
-- Orchestration lives in service; clock rule intact; tests green; REPORT + handoff; STOP
+- Service exists; behavior identical; REPORT + handoff; STOP
