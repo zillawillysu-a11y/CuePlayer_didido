@@ -1,26 +1,32 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint45-variant-validation-028d`  
+**Branch:** `cursor/sprint5-song-time-facade-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 4.5 — Production Validation of Song Variant MVP (docs only).
+Sprint 5 Task 1 — Song-Time Façade Completion.
 
 ## What was implemented
 
-- Architecture verification table (Song Time, cues, mapping uniqueness, legacy/multi-variant)
-- Production checklist: Playback / Seek / Loop / Mark / Song switch / Legacy / Multi-variant / Errors
-- Debt, risks, UX gaps, priority stack
-- Updates: `docs/song_variant_design.md` §17, `docs/roadmap.md`
-- **No runtime code changes**
+- RemoteHost Song-Time APIs → PlaybackService
+- Web Remote seek/clock/loops/monitor meta on Song Time
+- MainWindow paste/drop/add-video/cue-list/load use `playback.position`
+- Live PCM cursor stays Variant Time (correct)
+- Docs §18; CHANGELOG; roadmap; current_architecture
+
+## Not done
+
+- Align Anchors UX
+- Waveform offset paint
+- Variant CRUD UI
 
 ## Tests
 
-N/A (docs-only). Prior Task 6 suites remain the automated baseline.
+remote_host_boundary + playback/domain/ports + web_remote dispatch marks: green
 
 ## Suggested next
 

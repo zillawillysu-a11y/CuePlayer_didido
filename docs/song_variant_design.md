@@ -1,12 +1,13 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4.5 complete (Production Validation — docs only)  
+**Status:** Sprint 5 Task 1 complete (Song-Time Façade Completion)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint45-variant-validation-028d`  
-**Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
+**Scope tip:** `cursor/sprint5-song-time-facade-028d`  
+**Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md)
 
-**Sprint 4.5 constraint:** Validation / checklist / debt map only. No runtime
-code, no UI redesign, no playback changes.
+**Sprint 5 Task 1 constraint:** Close Song-Time bypasses only. No Align UI,
+Timeline/Waveform redesign, or intentional playback behavior change (offset 0
+remains identity).
 
 ---
 
@@ -823,8 +824,8 @@ Use on a Windows show machine with real media. Checkboxes are for operators / QA
 
 ### 17.6 Recommended priority for future implementation
 
-1. **P0 — Align Anchors UX design** (next): manual anchor pair → `anchor_offset`; no cue moves; no Timeline redesign.  
-2. **P0 — Close Song-Time façade holes**: Remote seek via PlaybackService; MainWindow paste/drop/add-video use `playback.position`.  
+1. **P0 — Align Anchors UX** (next): manual anchor pair → `anchor_offset`; no cue moves; no Timeline redesign.  
+2. ~~**P0 — Close Song-Time façade holes**~~ → **Done in Sprint 5 Task 1** (Remote + MainWindow paste/drop).  
 3. **P1 — Variant picker / CRUD (minimal)**: select + add audio as variant without collapsing on Open Audio.  
 4. **P1 — Offset-aware waveform paint** (or clear “media vs song” indicator).  
 5. **P2 — Auto / cross-correlation align**; compare-hear without second master clock.  
@@ -836,8 +837,60 @@ Use on a Windows show machine with real media. Checkboxes are for operators / QA
 |------|----------------------------------|
 | Legacy projects, offset 0, single bed | **Yes** — treat as validated by design + unit coverage; run checklist A/B/D/E/F on site |
 | Multi-variant select-one, offset 0 | **Yes** if variants authored in JSON / tests; **no in-app CRUD** |
-| Non-zero `anchor_offset` on desktop seek/loop/playhead | **Conditionally yes** for lab; Remote + some paste paths **not** safe |
+| Non-zero `anchor_offset` on desktop seek/loop/playhead | **Conditionally yes** for lab; Remote + some paste paths **not** safe (closed in Sprint 5 Task 1) |
 | Align / compare UX | **No** — design next |
+
+---
+
+## 18. Sprint 5 Task 1 — Song-Time Façade Completion (done)
+
+**Scope tip:** `cursor/sprint5-song-time-facade-028d`
+
+### 18.1 Remaining Song-Time bypasses — before / after
+
+| Entry point | Before | After |
+|-------------|--------|-------|
+| Web Remote `seek` / `seek_mark` / `stop` | `host.engine.seek(Song Time)` | `host.seek_song_time` → PlaybackService → AnchorMapping → engine |
+| Web Remote clock / state `position` | `engine.position` (Variant) | `host.song_position()` (Song Time) |
+| Web Remote loop payload | raw `engine.loop_a/b` (Variant) | `host.song_loop_a/b` (Song Time) |
+| Web Remote monitor meta `position` | engine Variant Time | Song Time; buffer slice still Variant Time |
+| Web Remote video listen start | engine position | Song Time into mixer |
+| MainWindow paste / drop / add-video / cue-list refresh / transport after load | `engine.position` | `playback.position` |
+| Live WebRTC PCM cursor | `engine.position` | **Unchanged** (media / Variant Time — correct) |
+| `AudioEngine` internal loop/end seeks | engine self | **Unchanged** (Variant Time internals) |
+| Sync calibration dialog `engine.seek(0)` | media start for latency cal | **Unchanged** (intentional Variant Time) |
+
+### 18.2 Updated dependency graph
+
+```text
+External transport / cues / paste / remote UI (Song Time)
+        │
+        ▼
+PlaybackService  ──song_to_variant_time / variant_to_song_time──►  domain.anchor_mapping
+        │
+        ▼
+AudioEngine (Variant / media Time only on seek & loop points)
+        │
+        ├── position_changed ─► MainWindow bridge ─► Timeline (Song Time)
+        └── raw position ─► WebRTC listen cursor / engine internals (Variant Time)
+
+RemoteHost
+  seek_song_time / song_position / song_loop_*  →  PlaybackService
+  engine.position / engine.seek                 →  Variant Time only (not for transport)
+```
+
+### 18.3 Risks
+
+| Risk | Notes |
+|------|-------|
+| Future `engine.seek` from new code | Boundary tests assert bridge has no `engine.seek(` |
+| Waveform still file-time | Visual skew with non-zero offset until Align UX / paint work |
+| Duration still media length | Song end vs file end with offset still policy-open |
+| Sync calib vs anchor | Keep `sync_offset_seconds` separate from `anchor_offset` |
+
+### 18.4 Recommendation for Sprint 5 Task 2
+
+**Align Anchors UX** — design + minimal chrome to edit `SongVariant.anchor_offset` (manual song/variant anchor pair) without moving cues or redesigning Timeline/Waveform. Façade is now safe enough for non-zero offset on desktop + remote transport.
 
 ---
 

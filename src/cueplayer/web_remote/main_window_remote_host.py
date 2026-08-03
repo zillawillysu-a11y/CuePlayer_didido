@@ -39,6 +39,24 @@ class MainWindowRemoteHost:
     def engine(self) -> RemoteEnginePort:
         return self._window.engine
 
+    def seek_song_time(self, seconds: float) -> None:
+        self._window.playback.seek(float(seconds))
+
+    def song_position(self) -> float:
+        return float(self._window.playback.position)
+
+    def song_to_engine_time(self, song_time: float) -> float:
+        return float(self._window.playback.song_to_engine_time(song_time))
+
+    def engine_to_song_time(self, engine_time: float) -> float:
+        return float(self._window.playback.engine_to_song_time(engine_time))
+
+    def song_loop_a(self) -> float | None:
+        return self._window.playback.loop_a
+
+    def song_loop_b(self) -> float | None:
+        return self._window.playback.loop_b
+
     # --- dirty / chrome ------------------------------------------------------
 
     def mark_dirty(self) -> None:

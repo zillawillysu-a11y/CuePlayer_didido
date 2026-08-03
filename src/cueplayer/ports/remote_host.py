@@ -101,7 +101,36 @@ class RemoteHost(Protocol):
 
     @property
     def engine(self) -> RemoteEnginePort:
-        """Typed engine surface for remote state builders. Owner: playback."""
+        """Typed engine surface for remote state builders. Owner: playback.
+
+        ``position`` / ``seek`` on this port are **Variant / media time** (raw
+        AudioEngine). Prefer ``seek_song_time`` / ``song_position`` for transport
+        and cue-aligned UI clocks.
+        """
+        ...
+
+    def seek_song_time(self, seconds: float) -> None:
+        """Seek to Song Time via PlaybackService → AnchorMapping → AudioEngine."""
+        ...
+
+    def song_position(self) -> float:
+        """Playhead in Song Time (PlaybackService mapping)."""
+        ...
+
+    def song_to_engine_time(self, song_time: float) -> float:
+        """Song Time → Variant Time (AnchorMapping only)."""
+        ...
+
+    def engine_to_song_time(self, engine_time: float) -> float:
+        """Variant Time → Song Time (AnchorMapping only)."""
+        ...
+
+    def song_loop_a(self) -> float | None:
+        """A–B loop point A in Song Time."""
+        ...
+
+    def song_loop_b(self) -> float | None:
+        """A–B loop point B in Song Time."""
         ...
 
     # --- dirty / chrome refresh ----------------------------------------------
