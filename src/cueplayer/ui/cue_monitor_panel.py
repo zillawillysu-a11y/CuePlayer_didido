@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -10,7 +10,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,6 +26,39 @@ from cueplayer.ui.transport_bar import format_time
 _COL_TIME = 0
 _COL_LANE = 1
 _COL_NOTE = 2
+
+
+class _NoteEditDelegate(QStyledItemDelegate):
+    """Inline Note editor tall enough that typed text is not clipped vertically."""
+
+    def createEditor(self, parent, option, index):  # noqa: ANN001, N802
+        del option, index
+        editor = QLineEdit(parent)
+        editor.setFrame(True)
+        editor.setStyleSheet(
+            "QLineEdit {"
+            "  background-color: #18181b;"
+            "  color: #e4e4e7;"
+            "  border: 1px solid #3b82f6;"
+            "  border-radius: 3px;"
+            "  padding: 0px 6px;"
+            "  margin: 0px;"
+            "}"
+        )
+        return editor
+
+    def updateEditorGeometry(self, editor, option, index) -> None:  # noqa: ANN001, N802
+        del index
+        fm = editor.fontMetrics()
+        height = max(option.rect.height(), fm.height() + 8)
+        y = option.rect.y() + max(0, (option.rect.height() - height) // 2)
+        editor.setGeometry(option.rect.x() + 2, y, max(24, option.rect.width() - 4), height)
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: ANN001, N802
+        hint = super().sizeHint(option, index)
+        fm = option.fontMetrics
+        min_h = fm.height() + 10
+        return QSize(hint.width(), max(hint.height(), min_h))
 
 
 def mark_now_text(song: Song, mark: Mark) -> str:
@@ -151,7 +187,13 @@ class CueMonitorPanel(QWidget):
         self.cue_table.horizontalHeader().setSectionResizeMode(_COL_TIME, QHeaderView.ResizeMode.ResizeToContents)
         self.cue_table.horizontalHeader().setSectionResizeMode(_COL_LANE, QHeaderView.ResizeMode.ResizeToContents)
         self.cue_table.horizontalHeader().setSectionResizeMode(_COL_NOTE, QHeaderView.ResizeMode.Stretch)
-        self.cue_table.setStyleSheet("QTableWidget::item { padding: 6px 8px; }")
+        self.cue_table.setItemDelegateForColumn(_COL_NOTE, _NoteEditDelegate(self.cue_table))
+        row_h = self.cue_table.fontMetrics().height() + 14
+        self.cue_table.verticalHeader().setDefaultSectionSize(max(32, row_h))
+        self.cue_table.setStyleSheet(
+            "QTableWidget::item { padding: 2px 8px; }"
+            "QTableWidget QLineEdit { padding: 0px 6px; margin: 0px; }"
+        )
         self.cue_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.cue_table.cellClicked.connect(self._on_cell_clicked)
         self.cue_table.itemChanged.connect(self._on_item_changed)
