@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 5 — Task 3: Align Anchors Dialog Shell (2026-08-03)
+
+- Added `ui/align_anchors_dialog.py` (variant selector, anchor fields, preview placeholder, Apply/Cancel/Reset/Preview stubs).
+- Tools → Align Anchors… opens the modal shell; no offset computation or playback changes.
+- UX shortcuts wired to stubs; Cancel closes; Apply does not persist.
+
 ### Sprint 5 — Task 1: Song-Time Façade Completion (2026-08-03)
 
 - RemoteHost: `seek_song_time` / `song_position` / `song_loop_*` / mapping helpers via PlaybackService.
