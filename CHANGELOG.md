@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 3 — Task 3: Event Bus foundation (2026-08-03)
+
+- Added `core/event_bus.py` (`EventBus`: `subscribe` / `unsubscribe` / `publish`).
+- Sync in-process only — no async, priorities, sticky/replay, threading, or networking.
+- No service migration, no UI changes, no Qt-signal replacement; AudioEngine remains sole clock.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 3 — Task 2: Remote boundary foundation (2026-08-03)
 
 - Expanded `ports/remote_host.py` (`RemoteHost` + `RemoteEnginePort`) with member ownership docs.

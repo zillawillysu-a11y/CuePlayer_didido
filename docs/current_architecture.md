@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 3 · Task 2 complete (Remote boundary foundation)  
+**Status:** Sprint 3 · Task 3 complete (Event Bus foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint3-remote-boundary-028d`  
-**Constraint (Task 2):** Explicit `RemoteHost` + adapter; bridge talks only through the boundary — no networking redesign; no Remote feature redesign; no MainWindow/ShowSessionService redesign; no EventBus.
+**Scope tip:** `cursor/sprint3-event-bus-foundation-028d`  
+**Constraint (Task 3):** In-process EventBus infrastructure only — no service migration, no UI changes, no Qt-signal replacement, no second clock.
 
 Related docs (do not treat as identical):
 
@@ -302,6 +302,54 @@ Menus, dialogs, BPM jobs, export, Settings UI, ProjectService I/O, ShowSession i
 - `push_song_undo(command: Any)` accepts undo command objects without a typed port.
 
 ---
+
+## Sprint 3 Task 3 — Event Bus foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `core/event_bus.py` | In-process `EventBus`: `subscribe` / `unsubscribe` / `publish` |
+| `core/__init__.py` | Re-exports `EventBus` |
+| Call sites | **None yet** — infrastructure only |
+
+### Why EventBus exists
+
+MainWindow still fans out dirty / marks / chrome refresh via private helpers and
+direct widget calls. A tiny typed bus is the strangler seam for **future**
+publish/subscribe without growing that hub further — and without inventing a
+second playback clock.
+
+### Problems it is intended to solve (after adoption)
+
+- Decouple services from concrete UI refresh call sites
+- Let multiple observers (desktop chrome, later remote) share one event contract
+- Unit-test notification wiring without constructing MainWindow
+
+### Problems it intentionally does NOT solve yet
+
+- Playhead / transport / sample clock (stays on `AudioEngine`)
+- Async, queued, cross-thread, sticky, replay, priorities, networking
+- Replacing Qt widget signals for local UI wiring
+- Migrating PlaybackService / ShowSessionService / ProjectService / SettingsService
+
+### API
+
+```text
+EventBus.subscribe(event_type, handler)   # exact type; duplicate handler ignored
+EventBus.unsubscribe(event_type, handler) # no-op if missing
+EventBus.publish(event)                   # sync; handlers in order; exact type only
+```
+
+### Adoption status
+
+```text
+[created] core.EventBus
+[not wired] application services
+[not wired] MainWindow / UI
+[not wired] Web Remote
+[forbidden] position / playing as bus events (clock rule)
+```
+
+---
 ## 1. Current folder structure
 
 ```text
@@ -320,6 +368,7 @@ CuePlayer_didido/
     ├── domain/             # models, undo, cue id, columns, media_relink, song_session
     ├── application/        # ProjectService, PlaybackService, SettingsService, ShowSessionService
     ├── repository/         # ProjectRepository (file I/O façade)
+    ├── core/               # In-process infrastructure (EventBus); no Qt / no clock
     ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
     ├── media/              # decode, caches, BPM, LTC detect, av_path_lock
@@ -740,9 +789,13 @@ Machine State and Project State must remain separate — SettingsService never o
 
 - `web_remote.bridge` duck-typing MainWindow / engine privates
 
-### P0 — Next (Event Bus)
+### Cleared in Sprint 3 Task 3
 
-1. **Event Bus foundation** — typed UI fan-out; do not replace AudioEngine clock.
+- Missing in-process EventBus primitive (now `core.EventBus`; not yet adopted)
+
+### P0 — Next (Playback events)
+
+1. **Playback events on EventBus** — narrow transport/chrome notifications only; do **not** put sample position on the bus.
 2. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
 3. Optional: route remote transport/loop exclusively through PlaybackService.
 4. Optional SettingsService fold-in for remaining machine prefs.
@@ -792,24 +845,25 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
 | Sprint 2 · 5–8 | ✅ Done | Playback → boundary → Settings → ShowSession |
 | Sprint 3 · 1 | ✅ Done | Explicit `ports.ShowHost` |
-| **Sprint 3 · 2** Remote boundary | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
-| **Sprint 3 · 3** Event Bus foundation | **Next** | Typed UI fan-out (not a second clock) |
+| Sprint 3 · 2 | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
+| **Sprint 3 · 3** Event Bus foundation | ✅ Done | `core.EventBus` (subscribe/unsubscribe/publish); no adopters yet |
+| **Sprint 3 · 4** Playback events | **Next** | First EventBus adoption for playback-related chrome (not the clock) |
 
-### Recommended Sprint 3 Task 3 — Event Bus foundation
+### Recommended Sprint 3 Task 4 — Playback events
 
-- Introduce a narrow Event Bus for UI fan-out (mark/dirty/chrome refresh signals).
-- Do **not** replace `AudioEngine` as the playback clock.
-- Do **not** redesign Remote features or networking.
-- Prefer publishing from services / adapters over growing MainWindow signal spaghetti.
+- Define a small set of playback-related event types (e.g. playing changed, song bound) — **not** continuous playhead ticks.
+- Have `PlaybackService` (or a thin adapter) publish; keep `AudioEngine` as sole sample clock.
+- Optionally subscribe one UI chrome path; do not replace Qt signals wholesale.
+- Do not migrate ShowSession / Project / Settings in the same task.
 
-### Risks for Task 3
+### Risks for Task 4
 
 | Risk | Mitigation |
 |------|------------|
-| Bus becomes a second clock | Forbid position/transport on the bus; clock stays AudioEngine |
-| Over-broad event catalog | Start with 3–5 chrome events only |
-| Double-refresh / loops | One publisher per event; adapters subscribe once |
+| Bus becomes a second clock | Forbid position/frame events; clock stays AudioEngine |
+| Over-broad event catalog | Start with 2–4 playback chrome events only |
+| Double-refresh with Qt signals | Adopt one path at a time; keep signals until proven |
 
 ---
 
-## READY FOR EVENT BUS FOUNDATION
+## READY FOR PLAYBACK EVENTS
