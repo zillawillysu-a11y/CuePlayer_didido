@@ -23,6 +23,10 @@
 
 Sprint 3 Task 3 — Event Bus foundation.
 
+## Suite
+
+Full: **919 passed**, **16 failed** (pre-existing Linux/env; unchanged failure set).
+
 ## Marker
 
 READY FOR EVENT BUS FOUNDATION
