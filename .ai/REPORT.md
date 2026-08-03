@@ -55,22 +55,31 @@ Repository layer.
 - One ports location: `cueplayer.ports` on this tip.
 - No Service Layer / RemoteHost wiring in this task.
 
-## Remaining technical debt
+## Tests performed
 
-- MainWindow still owns project/song orchestration (next: Service Layer).
-- RemoteHost Protocol unused; bridge still duck-types MainWindow privates.
-- `domain.media_relink` → media/persistence; models↔main_cue_id soft cycle.
-- Giant UI / AudioEngine files unchanged.
+Full suite (`python -m pytest -q`):
 
-## Risks discovered
+- **882 passed**, **16 failed**, 21 warnings (~3 min, Linux/offscreen)
+- **Cleanup-related green:** ports package, cue_list_columns (domain-only), persistence column load, LTC clamp domain tests (28/28 targeted)
 
-- External/out-of-tree scripts still importing `cueplayer.ui.cue_list_columns` would break (in-repo callers updated; none remain).
-- Deleting empty packages is low risk but any unpublished plugin importing `cueplayer.timeline` would fail (no in-repo usage).
+### Failures (pre-existing / environment — not introduced by Task 2)
 
-## Suggested next task (Sprint 1 Task 3)
+| Area | Examples | Likely cause |
+|------|----------|--------------|
+| Video audio mix | `test_audio_engine_video_mix` (×7), `test_ltc_off_strips_from_music` | `_CachedPcm` not iterable — API drift vs tests |
+| Devices | DirectSound stream test | Linux CI has no DirectSound (falls back to ALSA) |
+| MTC | `test_mtc_midi_backend` (×2) | `configure()` now requires `midi_master` |
+| Domain | `test_video_clip_create_clamps_degenerate_values` | Start clamp expectation vs current model |
+| UI | shutdown quit count, setlist LTC badge, scrub font, smooth scale | Env / prior product drift |
 
-**Service Layer first extract:** `application/project_service` for open/save/save-as/dirty/autosave — no Repository yet; MainWindow keeps dialogs.
+Also fixed orphaned import in `tests/domain/test_ltc_channel_clamp.py` (removed dead `_clamp_channel_ui_text` UI private dependency that blocked collection).
 
-## Tests
+## Remaining issues
 
-Full suite results recorded after run in this REPORT / handoff.
+- Service Layer not started (Task 3).
+- RemoteHost unused.
+- Pre-existing failing tests above (recommend separate triage PR; not in Task 2 scope).
+
+## Suggested next task
+
+Sprint 1 Task 3 — `application/project_service` extract (see `NEXT_TASK.md`).

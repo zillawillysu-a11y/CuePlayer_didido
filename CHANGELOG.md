@@ -14,6 +14,7 @@ Cleanup only — no UI changes, no behavior changes, no Service/Repository layer
 - **Removed** empty stub packages `timeline/` and `ltc/` (real code lives under `ui/` and `timecode/`/`media/`).
 - **Removed** unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`.
 - Updated `docs/current_architecture.md`.
+- Fixed orphaned test import of deleted UI private `_clamp_channel_ui_text` (collection blocker).
 
 ### Sprint 1 — Task 1: Architecture assessment (2026-08-03)
 

@@ -37,6 +37,11 @@ Remove transitional compatibility layers; unify ports; preserve identical runtim
 
 See `.ai/REPORT.md`.
 
+## Tests
+
+Full suite: **882 passed, 16 failed** (failures pre-existing / Linux env — not Task 2).  
+Targeted cleanup suite: **28 passed**.
+
 ## Recommendation for Task 3
 
 Introduce `application/project_service` (open/save/dirty/autosave orchestration). No Repository. No RemoteHost yet (Task 4).
