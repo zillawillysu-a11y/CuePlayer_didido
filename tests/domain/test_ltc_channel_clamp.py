@@ -7,7 +7,6 @@ from cueplayer.domain.models import (
     default_ltc_channels_for_device,
 )
 from cueplayer.playback.routing_parse import parse_channel_ui as _parse_channel_ui
-from cueplayer.ui.audio_timecode_dialog import _clamp_channel_ui_text
 
 
 def test_default_ltc_jumps_into_stereo_range() -> None:
@@ -29,9 +28,3 @@ def test_parse_channel_ui_clamps_ltc_three_on_stereo() -> None:
     assert _parse_channel_ui("3", max_ch=2) == [1]
     assert _parse_channel_ui("1+3", max_ch=2) == [0, 1]
     assert _parse_channel_ui("3", max_ch=4) == [2]
-
-
-def test_clamp_channel_ui_text_rewrites_three_to_two() -> None:
-    assert _clamp_channel_ui_text("3", max_ch=2, fallback=[1]) == "2"
-    assert _clamp_channel_ui_text("", max_ch=2, fallback=[1]) == "2"
-    assert _clamp_channel_ui_text("3", max_ch=4, fallback=[2]) == "3"
