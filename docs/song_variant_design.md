@@ -1,12 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 4 complete (Playback Variant Support MVP)  
+**Status:** Sprint 4 Feature Task 5 complete (Anchor Mapping Foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-playback-variant-mvp-028d`  
+**Scope tip:** `cursor/sprint4-anchor-mapping-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Task 4 constraint:** Playback load path only. No UI management, Timeline/Waveform
-redesign, or Anchor Alignment.
+**Task 5 constraint:** Domain mapping only. No PlaybackService / Timeline /
+Waveform / UI changes. Offsets are **not** applied during playback yet.
 
 ---
 
@@ -448,7 +448,7 @@ Aligns with roadmap Feature Sprint but **reframes** “Reference lanes” as **V
 | `ShowSessionService` arming uses PlaybackService resolve | ✅ |
 | `MainWindow._main_audio_path_for_song` → PlaybackService | ✅ |
 | Open Audio / Edit Song replace keep variants coherent | ✅ |
-| Anchor offset applied at load | ❌ (Task 5) |
+| Anchor offset applied at load | ❌ (Task 6) |
 | UI variant picker / CRUD | ❌ (later) |
 | Timeline / Waveform redesign | ❌ |
 
@@ -510,25 +510,113 @@ Rules:
 | Risk | Mitigation |
 |------|------------|
 | Stale variant after Open Audio | `replace_main_audio` syncs / collapses variants |
-| Marks “wrong” vs new mix | Expected until Task 5 offset; cues stay song-global |
-| Accidental multi-variant wipe | Document; Task 5+ CRUD must use `select_variant`, not Open Audio |
+| Marks “wrong” vs new mix | Expected until Task 6 applies mapping; cues stay song-global |
+| Accidental multi-variant wipe | Document; CRUD must use `select_variant`, not Open Audio |
 | Clock / second buffer creep | Resolve returns one path only; engine unchanged |
 
 ### 14.7 Future extension points (Anchor Alignment)
 
 | Extension | Where |
 |-----------|--------|
-| Apply `variant.anchor_offset` when mapping media time ↔ song timeline | PlaybackService or a thin align helper **called by** load/scrub — not inside AudioEngine clock math |
+| Apply `variant.anchor_offset` when mapping media time ↔ song timeline | Call `domain.anchor_mapping` from load/scrub/paint — not inside AudioEngine clock math |
 | Align Anchors UI edits offset | Mutate `SongVariant.anchor_offset` on Song; keep marks fixed |
 | Compare / audition non-selected | Optional second decode **outside** the sole clock (or muted offline) — never a second master clock |
-| Offset-aware waveform | Paint transform using offset; cache key includes offset |
-
-PlaybackService must **not** embed Align UI or cross-correlation; Task 5 should add a foundation that exposes offset for load/position mapping only.
-
-### Recommended Feature Task 5
-
-**Anchor Offset Foundation** — define how `anchor_offset` shifts media vs the song cue timeline (load/scrub/paint mapping), with tests; no full Align Anchors UI, no timeline redesign.
+| Offset-aware waveform | Paint transform using mapping; cache key includes offset |
 
 ---
 
-## READY FOR ANCHOR OFFSET FOUNDATION
+## 15. Task 5 status — Anchor Mapping Foundation (done)
+
+| Deliverable | Status |
+|-------------|--------|
+| `domain/anchor_mapping.py` | ✅ |
+| `song_to_variant_time` / `variant_to_song_time` | ✅ |
+| Unit tests `tests/domain/test_anchor_mapping.py` | ✅ |
+| PlaybackService / Timeline / Waveform / UI | ❌ unchanged |
+| Offset applied during playback | ❌ (Task 6) |
+
+### 15.1 Mapping API
+
+```text
+domain.anchor_mapping
+  coerce_anchor_offset(value) -> float
+  resolve_anchor_offset(offset=None, *, variant=None) -> float
+  song_to_variant_time(song_time, offset=None, *, variant=None) -> float
+  variant_to_song_time(variant_time, offset=None, *, variant=None) -> float
+  clamp_non_negative(time) -> float          # helper for later playback
+  variant_time_in_media(t, *, media_duration) -> bool
+```
+
+### 15.2 Mapping formulas
+
+Song Time is canonical. Variants never move cues.
+
+```text
+variant_time = song_time - anchor_offset
+song_time    = variant_time + anchor_offset
+```
+
+Equivalent: media sample `0` aligns with song time `+anchor_offset`
+(same spirit as legacy `AudioTrack.offset_seconds` → migrated `anchor_offset`).
+
+### 15.3 Positive vs negative offsets
+
+| Offset | Meaning | At song time 0 |
+|--------|---------|----------------|
+| `+0.5` | Media delayed on song timeline | Variant time `-0.5` (before file start) |
+| `0` | Identity | Variant time `0` |
+| `-0.25` | Media starts early vs song | Variant time `+0.25` (skip file head) |
+
+Align Anchors UI (later) should edit `SongVariant.anchor_offset` only — never rewrite mark times.
+
+### 15.4 Edge cases
+
+| Case | Behavior |
+|------|----------|
+| `offset is None` / missing variant | Treat as `0.0` |
+| Non-finite / unparsable offset | Coerce to `0.0` |
+| Mapped time `< 0` or past media end | **Not clamped** by mapping API — raw float; Task 6 chooses silence / clamp / seek policy |
+| Cues / Timeline / exporters | Always Song Time; ignore mapping unless explicitly converting for media I/O |
+| Auto alignment (future) | Write a proposed `anchor_offset` via this API’s inverse; do not invent a second formula |
+
+### 15.5 Future extension for automatic alignment
+
+1. Detect shared anchors (manual marks or cross-correlation spike).  
+2. Compute `anchor_offset = song_anchor_time - variant_anchor_time`.  
+3. Store on `SongVariant.anchor_offset`.  
+4. All consumers keep calling `song_to_variant_time` / `variant_to_song_time`.
+
+No cross-correlation or multi-anchor conform in this task.
+
+### 15.6 Test coverage
+
+- Zero / positive / negative offsets  
+- Round-trip both directions  
+- Variant object vs explicit offset precedence  
+- Coercion edge cases (None, NaN, Inf, bad strings)  
+- No-clamp default + helper utilities  
+- Module import isolation (no Qt / cueplayer runtime deps)
+
+### 15.7 Remaining playback integration work (Task 6+)
+
+- Seek / playhead: song position → `song_to_variant_time` before engine media index  
+- Waveform paint / scrub: transform with mapping; offset-aware cache keys  
+- Duration / end-of-media when offset pushes content  
+- Optional EventBus “anchor_offset changed”  
+- Still no second clock; still one buffer for the selected variant  
+
+### 15.8 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Second ad-hoc `± offset` in UI/engine | Single module; document formulas; Task 6 must import here |
+| Silent wrong mix until Task 6 | Expected; markers stay song-correct |
+| Clamp policy surprises | Mapping stays unclamped; playback documents policy |
+
+### Recommended Feature Task 6
+
+**Anchor Playback Integration** — apply `domain.anchor_mapping` on the selected variant during seek/load/playhead↔media index (and optionally waveform paint). No Align Anchors UI; no Timeline redesign; AudioEngine remains sole clock.
+
+---
+
+## READY FOR ANCHOR PLAYBACK INTEGRATION
