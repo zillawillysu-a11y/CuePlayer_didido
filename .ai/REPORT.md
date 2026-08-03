@@ -1,29 +1,27 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint5-align-beta-028d`  
+**Branch:** `cursor/sprint6-product-planning-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 5 — Align Anchors Beta Stabilization (no new features).
+Sprint 6 — Product Planning (docs only; no feature implementation).
 
-## What was hardened
+## Recommendation
 
-1. Preview lifecycle — replace-not-accumulate; generation; entry snapshot
-2. Cancel — `restore_entry=True` restores position / loops / playing
-3. Apply — re-entrancy guard; one command; exits Preview cleanly
-4. Song switch — ends Preview in ShowSession + PlaybackService
-5. UI — banner, variant lock, dirty Apply enablement
-6. Regression tests — playback + UI beta suites
+**MA Export Preview / Validation (MVP)** — highest-value next feature after Align Anchors production.
 
-## Tests
+## Why
 
-application + UI align suites → green
+Closes console-handoff gap; PRODUCT_SPEC P1 #1; exporters/Show Patch already ready; strengthens MA3/executor/reliability without Timeline redesign.
+
+## Runner-ups
+
+Variant CRUD UI · Timecode-only clarity · Latency compensation UX
 
 ## Marker
 
-READY FOR SPRINT 6  
-Align Anchors Production Complete
+READY FOR SPRINT 6 FEATURE
