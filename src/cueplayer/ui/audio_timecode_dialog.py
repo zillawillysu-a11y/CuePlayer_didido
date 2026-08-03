@@ -17,9 +17,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueplayer.domain.models import AudioOutputSettings, default_channel_routing
+from cueplayer.domain.models import (
+    AudioOutputSettings,
+    clamp_output_channels,
+    default_channel_routing,
+    default_ltc_channels_for_device,
+)
 from cueplayer.playback.devices import find_output_device, list_output_devices
-from cueplayer.playback.mtc_output import list_midi_output_names
+from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
 from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.theme import SLIDER_QSS
 
@@ -35,6 +40,7 @@ def _parse_channel_ui(text: str, *, max_ch: int) -> list[int] | None:
     """
     Parse '1', '1+2', '3', '1,2' (1-based) → 0-based indices.
     Empty string → []. None on parse error.
+    Values above ``max_ch`` are clamped into range (e.g. LTC 3 → 2 on stereo).
     """
     raw = text.strip().replace(",", "+").replace(" ", "")
     if not raw:
@@ -50,10 +56,22 @@ def _parse_channel_ui(text: str, *, max_ch: int) -> list[int] | None:
             return None
         idx = one_based - 1
         if max_ch > 0 and idx >= max_ch:
-            return None
+            idx = max_ch - 1
         if idx not in out:
             out.append(idx)
     return out
+
+
+def _clamp_channel_ui_text(
+    text: str, *, max_ch: int, fallback: list[int] | None = None
+) -> str:
+    """Clamp a 1-based channel field into 1..max_ch; use fallback if empty/invalid."""
+    parsed = _parse_channel_ui(text, max_ch=max_ch)
+    if parsed is None:
+        parsed = []
+    if not parsed and fallback is not None:
+        parsed = clamp_output_channels(list(fallback), max_ch)
+    return _channels_to_ui(parsed)
 
 
 class AudioTimecodeDialog(QDialog):
@@ -159,6 +177,10 @@ class AudioTimecodeDialog(QDialog):
         self.midi_port.setCurrentIndex(midi_sel)
         mtc_form.addRow(self.mtc_enable)
         mtc_form.addRow("MIDI Out", self.midi_port)
+        midi_hint = QLabel(midi_backend_status())
+        midi_hint.setWordWrap(True)
+        midi_hint.setStyleSheet("color: #a1a1aa;")
+        mtc_form.addRow(midi_hint)
         root.addWidget(mtc_box)
 
         buttons = QDialogButtonBox(
@@ -173,10 +195,18 @@ class AudioTimecodeDialog(QDialog):
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
         self._on_device_changed()
-        # Restore channel text after populating combos.
-        self.music_l.setEditText(_channels_to_ui(settings.music_left_channels) or "1")
-        self.music_r.setEditText(_channels_to_ui(settings.music_right_channels) or "2")
-        self.ltc_channels.setEditText(_channels_to_ui(settings.ltc_channels) or "3")
+        # Restore channel text after populating combos — clamp into this
+        # device's range so a saved LTC→3 becomes LTC→2 on a stereo card.
+        max_ch = self._current_max_channels()
+        left = clamp_output_channels(settings.music_left_channels, max_ch) or [0]
+        right_default = [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        right = clamp_output_channels(settings.music_right_channels, max_ch) or right_default
+        ltc = clamp_output_channels(settings.ltc_channels, max_ch)
+        if not ltc:
+            ltc = default_ltc_channels_for_device(max_ch)
+        self.music_l.setEditText(_channels_to_ui(left) or "1")
+        self.music_r.setEditText(_channels_to_ui(right) or ("2" if max_ch >= 2 else "1"))
+        self.ltc_channels.setEditText(_channels_to_ui(ltc) or ("2" if max_ch >= 2 else "1"))
 
     def _current_max_channels(self) -> int:
         name = self.device_combo.currentData() or ""
@@ -190,24 +220,32 @@ class AudioTimecodeDialog(QDialog):
 
     def _on_device_changed(self) -> None:
         max_ch = self._current_max_channels()
-        left, right, ltc = default_channel_routing(max_ch)
+        left, right, _ltc_default = default_channel_routing(max_ch)
+        ltc_default = default_ltc_channels_for_device(max_ch)
         l_txt = _channels_to_ui(left) or "—"
         r_txt = _channels_to_ui(right) or "—"
-        ltc_txt = _channels_to_ui(ltc) or "unmapped (stereo device)"
+        ltc_txt = _channels_to_ui(ltc_default) or "—"
         self.device_hint.setText(
             f"{max_ch} output channel(s). "
-            f"Default: Music L→{l_txt}, R→{r_txt}; LTC→{ltc_txt}."
+            f"Default: Music L→{l_txt}, R→{r_txt}; LTC→{ltc_txt}"
+            + (" (within CH1–2 on stereo)." if max_ch <= 2 else ".")
         )
         # Refresh suggestion items.
         suggestions = [str(i) for i in range(1, max_ch + 1)]
         if max_ch >= 2:
             suggestions.append("1+2")
-        for combo in (self.music_l, self.music_r, self.ltc_channels):
+        for combo, fallback in (
+            (self.music_l, left or [0]),
+            (self.music_r, right or ([min(1, max_ch - 1)] if max_ch > 0 else [0])),
+            (self.ltc_channels, ltc_default),
+        ):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(suggestions)
-            combo.setEditText(current)
+            combo.setEditText(
+                _clamp_channel_ui_text(current, max_ch=max_ch, fallback=fallback)
+            )
             combo.blockSignals(False)
 
     def result_settings(self) -> AudioOutputSettings:
@@ -222,14 +260,21 @@ class AudioTimecodeDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Invalid routing",
-                f"Channel numbers must be 1–{max_ch} (examples: 1, 1+2, 3).",
+                f"Channel numbers must be ≥1 (examples: 1, 1+2, 3). "
+                f"Values above {max_ch} are clamped to CH{max_ch}.",
             )
             return
+        # Reflect any clamp (e.g. LTC 3→2) back into the fields so the user sees it.
+        self.music_l.setEditText(_channels_to_ui(left))
+        self.music_r.setEditText(_channels_to_ui(right))
+        if self.ltc_enable.isChecked() and not ltc:
+            ltc = default_ltc_channels_for_device(max_ch)
+        self.ltc_channels.setEditText(_channels_to_ui(ltc))
         if self.ltc_enable.isChecked() and not ltc:
             QMessageBox.warning(
                 self,
                 "LTC routing",
-                "LTC is enabled but no output channel is set.",
+                "LTC is enabled but this device has no output channels.",
             )
             return
         if self.mtc_enable.isChecked() and not (self.midi_port.currentData() or ""):
@@ -245,7 +290,9 @@ class AudioTimecodeDialog(QDialog):
             music_right_channels=right,
             ltc_enabled=self.ltc_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
-            ltc_channels=ltc,
+            ltc_channels=ltc if self.ltc_enable.isChecked() else (
+                ltc or default_ltc_channels_for_device(max_ch)
+            ),
             mtc_enabled=self.mtc_enable.isChecked(),
             midi_port_name=str(self.midi_port.currentData() or ""),
         )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QModelIndex, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -16,7 +16,6 @@ from PySide6.QtGui import (
     QDropEvent,
     QKeySequence,
     QPainter,
-    QPalette,
     QPen,
     QShortcut,
 )
@@ -24,12 +23,16 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QColorDialog,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -39,9 +42,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -56,7 +56,13 @@ from cueplayer.domain.models import (
     Song,
     VideoClip,
 )
+from cueplayer.persistence.backup import (
+    DEFAULT_KEEP,
+    create_backup_before_save,
+    list_backups,
+)
 from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.domain.undo import (
     AddMarksCommand,
     AddVideoClipsCommand,
@@ -86,18 +92,39 @@ from cueplayer.ui.song_edit_dialog import (
     parse_setlist_number,
     suggest_ma_export_name,
 )
-from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
+from cueplayer.ui.theme import ACCENT, BG_SELECTED, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget
 
-_AUDIO_SUFFIXES = {".wav", ".flac", ".ogg", ".mp3", ".aiff", ".aif"}
+_AUDIO_SUFFIXES = {
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".oga",
+    ".mp3",
+    ".aiff",
+    ".aif",
+    ".aifc",
+    ".m4a",
+    ".aac",
+    ".wma",
+    ".opus",
+    ".caf",
+    ".wv",
+}
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
 _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"
 )
+_SETTINGS_ORG = "CuePlayer"
+_SETTINGS_APP = "CuePlayer"
+_KEY_AUTOSAVE_ENABLED = "autosave/enabled"
+_KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
+_KEY_BACKUP_KEEP = "autosave/backup_keep"
+_DEFAULT_AUTOSAVE_INTERVAL_SEC = 120
 
 
 def _text_input_has_focus() -> bool:
@@ -106,17 +133,66 @@ def _text_input_has_focus() -> bool:
     return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox))
 
 
+def _mime_looks_like_file_drop(mime) -> bool:  # noqa: ANN001
+    """
+    Optimistic check for Explorer → app file drags on Windows.
+
+    During dragEnter, some hosts omit usable URLs until the actual drop;
+    rejecting too early means the drop never arrives. Accept when the MIME
+    claims file URLs / uri-list; filter real audio paths in dropEvent.
+    """
+    if mime is None:
+        return False
+    if mime.hasUrls():
+        return True
+    for fmt in mime.formats():
+        key = str(fmt).lower()
+        if "uri-list" in key or "filename" in key or "cf_hdrop" in key:
+            return True
+    return False
+
+
 def _audio_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
     if mime is None or not mime.hasUrls():
         return []
     out: list[Path] = []
+    seen: set[str] = set()
     for url in mime.urls():
         if not url.isLocalFile():
             continue
         path = Path(url.toLocalFile())
-        if path.is_file() and path.suffix.lower() in _AUDIO_SUFFIXES:
-            out.append(path)
+        if path.suffix.lower() not in _AUDIO_SUFFIXES:
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
     return out
+
+
+def _rejected_drop_reason(mime) -> str:  # noqa: ANN001
+    """Human-readable why a file drop onto the setlist was ignored."""
+    if mime is None or not mime.hasUrls():
+        return "Drop ignored (not a local file drag)"
+    names: list[str] = []
+    for url in mime.urls():
+        if not url.isLocalFile():
+            names.append("(non-local URL)")
+            continue
+        path = Path(url.toLocalFile())
+        suf = path.suffix.lower() or "(no extension)"
+        if suf not in _AUDIO_SUFFIXES:
+            names.append(f"{path.name} [{suf}]")
+        elif not path.exists():
+            names.append(f"{path.name} (not found)")
+    if names:
+        return (
+            "Unsupported / missing audio: "
+            + ", ".join(names[:3])
+            + " — use wav/mp3/flac/ogg/aiff/m4a…"
+        )
+    return "Drop ignored"
 
 
 class SetlistWidget(QTableWidget):
@@ -127,11 +203,11 @@ class SetlistWidget(QTableWidget):
     COL_EN = 2
     COL_BPM = 3
 
-    # Custom item-data role carrying each song's optional row_color ("#RRGGBB"
-    # or "" for none); read by _SetlistRowDelegate to paint the row background.
-    ROLE_ROW_COLOR = int(Qt.ItemDataRole.UserRole) + 50
+    # Shared with export/show-patch song lists (see cueplayer.ui.row_color).
+    ROLE_ROW_COLOR = ROLE_ROW_COLOR
 
     audio_files_dropped = Signal(list)
+    audio_drop_rejected = Signal(str)
     rows_reordered = Signal(list, int)  # song ids in drag order, insert-before row
     setlist_number_edited = Signal(int, float)  # row, new number
     setlist_number_edit_failed = Signal(int)  # row
@@ -347,7 +423,9 @@ class SetlistWidget(QTableWidget):
         painter.end()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if _audio_paths_from_mime(event.mimeData()) or event.source() is self:
+        # Accept Explorer file drags optimistically (Windows may omit URLs
+        # until drop); still accept internal row reorders.
+        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -355,7 +433,7 @@ class SetlistWidget(QTableWidget):
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if _audio_paths_from_mime(event.mimeData()) or event.source() is self:
+        if event.source() is self or _mime_looks_like_file_drop(event.mimeData()):
             event.acceptProposedAction()
             if event.source() is self:
                 self._set_insert_indicator(self._insert_row_at(event.position().toPoint()))
@@ -371,12 +449,13 @@ class SetlistWidget(QTableWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._clear_insert_indicator()
-        paths = _audio_paths_from_mime(event.mimeData())
-        if paths:
-            event.acceptProposedAction()
-            self.audio_files_dropped.emit(paths)
-            return
         if event.source() is not self:
+            paths = _audio_paths_from_mime(event.mimeData())
+            if paths:
+                event.acceptProposedAction()
+                self.audio_files_dropped.emit(paths)
+                return
+            self.audio_drop_rejected.emit(_rejected_drop_reason(event.mimeData()))
             event.ignore()
             return
         pos = event.position().toPoint()
@@ -390,58 +469,6 @@ class SetlistWidget(QTableWidget):
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
         self.rows_reordered.emit(ids, drop_row)
-
-
-class _SetlistRowDelegate(QStyledItemDelegate):
-    """Paints each song row's optional custom background (``Song.row_color``)
-    and a selection treatment that matches the app's accent-blue theme tokens
-    (ACCENT / BG_SELECTED) instead of the default OS highlight — and stays
-    readable when a custom-colored row is selected.
-    """
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # noqa: N802
-        color_hex = str(index.data(SetlistWidget.ROLE_ROW_COLOR) or "").strip()
-        base = QColor(color_hex) if color_hex else None
-        if base is not None and not base.isValid():
-            base = None
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-
-        if base is None and not selected:
-            # Nothing custom going on: let the normal theme QSS (incl.
-            # alternating row colors) paint this cell as usual.
-            super().paint(painter, option, index)
-            return
-
-        opt = QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        # We're about to hand-paint the background, so strip the flags that
-        # would make the base delegate paint its own (alternate-row / QSS
-        # selection) background over ours.
-        opt.features = opt.features & ~QStyleOptionViewItem.ViewItemFeature.Alternate
-        opt.state = opt.state & ~QStyle.StateFlag.State_Selected
-
-        rect = option.rect
-        painter.save()
-        if base is not None:
-            painter.fillRect(rect, base)
-            if selected:
-                # Accent tint on top so the custom color still peeks through
-                # while the row unmistakably reads as "selected".
-                painter.fillRect(rect, with_alpha(ACCENT, 90))
-            text_hex = contrast_text_color(base.name())
-        else:
-            painter.fillRect(rect, QColor(BG_SELECTED))
-            text_hex = "#ffffff"
-        if selected:
-            # Accent-colored left bar ties the selection back to the same
-            # blue used across transport / accent controls.
-            painter.fillRect(int(rect.left()), int(rect.top()), 3, int(rect.height()), QColor(ACCENT))
-        painter.restore()
-
-        text_color = QColor(text_hex)
-        opt.palette.setColor(QPalette.ColorRole.Text, text_color)
-        opt.palette.setColor(QPalette.ColorRole.HighlightedText, text_color)
-        super().paint(painter, opt, index)
 
 
 class MainWindow(QMainWindow):
@@ -506,6 +533,11 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left.setObjectName("setlistPanel")
+        # Whole left chrome accepts Explorer audio drops (not only the table
+        # cells) — title / empty margins / button row used to swallow them.
+        left.setAcceptDrops(True)
+        left.installEventFilter(self)
+        self._setlist_panel = left
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_title = QLabel("Setlist")
@@ -515,7 +547,7 @@ class MainWindow(QMainWindow):
         title_row.addWidget(left_title)
         title_row.addStretch(1)
         self.song_list = SetlistWidget()
-        self.song_list.setItemDelegate(_SetlistRowDelegate(self.song_list))
+        self.song_list.setItemDelegate(RowColorDelegate(self.song_list))
         self.song_list.set_name_mode(self.project.setlist_name_mode)
         self.song_list.set_show_bpm(self.project.setlist_show_bpm)
         self._rebuild_song_list(select_indexes=[0])
@@ -609,7 +641,9 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar(self)
         self.setStatusBar(self.status)
+        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         self._build_file_menu()
+        self._setup_autosave()
         self._refresh_window_title()
         self._refresh_status()
 
@@ -622,6 +656,9 @@ class MainWindow(QMainWindow):
         self.renumber_button.clicked.connect(self._renumber_songs_by_list_order)
         self.song_list.currentCellChanged.connect(self._on_song_cell_changed)
         self.song_list.audio_files_dropped.connect(self._add_songs_from_audio_paths)
+        self.song_list.audio_drop_rejected.connect(
+            lambda msg: self.status.showMessage(msg, 5000)
+        )
         self.song_list.rows_reordered.connect(self._on_setlist_rows_reordered)
         self.song_list.setlist_number_edited.connect(self._on_setlist_number_edited)
         self.song_list.setlist_number_edit_failed.connect(self._on_setlist_number_edit_failed)
@@ -666,6 +703,7 @@ class MainWindow(QMainWindow):
         self.timeline.duplicate_video_clip_requested.connect(self._duplicate_video_clip)
         self.timeline.video_files_dropped.connect(self._add_video_clips_from_paths)
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
+        self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
         self.timeline.video_clip_volume_changed.connect(self._on_video_clip_volume_changed)
         self.timeline.music_volume_changed.connect(self._on_music_volume_changed)
         self.engine.position_changed.connect(self.video_sync.update_position)
@@ -734,6 +772,22 @@ class MainWindow(QMainWindow):
         menu.addAction(act_save)
         menu.addAction(act_save_as)
         menu.addSeparator()
+        self._autosave_action = QAction("Auto-&Save", self)
+        self._autosave_action.setCheckable(True)
+        self._autosave_action.setChecked(self._autosave_enabled())
+        self._autosave_action.setToolTip(
+            f"Automatically save dirty projects every "
+            f"{self._autosave_interval_seconds()}s (only after Save As)"
+        )
+        self._autosave_action.toggled.connect(self._set_autosave_enabled)
+        menu.addAction(self._autosave_action)
+        act_restore = QAction("&Restore from Backup…", self)
+        act_restore.setToolTip(
+            "Open a timestamped copy from .cueplayer_backups next to this project"
+        )
+        act_restore.triggered.connect(self._file_restore_backup)
+        menu.addAction(act_restore)
+        menu.addSeparator()
         act_export = QAction("&Export…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
         act_export.triggered.connect(self._open_ma_patch_page)
@@ -759,11 +813,72 @@ class MainWindow(QMainWindow):
         act_video_preview.setChecked(True)
         act_video_preview.triggered.connect(self.video_preview_panel.setVisible)
         tools_menu.addAction(act_video_preview)
+        self._show_video_track_action = QAction("Show &Video Track", self)
+        self._show_video_track_action.setCheckable(True)
+        self._show_video_track_action.setChecked(True)
+        self._show_video_track_action.setToolTip(
+            "Hide after alignment to free timeline space. "
+            "Preview / Clean Output keep playing either way."
+        )
+        self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
+        tools_menu.addAction(self._show_video_track_action)
         self._clean_output_action = QAction("&Clean Video Output", self)
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
         tools_menu.addAction(self._clean_output_action)
         self._build_video_decode_quality_menu(tools_menu)
+
+    def _autosave_enabled(self) -> bool:
+        return bool(self._settings.value(_KEY_AUTOSAVE_ENABLED, True, type=bool))
+
+    def _autosave_interval_seconds(self) -> int:
+        raw = self._settings.value(
+            _KEY_AUTOSAVE_INTERVAL_SEC, _DEFAULT_AUTOSAVE_INTERVAL_SEC
+        )
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError):
+            seconds = _DEFAULT_AUTOSAVE_INTERVAL_SEC
+        return max(15, seconds)
+
+    def _backup_keep_count(self) -> int:
+        raw = self._settings.value(_KEY_BACKUP_KEEP, DEFAULT_KEEP)
+        try:
+            keep = int(raw)
+        except (TypeError, ValueError):
+            keep = DEFAULT_KEEP
+        return max(1, keep)
+
+    def _set_autosave_enabled(self, enabled: bool) -> None:
+        self._settings.setValue(_KEY_AUTOSAVE_ENABLED, bool(enabled))
+        self._setup_autosave()
+
+    def _setup_autosave(self) -> None:
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is None:
+            self._autosave_timer = QTimer(self)
+            self._autosave_timer.timeout.connect(self._autosave_tick)
+        interval_ms = self._autosave_interval_seconds() * 1000
+        self._autosave_timer.setInterval(interval_ms)
+        if self._autosave_enabled():
+            if not self._autosave_timer.isActive():
+                self._autosave_timer.start()
+        else:
+            self._autosave_timer.stop()
+
+    def _autosave_tick(self) -> None:
+        if not self._autosave_enabled():
+            return
+        if not self._dirty or self._project_path is None:
+            return
+        self._file_save(quiet=True)
+
+    def _backup_before_overwrite(self, path: Path) -> None:
+        try:
+            create_backup_before_save(path, keep=self._backup_keep_count())
+        except OSError as exc:
+            # Backup failure must not block Save; surface a soft warning.
+            self.status.showMessage(f"Backup failed: {exc}", 5000)
 
     def _build_video_decode_quality_menu(self, tools_menu: QMenu) -> None:
         """Preview / Clean Output decode resolution cap (perf knob).
@@ -844,8 +959,49 @@ class MainWindow(QMainWindow):
             return self._file_save()
         return True
 
+    def _project_is_pristine(self) -> bool:
+        """Blank Untitled session with no media/marks — New can be silent."""
+        if self._dirty or self._project_path is not None:
+            return False
+        if (self.project.name or "").strip() not in ("Untitled Project", "Untitled", ""):
+            return False
+        if len(self.project.songs) != 1:
+            return False
+        song = self.project.songs[0]
+        if (song.name or "").strip() not in ("Untitled Song", ""):
+            return False
+        if song.audio_tracks or song.video_clips or song.marks:
+            return False
+        return True
+
+    def _confirm_new_project(self) -> bool:
+        """
+        New Project gate:
+
+        - Dirty → Save / Discard / Cancel
+        - Loaded from disk and no edits → allow without ask
+        - Untitled but already has songs/media/marks → Yes/No confirm
+        - Pristine blank → silent
+        """
+        if self._dirty:
+            return self._confirm_discard_if_dirty()
+        if self._project_path is not None:
+            # Just opened a file and made no changes.
+            return True
+        if self._project_is_pristine():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "New Project",
+            "Create a new project?\n\n"
+            "The current setlist and media in this window will be closed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _file_new(self) -> None:
-        if not self._confirm_discard_if_dirty():
+        if not self._confirm_new_project():
             return
         self.engine.stop()
         self.project = Project.create("Untitled Project")
@@ -878,18 +1034,23 @@ class MainWindow(QMainWindow):
         self._set_clean()
         self.status.showMessage(f"Opened: {path.name}", 3500)
 
-    def _file_save(self) -> bool:
+    def _file_save(self, *, quiet: bool = False) -> bool:
         if self._project_path is None:
             return self._file_save_as()
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
+        self._backup_before_overwrite(self._project_path)
         try:
             save_project(self.project, self._project_path)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Unable to Save Project", str(exc))
+            if not quiet:
+                QMessageBox.warning(self, "Unable to Save Project", str(exc))
+            else:
+                self.status.showMessage(f"Auto-save failed: {exc}", 5000)
             return False
         self._set_clean()
-        self.status.showMessage(f"Saved: {self._project_path.name}", 2500)
+        label = "Auto-saved" if quiet else "Saved"
+        self.status.showMessage(f"{label}: {self._project_path.name}", 2500)
         return True
 
     def _file_save_as(self) -> bool:
@@ -916,6 +1077,9 @@ class MainWindow(QMainWindow):
             path = path.with_name(f"{path.name}.cueplayer.json")
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
+        # Overwriting an existing path (or re-Save-As to the same file) still
+        # gets a backup of whatever was previously on disk.
+        self._backup_before_overwrite(path)
         try:
             save_project(self.project, path)
         except Exception as exc:  # noqa: BLE001
@@ -931,6 +1095,70 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         self.status.showMessage(f"Saved: {path.name}", 2500)
         return True
+
+    def _file_restore_backup(self) -> None:
+        if self._project_path is None:
+            QMessageBox.information(
+                self,
+                "Restore from Backup",
+                "Save the project once before restoring a backup.\n"
+                "Backups live in a .cueplayer_backups folder next to the project file.",
+            )
+            return
+        backups = list_backups(self._project_path)
+        if not backups:
+            QMessageBox.information(
+                self,
+                "Restore from Backup",
+                f"No backups found for:\n{self._project_path.name}\n\n"
+                "A backup is created automatically each time you Save.",
+            )
+            return
+        if not self._confirm_discard_if_dirty():
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Restore from Backup")
+        dialog.resize(480, 360)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                "Pick a timestamped backup to open. "
+                "The current project file is left untouched until you Save."
+            )
+        )
+        listing = QListWidget()
+        for path in backups:
+            item = QListWidgetItem(path.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            listing.addItem(item)
+        listing.setCurrentRow(0)
+        layout.addWidget(listing, stretch=1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        listing.itemDoubleClicked.connect(lambda _item: dialog.accept())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        current = listing.currentItem()
+        if current is None:
+            return
+        path = Path(str(current.data(Qt.ItemDataRole.UserRole)))
+        try:
+            project = load_project(path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Unable to Open Backup", str(exc))
+            return
+        self.engine.stop()
+        self.project = project
+        # Keep pointing at the live project path so the next Save writes there
+        # (and takes a fresh backup of whatever is currently on disk).
+        self._apply_project()
+        self._mark_dirty()
+        self.status.showMessage(f"Restored backup into editor: {path.name}", 4500)
 
     def _apply_project(self) -> None:
         if not self.project.songs:
@@ -1100,6 +1328,23 @@ class MainWindow(QMainWindow):
         song.bpm = draft.bpm
         song.start_timecode = draft.start_timecode
         song.fps = draft.fps
+        if draft.audio_path is not None and Path(draft.audio_path).is_file():
+            song.audio_tracks = [
+                AudioTrack(
+                    id="main_audio",
+                    name=Path(draft.audio_path).stem,
+                    path=Path(draft.audio_path),
+                    role="main",
+                )
+            ]
+        elif draft.audio_path is None:
+            # Explicit clear from Browse cell × — drop tracks only when the
+            # dialog started with a path that the user cleared, or Add Song
+            # with no file. Keep existing tracks when draft.audio_path was
+            # never set on Edit of a song that already has audio and user
+            # didn't touch Browse... Actually Browse cell always has the
+            # path or None from dialog. Clearing means None → clear tracks.
+            song.audio_tracks = []
         if song is self.current_song:
             self.engine.set_song_timebase(song.start_timecode, song.fps)
 
@@ -1490,6 +1735,11 @@ class MainWindow(QMainWindow):
         self.monitor.set_song(self.current_song)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
+        action = getattr(self, "_show_video_track_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(self.current_song.show_video_track))
+            action.blockSignals(False)
         self._rebuild_digit_shortcuts()
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -1583,15 +1833,6 @@ class MainWindow(QMainWindow):
         for draft in dialog.result_drafts():
             song = self.project.new_song(draft.name)
             self._apply_draft_to_song(song, draft)
-            if draft.audio_path is not None:
-                song.audio_tracks = [
-                    AudioTrack(
-                        id="main_audio",
-                        name=draft.audio_path.stem,
-                        path=draft.audio_path,
-                        role="main",
-                    )
-                ]
             self.project.songs.append(song)
             last_index = len(self.project.songs) - 1
             added_indexes.append(last_index)
@@ -1626,6 +1867,13 @@ class MainWindow(QMainWindow):
             if draft.song_id and draft.song_id in by_id:
                 self._apply_draft_to_song(by_id[draft.song_id], draft)
         self._rebuild_song_list(select_indexes=indexes)
+        # Reload current song audio if it was one of the edited rows.
+        if self.current_song.id in {d.song_id for d in dialog.result_drafts() if d.song_id}:
+            try:
+                cur = self.project.songs.index(self.current_song)
+            except ValueError:
+                cur = indexes[0]
+            self._activate_song(cur, stop_playback=False)
         self._mark_dirty()
         self._refresh_status()
         if len(indexes) == 1:
@@ -1685,6 +1933,26 @@ class MainWindow(QMainWindow):
             if widget is self or not widget.isVisible():
                 continue
             widget.close()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        """Forward Explorer audio drops from the left setlist panel chrome."""
+        panel = getattr(self, "_setlist_panel", None)
+        if panel is not None and watched is panel and event is not None:
+            etype = event.type()
+            if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if _mime_looks_like_file_drop(event.mimeData()):
+                    event.acceptProposedAction()
+                    return True
+            elif etype == QEvent.Type.Drop:
+                paths = _audio_paths_from_mime(event.mimeData())
+                if paths:
+                    event.acceptProposedAction()
+                    self._add_songs_from_audio_paths(paths)
+                    return True
+                self.status.showMessage(_rejected_drop_reason(event.mimeData()), 5000)
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if not self._confirm_discard_if_dirty():
@@ -2115,6 +2383,26 @@ class MainWindow(QMainWindow):
             "Video Track muted (embedded clip audio silenced)" if muted else "Video Track unmuted",
             2000,
         )
+
+    def _on_video_track_visibility_changed(self, visible: bool) -> None:
+        self.current_song.show_video_track = bool(visible)
+        action = getattr(self, "_show_video_track_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(visible))
+            action.blockSignals(False)
+        self._mark_dirty()
+        self.status.showMessage(
+            "Video Track shown"
+            if visible
+            else "Video Track hidden (Preview/Clean Output still play)",
+            2500,
+        )
+
+    def _on_show_video_track_toggled(self, checked: bool) -> None:
+        self.timeline.set_show_video_track(bool(checked))
+        self.current_song.show_video_track = bool(checked)
+        self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:
         # Volume is already applied to the clip by the timeline widget; this

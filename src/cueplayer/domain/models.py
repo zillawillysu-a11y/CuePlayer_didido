@@ -215,6 +215,10 @@ class Song:
     # see docs/PRODUCT_SPEC.md's "影片原始音軌預設 Mute" note for the
     # deferred/OBS-reference assumption this overrides per explicit user request.
     video_track_muted: bool = False
+    # When False, the Video lane is collapsed out of the timeline after
+    # alignment work is done — Preview / Clean Output keep playing; only the
+    # editable track chrome is hidden until the user shows it again.
+    show_video_track: bool = True
     # Dedicated music-bed gain for alignment (Video vs Music balancing) —
     # independent of Master Volume (which scales music + video clip audio
     # together) and of LTC (never touched by any volume control, per
@@ -604,7 +608,8 @@ class CleanVideoOutputSettings:
 def default_channel_routing(output_channels: int) -> tuple[list[int], list[int], list[int]]:
     """
     Sensible defaults: Music→CH1+CH2, LTC→CH3 when device has ≥3 outs.
-    Stereo-only: Music only (LTC unmapped until the user remaps).
+    Stereo-only: Music→CH1+CH2, LTC left unmapped until the generator is enabled
+    (see ``default_ltc_channels_for_device`` / UI clamp — LTC jumps into CH1–2).
     """
     n = max(0, int(output_channels))
     if n >= 3:
@@ -614,6 +619,42 @@ def default_channel_routing(output_channels: int) -> tuple[list[int], list[int],
     if n == 1:
         return [0], [0], []
     return [0], [1], [2]
+
+
+def default_ltc_channels_for_device(output_channels: int) -> list[int]:
+    """
+    Where Generated LTC should land on this device.
+
+    ≥3 outs → CH3 (index 2). 2-ch → CH2 (index 1). 1-ch → CH1 (index 0).
+    So a Focusrite-style default of CH3 automatically jumps back within the
+    available range on stereo headphones / laptop speakers.
+    """
+    n = max(0, int(output_channels))
+    if n <= 0:
+        return []
+    if n >= 3:
+        return [2]
+    return [n - 1]
+
+
+def clamp_output_channels(channels: list[int], output_channels: int) -> list[int]:
+    """Keep 0-based destination indices inside ``0 .. output_channels-1`` (deduped)."""
+    n = max(0, int(output_channels))
+    if n <= 0:
+        return []
+    out: list[int] = []
+    for raw in channels:
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0:
+            continue
+        if idx >= n:
+            idx = n - 1
+        if idx not in out:
+            out.append(idx)
+    return out
 
 
 @dataclass

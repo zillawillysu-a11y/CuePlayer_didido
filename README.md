@@ -6,46 +6,57 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-Milestone 1 in progress: project skeleton, Unicode persistence, blank main window.
+Core P0 timeline / marks / video / MA2·MA3 export are on `master`.
 
-Product requirements: `docs/PRODUCT_SPEC.md`
+Laptop all-in-one branch: `cursor/laptop-ux-pack-028d`
+(Auto Save, LTC 2ch clamp, setlist audio drop, hide Video track, Add Song Browse, New Project confirm, MIDI via Windows winmm / optional pygame-ce).
+
+Product requirements: `docs/PRODUCT_SPEC.md`  
+Agent handoff: `AGENTS.md`
 
 ## Requirements
 
 - Windows 11
-- Python 3.13+
+- Python 3.13+ (3.14 OK)
 - Git
 
-## Setup
+## Update + run (this laptop)
 
 ```powershell
-cd C:\Users\willy\Projects\CuePlayer
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-pip install -e ".[dev]"
+cd C:\Users\User\Projects\CuePlayer_didido
+git fetch origin
+git checkout cursor/laptop-ux-pack-028d
+git pull
+
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# Do NOT install pygame on 3.14 (no wheel / build fails).
+# Windows MTC uses winmm.dll with no extra package.
+# Optional mido pygame backend: pip install pygame-ce
+.\.venv\Scripts\python.exe -m cueplayer.app
 ```
 
-## Run
+If `.venv` is missing, create it first:
 
 ```powershell
-cueplayer
-# or
-python -m cueplayer.app
+py -3.14 -m venv .venv
 ```
 
-操作：
-- `Space` Play / Pause（有音訊時會真的出聲）
-- `1`–`9` 在目前 playhead 打點
-- 左／右鍵微移 0.1 秒
-- 點擊／拖曳時間軸 Seek
-- 滾輪縮放時間軸
-- **開啟音訊…** 載入 WAV/FLAC/OGG/MP3 等，主畫面顯示波形
+## Setup (fresh)
+
+```powershell
+cd C:\Users\User\Projects\CuePlayer_didido
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# MIDI: winmm works out of the box on Windows. Optional: pip install pygame-ce
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
 
 ## Test
 
 ```powershell
-pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 
 ## Priority pain points
