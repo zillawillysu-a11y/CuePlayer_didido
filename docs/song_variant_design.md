@@ -1182,7 +1182,7 @@ Dialog draft_offset (spin + preview panel)
         │
         ├── Nudge / type → update draft only
         ├── Reset → draft = 0.0
-        └── Apply → still non-destructive (Task 5)
+        └── Apply → Task 5 commits via SetVariantAnchorOffsetCommand
 ```
 
 MainWindow supplies read-only playhead callbacks (`playback.position`, `engine.position`); dialog never seeks.
@@ -1193,15 +1193,15 @@ MainWindow supplies read-only playhead callbacks (`playback.position`, `engine.p
 |-------|----------|------------|
 | `_song_anchor` | Dialog session | No |
 | `_variant_anchor` | Dialog session | No |
-| `_draft_offset` | Dialog session | No |
-| `SongVariant.anchor_offset` | Project | Unchanged this task |
+| `_draft_offset` | Dialog session | No (until Apply) |
+| `SongVariant.anchor_offset` | Project | Unchanged in Task 4 |
 
 ### 21.3 Validation rules (draft)
 
 - Finite offsets via `coerce_anchor_offset`
 - Both anchors required to recompute from pair; typed/nudged draft always allowed
 - Missing playhead source → status message, no crash
-- Apply never mutates project
+- Apply deferred to Task 5
 
 ### 21.4 Remaining Apply workflow (Task 5)
 
@@ -1216,7 +1216,7 @@ MainWindow supplies read-only playhead callbacks (`playback.position`, `engine.p
 - `offset_from_anchors` round-trip with mapping
 - Capture both anchors → draft; variant unchanged
 - Nudge / Reset draft-only
-- Apply stub non-mutating
+- Apply stub non-mutating (superseded by §22)
 - Use mark capture
 
 ### 21.6 Risks
@@ -1233,4 +1233,81 @@ MainWindow supplies read-only playhead callbacks (`playback.position`, `engine.p
 
 ---
 
-## READY FOR ANCHOR APPLY
+## 22. Sprint 5 Task 5 — Anchor Apply / Commit (done)
+
+**Scope tip:** `cursor/sprint5-anchor-apply-028d`
+
+### 22.1 Commit flow
+
+```text
+Dialog draft_offset (temporary)
+        │
+        ▼
+SetVariantAnchorOffsetCommand(variant_id, old, new)
+        │
+        ├── command.redo(song)     ← sole mutation of SongVariant.anchor_offset
+        ├── refresh Applied label
+        └── emit offset_committed(command)
+                │
+                ▼
+MainWindow._on_align_anchors_committed
+        ├── _push_song_undo(command)
+        └── _mark_dirty()
+```
+
+- Marks / cue times are never rewritten.
+- `domain.anchor_mapping` remains the only Song↔Variant formula source.
+- Dialog does not reach into unrelated project structures; commit goes through the undo command.
+- Dialog stays open after Apply so the operator can refine.
+
+### 22.2 Undo behavior
+
+| Action | Effect |
+|--------|--------|
+| Apply | `redo` writes `new_offset`; command pushed on MainWindow undo stack |
+| Ctrl+Z | `undo` restores `old_offset` on the same variant; marks untouched |
+| Ctrl+Y / Redo | `redo` re-applies `new_offset` |
+| Cancel / Esc (dirty) | Confirm discard; **no** project write |
+| Cancel (clean) | Close; no write |
+| Reset | Sets draft to `0.0` only until Apply |
+
+### 22.3 Dirty-state updates
+
+- Apply → `ProjectService.mark_dirty()` via MainWindow (window title `*`).
+- Draft edits alone do **not** dirty the project.
+- Reset / Cancel do **not** dirty the project.
+
+### 22.4 Remaining playback integration work
+
+PlaybackService already maps seek/loops via applied `anchor_offset` (Sprint 4 Task 6 + Sprint 5 Task 1). This task only commits the field.
+
+Still deferred for Align Anchors MVP polish:
+
+| Item | Notes |
+|------|-------|
+| Preview session | Temporary draft offset for audition without Apply |
+| Cancel restore of preview | Needs I3 preview session first |
+| Duration chips / missing-media enablement | §19.6 |
+| Waveform draft indicator | Optional; no redesign required for MVP |
+| Auto-correlate propose | §19.11 later |
+
+### 22.5 Test coverage
+
+- Domain: `SetVariantAnchorOffsetCommand` undo/redo; marks unchanged
+- UI: Apply mutates + emits command; noop when clean; Reset draft-only; Cancel discards
+
+### 22.6 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Operator expects live Preview before Apply | Status copy; Preview session = Task 6 |
+| Applied offset changes seek mapping immediately | Expected once façade exists; document |
+| Undo after song switch | Song-scoped undo stack already handles focus |
+
+### 22.7 Recommendation for Sprint 5 Task 6
+
+**Align Anchors MVP** — Preview audition session (temporary draft → PlaybackService mapping, Cancel restores applied), duration/missing-media chips, and a short validation checklist. No Timeline/Waveform redesign.
+
+---
+
+## READY FOR ALIGN ANCHORS MVP

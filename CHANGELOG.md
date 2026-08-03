@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 5 — Task 5: Anchor Apply / Commit (2026-08-03)
+
+- Apply writes `draft_offset` → `SongVariant.anchor_offset` via `SetVariantAnchorOffsetCommand`.
+- MainWindow pushes undo + marks project dirty; Cancel discards draft; Reset stays draft-only.
+- Marks / cue times never move; no Playback / Timeline / Waveform redesign.
+
 ### Sprint 5 — Task 4: Anchor Computation (draft only) (2026-08-03)
 
 - `anchor_mapping.offset_from_anchors`; Align Anchors captures song/media anchors and computes draft live.

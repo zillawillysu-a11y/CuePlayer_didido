@@ -168,6 +168,29 @@ class EditMainCueIdCommand:
 
 
 @dataclass
+class SetVariantAnchorOffsetCommand:
+    """Commit Align Anchors draft → ``SongVariant.anchor_offset`` (marks untouched).
+
+    Sole mutation point for Align Apply. Does not move marks or change cue times.
+    """
+
+    variant_id: str
+    old_offset: float
+    new_offset: float
+    label: str = "Align Anchors"
+
+    def undo(self, song: Song) -> None:
+        variant = song.variant_by_id(self.variant_id)
+        if variant is not None:
+            variant.anchor_offset = float(self.old_offset)
+
+    def redo(self, song: Song) -> None:
+        variant = song.variant_by_id(self.variant_id)
+        if variant is not None:
+            variant.anchor_offset = float(self.new_offset)
+
+
+@dataclass
 class RenumberMainCueIdsCommand:
     before: dict[str, str]
     after: dict[str, str]

@@ -1,4 +1,4 @@
-"""UI / unit tests for Align Anchors draft computation (no Apply)."""
+"""UI / unit tests for Align Anchors draft + Apply commit."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from cueplayer.domain.anchor_mapping import (
 )
 from cueplayer.domain.models import Song
 from cueplayer.domain.song_variant import SongVariant
+from cueplayer.domain.undo import SetVariantAnchorOffsetCommand, UndoStack
 from cueplayer.ui.align_anchors_dialog import AlignAnchorsDialog
 
 
@@ -95,22 +96,76 @@ def test_nudge_and_reset_draft_only(qapp: QApplication, tmp_path: Path) -> None:
     assert variant.anchor_offset == pytest.approx(0.2)
 
 
-def test_apply_stub_does_not_mutate_offset(qapp: QApplication, tmp_path: Path) -> None:
+def test_apply_commits_offset_and_emits_command(
+    qapp: QApplication, tmp_path: Path
+) -> None:
     song = Song.create("曲")
     variant = SongVariant.create("Main", tmp_path / "a.wav", anchor_offset=0.5)
     song.variants = [variant]
     song.selected_variant_id = variant.id
+    mark = song.add_mark(1, 4.0, display_name="Cue")
+    mark_time = mark.time_seconds
+
     dialog = AlignAnchorsDialog(
         song,
         get_song_playhead=lambda: 10.0,
         get_media_playhead=lambda: 9.0,
     )
+    committed: list[SetVariantAnchorOffsetCommand] = []
+    dialog.offset_committed.connect(committed.append)
+
     dialog.use_playhead_btn.click()
     dialog.use_media_playhead_btn.click()
     assert dialog.draft_offset() == pytest.approx(1.0)
     dialog.apply_btn.click()
+
+    assert variant.anchor_offset == pytest.approx(1.0)
+    assert mark.time_seconds == mark_time
+    assert len(committed) == 1
+    assert committed[0].old_offset == pytest.approx(0.5)
+    assert committed[0].new_offset == pytest.approx(1.0)
+    assert "1.000" in dialog.applied_offset_label.text()
+    assert dialog.is_draft_dirty() is False
+
+    # Simulate MainWindow undo wiring.
+    stack = UndoStack()
+    stack.push(committed[0])
+    stack.undo(song)
     assert variant.anchor_offset == pytest.approx(0.5)
-    assert "deferred" in dialog.shell_status.text().lower()
+    assert mark.time_seconds == mark_time
+    stack.redo(song)
+    assert variant.anchor_offset == pytest.approx(1.0)
+
+
+def test_apply_noop_when_draft_matches_applied(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    song = Song.create("曲")
+    variant = SongVariant.create("Main", tmp_path / "a.wav", anchor_offset=0.5)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    dialog = AlignAnchorsDialog(song)
+    committed: list[object] = []
+    dialog.offset_committed.connect(committed.append)
+    dialog.apply_btn.click()
+    assert variant.anchor_offset == pytest.approx(0.5)
+    assert committed == []
+
+
+def test_cancel_discards_draft(qapp: QApplication, tmp_path: Path, monkeypatch) -> None:
+    song = Song.create("曲")
+    variant = SongVariant.create("Main", tmp_path / "a.wav", anchor_offset=0.5)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    dialog = AlignAnchorsDialog(song)
+    dialog.nudge_plus_10ms.click()
+    assert dialog.is_draft_dirty() is True
+    monkeypatch.setattr(
+        "cueplayer.ui.align_anchors_dialog.QMessageBox.question",
+        lambda *a, **k: __import__("PySide6.QtWidgets", fromlist=["QMessageBox"]).QMessageBox.StandardButton.Yes,
+    )
+    dialog.reject()
+    assert variant.anchor_offset == pytest.approx(0.5)
 
 
 def test_capture_song_mark(qapp: QApplication, tmp_path: Path, monkeypatch) -> None:
