@@ -120,7 +120,7 @@ def test_static_dir_has_index() -> None:
         root / ".." / "bridge.py"
     ).read_text(encoding="utf-8")
     assert "decoding_video" in (
-        (root / ".." / "bridge.py").read_text(encoding="utf-8")
+        (root / ".." / "main_window_remote_host.py").read_text(encoding="utf-8")
     )
     assert "Loading video waveform" in js
     assert "mix_listen_mono" in (
