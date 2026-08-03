@@ -60,6 +60,14 @@ class MarkDisplayDialog(QDialog):
         self.tracks_box.setChecked(song.show_mark_tracks)
         form.addRow("Tracks", self.tracks_box)
 
+        self.video_track_box = QCheckBox("Show Video Track")
+        self.video_track_box.setChecked(song.show_video_track)
+        self.video_track_box.setToolTip(
+            "Hide after alignment to free timeline space. "
+            "Preview / Clean Output keep playing either way."
+        )
+        form.addRow("Video", self.video_track_box)
+
         self.stem_box = QCheckBox("Stem line through mark shapes")
         self.stem_box.setChecked(song.show_mark_stem)
         self.stem_box.setToolTip("Draws a vertical line above/below each Mark shape; turn off to show just the shape")
@@ -122,6 +130,12 @@ class MarkDisplayDialog(QDialog):
         self.wave_color = ColorSwatchButton(line_src.waveform_color or "#3dd68c")
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
+
+        self.playhead_color = ColorSwatchButton(
+            getattr(line_src, "playhead_color", None) or "#ff5a5f"
+        )
+        self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
+        form2.addRow("Playhead Color (project)", self.playhead_color)
 
         self.line_style = QComboBox()
         self.line_style.addItem("Solid", "solid")
@@ -194,6 +208,7 @@ class MarkDisplayDialog(QDialog):
         layout.addWidget(buttons)
 
         self.tracks_box.toggled.connect(self._apply)
+        self.video_track_box.toggled.connect(self._apply)
         self.stem_box.toggled.connect(self._apply)
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
@@ -290,6 +305,7 @@ class MarkDisplayDialog(QDialog):
     def _apply(self) -> None:
         self._sync_spacing_enabled()
         self._song.show_mark_tracks = self.tracks_box.isChecked()
+        self._song.show_video_track = self.video_track_box.isChecked()
         self._song.show_mark_stem = self.stem_box.isChecked()
         style = str(self.line_style.currentData() or "solid")
         if style not in ("solid", "dash", "dot"):
@@ -303,6 +319,10 @@ class MarkDisplayDialog(QDialog):
         target.mark_dash_on = spacing
         target.mark_dash_off = spacing
         target.waveform_color = self.wave_color.color()
+        if self._project is not None:
+            self._project.playhead_color = self.playhead_color.color()
+        elif hasattr(target, "playhead_color"):
+            target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
         primary, secondary = self._collect_now_lanes()
         self._song.now_lanes_configured = True
         self._song.now_primary_lanes = primary

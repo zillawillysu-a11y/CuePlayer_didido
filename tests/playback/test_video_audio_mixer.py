@@ -16,9 +16,17 @@ SR = 48000
 
 
 def _inject(mixer: VideoAudioMixer, clip: VideoClip, samples: np.ndarray) -> None:
-    """Bypass real decoding: pretend `clip` was already decoded + resampled."""
+    """Bypass real decoding: pretend `clip` was already decoded + resampled.
+
+    Buffer index 0 == clip.source_in (windowed decode contract).
+    """
     mixer._cache[clip.id] = samples
-    mixer._cache_key[clip.id] = (str(clip.path), mixer._playback_rate)
+    mixer._cache_key[clip.id] = (
+        str(clip.path),
+        mixer._playback_rate,
+        round(float(clip.source_in_seconds), 3),
+        round(float(clip.source_span_seconds or clip.duration_seconds), 3),
+    )
 
 
 def _constant(seconds: float, value: float) -> np.ndarray:
@@ -61,7 +69,7 @@ def test_chunk_at_returns_clip_audio_scaled_by_volume() -> None:
 
 
 def test_chunk_at_respects_source_in_offset() -> None:
-    """Mid-clip trims must read from the right point in the decoded buffer."""
+    """Windowed buffer: samples[0] is source_in; timeline offset 0 maps to index 0."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c", path=Path("c.mp4"), start_seconds=1.0, source_in_seconds=3.0, duration_seconds=2.0
@@ -71,15 +79,15 @@ def test_chunk_at_respects_source_in_offset() -> None:
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # Small-amplitude ramp (indices scaled down so nothing hits the output's
-    # safety clip) so we can tell exactly which source sample landed where.
-    ramp = np.arange(10 * SR, dtype=np.float32) * 1e-6
+    # Window covering source 3.0s..5.0s — value encodes absolute source frame.
+    source_in_frame = int(3.0 * SR)
+    ramp = (np.arange(2 * SR, dtype=np.float32) + source_in_frame) * 1e-6
     samples = np.stack([ramp, ramp], axis=1)
     _inject(mixer, clip, samples)
 
     start_frame = int(1.0 * SR)  # song-timeline frame at clip.start_seconds
     out = mixer.chunk_at(start_frame, 5)
-    expected_src0 = int(3.0 * SR) * 1e-6  # clip.source_in_seconds
+    expected_src0 = source_in_frame * 1e-6
     assert out[0, 0] == pytest.approx(expected_src0, abs=1e-6)
     assert out[4, 0] == pytest.approx(expected_src0 + 4e-6, abs=1e-6)
 
