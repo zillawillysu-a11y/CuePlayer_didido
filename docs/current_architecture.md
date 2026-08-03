@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 2 · Task 5 complete (Playback foundation)  
+**Status:** Sprint 2 · Task 6 complete (Playback boundary completion)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint2-playback-foundation-028d`  
-**Constraint (Task 5):** PlaybackService + SongSession only — no AudioEngine redesign; no Timeline/Waveform/UI behavior change.
+**Scope tip:** `cursor/sprint2-playback-boundary-028d`  
+**Constraint (Task 6):** Volume / loop / scrub / nudge via PlaybackService — no AudioEngine redesign; no Timeline/Waveform/Settings/ShowSessionService; `_activate_song` stays in MainWindow.
 
 Related docs (do not treat as identical):
 
@@ -73,11 +73,13 @@ MainWindow → ProjectService → ProjectRepository → persistence.project_stor
 | `application/playback_service.py` (`PlaybackService`) | Play / Pause / Stop / Seek / Toggle → `AudioEngine` |
 | MainWindow | Transport + Space wired to `PlaybackService`; `current_song` proxies session |
 
-### Design contracts
+### Design contracts (Task 5)
 
-**SongSession** — Responsibilities: hold current song + transport snapshot. Non-responsibilities: not the sample clock; no PortAudio/video/Timeline. Dependencies: `Song` only.
+**SongSession** — Current song + transport snapshot mirror.
 
-**PlaybackService** — Responsibilities: transport façade + keep session in sync with engine. Non-responsibilities: no engine redesign; no timeline/waveform/scrub/volume/LTC/MTC; no full song-activate orchestration. Dependencies: `AudioEngine`, `SongSession`.
+**PlaybackService** — Play/Pause/Stop/Seek/Toggle → engine; sync session.
+
+See Task 6 for expanded PlaybackService contract (volume/loop/scrub/nudge).
 
 ### Architecture before / after
 
@@ -93,7 +95,44 @@ After:
   MainWindow.current_song ──property──► SongSession.song
 ```
 
-**Not done here:** Settings service; full `_activate_song` extract; RemoteHost.
+**Deferred from Task 5 (done in Task 6):** volume / loop / scrub / nudge boundary.
+
+---
+
+## Sprint 2 Task 6 — Playback boundary completion (done)
+
+| Piece | Role |
+|-------|------|
+| `PlaybackService` (extended) | Volume / mute / music gain / waveform gain; A–B loop; scrub begin/end; nudge |
+| `SongSession` | Unchanged contract — transport read-model mirror only |
+| MainWindow | No longer writes volume/loop/scrub/nudge to `AudioEngine` directly |
+| `_activate_song` | Still in MainWindow (orchestration intentionally deferred) |
+
+### Design decisions
+
+| Decision | Responsibility | Non-responsibility | Dependency | Why |
+|----------|----------------|--------------------|------------|-----|
+| Volume/mute/gain on `PlaybackService` | Façade writes → engine | Not clip-local video volume UI state | `AudioEngine` | Same path as transport; UI must not touch mix gains |
+| Loop mutations on `PlaybackService` | A/B/region/enable/clear + fresh-pair rule | Timeline paint / transport widgets | `AudioEngine` | Preserves engage/`_loop_engage` semantics without engine redesign |
+| Scrub begin/end on `PlaybackService` | Pause-for-scrub / resume | VideoSync scrubbing flag (still UI) | `AudioEngine` | Engine owns scrub resume state |
+| Nudge on `PlaybackService` | Frame-step seek | Hold-acceleration timing (still UI) | `AudioEngine` | Playback-related seek |
+| Playback rate **not** extracted | — | Device `_playback_rate` stays inside engine | — | Not a MainWindow-owned pitch control; PortAudio negotiation only |
+| `_activate_song` stays | — | Song load / buffer / timeline apply | MainWindow | Orchestration spans UI surfaces; separate future task |
+
+### Playback dependency graph
+
+```text
+Before (Task 5):
+  MainWindow ──transport──► PlaybackService ──► AudioEngine
+  MainWindow ──volume/loop/scrub/nudge──► AudioEngine   (still direct)
+
+After (Task 6):
+  MainWindow ──transport/volume/loop/scrub/nudge──► PlaybackService ──► AudioEngine
+  MainWindow ──_activate_song / buffer / device / LTC──► AudioEngine   (orchestration + I/O)
+  SongSession ◄── sync (playing/position/duration) ── PlaybackService
+```
+
+**Not done here:** Settings service; ShowSessionService; RemoteHost mute path; sync-calib dialog engine mute; `_activate_song` extract.
 
 ---
 
@@ -370,8 +409,8 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | Service | Home | Notes |
 |---------|------|-------|
 | **`ProjectService`** | `application/project_service.py` | Lifecycle; I/O via `ProjectRepository` |
-| **`PlaybackService`** | `application/playback_service.py` | ✅ Play/Pause/Stop/Seek → AudioEngine |
-| **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot |
+| **`PlaybackService`** | `application/playback_service.py` | ✅ Transport + volume/loop/scrub/nudge → AudioEngine |
+| **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot (mirror) |
 | Song activate orchestration | `MainWindow._activate_song` | Still UI-owned (timeline/video/monitor refresh) |
 | Media job queue | `MainWindow` executors | Still UI-owned |
 | Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
@@ -572,15 +611,17 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 |------|--------|-------|
 | Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
 | **Sprint 2 · 5** Playback foundation | ✅ Done | PlaybackService + SongSession |
-| **Sprint 2 · 6** Settings service | **Next** | Machine/project settings façade |
+| **Sprint 2 · 6** Playback boundary | ✅ Done | Volume / loop / scrub / nudge via service |
+| **Sprint 2 · 7** Settings service | **Next** | Machine/project settings façade |
 
-### Recommended Sprint 2 Task 6 — Settings service
+### Recommended Sprint 2 Task 7 — Settings service
 
 - Extract `application/settings_service.py` for machine-global prefs currently scattered (`audio_prefs`, autosave keys already partly in ProjectService, UI session keys still on MainWindow).
 - Prefer wrapping existing QSettings / `audio_prefs` functions — no behavior change.
 - Do not redesign preference schemas in the same task.
+- Do not introduce ShowSessionService in the same task.
 
-### Risks for Task 6
+### Risks for Task 7
 
 | Risk | Mitigation |
 |------|------------|

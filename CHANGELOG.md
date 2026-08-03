@@ -4,6 +4,14 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 2 — Task 6: Playback boundary completion (2026-08-03)
+
+- Extended `PlaybackService` with volume / mute / music gain / waveform gain, A–B loop, scrub begin/end, and nudge.
+- `MainWindow` no longer writes those playback controls directly to `AudioEngine`.
+- `_activate_song` orchestration left in `MainWindow`; AudioEngine / Timeline / Waveform unchanged.
+- Device sample-rate (`_playback_rate`) remains engine-internal (not a UI pitch control).
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 2 — Task 5: Playback foundation (2026-08-03)
 
 - Added `domain/song_session.py` (`SongSession`: current song, playing, position, duration).
