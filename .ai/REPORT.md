@@ -35,3 +35,8 @@ publish(event)                    # sync; order preserved; exact type only
 ## Suggested next task
 
 Sprint 3 Task 4 — Playback events (READY FOR PLAYBACK EVENTS).
+
+## Tests
+
+- `tests/core/test_event_bus.py`: 10 passed
+- Full suite: **929 passed**, **16 failed** (same pre-existing / Linux env set)
