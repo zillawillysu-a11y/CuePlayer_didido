@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -17,43 +16,55 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueplayer.domain.models import AudioOutputSettings, default_channel_routing
-from cueplayer.playback.devices import find_output_device, list_output_devices
-from cueplayer.playback.mtc_output import list_midi_output_names
+from cueplayer.domain.models import (
+    AudioOutputSettings,
+    clamp_output_channels,
+    default_channel_routing,
+    default_ltc_channels_for_device,
+)
+from cueplayer.playback.devices import (
+    OutputDeviceInfo,
+    asio_available,
+    find_output_device,
+    list_output_devices,
+    list_output_devices_for_picker,
+    picker_hostapi_options,
+    resolve_output_hostapi,
+    resolve_output_endpoint_for_channels,
+    upgrade_device_for_channels,
+)
+from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
+from cueplayer.playback.routing_parse import (
+    LTC_LABEL,
+    MUSIC_SOURCE_LABEL,
+    is_ltc_route,
+    is_music_source_route,
+    parse_channel_ui,
+    parse_stereo_route,
+    route_to_ui,
+)
+from cueplayer.ui.checkbox import TickCheckBox
 from cueplayer.ui.spinboxes import NoWheelComboBox
 from cueplayer.ui.theme import SLIDER_QSS
 
 
 def _channels_to_ui(channels: list[int]) -> str:
-    """0-based list → human '1+2' style string."""
     if not channels:
         return ""
     return "+".join(str(int(c) + 1) for c in channels)
 
 
-def _parse_channel_ui(text: str, *, max_ch: int) -> list[int] | None:
-    """
-    Parse '1', '1+2', '3', '1,2' (1-based) → 0-based indices.
-    Empty string → []. None on parse error.
-    """
-    raw = text.strip().replace(",", "+").replace(" ", "")
-    if not raw:
-        return []
-    parts = [p for p in raw.split("+") if p]
-    out: list[int] = []
-    for part in parts:
-        try:
-            one_based = int(part)
-        except ValueError:
-            return None
-        if one_based < 1:
-            return None
-        idx = one_based - 1
-        if max_ch > 0 and idx >= max_ch:
-            return None
-        if idx not in out:
-            out.append(idx)
-    return out
+def _clamp_channel_ui_text(
+    text: str, *, max_ch: int, fallback: list[int] | None = None
+) -> str:
+    if is_music_source_route(text) or is_ltc_route(text):
+        return text.strip()
+    parsed = parse_channel_ui(text, max_ch=max_ch)
+    if parsed is None:
+        parsed = []
+    if not parsed and fallback is not None:
+        parsed = clamp_output_channels(list(fallback), max_ch)
+    return _channels_to_ui(parsed)
 
 
 class AudioTimecodeDialog(QDialog):
@@ -66,13 +77,20 @@ class AudioTimecodeDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Audio / Timecode")
-        self.resize(520, 480)
-        self._devices = list_output_devices()
+        self.resize(540, 520)
+        self._all_devices = list_output_devices(dedupe=False)
+        self._devices: list[OutputDeviceInfo] = []
         self._result = AudioOutputSettings(
             output_device_name=settings.output_device_name,
+            output_device_index=settings.output_device_index,
+            output_hostapi=str(settings.output_hostapi or ""),
+            music_l_route=str(settings.music_l_route or "1"),
+            music_r_route=str(settings.music_r_route or "2"),
             music_left_channels=list(settings.music_left_channels),
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
+            ltc_source=str(settings.ltc_source),
+            ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(settings.ltc_gain),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
@@ -81,48 +99,80 @@ class AudioTimecodeDialog(QDialog):
 
         root = QVBoxLayout(self)
 
-        # --- Output device ---
         device_box = QGroupBox("Output Device")
         device_form = QFormLayout(device_box)
+        self.hostapi_combo = NoWheelComboBox()
+        for label, api in picker_hostapi_options():
+            self.hostapi_combo.addItem(label, api)
+        saved_api = resolve_output_hostapi(settings.output_hostapi)
+        selected = False
+        for i in range(self.hostapi_combo.count()):
+            if self.hostapi_combo.itemData(i) == saved_api:
+                self.hostapi_combo.setCurrentIndex(i)
+                selected = True
+                break
+        if not selected and self.hostapi_combo.count():
+            self.hostapi_combo.setCurrentIndex(0)
+
         self.device_combo = NoWheelComboBox()
-        self.device_combo.addItem("System default", "")
-        selected_idx = 0
-        for i, dev in enumerate(self._devices):
-            self.device_combo.addItem(dev.label, dev.name)
-            if settings.output_device_name and (
-                settings.output_device_name == dev.name
-                or settings.output_device_name.lower() in dev.name.lower()
-            ):
-                selected_idx = i + 1
-        self.device_combo.setCurrentIndex(selected_idx)
         self.device_hint = QLabel("")
         self.device_hint.setStyleSheet("color: #a1a1aa;")
         self.device_hint.setWordWrap(True)
+        self.driver_hint = QLabel(
+            "Driver: choose ASIO, then pick your interface (e.g. Focusrite) under Device. "
+            "Use WASAPI or DirectSound only when ASIO is unavailable."
+        )
+        self.driver_hint.setWordWrap(True)
+        self.driver_hint.setStyleSheet("color: #8b949e;")
+        if not asio_available():
+            self.driver_hint.setText(
+                "No ASIO in PortAudio — install your interface ASIO driver and restart. "
+                "Until then, a 4ch DirectSound / WASAPI row can still route LTC→CH3."
+            )
+        device_form.addRow("Driver", self.hostapi_combo)
         device_form.addRow("Device", self.device_combo)
         device_form.addRow(self.device_hint)
+        device_form.addRow(self.driver_hint)
         root.addWidget(device_box)
 
-        # --- Music routing ---
-        music_box = QGroupBox("Music Routing (1-based channel numbers)")
-        music_form = QFormLayout(music_box)
+        stereo_box = QGroupBox("Stereo Output (L / R legs)")
+        stereo_form = QFormLayout(stereo_box)
         self.music_l = NoWheelComboBox()
         self.music_l.setEditable(True)
         self.music_r = NoWheelComboBox()
         self.music_r.setEditable(True)
-        music_form.addRow("Music L →", self.music_l)
-        music_form.addRow("Music R →", self.music_r)
-        tip = QLabel("Examples: 1 · 1+2 · 3  (empty = mute that side)")
-        tip.setStyleSheet("color: #a1a1aa;")
-        music_form.addRow(tip)
-        root.addWidget(music_box)
+        stereo_form.addRow("L →", self.music_l)
+        stereo_form.addRow("R →", self.music_r)
+        stereo_tip = QLabel(
+            "Music Source = music-only (striped LTC removed). "
+            "LTC = pass file timecode to that leg (e.g. 3.5mm split: L=Music Source, R=LTC). "
+            "Or use channel numbers 1 · 2 · 3 · 1+2."
+        )
+        stereo_tip.setStyleSheet("color: #a1a1aa;")
+        stereo_tip.setWordWrap(True)
+        stereo_form.addRow(stereo_tip)
+        root.addWidget(stereo_box)
 
-        # --- LTC ---
-        ltc_box = QGroupBox("Generated LTC")
+        ltc_box = QGroupBox("LTC Output")
         ltc_form = QFormLayout(ltc_box)
-        self.ltc_enable = QCheckBox("Enable LTC generator")
+        self.ltc_enable = TickCheckBox("Enable LTC on output")
         self.ltc_enable.setChecked(settings.ltc_enabled)
         self.ltc_channels = NoWheelComboBox()
         self.ltc_channels.setEditable(True)
+        self.ltc_source = NoWheelComboBox()
+        self.ltc_source.addItem("Internal generator", "generator")
+        self.ltc_source.addItem("From file — auto-detect L/R", "auto")
+        self.ltc_source.addItem("From file — Left channel", "source_left")
+        self.ltc_source.addItem("From file — Right channel", "source_right")
+        for i in range(self.ltc_source.count()):
+            if self.ltc_source.itemData(i) == settings.ltc_source:
+                self.ltc_source.setCurrentIndex(i)
+                break
+        self.ltc_generator_enable = TickCheckBox("Enable internal LTC generator")
+        self.ltc_generator_enable.setChecked(settings.ltc_generator_enabled)
+        self.ltc_generator_enable.setToolTip(
+            "Only when LTC source is Internal generator. File pass-through ignores this."
+        )
         self.ltc_gain = QSlider(Qt.Orientation.Horizontal)
         self.ltc_gain.setRange(0, 150)
         self.ltc_gain.setValue(int(round(settings.ltc_gain * 100)))
@@ -131,18 +181,23 @@ class AudioTimecodeDialog(QDialog):
         gain_row = QHBoxLayout()
         gain_row.addWidget(self.ltc_gain, stretch=1)
         gain_row.addWidget(self.ltc_gain_label)
-        ltc_note = QLabel("LTC gain is independent of master Vol.")
+        ltc_note = QLabel(
+            "Enable LTC on output + LTC→CH3 sends timecode to your interface. "
+            "Use file source for striped audio; use Internal generator only when needed."
+        )
         ltc_note.setStyleSheet("color: #a1a1aa;")
+        ltc_note.setWordWrap(True)
         ltc_form.addRow(self.ltc_enable)
         ltc_form.addRow("LTC →", self.ltc_channels)
+        ltc_form.addRow("LTC source", self.ltc_source)
+        ltc_form.addRow(self.ltc_generator_enable)
         ltc_form.addRow("LTC Gain", gain_row)
         ltc_form.addRow(ltc_note)
         root.addWidget(ltc_box)
 
-        # --- MTC ---
         mtc_box = QGroupBox("MIDI Timecode (MTC)")
         mtc_form = QFormLayout(mtc_box)
-        self.mtc_enable = QCheckBox("Enable MTC generator")
+        self.mtc_enable = TickCheckBox("Enable MTC generator")
         self.mtc_enable.setChecked(settings.mtc_enabled)
         self.midi_port = NoWheelComboBox()
         self.midi_port.addItem("(none)", "")
@@ -159,6 +214,10 @@ class AudioTimecodeDialog(QDialog):
         self.midi_port.setCurrentIndex(midi_sel)
         mtc_form.addRow(self.mtc_enable)
         mtc_form.addRow("MIDI Out", self.midi_port)
+        midi_hint = QLabel(midi_backend_status())
+        midi_hint.setWordWrap(True)
+        midi_hint.setStyleSheet("color: #a1a1aa;")
+        mtc_form.addRow(midi_hint)
         root.addWidget(mtc_box)
 
         buttons = QDialogButtonBox(
@@ -168,84 +227,173 @@ class AudioTimecodeDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+        self.hostapi_combo.currentIndexChanged.connect(lambda _idx: self._reload_devices())
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        self.ltc_source.currentIndexChanged.connect(self._on_ltc_source_changed)
+        self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
         self.ltc_gain.valueChanged.connect(
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
+        self._reload_devices()
+        self._on_ltc_source_changed()
+        self.music_l.setEditText(settings.music_l_route or "1")
+        self.music_r.setEditText(settings.music_r_route or "2")
+        max_ch = self._current_max_channels()
+        ltc = clamp_output_channels(settings.ltc_channels, max_ch)
+        if not ltc:
+            ltc = default_ltc_channels_for_device(max_ch)
+        self.ltc_channels.setEditText(_channels_to_ui(ltc) or ("3" if max_ch >= 3 else "1"))
+
+    def _reload_devices(self) -> None:
+        api = str(self.hostapi_combo.currentData() or "")
+        prev_idx = self.device_combo.currentData()
+        self._devices = list_output_devices_for_picker(api)
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        self.device_combo.addItem("System default", None)
+        select = 0
+        for i, dev in enumerate(self._devices):
+            self.device_combo.addItem(dev.label, dev.index)
+            if prev_idx is not None and dev.index == prev_idx:
+                select = i + 1
+            elif self._result.output_device_index is not None and dev.index == self._result.output_device_index:
+                select = i + 1
+            elif self._result.output_device_name and (
+                self._result.output_device_name == dev.name
+                or self._result.output_device_name.lower() in dev.name.lower()
+            ):
+                select = i + 1
+        self.device_combo.setCurrentIndex(select)
+        self.device_combo.blockSignals(False)
         self._on_device_changed()
-        # Restore channel text after populating combos.
-        self.music_l.setEditText(_channels_to_ui(settings.music_left_channels) or "1")
-        self.music_r.setEditText(_channels_to_ui(settings.music_right_channels) or "2")
-        self.ltc_channels.setEditText(_channels_to_ui(settings.ltc_channels) or "3")
+
+    def _chosen_device(self) -> OutputDeviceInfo | None:
+        idx = self.device_combo.currentData()
+        if idx is None:
+            return find_output_device(self._devices, name="")
+        for dev in self._devices:
+            if dev.index == idx:
+                return dev
+        return find_output_device(self._devices, name=str(self.device_combo.currentData() or ""))
 
     def _current_max_channels(self) -> int:
-        name = self.device_combo.currentData() or ""
-        if not name:
-            chosen = find_output_device(self._devices, name="")
-            return chosen.max_output_channels if chosen else 2
-        for d in self._devices:
-            if d.name == name:
-                return d.max_output_channels
-        return 2
+        chosen = self._chosen_device()
+        if chosen is None:
+            return 2
+        need = 3 if self.ltc_enable.isChecked() else 1
+        endpoint = resolve_output_endpoint_for_channels(
+            preferred_name=chosen.name,
+            min_channels=need,
+            samplerate=48000.0,
+            raw_devices=self._all_devices,
+        )
+        if endpoint is not None:
+            return endpoint.max_output_channels
+        return upgrade_device_for_channels(
+            chosen, min_channels=need, raw_devices=self._all_devices
+        ).max_output_channels
+
+    def _on_ltc_source_changed(self) -> None:
+        is_generator = self.ltc_source.currentData() == "generator"
+        self.ltc_generator_enable.setVisible(is_generator)
+        if is_generator:
+            self.ltc_generator_enable.setEnabled(self.ltc_enable.isChecked())
+
+    def _stereo_suggestions(self, max_ch: int) -> list[str]:
+        items = [MUSIC_SOURCE_LABEL, LTC_LABEL]
+        items.extend(str(i) for i in range(1, max_ch + 1))
+        if max_ch >= 2:
+            items.append("1+2")
+        return items
 
     def _on_device_changed(self) -> None:
         max_ch = self._current_max_channels()
-        left, right, ltc = default_channel_routing(max_ch)
-        l_txt = _channels_to_ui(left) or "—"
-        r_txt = _channels_to_ui(right) or "—"
-        ltc_txt = _channels_to_ui(ltc) or "unmapped (stereo device)"
+        left, right, _ = default_channel_routing(max_ch)
+        ltc_default = default_ltc_channels_for_device(max_ch)
+        chosen = self._chosen_device()
+        api_txt = chosen.hostapi_name.replace("Windows ", "") if chosen else "—"
         self.device_hint.setText(
-            f"{max_ch} output channel(s). "
-            f"Default: Music L→{l_txt}, R→{r_txt}; LTC→{ltc_txt}."
+            f"{max_ch} output channel(s) via {api_txt}. "
+            f"Default LTC→{_channels_to_ui(ltc_default) or '—'}."
         )
-        # Refresh suggestion items.
-        suggestions = [str(i) for i in range(1, max_ch + 1)]
-        if max_ch >= 2:
-            suggestions.append("1+2")
-        for combo in (self.music_l, self.music_r, self.ltc_channels):
+        suggestions = self._stereo_suggestions(max_ch)
+        for combo, fallback, side in (
+            (self.music_l, left or [0], "l"),
+            (self.music_r, right or ([min(1, max_ch - 1)] if max_ch > 0 else [0]), "r"),
+        ):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(suggestions)
-            combo.setEditText(current)
+            if is_music_source_route(current) or is_ltc_route(current):
+                combo.setEditText(current)
+            else:
+                combo.setEditText(
+                    _clamp_channel_ui_text(current, max_ch=max_ch, fallback=fallback)
+                )
             combo.blockSignals(False)
+        ltc_suggestions = [str(i) for i in range(1, max_ch + 1)]
+        combo = self.ltc_channels
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(ltc_suggestions)
+        combo.setEditText(
+            _clamp_channel_ui_text(current, max_ch=max_ch, fallback=ltc_default)
+        )
+        combo.blockSignals(False)
 
     def result_settings(self) -> AudioOutputSettings:
         return self._result
 
     def _accept(self) -> None:
         max_ch = self._current_max_channels()
-        left = _parse_channel_ui(self.music_l.currentText(), max_ch=max_ch)
-        right = _parse_channel_ui(self.music_r.currentText(), max_ch=max_ch)
-        ltc = _parse_channel_ui(self.ltc_channels.currentText(), max_ch=max_ch)
-        if left is None or right is None or ltc is None:
+        left_parsed = parse_stereo_route(self.music_l.currentText(), side="l", max_ch=max_ch)
+        right_parsed = parse_stereo_route(self.music_r.currentText(), side="r", max_ch=max_ch)
+        ltc = parse_channel_ui(self.ltc_channels.currentText(), max_ch=max_ch)
+        if left_parsed is None or right_parsed is None or ltc is None:
             QMessageBox.warning(
                 self,
                 "Invalid routing",
-                f"Channel numbers must be 1–{max_ch} (examples: 1, 1+2, 3).",
+                "Use Music Source, LTC, or channel numbers (1, 1+2, 3).",
             )
             return
+        left_kind, left_ch = left_parsed
+        right_kind, right_ch = right_parsed
+        self.music_l.setEditText(route_to_ui(left_kind, left_ch, legacy_text=self.music_l.currentText()))
+        self.music_r.setEditText(route_to_ui(right_kind, right_ch, legacy_text=self.music_r.currentText()))
         if self.ltc_enable.isChecked() and not ltc:
+            ltc = default_ltc_channels_for_device(max_ch)
+        if self.ltc_enable.isChecked() and ltc and len(ltc) > 1:
             QMessageBox.warning(
                 self,
                 "LTC routing",
-                "LTC is enabled but no output channel is set.",
+                "LTC is mono — route to one channel (e.g. 3 for Focusrite CH3).",
             )
+            return
+        self.ltc_channels.setEditText(_channels_to_ui(ltc))
+        if self.ltc_enable.isChecked() and not ltc:
+            QMessageBox.warning(self, "LTC routing", "LTC is enabled but no output channel is set.")
             return
         if self.mtc_enable.isChecked() and not (self.midi_port.currentData() or ""):
-            QMessageBox.warning(
-                self,
-                "MTC port",
-                "MTC is enabled but no MIDI output port is selected.",
-            )
+            QMessageBox.warning(self, "MTC port", "MTC is enabled but no MIDI output port is selected.")
             return
+        chosen = self._chosen_device()
         self._result = AudioOutputSettings(
-            output_device_name=str(self.device_combo.currentData() or ""),
-            music_left_channels=left,
-            music_right_channels=right,
+            output_device_name=chosen.name if chosen is not None else "",
+            output_device_index=chosen.index if chosen is not None else None,
+            output_hostapi=resolve_output_hostapi(str(self.hostapi_combo.currentData() or "")),
+            music_l_route=self.music_l.currentText().strip() or "1",
+            music_r_route=self.music_r.currentText().strip() or "2",
+            music_left_channels=left_ch if left_kind == "channels" else [],
+            music_right_channels=right_ch if right_kind == "channels" else [],
             ltc_enabled=self.ltc_enable.isChecked(),
+            ltc_source=str(self.ltc_source.currentData() or "generator"),
+            ltc_generator_enabled=self.ltc_generator_enable.isChecked(),
             ltc_gain=self.ltc_gain.value() / 100.0,
-            ltc_channels=ltc,
+            ltc_channels=ltc if self.ltc_enable.isChecked() else (
+                ltc or default_ltc_channels_for_device(max_ch)
+            ),
             mtc_enabled=self.mtc_enable.isChecked(),
             midi_port_name=str(self.midi_port.currentData() or ""),
         )

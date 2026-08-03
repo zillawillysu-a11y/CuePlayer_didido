@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent, QHideEvent, QResizeEvent, QShowEvent
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
-from cueplayer.domain.models import CleanVideoOutputSettings
+from cueplayer.domain.models import CleanVideoOutputSettings, VIDEO_DECODE_QUALITY_MAX_HEIGHT
 from cueplayer.ui.video_preview import VideoPreviewWidget
 
 CLEAN_OUTPUT_WINDOW_TITLE = "CuePlayer Clean Video Output"
@@ -39,18 +40,28 @@ _ASPECT_H = 9
 _QWIDGETSIZE_MAX = 16777215
 
 
+_DECODE_QUALITY_LABELS: tuple[tuple[str, str], ...] = (
+    ("full", "Full (source resolution)"),
+    ("1080p", "1080p"),
+    ("720p", "720p"),
+    ("540p", "540p"),
+)
+
+
 class CleanVideoOutputWindow(QWidget):
     visibility_changed = Signal(bool)
     # Content size or aspect-lock state changed; main_window marks the
     # project dirty on this (actual persistence happens at save time via
     # current_settings()).
     settings_changed = Signal()
+    decode_quality_changed = Signal(str)  # emitted when user picks a quality in this menu
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle(CLEAN_OUTPUT_WINDOW_TITLE)
         self._aspect_locked = True
         self._adjusting = False
+        self._decode_quality: str = "1080p"
         # Normally the X button only hides this window (see closeEvent) so
         # that re-opening from the Tools menu keeps the same OBS capture
         # target valid. force_close() flips this so MainWindow can actually
@@ -137,6 +148,13 @@ class CleanVideoOutputWindow(QWidget):
             self._enforce_aspect_ratio()
         self.settings_changed.emit()
 
+    def current_decode_quality(self) -> str:
+        return self._decode_quality
+
+    def set_decode_quality(self, quality: str) -> None:
+        if quality in VIDEO_DECODE_QUALITY_MAX_HEIGHT:
+            self._decode_quality = quality
+
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
         fit_action = menu.addAction("Fit")
@@ -161,6 +179,18 @@ class CleanVideoOutputWindow(QWidget):
         lock_action.setChecked(self._aspect_locked)
 
         menu.addSeparator()
+        quality_menu = menu.addMenu("Video Decode Quality")
+        quality_group = QActionGroup(self)
+        quality_group.setExclusive(True)
+        quality_actions: dict[object, str] = {}
+        for q_key, q_label in _DECODE_QUALITY_LABELS:
+            qa = quality_menu.addAction(q_label)
+            qa.setCheckable(True)
+            qa.setChecked(q_key == self._decode_quality)
+            quality_group.addAction(qa)
+            quality_actions[qa] = q_key
+
+        menu.addSeparator()
         fullscreen_action = menu.addAction("Exit Fullscreen" if self.isFullScreen() else "Fullscreen")
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is fit_action:
@@ -172,6 +202,10 @@ class CleanVideoOutputWindow(QWidget):
         elif chosen in preset_actions:
             width, height = preset_actions[chosen]
             self.apply_preset(width, height)
+        elif chosen in quality_actions:
+            quality = quality_actions[chosen]
+            self._decode_quality = quality
+            self.decode_quality_changed.emit(quality)
         elif chosen is fullscreen_action:
             if self.isFullScreen():
                 self.showNormal()

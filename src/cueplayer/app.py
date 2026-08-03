@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
+
+# Load PortAudio's ASIO backend on Windows (Reaper-style) before sounddevice import.
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 
 def main() -> int:

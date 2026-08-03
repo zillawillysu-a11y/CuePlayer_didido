@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cueplayer.timecode.ltc import encode_ltc_frame_bits, generate_ltc_pcm
+from cueplayer.timecode.ltc import encode_ltc_frame_bits, generate_ltc_pcm, generate_ltc_pcm_segment
 
 
 def test_encode_ltc_sync_word() -> None:
@@ -48,6 +48,46 @@ def test_generate_ltc_various_fps(fps: float) -> None:
     pcm = generate_ltc_pcm(0.2, 48000, "10:00:00:00", fps)
     assert pcm.size == int(round(0.2 * 48000))
     assert np.any(pcm != 0)
+
+
+def test_generate_ltc_continuous_no_gaps() -> None:
+    pcm = generate_ltc_pcm(2.0, 48000, "01:00:00:00", 30.0)
+    max_gap = 0
+    gap = 0
+    for x in pcm:
+        if abs(float(x)) < 1e-6:
+            gap += 1
+            max_gap = max(max_gap, gap)
+        else:
+            gap = 0
+  # Bi-phase should stay active; old encoder left multi-sample silence between frames.
+    assert max_gap < 8
+    assert float(np.max(np.abs(pcm))) > 0.1
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000])
+def test_generate_ltc_frame_lengths_match(sample_rate: int) -> None:
+    fps = 30.0
+    pcm = generate_ltc_pcm(1.0, sample_rate, "01:00:00:00", fps)
+    assert pcm.shape[0] == sample_rate
+    max_gap = 0
+    gap = 0
+    for x in pcm:
+        if abs(float(x)) < 1e-6:
+            gap += 1
+            max_gap = max(max_gap, gap)
+        else:
+            gap = 0
+    assert max_gap < 8
+
+
+def test_generate_ltc_pcm_segment_matches_full_cache() -> None:
+    sr = 48000
+    full = generate_ltc_pcm(2.0, sr, "01:00:00:00", 30.0)
+    start = 12345
+    frames = 4096
+    seg = generate_ltc_pcm_segment(start, frames, sr, "01:00:00:00", 30.0)
+    assert np.allclose(seg, full[start : start + frames])
 
 
 def test_ltc_advances_from_start_tc() -> None:

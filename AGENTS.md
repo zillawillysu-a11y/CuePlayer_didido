@@ -37,4 +37,8 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-07)
 
-Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
+Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements.
+
+Latest slice: Auto Save + timestamped `.cueplayer_backups/` (Unicode-safe), Restore from Backup, and Song.row_color painted consistently across setlist / Export dialog / Show Patch.
+
+Still open P0/P1 often next: multi-audio version compare + Align Anchors, Missing Media Relink dialog, MA Export Preview/Validation. Optional NDI only after cue accuracy is solid.
