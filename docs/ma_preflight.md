@@ -1,9 +1,9 @@
 # MA Preflight — Validation Domain
 
-**Status:** Sprint 6 Feature Task 3 complete (report builder)  
+**Status:** Sprint 6 Feature Task 4 complete (Preflight UI MVP)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint6-preflight-report-028d`  
-**Package:** `cueplayer.domain.validation`
+**Scope tip:** `cursor/sprint6-preflight-ui-028d`  
+**Package:** `cueplayer.domain.validation` + `cueplayer.ui.ma_preflight_dialog`
 
 ---
 
@@ -13,7 +13,8 @@
 - Independent of `cueplayer.exporters` XML generation.
 - Extensible rule registration for Task 2+ rule packs.
 - Stable presentation layer for UI / CLI / JSON (Task 3).
-- **No** UI, **no** auto-fixes, **no** project mutation.
+- Read-only Preflight dialog (Task 4) consuming `PreflightReport` only.
+- **No** auto-fixes, **no** project mutation, **no** exporter changes from Preflight.
 
 ---
 
@@ -243,25 +244,87 @@ Do not invent a second schema in the UI layer — consume this object / dict onl
 - Project read-only after `build_preflight_report_for_project`
 - Prior rule + framework suites remain green
 
-### Remaining work
+### Remaining work (after Task 3)
 
 | Item | Notes |
 |------|-------|
-| Preflight UI | Task 4 — dialog / panel over `PreflightReport` |
-| Export gate | Wire Export action to `has_errors` (warn-or-block policy TBD) |
+| Preflight UI | ✅ Task 4 |
+| Export gate | Task 5 — wire Export to `has_errors` |
 | CLI entry | Optional thin wrapper calling `format_text()` |
 | Auto-fix | Still deferred — separate command layer later |
 | Deeper rules | Cue-level names, pool ranges, TC mode — still Task 2 gaps |
 
-### Recommendation for Task 4 (Preflight UI)
+---
 
-1. Read-only dialog: summary line + severity-filtered table bound to `PreflightReport.issues`.  
-2. Columns: Severity, Code, Category, Song, Object, Message.  
-3. Export menu: run `build_preflight_report_for_project` first; if `has_errors`, block or confirm.  
-4. No auto-fix buttons in MVP; “Open song” navigation optional.  
-5. Do **not** call exporters from the preflight UI.
+## Sprint 6 Task 4 — Preflight UI (done)
 
-Still **no** auto-fix, **no** XML write, **no** exporter changes in Task 3.
+**Scope tip:** `cursor/sprint6-preflight-ui-028d`  
+**Module:** `cueplayer.ui.ma_preflight_dialog.MaPreflightDialog`  
+**Entry:** Tools → **MA Preflight…**
+
+### UI layout
+
+```text
+┌─ MA Preflight ─────────────────────────────────────┐
+│ Demo Show: 1 error(s), 2 warning(s), 1 info          │
+│ Errors: 1    Warnings: 2    Information: 1           │
+│ Hint: double-click to navigate (read-only)           │
+│ ┌──────────────────────────────────────────────────┐ │
+│ │ Code │ Severity │ Song / Object │ Message        │ │
+│ │ MA001│ error    │ 開場          │ …              │ │
+│ │ MA050│ warning  │ 開場 · seq…   │ …              │ │
+│ │ …    │ …        │ …             │ …              │ │
+│ └──────────────────────────────────────────────────┘ │
+│                                          [ Close ]   │
+└──────────────────────────────────────────────────────┘
+```
+
+- One table (report already sorted: errors → warnings → information).
+- No filter / search / auto-fix in MVP.
+- Dialog accepts **`PreflightReport` only** — never calls `run_ma_preflight` / rule factories.
+- Host (`MainWindow._open_ma_preflight`) builds the report via `build_preflight_report_for_project`.
+
+### Navigation behavior
+
+| Double-click target | Action |
+|---------------------|--------|
+| `song:…` | Activate that song in the setlist |
+| `mark:…` (+ `song_id`) | Activate song, select mark, seek playhead |
+| `sequence:…` (+ `song_id`) | Activate song |
+| `project:` / `settings:` / executor-only / info totals | No navigation |
+
+Signal: `navigate_requested(song_id, object_kind, object_id)`.
+
+### Coverage
+
+- UI tests: `tests/ui/test_ma_preflight_dialog.py`
+- Layout / summary counts / double-click navigate / read-only / no exporter imports
+
+### Remaining UX work
+
+| Item | Notes |
+|------|-------|
+| Category column | Optional; severity + code sufficient for MVP |
+| Keep dialog open while jumping | Modal today; modeless later if needed |
+| Highlight mark after seek | Timeline selection set; cue-list scroll polish later |
+| Filter / search | Explicitly out of MVP |
+| Export integration | Task 5 |
+
+### Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Stale report if project edited while dialog open | Dialog is modal; rebuild on each open |
+| Missing `song_id` on some issues | `navigation_target` returns `None`; no jump |
+| Operators expect auto-fix | Hint text + no Fix buttons |
+
+### Recommendation for Task 5 (Export Integration)
+
+1. Before Export / Show Patch write: `report = build_preflight_report_for_project(project)`.  
+2. If `report.has_errors`: block export **or** confirm (“Export anyway?”) — product choice.  
+3. Optionally open `MaPreflightDialog(report)` from the Export path when blocked.  
+4. Warnings: soft confirm only.  
+5. Still **no** auto-fix; still **no** rule execution inside the dialog.
 
 ---
 
@@ -269,11 +332,11 @@ Still **no** auto-fix, **no** XML write, **no** exporter changes in Task 3.
 
 | Extension | Approach |
 |-----------|----------|
-| Task 4 Preflight UI | Present `PreflightReport` in a dialog / export gate |
+| Task 5 Export Integration | Gate Export on `PreflightReport.has_errors` |
 | Export-intent fidelity | Keep `MaPreflightContext` aligned with Show Patch fields |
 | Auto-fix (later) | Separate command layer; never inside `evaluate` or report builder |
 | Non-MA packs | New prefixes + rule sets; reuse `build_preflight_report` |
 
 ---
 
-## READY FOR PREFLIGHT UI
+## READY FOR MA PREFLIGHT INTEGRATION

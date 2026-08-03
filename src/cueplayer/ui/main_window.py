@@ -177,6 +177,8 @@ from cueplayer.playback.ndi_output import (
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.align_anchors_dialog import AlignAnchorsDialog
+from cueplayer.ui.ma_preflight_dialog import MaPreflightDialog
+from cueplayer.domain.validation import build_preflight_report_for_project
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.web_remote.bridge import WebRemoteBridge
 from cueplayer.web_remote.main_window_remote_host import MainWindowRemoteHost
@@ -2323,12 +2325,18 @@ class MainWindow(QMainWindow):
             "Align a song variant mix to the cue timeline (shell — Apply not wired yet)."
         )
         act_align_anchors.triggered.connect(self._open_align_anchors)
+        act_ma_preflight = QAction("MA &Preflight…", self)
+        act_ma_preflight.setToolTip(
+            "Validate MA export labels, sequences, and executors (read-only; no auto-fix)."
+        )
+        act_ma_preflight.triggered.connect(self._open_ma_preflight)
         tools_menu.addAction(act_manager)
         tools_menu.addAction(act_display)
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addAction(act_web_remote)
         tools_menu.addAction(act_align_anchors)
+        tools_menu.addAction(act_ma_preflight)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -5003,6 +5011,45 @@ class MainWindow(QMainWindow):
         # Safety: preview must not survive dialog close.
         if self.playback.anchor_preview_active:
             self.playback.end_anchor_preview(restore_entry=True)
+
+    def _open_ma_preflight(self) -> None:
+        """Tools → MA Preflight… — build report outside the dialog, show read-only UI."""
+        report = build_preflight_report_for_project(self.project)
+        dialog = MaPreflightDialog(report, self)
+        dialog.navigate_requested.connect(self._on_preflight_navigate)
+        dialog.exec()
+
+    def _on_preflight_navigate(
+        self, song_id: str, object_kind: str, object_id: str
+    ) -> None:
+        """Activate Song (and optionally select/seek a mark) from Preflight double-click."""
+        song_id = str(song_id or "").strip()
+        if not song_id:
+            self.status.showMessage("Preflight: no Song to navigate to", 2000)
+            return
+        index = next(
+            (i for i, s in enumerate(self.project.songs) if s.id == song_id),
+            None,
+        )
+        if index is None:
+            self.status.showMessage("Preflight: Song not found in setlist", 2500)
+            return
+        self._activate_song(index, stop_playback=False)
+        kind = str(object_kind or "").strip().lower()
+        oid = str(object_id or "").strip()
+        if kind == "mark" and oid:
+            mark = self.current_song.mark_by_id(oid)
+            if mark is not None:
+                self.timeline.set_selected_mark_ids([oid])
+                self.monitor.set_selected_mark_ids([oid])
+                self.playback.seek(float(mark.time_seconds))
+                self.timeline.set_position(float(mark.time_seconds))
+                self.status.showMessage(
+                    f"Preflight → {self.current_song.name} · mark", 2500
+                )
+                return
+        self.status.showMessage(f"Preflight → {self.current_song.name}", 2000)
+
     def _on_align_anchors_committed(self, command: SetVariantAnchorOffsetCommand) -> None:
         """Undo stack + dirty after Align Anchors Apply (command already applied)."""
         self._push_song_undo(command)
