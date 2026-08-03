@@ -66,6 +66,11 @@ class VideoSyncController(QObject):
         self._warned_overlap_keys: set[frozenset[str]] = set()
         self._decode_quality: VideoDecodeQuality = "full"
         self._decode_max_height: int | None = None
+        # When both the embedded Preview panel and Clean Output window are
+        # hidden, skip all decode work so playback/editing stays light on CPU
+        # (see MainWindow._sync_video_output_active).
+        self._video_output_active = True
+        self._last_position_seconds: float | None = None
         self._scrubbing = False
         self._playing = False
         # Trailing-edge throttle state, active while scrubbing or playing
@@ -89,6 +94,33 @@ class VideoSyncController(QObject):
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
+
+    def video_output_active(self) -> bool:
+        return self._video_output_active
+
+    def set_video_output_active(self, active: bool) -> None:
+        """Enable/disable frame decode+emit (Preview / Clean Output visibility).
+
+        Audio playback and embedded clip audio are unaffected — only the RGB
+        preview path is gated. When re-enabled, the frame at the last
+        `update_position()` is decoded immediately."""
+        active = bool(active)
+        if active == self._video_output_active:
+            return
+        self._video_output_active = active
+        if not active:
+            self._cancel_pending()
+            self._close_all_decoders()
+            return
+        song = self._song
+        seconds = self._last_position_seconds
+        if song is None or seconds is None:
+            return
+        self._maybe_warn_overlap(song, seconds)
+        primary = song.active_video_clip_at(seconds)
+        self._set_active(primary.id if primary else None)
+        self._last_decode_time = 0.0
+        self._decode_and_emit(song, seconds)
 
     def set_scrubbing(self, active: bool) -> None:
         """Call from the timeline's scrub_started/scrub_ended signals.
@@ -164,6 +196,9 @@ class VideoSyncController(QObject):
 
     def update_position(self, seconds: float) -> None:
         """Call on every AudioEngine.position_changed tick (the master clock)."""
+        self._last_position_seconds = float(seconds)
+        if not self._video_output_active:
+            return
         song = self._song
         if song is None:
             self._cancel_pending()
