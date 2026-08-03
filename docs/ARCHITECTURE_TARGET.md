@@ -173,7 +173,7 @@ src/cueplayer/ui/cue_list_columns.py    →  re-export domain.cue_list_columns
 
 | # | 搬哪個 Module | 做什麼（仍不改功能） | 完成定義 |
 |---|---------------|----------------------|----------|
-| **0** | `ports/` 空殼 | 只加 Protocol 檔，無人實作也無呼叫 | 套件可 import |
+| **0** | `ports/` Protocol 套件 | ✅ 已落地：`src/cueplayer/ports/` 僅 Protocol（見 handoff `PortsPackageStep0`） | `import cueplayer.ports` |
 | **1** | `domain/cue_list_columns` | 從 `ui/cue_list_columns` 遷出；ui/persistence 兩邊 shim | persistence 不再 import `ui.*` |
 | **2** | `ports.remote_host` + bridge 適配 | 定義介面；bridge 改打公開方法（MainWindow 先實作介面） | bridge 零私有 `_` 存取 |
 | **3** | `application/autosave_service` | 從 MainWindow 剪出 timer+backup 呼叫 | MainWindow 只持有 service |
