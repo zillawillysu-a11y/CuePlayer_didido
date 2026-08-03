@@ -107,6 +107,7 @@ from cueplayer.application.settings_service import (
     SETTINGS_ORG as _SETTINGS_ORG,
     SettingsService,
 )
+from cueplayer.application.show_session_service import ShowSessionService
 from cueplayer.domain.song_session import SongSession
 from cueplayer.persistence.backup import (
     list_backups,
@@ -1046,6 +1047,7 @@ class MainWindow(QMainWindow):
 
         self.engine = AudioEngine(self)
         self.playback = PlaybackService(self.engine, self._song_session)
+        self.show_session = ShowSessionService(self, self.playback)
         self.engine.set_duration(self.current_song.duration_seconds)
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -3014,26 +3016,7 @@ class MainWindow(QMainWindow):
         self.current_song = self._blank_song
         self._undo_ctx = UndoContext(self.project, self.current_song.id)
         self._rebuild_song_list(select_indexes=[])
-        self.timeline.clear_selection(emit=False)
-        self.timeline.set_song(None)
-        self.timeline.set_audio(None)
-        self.timeline.set_audio_loading(False)
-        self.timeline.set_ltc_audio(None)
-        self.monitor.set_song(None)
-        self.monitor.set_selected_mark_ids([])
-        self.video_sync.set_song(None)
-        self.engine.set_song(None)
-        self.engine.set_buffer(None)
-        self.engine.set_duration(60.0)
-        self.playback.clear_loop()
-        self._sync_loop_ui()
-        self.transport.set_times(0.0, self.engine.duration)
-        self.monitor.set_position(0.0, self.engine.duration)
-        self._rebuild_digit_shortcuts()
-        self._refresh_window_title()
-        self._refresh_status()
-        self._sync_timeline_overview()
-        self._ensure_video_preview_frame()
+        self.show_session.apply_empty_workspace()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -4511,118 +4494,12 @@ class MainWindow(QMainWindow):
         self._show_renumber_section_menu()
 
     def _activate_song(self, index: int, *, stop_playback: bool = True) -> None:
-        if index < 0 or index >= len(self.project.songs):
-            return
-        self._audio_load_token += 1
-        self._song_activate_gen += 1
-        activate_gen = self._song_activate_gen
-        # Tear down PortAudio + video decode before swapping song media.
-        # Leaving the stream open (pause/stop alone) races PyAV close with the
-        # audio callback and is a common mid-play / song-switch hard crash.
-        if stop_playback or bool(getattr(self.engine, "playing", False)):
-            self.engine.quiesce_output()
-        self.current_song = self.project.songs[index]
-        self._sync_undo_context()
-        self.playback.clear_loop()
-        self._sync_loop_ui()
-        self.timeline.clear_selection(emit=False)
-        self.monitor.set_selected_mark_ids([])
-        # Arm Loading before set_song paints — otherwise the Music lane flashes
-        # "Open audio…" while the first long video/audio decode is still queued.
-        self._arm_timeline_audio_loading_placeholder(self.current_song)
-        self.timeline.set_song(self.current_song)
-        self._apply_project_mark_line_settings()
-        # Cue List rebuild is relatively heavy — defer so Setlist selection
-        # + timeline swap paint first (feels like an instant song switch).
-        QTimer.singleShot(
-            0,
-            lambda g=activate_gen, song=self.current_song: self._activate_song_monitor(
-                g, song
-            ),
-        )
-        self.video_sync.set_song(self.current_song)
-        self.engine.set_song(self.current_song)
-        action = getattr(self, "_show_video_track_action", None)
-        if action is not None:
-            action.blockSignals(True)
-            action.setChecked(bool(self.project.show_video_track))
-            action.blockSignals(False)
-        # Keep timeline eye in sync with project-global preference across songs.
-        self.timeline.set_show_video_track(self.project.show_video_track, emit=False)
-        self._sync_timeline_geometry()
-        self._rebuild_digit_shortcuts()
-        self.engine.set_song_timebase(
-            self.current_song.start_timecode, self.current_song.fps
-        )
-        self._refresh_output_timecode_clock(0.0)
-        main_audio = next(
-            (t for t in self.current_song.audio_tracks if t.role == "main"),
-            self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
-        )
-        if main_audio is not None and Path(main_audio.path).is_file():
-            audio_path = Path(main_audio.path)
-            # RAM only — never sync-load .npz on the UI thread (that hitch
-            # was the main Setlist song-switch stall after warm).
-            cached = self._cached_audio_buffer(audio_path)
-            if cached is not None:
-                self.timeline.set_audio_loading(False)
-                self._apply_loaded_audio(
-                    cached,
-                    audio_path,
-                    mark_dirty=False,
-                    replace_track=False,
-                    refresh_song_widgets=False,
-                )
-            else:
-                self.engine.set_buffer(None)
-                self._timeline_ltc_exclude = None
-                self._apply_probed_audio_duration(audio_path, song=self.current_song)
-                # Peaks sidecar paints the Music lane immediately after restart
-                # while full PCM (or full .npz) loads for playback.
-                peaks = load_cached_waveform_peaks(audio_path)
-                if peaks is not None:
-                    self.timeline.set_audio_loading(False)
-                    self.timeline.set_audio(peaks, reset_view=False)
-                    if not self._media_warm_active:
-                        self.status.showMessage(
-                            f"Waveform ready — loading audio… ({audio_path.name})", 0
-                        )
-                else:
-                    self.timeline.set_audio_loading(True, audio_path.name)
-                self._load_audio_path(
-                    audio_path,
-                    mark_dirty=False,
-                    replace_track=False,
-                    bump_token=False,
-                    keep_waveform=peaks is not None,
-                )
-        else:
-            self.engine.set_buffer(None)
-            self._timeline_ltc_exclude = None
-            self.timeline.set_ltc_audio(None)
-            self.engine.set_duration(self.current_song.duration_seconds)
-            self.transport.set_times(0.0, self.engine.duration)
-            self.monitor.set_position(0.0, self.engine.duration)
-            if main_audio is not None:
-                self.timeline.set_audio(None)
-                self.timeline.set_audio_loading(False)
-                self.status.showMessage(
-                    f"Audio file not found: {main_audio.path} "
-                    "(File → Relink Missing Media…)",
-                    5000,
-                )
-            else:
-                # No music file — show embedded video audio in the Music lane.
-                self._schedule_video_music_standin()
-        self._refresh_window_title()
-        self._refresh_status()
-        self._sync_timeline_overview()
-        self._ensure_video_preview_frame()
+        """Activate setlist song — orchestration lives on ``ShowSessionService``."""
+        self.show_session.activate_song_at(index, stop_playback=stop_playback)
 
     def _activate_song_monitor(self, gen: int, song) -> None:  # noqa: ANN001
-        if gen != self._song_activate_gen or song is not self.current_song:
-            return
-        self.monitor.set_song(song)
+        """Back-compat wrapper; prefer ``ShowSessionService._activate_song_monitor``."""
+        self.show_session._activate_song_monitor(gen, song)
 
     def _next_song_default_name(self) -> str:
         return f"Song {len(self.project.songs) + 1}"
