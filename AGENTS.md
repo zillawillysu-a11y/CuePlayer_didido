@@ -43,8 +43,7 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-08)
 
-Architecture through Sprint 3.5 + Feature Planning: services, ShowHost/RemoteHost,
-EventBus (unwired), snapshot in `docs/architecture_overview.md`, plan in
-`docs/roadmap.md`. **Next Feature:** Multi-audio Reference lanes + Align Anchors
-(MVP). Deferred chrome: selection row-color consistency. NDI only after cue
-accuracy. See `.ai/NEXT_TASK.md`.
+Architecture through Sprint 3.5 + Feature Planning + **Song Variant design**
+(`docs/song_variant_design.md`). **Next:** implement Song Variants (select one
+media package per song; cues stay on Song). Align Anchors later. NDI only after
+cue accuracy. See `.ai/NEXT_TASK.md` and `docs/roadmap.md`.

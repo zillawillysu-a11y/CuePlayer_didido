@@ -1,24 +1,27 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint4-feature-planning-028d`  
+**Branch:** `cursor/sprint4-song-variant-design-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 4 — **Feature Planning**: propose the next Feature Sprint. Docs only —
-no feature implementation.
+Sprint 4 Feature Task 1 — Domain & Persistence Audit for Song Variants.
+Design only; no production code / playback / UI changes.
 
 ## What was produced
 
-- `docs/roadmap.md` — Top 10 candidates, recommended pick, Task 1–N plan, extensions
-- Updated `docs/current_architecture.md`, `architecture_overview.md`, `ARCHITECTURE.md`, `CHANGELOG.md`
+- `docs/song_variant_design.md` — full design proposal
+- Updated `docs/roadmap.md`, `docs/current_architecture.md`, `CHANGELOG.md`
 
-## Recommended Feature Sprint
+## Key design choices
 
-**Multi-audio Reference lanes + Align Anchors (MVP)**
+- `SongVariant` + `SongVariantMedia`; cues stay on Song
+- One `selected_variant_id` feeds the sole AudioEngine buffer
+- Schema v2; migrate from legacy `audio_tracks`; Phase A mirror write
+- Align Anchors / simultaneous compare deferred after select-one works
 
 ## Runtime code
 
@@ -26,5 +29,5 @@ no feature implementation.
 
 ## Suggested next
 
-Feature Implementation — Task 1 (domain/persistence audit).  
-READY FOR FEATURE IMPLEMENTATION.
+Song Variant implementation I1 (domain types + tests).  
+READY FOR SONG VARIANT IMPLEMENTATION.

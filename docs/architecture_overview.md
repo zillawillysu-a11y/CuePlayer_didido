@@ -258,4 +258,4 @@ Queued    → Playback events (EventBus adoption; architecture spine, not Featur
 
 ---
 
-## READY FOR FEATURE IMPLEMENTATION
+## READY FOR SONG VARIANT IMPLEMENTATION
