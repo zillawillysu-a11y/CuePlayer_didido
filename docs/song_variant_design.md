@@ -1306,8 +1306,67 @@ Still deferred for Align Anchors MVP polish:
 
 ### 22.7 Recommendation for Sprint 5 Task 6
 
-**Align Anchors MVP** — Preview audition session (temporary draft → PlaybackService mapping, Cancel restores applied), duration/missing-media chips, and a short validation checklist. No Timeline/Waveform redesign.
+**Align Anchors Preview Session** — temporary draft → PlaybackService mapping; Cancel restores applied; Apply still the only commit. Duration chips deferred to beta polish.
 
 ---
 
-## READY FOR ALIGN ANCHORS MVP
+## 23. Sprint 5 Task 6 — Align Anchors Preview Session (done)
+
+**Scope tip:** `cursor/sprint5-align-preview-028d`
+
+### 23.1 Preview lifecycle
+
+```text
+Idle (committed mapping)
+        │ Preview button / Enter
+        ▼
+PlaybackService.begin_anchor_preview(draft_offset)
+        │  • sets ephemeral _preview_anchor_offset
+        │  • rematerializes Song Time playhead + A–B loops
+        │  • never writes SongVariant / undo
+        ▼
+Previewing
+        │ draft nudge/type → update_anchor_preview(draft)
+        │ Apply → commit command + end_anchor_preview
+        │ Cancel / close / variant switch → end_anchor_preview
+        ▼
+Idle (committed mapping restored)
+```
+
+### 23.2 State transitions
+
+| From | Event | To | Project / Undo |
+|------|-------|----|----------------|
+| Idle | Preview | Previewing | unchanged |
+| Previewing | Nudge / type draft | Previewing (new offset) | unchanged |
+| Previewing | Apply | Idle + committed offset | undo push + dirty |
+| Previewing | Cancel / Esc / close | Idle (applied mapping) | unchanged |
+| Previewing | Variant switch | Idle then new draft | unchanged |
+
+Song Time remains canonical; PlaybackService is the only playback owner; `anchor_mapping` remains the only formula.
+
+### 23.3 Remaining UX work (beta)
+
+| Item | Notes |
+|------|-------|
+| Duration chips / missing-media enablement | §19.6 |
+| Seek-to-song-anchor on Preview | Optional comfort |
+| Waveform draft indicator | Optional; no redesign |
+| Variant CRUD UI | Separate feature |
+| Auto-correlate propose | §19.11 later |
+
+### 23.4 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Preview left active after dialog crash | MainWindow `exec` finally ends preview |
+| Loop rematerialize edge cases | Capture Song Times before offset swap |
+| Operators confuse Preview with Apply | Status “Previewing — Cancel restores…” |
+
+### 23.5 Recommendation for Beta Stabilization
+
+**Align Anchors Beta** — on-desk checklist (preview → adjust → Apply → undo; Cancel restore; marks fixed; Unicode paths), duration/missing-media polish, and freeze API surface (`begin/end_anchor_preview`, Apply command). No Timeline/Waveform redesign.
+
+---
+
+## READY FOR ALIGN ANCHORS BETA

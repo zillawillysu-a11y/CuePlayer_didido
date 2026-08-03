@@ -1,47 +1,38 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint5-anchor-apply-028d`  
+**Branch:** `cursor/sprint5-align-preview-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 5 Task 5 — Anchor Apply / Commit.
+Sprint 5 Task 6 — Align Anchors Preview Session.
 
 ## What was implemented
 
-1. **Commit flow**
-   - `SetVariantAnchorOffsetCommand` in `domain/undo.py`
-   - Apply → `command.redo(song)` → emit `offset_committed`
-   - MainWindow → `_push_song_undo` + `_mark_dirty`
-2. **Undo coverage** — undo/redo restores `anchor_offset` only; marks unchanged
-3. **Dirty** — Apply dirties project; draft/Reset/Cancel do not
-4. **Cancel / Reset** — Cancel discards draft (confirm if dirty); Reset draft-only until Apply
+1. **Preview lifecycle** — `PlaybackService.begin/update/end_anchor_preview` (ephemeral `_preview_anchor_offset`)
+2. **State transitions** — Preview → live draft updates → Apply ends + commits; Cancel restores committed mapping
+3. Dialog Preview button + Enter; MainWindow wires playback callbacks
+4. No project mutation / undo during preview; Apply still sole commit
 
 ## Tests
 
-- `tests/domain/test_variant_anchor_undo.py`
-- `tests/ui/test_align_anchors_dialog.py`
-- `tests/domain/test_anchor_mapping.py`  
-→ green
+playback_service + align_anchors_dialog + variant_anchor_undo + anchor_mapping → **38 passed**
 
-## Remaining technical debt
+## Remaining UX work
 
-- Preview audition session (temporary draft mapping)
-- Duration chips / missing-media enablement
-- Optional waveform draft indicator
+Duration chips, missing-media enablement, optional seek-to-anchor, waveform indicator
 
 ## Risks
 
-- Operators may expect live Preview before Apply
-- Applied offset affects next seek via existing PlaybackService façade (intentional)
+Preview leak after crash (mitigated by dialog finished + MainWindow safety end); loop rematerialize edges
 
-## Recommendation for Sprint 5 Task 6
+## Recommendation for Beta Stabilization
 
-**Align Anchors MVP** — Preview session + Cancel restore + duration chips + validation checklist.
+On-desk checklist + duration/missing-media polish; freeze preview/Apply API.
 
 ## Marker
 
-READY FOR ALIGN ANCHORS MVP
+READY FOR ALIGN ANCHORS BETA

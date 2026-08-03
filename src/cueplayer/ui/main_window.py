@@ -4988,15 +4988,21 @@ class MainWindow(QMainWindow):
         self._sync_timeline_overview()
 
     def _open_align_anchors(self) -> None:
-        """Tools → Align Anchors… — draft + Apply commits offset via undo command."""
+        """Tools → Align Anchors… — draft, preview session, Apply via undo."""
         dialog = AlignAnchorsDialog(
             self.current_song,
             self,
             get_song_playhead=lambda: float(self.playback.position),
             get_media_playhead=lambda: float(self.engine.position),
+            begin_preview=self.playback.begin_anchor_preview,
+            end_preview=self.playback.end_anchor_preview,
+            is_preview_active=lambda: bool(self.playback.anchor_preview_active),
         )
         dialog.offset_committed.connect(self._on_align_anchors_committed)
         dialog.exec()
+        # Safety: preview must not survive dialog close.
+        if self.playback.anchor_preview_active:
+            self.playback.end_anchor_preview()
 
     def _on_align_anchors_committed(self, command: SetVariantAnchorOffsetCommand) -> None:
         """Undo stack + dirty after Align Anchors Apply (command already applied)."""
