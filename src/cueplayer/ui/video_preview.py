@@ -29,12 +29,16 @@ class VideoPreviewWidget(QWidget):
         self.update()
 
     def set_frame(self, frame: np.ndarray | None) -> None:
+        if not self.isVisible():
+            return
         if frame is None:
             if self._image is not None:
                 self._image = None
-                self.update()
+                if self.isVisible():
+                    self.update()
             return
-        frame = np.ascontiguousarray(frame)
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
         height, width = frame.shape[0], frame.shape[1]
         image = QImage(frame.data, width, height, frame.strides[0], QImage.Format.Format_RGB888)
         self._image = image.copy()  # detach from the short-lived numpy buffer
