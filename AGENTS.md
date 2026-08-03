@@ -2,6 +2,10 @@
 
 Read `docs/PRODUCT_SPEC.md` before implementing features.
 
+**AI workflow (permanent):** [`.ai/README.md`](.ai/README.md) → [`.ai/WORKFLOW.md`](.ai/WORKFLOW.md) → [`.ai/NEXT_TASK.md`](.ai/NEXT_TASK.md).  
+Every task: **plan before code**; after code update [`.ai/REPORT.md`](.ai/REPORT.md) + a file under [`.ai/handoffs/`](.ai/handoffs/); then **stop**.  
+System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md). Cursor rule: `.cursor/rules/ai-workflow.mdc`.
+
 ## Non-negotiables
 
 - Full Unicode / Chinese support for project names, folders, and media paths from day one.
