@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 3 — Task 1: ShowHost Protocol foundation (2026-08-03)
+
+- Added `ports/show_host.py` (`ShowHost` + nested engine/timeline/monitor/video/transport/status Protocols).
+- `ShowSessionService` now takes an explicit `ShowHost` (no duck-typed `Any`).
+- MainWindow unchanged as structural implementer; no EventBus; Playback/Project untouched.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 2 — Task 8: ShowSession foundation (2026-08-03)
 
 - Added `application/show_session_service.py` (activate/deactivate song, prepare playback, timeline/waveform/video refresh coordination, MA3/OSC hook no-op).
