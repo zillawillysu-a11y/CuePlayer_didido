@@ -4,6 +4,11 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 6 — Task 2: MA Validation Rule Pack (MVP) (2026-08-03)
+
+- `ma_preflight_rules()` / `build_ma_preflight_context(project)` — Errors MA001–004, Warnings MA050–053, Info MA150–153.
+- Read-only; no exporters/UI/auto-fix. Docs: `docs/ma_preflight.md`.
+
 ### Sprint 6 — Task 1: MA Preflight Domain (2026-08-03)
 
 - Added `domain/validation` (`ValidationReport` / `ValidationIssue` / `ValidationSeverity` / `ValidationCode` / rule registry).
