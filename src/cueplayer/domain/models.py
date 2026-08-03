@@ -12,7 +12,7 @@ import numpy as np
 
 from cueplayer.domain.song_variant import SongVariant
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 LaneType = Literal["main", "top_button"]
 AudioRole = Literal["main", "reference"]

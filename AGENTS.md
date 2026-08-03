@@ -43,6 +43,5 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-08)
 
-Song Variant **domain** shipped (`domain/song_variant.py`); not persisted yet.
-**Next:** schema v2 persistence integration. Design: `docs/song_variant_design.md`.
-See `.ai/NEXT_TASK.md`.
+Song Variants **persisted** (schema v2). **Next:** playback uses
+`selected_audio_path()`. See `docs/song_variant_design.md` / `.ai/NEXT_TASK.md`.

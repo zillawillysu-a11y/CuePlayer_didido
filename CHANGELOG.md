@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 3: Song Variant persistence (2026-08-03)
+
+- `SCHEMA_VERSION = 2`; serialize/deserialize `Song.variants` / `selected_variant_id`.
+- Migrations isolated in `persistence/project_migrations.py` (Repository stays load/save).
+- v1 projects synthesize variants from `audio_tracks` on load; `audio_tracks` still written (Phase A).
+- No UI / playback / timeline changes.
+
 ### Sprint 4 — Feature Task 2: Song Variant domain foundation (2026-08-03)
 
 - Added `domain/song_variant.py` (`SongVariant`, `VariantKind`) with field docs.
