@@ -13,3 +13,15 @@ def test_add_marks_on_lanes_sorted_by_time() -> None:
     assert [m.time_seconds for m in song.marks] == [1.5, 2.0, 3.0]
     assert len(song.marks_for_lane(1)) == 2
     assert song.lane_by_index(1).lane_type == "main"
+
+
+def test_last_mark_at_or_before_follows_chronological_playhead() -> None:
+    song = Project.create("測試").songs[0]
+    main = song.add_mark(1, 1.0, "Main")
+    song.add_mark(2, 2.5, "Hit")
+    song.add_mark(1, 4.0, "Main2")
+
+    assert song.last_mark_at_or_before(0.5) is None
+    assert song.last_mark_at_or_before(1.0).id == main.id
+    assert song.last_mark_at_or_before(3.0).display_name == "Hit"
+    assert song.last_mark_at_or_before(5.0).display_name == "Main2"

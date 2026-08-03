@@ -37,6 +37,7 @@ from cueplayer.exporters.plan_from_song import (
     plan_summary_text,
     timecode_to_seconds,
 )
+from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 _SETTINGS_ORG = "CuePlayer"
@@ -77,6 +78,7 @@ class ExportDialog(QDialog):
         # selection the setlist/timeline use (checkbox state stays independent —
         # this is just "which row you're looking at", not "which songs export").
         self.song_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.song_list.setItemDelegate(RowColorDelegate(self.song_list))
         preselect = set(selected_indexes or [])
         if not preselect and 0 <= current_index < len(self._songs):
             preselect = {current_index}
@@ -88,6 +90,7 @@ class ExportDialog(QDialog):
                 Qt.CheckState.Checked if i in preselect else Qt.CheckState.Unchecked
             )
             item.setData(Qt.ItemDataRole.UserRole, i)
+            item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_list.addItem(item)
         song_layout.addWidget(self.song_list)
         pick_row = QHBoxLayout()
