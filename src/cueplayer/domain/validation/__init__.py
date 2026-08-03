@@ -1,11 +1,12 @@
-"""MA Export Preflight — validation domain framework (read-only).
+"""MA Preflight — validation domain framework (read-only).
 
 This package defines reusable report / issue / severity / code types and a
 rule-registration runner. It must stay free of Qt, persistence I/O,
 AudioEngine, and ``cueplayer.exporters`` (validation is independent of XML
 generation).
 
-Task 2 adds the MA Preflight rule pack under ``ma_rules`` / ``ma_context``.
+Task 2: MA rule pack (``ma_rules`` / ``ma_context``).
+Task 3: Preflight report builder (``preflight_report``).
 """
 
 from __future__ import annotations
@@ -21,6 +22,14 @@ from cueplayer.domain.validation.ma_context import (
     build_ma_preflight_context,
 )
 from cueplayer.domain.validation.ma_rules import ma_preflight_rules, run_ma_preflight
+from cueplayer.domain.validation.preflight_report import (
+    PreflightCategory,
+    PreflightIssueRow,
+    PreflightReport,
+    build_preflight_report,
+    build_preflight_report_for_project,
+    category_for_code,
+)
 from cueplayer.domain.validation.report import ValidationReport
 from cueplayer.domain.validation.rules import (
     ValidationRule,
@@ -31,6 +40,9 @@ from cueplayer.domain.validation.severity import ValidationSeverity, coerce_seve
 
 __all__ = [
     "MaPreflightContext",
+    "PreflightCategory",
+    "PreflightIssueRow",
+    "PreflightReport",
     "ValidationCode",
     "ValidationIssue",
     "ValidationReport",
@@ -38,6 +50,9 @@ __all__ = [
     "ValidationRuleSet",
     "ValidationSeverity",
     "build_ma_preflight_context",
+    "build_preflight_report",
+    "build_preflight_report_for_project",
+    "category_for_code",
     "coerce_severity",
     "coerce_validation_code",
     "is_valid_code_format",
