@@ -32,6 +32,11 @@ through `ports.RemoteHost`; no MainWindow private duck-typing in the bridge.
 - Remote transport/loop not exclusively via PlaybackService
 - `push_song_undo(Any)`
 
+## Tests
+
+- Boundary + ports + web_remote targeted: green
+- Full suite: **919 passed**, **16 failed** (same pre-existing / Linux env set as prior tip)
+
 ## Suggested next task
 
 Sprint 3 Task 3 — Event Bus foundation (READY FOR EVENT BUS FOUNDATION).
