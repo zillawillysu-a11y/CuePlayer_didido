@@ -1,4 +1,4 @@
-"""Qt bridge: HTTP worker thread → MainWindow UI thread."""
+"""Qt bridge: HTTP worker thread → RemoteHost (UI thread)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from cueplayer.ports.remote_host import RemoteHost
 from cueplayer.web_remote.prefs import WebRemotePrefs
 from cueplayer.web_remote.server import WebRemoteServer
 from cueplayer.web_remote.state import (
@@ -31,9 +32,9 @@ class WebRemoteBridge(QObject):
     started = Signal()
     stopped = Signal()
 
-    def __init__(self, host_window: Any, parent: QObject | None = None) -> None:
+    def __init__(self, host: RemoteHost, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._host = host_window
+        self._host = host
         self._server: WebRemoteServer | None = None
         self._webrtc = WebRTCListenHub(
             self._live_monitor_pcm,
@@ -162,7 +163,7 @@ class WebRemoteBridge(QObject):
             project=project,
             song=song,
             engine=engine,
-            ltc_channel_for_song=getattr(host, "_ltc_channel_for_song", None),
+            ltc_channel_for_song=host.ltc_channel_for_song,
         )
 
     def _safe_clock(self) -> dict[str, Any]:
@@ -219,32 +220,23 @@ class WebRemoteBridge(QObject):
     def _timeline_display_audio(self) -> Any:
         """Desktop Music-lane buffer (real music, or video-audio standin)."""
         try:
-            timeline = getattr(self._host, "timeline", None)
-            display = getattr(timeline, "_audio", None) if timeline is not None else None
-            if (
-                display is not None
-                and getattr(display, "peak_levels", None)
-                and getattr(display, "mono", None) is not None
-            ):
-                return display
+            return self._host.timeline_display_audio()
         except Exception:  # noqa: BLE001
             return None
-        return None
 
     def _has_main_music_file(self) -> bool:
         host = self._host
-        if hasattr(host, "_song_has_main_audio_file"):
-            try:
-                return bool(host._song_has_main_audio_file())
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            return bool(host.song_has_main_audio_file())
+        except Exception:  # noqa: BLE001
+            pass
         buf = getattr(host.engine, "buffer", None)
         return buf is not None and int(getattr(buf, "frames", 0) or 0) > 0
 
     def _music_waveform_buffer(self) -> Any:
         """Music-lane display buffer matching the desktop timeline.
 
-        Prefer ``timeline._audio`` first so video-only songs (no music file)
+        Prefer timeline display audio first so video-only songs (no music file)
         expose the same video-audio standin waveform the desktop Music lane
         paints. When a main music file exists, fall back to the engine buffer
         with LTC stripped.
@@ -255,38 +247,27 @@ class WebRemoteBridge(QObject):
             return display
         # RAM standin may exist before timeline paint catches up.
         try:
-            cache = getattr(host, "_video_standin_cache", None)
-            clip_fn = getattr(host, "_primary_video_clip_for_standin", None)
-            key_fn = getattr(host, "_video_standin_cache_key", None)
-            if cache and callable(clip_fn) and callable(key_fn):
-                clip = clip_fn()
-                if clip is not None:
-                    key = key_fn(
-                        clip,
-                        timeline_duration=float(host.current_song.duration_seconds),
-                    )
-                    if key is not None and key in cache:
-                        return cache[key]
+            standin = host.video_standin_buffer()
+            if standin is not None:
+                return standin
         except Exception:  # noqa: BLE001
             pass
         engine = host.engine
         buf = getattr(engine, "buffer", None)
         if buf is None:
             # Nudge desktop to start / resume video-audio standin for remote wave.
-            if not self._has_main_music_file() and hasattr(
-                host, "_schedule_video_music_standin"
-            ):
+            if not self._has_main_music_file():
                 try:
-                    host._schedule_video_music_standin()
+                    host.schedule_video_music_standin()
                 except Exception:  # noqa: BLE001
                     pass
             return None
         try:
             song = host.current_song
-            exclude = host._ltc_channel_for_song(song)
-            path = host._main_audio_path_for_song(song)
-            if path is not None and hasattr(host, "_waveform_for_timeline"):
-                return host._waveform_for_timeline(buf, path, exclude)
+            exclude = host.ltc_channel_for_song(song)
+            path = host.main_audio_path_for_song(song)
+            if path is not None:
+                return host.waveform_for_timeline(buf, path, exclude)
             from cueplayer.media.audio_loader import waveform_display_buffer
 
             return waveform_display_buffer(buf, exclude_channel=exclude)
@@ -296,21 +277,19 @@ class WebRemoteBridge(QObject):
     def _waveform_loading(self) -> bool:
         host = self._host
         try:
-            timeline = getattr(host, "timeline", None)
-            loader = getattr(timeline, "audio_loading", None) if timeline is not None else None
-            if callable(loader) and bool(loader()):
+            if host.timeline_audio_loading():
                 return True
         except Exception:  # noqa: BLE001
             pass
         if self._has_main_music_file():
             return False
-        song = getattr(host, "current_song", None)
+        song = host.current_song
         clips = list(getattr(song, "video_clips", None) or []) if song is not None else []
         return bool(clips) and self._timeline_display_audio() is None
 
     def _ltc_exclude_for_cache(self) -> int | None:
         try:
-            return self._host._ltc_channel_for_song(self._host.current_song)
+            return self._host.ltc_channel_for_song(self._host.current_song)
         except Exception:  # noqa: BLE001
             return None
 
@@ -426,7 +405,7 @@ class WebRemoteBridge(QObject):
             "frames": 0,
         }
         video = self._video_listen_stereo(t0, n, out_sr)
-        play_sr = int(getattr(engine, "_playback_rate", 0) or out_sr)
+        play_sr = int(host.playback_sample_rate() or out_sr)
         mixed = mix_listen_mono(
             music_mono=None,
             music_rate=out_sr,
@@ -439,17 +418,7 @@ class WebRemoteBridge(QObject):
         raw = pcm.tobytes(order="C")
         energy = float(np.max(np.abs(mixed))) if mixed is not None else 0.0
         ready = bool(video is not None) and energy > 1e-6
-        reason = ""
-        if not ready:
-            mixer = getattr(engine, "_video_mixer", None)
-            song = getattr(engine, "_song", None)
-            has_clips = bool(getattr(song, "video_clips", None) or [])
-            if mixer is not None and bool(getattr(mixer, "muted", False)):
-                reason = "video_muted"
-            elif not has_clips:
-                reason = "no_video"
-            else:
-                reason = "decoding_video"
+        reason = "" if ready else host.video_listen_unavailable_reason()
         meta.update(
             {
                 "ready": ready,
@@ -465,38 +434,8 @@ class WebRemoteBridge(QObject):
     def _video_listen_stereo(
         self, start_seconds: float, out_frames: int, out_rate: int
     ) -> Any:
-        """Video-clip stereo at engine playback rate covering ``out_frames`` @ ``out_rate``.
-
-        Same ``VideoAudioMixer`` as desktop (sample-locked; no second decoder).
-        Used only when there is no main music file. Bypasses PC Mute; respects
-        Video Track mute.
-        """
-        import numpy as np
-
-        engine = self._host.engine
-        mixer = getattr(engine, "_video_mixer", None)
-        if mixer is None or bool(getattr(mixer, "muted", False)):
-            return None
-        song = getattr(engine, "_song", None)
-        clips = list(getattr(song, "video_clips", None) or []) if song is not None else []
-        if not clips:
-            return None
-        play_sr = int(getattr(engine, "_playback_rate", 0) or 0)
-        if play_sr <= 0:
-            play_sr = max(1, int(out_rate))
-        dur = float(out_frames) / float(max(1, int(out_rate)))
-        n_play = int(max(1, round(dur * float(play_sr))))
-        start_frame = int(max(0, round(float(start_seconds) * float(play_sr))))
-        try:
-            stereo = mixer.chunk_at(start_frame, n_play)
-        except Exception:  # noqa: BLE001
-            return None
-        if stereo is None:
-            return None
-        arr = np.asarray(stereo, dtype=np.float32)
-        if arr.size == 0:
-            return None
-        return arr
+        """Video-clip stereo via RemoteHost (sample-locked mixer; no second decoder)."""
+        return self._host.video_listen_stereo(start_seconds, out_frames, out_rate)
 
     def _safe_webrtc(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._webrtc.handle(payload if isinstance(payload, dict) else {})
@@ -511,10 +450,7 @@ class WebRemoteBridge(QObject):
         if not active:
             with self._preview_lock:
                 self._preview_rgb = None
-        host = self._host
-        sync = getattr(host, "_sync_video_output_active", None)
-        if callable(sync):
-            QTimer.singleShot(0, sync)
+        QTimer.singleShot(0, self._host.sync_video_output_active)
 
     def push_preview_frame(self, frame: Any) -> None:
         """Copy latest RGB24 frame from MainWindow fan-out (UI thread)."""
@@ -566,8 +502,7 @@ class WebRemoteBridge(QObject):
             return silence
 
         has_music = self._has_main_music_file()
-        song = getattr(engine, "_song", None)
-        has_video = bool(getattr(song, "video_clips", None) or [])
+        has_video = bool(host.current_song_has_video_clips())
         if not has_music and not has_video:
             self._mon_was_playing = False
             return silence
@@ -635,7 +570,7 @@ class WebRemoteBridge(QObject):
 
         # Pure video — no main music file.
         video = self._video_listen_stereo(cursor, n, out_sr)
-        play_sr = int(getattr(engine, "_playback_rate", 0) or out_sr)
+        play_sr = int(host.playback_sample_rate() or out_sr)
         mixed = mix_listen_mono(
             music_mono=None,
             music_rate=out_sr,
@@ -751,36 +686,19 @@ class WebRemoteBridge(QObject):
         }
 
     def _set_loop_a(self, _command: dict[str, Any]) -> dict[str, Any]:
-        host = self._host
-        if hasattr(host, "_set_loop_a"):
-            host._set_loop_a()
-        else:
-            return {"ok": False, "error": "loop_unavailable"}
+        self._host.set_loop_a()
         return {"ok": True, "op": "set_loop_a", "loop": self._loop_payload()}
 
     def _set_loop_b(self, _command: dict[str, Any]) -> dict[str, Any]:
-        host = self._host
-        if hasattr(host, "_set_loop_b"):
-            host._set_loop_b()
-        else:
-            return {"ok": False, "error": "loop_unavailable"}
+        self._host.set_loop_b()
         return {"ok": True, "op": "set_loop_b", "loop": self._loop_payload()}
 
     def _clear_loop(self, _command: dict[str, Any]) -> dict[str, Any]:
-        host = self._host
-        if hasattr(host, "_clear_loop"):
-            host._clear_loop()
-        else:
-            return {"ok": False, "error": "loop_unavailable"}
+        self._host.clear_loop()
         return {"ok": True, "op": "clear_loop", "loop": self._loop_payload()}
 
     def _set_loop_enabled(self, command: dict[str, Any]) -> dict[str, Any]:
-        host = self._host
-        enabled = bool(command.get("enabled"))
-        if hasattr(host, "_set_loop_enabled"):
-            host._set_loop_enabled(enabled)
-        else:
-            return {"ok": False, "error": "loop_unavailable"}
+        self._host.set_loop_enabled(bool(command.get("enabled")))
         return {"ok": True, "op": "set_loop_enabled", "loop": self._loop_payload()}
 
     def _set_display(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -804,23 +722,23 @@ class WebRemoteBridge(QObject):
             return {"ok": False, "error": "no_display_fields"}
 
         try:
-            host.monitor.apply_now_display_settings()
+            host.apply_now_display_settings()
         except Exception:  # noqa: BLE001
             pass
         try:
-            host.monitor.configure_output_timecode_clock(
+            host.configure_output_timecode_clock(
                 visible=bool(project.show_output_timecode_clock),
                 color=str(
                     getattr(project, "output_timecode_clock_color", "") or "#3dd68c"
                 ),
             )
-            host.monitor.configure_output_quick_toggles(
+            host.configure_output_quick_toggles(
                 visible=bool(project.show_output_quick_toggles),
             )
-            host._refresh_output_timecode_clock()
+            host.refresh_output_timecode_clock()
         except Exception:  # noqa: BLE001
             pass
-        host._mark_dirty()
+        host.mark_dirty()
         return {
             "ok": True,
             "op": "set_display",
@@ -877,12 +795,14 @@ class WebRemoteBridge(QObject):
         from cueplayer.persistence.audio_prefs import save_global_audio_output
 
         warning = host.engine.apply_audio_settings(ao)
-        host._refresh_timecode_status()
-        host._refresh_output_timecode_clock()
-        if hasattr(host, "monitor"):
-            host.monitor.sync_output_quick_toggles(ao)
+        host.refresh_timecode_status()
+        host.refresh_output_timecode_clock()
+        try:
+            host.sync_output_quick_toggles(ao)
+        except Exception:  # noqa: BLE001
+            pass
         save_global_audio_output(ao)
-        host._mark_dirty()
+        host.mark_dirty()
         return {
             "ok": True,
             "op": "set_output_toggle",
@@ -903,10 +823,10 @@ class WebRemoteBridge(QObject):
             category.collapsed = not bool(category.collapsed)
         # Keep Setlist UI in sync on the PC.
         try:
-            host._rebuild_song_list(select_indexes=host._selected_song_indexes() or None)
+            host.rebuild_song_list(select_indexes=host.selected_song_indexes() or None)
         except Exception:  # noqa: BLE001
             pass
-        host._mark_dirty()
+        host.mark_dirty()
         return {
             "ok": True,
             "op": "toggle_folder",
@@ -971,11 +891,11 @@ class WebRemoteBridge(QObject):
         if "cue_list_enabled" in command:
             lane.cue_list_enabled = bool(command.get("cue_list_enabled"))
 
-        host._rebuild_digit_shortcuts()
-        host.timeline.apply_song_display_settings()
-        host.monitor.apply_now_display_settings()
-        host._refresh_marks_ui()
-        host._mark_dirty()
+        host.rebuild_digit_shortcuts()
+        host.apply_timeline_song_display_settings()
+        host.apply_now_display_settings()
+        host.refresh_marks_ui()
+        host.mark_dirty()
         return {"ok": True, "op": "update_lane", "lane_index": lane_index}
 
     def _select_song(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -997,8 +917,8 @@ class WebRemoteBridge(QObject):
                     break
         if index is None or index < 0 or index >= len(songs):
             return {"ok": False, "error": "song_not_found"}
-        host._activate_song(index, stop_playback=False)
-        host._rebuild_song_list(select_indexes=[index])
+        host.activate_song(index, stop_playback=False)
+        host.rebuild_song_list(select_indexes=[index])
         return {"ok": True, "op": "select_song", "index": index}
 
     def _step_song(self, delta: int) -> dict[str, Any]:
@@ -1013,8 +933,8 @@ class WebRemoteBridge(QObject):
         nxt = max(0, min(len(songs) - 1, cur + int(delta)))
         if nxt == cur:
             return {"ok": True, "op": "step_song", "index": cur, "unchanged": True}
-        host._activate_song(nxt, stop_playback=False)
-        host._rebuild_song_list(select_indexes=[nxt])
+        host.activate_song(nxt, stop_playback=False)
+        host.rebuild_song_list(select_indexes=[nxt])
         return {"ok": True, "op": "step_song", "index": nxt}
 
     def _add_mark(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -1044,7 +964,7 @@ class WebRemoteBridge(QObject):
         before_ids = {m.id for m in song.marks}
         try:
             lane.prompt_note_on_mark = False
-            host._add_mark(lane.index)
+            host.add_mark(lane.index)
         finally:
             lane.prompt_note_on_mark = saved_prompt
 
@@ -1062,8 +982,8 @@ class WebRemoteBridge(QObject):
         note = command.get("note")
         if mark is not None and note is not None:
             mark.display_name = str(note).strip()
-            host._refresh_marks_ui()
-            host._mark_dirty()
+            host.refresh_marks_ui()
+            host.mark_dirty()
 
         return {
             "ok": True,
@@ -1088,10 +1008,10 @@ class WebRemoteBridge(QObject):
             return {"ok": True, "op": "set_mark_note", "mark_id": mark_id, "note": note}
         mark.display_name = note
         try:
-            host._on_note_changed(mark_id, old, note)
+            host.on_note_changed(mark_id, old, note)
         except Exception:  # noqa: BLE001
-            host._refresh_marks_ui()
-            host._mark_dirty()
+            host.refresh_marks_ui()
+            host.mark_dirty()
         return {
             "ok": True,
             "op": "set_mark_note",
@@ -1139,10 +1059,10 @@ class WebRemoteBridge(QObject):
             return {"ok": False, "error": "Cue ID is out of time order"}
         mark.main_cue_id = new_id
         try:
-            host._on_cue_id_changed(mark_id, old_id, new_id)
+            host.on_cue_id_changed(mark_id, old_id, new_id)
         except Exception:  # noqa: BLE001
-            host._refresh_marks_ui()
-            host._mark_dirty()
+            host.refresh_marks_ui()
+            host.mark_dirty()
         return {
             "ok": True,
             "op": "set_mark_cue_id",
@@ -1181,14 +1101,14 @@ class WebRemoteBridge(QObject):
         song.sort_marks()
         refresh_main_cue_ids(song, mark_ids={mark.id})
         try:
-            host._push_song_undo(
+            host.push_song_undo(
                 MoveMarksCommand(times={mark.id: (old_t, new_t)}, label="Move Mark")
             )
         except Exception:  # noqa: BLE001
             pass
         try:
-            host._refresh_marks_ui()
-            host._mark_dirty()
+            host.refresh_marks_ui()
+            host.mark_dirty()
         except Exception:  # noqa: BLE001
             pass
         return {
@@ -1215,7 +1135,7 @@ class WebRemoteBridge(QObject):
         if not wanted:
             return {"ok": False, "error": "mark_not_found"}
         try:
-            host._delete_marks(wanted)
+            host.delete_marks(wanted)
         except Exception:  # noqa: BLE001
             from cueplayer.domain.undo import DeleteMarksCommand, MarkSnapshot
 
@@ -1224,12 +1144,12 @@ class WebRemoteBridge(QObject):
             if removed_n <= 0:
                 return {"ok": False, "error": "mark_not_found"}
             try:
-                host._push_song_undo(DeleteMarksCommand(marks=snapshots))
+                host.push_song_undo(DeleteMarksCommand(marks=snapshots))
             except Exception:  # noqa: BLE001
                 pass
             try:
-                host._refresh_marks_ui()
-                host._mark_dirty()
+                host.refresh_marks_ui()
+                host.mark_dirty()
             except Exception:  # noqa: BLE001
                 pass
         removed = len(before_ids) - len({m.id for m in song.marks})
@@ -1252,7 +1172,7 @@ class WebRemoteBridge(QObject):
             muted = not current
         host.engine.set_music_muted(muted)
         try:
-            host.status.showMessage(
+            host.show_status(
                 "PC music muted (remote Listen)" if muted else "PC music unmuted",
                 2500,
             )
@@ -1301,11 +1221,11 @@ class WebRemoteBridge(QObject):
                 "scope": scope_label,
             }
         try:
-            host._push_song_undo(RenumberMainCueIdsCommand(before=before, after=after))
+            host.push_song_undo(RenumberMainCueIdsCommand(before=before, after=after))
         except Exception:  # noqa: BLE001
             pass
-        host._mark_dirty()
-        host._refresh_marks_ui()
+        host.mark_dirty()
+        host.refresh_marks_ui()
         return {
             "ok": True,
             "op": "renumber_cue_ids",

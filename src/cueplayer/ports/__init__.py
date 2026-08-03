@@ -18,7 +18,7 @@ from cueplayer.ports.exporter import ShowExporter
 from cueplayer.ports.frame_sink import FrameSink
 from cueplayer.ports.media_jobs import MediaJobQueue
 from cueplayer.ports.project_store import ProjectStore
-from cueplayer.ports.remote_host import RemoteHost
+from cueplayer.ports.remote_host import RemoteEnginePort, RemoteHost
 from cueplayer.ports.show_host import (
     ShowHost,
     ShowHostEngine,
@@ -39,6 +39,7 @@ __all__ = [
     "MediaJobQueue",
     "PlaybackClock",
     "ProjectStore",
+    "RemoteEnginePort",
     "RemoteHost",
     "ShowExporter",
     "ShowHost",

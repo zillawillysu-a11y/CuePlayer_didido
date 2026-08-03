@@ -177,6 +177,7 @@ from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.web_remote.bridge import WebRemoteBridge
+from cueplayer.web_remote.main_window_remote_host import MainWindowRemoteHost
 from cueplayer.web_remote.dialog import WebRemoteDialog
 from cueplayer.web_remote.prefs import load_web_remote_prefs, save_web_remote_prefs
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
@@ -1280,7 +1281,7 @@ class MainWindow(QMainWindow):
         self._setup_autosave()
         self._refresh_window_title()
         self._refresh_status()
-        self._web_remote = WebRemoteBridge(self, parent=self)
+        self._web_remote = WebRemoteBridge(MainWindowRemoteHost(self), parent=self)
         self._web_remote.status_changed.connect(
             lambda msg: self.status.showMessage(msg, 4000)
         )
