@@ -4,6 +4,14 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 2 — Task 5: Playback foundation (2026-08-03)
+
+- Added `domain/song_session.py` (`SongSession`: current song, playing, position, duration).
+- Added `application/playback_service.py` (`PlaybackService`: play/pause/stop/seek/toggle → `AudioEngine`).
+- `MainWindow` transport / Space / seek paths go through `PlaybackService`; `current_song` proxies the session.
+- AudioEngine / Timeline / Waveform internals unchanged.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 1 — Task 4: Repository layer foundation (2026-08-03)
 
 - Added `cueplayer.repository.ProjectRepository` (`load` / `save` / `autosave` / `backup` / `exists`).

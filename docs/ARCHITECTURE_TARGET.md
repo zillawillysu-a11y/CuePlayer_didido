@@ -183,10 +183,10 @@ src/cueplayer/web_remote/bridge.py      →  re-export adapters.remote.bridge
 | **3** | `application/project_service` *(Sprint 1 Task 3)* | ✅ 從 MainWindow 剪出 open/save/dirty/autosave/recent | MainWindow 持有 service；dialogs 仍在 UI |
 | **3b** | `application/autosave_service` | 可併入 project_service（已併入 prefs）或隨後拆 | — |
 | **4** | `repository/project_repository` *(Sprint 1 Task 4)* | ✅ 薄包裝 load/save/autosave/backup/exists；ProjectService 注入 | Service 不再 import persistence |
-| **5** | `application/playback_service` / song_session | 換歌 + transport 編排從 MainWindow 剪出 | 時鐘規則不變 |
-| **6** | `adapters/` 目錄 + **playback 整包搬** | `playback/` → `adapters/playback/` + 頂層 shim | 測試/UI import 仍綠 |
-| **7** | **media 整包搬** | 同上 | 同上 |
-| **8** | **persistence 整包搬** | 同上 | 同上 |
+| **5** | `application/playback_service` + `domain/song_session` *(Sprint 2 Task 5)* | ✅ Play/Pause/Stop/Seek 經 PlaybackService；SongSession 快照 | AudioEngine 仍是唯一 clock |
+| **6** | `application/settings_service` | 機器/專案設定 façade | 行為不變 |
+| **7** | `adapters/` 目錄 + **playback 整包搬** | `playback/` → `adapters/playback/` + 頂層 shim | 測試/UI import 仍綠 |
+| **8** | **media 整包搬** | 同上 | 同上 |
 | **9** | **exporters 整包搬** | 同上 | 同上 |
 | **10** | **timecode + routing 搬** | 小包 | 同上 |
 | **11** | `web_remote` → `adapters/remote` | 改名+shim | Remote 行為不變 |

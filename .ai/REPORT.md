@@ -1,62 +1,55 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint1-project-repository-028d`  
+**Branch:** `cursor/sprint2-playback-foundation-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 1 · Task 4 — **Repository Layer Foundation**: introduce
-`repository/project_repository.py` so `ProjectService` no longer depends on
-persistence directly. No persistence redesign; no UI/playback/audio/timeline changes.
+Sprint 2 · Task 5 — **Playback Foundation**: introduce `PlaybackService` and
+`SongSession` without changing user-facing behavior or redesigning AudioEngine.
 
 ## What was implemented
 
-- `ProjectRepository` with `load`, `save`, `autosave`, `backup`, `exists`
-- `ProjectService` injects/uses repository; **zero** `cueplayer.persistence` imports
-- Persistence modules unchanged
-- UI unchanged (MainWindow still constructs `ProjectService(settings)` which defaults a repository)
+- `domain/song_session.py` — current song + playing / position / duration
+- `application/playback_service.py` — play/pause/stop/seek/toggle → AudioEngine; syncs session
+- MainWindow: transport/Space/seek via `playback`; `current_song` property → session
+- Design contracts documented in module docs + `docs/current_architecture.md`
 
-## Dependency graph
+## Architecture before / after
 
-**Before:** `MainWindow → ProjectService → persistence.project_store / backup`  
-**After:** `MainWindow → ProjectService → ProjectRepository → persistence.project_store / backup`
+```text
+Before: MainWindow ──transport──► AudioEngine ; current_song field
+After:  MainWindow ──► PlaybackService ──► AudioEngine
+                         └─ syncs SongSession ; current_song property
+```
 
-## Responsibilities moved
+## MainWindow responsibilities removed (from transport)
 
-| Concern | From | To |
-|---------|------|-----|
-| load / save JSON | Service → persistence | Service → Repository → persistence |
-| backup before overwrite | Service → `create_backup_before_save` | Repository.backup |
-| exists check for recent/last | `Path.is_file()` in service | Repository.exists |
-| autosave write API | (same as save) | Repository.autosave (+ service.autosave_project) |
+- Direct `engine.play/pause/stop/seek/toggle` for transport / Space / cue seek / mark pause
+- Owning `current_song` as a bare field (now session-backed)
 
-## Remaining MainWindow responsibilities
+Still in MainWindow: `_activate_song`, scrub begin/end, volume, video_sync, media jobs, dialogs.
 
-Dialogs, media layout/bundle, apply project to widgets/engine, song activate, media jobs, remote host, transport/timeline wiring.
+## Remaining playback technical debt
 
-## Remaining persistence responsibilities
-
-Schema migrations, JSON encode/decode, media layout, bundle, audio prefs — unchanged; repository only wraps project file + backup helpers.
-
-## Architecture decisions
-
-1. Concrete `ProjectRepository` class (not generic base) — task forbids generic repositories.
-2. `autosave()` == `save()` at persistence level — quiet policy stays in service/UI.
-3. Default repository constructed inside `ProjectService` so UI needs no edits.
-
-## Tests
-
-- Targeted: **23 passed**
-- Full suite: **894 passed**, **16 failed** (same pre-existing / Linux env set)
+- Full song-activate orchestration still in MainWindow
+- Scrub / volume / loop still wired straight to engine
+- Remote still duck-types MainWindow
+- `ports.SongSession` Protocol not adopted for activate/refresh
 
 ## Risks
 
-- MainWindow still imports `load_project` for backup-restore dialog path (out of ProjectService; not Task 4 UI change).
-- `ports.ProjectStore` Protocol not formally implemented yet (repository is the concrete façade).
+- Dual read of playing (engine vs session) if sync lags — mitigated by sync on position/playing signals and after every transport call
+- Property `current_song` vs tests assigning the attribute — setter covers this
+
+## Tests
+
+- Targeted: **28 passed**
+- Full suite: **898 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
-Sprint 1 Task 5 — Playback / song-session service foundation.
+Sprint 2 Task 6 — SettingsService foundation.

@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 1 · Task 4 complete (`ProjectRepository`)  
+**Status:** Sprint 2 · Task 5 complete (Playback foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint1-project-repository-028d`  
-**Constraint (Task 4):** Repository façade only — no persistence redesign; **no** UI / playback / audio / timeline changes.
+**Scope tip:** `cursor/sprint2-playback-foundation-028d`  
+**Constraint (Task 5):** PlaybackService + SongSession only — no AudioEngine redesign; no Timeline/Waveform/UI behavior change.
 
 Related docs (do not treat as identical):
 
@@ -65,6 +65,38 @@ MainWindow → ProjectService → ProjectRepository → persistence.project_stor
 
 ---
 
+## Sprint 2 Task 5 — Playback foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `domain/song_session.py` (`SongSession`) | Current song + playing / position / duration snapshot |
+| `application/playback_service.py` (`PlaybackService`) | Play / Pause / Stop / Seek / Toggle → `AudioEngine` |
+| MainWindow | Transport + Space wired to `PlaybackService`; `current_song` proxies session |
+
+### Design contracts
+
+**SongSession** — Responsibilities: hold current song + transport snapshot. Non-responsibilities: not the sample clock; no PortAudio/video/Timeline. Dependencies: `Song` only.
+
+**PlaybackService** — Responsibilities: transport façade + keep session in sync with engine. Non-responsibilities: no engine redesign; no timeline/waveform/scrub/volume/LTC/MTC; no full song-activate orchestration. Dependencies: `AudioEngine`, `SongSession`.
+
+### Architecture before / after
+
+```text
+Before:
+  MainWindow ──play/pause/stop/seek──► AudioEngine
+  MainWindow.current_song (local field)
+
+After:
+  MainWindow ──► PlaybackService ──► AudioEngine  (sole sample clock)
+                     │
+                     └─ syncs ► SongSession (current song + transport snapshot)
+  MainWindow.current_song ──property──► SongSession.song
+```
+
+**Not done here:** Settings service; full `_activate_song` extract; RemoteHost.
+
+---
+
 ## 1. Current folder structure
 
 ```text
@@ -80,8 +112,8 @@ CuePlayer_didido/
 └── src/cueplayer/          # ~107 .py packages (no empty timeline/ltc stubs)
     ├── app.py              # QApplication boot + MainWindow
     ├── __main__.py         # python -m cueplayer
-    ├── domain/             # models, undo, cue id, columns, media_relink
-    ├── application/        # ProjectService (lifecycle)
+    ├── domain/             # models, undo, cue id, columns, media_relink, song_session
+    ├── application/        # ProjectService, PlaybackService
     ├── repository/         # ProjectRepository (file I/O façade)
     ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
@@ -338,15 +370,17 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | Service | Home | Notes |
 |---------|------|-------|
 | **`ProjectService`** | `application/project_service.py` | Lifecycle; I/O via `ProjectRepository` |
-| Song session | `MainWindow._activate_song` | Still UI-owned |
+| **`PlaybackService`** | `application/playback_service.py` | ✅ Play/Pause/Stop/Seek → AudioEngine |
+| **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot |
+| Song activate orchestration | `MainWindow._activate_song` | Still UI-owned (timeline/video/monitor refresh) |
 | Media job queue | `MainWindow` executors | Still UI-owned |
 | Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
 | Export orchestration | UI + `exporters/*` | |
 | Remote command surface | `web_remote.bridge` | RemoteHost port unused |
-| Playback clock / mix | `AudioEngine` | Next extract candidate: PlaybackService |
+| Playback clock / mix | `AudioEngine` | Unchanged internals |
 | Frame clock follower | `VideoSyncController` | |
 
-`MainWindow` still owns dialogs, media layout/bundle prompts, and applying a loaded `Project` to widgets/engine.
+`MainWindow` still owns dialogs, media layout/bundle, song-activate refresh order, and applying a loaded `Project` to widgets.
 
 ---
 
@@ -489,11 +523,11 @@ Implication for future `application` services: must know **which knobs are machi
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Playback service / Remote)
+### P0 — Next (Settings / Remote)
 
-1. **Playback / song-session orchestration still in MainWindow** — next candidate after repository.
+1. **Machine + project settings still split across MainWindow / QSettings / audio_prefs** — next candidate: SettingsService.
 2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
-3. **Doc overlap / stale claims** — older REVIEW / PRODUCT_SPEC status still confuse agents.
+3. **`_activate_song` still a large MainWindow orchestrator** — further song-session Protocol adoption later.
 
 ### P1 — Structural risk (product-visible)
 
@@ -532,30 +566,27 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 
 ---
 
-# Sprint 1 — Plan status
+# Sprint plan status
 
 | Task | Status | Notes |
 |------|--------|-------|
-| **1** Architecture assessment | ✅ Done | This file originated here |
-| **2** Transitional layer cleanup | ✅ Done | ports unified; shims/stubs/aliases removed |
-| **3** Application `ProjectService` | ✅ Done | Lifecycle only |
-| **4** `ProjectRepository` | ✅ Done | Service → repository → persistence |
-| **5** Playback service (first) | **Next** | Song activate / clock wiring extract |
+| Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
+| **Sprint 2 · 5** Playback foundation | ✅ Done | PlaybackService + SongSession |
+| **Sprint 2 · 6** Settings service | **Next** | Machine/project settings façade |
 
-### Recommended Sprint 1 Task 5 — Playback service foundation
+### Recommended Sprint 2 Task 6 — Settings service
 
-- Extract a thin `application/playback_service` (or `song_session`) that owns the **order** of `engine` / `video_sync` / timeline / monitor refresh on song activate and transport play/pause/stop/seek wiring helpers — without moving `AudioEngine` internals.
-- `MainWindow` keeps Qt signal connections initially; service owns orchestration calls.
-- **Do not** change sample-clock rules or `av_path_lock` policy.
-- Leave RemoteHost for a later task unless human prioritizes it.
+- Extract `application/settings_service.py` for machine-global prefs currently scattered (`audio_prefs`, autosave keys already partly in ProjectService, UI session keys still on MainWindow).
+- Prefer wrapping existing QSettings / `audio_prefs` functions — no behavior change.
+- Do not redesign preference schemas in the same task.
 
-### Risks for Task 5
+### Risks for Task 6
 
 | Risk | Mitigation |
 |------|------------|
-| Song-switch races | Preserve quiesce → set_song order; reuse existing tokens |
-| Accidental second clock | Forbid new timers as master; AudioEngine remains sole clock |
+| Overlay order (machine audio vs project JSON) | Keep `apply_global_audio_to_project` semantics |
+| Splitting UI session vs audio prefs too early | Start with audio + autosave only if needed |
 
 ---
 
-## READY FOR PLAYBACK SERVICE
+## READY FOR SETTINGS SERVICE

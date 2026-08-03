@@ -67,6 +67,7 @@ from cueplayer.domain.models import (
     Song,
     VideoClip,
 )
+from cueplayer.application.playback_service import PlaybackService
 from cueplayer.application.project_service import (
     AUTOSAVE_INTERVAL_MINUTES as _AUTOSAVE_INTERVAL_MINUTES,
     DEFAULT_AUTOSAVE_INTERVAL_SEC as _DEFAULT_AUTOSAVE_INTERVAL_SEC,
@@ -77,6 +78,7 @@ from cueplayer.application.project_service import (
     KEY_LAST_SONG_ID as _KEY_LAST_SONG_ID,
     ProjectService,
 )
+from cueplayer.domain.song_session import SongSession
 from cueplayer.persistence.backup import (
     list_backups,
 )
@@ -961,6 +963,7 @@ class MainWindow(QMainWindow):
         self.project = project or Project.create("Untitled Project", with_song=False)
         # Workspace stand-in when Setlist is empty — never listed as a song.
         self._blank_song = Song.create("Untitled Song")
+        self._song_session = SongSession()
         if self.project.songs:
             self.current_song = self.project.songs[0]
         else:
@@ -1041,6 +1044,7 @@ class MainWindow(QMainWindow):
         self._pending_restore_geometry = None
 
         self.engine = AudioEngine(self)
+        self.playback = PlaybackService(self.engine, self._song_session)
         self.engine.set_duration(self.current_song.duration_seconds)
         self.engine.set_song_timebase(
             self.current_song.start_timecode, self.current_song.fps
@@ -1048,6 +1052,7 @@ class MainWindow(QMainWindow):
         # Machine-global audio prefs (survive New / Load Project).
         apply_global_audio_to_project(self.project)
         self.engine.apply_audio_settings(self.project.audio_output)
+        self.playback.sync_from_engine()
 
         # Video clips are driven by the audio sample clock (AudioEngine) —
         # no independent video timer (AGENTS.md non-negotiable).
@@ -1310,9 +1315,9 @@ class MainWindow(QMainWindow):
         self.song_list.horizontalHeader().customContextMenuRequested.connect(
             self._on_setlist_header_context_menu
         )
-        self.transport.play_clicked.connect(self.engine.play)
-        self.transport.pause_clicked.connect(self.engine.pause)
-        self.transport.stop_clicked.connect(self.engine.stop)
+        self.transport.play_clicked.connect(self.playback.play)
+        self.transport.pause_clicked.connect(self.playback.pause)
+        self.transport.stop_clicked.connect(self.playback.stop)
         self.toolbar.view_mode_changed.connect(self._set_view_mode)
         self.show_patch_page.settings_changed.connect(self._mark_dirty)
         self.show_patch_page.export_finished.connect(self._on_ma_export_finished)
@@ -1325,8 +1330,8 @@ class MainWindow(QMainWindow):
         self.transport.volume_changed.connect(self.engine.set_volume)
         self.transport.music_mute_toggled.connect(self._set_music_muted_from_ui)
         self.engine.music_muted_changed.connect(self.transport.set_music_muted)
-        self.timeline.seek_requested.connect(self.engine.seek)
-        self.transport.seek_requested.connect(self.engine.seek)
+        self.timeline.seek_requested.connect(self.playback.seek)
+        self.transport.seek_requested.connect(self.playback.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
         self.timeline.scrub_started.connect(self.engine.begin_scrub)
@@ -1414,6 +1419,7 @@ class MainWindow(QMainWindow):
         self.monitor.now_layout_changed.connect(self._on_now_layout_changed)
         self.monitor.renumber_cue_ids_requested.connect(self._renumber_main_cue_ids)
         self.engine.position_changed.connect(self._on_position_changed)
+        self.engine.playing_changed.connect(lambda _playing=False: self.playback.sync_from_engine())
         self.engine.playing_changed.connect(self.transport.set_playing)
         self.engine.playing_changed.connect(self.timeline.set_playing)
         self.engine.timecode_status_changed.connect(self._refresh_timecode_status)
@@ -1427,7 +1433,7 @@ class MainWindow(QMainWindow):
         self._sync_output_timecode_clock_ui()
         self._refresh_output_timecode_clock()
 
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.engine.toggle)
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.playback.toggle)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self._nudge_frames(-1))
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=lambda: self._nudge_frames(1))
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._delete_current_selection)
@@ -1499,6 +1505,15 @@ class MainWindow(QMainWindow):
             self._project_service.mark_dirty()
         else:
             self._project_service.mark_clean()
+
+    @property
+    def current_song(self) -> Song:
+        song = self._song_session.song
+        return song if song is not None else self._blank_song
+
+    @current_song.setter
+    def current_song(self, song: Song) -> None:
+        self._song_session.set_song(song)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -1917,7 +1932,7 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Unable to Open Project", str(exc))
             return False
-        self.engine.stop()
+        self.playback.stop()
         self.project = project
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._apply_project(preferred_song_id=song_id)
@@ -2091,7 +2106,7 @@ class MainWindow(QMainWindow):
             )
             return
         preferred = self.current_song.id if self.project.songs else None
-        self.engine.stop()
+        self.playback.stop()
         self.project = loaded
         # Bundle remapped media paths + cloned LTC disk cache — remount
         # in-memory keys and reload disk so Setlist L/R badges stay lit
@@ -2787,7 +2802,7 @@ class MainWindow(QMainWindow):
     def _file_new(self) -> None:
         if not self._confirm_new_project():
             return
-        self.engine.stop()
+        self.playback.stop()
         self.project = self._project_service.new_project(with_song=False)
         self._apply_project()
         self._set_clean()
@@ -2949,7 +2964,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Unable to Open Backup", str(exc))
             return
-        self.engine.stop()
+        self.playback.stop()
         self.project = project
         # Keep pointing at the live project path so the next Save writes there
         # (and takes a fresh backup of whatever is currently on disk).
@@ -4885,7 +4900,7 @@ class MainWindow(QMainWindow):
 
     def _shutdown_secondary_windows(self) -> None:
         """Close persistent tool windows so the app can exit with the main UI."""
-        self.engine.stop()
+        self.playback.stop()
         self.engine.shutdown_midi_outputs()
         if hasattr(self, "_ndi_output"):
             self._ndi_output.close()
@@ -5070,6 +5085,7 @@ class MainWindow(QMainWindow):
             self._digit_shortcuts.append(sc)
 
     def _on_position_changed(self, seconds: float) -> None:
+        self.playback.sync_from_engine()
         self.timeline.set_position(seconds)
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
@@ -5114,7 +5130,7 @@ class MainWindow(QMainWindow):
         self.timeline.update()
 
     def _seek_from_cue_list(self, seconds: float) -> None:
-        self.engine.seek(seconds)
+        self.playback.seek(seconds)
         self.timeline.set_position(seconds)
         self.status.showMessage(f"Jumped to Cue @ {seconds:.3f}s", 1500)
 
@@ -7287,7 +7303,7 @@ class MainWindow(QMainWindow):
         # the panel stays black until the user seeks/plays. Land the playhead
         # inside the new clip when needed, then force one decode.
         if not clip.contains(float(self.engine.position)):
-            self.engine.seek(float(clip.start_seconds))
+            self.playback.seek(float(clip.start_seconds))
         else:
             self.video_sync.update_position(float(self.engine.position))
         if not self._song_has_main_audio_file():
@@ -7526,7 +7542,7 @@ class MainWindow(QMainWindow):
         # Use the visual playhead while scrubbing (engine still sits at press).
         # While playing, read the engine's interpolated write-head so marks are
         # not quantized to the audio-block grid (often 10ms → sticky ms digit).
-        if self.engine.playing and not self.timeline.is_scrubbing():
+        if self.playback.playing and not self.timeline.is_scrubbing():
             mark_at = float(self.engine.position)
         else:
             mark_at = self.timeline.playhead_seconds()
@@ -7535,8 +7551,8 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._refresh_marks_ui()
         paused = False
-        if bool(getattr(lane, "pause_on_mark", False)) and self.engine.playing:
-            self.engine.pause()
+        if bool(getattr(lane, "pause_on_mark", False)) and self.playback.playing:
+            self.playback.pause()
             paused = True
         if bool(getattr(lane, "prompt_note_on_mark", False)):
             text, ok = QInputDialog.getText(
