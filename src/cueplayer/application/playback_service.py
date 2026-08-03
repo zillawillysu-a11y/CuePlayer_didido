@@ -9,6 +9,7 @@ Design contract
 - Expose scrub begin / end to the UI.
 - Convert Song Time ↔ Variant Time via ``domain.anchor_mapping`` so
   ``AudioEngine`` receives **Variant Time only** on seek / loop points.
+- Hold an ephemeral Align Anchors **preview** offset (never project data).
 - Delegate transport to ``AudioEngine`` (unchanged implementation).
 - Keep ``domain.song_session.SongSession`` transport fields in sync (Song Time).
 
@@ -21,6 +22,7 @@ Design contract
   that is an internal PortAudio negotiation, not a UI pitch-rate control.
 - Does not own Settings / QSettings / RemoteHost.
 - Does not invent a second offset formula (only ``anchor_mapping``).
+- Does not commit ``SongVariant.anchor_offset`` (Align Apply / undo owns that).
 
 **Dependencies**
 - ``cueplayer.playback.audio_engine.AudioEngine`` (PlaybackClock + mix)
@@ -38,6 +40,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cueplayer.domain.anchor_mapping import (
+    coerce_anchor_offset,
     resolve_anchor_offset,
     song_to_variant_time,
     variant_to_song_time,
@@ -54,6 +57,8 @@ class PlaybackService:
     def __init__(self, engine: AudioEngine, session: SongSession) -> None:
         self._engine = engine
         self._session = session
+        # Ephemeral Align Anchors preview — never written to SongVariant.
+        self._preview_anchor_offset: float | None = None
 
     @property
     def engine(self) -> AudioEngine:
@@ -90,19 +95,86 @@ class PlaybackService:
     # --- anchor mapping (Song Time ↔ Variant / engine Time) ------------------
 
     def active_anchor_offset(self, song: Song | None = None) -> float:
-        """``anchor_offset`` of the active variant, else ``0.0`` (identity)."""
+        """Effective mapping offset: preview (if active) else applied variant offset."""
+        if self._preview_anchor_offset is not None:
+            return coerce_anchor_offset(self._preview_anchor_offset)
         return resolve_anchor_offset(variant=self.active_variant(song))
+
+    def committed_anchor_offset(self, song: Song | None = None) -> float:
+        """``SongVariant.anchor_offset`` only — ignores ephemeral preview."""
+        return resolve_anchor_offset(variant=self.active_variant(song))
+
+    @property
+    def anchor_preview_active(self) -> bool:
+        return self._preview_anchor_offset is not None
+
+    @property
+    def preview_anchor_offset(self) -> float | None:
+        """Ephemeral preview offset, or ``None`` when not previewing."""
+        if self._preview_anchor_offset is None:
+            return None
+        return coerce_anchor_offset(self._preview_anchor_offset)
+
+    def begin_anchor_preview(self, offset: float) -> None:
+        """Start (or refresh) temporary mapping with ``offset`` — no project write.
+
+        Preserves Song Time playhead and rematerializes A–B loop Song Times.
+        """
+        song_pos = float(self.position)
+        loop_a = self.loop_a
+        loop_b = self.loop_b
+        loop_enabled = bool(self.loop_enabled)
+        self._preview_anchor_offset = coerce_anchor_offset(offset)
+        self._rematerialize_song_transport(
+            song_pos, loop_a, loop_b, loop_enabled=loop_enabled
+        )
+
+    def update_anchor_preview(self, offset: float) -> None:
+        """Update active preview offset; starts a session if none is active."""
+        self.begin_anchor_preview(offset)
+
+    def end_anchor_preview(self) -> None:
+        """Exit preview and restore committed-offset mapping — no project write."""
+        if self._preview_anchor_offset is None:
+            return
+        song_pos = float(self.position)
+        loop_a = self.loop_a
+        loop_b = self.loop_b
+        loop_enabled = bool(self.loop_enabled)
+        self._preview_anchor_offset = None
+        self._rematerialize_song_transport(
+            song_pos, loop_a, loop_b, loop_enabled=loop_enabled
+        )
+
+    def _rematerialize_song_transport(
+        self,
+        song_position: float,
+        loop_a: float | None,
+        loop_b: float | None,
+        *,
+        loop_enabled: bool,
+    ) -> None:
+        """Re-apply Song Time transport after the effective offset changes."""
+        if loop_a is not None or loop_b is not None:
+            self.set_loop_region(loop_a, loop_b)
+            # set_loop_region may auto-enable; honour prior enabled flag.
+            if not loop_enabled:
+                self._engine.set_loop_enabled(False)
+            elif self._complete_loop_pair():
+                self._engine.set_loop_enabled(True)
+                self._engine.engage_ab_loop(seek_if_outside=False)
+        self.seek(float(song_position))
 
     def song_to_engine_time(self, song_time: float, song: Song | None = None) -> float:
         """Song Time → Variant Time for ``AudioEngine`` (via ``anchor_mapping``)."""
         return song_to_variant_time(
-            float(song_time), variant=self.active_variant(song)
+            float(song_time), offset=self.active_anchor_offset(song)
         )
 
     def engine_to_song_time(self, engine_time: float, song: Song | None = None) -> float:
         """Variant / engine Time → Song Time (via ``anchor_mapping``)."""
         return variant_to_song_time(
-            float(engine_time), variant=self.active_variant(song)
+            float(engine_time), offset=self.active_anchor_offset(song)
         )
 
     # --- transport -----------------------------------------------------------

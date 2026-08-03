@@ -313,3 +313,66 @@ def test_legacy_song_without_variants_seek_unchanged(tmp_path: Path) -> None:
     svc.seek(3.25)
     assert ("seek", 3.25) in engine.calls
     assert svc.position == pytest.approx(3.25)
+
+
+def test_anchor_preview_session_does_not_mutate_variant(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    variant = SongVariant.create("Alt", tmp_path / "b.wav", anchor_offset=0.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    session.set_song(song)
+
+    svc.seek(10.0)
+    assert engine._position == pytest.approx(10.0)
+
+    svc.begin_anchor_preview(0.5)
+    assert svc.anchor_preview_active is True
+    assert variant.anchor_offset == pytest.approx(0.0)
+    assert svc.committed_anchor_offset() == pytest.approx(0.0)
+    assert svc.active_anchor_offset() == pytest.approx(0.5)
+    # Song Time preserved; engine receives Variant Time under draft.
+    assert svc.position == pytest.approx(10.0)
+    assert engine._position == pytest.approx(9.5)
+
+    svc.update_anchor_preview(1.0)
+    assert variant.anchor_offset == pytest.approx(0.0)
+    assert svc.position == pytest.approx(10.0)
+    assert engine._position == pytest.approx(9.0)
+
+    svc.end_anchor_preview()
+    assert svc.anchor_preview_active is False
+    assert variant.anchor_offset == pytest.approx(0.0)
+    assert svc.active_anchor_offset() == pytest.approx(0.0)
+    assert svc.position == pytest.approx(10.0)
+    assert engine._position == pytest.approx(10.0)
+
+
+def test_anchor_preview_preserves_loop_song_times(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    variant = SongVariant.create("Alt", tmp_path / "c.wav", anchor_offset=0.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    session.set_song(song)
+
+    svc.set_loop_region(2.0, 5.0)
+    assert engine.loop_a == pytest.approx(2.0)
+    assert engine.loop_b == pytest.approx(5.0)
+
+    svc.begin_anchor_preview(1.0)
+    assert svc.loop_a == pytest.approx(2.0)
+    assert svc.loop_b == pytest.approx(5.0)
+    assert engine.loop_a == pytest.approx(1.0)
+    assert engine.loop_b == pytest.approx(4.0)
+    assert variant.anchor_offset == pytest.approx(0.0)
+
+    svc.end_anchor_preview()
+    assert svc.loop_a == pytest.approx(2.0)
+    assert svc.loop_b == pytest.approx(5.0)
+    assert engine.loop_a == pytest.approx(2.0)
+    assert engine.loop_b == pytest.approx(5.0)

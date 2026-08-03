@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 5 Task 5 complete (Anchor Apply / Commit)  
+**Status:** Sprint 5 Task 6 complete (Align Anchors Preview Session)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint5-anchor-apply-028d`
+**Scope tip:** `cursor/sprint5-align-preview-028d`
 **Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -206,7 +206,8 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | **Sprint 5 · Task 3 — Align Anchors Dialog Shell** | ✅ Done — `ui/align_anchors_dialog.py` (no apply) |
 | **Sprint 5 · Task 4 — Anchor Computation** | ✅ Done — draft only via `offset_from_anchors` |
 | **Sprint 5 · Task 5 — Anchor Apply / Commit** | ✅ Done — undoable `anchor_offset` write |
-| Sprint 5 · Task 6 — Align Anchors MVP | **Next** — Preview session + polish |
+| **Sprint 5 · Task 6 — Align Anchors Preview** | ✅ Done — ephemeral PlaybackService preview |
+| Align Anchors Beta Stabilization | **Next** — checklist + UX polish |
 
 ---
 
@@ -227,6 +228,7 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | Sprint 5 Task 3 | Dialog shell only; Apply/Preview stubs; no playback change |
 | Sprint 5 Task 4 | Draft computation only; Apply still non-destructive |
 | Sprint 5 Task 5 | Apply commits via undo command; dirty; marks fixed |
+| Sprint 5 Task 6 | Ephemeral preview offset on PlaybackService; Cancel restores |
 | Explicitly deferred this slice | NDI, overlay, plugin system, EventBus-as-feature, auto-align |
 
 ---
@@ -239,16 +241,17 @@ Full checklist and debt tables: [`song_variant_design.md`](song_variant_design.m
 |---------|--------|
 | Ready | Legacy / offset-0 / single-bed desktop workflows (run on-site checklist) |
 | Conditional → improved | Non-zero offset: desktop + remote transport façade closed in Sprint 5 Task 1 |
-| Not ready | Align Preview session; variant CRUD; waveform offset paint |
+| Not ready | Duration chips; variant CRUD; waveform offset paint |
 
-**Next priority:** Align Anchors MVP (Task 6 — Preview session + polish).
+**Next priority:** Align Anchors Beta Stabilization.
 
 - Façade graph: [`song_variant_design.md`](song_variant_design.md) §18  
 - Align UX: [`song_variant_design.md`](song_variant_design.md) §19  
 - Dialog shell: [`song_variant_design.md`](song_variant_design.md) §20  
 - Draft compute: [`song_variant_design.md`](song_variant_design.md) §21  
 - Apply / Commit: [`song_variant_design.md`](song_variant_design.md) §22  
+- Preview session: [`song_variant_design.md`](song_variant_design.md) §23  
 
 ---
 
-## READY FOR ALIGN ANCHORS MVP
+## READY FOR ALIGN ANCHORS BETA

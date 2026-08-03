@@ -168,6 +168,81 @@ def test_cancel_discards_draft(qapp: QApplication, tmp_path: Path, monkeypatch) 
     assert variant.anchor_offset == pytest.approx(0.5)
 
 
+def test_preview_session_ephemeral_no_project_write(
+    qapp: QApplication, tmp_path: Path, monkeypatch
+) -> None:
+    song = Song.create("曲")
+    variant = SongVariant.create("Main", tmp_path / "a.wav", anchor_offset=0.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    mark = song.add_mark(1, 2.0, display_name="Hit")
+    mark_time = mark.time_seconds
+
+    state = {"offset": None, "active": False}
+
+    def begin(offset: float) -> None:
+        state["offset"] = float(offset)
+        state["active"] = True
+
+    def end() -> None:
+        state["offset"] = None
+        state["active"] = False
+
+    dialog = AlignAnchorsDialog(
+        song,
+        get_song_playhead=lambda: 10.0,
+        get_media_playhead=lambda: 9.5,
+        begin_preview=begin,
+        end_preview=end,
+        is_preview_active=lambda: bool(state["active"]),
+    )
+    dialog.use_playhead_btn.click()
+    dialog.use_media_playhead_btn.click()
+    assert dialog.draft_offset() == pytest.approx(0.5)
+    dialog.preview_btn.click()
+    assert state["active"] is True
+    assert state["offset"] == pytest.approx(0.5)
+    assert variant.anchor_offset == pytest.approx(0.0)
+    assert mark.time_seconds == mark_time
+    assert "PREVIEW" in dialog.preview_area.text()
+
+    dialog.nudge_plus_10ms.click()
+    assert state["offset"] == pytest.approx(0.51)
+    assert variant.anchor_offset == pytest.approx(0.0)
+
+    monkeypatch.setattr(
+        "cueplayer.ui.align_anchors_dialog.QMessageBox.question",
+        lambda *a, **k: __import__(
+            "PySide6.QtWidgets", fromlist=["QMessageBox"]
+        ).QMessageBox.StandardButton.Yes,
+    )
+    dialog.reject()
+    assert state["active"] is False
+    assert variant.anchor_offset == pytest.approx(0.0)
+
+def test_preview_then_apply_commits_and_ends_preview(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    song = Song.create("曲")
+    variant = SongVariant.create("Main", tmp_path / "a.wav", anchor_offset=0.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    state = {"active": False}
+
+    dialog = AlignAnchorsDialog(
+        song,
+        begin_preview=lambda o: state.update(active=True, offset=float(o)),
+        end_preview=lambda: state.update(active=False),
+        is_preview_active=lambda: bool(state["active"]),
+    )
+    dialog.draft_offset_spin.setValue(0.75)
+    dialog.preview_btn.click()
+    assert state["active"] is True
+    dialog.apply_btn.click()
+    assert variant.anchor_offset == pytest.approx(0.75)
+    assert state["active"] is False
+
+
 def test_capture_song_mark(qapp: QApplication, tmp_path: Path, monkeypatch) -> None:
     song = Song.create("曲")
     variant = SongVariant.create("Main", tmp_path / "a.wav")

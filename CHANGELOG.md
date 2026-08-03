@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 5 — Task 6: Align Anchors Preview Session (2026-08-03)
+
+- PlaybackService ephemeral `begin/update/end_anchor_preview` — never mutates project or undo.
+- Align Anchors Preview button auditions draft offset; Cancel/close restores committed mapping.
+- Apply still commits via undo command; Song Time + `anchor_mapping` unchanged.
+
 ### Sprint 5 — Task 5: Anchor Apply / Commit (2026-08-03)
 
 - Apply writes `draft_offset` → `SongVariant.anchor_offset` via `SetVariantAnchorOffsetCommand`.
