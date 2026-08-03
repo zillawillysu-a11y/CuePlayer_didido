@@ -1,45 +1,45 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Settings service  
+**Type:** Architecture / Event Bus  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 2 Task 6 — Playback Boundary Completion  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2PlaybackBoundary.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR SETTINGS SERVICE)
+**Previous:** Sprint 2 Task 7 — Settings Service Foundation  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2SettingsService.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR EVENT BUS FOUNDATION)
 
 ---
 
 ## Current task
 
-### Sprint 2 — Task 7: Settings service foundation
+### Sprint 2 — Task 8: Event Bus foundation
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Introduce `application/settings_service.py` for machine-global / shared settings
-orchestration currently scattered across MainWindow and `persistence.audio_prefs`,
-without changing preference schemas or UI behavior.
+Introduce a thin in-process application event bus to reduce MainWindow signal
+fan-out for high-value domain/UI events, without redesigning Qt widgets or
+replacing the AudioEngine sample clock.
 
 ### Read first
 
-1. `docs/current_architecture.md` (§ settings flow, plan Task 7)
+1. `docs/current_architecture.md` (plan Task 8)
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. `persistence/audio_prefs.py`, ProjectService autosave keys
+3. MainWindow signal wiring around playhead / dirty / song activate
 
 ### In scope
 
-- Settings service façade
-- Wire high-value call sites (audio prefs / apply-to-project) if safe
+- Event bus module + a small set of migrated subscriptions
 - Tests
 
 ### Out of scope
 
-- Redesigning QSettings keys, RemoteHost, AudioEngine, Timeline
-- ShowSessionService / `_activate_song` extract
+- Replacing AudioEngine `position_changed` / `playing_changed` as the clock
+- Settings / Playback / RemoteHost redesign
+- ShowSessionService
 
 ### Done when
 
-- Service exists; behavior identical; REPORT + handoff; STOP
+- Bus exists; behavior identical; REPORT + handoff; STOP

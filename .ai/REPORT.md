@@ -1,56 +1,58 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint2-playback-boundary-028d`  
+**Branch:** `cursor/sprint2-settings-service-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 2 · Task 6 — **Playback Boundary Completion**: move remaining
-playback-related MainWindow interactions (volume, loop, scrub, nudge) into
-`PlaybackService` without redesigning AudioEngine or changing UI behavior.
+Sprint 2 · Task 7 — **Settings Service Foundation**: introduce
+`application/settings_service.py` for machine-level preferences only,
+preserving QSettings schema and separating Machine State from Project State.
 
 ## What was implemented
 
-- Extended `application/playback_service.py` with volume/mute/gain, A–B loop
-  (including fresh-pair A/B rules), scrub begin/end, nudge.
-- MainWindow wires those paths through `playback.*` only.
-- `_activate_song` left in MainWindow.
-- Playback rate: documented as engine-internal device sample-rate (no UI owner).
-- Design decisions table in `docs/current_architecture.md`.
+- `SettingsService`: QSettings owner; audio via existing `audio_prefs`; window/UI
+  chrome keys; autosave/recent raw APIs; fixed `theme_id()` = `pitch_black`.
+- MainWindow constructs `SettingsService(QSettings(...))`; `_settings` aliases
+  the service (tests keep working); audio apply/save go through the service.
+- ProjectService receives SettingsService as its SettingsStore.
+- Design contracts documented in module + `docs/current_architecture.md`.
 
-## Remaining AudioEngine touch points in MainWindow
+## Remaining MainWindow QSettings usages
 
-Intentionally left (orchestration / device / timecode / media):
+- Still constructs `QSettings` once to inject into `SettingsService` (test patch
+  compatibility: `patch(...main_window.QSettings)`).
+- Still calls `self._settings` / `self.settings` value/setValue for UI session
+  (now the SettingsService façade, not a raw orphaned QSettings).
 
-- `set_song` / `set_song_timebase` / `set_duration` / `set_buffer`
-- `apply_audio_settings` / `quiesce_output` / `ensure_playback_ready` / `rebind_playback_samples`
-- `refresh_video_clips` / `set_video_track_muted` / video decode flags
-- LTC/MTC status, sync offset, MIDI shutdown
-- Signal subscriptions (`playing_changed`, `position_changed`, …) for UI observers
-- Position/duration **reads** for monitors (clock source of truth remains engine)
+## Remaining machine settings outside SettingsService
 
-## Remaining playback technical debt
+- `web_remote/prefs.py`
+- `ui/color_presets.py`
+- `ui/export_dialog.py` (MA export dirs / last console)
+- Sync-calib / Remote mute paths unrelated to settings store
 
-- Full `_activate_song` extract (ShowSession / activate service — not this sprint task)
-- RemoteHost + sync-calib still call `engine.set_music_muted` directly
-- Position/duration reads still often go to `engine` instead of `playback`
-- `ports.SongSession` Protocol unused for activate/refresh
-- Loop still touches `_loop_engage` via façade (engine API gap)
+## Remaining technical debt
+
+- ProjectService still duplicates autosave/recent orchestration on same keys
+- MainWindow still has many chrome setValue call sites (routed, not extracted helpers)
+- No persisted theme switch (theme is code-fixed)
+- Project JSON still mirrors some chrome flags onto songs
 
 ## Risks
 
-- Loop engage private field still set from service (same as prior MainWindow)
-- Dual observers: engine signals + session mirror if sync skipped on a path
-- Broader “no direct engine” wording vs intentional activate/device exceptions
+- Dual APIs (SettingsService + ProjectService) for autosave/recent keys
+- Injected QSettings vs audio_prefs internal QSettings (same org/app; tests
+  isolate audio_prefs separately)
 
 ## Tests
 
-- Targeted: **8 passed** (playback service + A–B loop)
-- Full suite: **900 passed**, **16 failed** (same pre-existing / Linux env set)
+- Targeted settings + session/autosave tests
+- Full suite: see handoff after run
 
 ## Suggested next task
 
-Sprint 2 Task 7 — SettingsService foundation (READY FOR SETTINGS SERVICE).
+Sprint 2 Task 8 — Event Bus foundation (READY FOR EVENT BUS FOUNDATION).

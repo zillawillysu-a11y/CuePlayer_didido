@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 2 · Task 6 complete (Playback boundary completion)  
+**Status:** Sprint 2 · Task 7 complete (Settings service foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint2-playback-boundary-028d`  
-**Constraint (Task 6):** Volume / loop / scrub / nudge via PlaybackService — no AudioEngine redesign; no Timeline/Waveform/Settings/ShowSessionService; `_activate_song` stays in MainWindow.
+**Scope tip:** `cursor/sprint2-settings-service-028d`  
+**Constraint (Task 7):** Machine SettingsService only — preserve QSettings schema; no Project JSON in SettingsService; no AudioEngine/Timeline/Playback/RemoteHost redesign.
 
 Related docs (do not treat as identical):
 
@@ -132,7 +132,43 @@ After (Task 6):
   SongSession ◄── sync (playing/position/duration) ── PlaybackService
 ```
 
-**Not done here:** Settings service; ShowSessionService; RemoteHost mute path; sync-calib dialog engine mute; `_activate_song` extract.
+**Not done here (Task 6):** ShowSessionService; RemoteHost mute path; sync-calib dialog engine mute; `_activate_song` extract.
+
+---
+
+## Sprint 2 Task 7 — Settings service foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `application/settings_service.py` | Machine prefs façade over `QSettings` + `audio_prefs` |
+| MainWindow | Creates `SettingsService`; UI session / audio go through it; no longer owns raw QSettings construction for prefs |
+| `ProjectService` | Still owns recent/autosave *orchestration*; uses SettingsService as `SettingsStore` |
+| Project JSON | Untouched — must not enter SettingsService |
+
+### Design decisions
+
+| Decision | Responsibility | Non-responsibility | Dependency | Why |
+|----------|----------------|--------------------|------------|-----|
+| SettingsService owns machine QSettings | Org/app store + key constants | Project song/mark/setlist JSON | `QSettings` | Single machine-state owner |
+| Audio via existing `audio_prefs` | load/save/apply overlay | Schema redesign; engine apply | `persistence.audio_prefs` | Identical schema + behavior |
+| Window / chrome keys on service | Geometry, splitters, view mode, NOW/cue list | Widget layout logic | Same string keys as before | Move QSettings out of MainWindow without UI redesign |
+| Theme = fixed `pitch_black` | Report theme id | Persisted theme switch (none exists) | `THEME_ID` constant | No schema to invent |
+| Autosave / recent APIs on service | Raw machine keys | Existence filtering / open-save side effects | Shared keys with ProjectService | Machine vs project separation; ProjectService still orchestrates |
+| Project state stays out | — | Never write show content to QSettings | — | Hard architecture rule |
+
+### Settings flow (after Task 7)
+
+```text
+MainWindow → SettingsService → QSettings (CuePlayer/CuePlayer)
+                 ├─ audio_prefs load/save/apply (machine audio)
+                 ├─ ui/* / mainwindow/* / clean_output/* keys
+                 ├─ autosave/* + session/recent|last keys (raw)
+                 └─ theme_id() → "pitch_black" (code theme; no key)
+MainWindow → ProjectService(SettingsService) → recent/autosave orchestration + ProjectRepository
+Project JSON ← persistence (project state only)
+```
+
+**Still outside SettingsService (debt):** `web_remote.prefs`, `color_presets`, export dialog dirs, RemoteHost.
 
 ---
 
@@ -152,7 +188,7 @@ CuePlayer_didido/
     ├── app.py              # QApplication boot + MainWindow
     ├── __main__.py         # python -m cueplayer
     ├── domain/             # models, undo, cue id, columns, media_relink, song_session
-    ├── application/        # ProjectService, PlaybackService
+    ├── application/        # ProjectService, PlaybackService, SettingsService
     ├── repository/         # ProjectRepository (file I/O façade)
     ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
@@ -375,7 +411,7 @@ CuePlayer avoids classic process-wide singletons for `Project` / `Song`, but has
 | Mechanism | Where | Role |
 |-----------|-------|------|
 | **`av_path_lock` registry** | `media/av_lock.py` (`_locks` dict) | Per-resolved-path `RLock` for PyAV; shared by preview, scrub, waveform, mixer, stand-in |
-| **QSettings (`CuePlayer`/`CuePlayer`)** | `MainWindow`, `audio_prefs`, `web_remote/prefs`, `color_presets` | Machine-global prefs (autosave, audio device, UI session, remote, colors) |
+| **QSettings (`CuePlayer`/`CuePlayer`)** | `SettingsService` (+ `audio_prefs`, `web_remote/prefs`, `color_presets`) | Machine-global prefs |
 | **Disk audio cache** | `media/audio_disk_cache` (+ MainWindow in-memory maps) | Cross-song PCM/waveform reuse |
 | **Thread pools / tokens** | `MainWindow` | Load/BPM/LTC generation counters (`_audio_load_token`, `_song_activate_gen`, …) |
 | **Shared mutable `Song` / `Project`** | Engine, video_sync, timeline, monitor, remote | Not a Python `global`, but **shared object identity** is the real global state |
@@ -410,6 +446,7 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 |---------|------|-------|
 | **`ProjectService`** | `application/project_service.py` | Lifecycle; I/O via `ProjectRepository` |
 | **`PlaybackService`** | `application/playback_service.py` | ✅ Transport + volume/loop/scrub/nudge → AudioEngine |
+| **`SettingsService`** | `application/settings_service.py` | ✅ Machine QSettings + audio_prefs façade |
 | **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot (mirror) |
 | Song activate orchestration | `MainWindow._activate_song` | Still UI-owned (timeline/video/monitor refresh) |
 | Media job queue | `MainWindow` executors | Still UI-owned |
@@ -523,7 +560,7 @@ Rules in force:
 
 ## 14. Current settings flow
 
-Settings are split across **three stores**:
+Settings are split across **machine** vs **project** stores:
 
 ```text
 ┌─────────────────────────────┐
@@ -532,23 +569,25 @@ Settings are split across **three stores**:
 └─────────────┬───────────────┘
               │ load overlays ↓
 ┌─────────────▼───────────────┐
-│ QSettings CuePlayer/CuePlayer│
-│ • audio/output_settings_json │  ← audio_prefs (wins over project on apply)
-│ • autosave/*                 │  ← MainWindow
-│ • UI session / monitor cols  │  ← MainWindow / cue monitor
-│ • web remote prefs           │  ← web_remote.prefs
-│ • color dialog presets       │  ← color_presets
+│ SettingsService             │
+│ → QSettings CuePlayer/…     │
+│ • audio/output_settings_json│  ← audio_prefs (wins over project on apply)
+│ • autosave/*                │  ← machine prefs (also used by ProjectService)
+│ • UI session / monitor cols │  ← MainWindow via SettingsService
+│ (not yet): web remote,      │  ← still web_remote.prefs / color_presets
+│            color presets    │
 └─────────────────────────────┘
               │
 ┌─────────────▼───────────────┐
 │ Live widgets                 │
 │ Audio Timecode dialog,       │
 │ Transport, Clean window, …   │
-│ mutate Project and/or QSettings
+│ mutate Project and/or machine│
+│ prefs via SettingsService    │
 └─────────────────────────────┘
 ```
 
-Implication for future `application` services: must know **which knobs are machine-global vs project-local** or saves will regress employee machines.
+Machine State and Project State must remain separate — SettingsService never owns Project JSON.
 
 ---
 
@@ -562,11 +601,12 @@ Implication for future `application` services: must know **which knobs are machi
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Settings / Remote)
+### P0 — Next (Event bus / Remote)
 
-1. **Machine + project settings still split across MainWindow / QSettings / audio_prefs** — next candidate: SettingsService.
+1. **No app-wide Event Bus** — UI still wires many Qt signals directly; next candidate: Event Bus foundation.
 2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
 3. **`_activate_song` still a large MainWindow orchestrator** — further song-session Protocol adoption later.
+4. **Machine prefs still also in `web_remote.prefs` / `color_presets` / export dialog** — fold into SettingsService later if needed.
 
 ### P1 — Structural risk (product-visible)
 
@@ -612,22 +652,22 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
 | **Sprint 2 · 5** Playback foundation | ✅ Done | PlaybackService + SongSession |
 | **Sprint 2 · 6** Playback boundary | ✅ Done | Volume / loop / scrub / nudge via service |
-| **Sprint 2 · 7** Settings service | **Next** | Machine/project settings façade |
+| **Sprint 2 · 7** Settings service | ✅ Done | Machine SettingsService + QSettings façade |
+| **Sprint 2 · 8** Event Bus foundation | **Next** | Decouple UI signal fan-out |
 
-### Recommended Sprint 2 Task 7 — Settings service
+### Recommended Sprint 2 Task 8 — Event Bus foundation
 
-- Extract `application/settings_service.py` for machine-global prefs currently scattered (`audio_prefs`, autosave keys already partly in ProjectService, UI session keys still on MainWindow).
-- Prefer wrapping existing QSettings / `audio_prefs` functions — no behavior change.
-- Do not redesign preference schemas in the same task.
-- Do not introduce ShowSessionService in the same task.
+- Introduce a thin in-process event bus / application events for high-value MainWindow fan-out (playhead, song activate, dirty) without redesigning Qt widgets.
+- Do not replace AudioEngine clock signals in the same task.
+- Keep behavior identical; strangler only.
 
-### Risks for Task 7
+### Risks for Task 8
 
 | Risk | Mitigation |
 |------|------------|
-| Overlay order (machine audio vs project JSON) | Keep `apply_global_audio_to_project` semantics |
-| Splitting UI session vs audio prefs too early | Start with audio + autosave only if needed |
+| Double-delivery if both bus and direct signals fire | Migrate one fan-out at a time |
+| Clock vs UI events mixed | Bus carries UI/domain events only; AudioEngine remains clock |
 
 ---
 
-## READY FOR SETTINGS SERVICE
+## READY FOR EVENT BUS FOUNDATION
