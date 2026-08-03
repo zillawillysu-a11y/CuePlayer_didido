@@ -783,7 +783,41 @@ class TimelineWidget(QWidget):
             self._selected_mark_ids.clear()
         self.update()
 
+    def _cancel_pending_left_gestures(self) -> None:
+        """Drop unfinished left-click drags when the user starts panning."""
+        if self._scrubbing:
+            self._scrubbing = False
+            self._scrub_timer.stop()
+            self.scrub_ended.emit()
+        if (self._dragging_clip is not None or self._trimming_clip is not None) and self._clip_drag_moved:
+            clip_id = self._dragging_clip or (
+                self._trimming_clip[0] if self._trimming_clip is not None else None
+            )
+            if clip_id is not None and self._song is not None:
+                clip = self._song.video_clip_by_id(clip_id)
+                old = self._clip_drag_snapshot.get(clip_id)
+                if clip is not None and old is not None:
+                    clip.start_seconds, clip.source_in_seconds, clip.duration_seconds = old
+                    clip.source_out_seconds = clip.source_in_seconds + clip.duration_seconds
+        self._dragging_clip = None
+        self._trimming_clip = None
+        self._clip_drag_moved = False
+        self._clip_drag_snapshot.clear()
+        self._dragging_loop = None
+        self._loop_drag_moved = False
+        self._resizing_wave = False
+        self._resizing_video_lane = False
+        self._box_selecting = False
+        self._box_click_seek = None
+        self._dragging_marks = False
+        self._drag_click_seek = None
+        self._drag_moved = False
+        self._drag_ids.clear()
+        self._drag_start_times.clear()
+        self._pending_single_select = None
+
     def _begin_pan(self, x: float, *, click_seek: float | None = None) -> None:
+        self._cancel_pending_left_gestures()
         self._panning = True
         self._pan_moved = False
         self._pan_click_seek = click_seek
