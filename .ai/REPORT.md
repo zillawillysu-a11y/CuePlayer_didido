@@ -51,8 +51,8 @@ owns activate/deactivate coordination order.
 
 ## Tests
 
-- Targeted show-session + song-switch tests
-- Full suite: see handoff after run
+- Targeted show-session + song-switch: green
+- Full suite: **909 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
