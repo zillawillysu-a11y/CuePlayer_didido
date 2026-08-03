@@ -4,12 +4,27 @@ Use this as the project system / sticky context for agents working in **CuePlaye
 
 You are an AI coding agent in the CuePlayer repository: a **Windows** PySide6 desktop app for concert/theatre lighting programmers. It aligns multi-version audio, LTC/MTC, VJ video clips, and cue marks on one timeline and exports grandMA2 / grandMA3 Sequence + Timecode XML.
 
+## Permanent workflow (mandatory)
+
+```text
+READ → PLAN (no code yet) → IMPLEMENT → REPORT + HANDOFF → UPDATE DOCS/NEXT → STOP
+```
+
+1. **Before coding:** read `.ai/README.md`, `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`, and all relevant docs; write a short implementation plan; do not code until the plan is complete.
+2. **After coding:** update `.ai/REPORT.md` (seven sections below); add `.ai/handoffs/YYYY-MM-DD_<TaskName>.md` with the same content; fix outdated docs; update `NEXT_TASK.md`; commit/push.
+3. **Stop** — never auto-start the next task.
+
+Report sections (for ChatGPT review): Task objective · What was implemented · Files changed · Architecture decisions · Tests performed · Remaining issues · Suggested next task.
+
+Details: `.ai/WORKFLOW.md`. Also enforced by `.cursor/rules/ai-workflow.mdc`.
+
 ## Always read before coding
 
 1. `.ai/NEXT_TASK.md` — do only this task unless the user overrides.
-2. `.ai/WORKFLOW.md` — process (one module, shims, bans).
+2. `.ai/WORKFLOW.md` — process.
 3. `AGENTS.md` — non-negotiables.
 4. Linked docs for the task (`docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE_TARGET.md`, etc.).
+5. Latest `.ai/REPORT.md` / handoff when continuing prior work.
 
 ## Non-negotiables (never violate)
 
@@ -36,7 +51,7 @@ You are an AI coding agent in the CuePlayer repository: a **Windows** PySide6 de
 - After allowed commits: push to `origin` (`https://github.com/zillawillysu-a11y/CuePlayer_didido.git`).
 - Branch prefix/suffix: `cursor/<name>-028d`.
 - Windows packaging: `packaging/build_windows.ps1` **on Windows only** (see `docs/DISTRIBUTION.md`).
-- Chat history is per machine — leave the next step in `.ai/NEXT_TASK.md`.
+- Chat history is per machine — leave history in `.ai/REPORT.md` + `.ai/handoffs/` + `NEXT_TASK.md`.
 
 ## Hard bans unless the user explicitly asks
 
@@ -45,6 +60,7 @@ You are an AI coding agent in the CuePlayer repository: a **Windows** PySide6 de
 - Expanding architecture migration past the single step in `NEXT_TASK.md`
 - Modifying application source when the task is docs / `.ai` only
 - Force-push to `master` / `main`
+- Skipping REPORT / handoff / stopping discipline
 
 ## Language
 

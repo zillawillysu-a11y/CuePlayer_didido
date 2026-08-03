@@ -1,68 +1,126 @@
 # CuePlayer AI workflow
 
-How Cursor / cloud agents must operate in this repository.
+**Permanent engineering standard.** Every Cursor / cloud agent task in this
+repository must follow this file end-to-end. Chat history is ephemeral; the
+repo (especially `.ai/`) is the engineering history.
 
-## 1. Read order (every task)
+---
 
-1. `.ai/NEXT_TASK.md` — the single active task.
-2. This file — process constraints.
-3. `AGENTS.md` — non-negotiables (Unicode, routing, MA export habits, clock).
-4. Task-linked docs only, usually one of:
-   - Feature work → `docs/PRODUCT_SPEC.md` (relevant section)
+## 0. Mandatory loop (never skip)
+
+```text
+READ → PLAN (no code yet) → IMPLEMENT → REPORT + HANDOFF → UPDATE DOCS/NEXT → STOP
+```
+
+Never start the next queued task automatically.
+
+---
+
+## 1. Before implementation
+
+### 1.1 Read (required)
+
+1. `.ai/README.md`
+2. `.ai/WORKFLOW.md` (this file)
+3. `.ai/NEXT_TASK.md` — unless the **user message** explicitly overrides the task
+4. `.ai/prompts/cursor_system.md` when starting fresh / no prior context
+5. All docs named by the task, typically:
+   - Feature → `docs/PRODUCT_SPEC.md` (relevant sections) + `AGENTS.md`
    - Architecture move → `docs/ARCHITECTURE_TARGET.md` + `docs/ARCHITECTURE_REVIEW.md`
    - Packaging → `docs/DISTRIBUTION.md`
-5. `.ai/prompts/cursor_system.md` if starting a fresh agent without prior chat.
+6. Latest `.ai/REPORT.md` and the newest file under `.ai/handoffs/` if continuing prior work
 
-Do **not** re-read the entire codebase “just in case.” Scope to the module named in `NEXT_TASK.md`.
+### 1.2 Plan (required — before any code or file edits)
 
-## 2. Task types
+Write a **short implementation plan** (in the agent turn / thinking) covering:
+
+- Objective (one sentence)
+- In scope / out of scope
+- Files likely touched
+- Risks (clock, `av_path_lock`, shared `Song`, persistence→ui, Remote private APIs)
+- Test approach
+
+**Do not start coding until that plan is complete.**
+
+---
+
+## 2. During implementation
 
 | Type | Allowed | Forbidden |
 |------|---------|-----------|
-| **Feature** | Product behavior the user asked for; tests; minimal docs if asked | Drive-by architecture moves |
-| **Bugfix** | Root-cause fix + regression test when practical | “While here” refactors |
-| **Architecture move** | Exactly one row from `ARCHITECTURE_TARGET.md` migration table; shims OK | Behavior changes, lock-strategy rewrites, multi-module moves |
-| **Docs / AI infra** | `.ai/`, `docs/`, `AGENTS.md` | Changing `src/cueplayer/` unless explicitly requested |
-| **Package** | Instruct / prepare Windows build; do not invent Linux Windows EXE | Claiming a cloud Linux agent produced a shippable `.exe` |
+| **Feature** | User-requested behavior + tests | Drive-by architecture moves |
+| **Bugfix** | Root cause + regression test when practical | “While here” refactors |
+| **Architecture move** | Exactly **one** row from `ARCHITECTURE_TARGET.md`; shims OK | Behavior changes; multi-module moves |
+| **Docs / AI infra** | `.ai/`, `docs/`, `AGENTS.md`, `.cursor/rules` | `src/cueplayer/` unless user asks |
+| **Package** | Windows build instructions / scripts on Windows | Fake Windows EXE from Linux cloud |
 
-## 3. Architecture migration rules
+### Architecture migration rules
 
 From `docs/ARCHITECTURE_TARGET.md`:
 
-- **One module per PR / per agent turn focus.**
-- Prefer `git mv` + **shim re-export** at the old path so imports keep working.
-- **No behavior change** in a move PR (no mixer window tuning, no Remote protocol changes, no BPM rewrite).
-- **Clock stays in `AudioEngine`** — never add a second independent video/audio clock.
-- Forbidden dependency directions (target): `persistence → ui`, `remote → MainWindow` private `_` APIs, `domain → media` (fix when that module’s turn comes).
+- One module per PR / per focused agent task.
+- Prefer `git mv` + **shim re-export** at the old path.
+- No behavior change in a pure move PR.
+- **`AudioEngine` sample position remains the only playback clock.**
+- Target bans: `persistence → ui`, `remote → MainWindow` private `_` APIs.
 
-Fragile areas (from review — touch only if the task requires):
+### Fragile areas (touch only if the task requires)
 
-- Global `media/av_lock.py` (`av_path_lock`) shared by Preview / mixer / scrub / waveforms
+- `media/av_lock.py` (`av_path_lock`) — Preview / mixer / scrub / waveforms
 - Shared mutable `Song` across engine / video_sync / timeline / monitor / web_remote
-- `persistence/project_store.py` importing `ui.cue_list_columns` (migration step 1)
+- `persistence/project_store.py` → `ui.cue_list_columns` (migration step 1)
 
-## 4. Git / branches / PR
+### Git
 
-- Branch names: `cursor/<descriptive-name>-028d` (lowercase).
-- After allowed commits: `git push -u origin HEAD` (see `.cursor/rules/auto-push.mdc`).
-- Do not force-push `master` / `main`.
-- Prefer ManagePullRequest / project PR tools over write `gh` for PR create/update when in cloud agent mode.
-- Windows employee builds are produced **on Windows** via `packaging/build_windows.ps1`.
+- Branches: `cursor/<descriptive-name>-028d` (lowercase).
+- After allowed commits: push `origin` (see `.cursor/rules/auto-push.mdc`).
+- No force-push to `master` / `main`.
+- Windows employee builds: `packaging/build_windows.ps1` **on Windows only**.
 
-## 5. Testing expectations
+### Tests
 
-- Run the narrowest relevant pytest paths for the touched package (`tests/domain`, `tests/playback`, `tests/ui`, …).
-- UI tests often need `QT_QPA_PLATFORM=offscreen`.
-- Do not claim “all green” without running tests for the area you changed.
+- Narrowest relevant pytest paths; UI often needs `QT_QPA_PLATFORM=offscreen`.
+- Do not claim green without running tests for the touched area.
 
-## 6. Communication
+---
 
-- User often works in **Traditional Chinese**; keep status replies concise.
-- Cursor chat is **per machine** — update `.ai/NEXT_TASK.md` when a migration step finishes so the other machine can continue.
+## 3. After implementation (required before stopping)
+
+### 3.1 Update `.ai/REPORT.md`
+
+Overwrite / refresh **latest report** with sections written for **ChatGPT review**:
+
+1. **Task objective**
+2. **What was implemented**
+3. **Files changed**
+4. **Architecture decisions**
+5. **Tests performed**
+6. **Remaining issues**
+7. **Suggested next task**
+
+### 3.2 Create a handoff archive file
+
+Path: `.ai/handoffs/YYYY-MM-DD_<TaskName>.md`  
+Same seven sections as `REPORT.md` (durable history; never delete old handoffs lightly).
+
+Naming: use ASCII `TaskName` in `PascalCase` or `snake_case` (e.g. `2026-08-03_PermanentAiWorkflowStandard.md`).
+
+### 3.3 Update outdated documentation
+
+- `.ai/NEXT_TASK.md` → single next task (or blocked + reason)
+- Any `docs/*` / `AGENTS.md` that the change made wrong
+- Do **not** leave stale “current step” pointers
+
+### 3.4 Commit, push, then **STOP**
+
+- Commit + push the slice (including report + handoff).
+- Update / open PR if in cloud-agent mode.
+- **Stop immediately.** Never continue to the next architecture row or feature unless the user starts a new task.
+
+---
+
+## 4. Communication
+
+- User often uses **Traditional Chinese**; keep status replies concise.
+- The repository — not chat — must be enough for the next session to continue.
 - Never shrink P0 product scope without asking (`AGENTS.md`).
-
-## 7. After finishing a task
-
-1. Commit + push the slice.
-2. Update `.ai/NEXT_TASK.md` to the **next** single step (or mark blocked with reason).
-3. Stop. Do not start the next architecture row unless the user asks.

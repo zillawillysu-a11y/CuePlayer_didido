@@ -2,7 +2,8 @@
 
 **Status:** Ready  
 **Type:** Architecture move (foundation only — no behavior change)  
-**Updated:** 2026-08-03
+**Updated:** 2026-08-03  
+**Workflow:** Mandatory `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP` (see `.ai/WORKFLOW.md`). Do not start this task in the same turn that only finished a different task.
 
 ---
 
@@ -23,7 +24,7 @@ Add `src/cueplayer/ports/` with Protocol stubs only (no wiring, no call sites, n
   - `project_store.py` → `ProjectStore`
   - (other port files listed in the target doc may be empty Protocol placeholders)
 - Optional: one tiny import smoke test under `tests/` that imports `cueplayer.ports` only
-- Update this file’s “Current task” to **step 1** after merge
+- After done: update `.ai/REPORT.md`, add `.ai/handoffs/YYYY-MM-DD_PortsPackageStep0.md`, set this file to **step 1**, then **stop**
 
 ### Out of scope
 
@@ -38,14 +39,15 @@ Add `src/cueplayer/ports/` with Protocol stubs only (no wiring, no call sites, n
 - [ ] `python -c "import cueplayer.ports"` succeeds
 - [ ] No production call sites depend on the new ports yet
 - [ ] Existing tests still pass for untouched areas
-- [ ] This file points at step **1** (`domain/cue_list_columns` move + shims)
+- [ ] `.ai/REPORT.md` + handoff written; this file points at step **1**
 
 ### Read first
 
-1. `.ai/WORKFLOW.md`
+1. `.ai/README.md`, `.ai/WORKFLOW.md`, this file, `.ai/REPORT.md`
 2. `docs/ARCHITECTURE_TARGET.md` (steps 0–1, shim technique)
 3. `docs/ARCHITECTURE_REVIEW.md` (why ports matter — RemoteHost / Persistence→UI)
 4. `AGENTS.md` (clock + layer non-negotiables)
+5. Write a short plan **before** creating any files under `src/`
 
 ---
 
@@ -69,5 +71,6 @@ Only when the user asks for product work (not implied by architecture steps):
 
 ## Notes for multi-machine handoff
 
-- Active AI infra branch may be `cursor/ai-workflow-infra-028d` or merged into `master`.
-- Ship / package tip may live on a release branch (e.g. `cursor/release-1-0-6-028d`); do not confuse packaging with architecture step 0.
+- AI infra + this workflow standard: branch `cursor/ai-workflow-infra-028d` (merge when ready).
+- Ship / package tip may live on a release branch; do not confuse packaging with architecture step 0.
+- Engineering history: `.ai/REPORT.md` + `.ai/handoffs/` (not chat).

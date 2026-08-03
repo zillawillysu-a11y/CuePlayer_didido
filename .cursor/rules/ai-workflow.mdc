@@ -1,0 +1,26 @@
+---
+description: Permanent CuePlayer AI task workflow (plan, report, handoff, stop)
+alwaysApply: true
+---
+
+# CuePlayer AI workflow (permanent)
+
+For **every** task in this repository:
+
+## Before implementation
+
+1. Read `.ai/README.md`, `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`, and all docs relevant to the task (plus `AGENTS.md` non-negotiables).
+2. Write a short implementation plan (objective, scope, files, risks, tests).
+3. **Do not start coding until the plan is complete.**
+
+## After implementation
+
+1. Update `.ai/REPORT.md` with: Task objective; What was implemented; Files changed; Architecture decisions; Tests performed; Remaining issues; Suggested next task.
+2. Create `.ai/handoffs/YYYY-MM-DD_<TaskName>.md` with the same information.
+3. Update outdated docs and `.ai/NEXT_TASK.md`.
+4. Commit/push as required by auto-push rules.
+5. **Stop immediately.** Never continue to another task automatically.
+
+The repository (especially `.ai/`) is the engineering history for future ChatGPT / Cursor sessions — do not rely on chat history.
+
+Full detail: `.ai/WORKFLOW.md`.

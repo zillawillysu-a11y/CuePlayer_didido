@@ -1,15 +1,20 @@
 # CuePlayer — AI workflow
 
-This directory is the **repo-local handoff** for Cursor / cloud agents.
+This directory is the **repo-local engineering history** for Cursor / cloud agents.
 Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md` do.
+
+**Permanent standard:** every task must follow [`WORKFLOW.md`](WORKFLOW.md)
+(`READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`).
 
 ## What lives here
 
 | Path | Purpose |
 |------|---------|
-| [`WORKFLOW.md`](WORKFLOW.md) | How agents must work on CuePlayer (read order, move rules, bans) |
-| [`NEXT_TASK.md`](NEXT_TASK.md) | Single current next task (update after each finished module step) |
-| [`prompts/cursor_system.md`](prompts/cursor_system.md) | Project system prompt for Cursor agents |
+| [`WORKFLOW.md`](WORKFLOW.md) | Mandatory before/after process for every task |
+| [`NEXT_TASK.md`](NEXT_TASK.md) | Single current next task |
+| [`REPORT.md`](REPORT.md) | Latest task report (ChatGPT-reviewable) |
+| [`handoffs/`](handoffs/) | Dated archive of completed tasks |
+| [`prompts/cursor_system.md`](prompts/cursor_system.md) | Project system prompt |
 
 ## Canonical product / architecture docs (do not duplicate)
 
@@ -32,8 +37,8 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 
 ## Start every agent session
 
-1. Read `.ai/NEXT_TASK.md` (what to do now).
-2. Read `.ai/WORKFLOW.md` (how to do it).
-3. Read `AGENTS.md` non-negotiables.
-4. Open only the docs / files named by the current task.
-5. Do **not** expand scope into refactor or unrelated features unless the user says so.
+1. Read `.ai/README.md` (this file), `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`.
+2. Read `.ai/REPORT.md` + latest `.ai/handoffs/*` if continuing work.
+3. Read `AGENTS.md` non-negotiables + task-linked docs.
+4. Write a short implementation **plan** — **no code until the plan is done**.
+5. Implement only the active task; then write `REPORT.md` + a handoff file; update docs; **stop**.
