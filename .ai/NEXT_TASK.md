@@ -1,31 +1,31 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Feature — Preflight Report Builder  
+**Type:** Feature — Preflight UI  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 6 Task 2 — MA Validation Rule Pack  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6MaValidationRules.md`  
-Baseline: `docs/ma_preflight.md` (ends READY FOR PREFLIGHT REPORT)
+**Previous:** Sprint 6 Task 3 — Preflight Report Builder  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6PreflightReport.md`  
+Baseline: `docs/ma_preflight.md` (ends READY FOR PREFLIGHT UI)
 
 ---
 
 ## Current task
 
-### Sprint 6 Task 3: Preflight Report Builder
+### Sprint 6 Task 4: Preflight UI
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Present / structure `ValidationReport` for UI and export gating (group/sort/serialize). No auto-fix, no XML write.
+Read-only dialog / panel over `PreflightReport`; optional Export gate on `has_errors`. No auto-fix, no exporter changes.
 
 ### Read first
 
-1. `docs/ma_preflight.md` (Task 2 section)
-2. `cueplayer.domain.validation` (`ValidationReport`, `run_ma_preflight`)
+1. `docs/ma_preflight.md` (Task 3 § Recommendation for Task 4)
+2. `cueplayer.domain.validation.preflight_report` (`PreflightReport`, `build_preflight_report_for_project`)
 
 ### Done when
 
-- Report builder + tests; REPORT + handoff; STOP
+- Preflight UI shell + tests; REPORT + handoff; STOP
