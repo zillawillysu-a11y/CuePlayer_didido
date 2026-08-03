@@ -11,6 +11,10 @@
 - MainWindow thin wrappers; no EventBus
 - Docs end **READY FOR SPRINT 3 ARCHITECTURE**
 
+## Tests
+
+- Full suite: **909 passed, 16 failed** (pre-existing / Linux env)
+
 ## Recommendation for Sprint 3
 
 Plan Event Bus, RemoteHost wiring, and a narrower ShowSession host Protocol.
