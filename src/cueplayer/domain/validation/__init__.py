@@ -5,7 +5,7 @@ rule-registration runner. It must stay free of Qt, persistence I/O,
 AudioEngine, and ``cueplayer.exporters`` (validation is independent of XML
 generation).
 
-Concrete MA rules land in Task 2; this Task 1 ships the framework only.
+Task 2 adds the MA Preflight rule pack under ``ma_rules`` / ``ma_context``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,11 @@ from cueplayer.domain.validation.codes import (
     is_valid_code_format,
 )
 from cueplayer.domain.validation.issue import ValidationIssue, make_issue
+from cueplayer.domain.validation.ma_context import (
+    MaPreflightContext,
+    build_ma_preflight_context,
+)
+from cueplayer.domain.validation.ma_rules import ma_preflight_rules, run_ma_preflight
 from cueplayer.domain.validation.report import ValidationReport
 from cueplayer.domain.validation.rules import (
     ValidationRule,
@@ -25,15 +30,19 @@ from cueplayer.domain.validation.rules import (
 from cueplayer.domain.validation.severity import ValidationSeverity, coerce_severity
 
 __all__ = [
+    "MaPreflightContext",
     "ValidationCode",
     "ValidationIssue",
     "ValidationReport",
     "ValidationRule",
     "ValidationRuleSet",
     "ValidationSeverity",
+    "build_ma_preflight_context",
     "coerce_severity",
     "coerce_validation_code",
     "is_valid_code_format",
+    "ma_preflight_rules",
     "make_issue",
+    "run_ma_preflight",
     "run_validation",
 ]

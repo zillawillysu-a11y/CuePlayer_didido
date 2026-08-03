@@ -1,32 +1,31 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Feature — MA Export Validation Rules  
+**Type:** Feature — Preflight Report Builder  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 6 Task 1 — MA Export Preflight Domain  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6MaPreflightDomain.md`  
-Baseline: `docs/ma_preflight.md` (ends READY FOR VALIDATION RULES)
+**Previous:** Sprint 6 Task 2 — MA Validation Rule Pack  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6MaValidationRules.md`  
+Baseline: `docs/ma_preflight.md` (ends READY FOR PREFLIGHT REPORT)
 
 ---
 
 ## Current task
 
-### Sprint 6 Task 2: Validation Rules
+### Sprint 6 Task 3: Preflight Report Builder
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-First MA rule pack (empty/illegal labels, duplicates, executor range, mode info) against a read-only export-intent context. No UI, no XML write, no auto-fix.
+Present / structure `ValidationReport` for UI and export gating (group/sort/serialize). No auto-fix, no XML write.
 
 ### Read first
 
-1. `docs/ma_preflight.md`
-2. `cueplayer.domain.validation`
-3. `exporters/plan_from_song.py` (for context field inventory only)
+1. `docs/ma_preflight.md` (Task 2 section)
+2. `cueplayer.domain.validation` (`ValidationReport`, `run_ma_preflight`)
 
 ### Done when
 
-- Rules + tests green; REPORT + handoff; STOP
+- Report builder + tests; REPORT + handoff; STOP

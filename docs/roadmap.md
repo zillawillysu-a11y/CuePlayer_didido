@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 6 Task 1 complete — MA Export Preflight domain  
+**Status:** Sprint 6 Task 2 complete — MA Validation Rule Pack (MVP)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint6-ma-preflight-domain-028d`  
+**Scope tip:** `cursor/sprint6-ma-validation-rules-028d`  
 **Related:** [`ma_preflight.md`](ma_preflight.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -255,9 +255,9 @@ Later
 | **Sprint 5 · Task 6 — Align Anchors Preview** | ✅ Done — ephemeral PlaybackService preview |
 | **Sprint 5 · Align Anchors Beta** | ✅ Done — lifecycle / Cancel / Apply / regressions |
 | **Sprint 6 · Product Planning** | ✅ Done — this document (historical pick) |
-| **Sprint 6 · Task 1 — Preflight Domain** | ✅ Done — `domain/validation` + `ma_export_validation.md` |
-| Sprint 6 · Task 2 — Validation Rules | **Next** — MA rule pack (read-only) |
-| Sprint 6 · Feature Implementation (Preview UI) | Queued after rules |
+| **Sprint 6 · Task 1 — Preflight Domain** | ✅ Done — `domain/validation` + `ma_preflight.md` |
+| **Sprint 6 · Task 2 — Validation Rules** | ✅ Done — `ma_preflight_rules()` MVP pack |
+| Sprint 6 · Task 3 — Preflight Report Builder | **Next** |
 
 ---
 
@@ -269,6 +269,7 @@ Later
 | Sprint 5 | Align Anchors UX → shell → compute → Apply → Preview → Beta |
 | **Sprint 6 Feature pick** | **MA Export Preview / Validation (MVP)** |
 | Sprint 6 Task 1 | Domain validation framework only (`ValidationReport` / rules registry) |
+| Sprint 6 Task 2 | MA Preflight rule pack MVP (read-only; no exporters/UI) |
 | Sprint 6 explicitly deferred | Overlay compare, NDI, OSC, EventBus-as-feature, variant CRUD (runner-up), large UI redesign |
 | Why not overlay next | Align is done, but console handoff risk > paint polish for lighting shows |
 | Why not variant CRUD first | Domain ready, but export confidence unblocks more shows per week |
@@ -295,10 +296,14 @@ Earlier Sprint 4 recommendation was **Song Variants → Align Anchors** (see git
 
 ## Sprint 6 Task 1 — Preflight Domain (done)
 
-See [`ma_export_validation.md`](ma_export_validation.md).
+See [`ma_preflight.md`](ma_preflight.md).
 
-**Next:** Validation Rules (Task 2).
+## Sprint 6 Task 2 — Validation Rules (done)
+
+See [`ma_preflight.md`](ma_preflight.md) § Task 2.
+
+**Next:** Preflight Report Builder (Task 3).
 
 ---
 
-## READY FOR VALIDATION RULES
+## READY FOR PREFLIGHT REPORT

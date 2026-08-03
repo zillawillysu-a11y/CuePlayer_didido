@@ -124,36 +124,77 @@ report.add(make_issue(
 
 | Extension | Approach |
 |-----------|----------|
-| Task 2 concrete rules | `domain/validation/ma_rules/` or `application/ma_preflight/` using these types |
-| Export-intent context | Protocol / dataclass view from song+patch — avoid exporter XML deps in rules |
-| UI Preview | Consume `ValidationReport` only |
+| Task 3 Report Builder | Present `ValidationReport` for UI / export gate (no auto-fix) |
+| Export-intent fidelity | Keep `MaPreflightContext` aligned with Show Patch fields |
 | Auto-fix (later) | Separate command layer; never inside `evaluate` |
 | Non-MA packs | New prefixes + rule sets (framework already reusable) |
 
 ---
 
-## Risks
+## Sprint 6 Task 2 — MA Validation Rule Pack (done)
 
-| Risk | Mitigation |
-|------|------------|
-| Rules accidentally mutate context | Protocol docs + unit tests with mutable spy |
-| Preview drift from real export | Task 2 context must mirror `plan_from_song` fields |
-| Code renumbering chaos | Document bands; freeze codes once shipped |
-| Coupling to exporters | Domain package forbids exporter imports |
+**Scope tip:** `cursor/sprint6-ma-validation-rules-028d`
+
+### Rule summary
+
+| Code | Severity | Rule |
+|------|----------|------|
+| MA001 | Error | Invalid MA Export Name (non-ASCII / illegal chars) |
+| MA002 | Error | Missing required Song MA Export Name |
+| MA003 | Error | Duplicate Sequence identifiers |
+| MA004 | Error | Invalid / colliding Executor assignments |
+| MA050 | Warning | Empty Sequence (no cues) |
+| MA051 | Warning | Disabled / excluded Song |
+| MA052 | Warning | Unused Cue (non-export lane) |
+| MA053 | Warning | Missing optional metadata (note / bpm) |
+| MA150 | Information | Total Songs |
+| MA151 | Information | Total Sequences |
+| MA152 | Information | Total Executors |
+| MA153 | Information | Total Variants |
+
+Factory: `ma_preflight_rules()` / `run_ma_preflight(context)`.  
+Context: `build_ma_preflight_context(project)` — frozen snapshot; **no** exporter imports.
+
+### Example report (after rules)
+
+```text
+Show: 2 error(s), 3 warning(s), 4 info
+
+[ERROR] MA001  Song MA Export Name has non-ASCII
+[ERROR] MA002  Song is missing MA Export Name
+[WARNING] MA050  Sequence 'Opening' has no cues
+[WARNING] MA051  Song 'Skip' is excluded from export
+[INFORMATION] MA150  Total songs: 2 (1 included)
+…
+```
+
+### Coverage
+
+- Errors / warnings / information listed above
+- Unit tests: `tests/domain/test_ma_preflight_rules.py`
+- Read-only: project fields unchanged after `run_ma_preflight`
+
+### Remaining validation gaps
+
+| Gap | Notes |
+|-----|-------|
+| Cue-level required MA names | Only song-level required today |
+| Pool number range vs console limits | Not checked |
+| Timecode-only vs full mode specifics | Info only (MA150 band); no MA100 mode issue yet |
+| Latency / TC Slot conflicts | Deferred |
+| Exact exporter sanitize parity | Domain uses ASCII-safe check; no pypinyin in rules |
+
+### Recommendation for Task 3 (Report Builder)
+
+Build a **Preflight Report** presentation layer over `ValidationReport`:
+
+1. Group by severity / song / code  
+2. Stable sort for UI tables  
+3. Optional JSON/text export of the report (still no project mutation)  
+4. Hook point for future Export dialog gate (`has_errors`)  
+
+Still **no** auto-fix, **no** XML write, **no** exporter changes.
 
 ---
 
-## Recommendation for Task 2 (Validation Rules)
-
-Implement the first **MA rule pack** against a read-only export-intent context:
-
-1. Empty / illegal / non-ASCII MA Export Names (`MA001`–).  
-2. Duplicate MA labels / executor collisions (`MA010`–).  
-3. Pool / page / executor range checks.  
-4. Mode information (`timecode_only` vs `full`) as Information.  
-
-Still **no UI**, **no XML write**, **no auto-fix**.
-
----
-
-## READY FOR VALIDATION RULES
+## READY FOR PREFLIGHT REPORT
