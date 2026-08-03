@@ -258,7 +258,8 @@ Later
 | **Sprint 6 · Task 1 — Preflight Domain** | ✅ Done — `domain/validation` + `ma_preflight.md` |
 | **Sprint 6 · Task 2 — Validation Rules** | ✅ Done — `ma_preflight_rules()` MVP pack |
 | **Sprint 6 · Task 3 — Preflight Report Builder** | ✅ Done — `PreflightReport` presentation layer |
-| Sprint 6 · Task 4 — Preflight UI | **Next** |
+| **Sprint 6 · Task 4 — Preflight UI** | ✅ Done — Tools → MA Preflight… |
+| Sprint 6 · Task 5 — Export Integration | **Next** |
 
 ---
 
@@ -272,7 +273,8 @@ Later
 | Sprint 6 Task 1 | Domain validation framework only (`ValidationReport` / rules registry) |
 | Sprint 6 Task 2 | MA Preflight rule pack MVP (read-only; no exporters/UI) |
 | Sprint 6 Task 3 | Preflight Report Builder (`PreflightReport` / sort / serialize) |
-| Sprint 6 Task 4 | Preflight UI (dialog + export gate; no auto-fix) |
+| Sprint 6 Task 4 | Preflight UI (`MaPreflightDialog`; read-only) |
+| Sprint 6 Task 5 | Export Integration (gate on `has_errors`) |
 | Sprint 6 explicitly deferred | Overlay compare, NDI, OSC, EventBus-as-feature, variant CRUD (runner-up), large UI redesign |
 | Why not overlay next | Align is done, but console handoff risk > paint polish for lighting shows |
 | Why not variant CRUD first | Domain ready, but export confidence unblocks more shows per week |
@@ -309,8 +311,12 @@ See [`ma_preflight.md`](ma_preflight.md) § Task 2.
 
 See [`ma_preflight.md`](ma_preflight.md) § Task 3.
 
-**Next:** Preflight UI (Task 4).
+## Sprint 6 Task 4 — Preflight UI (done)
+
+See [`ma_preflight.md`](ma_preflight.md) § Task 4.
+
+**Next:** Export Integration (Task 5).
 
 ---
 
-## READY FOR PREFLIGHT UI
+## READY FOR MA PREFLIGHT INTEGRATION

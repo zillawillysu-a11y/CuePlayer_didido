@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 6 — Task 4: Preflight UI (MVP) (2026-08-03)
+
+- Tools → **MA Preflight…** — `MaPreflightDialog` over `PreflightReport` (summary + issue table).
+- Double-click navigates to Song / mark when possible. Read-only; no exporters/auto-fix.
+- Docs: `docs/ma_preflight.md`.
+
 ### Sprint 6 — Task 3: Preflight Report Builder (2026-08-03)
 
 - `PreflightReport` / `PreflightIssueRow` / `build_preflight_report` — severity groups, deterministic sort, `has_errors` / `has_warnings` / `summary`, `format_text` / `to_dict`.
