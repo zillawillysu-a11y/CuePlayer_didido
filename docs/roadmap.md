@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 4 Feature Task 1 complete (Song Variant design — docs only)  
+**Status:** Sprint 4 Feature Task 2 complete (Song Variant domain foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-design-028d`  
+**Scope tip:** `cursor/sprint4-song-variant-domain-028d`  
 **Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -195,7 +195,8 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 |------|--------|
 | Planning | ✅ Done |
 | **Task 1 — Domain & persistence audit / design** | ✅ Done — `song_variant_design.md` |
-| I1+ Domain implementation | **Next** |
+| **Task 2 — Domain foundation** | ✅ Done — `domain/song_variant.py` + tests |
+| Task 3 — Persistence integration | **Next** |
 
 ---
 
@@ -205,8 +206,9 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 |----------|--------|
 | Feature Sprint 4 pick | Song Variants (select one) then Align/compare |
 | Task 1 framing | Explicit variants model (not simultaneous Reference-first) |
+| Task 2 model shape | Flat `SongVariant` (kind+path+anchor_offset); media-bag deferred |
 | Explicitly deferred this slice | NDI, overlay, plugin system, UI redesign, EventBus-as-feature |
 
 ---
 
-## READY FOR SONG VARIANT IMPLEMENTATION
+## READY FOR PERSISTENCE INTEGRATION

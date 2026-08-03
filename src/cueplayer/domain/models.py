@@ -10,6 +10,8 @@ from uuid import uuid4
 
 import numpy as np
 
+from cueplayer.domain.song_variant import SongVariant
+
 SCHEMA_VERSION = 1
 
 LaneType = Literal["main", "top_button"]
@@ -279,6 +281,10 @@ class Song:
     # Optional Setlist folder (see Project.setlist_categories).
     category_id: str | None = None
     audio_tracks: list[AudioTrack] = field(default_factory=list)
+    # Switchable media packages (domain foundation). Persistence comes later.
+    # Marks stay on this Song; playback will use selected_variant_id only.
+    variants: list[SongVariant] = field(default_factory=list)
+    selected_variant_id: str | None = None
     video_clips: list[VideoClip] = field(default_factory=list)
     # When set, route that file channel to the project LTC output channel(s)
     # and strip it from the music/speaker bus. "auto" uses stripe detection.
@@ -559,6 +565,18 @@ class Song:
             now_primary_single_line=self.now_primary_single_line,
             now_secondary_clear_seconds=self.now_secondary_clear_seconds,
         )
+        id_map: dict[str, str] = {}
+        dup.variants = []
+        for variant in self.variants:
+            copied = variant.copy_with_new_id()
+            id_map[variant.id] = copied.id
+            dup.variants.append(copied)
+        if self.selected_variant_id and self.selected_variant_id in id_map:
+            dup.selected_variant_id = id_map[self.selected_variant_id]
+        elif dup.variants:
+            dup.selected_variant_id = dup.variants[0].id
+        else:
+            dup.selected_variant_id = None
         dup.audio_tracks = [
             AudioTrack(
                 id=_new_id(),
@@ -603,6 +621,72 @@ class Song:
             for mark in self.marks
         ]
         return dup
+
+    def variant_by_id(self, variant_id: str) -> SongVariant | None:
+        for variant in self.variants:
+            if variant.id == variant_id:
+                return variant
+        return None
+
+    def selected_variant(self) -> SongVariant | None:
+        """Resolve the playback candidate variant (does not load audio).
+
+        Prefers ``selected_variant_id`` when that variant exists and is enabled;
+        otherwise the first enabled variant; otherwise ``None``.
+        """
+        if self.selected_variant_id:
+            chosen = self.variant_by_id(self.selected_variant_id)
+            if chosen is not None and chosen.enabled:
+                return chosen
+        for variant in self.variants:
+            if variant.enabled:
+                return variant
+        return None
+
+    def selected_audio_path(self) -> Path | None:
+        """Path of the selected enabled audio variant, if any.
+
+        Domain accessor only — does not touch AudioEngine or disk existence.
+        """
+        variant = self.selected_variant()
+        if variant is None or not variant.is_audio or not variant.has_resolvable_path():
+            return None
+        return Path(variant.path)
+
+    def select_variant(self, variant_id: str) -> bool:
+        """Set ``selected_variant_id`` when ``variant_id`` exists. Returns success."""
+        if self.variant_by_id(variant_id) is None:
+            return False
+        self.selected_variant_id = variant_id
+        return True
+
+    def ensure_variants_from_legacy_audio_tracks(self) -> bool:
+        """Populate ``variants`` from ``audio_tracks`` when variants are empty.
+
+        Domain helper for future persistence migration / shims. Does not mutate
+        ``audio_tracks``. Returns True when variants were created.
+        """
+        if self.variants:
+            return False
+        if not self.audio_tracks:
+            return False
+        created: list[SongVariant] = []
+        selected: str | None = None
+        for track in self.audio_tracks:
+            variant = SongVariant.create(
+                name=track.name or track.path.name or "Variant",
+                path=track.path,
+                kind="audio",
+                anchor_offset=float(track.offset_seconds),
+                enabled=not bool(track.hidden),
+                metadata={"legacy_track_id": track.id, "legacy_role": track.role},
+            )
+            created.append(variant)
+            if selected is None and track.role == "main":
+                selected = variant.id
+        self.variants = created
+        self.selected_variant_id = selected or (created[0].id if created else None)
+        return True
 
     def marks_for_lane(self, lane_index: int) -> list[Mark]:
         return [m for m in self.marks if m.lane_index == lane_index]

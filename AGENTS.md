@@ -43,7 +43,6 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-08)
 
-Architecture through Sprint 3.5 + Feature Planning + **Song Variant design**
-(`docs/song_variant_design.md`). **Next:** implement Song Variants (select one
-media package per song; cues stay on Song). Align Anchors later. NDI only after
-cue accuracy. See `.ai/NEXT_TASK.md` and `docs/roadmap.md`.
+Song Variant **domain** shipped (`domain/song_variant.py`); not persisted yet.
+**Next:** schema v2 persistence integration. Design: `docs/song_variant_design.md`.
+See `.ai/NEXT_TASK.md`.
