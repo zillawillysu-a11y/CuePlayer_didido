@@ -1,7 +1,9 @@
 """Project document repository — thin façade over existing persistence.
 
 Not a generic repository framework. Only project JSON load/save/backup.
-Schema migrations and UTF-8 rules stay inside ``cueplayer.persistence``.
+
+Schema migrations live in ``cueplayer.persistence.project_migrations`` and are
+invoked by ``load_project`` — **not** by this repository.
 """
 
 from __future__ import annotations

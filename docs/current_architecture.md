@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Task 2 complete (Song Variant domain foundation)  
+**Status:** Sprint 4 Feature Task 3 complete (Song Variant persistence)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-domain-028d`  
-**Constraint (Task 2):** Domain + tests only — no persistence migration, no playback/UI changes.
+**Scope tip:** `cursor/sprint4-song-variant-persistence-028d`  
+**Constraint (Task 3):** Persistence only — no UI/playback/timeline changes; Repository load/save only.
 
 Related docs (do not treat as identical):
 
@@ -651,7 +651,8 @@ Primary home: `domain/models.py` (+ helpers in sibling modules).
 | Undo commands | `domain/undo.py` | Command objects over Project/Song |
 | Relink scan helpers | `domain/media_relink.py` | Domain-named but reaches media/persistence |
 
-Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in `persistence/project_store.py`.
+Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
+`persistence/project_migrations.py` (invoked by `load_project`, not Repository).
 
 ---
 
@@ -888,14 +889,15 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 4 Planning** Feature plan | ✅ Done | `docs/roadmap.md` |
 | **Sprint 4 · F1** Song Variant design | ✅ Done | `docs/song_variant_design.md` |
 | **Sprint 4 · F2** Song Variant domain | ✅ Done | `domain/song_variant.py` + tests |
-| **Next** Persistence integration | **Queued** | Schema v2 migrate/load/save |
+| **Sprint 4 · F3** Song Variant persistence | ✅ Done | schema v2 + `project_migrations` |
+| **Next** Playback variant support | **Queued** | Retarget load to `selected_audio_path` |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Task 2
+### After Feature Task 3
 
-Wire Song Variants into project JSON (schema v2) per `docs/song_variant_design.md`.  
+Wire playback load paths to `song.selected_audio_path()` (one buffer).  
 Do **not** auto-start until the user continues.
 
 ---
 
-## READY FOR PERSISTENCE INTEGRATION
+## READY FOR PLAYBACK VARIANT SUPPORT

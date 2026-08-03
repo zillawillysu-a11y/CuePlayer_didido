@@ -25,14 +25,25 @@ from cueplayer.domain.models import (
     VideoDecodeQuality,
     coerce_file_ltc_side,
 )
+from cueplayer.domain.song_variant import SongVariant, coerce_variant_kind
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
 from cueplayer.persistence.media_paths import (
     from_storage_path,
     project_root_for,
     to_storage_path,
 )
+from cueplayer.persistence.project_migrations import SchemaError, migrate_project_dict
 from cueplayer.exporters.common import ma_export_name_from_display
 from cueplayer.domain.cue_list_columns import normalize_cue_list_column_order
+
+__all__ = [
+    "SchemaError",
+    "migrate_project_dict",
+    "load_project",
+    "save_project",
+    "project_to_dict",
+    "project_from_dict",
+]
 
 
 def _coerce_setlist_name_mode(data: dict[str, Any]) -> SetlistNameMode:
@@ -259,8 +270,63 @@ def _coerce_video_decode_quality(raw: Any) -> VideoDecodeQuality:
     return "1080p"
 
 
-class SchemaError(ValueError):
-    """Raised when a project file cannot be migrated or parsed."""
+def _variant_metadata_to_dict(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        out[str(key)] = str(value)
+    return out
+
+
+def _variant_to_dict(
+    variant: SongVariant, *, project_dir: Path | None
+) -> dict[str, Any]:
+    return {
+        "id": variant.id,
+        "name": variant.name,
+        "kind": variant.kind,
+        "path": _path_to_str(variant.path, project_dir),
+        "anchor_offset": float(variant.anchor_offset),
+        "enabled": bool(variant.enabled),
+        "metadata": dict(variant.metadata),
+    }
+
+
+def _variant_from_dict(
+    raw: dict[str, Any], *, project_dir: Path | None
+) -> SongVariant:
+    return SongVariant(
+        id=str(raw.get("id") or ""),
+        name=str(raw.get("name") or "Variant"),
+        kind=coerce_variant_kind(raw.get("kind")),
+        path=_str_to_path(str(raw.get("path") or ""), project_dir),
+        anchor_offset=float(raw.get("anchor_offset", 0.0) or 0.0),
+        enabled=bool(raw.get("enabled", True)),
+        metadata=_variant_metadata_to_dict(raw.get("metadata")),
+    )
+
+
+def _variants_from_song_data(
+    song_data: dict[str, Any], *, project_dir: Path | None
+) -> tuple[list[SongVariant], str | None]:
+    raw_list = song_data.get("variants")
+    variants: list[SongVariant] = []
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            variant = _variant_from_dict(item, project_dir=project_dir)
+            if not variant.id:
+                continue
+            variants.append(variant)
+    selected = song_data.get("selected_variant_id")
+    selected_id = str(selected) if selected else None
+    if selected_id and not any(v.id == selected_id for v in variants):
+        selected_id = variants[0].id if variants else None
+    elif selected_id is None and variants:
+        selected_id = variants[0].id
+    return variants, selected_id
 
 
 def _path_to_str(path: Path, project_dir: Path | None = None) -> str:
@@ -518,6 +584,11 @@ def project_to_dict(
                     }
                     for track in song.audio_tracks
                 ],
+                "variants": [
+                    _variant_to_dict(variant, project_dir=project_dir)
+                    for variant in song.variants
+                ],
+                "selected_variant_id": song.selected_variant_id,
                 "video_clips": [
                     {
                         "id": clip.id,
@@ -694,6 +765,9 @@ def project_from_dict(
             )
             for mark in song_data.get("marks", [])
         ]
+        variants, selected_variant_id = _variants_from_song_data(
+            song_data, project_dir=project_dir
+        )
         now_cfg = _load_now_config(song_data)
         songs.append(
             Song(
@@ -722,6 +796,8 @@ def project_from_dict(
                     use_left_ltc=bool(song_data.get("use_left_ltc", False)),
                 ),
                 audio_tracks=audio_tracks,
+                variants=variants,
+                selected_variant_id=selected_variant_id,
                 video_clips=video_clips,
                 video_track_muted=bool(song_data.get("video_track_muted", False)),
                 show_video_track=bool(song_data.get("show_video_track", True)),
@@ -830,27 +906,6 @@ def project_from_dict(
         clean_video_output=dict_to_clean_video_output(data.get("clean_video_output")),
         video_decode_quality=_coerce_video_decode_quality(data.get("video_decode_quality")),
     )
-
-
-def migrate_project_dict(data: dict[str, Any], from_version: int) -> dict[str, Any]:
-    """Migrate older project dicts up to SCHEMA_VERSION."""
-    if from_version > SCHEMA_VERSION:
-        raise SchemaError(
-            f"Project schema_version {from_version} is newer than supported {SCHEMA_VERSION}."
-        )
-
-    migrated = dict(data)
-    version = from_version
-    if version == 0:
-        migrated.setdefault("schema_version", SCHEMA_VERSION)
-        migrated.setdefault("songs", [])
-        version = 1
-
-    if version != SCHEMA_VERSION:
-        raise SchemaError(f"No migration path from schema_version {from_version}.")
-
-    migrated["schema_version"] = SCHEMA_VERSION
-    return migrated
 
 
 def save_project(project: Project, path: Path) -> None:

@@ -1,11 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 2 complete (Song Variant **domain foundation**)  
+**Status:** Sprint 4 Feature Task 3 complete (Song Variant **persistence integration**)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-domain-028d`  
+**Scope tip:** `cursor/sprint4-song-variant-persistence-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Task 2 constraint:** Domain model + unit tests only. No UI, no playback behavior change, no schema migration / ProjectService / Timeline changes.
+**Task 3 constraint:** Persistence only. No UI, playback, timeline, or project workflow changes.
+Repository remains load/save; migrations live in ``project_migrations.py``.
 
 ---
 
@@ -191,9 +192,62 @@ Song
 
 ---
 
-## 6. Persistence schema proposal
+## 6. Persistence schema (Task 3 — implemented)
 
-### 6.1 Bump
+### 6.1 Version
+
+- `SCHEMA_VERSION = 2` (`domain.models`)
+
+### 6.2 Song JSON fields (v2)
+
+```json
+{
+  "variants": [
+    {
+      "id": "variant-main_audio",
+      "name": "Main",
+      "kind": "audio",
+      "path": "Media/…/main.wav",
+      "anchor_offset": 0.0,
+      "enabled": true,
+      "metadata": { "legacy_track_id": "main_audio", "legacy_role": "main" }
+    }
+  ],
+  "selected_variant_id": "variant-main_audio",
+  "audio_tracks": [ … ]
+}
+```
+
+Paths use existing Unicode-safe relative/absolute helpers. ``metadata`` is a
+string→string map only.
+
+### 6.3 Component boundary
+
+| Component | Role |
+|-----------|------|
+| ``ProjectRepository`` | `load` / `save` / `autosave` / `backup` / `exists` only |
+| ``persistence.project_store`` | UTF-8 JSON encode/decode of domain objects |
+| ``persistence.project_migrations`` | `migrate_project_dict` (0→1→2); **not** in Repository |
+
+### 6.4 Backward compatibility
+
+1. Load schema 0/1 → `migrate_project_dict` upgrades to 2.  
+2. v1 songs without `variants` get variants synthesized from `audio_tracks` (main preferred for selection).  
+3. Save always writes `schema_version: 2` plus `variants` / `selected_variant_id`.  
+4. Phase A: continue writing legacy `audio_tracks` unchanged (call sites still use them).  
+5. Downgrade not supported (`SchemaError` if file newer than supported).
+
+### 6.5 Future schema evolution
+
+- New fields: additive on variant dict with defaults in `_variant_from_dict`.  
+- Breaking changes: bump `SCHEMA_VERSION`, add `if version == N:` step in `project_migrations.py` only.  
+- Never put migration or auto-repair in `ProjectRepository`.
+
+---
+
+## 6b. Persistence schema proposal (Task 1 sketch — historical)
+
+### 6.1 Bump (historical)
 
 - `SCHEMA_VERSION = 2`
 
@@ -359,25 +413,34 @@ Aligns with roadmap Feature Sprint but **reframes** “Reference lanes” as **V
 | `domain/song_variant.py` | ✅ |
 | `Song.variants` / `selected_variant_id` + helpers | ✅ |
 | Unit tests `tests/domain/test_song_variant.py` | ✅ |
-| Persistence / schema migration | ❌ next task |
-| Playback / UI | ❌ unchanged |
 
-### Open design questions (before persistence)
+## 13. Task 3 status — persistence integration (done)
 
-1. Serialize `metadata` as opaque string map only, or allow nested JSON?
-2. On migrate from `audio_tracks`, should hidden tracks become `enabled=False`? (domain helper currently does)
-3. Keep emitting `audio_tracks` mirror forever in Phase A, or one schema generation only?
+| Deliverable | Status |
+|-------------|--------|
+| `SCHEMA_VERSION = 2` | ✅ |
+| Serialize/deserialize variants | ✅ |
+| `persistence/project_migrations.py` (0→1→2) | ✅ |
+| Repository stays load/save only | ✅ |
+| Tests `tests/persistence/test_song_variants.py` | ✅ |
+| UI / playback / timeline | ❌ unchanged |
 
-### Risks before persistence integration
+### Remaining migration risks
 
-- In-memory variants lost on save until schema v2  
-- Call sites still use `_main_audio_path_for_song` / `audio_tracks`  
-- Dual model drift if UI writes tracks but not variants  
+- Dual write (`audio_tracks` + `variants`) can drift until playback uses `selected_audio_path`
+- Legacy files with empty `audio_tracks` get empty variants (video-only OK)
+- `metadata` values coerced to strings only
 
-### Recommended Feature Task 3
+### Technical debt
 
-**Persistence integration:** schema v2, migrate 1→2, round-trip fixtures, optional derived `audio_tracks` mirror — still no UI redesign and no intentional playback behavior change beyond load accessors in a later slice.
+- Playback/remote still resolve audio via `_main_audio_path_for_song` / tracks
+- Bundle/relink scanners not yet variant-path primary (tracks mirror helps)
+- No derived tracks-from-variants on save (Phase A keeps caller-owned tracks)
+
+### Recommended Feature Task 4
+
+**Playback variant support** — retarget load paths to `song.selected_audio_path()` (one buffer); optional select-variant without UI redesign beyond minimal wiring. No timeline redesign.
 
 ---
 
-## READY FOR PERSISTENCE INTEGRATION
+## READY FOR PLAYBACK VARIANT SUPPORT
