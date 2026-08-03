@@ -5,6 +5,8 @@ No libltc dependency — bi-phase mark, 80-bit frames, cacheable float32 mono.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
 
 from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
@@ -78,22 +80,47 @@ def encode_ltc_frame_bits(
     return bits
 
 
-def _biphase_encode(bits: list[int], samples_per_bit: int, amplitude: float) -> np.ndarray:
-    """Bi-phase mark: edge at every bit boundary; mid-bit edge iff bit == 1."""
-    spb = max(2, int(samples_per_bit))
-    half = spb // 2
-    out = np.empty(len(bits) * spb, dtype=np.float32)
-    level = float(amplitude)
-    pos = 0
-    for bit in bits:
-        # Transition at start of bit.
+def _ltc_frame_start(frame_idx: int, sample_rate: int, fps: float) -> int:
+    rate = float(fps) if fps > 0 else 30.0
+    return int(round(frame_idx * sample_rate / rate))
+
+
+def _ltc_frame_len(frame_idx: int, sample_rate: int, fps: float) -> int:
+    return max(
+        160,
+        _ltc_frame_start(frame_idx + 1, sample_rate, fps)
+        - _ltc_frame_start(frame_idx, sample_rate, fps),
+    )
+
+
+def _biphase_encode(
+    bits: list[int],
+    frame_len: int,
+    amplitude: float,
+    *,
+    initial_level: float | None = None,
+) -> tuple[np.ndarray, float]:
+    """Bi-phase mark with exactly ``frame_len`` samples (80 bit cells).
+
+    Bit boundaries use cumulative rounding so non-integer samples/bit at
+    rates like 44.1 kHz do not need pad/truncate (which breaks decoders).
+    ``initial_level`` carries polarity from the previous LTC frame.
+    """
+    frame_len = max(160, int(frame_len))
+    boundaries = [int(round(i * frame_len / 80)) for i in range(81)]
+    out = np.zeros(frame_len, dtype=np.float32)
+    level = float(amplitude) if initial_level is None else float(initial_level)
+    for i, bit in enumerate(bits):
+        start, end = boundaries[i], boundaries[i + 1]
+        if end <= start:
+            continue
+        mid = start + (end - start) // 2
         level = -level
-        out[pos : pos + half] = level
+        out[start:mid] = level
         if bit:
             level = -level
-        out[pos + half : pos + spb] = level
-        pos += spb
-    return out
+        out[mid:end] = level
+    return out, level
 
 
 def generate_ltc_pcm(
@@ -124,47 +151,201 @@ def generate_ltc_pcm(
         )
 
     tc = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
-    # Approximate integer samples/bit; residual drift corrected by absolute bit index.
-    spb_i = max(2, int(round(samples_per_bit)))
-
     out = np.zeros(total_samples, dtype=np.float32)
-    # How many complete LTC frames fit.
-    frame_samples = samples_per_bit * 80.0
-    n_frames = int(np.ceil(total_samples / frame_samples)) + 1
+    level = float(amplitude)
+    pos = 0
+    frame_idx = 0
+    min_frame_samples = 80 * 2
 
-    write_pos = 0.0
-    current = tc
-    for _ in range(n_frames):
-        if int(write_pos) >= total_samples:
-            break
+    while pos < total_samples:
+        frame_len = min(
+            _ltc_frame_len(frame_idx, sr, rate),
+            total_samples - pos,
+        )
+        if frame_len < min_frame_samples:
+            if total_samples - pos < min_frame_samples:
+                break
+            frame_len = min(total_samples - pos, max(min_frame_samples, int(round(sr / rate))))
+
         bits = encode_ltc_frame_bits(
-            current.hours,
-            current.minutes,
-            current.seconds,
-            current.frames,
+            tc.hours,
+            tc.minutes,
+            tc.seconds,
+            tc.frames,
             drop_frame=drop_frame,
         )
-        # Per-frame sample count from absolute bit clock to limit long-term drift.
-        frame_len = int(round((write_pos + frame_samples))) - int(round(write_pos))
-        if frame_len < 80 * 2:
-            frame_len = spb_i * 80
-        # Encode with uniform samples/bit for this frame, then trim/pad to frame_len.
-        spb = max(2, frame_len // 80)
-        wave = _biphase_encode(bits, spb, amplitude)
-        if wave.size < frame_len:
-            wave = np.pad(wave, (0, frame_len - wave.size))
-        elif wave.size > frame_len:
-            wave = wave[:frame_len]
-
-        start_i = int(round(write_pos))
-        end_i = min(total_samples, start_i + wave.size)
-        if end_i <= start_i:
-            break
-        out[start_i:end_i] = wave[: end_i - start_i]
-        write_pos += frame_samples
-        current = add_frames(current, 1, rate)
+        wave, level = _biphase_encode(bits, frame_len, amplitude, initial_level=level)
+        out[pos : pos + frame_len] = wave
+        pos += frame_len
+        frame_idx += 1
+        tc = add_frames(tc, 1, rate)
 
     return out
+
+
+def _frame_index_covering(sample_pos: int, sample_rate: int, fps: float) -> int:
+    """LTC frame index whose sample range contains ``sample_pos``."""
+    rate = float(fps) if fps > 0 else 30.0
+    sr = max(1, int(sample_rate))
+    pos = max(0, int(sample_pos))
+    # Inverse of _ltc_frame_start ≈ round(i * sr / rate)
+    approx = int(pos * rate / sr)
+    for cand in range(max(0, approx - 2), approx + 4):
+        start = _ltc_frame_start(cand, sr, rate)
+        end = start + _ltc_frame_len(cand, sr, rate)
+        if start <= pos < end:
+            return cand
+    return max(0, approx)
+
+
+@dataclass
+class LtcPlaybackCursor:
+    """Incremental LTC renderer for realtime playback (O(chunk) when sequential)."""
+
+    sample_rate: int
+    fps: float
+    start_timecode: str
+    amplitude: float = 0.9
+    drop_frame: bool = False
+    stream_pos: int = 0
+    frame_idx: int = 0
+    level: float = field(init=False)
+    tc: Timecode = field(init=False)
+    _wave: np.ndarray | None = field(default=None, init=False, repr=False)
+    _wave_start: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.stream_pos = 0
+        self.frame_idx = 0
+        self.level = float(self.amplitude)
+        self.tc = parse_timecode(self.start_timecode) or Timecode(1, 0, 0, 0)
+        self._wave = None
+        self._wave_start = 0
+
+    def configure(
+        self,
+        *,
+        sample_rate: int,
+        fps: float,
+        start_timecode: str,
+        amplitude: float = 0.9,
+        drop_frame: bool = False,
+    ) -> None:
+        changed = (
+            int(sample_rate) != int(self.sample_rate)
+            or abs(float(fps) - float(self.fps)) > 1e-9
+            or str(start_timecode) != str(self.start_timecode)
+            or abs(float(amplitude) - float(self.amplitude)) > 1e-9
+            or bool(drop_frame) != bool(self.drop_frame)
+        )
+        self.sample_rate = max(1, int(sample_rate))
+        self.fps = float(fps) if fps > 0 else 30.0
+        self.start_timecode = start_timecode
+        self.amplitude = float(amplitude)
+        self.drop_frame = bool(drop_frame)
+        if changed:
+            self.reset()
+
+    def _skip_to_frame(self, target_frame_idx: int) -> None:
+        """Jump to the start of ``target_frame_idx`` without building PCM."""
+        target_frame_idx = max(0, int(target_frame_idx))
+        if target_frame_idx < self.frame_idx:
+            self.reset()
+        if target_frame_idx == self.frame_idx and self.stream_pos == _ltc_frame_start(
+            self.frame_idx, self.sample_rate, self.fps
+        ):
+            return
+        delta = target_frame_idx - self.frame_idx
+        if delta > 0:
+            # Approximate polarity: each LTC frame has an even transition count
+            # often enough that keeping amplitude is fine; decoders resync in 1–2 frames.
+            self.tc = add_frames(self.tc, delta, self.fps)
+            self.frame_idx = target_frame_idx
+            self.level = float(self.amplitude)
+        self.stream_pos = _ltc_frame_start(self.frame_idx, self.sample_rate, self.fps)
+        self._wave = None
+
+    def _seek_to(self, target_pos: int) -> None:
+        target_pos = max(0, int(target_pos))
+        if target_pos == self.stream_pos:
+            return
+        if target_pos < self.stream_pos:
+            self.reset()
+        frame_idx = _frame_index_covering(target_pos, self.sample_rate, self.fps)
+        self._skip_to_frame(frame_idx)
+        self.stream_pos = target_pos
+        self._wave = None
+
+    def _ensure_wave(self) -> np.ndarray:
+        if self._wave is not None:
+            return self._wave
+        frame_len = _ltc_frame_len(self.frame_idx, self.sample_rate, self.fps)
+        bits = encode_ltc_frame_bits(
+            self.tc.hours,
+            self.tc.minutes,
+            self.tc.seconds,
+            self.tc.frames,
+            drop_frame=self.drop_frame,
+        )
+        wave, self.level = _biphase_encode(
+            bits, frame_len, self.amplitude, initial_level=self.level
+        )
+        self._wave = wave
+        self._wave_start = _ltc_frame_start(self.frame_idx, self.sample_rate, self.fps)
+        return wave
+
+    def _advance_after_frame(self) -> None:
+        self.frame_idx += 1
+        self.tc = add_frames(self.tc, 1, self.fps)
+        self._wave = None
+        self.stream_pos = _ltc_frame_start(self.frame_idx, self.sample_rate, self.fps)
+
+    def render(self, start_frame: int, num_frames: int) -> np.ndarray:
+        if num_frames <= 0:
+            return np.zeros(0, dtype=np.float32)
+        start_frame = max(0, int(start_frame))
+        if start_frame != self.stream_pos:
+            self._seek_to(start_frame)
+        out = np.zeros(num_frames, dtype=np.float32)
+        written = 0
+        while written < num_frames:
+            wave = self._ensure_wave()
+            local = self.stream_pos - self._wave_start
+            if local < 0 or local >= wave.size:
+                # Landed past current wave — advance frame bookkeeping.
+                self._advance_after_frame()
+                continue
+            take = min(num_frames - written, wave.size - local)
+            out[written : written + take] = wave[local : local + take]
+            written += take
+            self.stream_pos += take
+            if self.stream_pos >= self._wave_start + wave.size:
+                self._advance_after_frame()
+        return out
+
+
+def generate_ltc_pcm_segment(
+    start_frame: int,
+    num_frames: int,
+    sample_rate: int,
+    start_timecode: str,
+    fps: float,
+    *,
+    amplitude: float = 0.9,
+    drop_frame: bool = False,
+) -> np.ndarray:
+    """Generate ``num_frames`` of LTC PCM starting at playback frame ``start_frame``."""
+    cursor = LtcPlaybackCursor(
+        sample_rate=sample_rate,
+        fps=fps,
+        start_timecode=start_timecode,
+        amplitude=amplitude,
+        drop_frame=drop_frame,
+    )
+    return cursor.render(start_frame, num_frames)
 
 
 def ltc_frame_count(pcm: np.ndarray, sample_rate: int, fps: float) -> int:
@@ -174,3 +355,4 @@ def ltc_frame_count(pcm: np.ndarray, sample_rate: int, fps: float) -> int:
     if frame_samples <= 0:
         return 0
     return int(pcm.size // frame_samples)
+
