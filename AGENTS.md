@@ -35,6 +35,29 @@ Playback Engine is the only playback clock source.
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
-## Recent handoff (2026-07)
+## Recent handoff (2026-07-28)
 
-Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
+**Laptop tip branch (latest):** `cursor/setlist-sheet-cue-id-028d`
+
+```powershell
+git fetch origin
+git checkout cursor/setlist-sheet-cue-id-028d
+git pull
+pip install -e ".[dev,midi]"
+python -m cueplayer.app
+```
+
+**Shipped today (PR stack, not all merged to master yet):**
+- Set List Sheet: 曲序/曲名/英文名/**Seq/Cue ID**/TC/BPM/Note、Folder 分隔、欄寬可拖、曲序可改
+- 左邊 Setlist 欄寬可拖
+- Video+LTC 眼睛固定在 Music、整場全域開/關
+- 時間軸順序：**Music → Video → LTC → Marks**（拉開高度可把 Marks 往下擠）
+- 深色啟動 Splash（避免大白）
+
+**Asked today but NOT done yet:**
+1. LTC 畫波形：有些歌 Reaper 乾淨、CuePlayer 仍毛（檔案本身髒的除外）— 尚未對齊 Reaper 顯示
+2. MA Export Preview／命名策略 UI（規格裡的 Cue ID 自動翻譯／拼音選項）— 尚未做
+3. 上述 PR 尚未全部 merge 進 `master`（筆電請先 checkout tip 分支）
+
+Older still-open: multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview/Validation; NDI only after cue accuracy is solid.
+

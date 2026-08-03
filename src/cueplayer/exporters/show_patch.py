@@ -63,7 +63,7 @@ def _button_lanes_with_marks(song: Song) -> list[tuple[int, str, int]]:
     """Return (lane_index, name, mark_count) for exportable button lanes that have marks."""
     out: list[tuple[int, str, int]] = []
     for lane in sorted(song.mark_lanes, key=lambda item: item.index):
-        if lane.lane_type != "top_button" or not lane.export_enabled:
+        if lane.cue_id_enabled or not lane.export_enabled:
             continue
         count = sum(1 for m in song.marks if m.lane_index == lane.index)
         if count <= 0:
@@ -73,9 +73,8 @@ def _button_lanes_with_marks(song: Song) -> list[tuple[int, str, int]]:
 
 
 def _main_cue_count(song: Song) -> int:
-    main = next((lane for lane in song.mark_lanes if lane.lane_type == "main"), None)
-    idx = main.index if main is not None else 1
-    return sum(1 for m in song.marks if m.lane_index == idx)
+    id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}
+    return sum(1 for m in song.marks if m.lane_index in id_lanes)
 
 
 def format_executor(page: int, executor: int) -> str:
