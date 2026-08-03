@@ -55,7 +55,7 @@ behavior. No Repository. No playback/audio/timeline/UI redesign.
 ## Tests
 
 - Targeted: **26 passed** (application + autosave + session restore + new-project + persistence samples)
-- Full suite: see handoff after run (expect same pre-existing failures as Task 2)
+- Full suite: **888 passed**, **16 failed** (same pre-existing / Linux env failures as Task 2; +6 new application tests)
 
 ## Remaining technical debt
 

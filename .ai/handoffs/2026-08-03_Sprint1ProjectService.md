@@ -18,6 +18,11 @@ Introduce `application/project_service.py` for project lifecycle only, identical
 - Unit tests under `tests/application/`
 - Docs end with **READY FOR REPOSITORY LAYER**
 
+## Tests
+
+Full suite: **888 passed, 16 failed** (pre-existing / Linux env).  
+Targeted lifecycle: **26 passed**.
+
 ## Recommendation for Task 4
 
 Wrap `load_project` / `save_project` in a thin adapter implementing `ports.ProjectStore`; inject into `ProjectService`. No schema changes.

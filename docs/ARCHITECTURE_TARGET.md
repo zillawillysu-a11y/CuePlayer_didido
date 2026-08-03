@@ -180,9 +180,9 @@ src/cueplayer/web_remote/bridge.py      →  re-export adapters.remote.bridge
 | **1** | `domain/cue_list_columns` | ✅ domain only; UI shim **removed** Sprint 1 Task 2; persistence→domain | single import path `domain.cue_list_columns` |
 | **1b** | Transitional cleanup | ✅ ports on tip; stubs/aliases cleared (handoff `Sprint1TransitionalCleanup`) | no dual shims for columns |
 | **2** | `ports.remote_host` + bridge 適配 | 定義介面；bridge 改打公開方法（MainWindow 先實作介面） | bridge 零私有 `_` 存取 |
-| **3** | `application/project_service` *(Sprint 1 Task 3)* | 從 MainWindow 剪出 open/save/dirty/autosave | MainWindow 只持有 service |
-| **3b** | `application/autosave_service` | 可併入 project_service 或隨後拆 | MainWindow 只持有 service |
-| **5** | `application/song_session` | 換歌時 engine/sync/timeline/monitor 的固定 refresh 順序 | 換歌路徑只經 session |
+| **3** | `application/project_service` *(Sprint 1 Task 3)* | ✅ 從 MainWindow 剪出 open/save/dirty/autosave/recent | MainWindow 持有 service；dialogs 仍在 UI |
+| **3b** | `application/autosave_service` | 可併入 project_service（已併入 prefs）或隨後拆 | — |
+| **4** | `ports.ProjectStore` adapter / repository | 薄包裝 load/save；注入 ProjectService | 行為不變 |
 | **6** | `adapters/` 目錄 + **playback 整包搬** | `playback/` → `adapters/playback/` + 頂層 shim | 測試/UI import 仍綠 |
 | **7** | **media 整包搬** | 同上 | 同上 |
 | **8** | **persistence 整包搬** | 同上 | 同上 |
