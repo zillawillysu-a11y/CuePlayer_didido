@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
-    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -37,19 +36,14 @@ from cueplayer.persistence.mark_template import (
     load_mark_template,
     save_mark_template,
 )
+from cueplayer.ui.color_presets import (
+    BUILTIN_PRESETS,
+    add_user_preset,
+    all_presets,
+    get_color,
+    remove_user_preset,
+)
 from cueplayer.ui.marker_draw import draw_marker_shape
-
-_PRESET_COLORS = [
-    "#E74C3C",
-    "#E67E22",
-    "#F1C40F",
-    "#2ECC71",
-    "#1ABC9C",
-    "#3498DB",
-    "#9B59B6",
-    "#34495E",
-    "#E91E63",
-]
 
 _COL_INDEX = 0
 _COL_NAME = 1
@@ -108,12 +102,34 @@ class ColorPickPopup(QFrame):
         title = QLabel("Quick Color Pick")
         title.setStyleSheet("color: #8b949e;")
         layout.addWidget(title)
-        grid = QGridLayout()
-        grid.setSpacing(6)
-        for i, hex_color in enumerate(_PRESET_COLORS):
+        self._grid = QGridLayout()
+        self._grid.setSpacing(6)
+        layout.addLayout(self._grid)
+        self._rebuild_grid(current)
+
+        row = QHBoxLayout()
+        custom = QPushButton("Custom Color…")
+        custom.setToolTip("Open the full color dialog (custom slots are remembered)")
+        custom.clicked.connect(self._custom)
+        add_btn = QPushButton("Add to Presets…")
+        add_btn.setToolTip("Pick a color and save it here for next time")
+        add_btn.clicked.connect(self._add_preset)
+        row.addWidget(custom)
+        row.addWidget(add_btn)
+        layout.addLayout(row)
+        self._current = current
+
+    def _rebuild_grid(self, current: str) -> None:
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for i, hex_color in enumerate(all_presets()):
             btn = QPushButton()
             btn.setFixedSize(28, 28)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(hex_color)
             selected = hex_color.upper() == QColor(current).name().upper()
             border = "2px solid #ffffff" if selected else "1px solid #111"
             btn.setStyleSheet(
@@ -121,22 +137,39 @@ class ColorPickPopup(QFrame):
                 f"QPushButton:hover {{ border: 2px solid #ffffff; }}"
             )
             btn.clicked.connect(lambda _=False, c=hex_color: self._pick(c))
-            grid.addWidget(btn, i // 3, i % 3)
-        layout.addLayout(grid)
-        custom = QPushButton("Custom Color…")
-        custom.clicked.connect(self._custom)
-        layout.addWidget(custom)
-        self._current = current
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(
+                lambda _pos, c=hex_color: self._maybe_remove_preset(c)
+            )
+            self._grid.addWidget(btn, i // 4, i % 4)
 
     def _pick(self, color: str) -> None:
         self.color_chosen.emit(color)
         self.close()
 
     def _custom(self) -> None:
-        chosen = QColorDialog.getColor(QColor(self._current), self, "Custom Mark Color")
+        chosen = get_color(QColor(self._current), self, "Custom Mark Color")
         if chosen.isValid():
             self.color_chosen.emit(chosen.name())
         self.close()
+
+    def _add_preset(self) -> None:
+        chosen = get_color(QColor(self._current), self, "Add Color Preset")
+        if not chosen.isValid():
+            return
+        add_user_preset(chosen.name())
+        self._rebuild_grid(chosen.name())
+        self._current = chosen.name()
+
+    def _maybe_remove_preset(self, color: str) -> None:
+        from cueplayer.ui.color_presets import BUILTIN_PRESETS, load_user_presets
+
+        if color.lower() not in {c.lower() for c in load_user_presets()}:
+            return
+        if color.lower() in {c.lower() for c in BUILTIN_PRESETS}:
+            return
+        remove_user_preset(color)
+        self._rebuild_grid(self._current)
 
 
 class ColorSwatchButton(QPushButton):
@@ -146,7 +179,7 @@ class ColorSwatchButton(QPushButton):
         super().__init__(parent)
         self.setFixedSize(52, 26)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Click for preset colors, or choose a custom one")
+        self.setToolTip("Click for preset colors, or choose a custom one (presets are saved)")
         self._color = "#4C8BF5"
         self.set_color(color)
         self.clicked.connect(self._open_picker)
@@ -172,6 +205,51 @@ class ColorSwatchButton(QPushButton):
     def _on_chosen(self, color: str) -> None:
         self.set_color(color)
         self.color_changed.emit(self._color)
+
+
+class ApplyMarkSettingsDialog(QDialog):
+    """Choose how to apply a loaded mark template (stacked buttons so labels stay readable)."""
+
+    CURRENT = "current"
+    ALL = "all"
+    DEFAULT = "default"
+
+    def __init__(self, mark_count: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Apply Mark Settings")
+        self.resize(400, 280)
+        self._choice: str | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        body = QLabel(
+            f"Loaded {mark_count} Mark(s).\n\n"
+            '"All Songs" will rewrite the Mark definitions for every song in the project '
+            "(marks with no matching lane will be removed)."
+        )
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        for key, label in (
+            (self.CURRENT, "Current Song"),
+            (self.ALL, "All Songs + Default"),
+            (self.DEFAULT, "Set as Default Only"),
+        ):
+            btn = QPushButton(label)
+            btn.setMinimumHeight(40)
+            btn.clicked.connect(lambda _checked=False, k=key: self._pick(k))
+            layout.addWidget(btn)
+
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        layout.addWidget(cancel)
+
+    def _pick(self, key: str) -> None:
+        self._choice = key
+        self.accept()
+
+    def choice(self) -> str | None:
+        return self._choice
 
 
 class MarkManagerDialog(QDialog):
@@ -383,19 +461,10 @@ class MarkManagerDialog(QDialog):
             QMessageBox.warning(self, "Empty Settings File", "The settings file has no Marks.")
             return
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Apply Mark Settings")
-        msg.setText(
-            f"Loaded {len(lanes)} Mark(s).\n"
-            '"All Songs" will rewrite the Mark definitions for every song in the project '
-            "(marks with no matching lane will be removed)."
-        )
-        btn_current = msg.addButton("Current Song", QMessageBox.ButtonRole.AcceptRole)
-        btn_all = msg.addButton("All Songs + Default", QMessageBox.ButtonRole.ActionRole)
-        btn_default = msg.addButton("Set as Default Only", QMessageBox.ButtonRole.ActionRole)
-        msg.addButton(QMessageBox.StandardButton.Cancel)
-        msg.exec()
-        clicked = msg.clickedButton()
+        msg = ApplyMarkSettingsDialog(len(lanes), self)
+        if msg.exec() != QDialog.DialogCode.Accepted or msg.choice() is None:
+            return
+        choice = msg.choice()
 
         now_primary = data.get("now_primary_lanes")
         now_secondary = data.get("now_secondary_lanes")
@@ -404,7 +473,7 @@ class MarkManagerDialog(QDialog):
         if not isinstance(now_secondary, list):
             now_secondary = None
 
-        if clicked is btn_current:
+        if choice == ApplyMarkSettingsDialog.CURRENT:
             dropped = apply_lanes_to_song(
                 self._song,
                 lanes,
@@ -416,7 +485,7 @@ class MarkManagerDialog(QDialog):
             self.project_defaults_changed.emit()
             extra = f" ({dropped} unmatched mark(s) removed)" if dropped else ""
             QMessageBox.information(self, "Applied", f"Applied to the current song{extra}. Fine-tune and press OK.")
-        elif clicked is btn_default:
+        elif choice == ApplyMarkSettingsDialog.DEFAULT:
             if self._project is None:
                 QMessageBox.information(self, "Unable to Set", "No project object available to write the default to.")
                 return
@@ -427,7 +496,7 @@ class MarkManagerDialog(QDialog):
                 "Set as Default",
                 'New songs added later will use this Mark layout. The current song is unchanged.',
             )
-        elif clicked is btn_all:
+        elif choice == ApplyMarkSettingsDialog.ALL:
             if self._project is None:
                 QMessageBox.information(self, "Unable to Apply", "No project object available.")
                 return
@@ -665,7 +734,7 @@ class MarkManagerDialog(QDialog):
         index = 1
         while index in used:
             index += 1
-        color = _PRESET_COLORS[(index - 1) % len(_PRESET_COLORS)]
+        color = BUILTIN_PRESETS[(index - 1) % len(BUILTIN_PRESETS)]
         taken_keys = set()
         for r in range(self.table.rowCount()):
             combo = self.table.cellWidget(r, _COL_KEY)
@@ -708,12 +777,12 @@ class MarkManagerDialog(QDialog):
     def _color_at(self, row: int) -> str:
         wrap = self.table.cellWidget(row, _COL_COLOR)
         if wrap is None:
-            return _PRESET_COLORS[0]
+            return BUILTIN_PRESETS[0]
         swatch = wrap.property("swatch")
         if isinstance(swatch, ColorSwatchButton):
             return swatch.color()
         found = wrap.findChild(ColorSwatchButton)
-        return found.color() if found is not None else _PRESET_COLORS[0]
+        return found.color() if found is not None else BUILTIN_PRESETS[0]
 
     def _accept(self) -> None:
         draft = self._collect_draft_lanes()
