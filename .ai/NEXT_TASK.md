@@ -7,7 +7,7 @@
 
 **Previous:** Sprint 6 Task 1 — MA Export Preflight Domain  
 See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6MaPreflightDomain.md`  
-Baseline: `docs/ma_export_validation.md` (ends READY FOR VALIDATION RULES)
+Baseline: `docs/ma_preflight.md` (ends READY FOR VALIDATION RULES)
 
 ---
 
@@ -23,7 +23,7 @@ First MA rule pack (empty/illegal labels, duplicates, executor range, mode info)
 
 ### Read first
 
-1. `docs/ma_export_validation.md`
+1. `docs/ma_preflight.md`
 2. `cueplayer.domain.validation`
 3. `exporters/plan_from_song.py` (for context field inventory only)
 
