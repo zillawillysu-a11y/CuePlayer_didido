@@ -1109,4 +1109,58 @@ THEN  offset == 0.0 (identity)
 
 ---
 
-## READY FOR ALIGN ANCHORS IMPLEMENTATION
+## 20. Sprint 5 Task 3 — Align Anchors Dialog Shell (done)
+
+**Scope tip:** `cursor/sprint5-align-anchors-shell-028d`
+
+### 20.1 Dialog structure
+
+| Widget | Role |
+|--------|------|
+| `AlignAnchorsDialog` | Modal QDialog; no Timeline/playback mutation |
+| `variant_combo` | Lists audio variants; shows path/status |
+| Song / Variant anchor groups | Labels + capture buttons (stubs) |
+| Draft / Applied offset row | Display + disabled draft spin; nudge stubs disabled |
+| `preview_area` | Placeholder for duration chips |
+| Preview / Reset / Apply / Cancel | Preview/Reset/Apply → status stub; Cancel → `reject()` |
+
+### 20.2 Dialog architecture
+
+```text
+MainWindow Tools → Align Anchors…
+        └─ AlignAnchorsDialog(song)
+             ├─ reads Song.variants (display only)
+             └─ stubs for capture / preview / apply / reset
+                  (Task 4: Anchor Computation + preview session)
+```
+
+### 20.3 Planned integration points (Task 4)
+
+- Capture playheads via PlaybackService (`song_position` / engine Variant Time)
+- Compute `draft = song_anchor − variant_anchor` through `anchor_mapping` only
+- Enable draft spin + nudges; Preview session without persisting
+- Apply writes `SongVariant.anchor_offset` (marks unchanged)
+
+### 20.4 Remaining implementation work
+
+- Anchor computation + draft/applied model (Task 4)
+- Preview session / Cancel restore playback mapping
+- Apply + undo + dirty
+- Duration chips / missing-media enablement rules
+- Enable nudge controls
+
+### 20.5 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Operators think Apply works | Intro + status: “Shell only” |
+| Shortcut clash with Timeline | Modal dialog; Esc closes |
+| Premature offset writes | Apply stub does not mutate |
+
+### 20.6 Recommendation for Task 4
+
+**Anchor Computation** — wire capture + `draft_offset = song_anchor − variant_anchor` (via `anchor_mapping`), update draft display/nudges; still no Apply persistence (or Apply in Task 5 if preferred). Prefer: compute + display in Task 4; Preview/Apply session next.
+
+---
+
+## READY FOR ANCHOR COMPUTATION

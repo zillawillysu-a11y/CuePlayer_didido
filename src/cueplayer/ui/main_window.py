@@ -175,6 +175,7 @@ from cueplayer.playback.ndi_output import (
 )
 from cueplayer.playback.video_sync import VideoSyncController
 from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
+from cueplayer.ui.align_anchors_dialog import AlignAnchorsDialog
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.web_remote.bridge import WebRemoteBridge
 from cueplayer.web_remote.main_window_remote_host import MainWindowRemoteHost
@@ -2316,11 +2317,17 @@ class MainWindow(QMainWindow):
             "Playback and marks on this PC; LTC stays here."
         )
         act_web_remote.triggered.connect(self._open_web_remote)
+        act_align_anchors = QAction("Align &Anchors…", self)
+        act_align_anchors.setToolTip(
+            "Align a song variant mix to the cue timeline (shell — Apply not wired yet)."
+        )
+        act_align_anchors.triggered.connect(self._open_align_anchors)
         tools_menu.addAction(act_manager)
         tools_menu.addAction(act_display)
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addAction(act_web_remote)
+        tools_menu.addAction(act_align_anchors)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -4978,6 +4985,11 @@ class MainWindow(QMainWindow):
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
         self._sync_timeline_overview()
+
+    def _open_align_anchors(self) -> None:
+        """Tools → Align Anchors… — shell dialog (no offset apply yet)."""
+        dialog = AlignAnchorsDialog(self.current_song, self)
+        dialog.exec()
 
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
