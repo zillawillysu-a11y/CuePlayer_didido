@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import numpy as np
+
 SCHEMA_VERSION = 1
 
 LaneType = Literal["main", "top_button"]
@@ -137,7 +139,7 @@ class VideoClip:
             id=_new_id(),
             name=name,
             path=Path(path),
-            start_seconds=max(0.0, float(start_seconds)),
+            start_seconds=float(start_seconds),
             source_in_seconds=source_in,
             source_out_seconds=source_in + duration,
             duration_seconds=duration,
@@ -215,6 +217,10 @@ class Song:
     # see docs/PRODUCT_SPEC.md's "影片原始音軌預設 Mute" note for the
     # deferred/OBS-reference assumption this overrides per explicit user request.
     video_track_muted: bool = False
+    # When False, the Video lane is collapsed out of the timeline after
+    # alignment work is done — Preview / Clean Output keep playing; only the
+    # editable track chrome is hidden until the user shows it again.
+    show_video_track: bool = True
     # Dedicated music-bed gain for alignment (Video vs Music balancing) —
     # independent of Master Volume (which scales music + video clip audio
     # together) and of LTC (never touched by any volume control, per
@@ -240,6 +246,9 @@ class Song:
     now_secondary_lanes: list[int] = field(default_factory=list)
     # When False, secondary lanes fold into primary and the secondary display card is hidden.
     now_secondary_enabled: bool = True
+    # Show/hide the PRIMARY / SECONDARY NOW cards in the right monitor (lane logic unchanged).
+    now_primary_visible: bool = True
+    now_secondary_visible: bool = True
     # Seconds before the secondary display clears after a cue (0 = never). Handy for Buttons.
     now_secondary_clear_seconds: float = 2.0
 
@@ -410,6 +419,18 @@ class Song:
                 active = mark
         return active
 
+    def last_mark_at_or_before(self, position: float) -> Mark | None:
+        """Latest visible mark at or before position (chronological, all lanes)."""
+        active: Mark | None = None
+        for mark in self.marks:
+            lane = self.lane_by_index(mark.lane_index)
+            if lane is not None and not lane.visible:
+                continue
+            if mark.time_seconds > position + 1e-4:
+                break
+            active = mark
+        return active
+
     def next_mark_among_lanes(self, lane_indices: list[int], position: float) -> Mark | None:
         allowed = set(lane_indices)
         if not allowed:
@@ -493,6 +514,41 @@ class Song:
         )
 
 
+def video_clip_crossfade_weights(
+    clip: VideoClip,
+    times_seconds: np.ndarray,
+    all_clips: list[VideoClip],
+) -> np.ndarray:
+    """
+    Vectorized 0..1 visibility weights for auto crossfade when clips overlap.
+
+    ``times_seconds`` may be any shape; returns float32 weights of the same shape.
+    """
+    times = np.asarray(times_seconds, dtype=np.float64)
+    if clip.hidden:
+        return np.zeros(times.shape, dtype=np.float32)
+    weights = np.ones(times.shape, dtype=np.float64)
+    in_clip = (times + 1e-9 >= clip.start_seconds) & (times < clip.end_seconds - 1e-9)
+    weights[~in_clip] = 0.0
+    for other in all_clips:
+        if other.hidden or other.id == clip.id:
+            continue
+        overlap_start = max(clip.start_seconds, other.start_seconds)
+        overlap_end = min(clip.end_seconds, other.end_seconds)
+        if overlap_end <= overlap_start + 1e-9:
+            continue
+        mask = (times + 1e-9 >= overlap_start) & (times < overlap_end - 1e-9)
+        if not np.any(mask):
+            continue
+        span = overlap_end - overlap_start
+        progress = np.clip((times - overlap_start) / span, 0.0, 1.0)
+        if other.start_seconds > clip.start_seconds + 1e-9:
+            weights[mask] = np.minimum(weights[mask], 1.0 - progress[mask])
+        elif other.start_seconds + 1e-9 < clip.start_seconds:
+            weights[mask] = np.minimum(weights[mask], progress[mask])
+    return weights.astype(np.float32)
+
+
 def video_clip_crossfade_weight(
     clip: VideoClip,
     time_seconds: float,
@@ -504,38 +560,13 @@ def video_clip_crossfade_weight(
     The earlier-starting clip fades out across the overlap; the later one
     fades in. Outside overlap each active clip is at full weight.
     """
-    if clip.hidden or not clip.contains(time_seconds):
-        return 0.0
-    weight = 1.0
-    for other in all_clips:
-        if other.hidden or other.id == clip.id:
-            continue
-        if other.start_seconds <= clip.start_seconds + 1e-9:
-            continue
-        overlap_start = other.start_seconds
-        overlap_end = min(clip.end_seconds, other.end_seconds)
-        if overlap_end <= overlap_start + 1e-9:
-            continue
-        if time_seconds + 1e-9 < overlap_start:
-            continue
-        progress = (time_seconds - overlap_start) / (overlap_end - overlap_start)
-        progress = max(0.0, min(1.0, progress))
-        weight = min(weight, 1.0 - progress)
-    for other in all_clips:
-        if other.hidden or other.id == clip.id:
-            continue
-        if other.start_seconds + 1e-9 >= clip.start_seconds:
-            continue
-        overlap_start = clip.start_seconds
-        overlap_end = min(clip.end_seconds, other.end_seconds)
-        if overlap_end <= overlap_start + 1e-9:
-            continue
-        if time_seconds + 1e-9 < overlap_start:
-            continue
-        progress = (time_seconds - overlap_start) / (overlap_end - overlap_start)
-        progress = max(0.0, min(1.0, progress))
-        weight = min(weight, progress)
-    return max(0.0, weight)
+    return float(
+        video_clip_crossfade_weights(
+            clip,
+            np.asarray(time_seconds, dtype=np.float64),
+            all_clips,
+        ).item()
+    )
 
 
 @dataclass
@@ -561,6 +592,14 @@ class MaExportSettings:
     output_dir_ma3: str = ""
 
 
+# How LTC reaches the output bus.
+# - generator: internal SMPTE generator (default)
+# - auto: detect striped LTC in the loaded stereo file
+# - source_left / source_right: pass that file channel through to ltc_channels
+LtcSourceMode = Literal["generator", "auto", "source_left", "source_right"]
+MusicRouteKind = Literal["mute", "music_source", "ltc", "channels"]
+
+
 @dataclass
 class AudioOutputSettings:
     """
@@ -572,11 +611,21 @@ class AudioOutputSettings:
 
     # Empty name = system default output device.
     output_device_name: str = ""
-    # Music L / R → device channels (may map one source to multiple outs).
+    # PortAudio device index when known (stable across host APIs).
+    output_device_index: int | None = None
+    # Host API filter / label saved with the device (ASIO, Windows WASAPI, …).
+    output_hostapi: str = ""
+    # L / R stereo legs: channel numbers, "Music Source", or "LTC".
+    music_l_route: str = "1"
+    music_r_route: str = "2"
+    # Legacy channel lists (derived from routes when loading old projects).
     music_left_channels: list[int] = field(default_factory=lambda: [0])
     music_right_channels: list[int] = field(default_factory=lambda: [1])
     # Generated LTC (independent of MTC).
     ltc_enabled: bool = False
+    ltc_source: LtcSourceMode = "generator"
+    # When ltc_source is "generator", actually run the internal SMPTE generator.
+    ltc_generator_enabled: bool = True
     ltc_gain: float = 0.8
     ltc_channels: list[int] = field(default_factory=lambda: [2])
     # MIDI Timecode quarter-frame output (independent of LTC).
@@ -604,7 +653,8 @@ class CleanVideoOutputSettings:
 def default_channel_routing(output_channels: int) -> tuple[list[int], list[int], list[int]]:
     """
     Sensible defaults: Music→CH1+CH2, LTC→CH3 when device has ≥3 outs.
-    Stereo-only: Music only (LTC unmapped until the user remaps).
+    Stereo-only: Music→CH1+CH2, LTC left unmapped until the generator is enabled
+    (see ``default_ltc_channels_for_device`` / UI clamp — LTC jumps into CH1–2).
     """
     n = max(0, int(output_channels))
     if n >= 3:
@@ -614,6 +664,42 @@ def default_channel_routing(output_channels: int) -> tuple[list[int], list[int],
     if n == 1:
         return [0], [0], []
     return [0], [1], [2]
+
+
+def default_ltc_channels_for_device(output_channels: int) -> list[int]:
+    """
+    Where Generated LTC should land on this device.
+
+    ≥3 outs → CH3 (index 2). 2-ch → CH2 (index 1). 1-ch → CH1 (index 0).
+    So a Focusrite-style default of CH3 automatically jumps back within the
+    available range on stereo headphones / laptop speakers.
+    """
+    n = max(0, int(output_channels))
+    if n <= 0:
+        return []
+    if n >= 3:
+        return [2]
+    return [n - 1]
+
+
+def clamp_output_channels(channels: list[int], output_channels: int) -> list[int]:
+    """Keep 0-based destination indices inside ``0 .. output_channels-1`` (deduped)."""
+    n = max(0, int(output_channels))
+    if n <= 0:
+        return []
+    out: list[int] = []
+    for raw in channels:
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0:
+            continue
+        if idx >= n:
+            idx = n - 1
+        if idx not in out:
+            out.append(idx)
+    return out
 
 
 @dataclass
@@ -640,7 +726,7 @@ class Project:
         default_factory=CleanVideoOutputSettings
     )
     # Preview/Clean Output decode resolution cap — see VideoDecodeQuality.
-    video_decode_quality: VideoDecodeQuality = "full"
+    video_decode_quality: VideoDecodeQuality = "1080p"
 
     @classmethod
     def create(cls, name: str) -> Project:

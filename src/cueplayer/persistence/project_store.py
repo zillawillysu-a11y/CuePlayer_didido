@@ -117,9 +117,15 @@ def _coerce_channel_list(raw: Any, default: list[int]) -> list[int]:
 def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
     return {
         "output_device_name": settings.output_device_name,
+        "output_device_index": settings.output_device_index,
+        "output_hostapi": str(settings.output_hostapi or ""),
+        "music_l_route": str(settings.music_l_route or "1"),
+        "music_r_route": str(settings.music_r_route or "2"),
         "music_left_channels": list(settings.music_left_channels),
         "music_right_channels": list(settings.music_right_channels),
         "ltc_enabled": bool(settings.ltc_enabled),
+        "ltc_source": str(settings.ltc_source),
+        "ltc_generator_enabled": bool(settings.ltc_generator_enabled),
         "ltc_gain": float(settings.ltc_gain),
         "ltc_channels": list(settings.ltc_channels),
         "mtc_enabled": bool(settings.mtc_enabled),
@@ -132,11 +138,33 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         return AudioOutputSettings()
     gain = float(raw.get("ltc_gain", 0.8) or 0.8)
     gain = min(1.5, max(0.0, gain))
+    ltc_source = str(raw.get("ltc_source") or "generator")
+    if ltc_source not in ("generator", "auto", "source_left", "source_right"):
+        ltc_source = "generator"
+    left = _coerce_channel_list(raw.get("music_left_channels"), [0])
+    right = _coerce_channel_list(raw.get("music_right_channels"), [1])
+    music_l_route = str(raw.get("music_l_route") or "").strip()
+    music_r_route = str(raw.get("music_r_route") or "").strip()
+    if not music_l_route:
+        music_l_route = "+".join(str(int(c) + 1) for c in left) or "1"
+    if not music_r_route:
+        music_r_route = "+".join(str(int(c) + 1) for c in right) or "2"
+    dev_index = raw.get("output_device_index")
+    try:
+        dev_index = int(dev_index) if dev_index is not None else None
+    except (TypeError, ValueError):
+        dev_index = None
     return AudioOutputSettings(
         output_device_name=str(raw.get("output_device_name") or ""),
-        music_left_channels=_coerce_channel_list(raw.get("music_left_channels"), [0]),
-        music_right_channels=_coerce_channel_list(raw.get("music_right_channels"), [1]),
+        output_device_index=dev_index,
+        output_hostapi=str(raw.get("output_hostapi") or ""),
+        music_l_route=music_l_route,
+        music_r_route=music_r_route,
+        music_left_channels=left,
+        music_right_channels=right,
         ltc_enabled=bool(raw.get("ltc_enabled", False)),
+        ltc_source=ltc_source,  # type: ignore[arg-type]
+        ltc_generator_enabled=bool(raw.get("ltc_generator_enabled", True)),
         ltc_gain=gain,
         ltc_channels=_coerce_channel_list(raw.get("ltc_channels"), [2]),
         mtc_enabled=bool(raw.get("mtc_enabled", False)),
@@ -178,7 +206,7 @@ def dict_to_clean_video_output(raw: Any) -> CleanVideoOutputSettings:
 def _coerce_video_decode_quality(raw: Any) -> VideoDecodeQuality:
     if raw in VIDEO_DECODE_QUALITY_MAX_HEIGHT:
         return raw  # type: ignore[return-value]
-    return "full"
+    return "1080p"
 
 
 class SchemaError(ValueError):
@@ -389,6 +417,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                     for clip in song.video_clips
                 ],
                 "video_track_muted": song.video_track_muted,
+                "show_video_track": bool(song.show_video_track),
                 "music_volume": song.music_volume,
                 "video_lane_height": song.video_lane_height,
                 "mark_lanes": [
@@ -421,6 +450,8 @@ def project_to_dict(project: Project) -> dict[str, Any]:
                 "now_primary_lanes": list(song.now_primary_lanes),
                 "now_secondary_lanes": list(song.now_secondary_lanes),
                 "now_secondary_enabled": song.now_secondary_enabled,
+                "now_primary_visible": song.now_primary_visible,
+                "now_secondary_visible": song.now_secondary_visible,
                 "now_secondary_clear_seconds": song.now_secondary_clear_seconds,
             }
             for song in project.songs
@@ -515,9 +546,10 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 audio_tracks=audio_tracks,
                 video_clips=video_clips,
                 video_track_muted=bool(song_data.get("video_track_muted", False)),
+                show_video_track=bool(song_data.get("show_video_track", True)),
                 music_volume=float(min(1.0, max(0.0, song_data.get("music_volume", 1.0)))),
                 video_lane_height=float(
-                    min(160.0, max(28.0, song_data.get("video_lane_height", 40.0)))
+                    min(4096.0, max(28.0, song_data.get("video_lane_height", 40.0)))
                 ),
                 mark_lanes=mark_lanes,
                 marks=marks,
@@ -534,6 +566,8 @@ def project_from_dict(data: dict[str, Any]) -> Project:
                 now_primary_lanes=now_cfg[1],
                 now_secondary_lanes=now_cfg[2],
                 now_secondary_enabled=bool(song_data.get("now_secondary_enabled", True)),
+                now_primary_visible=bool(song_data.get("now_primary_visible", True)),
+                now_secondary_visible=bool(song_data.get("now_secondary_visible", True)),
                 now_secondary_clear_seconds=float(
                     song_data.get("now_secondary_clear_seconds", 2.0)
                 ),
