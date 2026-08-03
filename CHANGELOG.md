@@ -4,6 +4,14 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 1 — Task 4: Repository layer foundation (2026-08-03)
+
+- Added `cueplayer.repository.ProjectRepository` (`load` / `save` / `autosave` / `backup` / `exists`).
+- `ProjectService` no longer imports `persistence`; uses the repository instead.
+- Existing persistence implementation unchanged (no redesign).
+- UI / playback / audio / timeline untouched.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 1 — Task 3: Application layer foundation (2026-08-03)
 
 - Added `cueplayer.application.ProjectService` for project lifecycle (new/open/save, dirty, autosave prefs, recent/last projects).

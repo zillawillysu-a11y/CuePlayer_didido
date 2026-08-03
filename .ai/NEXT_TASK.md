@@ -1,45 +1,46 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Repository layer  
+**Type:** Architecture / Playback service  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 1 Task 3 — Application `ProjectService`  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint1ProjectService.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR REPOSITORY LAYER)
+**Previous:** Sprint 1 Task 4 — `ProjectRepository`  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint1ProjectRepository.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR PLAYBACK SERVICE)
 
 ---
 
 ## Current task
 
-### Sprint 1 — Task 4: Repository layer (thin ProjectStore adapter)
+### Sprint 1 — Task 5: Playback service foundation
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Introduce a thin repository / adapter implementing `ports.ProjectStore` that
-wraps existing `persistence.project_store.load_project` / `save_project`.
-Point `ProjectService` at it. **No** behavior or schema changes.
+Extract a thin application playback / song-session service for orchestration
+currently in `MainWindow` (song activate refresh order, transport helpers)
+**without** changing `AudioEngine` internals, sample-clock rules, or UI design.
 
 ### Read first
 
-1. `docs/current_architecture.md` (plan Task 4)
+1. `docs/current_architecture.md` (playback flow §13, plan Task 5)
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. `src/cueplayer/ports/project_store.py`
-4. `src/cueplayer/application/project_service.py`
+3. `AGENTS.md` clock non-negotiables
+4. `MainWindow._activate_song` + engine wiring
 
 ### In scope
 
-- Adapter class + wire into `ProjectService`
-- Tests proving identical load/save
+- New application service module
+- MainWindow delegates orchestration calls
+- Tests for song switch / transport smoke where practical
 
 ### Out of scope
 
-- New persistence features, migrations, RemoteHost, song_session
-- UI redesign
+- Redesigning AudioEngine / mixer / av_path_lock policy
+- RemoteHost, Repository expansions, features
 
 ### Done when
 
-- Service uses port/adapter; tests green; REPORT + handoff; STOP
+- Orchestration lives in service; clock rule intact; tests green; REPORT + handoff; STOP
