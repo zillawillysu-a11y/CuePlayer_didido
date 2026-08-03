@@ -16,6 +16,14 @@ CUE_LIST_FIELD_LABELS: dict[str, str] = {
 }
 LOGICAL_INDEX_BY_FIELD: dict[str, int] = {field: index for index, field in enumerate(CUE_LIST_FIELDS)}
 
+__all__ = [
+    "CUE_LIST_FIELDS",
+    "DEFAULT_CUE_LIST_COLUMN_ORDER",
+    "CUE_LIST_FIELD_LABELS",
+    "LOGICAL_INDEX_BY_FIELD",
+    "normalize_cue_list_column_order",
+]
+
 
 def normalize_cue_list_column_order(order: list[str] | None) -> list[str]:
     """Return a full permutation of cue-list fields (default: Time, Type, Cue ID, Note)."""

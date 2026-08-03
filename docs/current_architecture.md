@@ -1,20 +1,35 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 1 · Task 1 (assessment only)  
-**Date:** 2026-08-03  
-**Scope tip:** `cursor/sprint1-architecture-assessment-028d` (stacked on Sprint 0 retrospective / columns-migrate line)  
-**Constraint:** Inspect + document only — **no** moves, renames, new packages, or behavior changes.
+**Status:** Sprint 1 · Task 2 complete (transitional cleanup)  
+**Updated:** 2026-08-03  
+**Scope tip:** `cursor/sprint1-transitional-cleanup-028d`  
+**Constraint (Task 2):** Cleanup only — unify ports, remove shims/stubs/aliases; **no** UI/behavior/features; **no** Service / Repository layer yet.
 
 Related docs (do not treat as identical):
 
 | Doc | Role |
 |-----|------|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Short aspirational layer diagram |
-| [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | Earlier as-built review (ZH); still useful, partially stale on `persistence→ui` / `ports` |
+| [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | Earlier as-built review (ZH); partially stale |
 | [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) | Strangler target layout |
 | [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) / [`MIGRATION_RULES.md`](MIGRATION_RULES.md) | Permanent law |
 | [`SPRINT_0_REVIEW.md`](SPRINT_0_REVIEW.md) | Foundation retrospective |
-| **This file** | English **Sprint 1 baseline** snapshot of the repo *as checked out today* |
+| [`CHANGELOG.md`](../CHANGELOG.md) | Release / sprint notes |
+| **This file** | Living English as-built snapshot |
+
+---
+
+## Sprint 1 Task 2 — Transitional cleanup (done)
+
+| Action | Result |
+|--------|--------|
+| Unify `ports/` | Canonical `src/cueplayer/ports/*.py` + `tests/ports/test_ports_package.py` on this tip |
+| Remove `ui.cue_list_columns` shim | Callers → `domain.cue_list_columns` only; shim file deleted |
+| Remove dead `playback/clock.py` | Unused wall-clock `PlaybackClock` (name clash with `ports.clock.PlaybackClock`) |
+| Remove empty `timeline/` / `ltc/` stubs | Real timeline UI under `ui/`; LTC under `timecode/` + `media/` |
+| Drop `_AUDIO_SUFFIXES` alias | Use `AUDIO_SUFFIXES` from `ui.drag_drop` only |
+
+**Not done here (explicitly deferred):** Service Layer, Repository pattern, RemoteHost wiring, adapters renames.
 
 ---
 
@@ -22,7 +37,7 @@ Related docs (do not treat as identical):
 
 ```text
 CuePlayer_didido/
-├── AGENTS.md / README.md / pyproject.toml
+├── AGENTS.md / README.md / CHANGELOG.md / pyproject.toml
 ├── .ai/                    # AI workflow: NEXT_TASK, REPORT, handoffs, prompts
 ├── .cursor/rules/          # auto-push, ai-workflow
 ├── docs/                   # architecture + product + distribution manuals
@@ -30,10 +45,11 @@ CuePlayer_didido/
 ├── packaging/              # Windows PyInstaller / Inno (Windows-only builds)
 ├── scripts/
 ├── tests/                  # ~mirrors packages; ui tests dominate
-└── src/cueplayer/          # ~107 .py, ~44.3k LOC
+└── src/cueplayer/          # ~107 .py packages (no empty timeline/ltc stubs)
     ├── app.py              # QApplication boot + MainWindow
     ├── __main__.py         # python -m cueplayer
     ├── domain/             # models, undo, cue id, columns, media_relink
+    ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
     ├── media/              # decode, caches, BPM, LTC detect, av_path_lock
     ├── persistence/        # JSON project, bundle, backup, media layout, audio prefs
@@ -43,10 +59,7 @@ CuePlayer_didido/
     ├── timecode/           # SMPTE / LTC / MTC helpers
     ├── routing/            # channel matrix
     ├── util/               # frozen runtime, thread priority
-    ├── spikes/             # early experiments
-    ├── ports/              # ⚠ SOURCE MISSING on this tip (only __pycache__)
-    ├── timeline/           # empty stub (__init__.py only)
-    └── ltc/                # empty stub (__init__.py only)
+    └── spikes/             # early experiments
 ```
 
 ### LOC by package (approx., `.py` only)
@@ -61,7 +74,8 @@ CuePlayer_didido/
 | `domain/` | ~2.2k | |
 | `persistence/` | ~2.2k | |
 | `timecode/` / others | small | |
-| `ports/` / `timeline/` / `ltc/` | 0 source | stubs or missing |
+| `ports/` | 0 → Protocols only | **Canonical** on tip after Task 2 |
+| ~~`timeline/` / `ltc/`~~ | removed | Empty stubs deleted Task 2 |
 
 ---
 
@@ -104,9 +118,8 @@ There is **no** separate `application/` package yet. Composition and use-cases l
 | **ui** | Widgets | Also project lifecycle, media jobs, remote host, autosave orchestration |
 | **web_remote** | LAN control | Package-local server/state; `bridge` duck-types `MainWindow` private APIs |
 | **timecode / routing / util** | Helpers | Small and coherent |
-| **ports** | Protocol seams (Sprint 0 Step 0) | Designed on architecture branch; **not present as `.py` on this tip** |
-| **timeline/ / ltc/** | Early scaffold | Empty — real UI/timeline + LTC live under `ui/` and `timecode/`/`media/` |
-
+| **ports** | Protocol seams | ✅ Present on tip; Protocols only — not wired yet |
+| ~~**timeline/ / ltc/**~~ | — | Removed empty stubs (Task 2) |
 ### Runtime composition (as wired today)
 
 ```mermaid
@@ -185,8 +198,8 @@ flowchart LR
 | `persistence → ui` | **Cleared** (Sprint 0): uses `domain.cue_list_columns` |
 | `domain → media/persistence` | Still present via `domain.media_relink` |
 | `web_remote → MainWindow` privates | Still present (duck-typed; no hard import of `main_window`) |
-| `ports` package | Missing source — cannot `import cueplayer.ports` cleanly for Step 2 |
-
+| `ports` package | ✅ Present — Protocols only; not yet adopted by bridge |
+| `cue_list_columns` | ✅ Single path: `domain.cue_list_columns` (UI shim removed) |
 Non-UI importers of `cueplayer.ui.*`: only `app` (boot) and `web_remote.dialog` (`ui.checkbox`).
 
 ---
@@ -277,7 +290,7 @@ Primary home: `domain/models.py` (+ helpers in sibling modules).
 | `AudioTrack`, `VideoClip`, `Mark`, `MarkLane` | `models.py` | Core timeline entities |
 | `SetlistCategory` | `models.py` | Folders |
 | `MaExportSettings`, `AudioOutputSettings`, `CleanVideoOutputSettings` | `models.py` | Nested settings objects |
-| Cue list column constants | `domain/cue_list_columns.py` | Migrated Sprint 0; UI shim re-exports |
+| Cue list column constants | `domain/cue_list_columns.py` | **Only** supported path (UI shim removed Task 2) |
 | Cue ID rules | `domain/main_cue_id.py` | Assign/renumber/sort |
 | Undo commands | `domain/undo.py` | Command objects over Project/Song |
 | Relink scan helpers | `domain/media_relink.py` | Domain-named but reaches media/persistence |
@@ -444,34 +457,40 @@ Implication for future `application` services: must know **which knobs are machi
 
 ## 15. Technical debt (prioritized)
 
-### P0 — Blocks safe Sprint 1 moves
+### Cleared in Sprint 1 Task 2
 
-1. **Split architecture vs release tips** — `ports/` `.py` sources exist on `cursor/ports-package-step0-028d` but not on this migrate tip (pycache only). Step 2 RemoteHost cannot start until tips unify.
-2. **`ui.cue_list_columns` shim still live** — callers (e.g. cue monitor) still import UI path; delete only after retarget.
-3. **Doc overlap / stale claims** — `ARCHITECTURE_REVIEW` still mentions `persistence→ui`; `PRODUCT_SPEC` status can mislead agents.
+- Split tip / missing `ports/` sources  
+- `ui.cue_list_columns` shim + dual import paths  
+- Empty `timeline/` / `ltc/` stubs  
+- Dead `playback.clock.PlaybackClock` wall-clock  
+- Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
+
+### P0 — Next (Service Layer / Remote)
+
+1. **No `application/` services yet** — open/save/autosave/song-activate still live in `MainWindow`.
+2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
+3. **Doc overlap / stale claims** — older REVIEW / PRODUCT_SPEC status still confuse agents.
 
 ### P1 — Structural risk (product-visible)
 
-4. **`MainWindow` god-object (~7.6k)** — composition + use-cases; every feature PR grows the hub.
+4. **`MainWindow` god-object (~7.6k)** — composition + use-cases.
 5. **Shared mutable `Song`** — missed refresh → A/V or list desync.
-6. **`av_path_lock` contention** — preview/scrub/waveform/mixer share path locks; perf/crash surface.
-7. **`WebRemoteBridge` ↔ MainWindow private API** — rename/`_` churn breaks remote; no `RemoteHost` port yet on tip.
-8. **`AudioEngine` breadth** — device + routing + LTC/MTC/MIDI + video audio in one type.
+6. **`av_path_lock` contention** — preview/scrub/waveform/mixer share path locks.
+7. **`AudioEngine` breadth** — device + routing + LTC/MTC/MIDI + video audio in one type.
 
 ### P2 — Layering / maintainability
 
-9. **`domain.media_relink` → media/persistence** — violates target domain purity.
-10. **`persistence` → `exporters.common` naming** — storage coupled to MA sanitize rules.
-11. **`models` ↔ `main_cue_id` soft cycle**.
-12. **Empty `timeline/` / `ltc/` stubs** — confuse navigators.
-13. **Giant UI files** (`timeline_widget`, `cue_monitor_panel`) — hard to test/review; split later, not first.
-14. **No named application services / repositories** — behavior exists but is undiscoverable for agents.
+8. **`domain.media_relink` → media/persistence** — violates target domain purity.
+9. **`persistence` → `exporters.common` naming** — storage coupled to MA sanitize rules.
+10. **`models` ↔ `main_cue_id` soft cycle**.
+11. **Giant UI files** (`timeline_widget`, `cue_monitor_panel`).
+12. **No repository classes** (intentional until a later sprint; functions in `persistence/` are fine).
 
-### P3 — Deferred (do not mix into early Sprint 1)
+### P3 — Deferred
 
-15. Full `adapters/` tree rename of playback/media.
-16. Rewriting `AudioEngine` / timeline paint architecture.
-17. Product features (NDI polish, Align Anchors, etc.) under an “architecture” banner.
+13. Full `adapters/` tree rename of playback/media.
+14. Rewriting `AudioEngine` / timeline paint architecture.
+15. Product features under an “architecture” banner.
 
 ---
 
@@ -489,58 +508,31 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 
 ---
 
-# Sprint 1 — Incremental implementation plan
+# Sprint 1 — Plan status
 
-Assessment (this document) is **Task 1**. Implementation tasks below are recommendations for subsequent agent turns — **one task per turn**, following `.ai/WORKFLOW.md` and `MIGRATION_RULES.md`. No code in Task 1.
+| Task | Status | Notes |
+|------|--------|-------|
+| **1** Architecture assessment | ✅ Done | This file originated here |
+| **2** Transitional layer cleanup | ✅ Done | ports unified; shims/stubs/aliases removed |
+| **3** Service Layer (first extract) | **Next** | Recommend `application/project_service` |
+| **4** RemoteHost adoption *or* further extracts | Queued | After first service proves the pattern |
 
-### Task 1 — Architecture assessment *(this deliverable)*
+### Recommended Sprint 1 Task 3 — Service Layer (first)
 
-- Produce `docs/current_architecture.md`.
-- Update `.ai/REPORT.md` + handoff; set `NEXT_TASK` to Task 2 only when human continues.
-- **No** refactors.
+- Create `application/project_service.py` (thin package OK) that owns project open/save/save-as/dirty/autosave orchestration currently inside `MainWindow`.
+- `MainWindow` keeps dialogs / Qt wiring; delegates persistence orchestration.
+- **No** Repository pattern yet; keep calling `persistence.project_store` functions.
+- **No** behavior or UI changes; tests: persistence + smoke open/save paths.
+- Leave RemoteHost for Task 4 once a service seam exists (ports Protocol already present).
 
-### Task 2 — Unify foundation tip (`ports/` + columns migrate)
+### Risks for Task 3
 
-- Integrate architecture-line `ports/` (and guardrail docs if missing) onto the release/columns-migrate trunk (or vice versa) so **one** tip has:
-  - `import cueplayer.ports`
-  - `domain.cue_list_columns` + UI shim
-  - BOUNDARY/MIGRATION docs
-- Verify with a tiny ports smoke test + existing columns tests.
-- **Still no** RemoteHost wiring beyond making ports importable.
-
-### Task 3 — Adopt `RemoteHost` port (shim / façade only)
-
-- Introduce a narrow `RemoteHost` implementation or adapter façade that Web Remote can call **without** new MainWindow private reach-ins (strangler: wrap existing methods first).
-- Prefer Protocol from `ports/`; keep behavior identical.
-- Safety: remote play/seek/mark paths + existing remote tests if any.
-
-### Task 4 — First MainWindow thinning: `project_service` extract **or** columns shim removal
-
-Pick **one** (human chooses; default recommendation = **project open/save/autosave extract** *or* **retarget cue_monitor → domain columns + delete shim** — whichever is smaller after Task 2):
-
-- **4a. Shim removal:** switch remaining UI imports to `domain.cue_list_columns`, delete `ui.cue_list_columns` shim, update tests.
-- **4b. Project service:** move pure save/load/dirty/autosave orchestration helpers out of `MainWindow` into `application/project_service.py` (new package allowed only in this task), MainWindow delegates; no UX change.
-
-### Estimated risks
-
-| Risk | Why it matters | Mitigation |
-|------|----------------|------------|
-| Merge conflicts / lost ports | Split tips already burned Sprint 0 | Explicit unify task before any port adoption |
-| Remote façade incomplete | Bridge uses many private hooks | Inventory bridge call sites first; wrap, don’t rewrite |
-| Save/bundle regressions | Media layout + Save As edge cases | Keep MainWindow dialogs; move only orchestration; run persistence tests |
-| Clock / lock regressions | Accidental second clock or lock order change | Forbid playback behavior edits in architecture tasks |
-| Agent doc confusion | Multiple architecture markdowns | Point NEXT_TASK at this file + BOUNDARY/MIGRATION |
-
-### Estimated difficulty
-
-| Task | Difficulty | Invasiveness |
-|------|------------|--------------|
-| Task 1 Assessment | Low | Docs only |
-| Task 2 Tip unify | Medium | Git integration + verify imports/tests; easy to get wrong base |
-| Task 3 RemoteHost | Medium–High | Many duck-typed touch points; behavior must stay identical |
-| Task 4a Shim delete | Low–Medium | Mechanical import retarget |
-| Task 4b Project service | Medium | Touches save/bundle/autosave paths; needs careful cut lines |
+| Risk | Mitigation |
+|------|------------|
+| Save As / Media layout edge cases | Move orchestration only; leave path/dialog code; run full persistence tests |
+| Dirty-flag / autosave races | Preserve timer+flag ownership together carefully |
+| Accidental UI churn | Diff should be mostly moves + call sites |
 
 ---
 
-## READY FOR SPRINT 1 IMPLEMENTATION
+## READY FOR SERVICE LAYER

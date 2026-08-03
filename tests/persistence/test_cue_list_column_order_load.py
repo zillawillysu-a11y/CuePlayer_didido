@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cueplayer.domain.models import Project
 from cueplayer.persistence.project_store import load_project, save_project
-from cueplayer.ui.cue_list_columns import (
+from cueplayer.domain.cue_list_columns import (
     DEFAULT_CUE_LIST_COLUMN_ORDER,
     normalize_cue_list_column_order,
 )

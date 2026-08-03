@@ -38,8 +38,8 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 - **Clock:** `AudioEngine` sample position is the only playback clock; video Preview / Clean / NDI share one decode path.
 - **Remote:** `origin` → `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (auto-push after commits; see `.cursor/rules/auto-push.mdc`).
 - **Architecture debt:** UI-centric hub (`ui/main_window.py`); planned migration is **one module per PR**, behavior-preserving shims — see `ARCHITECTURE_TARGET.md` + `current_architecture.md`.
-- **Ports package:** Protocol sources landed on architecture Step 0 branch; **may be missing on tips that only have columns migrate** until Sprint 1 Task 2 unifies trunks. Do not assume `import cueplayer.ports` works until verified.
-- **Step 1 done:** `cue_list_columns` lives in `domain/`; `ui.cue_list_columns` is a shim; persistence imports domain. Next after tip unify: RemoteHost (Sprint 1 Task 3).
+- **Ports package:** `src/cueplayer/ports/` — Protocol interfaces only (unified onto tip in Sprint 1 Task 2).
+- **Columns:** `domain.cue_list_columns` only (UI shim removed). Next: Service Layer (`application/project_service`), then RemoteHost.
 ## Start every agent session
 
 1. Read `.ai/README.md` (this file), `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`.
