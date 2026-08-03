@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 3.5 — Architecture snapshot (2026-08-03)
+
+- Added `docs/architecture_overview.md` (layer diagram, dependency/service/repository/protocol maps, EventBus + planned taxonomy, MainWindow responsibilities, debt map, Sprint 0→3 progress, Sprint 4 + Feature Sprint candidates, decisions log).
+- Updated `docs/current_architecture.md` to point at the snapshot.
+- Docs only — no runtime code changes.
+
 ### Sprint 3 — Task 3: Event Bus foundation (2026-08-03)
 
 - Added `core/event_bus.py` (`EventBus`: `subscribe` / `unsubscribe` / `publish`).
