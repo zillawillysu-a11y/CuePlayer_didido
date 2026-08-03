@@ -117,6 +117,22 @@ Naming: use ASCII `TaskName` in `PascalCase` or `snake_case` (e.g. `2026-08-03_P
 - Update / open PR if in cloud-agent mode.
 - **Stop immediately.** Never continue to the next architecture row or feature unless the user starts a new task.
 
+### 3.5 ChatGPT paste block (required in the user-facing reply)
+
+After every finished task, the agent’s **final user message** must include a
+**single fenced plain-text block** the human can copy-paste to ChatGPT for
+cross-tool review. The block must include at least:
+
+- Project + branch + date
+- Task objective / done summary
+- Key files changed
+- Architecture / product constraints that still apply
+- Remaining issues
+- Exact suggested next task (from `.ai/NEXT_TASK.md`)
+- Pointers: `.ai/REPORT.md`, the new handoff path, relevant `docs/`
+
+Do not omit this block. It is part of the permanent standard.
+
 ---
 
 ## 4. Communication

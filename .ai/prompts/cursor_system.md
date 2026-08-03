@@ -13,6 +13,7 @@ READ → PLAN (no code yet) → IMPLEMENT → REPORT + HANDOFF → UPDATE DOCS/N
 1. **Before coding:** read `.ai/README.md`, `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`, and all relevant docs; write a short implementation plan; do not code until the plan is complete.
 2. **After coding:** update `.ai/REPORT.md` (seven sections below); add `.ai/handoffs/YYYY-MM-DD_<TaskName>.md` with the same content; fix outdated docs; update `NEXT_TASK.md`; commit/push.
 3. **Stop** — never auto-start the next task.
+4. End the user-facing reply with a **copy-paste block for ChatGPT** (see `.ai/WORKFLOW.md` §3.5).
 
 Report sections (for ChatGPT review): Task objective · What was implemented · Files changed · Architecture decisions · Tests performed · Remaining issues · Suggested next task.
 

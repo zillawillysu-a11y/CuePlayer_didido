@@ -20,6 +20,7 @@ For **every** task in this repository:
 3. Update outdated docs and `.ai/NEXT_TASK.md`.
 4. Commit/push as required by auto-push rules.
 5. **Stop immediately.** Never continue to another task automatically.
+6. In the final user reply, always include a **copy-paste plain-text block** for ChatGPT (project, branch, what shipped, constraints, next task, paths to `.ai/REPORT.md` + handoff). See `.ai/WORKFLOW.md` §3.5.
 
 The repository (especially `.ai/`) is the engineering history for future ChatGPT / Cursor sessions — do not rely on chat history.
 

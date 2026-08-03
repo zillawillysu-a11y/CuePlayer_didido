@@ -56,3 +56,7 @@ Make the CuePlayer AI working method a **permanent engineering standard**: every
 ## Suggested next task
 
 Execute `.ai/NEXT_TASK.md`: **`ARCHITECTURE_TARGET` step 0 — create empty `src/cueplayer/ports/` Protocol package** (no wiring, no behavior change), then report + handoff + stop.
+
+## ChatGPT paste
+
+Agents must also put a copy-paste summary in the **final user reply** (`.ai/WORKFLOW.md` §3.5). That block is for the human to forward to ChatGPT; this file remains the in-repo record.
