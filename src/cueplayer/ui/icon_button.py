@@ -159,6 +159,20 @@ class IconButton(QPushButton):
             else:
                 painter.drawLine(QPointF(cx - 6, cy - 3), QPointF(cx, cy + 4))
                 painter.drawLine(QPointF(cx, cy + 4), QPointF(cx + 6, cy - 3))
+        elif kind == "eye_off":
+            # Hide track — simple eye outline with a slash.
+            painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            path = QPainterPath()
+            path.moveTo(cx - 8, cy)
+            path.cubicTo(cx - 4, cy - 6, cx + 4, cy - 6, cx + 8, cy)
+            path.cubicTo(cx + 4, cy + 6, cx - 4, cy + 6, cx - 8, cy)
+            painter.drawPath(path)
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(cx, cy), 2.2, 2.2)
+            painter.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(QPointF(cx - 7, cy + 6), QPointF(cx + 7, cy - 6))
         elif kind == "letter_s":
             # Setup mode — capital S.
             painter.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
