@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
+
 from dataclasses import dataclass
 
 import sounddevice as sd
@@ -189,6 +195,124 @@ def list_output_devices(*, dedupe: bool = True) -> list[OutputDeviceInfo]:
     return filter_output_devices(out) if dedupe else out
 
 
+def hostapi_names() -> list[str]:
+    """Installed PortAudio host APIs (e.g. ASIO, Windows WASAPI)."""
+    try:
+        return [str(api.get("name", "")) for api in sd.query_hostapis()]
+    except Exception:
+        return []
+
+
+def asio_available() -> bool:
+    return any(name == "ASIO" for name in hostapi_names())
+
+
+def list_output_devices_for_picker(hostapi: str = "") -> list[OutputDeviceInfo]:
+    """
+    Routing picker list filtered by host API (Reaper-style).
+
+    When ``hostapi`` is empty, prefer ASIO + WASAPI + multi-channel endpoints.
+    When set (e.g. "ASIO", "Windows DirectSound"), only that API is listed.
+    """
+    raw = list_output_devices(dedupe=False)
+    usable = [d for d in raw if not _is_junk_device_name(d.name)]
+    wanted = (hostapi or "").strip()
+    if wanted:
+        return sorted(
+            [d for d in usable if d.hostapi_name == wanted],
+            key=lambda d: (-d.max_output_channels, d.name.casefold(), d.index),
+        )
+
+    picked: list[OutputDeviceInfo] = []
+    seen: set[int] = set()
+
+    def add(d: OutputDeviceInfo) -> None:
+        if d.index in seen:
+            return
+        seen.add(d.index)
+        picked.append(d)
+
+    for d in usable:
+        if d.hostapi_name == "ASIO":
+            add(d)
+    for d in filter_output_devices(usable):
+        add(d)
+    for d in usable:
+        if d.max_output_channels >= 3 and d.index not in seen:
+            add(d)
+    return sorted(
+        picked,
+        key=lambda d: (
+            0 if d.hostapi_name == "ASIO" else 1 if d.hostapi_name == "Windows WASAPI" else 2,
+            -d.max_output_channels,
+            _hostapi_rank(d.hostapi_name),
+            d.name.casefold(),
+            d.index,
+        ),
+    )
+
+
+def default_picker_hostapi() -> str:
+    """Preferred driver when none is saved — ASIO first (Reaper-style)."""
+    names = hostapi_names()
+    for preferred in (
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ):
+        if preferred in names:
+            return preferred
+    return names[0] if names else ""
+
+
+def resolve_output_hostapi(hostapi: str) -> str:
+    """Map legacy empty hostapi to an explicit driver, with fallback if unavailable."""
+    wanted = (hostapi or "").strip()
+    if not wanted:
+        wanted = default_picker_hostapi()
+    names = hostapi_names()
+    if wanted in names:
+        return wanted
+    for fallback in (
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ):
+        if fallback in names:
+            return fallback
+    return wanted if wanted in names else (names[0] if names else "")
+
+
+def picker_hostapi_options() -> list[tuple[str, str]]:
+    """(label, hostapi name) rows for the Audio / Midi / Timecode driver combo."""
+    names = hostapi_names()
+    preferred = [
+        "ASIO",
+        "Windows WASAPI",
+        "Windows DirectSound",
+        "MME",
+        "Windows WDM-KS",
+    ]
+    out: list[tuple[str, str]] = []
+    # Always show the common Windows drivers so the combo is never empty —
+    # even if PortAudio briefly reports no host APIs (or ASIO isn't loaded yet).
+    for name in preferred:
+        short = name.replace("Windows ", "")
+        if name in names:
+            out.append((short, name))
+        elif name in {"ASIO", "Windows WASAPI", "Windows DirectSound"}:
+            out.append((f"{short} (not detected)", name))
+    for name in sorted(set(names) - set(preferred)):
+        out.append((name, name))
+    if not out:
+        out.append(("System default", ""))
+    return out
+
+
 def _match_by_name(devices: list[OutputDeviceInfo], wanted: str) -> OutputDeviceInfo | None:
     """Exact, then substring (either direction) name match against `devices`."""
     wanted = (wanted or "").strip()
@@ -264,6 +388,149 @@ def query_default_output_index() -> int | None:
     return None
 
 
+def device_name_score(preferred_name: str, device_name: str) -> int:
+    """Higher = better match between saved device label and a raw endpoint name."""
+    return _device_name_score(preferred_name, device_name)
+
+
+def upgrade_device_for_channels(
+    chosen: OutputDeviceInfo,
+    *,
+    min_channels: int,
+    raw_devices: list[OutputDeviceInfo] | None = None,
+    hostapi: str = "",
+) -> OutputDeviceInfo:
+    """
+    Pick a PortAudio endpoint for the same logical device that exposes at
+    least ``min_channels`` outputs.
+
+    Windows often lists the same interface twice (e.g. Focusrite WASAPI 2ch
+    stereo vs 8ch). ``filter_output_devices`` usually keeps the higher-count
+    sibling, but a stored device index or name match can still resolve to the
+    2ch endpoint — which breaks LTC→CH3 routing.
+    """
+    need = max(1, int(min_channels))
+    if chosen.max_output_channels >= need:
+        return chosen
+    key = _normalize_device_key(chosen.name)
+    best = chosen
+    wanted_api = (hostapi or "").strip()
+    pool = raw_devices if raw_devices is not None else list_output_devices(dedupe=False)
+    for candidate in pool:
+        if wanted_api and candidate.hostapi_name != wanted_api:
+            continue
+        if candidate.max_output_channels < need:
+            continue
+        cand_key = _normalize_device_key(candidate.name)
+        if not (
+            key == cand_key
+            or _names_likely_same(key, cand_key)
+            or _names_likely_same(cand_key, key)
+        ):
+            continue
+        if _better_device(candidate, best):
+            best = candidate
+    return best
+
+
+def _device_name_score(preferred_name: str, device_name: str) -> int:
+    """Higher = better match between saved device label and a raw endpoint name."""
+    pref = (preferred_name or "").strip().casefold()
+    name = (device_name or "").strip().casefold()
+    if not pref:
+        return 0
+    if pref == name:
+        return 300
+    if pref in name or name in pref:
+        return 200
+    tokens = [t for t in pref.replace("(", " ").replace(")", " ").split() if len(t) >= 3]
+    if any(t in name for t in tokens):
+        return 120
+    if _names_likely_same(_normalize_device_key(pref), _normalize_device_key(name)):
+        return 100
+    return 0
+
+
+def resolve_output_endpoint_for_channels(
+    *,
+    preferred_name: str,
+    min_channels: int,
+    samplerate: float,
+    raw_devices: list[OutputDeviceInfo],
+    hostapi: str = "",
+) -> OutputDeviceInfo | None:
+    """
+    Pick a PortAudio output endpoint that can actually open ``min_channels`` at
+    ``samplerate``.
+
+    Windows often exposes the same interface as a 2ch WASAPI "Speakers" entry
+    and a separate 8ch ASIO / multi-line endpoint. Saved names like
+    "Speakers (Focusrite USB)" must not trap LTC→CH3 on the stereo pair.
+    """
+    need = max(1, int(min_channels))
+    wanted_api = (hostapi or "").strip()
+    best: OutputDeviceInfo | None = None
+    best_score = -1
+    for candidate in raw_devices:
+        if wanted_api and candidate.hostapi_name != wanted_api:
+            continue
+        if candidate.max_output_channels < need:
+            continue
+        try:
+            sd.check_output_settings(
+                device=candidate.index,
+                channels=need,
+                samplerate=float(samplerate),
+                dtype="float32",
+            )
+        except Exception:
+            continue
+        score = _device_name_score(preferred_name, candidate.name)
+        api = candidate.hostapi_name.casefold()
+        if "asio" in api:
+            score += 45
+        elif api == "windows wasapi":
+            score += 35
+        elif "wdm" in api:
+            score += 15
+        score += min(candidate.max_output_channels, 32)
+        if score > best_score:
+            best_score = score
+            best = candidate
+    return best
+
+
+def probe_supported_output_channels(
+    device_index: int,
+    *,
+    min_channels: int,
+    samplerate: float,
+) -> int:
+    """
+    Highest channel count the device accepts at ``samplerate`` (downward probe).
+    Falls back to ``min( device max, min_channels )`` when probing fails.
+    """
+    need = max(1, int(min_channels))
+    try:
+        dev_max = int(sd.query_devices(device_index)["max_output_channels"])
+    except Exception:
+        return need
+    for ch in range(dev_max, 0, -1):
+        if ch < need:
+            break
+        try:
+            sd.check_output_settings(
+                device=device_index,
+                channels=ch,
+                samplerate=float(samplerate),
+                dtype="float32",
+            )
+            return ch
+        except Exception:
+            continue
+    return max(1, min(dev_max, need))
+
+
 def find_output_device(
     devices: list[OutputDeviceInfo],
     *,
@@ -335,6 +602,22 @@ def build_source_route(
 # Probed in order after the caller's preferred rate; covers the common
 # WASAPI shared-mode "locked mixer format" rates seen in the wild.
 _FALLBACK_SAMPLE_RATES: tuple[float, ...] = (48000.0, 44100.0, 96000.0, 32000.0, 22050.0)
+
+
+def iter_output_samplerate_candidates(
+    *,
+    device_index: int | None,
+    preferred_rate: float,
+    device_default_rate: float | None = None,
+) -> list[float]:
+    """Ordered sample rates to try when opening an output stream."""
+    candidates: list[float] = [preferred_rate]
+    if device_default_rate and device_default_rate not in candidates:
+        candidates.append(device_default_rate)
+    for rate in _FALLBACK_SAMPLE_RATES:
+        if rate not in candidates:
+            candidates.append(rate)
+    return candidates
 
 
 def resolve_output_samplerate(

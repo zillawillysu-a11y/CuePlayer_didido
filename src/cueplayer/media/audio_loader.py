@@ -130,3 +130,66 @@ def load_audio(path: Path) -> AudioBuffer:
         mono=mono,
         peak_levels=levels,
     )
+
+
+def waveform_display_buffer(
+    buffer: AudioBuffer,
+    *,
+    exclude_channel: int | None = None,
+) -> AudioBuffer:
+    """
+    Buffer used only for timeline waveform drawing.
+
+    When ``exclude_channel`` is set (striped LTC on L or R), rebuild mono/peaks
+    from the remaining music channel(s) so LTC square-wave energy does not
+    dominate the green waveform. Playback still uses ``buffer.samples``.
+    """
+    if exclude_channel is None:
+        return buffer
+    samples = buffer.samples
+    if samples.ndim != 2 or samples.shape[1] < 2:
+        return buffer
+    ch = int(exclude_channel)
+    if ch < 0 or ch >= samples.shape[1]:
+        return buffer
+    keep = [i for i in range(samples.shape[1]) if i != ch]
+    if not keep:
+        return buffer
+    music = samples[:, keep]
+    if music.shape[1] == 1:
+        music = music[:, 0]
+    mono, levels = build_peak_pyramid(music, int(buffer.sample_rate))
+    return AudioBuffer(
+        path=buffer.path,
+        sample_rate=buffer.sample_rate,
+        samples=buffer.samples,
+        mono=mono,
+        peak_levels=levels,
+    )
+
+
+def ltc_waveform_display_buffer(
+    buffer: AudioBuffer,
+    channel: int,
+) -> AudioBuffer | None:
+    """
+    Display-only buffer for the optional LTC timeline lane (one file channel).
+
+    Returns ``None`` when the channel index is out of range. Playback samples
+    stay on the original buffer; this only rebuilds mono/peaks for painting.
+    """
+    samples = buffer.samples
+    if samples.ndim != 2:
+        return None
+    ch = int(channel)
+    if ch < 0 or ch >= samples.shape[1]:
+        return None
+    mono_src = samples[:, ch]
+    mono, levels = build_peak_pyramid(mono_src, int(buffer.sample_rate))
+    return AudioBuffer(
+        path=buffer.path,
+        sample_rate=buffer.sample_rate,
+        samples=buffer.samples,
+        mono=mono,
+        peak_levels=levels,
+    )

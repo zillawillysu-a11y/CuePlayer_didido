@@ -41,7 +41,9 @@ from cueplayer.exporters.show_patch import (
     plans_from_show_patch,
     sequence_chain_labels,
 )
+from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
+from cueplayer.ui.theme import contrast_text_color
 
 _COL_ORDER = 0
 _COL_SONG = 1
@@ -55,7 +57,7 @@ _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
 
 
 def _lane_color_for_main(song) -> str:  # noqa: ANN001
-    lane = next((l for l in song.mark_lanes if l.lane_type == "main"), None)
+    lane = next((l for l in song.mark_lanes if l.cue_id_enabled), None)
     return (lane.color if lane and lane.color else "#E74C3C")
 
 
@@ -212,6 +214,7 @@ class ShowPatchPage(QWidget):
         self.song_pick = QListWidget()
         self.song_pick.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.song_pick.setMaximumHeight(140)
+        self.song_pick.setItemDelegate(RowColorDelegate(self.song_pick))
         song_layout.addWidget(self.song_pick)
         pick_btns = QHBoxLayout()
         self.song_all_btn = QPushButton("Select All")
@@ -268,8 +271,9 @@ class ShowPatchPage(QWidget):
         self.export_btn = QPushButton("Export Checked Songs…")
         self.export_btn.setStyleSheet(
             "QPushButton { height: 34px; padding: 0 16px; font-weight: 600;"
-            " background: #4a9eff; border: 1px solid #79b8ff; color: #09090b; }"
-            "QPushButton:hover { background: #79b8ff; }"
+            " background: transparent; border: none; color: #ededed; }"
+            "QPushButton:hover { background: #222222; }"
+            "QPushButton:pressed { background: #2a2a2a; }"
         )
         action_row.addWidget(self.refresh_btn)
         action_row.addStretch(1)
@@ -360,6 +364,7 @@ class ShowPatchPage(QWidget):
             checked = default_all or song.id in selected
             item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, song.id)
+            item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_pick.addItem(item)
         self.song_pick.blockSignals(False)
 
@@ -520,8 +525,8 @@ class ShowPatchPage(QWidget):
         self.chain_label.setText("  →  ".join(labels))
 
     def _rebuild_table(self) -> None:
-        # ord, en, seq_name, pool, fader, tc, marks, is_main, tc_tip, color
-        rows: list[tuple[str, str, str, str, str, str, str, bool, str, str]] = []
+        # ord, en, seq_name, pool, fader, tc, marks, is_main, tc_tip, color, row_color
+        rows: list[tuple[str, str, str, str, str, str, str, bool, str, str, str]] = []
         order = 1
         for slot in self._slots:
             btn_n = slot.button_lane_count
@@ -536,6 +541,7 @@ class ShowPatchPage(QWidget):
                 )
             )
             main_color = _lane_color_for_main(slot.song)
+            song_row_color = (slot.song.row_color or "").strip()
             rows.append(
                 (
                     str(order),
@@ -548,6 +554,7 @@ class ShowPatchPage(QWidget):
                     True,
                     tip_main,
                     main_color,
+                    song_row_color,
                 )
             )
             order += 1
@@ -565,6 +572,7 @@ class ShowPatchPage(QWidget):
                         False,
                         "This Button's Top events are written into the same song's Timecode",
                         btn_color,
+                        song_row_color,
                     )
                 )
                 order += 1
@@ -581,20 +589,31 @@ class ShowPatchPage(QWidget):
                         False,
                         "",
                         "",
+                        song_row_color,
                     )
                 )
                 order += 1
 
         self.table.setRowCount(len(rows))
-        for r, (ord_s, en, seq_name, pool, fader, tc, marks, is_main, tc_tip, color) in enumerate(rows):
+        for r, (ord_s, en, seq_name, pool, fader, tc, marks, is_main, tc_tip, color, row_color) in enumerate(
+            rows
+        ):
             values = [ord_s, en, seq_name, pool, fader, tc, marks]
             lane_color = QColor(color) if color else None
+            song_bg = QColor(row_color) if row_color else None
+            if song_bg is not None and not song_bg.isValid():
+                song_bg = None
             for c, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 if is_main:
                     item.setForeground(QBrush(QColor("#e4e4e7")))
                 else:
                     item.setForeground(QBrush(QColor("#a1a1aa")))
+                # # + English columns carry the setlist Song.row_color so VIP /
+                # problem songs stay recognizable from setlist → export.
+                if c in (_COL_ORDER, _COL_SONG) and song_bg is not None:
+                    item.setBackground(QBrush(song_bg))
+                    item.setForeground(QBrush(QColor(contrast_text_color(song_bg.name()))))
                 # Sequence Name + Pool + Fader follow Mark color.
                 if (
                     c in (_COL_ROLE, _COL_SEQ, _COL_FADER)

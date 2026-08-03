@@ -355,3 +355,89 @@ def test_set_song_none_clears_state_and_emits_black_frame(
     controller.set_song(None)
     assert frames == [None]
     assert controller._decoders == {}
+
+
+def test_video_output_inactive_skips_decode(app: QApplication, red_clip_path: Path) -> None:
+    """When neither Preview nor Clean Output needs frames, decode must not run."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.set_video_output_active(False)
+    controller.update_position(0.5)
+    controller.update_position(1.0)
+
+    assert frames == []
+    assert clip.id not in controller._decoders
+
+    controller.set_video_output_active(True)
+    assert len(frames) == 1
+    assert isinstance(frames[0], np.ndarray)
+
+
+def test_video_output_reenable_uses_last_position(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_video_output_active(False)
+    controller.update_position(2.5)
+
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_video_output_active(True)
+
+    assert len(frames) == 1
+    frame = frames[0]
+    assert isinstance(frame, np.ndarray)
+    assert frame.mean(axis=(0, 1))[2] > frame.mean(axis=(0, 1))[0]
+
+
+def test_scrubbing_uses_preloaded_cache_without_live_decoder(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Once scrub posters are warm, mid-drag Preview must not open/seek the
+    live UI-thread decoder (that hitch felt like 'loading video')."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not controller._scrub_cache.ready(clip.id):
+        time.sleep(0.05)
+    assert controller._scrub_cache.ready(clip.id)
+
+    # Ensure no live decoder is open, then scrub.
+    controller._close_all_decoders()
+    assert clip.id not in controller._decoders
+
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_scrubbing(True)
+    controller.update_position(0.3)
+    controller.update_position(1.2)
+
+    assert len(frames) >= 1
+    assert all(isinstance(f, np.ndarray) for f in frames if f is not None)
+    # Mid-scrub must not have opened the live decoder.
+    assert clip.id not in controller._decoders
+
+    controller.set_scrubbing(False)
+    # Mouse-up flush may open the live decoder for the exact land frame.
+    assert clip.id in controller._decoders

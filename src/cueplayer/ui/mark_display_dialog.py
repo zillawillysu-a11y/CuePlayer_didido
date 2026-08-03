@@ -60,6 +60,19 @@ class MarkDisplayDialog(QDialog):
         self.tracks_box.setChecked(song.show_mark_tracks)
         form.addRow("Tracks", self.tracks_box)
 
+        self.video_track_box = QCheckBox("Show Video / LTC Tracks")
+        initial_video = (
+            project.show_video_track if project is not None else song.show_video_track
+        )
+        self.video_track_box.setChecked(bool(initial_video))
+        self.video_track_box.setToolTip(
+            "Hide Video + LTC after alignment to free timeline space. "
+            "Applies to the whole show (all songs). "
+            "Preview / Clean Output keep playing either way. "
+            "LTC lane appears under Video when a file stripe is known."
+        )
+        form.addRow("Video", self.video_track_box)
+
         self.stem_box = QCheckBox("Stem line through mark shapes")
         self.stem_box.setChecked(song.show_mark_stem)
         self.stem_box.setToolTip("Draws a vertical line above/below each Mark shape; turn off to show just the shape")
@@ -122,6 +135,39 @@ class MarkDisplayDialog(QDialog):
         self.wave_color = ColorSwatchButton(line_src.waveform_color or "#3dd68c")
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
+
+        self.playhead_color = ColorSwatchButton(
+            getattr(line_src, "playhead_color", None) or "#ff5a5f"
+        )
+        self.playhead_color.setToolTip("Playhead (NOW) line color — applies to the whole project")
+        form2.addRow("Playhead Color (project)", self.playhead_color)
+
+        self.tc_clock_box = QCheckBox("Show output timecode clock")
+        self.tc_clock_box.setChecked(
+            bool(getattr(line_src, "show_output_timecode_clock", True))
+        )
+        self.tc_clock_box.setToolTip(
+            "LTC / MTC timecode under the seconds display on the right — "
+            "shows whether output is armed and the current HH:MM:SS:FF"
+        )
+        form2.addRow("Timecode Clock", self.tc_clock_box)
+
+        self.output_toggles_box = QCheckBox("Show output toggles (TRANS · Note · MTC · LTC)")
+        self.output_toggles_box.setChecked(
+            bool(getattr(line_src, "show_output_quick_toggles", True))
+        )
+        self.output_toggles_box.setToolTip(
+            "Quick output switches under the clock — right-click the clock to toggle too"
+        )
+        form2.addRow("Output Toggles", self.output_toggles_box)
+
+        self.tc_clock_color = ColorSwatchButton(
+            getattr(line_src, "output_timecode_clock_color", None) or "#3dd68c"
+        )
+        self.tc_clock_color.setToolTip(
+            "Output timecode clock color (default green) — applies to the whole project"
+        )
+        form2.addRow("Timecode Clock Color", self.tc_clock_color)
 
         self.line_style = QComboBox()
         self.line_style.addItem("Solid", "solid")
@@ -194,10 +240,15 @@ class MarkDisplayDialog(QDialog):
         layout.addWidget(buttons)
 
         self.tracks_box.toggled.connect(self._apply)
+        self.video_track_box.toggled.connect(self._apply)
         self.stem_box.toggled.connect(self._apply)
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
         self.wave_color.color_changed.connect(self._apply)
+        self.playhead_color.color_changed.connect(self._apply)
+        self.tc_clock_box.toggled.connect(self._apply)
+        self.output_toggles_box.toggled.connect(self._apply)
+        self.tc_clock_color.color_changed.connect(self._apply)
         self.line_style.currentIndexChanged.connect(self._apply)
         self.line_width.valueChanged.connect(self._apply)
         self.dash_spacing.valueChanged.connect(self._apply)
@@ -221,8 +272,7 @@ class MarkDisplayDialog(QDialog):
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 2, 0, 2)
-            tag = "Main" if lane.lane_type == "main" else "Button"
-            name = QLabel(f"{lane.index}. {lane.name} ({tag})")
+            name = QLabel(f"{lane.index}. {lane.name}")
             name.setStyleSheet(f"color: {lane.color}; min-width: 160px;")
             name.setToolTip(lane.name)
 
@@ -290,6 +340,12 @@ class MarkDisplayDialog(QDialog):
     def _apply(self) -> None:
         self._sync_spacing_enabled()
         self._song.show_mark_tracks = self.tracks_box.isChecked()
+        show_video = self.video_track_box.isChecked()
+        if self._project is not None:
+            self._project.set_show_video_track(show_video)
+        else:
+            self._song.show_video_track = show_video
+            self._song.show_ltc_track = show_video
         self._song.show_mark_stem = self.stem_box.isChecked()
         style = str(self.line_style.currentData() or "solid")
         if style not in ("solid", "dash", "dot"):
@@ -303,6 +359,13 @@ class MarkDisplayDialog(QDialog):
         target.mark_dash_on = spacing
         target.mark_dash_off = spacing
         target.waveform_color = self.wave_color.color()
+        if self._project is not None:
+            self._project.playhead_color = self.playhead_color.color()
+            self._project.show_output_timecode_clock = self.tc_clock_box.isChecked()
+            self._project.output_timecode_clock_color = self.tc_clock_color.color()
+            self._project.show_output_quick_toggles = self.output_toggles_box.isChecked()
+        elif hasattr(target, "playhead_color"):
+            target.playhead_color = self.playhead_color.color()  # type: ignore[attr-defined]
         primary, secondary = self._collect_now_lanes()
         self._song.now_lanes_configured = True
         self._song.now_primary_lanes = primary
