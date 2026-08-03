@@ -1,55 +1,56 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint2-playback-foundation-028d`  
+**Branch:** `cursor/sprint2-playback-boundary-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 2 · Task 5 — **Playback Foundation**: introduce `PlaybackService` and
-`SongSession` without changing user-facing behavior or redesigning AudioEngine.
+Sprint 2 · Task 6 — **Playback Boundary Completion**: move remaining
+playback-related MainWindow interactions (volume, loop, scrub, nudge) into
+`PlaybackService` without redesigning AudioEngine or changing UI behavior.
 
 ## What was implemented
 
-- `domain/song_session.py` — current song + playing / position / duration
-- `application/playback_service.py` — play/pause/stop/seek/toggle → AudioEngine; syncs session
-- MainWindow: transport/Space/seek via `playback`; `current_song` property → session
-- Design contracts documented in module docs + `docs/current_architecture.md`
+- Extended `application/playback_service.py` with volume/mute/gain, A–B loop
+  (including fresh-pair A/B rules), scrub begin/end, nudge.
+- MainWindow wires those paths through `playback.*` only.
+- `_activate_song` left in MainWindow.
+- Playback rate: documented as engine-internal device sample-rate (no UI owner).
+- Design decisions table in `docs/current_architecture.md`.
 
-## Architecture before / after
+## Remaining AudioEngine touch points in MainWindow
 
-```text
-Before: MainWindow ──transport──► AudioEngine ; current_song field
-After:  MainWindow ──► PlaybackService ──► AudioEngine
-                         └─ syncs SongSession ; current_song property
-```
+Intentionally left (orchestration / device / timecode / media):
 
-## MainWindow responsibilities removed (from transport)
-
-- Direct `engine.play/pause/stop/seek/toggle` for transport / Space / cue seek / mark pause
-- Owning `current_song` as a bare field (now session-backed)
-
-Still in MainWindow: `_activate_song`, scrub begin/end, volume, video_sync, media jobs, dialogs.
+- `set_song` / `set_song_timebase` / `set_duration` / `set_buffer`
+- `apply_audio_settings` / `quiesce_output` / `ensure_playback_ready` / `rebind_playback_samples`
+- `refresh_video_clips` / `set_video_track_muted` / video decode flags
+- LTC/MTC status, sync offset, MIDI shutdown
+- Signal subscriptions (`playing_changed`, `position_changed`, …) for UI observers
+- Position/duration **reads** for monitors (clock source of truth remains engine)
 
 ## Remaining playback technical debt
 
-- Full song-activate orchestration still in MainWindow
-- Scrub / volume / loop still wired straight to engine
-- Remote still duck-types MainWindow
-- `ports.SongSession` Protocol not adopted for activate/refresh
+- Full `_activate_song` extract (ShowSession / activate service — not this sprint task)
+- RemoteHost + sync-calib still call `engine.set_music_muted` directly
+- Position/duration reads still often go to `engine` instead of `playback`
+- `ports.SongSession` Protocol unused for activate/refresh
+- Loop still touches `_loop_engage` via façade (engine API gap)
 
 ## Risks
 
-- Dual read of playing (engine vs session) if sync lags — mitigated by sync on position/playing signals and after every transport call
-- Property `current_song` vs tests assigning the attribute — setter covers this
+- Loop engage private field still set from service (same as prior MainWindow)
+- Dual observers: engine signals + session mirror if sync skipped on a path
+- Broader “no direct engine” wording vs intentional activate/device exceptions
 
 ## Tests
 
-- Targeted: **28 passed**
-- Full suite: **898 passed**, **16 failed** (same pre-existing / Linux env set)
+- Targeted: **8 passed** (playback service + A–B loop)
+- Full suite: **900 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
-Sprint 2 Task 6 — SettingsService foundation.
+Sprint 2 Task 7 — SettingsService foundation (READY FOR SETTINGS SERVICE).

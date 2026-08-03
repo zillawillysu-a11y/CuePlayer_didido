@@ -1327,15 +1327,15 @@ class MainWindow(QMainWindow):
         self.transport.set_loop_b_clicked.connect(self._set_loop_b)
         self.transport.clear_loop_clicked.connect(self._clear_loop)
         self.transport.loop_toggled.connect(self._set_loop_enabled)
-        self.transport.volume_changed.connect(self.engine.set_volume)
+        self.transport.volume_changed.connect(self.playback.set_volume)
         self.transport.music_mute_toggled.connect(self._set_music_muted_from_ui)
         self.engine.music_muted_changed.connect(self.transport.set_music_muted)
         self.timeline.seek_requested.connect(self.playback.seek)
         self.transport.seek_requested.connect(self.playback.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
-        self.timeline.scrub_started.connect(self.engine.begin_scrub)
-        self.timeline.scrub_ended.connect(self.engine.end_scrub)
+        self.timeline.scrub_started.connect(self.playback.begin_scrub)
+        self.timeline.scrub_ended.connect(self.playback.end_scrub)
         # Throttle video decode while the playhead is actively being
         # dragged — see VideoSyncController.set_scrubbing(). Mid-drag
         # preview uses scrub_preview_requested (not full engine seek).
@@ -3024,7 +3024,7 @@ class MainWindow(QMainWindow):
         self.engine.set_song(None)
         self.engine.set_buffer(None)
         self.engine.set_duration(60.0)
-        self.engine.clear_loop()
+        self.playback.clear_loop()
         self._sync_loop_ui()
         self.transport.set_times(0.0, self.engine.duration)
         self.monitor.set_position(0.0, self.engine.duration)
@@ -4522,7 +4522,7 @@ class MainWindow(QMainWindow):
             self.engine.quiesce_output()
         self.current_song = self.project.songs[index]
         self._sync_undo_context()
-        self.engine.clear_loop()
+        self.playback.clear_loop()
         self._sync_loop_ui()
         self.timeline.clear_selection(emit=False)
         self.monitor.set_selected_mark_ids([])
@@ -5176,7 +5176,7 @@ class MainWindow(QMainWindow):
 
         fps = self.current_song.fps if self.current_song and self.current_song.fps > 0 else 30.0
         frames = hold_step_frames(now - start)
-        self.engine.nudge(direction * frames / fps)
+        self.playback.nudge(direction * frames / fps)
 
     def _delete_current_selection(self) -> None:
         if _text_input_has_focus():
@@ -5395,31 +5395,25 @@ class MainWindow(QMainWindow):
 
     def _sync_loop_ui(self) -> None:
         self.transport.set_loop_status(
-            self.engine.loop_a,
-            self.engine.loop_b,
-            enabled=self.engine.loop_enabled,
+            self.playback.loop_a,
+            self.playback.loop_b,
+            enabled=self.playback.loop_enabled,
         )
         self.timeline.set_loop_region(
-            self.engine.loop_a,
-            self.engine.loop_b,
-            enabled=self.engine.loop_enabled,
+            self.playback.loop_a,
+            self.playback.loop_b,
+            enabled=self.playback.loop_enabled,
         )
 
     def _on_loop_region_dragged(self, a: object, b: object) -> None:
-        self.engine.loop_a = float(a) if a is not None else None
-        self.engine.loop_b = float(b) if b is not None else None
-        if (
-            self.engine.loop_a is not None
-            and self.engine.loop_b is not None
-            and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
-        ):
-            self.engine.loop_enabled = True
-            # Dragging handles only repositions — never seek the playhead.
-            self.engine.engage_ab_loop(seek_if_outside=False)
+        self.playback.set_loop_region(
+            float(a) if a is not None else None,
+            float(b) if b is not None else None,
+        )
         self.transport.set_loop_status(
-            self.engine.loop_a,
-            self.engine.loop_b,
-            enabled=self.engine.loop_enabled,
+            self.playback.loop_a,
+            self.playback.loop_b,
+            enabled=self.playback.loop_enabled,
         )
 
     def _set_loop_a(self) -> None:
@@ -5429,69 +5423,37 @@ class MainWindow(QMainWindow):
         loop (clears B) instead of stretching the old pair to the new point.
         """
         t = float(self.timeline.playhead_seconds())
-        if (
-            self.engine.loop_a is not None
-            and self.engine.loop_b is not None
-            and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
-        ):
-            self.engine.loop_b = None
-            self.engine.loop_enabled = False
-            self.engine._loop_engage = False  # noqa: SLF001
-        self.engine.loop_a = t
-        if self.engine.loop_a is not None and self.engine.loop_b is not None:
-            if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
-                self.engine.loop_enabled = True
-                self.engine.engage_ab_loop(seek_if_outside=False)
+        a = self.playback.set_loop_a_at(t)
         self._sync_loop_ui()
-        self.status.showMessage(f"A = {self.engine.loop_a:.3f}s", 2000)
+        self.status.showMessage(f"A = {a:.3f}s", 2000)
 
     def _set_loop_b(self) -> None:
         """Mark B at the visible playhead (same fresh-pair rule as A)."""
         t = float(self.timeline.playhead_seconds())
-        if (
-            self.engine.loop_a is not None
-            and self.engine.loop_b is not None
-            and abs(self.engine.loop_b - self.engine.loop_a) >= 0.01
-        ):
-            self.engine.loop_a = None
-            self.engine.loop_enabled = False
-            self.engine._loop_engage = False  # noqa: SLF001
-        self.engine.loop_b = t
-        if self.engine.loop_a is not None and self.engine.loop_b is not None:
-            if abs(self.engine.loop_b - self.engine.loop_a) >= 0.01:
-                self.engine.loop_enabled = True
-                self.engine.engage_ab_loop(seek_if_outside=False)
+        b = self.playback.set_loop_b_at(t)
         self._sync_loop_ui()
-        self.status.showMessage(f"B = {self.engine.loop_b:.3f}s", 2000)
+        self.status.showMessage(f"B = {b:.3f}s", 2000)
 
     def _clear_loop(self) -> None:
-        self.engine.clear_loop()
+        self.playback.clear_loop()
         self._sync_loop_ui()
         self.status.showMessage("Cleared A-B", 2000)
 
     def _set_loop_enabled(self, enabled: bool) -> None:
-        if enabled and (self.engine.loop_a is None or self.engine.loop_b is None):
+        reason = self.playback.try_set_loop_enabled(enabled)
+        if reason is not None:
             self.transport.set_loop_status(
-                self.engine.loop_a,
-                self.engine.loop_b,
+                self.playback.loop_a,
+                self.playback.loop_b,
                 enabled=False,
             )
-            self.status.showMessage("Set point A and B first", 2500)
+            self.status.showMessage(reason, 2500)
             return
-        if enabled and abs((self.engine.loop_b or 0) - (self.engine.loop_a or 0)) < 0.01:
-            self.transport.set_loop_status(
-                self.engine.loop_a,
-                self.engine.loop_b,
-                enabled=False,
-            )
-            self.status.showMessage("A / B are too close together", 2500)
-            return
-        self.engine.set_loop_enabled(enabled)
         self._sync_loop_ui()
 
     def _set_music_muted_from_ui(self, muted: bool) -> None:
         """Transport mute chip — same engine flag as Web Remote Mute PC."""
-        self.engine.set_music_muted(bool(muted))
+        self.playback.set_music_muted(bool(muted))
         self.status.showMessage(
             "PC music muted (LTC stays)" if muted else "PC music unmuted",
             2500,
@@ -7196,11 +7158,11 @@ class MainWindow(QMainWindow):
         # song.music_volume is already updated by the timeline widget; this
         # applies it live to playback and persists it (no undo entry,
         # matching Master Volume / lock-hide toggles).
-        self.engine.set_music_volume(volume)
+        self.playback.set_music_volume(volume)
         self._mark_dirty()
 
     def _on_audio_gain_changed(self, gain_db: float) -> None:
-        self.engine.set_audio_gain_db(gain_db)
+        self.playback.set_audio_gain_db(gain_db)
         self._mark_dirty()
 
     def _on_now_layout_changed(self) -> None:

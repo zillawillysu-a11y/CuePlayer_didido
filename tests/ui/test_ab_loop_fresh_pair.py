@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from cueplayer.application.playback_service import PlaybackService
+from cueplayer.domain.song_session import SongSession
 from cueplayer.ui.main_window import MainWindow
 
 
@@ -19,6 +21,21 @@ class _FakeEngine:
         self.loop_b: float | None = None
         self.loop_enabled = False
         self._loop_engage = False
+        self._playing = False
+        self._position = 0.0
+        self._duration = 60.0
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    @property
+    def position(self) -> float:
+        return self._position
+
+    @property
+    def duration(self) -> float:
+        return self._duration
 
     def engage_ab_loop(self, *, seek_if_outside: bool = True) -> None:
         del seek_if_outside
@@ -28,6 +45,7 @@ class _FakeEngine:
 class _Host:
     def __init__(self, engine: _FakeEngine, seconds: float) -> None:
         self.engine = engine
+        self.playback = PlaybackService(engine, SongSession())  # type: ignore[arg-type]
         self.timeline = _FakeTimeline(seconds)
         self.status = type("S", (), {"showMessage": staticmethod(lambda *a, **k: None)})()
 

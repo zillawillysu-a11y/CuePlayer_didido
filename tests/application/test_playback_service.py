@@ -12,6 +12,14 @@ class _FakeEngine:
         self._playing = False
         self._position = 0.0
         self._duration = 12.0
+        self._volume = 1.0
+        self._music_volume = 1.0
+        self._audio_gain_db = 0.0
+        self._mute_music = False
+        self.loop_a: float | None = None
+        self.loop_b: float | None = None
+        self.loop_enabled = False
+        self._loop_engage = False
         self.calls: list[tuple] = []
 
     @property
@@ -46,6 +54,59 @@ class _FakeEngine:
     def toggle(self) -> None:
         self.calls.append(("toggle",))
         self._playing = not self._playing
+
+    def nudge(self, delta_seconds: float) -> None:
+        self.calls.append(("nudge", float(delta_seconds)))
+        self._position = max(0.0, self._position + float(delta_seconds))
+
+    def begin_scrub(self) -> None:
+        self.calls.append(("begin_scrub",))
+        self._playing = False
+
+    def end_scrub(self) -> None:
+        self.calls.append(("end_scrub",))
+
+    def set_volume(self, volume: float) -> None:
+        self.calls.append(("set_volume", float(volume)))
+        self._volume = float(volume)
+
+    def volume(self) -> float:
+        return float(self._volume)
+
+    def set_music_volume(self, volume: float) -> None:
+        self.calls.append(("set_music_volume", float(volume)))
+        self._music_volume = float(volume)
+
+    def music_volume(self) -> float:
+        return float(self._music_volume)
+
+    def set_audio_gain_db(self, gain_db: float) -> None:
+        self.calls.append(("set_audio_gain_db", float(gain_db)))
+        self._audio_gain_db = float(gain_db)
+
+    def set_music_muted(self, muted: bool) -> None:
+        self.calls.append(("set_music_muted", bool(muted)))
+        self._mute_music = bool(muted)
+
+    @property
+    def music_muted(self) -> bool:
+        return bool(self._mute_music)
+
+    def clear_loop(self) -> None:
+        self.calls.append(("clear_loop",))
+        self.loop_a = None
+        self.loop_b = None
+        self.loop_enabled = False
+        self._loop_engage = False
+
+    def set_loop_enabled(self, enabled: bool) -> None:
+        self.calls.append(("set_loop_enabled", bool(enabled)))
+        self.loop_enabled = bool(enabled)
+        self._loop_engage = bool(enabled)
+
+    def engage_ab_loop(self, *, seek_if_outside: bool = True) -> None:
+        self.calls.append(("engage_ab_loop", seek_if_outside))
+        self._loop_engage = True
 
 
 def test_song_session_holds_current_song_and_transport() -> None:
@@ -96,3 +157,56 @@ def test_playback_service_set_current_song_does_not_touch_engine() -> None:
     svc.set_current_song(song)
     assert session.song is song
     assert engine.calls == []
+
+
+def test_playback_service_volume_scrub_nudge() -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+
+    svc.set_volume(0.4)
+    assert engine.volume() == 0.4
+    svc.set_music_volume(0.55)
+    assert engine.music_volume() == 0.55
+    svc.set_audio_gain_db(3.0)
+    assert ("set_audio_gain_db", 3.0) in engine.calls
+    svc.set_music_muted(True)
+    assert svc.music_muted is True
+
+    svc.begin_scrub()
+    svc.end_scrub()
+    assert ("begin_scrub",) in engine.calls
+    assert ("end_scrub",) in engine.calls
+
+    engine._position = 5.0
+    svc.nudge(-0.5)
+    assert session.position_seconds == 4.5
+
+
+def test_playback_service_loop_region_and_fresh_pair() -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+
+    svc.set_loop_region(1.0, 4.0)
+    assert svc.loop_a == 1.0
+    assert svc.loop_b == 4.0
+    assert svc.loop_enabled is True
+    assert ("engage_ab_loop", False) in engine.calls
+
+    # Fresh-pair: tapping A again clears B when a complete loop exists.
+    a = svc.set_loop_a_at(2.5)
+    assert a == 2.5
+    assert svc.loop_b is None
+    assert svc.loop_enabled is False
+
+    svc.set_loop_b_at(5.0)
+    assert svc.loop_enabled is True
+
+    assert svc.try_set_loop_enabled(True) is None
+    svc.clear_loop()
+    assert svc.loop_a is None
+    assert svc.try_set_loop_enabled(True) == "Set point A and B first"
+
+    svc.set_loop_region(1.0, 1.005)
+    assert svc.try_set_loop_enabled(True) == "A / B are too close together"

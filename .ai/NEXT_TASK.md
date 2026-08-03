@@ -5,15 +5,15 @@
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 2 Task 5 — Playback Foundation  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2PlaybackFoundation.md`  
+**Previous:** Sprint 2 Task 6 — Playback Boundary Completion  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2PlaybackBoundary.md`  
 Baseline: `docs/current_architecture.md` (ends READY FOR SETTINGS SERVICE)
 
 ---
 
 ## Current task
 
-### Sprint 2 — Task 6: Settings service foundation
+### Sprint 2 — Task 7: Settings service foundation
 
 **Do not auto-start until the user explicitly continues.**
 
@@ -25,7 +25,7 @@ without changing preference schemas or UI behavior.
 
 ### Read first
 
-1. `docs/current_architecture.md` (§14 settings flow, plan Task 6)
+1. `docs/current_architecture.md` (§ settings flow, plan Task 7)
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
 3. `persistence/audio_prefs.py`, ProjectService autosave keys
 
@@ -38,6 +38,7 @@ without changing preference schemas or UI behavior.
 ### Out of scope
 
 - Redesigning QSettings keys, RemoteHost, AudioEngine, Timeline
+- ShowSessionService / `_activate_song` extract
 
 ### Done when
 
