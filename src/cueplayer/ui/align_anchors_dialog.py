@@ -1,8 +1,10 @@
-"""Align Anchors dialog — draft computation (Sprint 5 Task 4).
+"""Align Anchors dialog — draft + Apply/Commit (Sprint 5 Tasks 4–5).
 
-Owns temporary draft state only. Does **not** write ``SongVariant.anchor_offset``,
-does not seek/play, and does not redesign Timeline.
+Draft state is temporary. Apply is the **only** commit point: it writes
+``draft_offset`` → ``SongVariant.anchor_offset`` via
+:class:`~cueplayer.domain.undo.SetVariantAnchorOffsetCommand`.
 
+Marks / cue times are never moved. Does not seek/play or redesign Timeline.
 Draft offset uses ``domain.anchor_mapping.offset_from_anchors`` exclusively
 (``draft = song_anchor − variant_anchor``).
 """
@@ -13,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 import math
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
@@ -39,20 +41,21 @@ from cueplayer.domain.anchor_mapping import (
 )
 from cueplayer.domain.models import Song
 from cueplayer.domain.song_variant import SongVariant
+from cueplayer.domain.undo import SetVariantAnchorOffsetCommand
 from cueplayer.ui.transport_bar import format_time
 
-_APPLY_DEFERRED = "Apply is deferred — draft only; project offset unchanged."
+_STATUS_HINT = "Apply commits draft → variant offset (marks unchanged)."
 
 
 class AlignAnchorsDialog(QDialog):
-    """Modal Align Anchors dialog with draft-only offset computation.
+    """Modal Align Anchors dialog with draft computation and Apply commit.
 
     Temporary state model
     ---------------------
     ``_song_anchor`` / ``_variant_anchor``
         Optional captured times (Song Time / Variant Time).
     ``_draft_offset``
-        Working offset shown in the spin box; never written to the project.
+        Working offset shown in the spin box; not persisted until Apply.
     ``applied`` (read-only display)
         Current ``SongVariant.anchor_offset`` for the selected variant.
 
@@ -61,9 +64,14 @@ class AlignAnchorsDialog(QDialog):
     1. Open / variant change → draft initialized from applied offset.
     2. Capture both anchors → draft = ``offset_from_anchors`` (live).
     3. Nudge / type draft → draft updates; anchors kept as last capture.
-    4. Reset → draft = 0.0 (still not persisted).
-    5. Apply → no-op (Task 5); Cancel → discard dialog (no project write).
+    4. Reset → draft = 0.0 (still not persisted until Apply).
+    5. Apply → ``SetVariantAnchorOffsetCommand.redo``; emit ``offset_committed``.
+    6. Cancel → discard draft; no project write.
     """
+
+    #: Emitted after Apply mutates the song via the undo command.
+    #: MainWindow should ``_push_song_undo`` + ``_mark_dirty``.
+    offset_committed = Signal(object)
 
     def __init__(
         self,
@@ -84,12 +92,13 @@ class AlignAnchorsDialog(QDialog):
         self._variant_anchor: float | None = None
         self._draft_offset = 0.0
         self._updating_draft_ui = False
+        self._suppress_variant_change = False
 
         root = QVBoxLayout(self)
 
         intro = QLabel(
             "Cues stay fixed on Song Time — only the mix shifts.\n"
-            "Draft offset is temporary until Apply (Apply not wired yet)."
+            "Draft is temporary until Apply."
         )
         intro.setWordWrap(True)
         intro.setObjectName("alignAnchorsIntro")
@@ -193,10 +202,10 @@ class AlignAnchorsDialog(QDialog):
         preview_layout.addWidget(self.preview_area)
         root.addWidget(preview_box)
 
-        self.shell_status = QLabel(_APPLY_DEFERRED)
+        self.shell_status = QLabel(_STATUS_HINT)
         self.shell_status.setObjectName("alignShellStatus")
         self.shell_status.setWordWrap(True)
-        self.shell_status.setStyleSheet("color: #c9a227;")
+        self.shell_status.setStyleSheet("color: #8b949e;")
         root.addWidget(self.shell_status)
 
         # --- actions ---------------------------------------------------------
@@ -233,7 +242,7 @@ class AlignAnchorsDialog(QDialog):
         self.use_media_playhead_btn.clicked.connect(self._capture_media_playhead)
         self.preview_btn.clicked.connect(self._refresh_preview)
         self.reset_btn.clicked.connect(self._reset_draft)
-        self.apply_btn.clicked.connect(self._on_apply_stub)
+        self.apply_btn.clicked.connect(self._on_apply)
         self.draft_offset_spin.valueChanged.connect(self._on_draft_spin_changed)
         self.nudge_minus_1f.clicked.connect(lambda: self._nudge_draft(-self._frame_seconds()))
         self.nudge_plus_1f.clicked.connect(lambda: self._nudge_draft(self._frame_seconds()))
@@ -289,7 +298,31 @@ class AlignAnchorsDialog(QDialog):
                 select_index = i
         self.variant_combo.setCurrentIndex(select_index)
 
-    def _on_variant_index_changed(self, _index: int) -> None:
+    def _on_variant_index_changed(self, index: int) -> None:
+        if self._suppress_variant_change:
+            return
+        # Confirm discard when leaving a dirty draft for another variant.
+        previous = getattr(self, "_last_variant_index", None)
+        if (
+            previous is not None
+            and previous != index
+            and self.is_draft_dirty()
+        ):
+            reply = QMessageBox.question(
+                self,
+                "Align Anchors",
+                "Discard draft offset for this variant?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._suppress_variant_change = True
+                try:
+                    self.variant_combo.setCurrentIndex(previous)
+                finally:
+                    self._suppress_variant_change = False
+                return
+        self._last_variant_index = index
         variant = self.selected_variant()
         if variant is None:
             self.path_label.setText("")
@@ -310,14 +343,17 @@ class AlignAnchorsDialog(QDialog):
             self.status_label.setText("Missing file")
         else:
             self.status_label.setText("Ready")
-        applied = coerce_anchor_offset(variant.anchor_offset)
-        sign = "+" if applied >= 0 else ""
-        self.applied_offset_label.setText(f"{sign}{applied:.3f} s")
+        self._refresh_applied_label()
         # New variant selection: reset draft to applied (no project write).
         self._set_song_anchor(None)
         self._set_variant_anchor(None)
-        self._set_draft_offset(applied, recompute_from_anchors=False)
+        self._set_draft_offset(self.applied_offset(), recompute_from_anchors=False)
         self._refresh_preview()
+
+    def _refresh_applied_label(self) -> None:
+        applied = self.applied_offset()
+        sign = "+" if applied >= 0 else ""
+        self.applied_offset_label.setText(f"{sign}{applied:.3f} s")
 
     def _frame_seconds(self) -> float:
         fps = float(getattr(self._song, "fps", 0.0) or 0.0)
@@ -378,7 +414,7 @@ class AlignAnchorsDialog(QDialog):
             self.variant_anchor_label.setText(format_time(self._variant_anchor))
 
     def _set_status(self, message: str) -> None:
-        self.shell_status.setText(f"{message}. {_APPLY_DEFERRED}")
+        self.shell_status.setText(f"{message}. {_STATUS_HINT}")
 
     # --- capture -------------------------------------------------------------
 
@@ -476,18 +512,58 @@ class AlignAnchorsDialog(QDialog):
             lines.append("Set both anchors to recompute draft from the pair.")
         self.preview_area.setText("\n".join(lines))
 
-    def _on_apply_stub(self) -> None:
-        # Non-destructive: never mutates SongVariant.anchor_offset.
+    def _on_apply(self) -> None:
+        """Commit draft_offset → SongVariant.anchor_offset via undo command."""
+        variant = self.selected_variant()
+        if variant is None:
+            self._set_status("No variant selected")
+            return
+        new_offset = coerce_anchor_offset(self.draft_offset())
+        old_offset = coerce_anchor_offset(variant.anchor_offset)
+        if abs(new_offset - old_offset) <= 1e-9:
+            self._refresh_preview()
+            self._set_status("Draft already matches applied")
+            return
+
+        command = SetVariantAnchorOffsetCommand(
+            variant_id=variant.id,
+            old_offset=old_offset,
+            new_offset=new_offset,
+        )
+        # Commit is the only mutation point — redo applies to the live song.
+        command.redo(self._song)
+        self._refresh_applied_label()
         self._refresh_preview()
-        self._set_status("Apply deferred (draft only)")
+        self._set_status(f"Applied {new_offset:+.3f} s")
+        self.shell_status.setStyleSheet("color: #3fb950;")
+        self.offset_committed.emit(command)
+        # Keep dialog open so the user can refine (UX §19).
+
+    def reject(self) -> None:
+        """Discard draft without writing SongVariant.anchor_offset."""
+        if not self._confirm_discard_draft():
+            return
+        super().reject()
+
+    def _confirm_discard_draft(self) -> bool:
+        if not self.is_draft_dirty():
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Align Anchors",
+            "Discard draft offset? Applied offset will not change.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     # --- shortcuts (§19.5) ---------------------------------------------------
 
     def _install_shortcuts(self) -> None:
         QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self._refresh_preview)
         QShortcut(QKeySequence(Qt.Key.Key_Enter), self, activated=self._refresh_preview)
-        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._on_apply_stub)
-        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._on_apply_stub)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._on_apply)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._on_apply)
         QShortcut(
             QKeySequence("["),
             self,

@@ -140,6 +140,7 @@ from cueplayer.domain.undo import (
     RenameMarkCommand,
     SetlistEditCommand,
     SetlistStateSnapshot,
+    SetVariantAnchorOffsetCommand,
     UndoContext,
     UndoStack,
     VideoClipSnapshot,
@@ -4987,14 +4988,21 @@ class MainWindow(QMainWindow):
         self._sync_timeline_overview()
 
     def _open_align_anchors(self) -> None:
-        """Tools → Align Anchors… — draft computation only (Apply deferred)."""
+        """Tools → Align Anchors… — draft + Apply commits offset via undo command."""
         dialog = AlignAnchorsDialog(
             self.current_song,
             self,
             get_song_playhead=lambda: float(self.playback.position),
             get_media_playhead=lambda: float(self.engine.position),
         )
+        dialog.offset_committed.connect(self._on_align_anchors_committed)
         dialog.exec()
+
+    def _on_align_anchors_committed(self, command: SetVariantAnchorOffsetCommand) -> None:
+        """Undo stack + dirty after Align Anchors Apply (command already applied)."""
+        self._push_song_undo(command)
+        self._mark_dirty()
+        self.status.showMessage("Anchor offset applied", 2500)
 
     def _open_mark_manager(self) -> None:
         dialog = MarkManagerDialog(self.current_song, self, project=self.project)
