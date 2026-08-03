@@ -174,7 +174,6 @@ from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_vid
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget, rgb_frame_to_qimage
 
-_AUDIO_SUFFIXES = AUDIO_SUFFIXES  # re-export for tests / callers
 _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"

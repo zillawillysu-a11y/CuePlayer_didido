@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView
 
 from cueplayer.domain.models import Project
-from cueplayer.ui.cue_list_columns import LOGICAL_INDEX_BY_FIELD
+from cueplayer.domain.cue_list_columns import LOGICAL_INDEX_BY_FIELD
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.ui.main_window import MainWindow
 from cueplayer.ui.transport_bar import BottomTransportBar

@@ -41,7 +41,7 @@ from cueplayer.domain.main_cue_id import (
     normalize_main_cue_id_text,
 )
 from cueplayer.domain.models import AudioOutputSettings, Mark, Song
-from cueplayer.ui.cue_list_columns import (
+from cueplayer.domain.cue_list_columns import (
     CUE_LIST_FIELD_LABELS,
     CUE_LIST_FIELDS,
     DEFAULT_CUE_LIST_COLUMN_ORDER,

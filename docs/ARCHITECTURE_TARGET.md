@@ -129,7 +129,7 @@ src/cueplayer/
 ```text
 src/cueplayer/playback/audio_engine.py  →  re-export adapters.playback.audio_engine
 src/cueplayer/web_remote/bridge.py      →  re-export adapters.remote.bridge
-src/cueplayer/ui/cue_list_columns.py    →  re-export domain.cue_list_columns
+# ui.cue_list_columns shim — deleted Sprint 1 Task 2 (use domain.cue_list_columns)
 ```
 
 這樣「搬 Module」不強迫一次改完全部 import。
@@ -177,10 +177,11 @@ src/cueplayer/ui/cue_list_columns.py    →  re-export domain.cue_list_columns
 | **0** | `ports/` Protocol 套件 | ✅ 已落地：`src/cueplayer/ports/` 僅 Protocol（見 handoff `PortsPackageStep0`） | `import cueplayer.ports` |
 | **G** | Architecture Guardrails | ✅ `BOUNDARY_RULES.md` + `MIGRATION_RULES.md`（docs only；插在 step 1 前） | 兩份永久規則文件 |
 | **1S** | `cue_list_columns` safety net | ✅ 行為測試 + 依賴圖 + 風險（見 handoff `CueListColumnsSafetyNet`） | tests green；未改 production 邏輯 |
-| **1** | `domain/cue_list_columns` | ✅ 已遷入 domain；`ui.cue_list_columns` shim；persistence→domain（handoff `CueListColumnsDomainMigrate`） | persistence 不再 import `ui.*` |
+| **1** | `domain/cue_list_columns` | ✅ domain only; UI shim **removed** Sprint 1 Task 2; persistence→domain | single import path `domain.cue_list_columns` |
+| **1b** | Transitional cleanup | ✅ ports on tip; stubs/aliases cleared (handoff `Sprint1TransitionalCleanup`) | no dual shims for columns |
 | **2** | `ports.remote_host` + bridge 適配 | 定義介面；bridge 改打公開方法（MainWindow 先實作介面） | bridge 零私有 `_` 存取 |
-| **3** | `application/autosave_service` | 從 MainWindow 剪出 timer+backup 呼叫 | MainWindow 只持有 service |
-| **4** | `application/project_service` | open/save/save-as/bundle 編排 | 同上 |
+| **3** | `application/project_service` *(Sprint 1 Task 3)* | 從 MainWindow 剪出 open/save/dirty/autosave | MainWindow 只持有 service |
+| **3b** | `application/autosave_service` | 可併入 project_service 或隨後拆 | MainWindow 只持有 service |
 | **5** | `application/song_session` | 換歌時 engine/sync/timeline/monitor 的固定 refresh 順序 | 換歌路徑只經 session |
 | **6** | `adapters/` 目錄 + **playback 整包搬** | `playback/` → `adapters/playback/` + 頂層 shim | 測試/UI import 仍綠 |
 | **7** | **media 整包搬** | 同上 | 同上 |

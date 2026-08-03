@@ -68,7 +68,7 @@ From `docs/ARCHITECTURE_TARGET.md`:
 
 - `media/av_lock.py` (`av_path_lock`) — Preview / mixer / scrub / waveforms
 - Shared mutable `Song` across engine / video_sync / timeline / monitor / web_remote
-- `persistence/project_store.py` → `ui.cue_list_columns` (migration step 1)
+- `persistence/project_store.py` → must import `domain.cue_list_columns` (never `ui`)
 
 ### Git
 

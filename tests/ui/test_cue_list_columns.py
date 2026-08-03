@@ -1,15 +1,11 @@
-"""Cue List column order helpers — behavior lock after domain migration.
-
-Imports via the **UI shim** keep backward compatibility. Domain is the source
-of truth; shim must re-export identical objects.
-"""
+"""Cue List column order helpers — domain is the only supported module."""
 
 from __future__ import annotations
 
 import importlib
 import inspect
 
-from cueplayer.ui.cue_list_columns import (
+from cueplayer.domain.cue_list_columns import (
     CUE_LIST_FIELD_LABELS,
     CUE_LIST_FIELDS,
     DEFAULT_CUE_LIST_COLUMN_ORDER,
@@ -120,17 +116,12 @@ def test_domain_module_has_no_ui_toolkit_imports() -> None:
         assert banned not in source
 
 
-def test_ui_shim_reexports_identical_objects() -> None:
-    ui_mod = importlib.import_module("cueplayer.ui.cue_list_columns")
-    dom_mod = importlib.import_module("cueplayer.domain.cue_list_columns")
-    for name in _PUBLIC:
-        assert getattr(ui_mod, name) is getattr(dom_mod, name)
-    assert set(ui_mod.__all__) == set(_PUBLIC)
-
-
-def test_domain_public_api_matches_shim() -> None:
+def test_domain_public_api_exports() -> None:
     from cueplayer.domain import cue_list_columns as dom
 
+    for name in _PUBLIC:
+        assert hasattr(dom, name)
+    assert set(dom.__all__) == set(_PUBLIC)
     assert dom.normalize_cue_list_column_order(["note"]) == [
         "note",
         "time",
@@ -139,8 +130,16 @@ def test_domain_public_api_matches_shim() -> None:
     ]
 
 
+def test_ui_cue_list_columns_shim_removed() -> None:
+    """Transitional UI shim must not exist — domain is the only path."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("cueplayer.ui.cue_list_columns")
+    assert spec is None
+
+
 def test_project_store_imports_normalize_from_domain_not_ui() -> None:
-    """Step 1 clears forbidden persistence→ui edge."""
+    """Forbidden persistence→ui edge stays cleared."""
     source = inspect.getsource(
         importlib.import_module("cueplayer.persistence.project_store")
     )
