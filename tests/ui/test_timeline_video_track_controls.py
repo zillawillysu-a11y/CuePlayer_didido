@@ -204,5 +204,7 @@ def test_video_lane_height_clamps_to_min_and_max(app: QApplication) -> None:
     widget.set_video_lane_height(10.0)
     assert widget._video_lane_base_height == pytest.approx(widget._video_lane_min_height)
 
-    widget.set_video_lane_height(999.0)
-    assert widget._video_lane_base_height <= widget._video_lane_max_height
+    max_h = widget._max_video_lane_height()
+    widget.set_video_lane_height(max_h + 500.0)
+    assert widget._video_lane_base_height == pytest.approx(max_h)
+    assert max_h > widget._video_lane_min_height
