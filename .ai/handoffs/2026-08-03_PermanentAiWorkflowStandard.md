@@ -57,3 +57,7 @@ Make the CuePlayer AI working method a **permanent engineering standard**: every
 ## Suggested next task
 
 Execute `.ai/NEXT_TASK.md`: **`ARCHITECTURE_TARGET` step 0 — create empty `src/cueplayer/ports/` Protocol package** (no wiring, no behavior change), then report + handoff + stop.
+
+## Note
+
+Permanent workflow now also requires a **ChatGPT copy-paste block** in every finished task’s user-facing reply (`.ai/WORKFLOW.md` §3.5).
