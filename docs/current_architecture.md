@@ -1,15 +1,16 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Planning complete (docs only — no implementation)  
+**Status:** Sprint 4 Feature Task 1 complete (Song Variant design — docs only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-feature-planning-028d`  
-**Constraint (Sprint 4 Planning):** Propose Feature Sprint only — do not implement features yet.
+**Scope tip:** `cursor/sprint4-song-variant-design-028d`  
+**Constraint (Task 1):** Design only — no production code, no playback/UI changes.
 
 Related docs (do not treat as identical):
 
 | Doc | Role |
 |-----|------|
-| [`roadmap.md`](roadmap.md) | **Sprint 4 Feature Planning** — Top 10, pick, task plan |
+| [`song_variant_design.md`](song_variant_design.md) | **Song Variants domain/persistence design** |
+| [`roadmap.md`](roadmap.md) | Sprint 4 Feature Planning + progress |
 | [`architecture_overview.md`](architecture_overview.md) | Sprint 3.5 snapshot — layers, maps, risks |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Short aspirational layer diagram |
 | [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | Earlier as-built review (ZH); partially stale |
@@ -370,8 +371,18 @@ architecture decisions log.
 
 Docs-only. Canonical plan: [`roadmap.md`](roadmap.md).
 
-**Recommended Feature Sprint:** Multi-audio Reference lanes + Align Anchors (MVP).  
-**Not implemented in this task.** Architecture spine (EventBus playback events) remains backlog.
+**Recommended Feature:** Song Variants (select one), then Align/compare.
+
+---
+
+## Sprint 4 — Feature Task 1: Song Variant design (done)
+
+Docs-only. Canonical design: [`song_variant_design.md`](song_variant_design.md).
+
+- Audited Song / `AudioTrack` / schema v1
+- Identified single-main-file call-site assumptions
+- Proposed `SongVariant` + schema v2 migrate + compat mirror of `audio_tracks`
+- **No production code**
 
 ---
 ## 1. Current folder structure
@@ -819,13 +830,12 @@ Machine State and Project State must remain separate — SettingsService never o
 
 - Missing in-process EventBus primitive (now `core.EventBus`; not yet adopted)
 
-### P0 — Next (Feature Implementation)
+### P0 — Next (Song Variant implementation)
 
-1. **Multi-audio Reference + Align Anchors MVP** — see `docs/roadmap.md`.
-2. Architecture spine (parallel/backlog): Playback events on EventBus (no playhead ticks).
-3. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
-4. Optional: route remote transport/loop exclusively through PlaybackService.
-5. Optional SettingsService fold-in for remaining machine prefs.
+1. **Song Variants domain + schema v2** — see `docs/song_variant_design.md`.
+2. Retarget main-audio path helpers to `selected_audio_path` (one buffer).
+3. Architecture spine (parallel/backlog): Playback events on EventBus (no playhead ticks).
+4. Optional: ShowHost/RemoteHost façades; Settings fold-in.
 
 ### P1 — Structural risk (product-visible)
 
@@ -875,17 +885,16 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Sprint 3 · 2 | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
 | **Sprint 3 · 3** Event Bus foundation | ✅ Done | `core.EventBus` (subscribe/unsubscribe/publish); no adopters yet |
 | **Sprint 3.5** Architecture snapshot | ✅ Done | `docs/architecture_overview.md` (docs only) |
-| **Sprint 4 Planning** Feature plan | ✅ Done | `docs/roadmap.md` — pick: Reference + Align Anchors MVP |
-| **Next** Feature Implementation | **Queued** | Sprint 4 Feature Task 1 (domain/persistence audit) |
+| **Sprint 4 Planning** Feature plan | ✅ Done | `docs/roadmap.md` |
+| **Sprint 4 · F1** Song Variant design | ✅ Done | `docs/song_variant_design.md` |
+| **Next** Song Variant implementation | **Queued** | Domain types + schema v2 (I1/I2) |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Planning
+### After Feature Task 1
 
-Implement **Multi-audio Reference lanes + Align Anchors (MVP)** per `docs/roadmap.md`
-Task 1–N. Do **not** auto-start until the user continues.
-
-Runner-up if MVP must shrink: Video ↔ music alignment UX polish, or row-color consistency.
+Implement Song Variants per `docs/song_variant_design.md` (I1+).  
+Do **not** auto-start until the user continues. No UI redesign in the first code slice.
 
 ---
 
-## READY FOR FEATURE IMPLEMENTATION
+## READY FOR SONG VARIANT IMPLEMENTATION

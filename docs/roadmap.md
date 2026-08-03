@@ -1,9 +1,9 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 4 Feature Planning complete (docs only — no implementation)  
+**Status:** Sprint 4 Feature Task 1 complete (Song Variant design — docs only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-feature-planning-028d`  
-**Related:** [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
+**Scope tip:** `cursor/sprint4-song-variant-design-028d`  
+**Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
 
@@ -25,16 +25,17 @@ Prioritize by:
 
 Sprint size key: **S** ≈ 1 focused task · **M** ≈ 2–4 tasks · **L** ≈ full Feature Sprint · **XL** = split before starting.
 
-### 1. Multi-audio Reference lanes + Align Anchors (MVP) — **RECOMMENDED Sprint 4**
+### 1. Multi-audio / Song Variants + Align Anchors — **Sprint 4 Feature**
 
 | | |
 |--|--|
-| **User value** | Compare old/new music beds on one timeline; lock offsets with Anchors — core P0 still missing while replace-only main audio dominates daily work. |
-| **Technical complexity** | **M–L** — domain `AudioTrack` + `offset_seconds` exist; timeline paint + mute/solo + align action are new UX surface. |
-| **Dependencies** | Existing timeline waveform path; PlaybackService mute/volume; ShowSession activate; persistence already stores tracks. |
-| **Architectural impact** | Low–medium. Extends domain/UI; should route mute/solo through PlaybackService; avoid growing MainWindow orchestration. Benefits from ShowSession song bind. |
-| **Risks** | Scope creep into overlay/ripple (P1); second waveform cache contention; A/B solo edge cases with LTC strip. |
-| **Sprint size** | **L** (MVP: Main + ≥1 Reference, mute/solo/hide, offset nudge, Align Anchors) |
+| **User value** | Multiple media mixes per song; cues stay on the song; switch playback bed without rebuilding marks. |
+| **Technical complexity** | **M–L** — design: [`song_variant_design.md`](song_variant_design.md); domain already has `AudioTrack` but runtime is replace-only main. |
+| **Dependencies** | Persistence migration v2; retarget main-path helpers; ShowSession load path. |
+| **Architectural impact** | Medium (domain + schema); clock stays one buffer. |
+| **Risks** | Dual `audio_tracks`/`variants` drift; duration/LTC on switch; scope creep into simultaneous compare. |
+| **Sprint size** | **L** — implement variants (select one) first; Align Anchors / compare later |
+| **Design status** | ✅ Task 1 design complete → **READY FOR SONG VARIANT IMPLEMENTATION** |
 
 ### 2. Video ↔ music alignment UX polish
 
@@ -139,43 +140,38 @@ Sprint size key: **S** ≈ 1 focused task · **M** ≈ 2–4 tasks · **L** ≈ 
 
 ## Recommended Sprint 4 feature
 
-### **Multi-audio Reference lanes + Align Anchors (MVP)**
+### **Song Variants (select one) → then Align / compare**
 
-Ship the smallest useful version of PRODUCT_SPEC P0 multi-audio comparison:
+Canonical design: [`song_variant_design.md`](song_variant_design.md).
 
-- Keep one **Main** music bed (clock source unchanged).
-- Show **≥1 Reference** audio lane with waveform, mute / solo / hide / lock, color, name.
-- Persist `offset_seconds` (already on `AudioTrack`).
-- **Align Anchors:** place an anchor on Main and Reference; command shifts Reference offset so anchors coincide.
-- Frame / ms nudge of selected track offset (reuse nudge patterns where possible).
-- **Out of Sprint 4 MVP:** translucent overlay, multi-anchor ripple, auto cross-correlation (P1/P2), replace Main with Reference without explicit action.
+1. **Variants foundation** — multiple media packages per song; cues on song; one selected variant feeds `AudioEngine`.  
+2. **Later** — Align Anchors / offset / optional compare hear (not simultaneous multi-clock).
+
+MVP out of scope until variants ship: translucent overlay, ripple, auto cross-correlation, per-variant video lane, UI redesign.
 
 ---
 
 ## Why implement this now
 
-1. **Highest remaining P0 product hole** after timeline/marks/video/LTC/MA — AGENTS still lists version-comparison workflow as incomplete vs replace-only.  
-2. **Daily workflow** for lighting programmers comparing revisions before cueing.  
-3. **Fits new architecture:** domain tracks exist; PlaybackService can own mute/solo; ShowSession already binds song media; no EventBus/clock redesign required.  
-4. **Production reliability:** correct offset before marks/export beats polish chrome.  
-5. **Maintainability:** forces track list to stay in domain/persistence rather than inventing parallel UI-only state.  
-6. NDI and overlays wait; selection colors and Export Preview are valuable but smaller than closing this P0 gap.
+1. **Highest remaining P0 product hole** — replace-only main audio vs versioned mixes.  
+2. **Design audited** — Task 1 documents single-file assumptions and schema v2 path.  
+3. **Fits architecture** — one buffer / sole clock; ShowSession load retarget; marks untouched.  
+4. **Production reliability** — switch beds without rebuilding cues.  
 
 ---
 
-## Suggested implementation plan (Task 1–N)
+## Suggested implementation plan (after design)
 
-| Task | Goal | Done when |
-|------|------|-----------|
-| **T1 — Domain & persistence audit** | Confirm `AudioTrack` fields, roles (Main/Reference), offset, mute/solo/hide/lock round-trip; add gaps only if required | Fixtures/tests for multi-track song JSON |
-| **T2 — Timeline Reference lane paint** | Paint Reference waveforms under Main; LTC strip rules unchanged on Main | Visual + unit/UI tests; no second clock |
-| **T3 — Track chrome controls** | Mute/solo/hide/lock/name/color for Reference via existing patterns; solo keeps shared playhead | PlaybackService used for mute/solo where applicable |
-| **T4 — Offset edit** | Nudge / numeric offset for selected Reference; undo command | Offset persists; undo/redo works |
-| **T5 — Align Anchors MVP** | Set anchors on Main + Reference; Align command computes Δt → Reference.offset | Golden test on known offset; Unicode paths OK |
-| **T6 — Setlist / song UX glue** | Add/remove Reference file; switch songs via ShowSession without losing tracks | Activate/deactivate preserves tracks |
-| **T7 — Docs + regression** | PRODUCT_SPEC/AGENTS note; full suite | Roadmap checked off; no LTC/clock regressions |
+See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 
-Optional parallel **architecture spine** (not Feature scope): discrete Playback EventBus events — only if it unblocks mute/solo fan-out without blocking T1–T7.
+| Task | Goal |
+|------|------|
+| **I1** | Domain `SongVariant` + helpers + tests |
+| **I2** | Schema v2 migrate/load/save |
+| **I3** | Retarget main-path helpers (compat mirror `audio_tracks`) |
+| **I4–I5** | Select/add variant API + minimal UI |
+| **I6** | Docs checkoff |
+| **I7+** | Align Anchors / extra media kinds |
 
 ---
 
@@ -183,24 +179,23 @@ Optional parallel **architecture spine** (not Feature scope): discrete Playback 
 
 | Extension | When |
 |-----------|------|
-| Semi-transparent waveform overlay | After MVP Reference lanes stable (PRODUCT P1) |
-| Multi-anchor / range conform / ripple | After single Align Anchors trusted |
+| Align Anchors / offset edit | After variants select-one works |
+| Semi-transparent waveform overlay | After Align (PRODUCT P1) |
+| Multi-anchor / range conform / ripple | After single Align trusted |
 | Auto cross-correlation align | P2 research spike |
-| A/B replace Main from Reference (explicit) | After operators trust offsets |
-| Remote control of Reference mute/solo | Via RemoteHost after desktop MVP |
-| MediaJobQueue extraction for detect UX | Separate Feature/arch slice |
-| NDI polish | After cue accuracy + multi-audio P0 |
+| Per-variant video / LTC / click media | After audio variants stable |
+| Remote select-variant | Via RemoteHost after desktop MVP |
+| NDI polish | After cue accuracy + variants P0 |
 
 ---
 
-## Sprint 4 architecture spine (non-Feature)
+## Sprint 4 Feature progress
 
-Keep on backlog; do **not** substitute for the Feature pick:
-
-1. Playback events on `EventBus` (discrete; no playhead ticks)  
-2. Optional remote transport via PlaybackService  
-3. Optional ShowHost/RemoteHost façades  
-4. Optional SettingsService fold-in  
+| Task | Status |
+|------|--------|
+| Planning | ✅ Done |
+| **Task 1 — Domain & persistence audit / design** | ✅ Done — `song_variant_design.md` |
+| I1+ Domain implementation | **Next** |
 
 ---
 
@@ -208,10 +203,10 @@ Keep on backlog; do **not** substitute for the Feature pick:
 
 | Decision | Choice |
 |----------|--------|
-| Feature Sprint 4 pick | Multi-audio Reference + Align Anchors MVP |
-| Explicitly deferred this sprint | NDI polish, overlay, plugin system, UI redesign, EventBus-as-feature |
-| Runner-up if MVP too large | Video ↔ music alignment UX polish (**M**) or row-color consistency (**S–M**) |
+| Feature Sprint 4 pick | Song Variants (select one) then Align/compare |
+| Task 1 framing | Explicit variants model (not simultaneous Reference-first) |
+| Explicitly deferred this slice | NDI, overlay, plugin system, UI redesign, EventBus-as-feature |
 
 ---
 
-## READY FOR FEATURE IMPLEMENTATION
+## READY FOR SONG VARIANT IMPLEMENTATION

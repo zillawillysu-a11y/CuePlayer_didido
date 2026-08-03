@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 1: Song Variant design (2026-08-03)
+
+- Added `docs/song_variant_design.md` (domain audit, persistence schema v2 proposal, migration/compat, risks, implementation tasks).
+- Updated `docs/roadmap.md` — variants (select one) first; Align/compare later.
+- Docs only — no production code.
+
 ### Sprint 4 — Feature Planning (2026-08-03)
 
 - Added `docs/roadmap.md` (Top 10 feature candidates, Sprint 4 pick, task plan, extensions).

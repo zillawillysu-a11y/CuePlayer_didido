@@ -1,46 +1,47 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Feature Implementation  
+**Type:** Feature Implementation — Song Variants  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 4 — Feature Planning  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint4FeaturePlanning.md`  
-Baseline: `docs/roadmap.md` (ends READY FOR FEATURE IMPLEMENTATION)
+**Previous:** Sprint 4 Feature Task 1 — Song Variant design  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint4SongVariantDesign.md`  
+Baseline: `docs/song_variant_design.md` (ends READY FOR SONG VARIANT IMPLEMENTATION)
 
 ---
 
 ## Current task
 
-### Sprint 4 Feature — Task 1: Domain & persistence audit (Reference tracks)
+### Sprint 4 Feature — I1: Domain SongVariant types + helpers
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Confirm `AudioTrack` Main/Reference roles, offset, mute/solo/hide/lock round-trip
-for multi-audio Align Anchors MVP. Add gaps only if required. No timeline UX yet
-unless needed for tests.
+Add `SongVariant` / `SongVariantMedia` and Song fields/helpers with unit tests.
+Prefer no playback behavior change yet; schema migrate may be I2 in the same or
+next task.
 
 ### Read first
 
-1. `docs/roadmap.md`
-2. `docs/PRODUCT_SPEC.md` (multi-audio / Align Anchors)
-3. `domain/models.py` (`AudioTrack`)
+1. `docs/song_variant_design.md`
+2. `docs/roadmap.md`
+3. `domain/models.py` (`Song`, `AudioTrack`)
 4. `persistence/project_store.py`
 
 ### In scope
 
-- Domain/persistence audit + tests for multi-track songs
-- Minimal model fixes if round-trip broken
+- Domain types + helpers + tests
+- Optional: schema v2 migrate if tightly scoped
 
 ### Out of scope
 
-- Full timeline Reference paint (Task 2+)
-- Overlay / ripple / auto-correlation
-- NDI, EventBus adoption, UI redesign
+- UI redesign
+- Align Anchors UI
+- Intentional playback behavior changes beyond accessors
+- EventBus adoption
 
 ### Done when
 
-- Multi-track song JSON round-trip covered; REPORT + handoff; STOP
+- Variants model + tests green; REPORT + handoff; STOP
