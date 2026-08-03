@@ -176,8 +176,8 @@ src/cueplayer/ui/cue_list_columns.py    →  re-export domain.cue_list_columns
 |---|---------------|----------------------|----------|
 | **0** | `ports/` Protocol 套件 | ✅ 已落地：`src/cueplayer/ports/` 僅 Protocol（見 handoff `PortsPackageStep0`） | `import cueplayer.ports` |
 | **G** | Architecture Guardrails | ✅ `BOUNDARY_RULES.md` + `MIGRATION_RULES.md`（docs only；插在 step 1 前） | 兩份永久規則文件 |
-| **1S** | `cue_list_columns` safety net | ✅ 行為測試 + 依賴圖 + 風險（見 handoff `CueListColumnsSafetyNet`）；**尚未搬移** | tests green；未改 production 邏輯 |
-| **1** | `domain/cue_list_columns` | 從 `ui/cue_list_columns` 遷出；ui/persistence 兩邊 shim | persistence 不再 import `ui.*` |
+| **1S** | `cue_list_columns` safety net | ✅ 行為測試 + 依賴圖 + 風險（見 handoff `CueListColumnsSafetyNet`） | tests green；未改 production 邏輯 |
+| **1** | `domain/cue_list_columns` | ✅ 已遷入 domain；`ui.cue_list_columns` shim；persistence→domain（handoff `CueListColumnsDomainMigrate`） | persistence 不再 import `ui.*` |
 | **2** | `ports.remote_host` + bridge 適配 | 定義介面；bridge 改打公開方法（MainWindow 先實作介面） | bridge 零私有 `_` 存取 |
 | **3** | `application/autosave_service` | 從 MainWindow 剪出 timer+backup 呼叫 | MainWindow 只持有 service |
 | **4** | `application/project_service` | open/save/save-as/bundle 編排 | 同上 |

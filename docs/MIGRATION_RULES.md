@@ -114,7 +114,7 @@ Canonical order remains [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md):
 | 0 | ✅ `ports/` Protocols |
 | **Guardrails** | ✅ This file + `BOUNDARY_RULES.md` (docs only; inserted before step 1) |
 | **1S** | ✅ Safety net tests + dependency/risk docs (before relocate) |
-| 1 | `cue_list_columns` → domain + shims |
+| 1 | ✅ `cue_list_columns` → domain + ui shim; persistence→domain |
 | 2 | `RemoteHost` adoption for Web Remote |
 | 3+ | application services, adapter package moves, … |
 

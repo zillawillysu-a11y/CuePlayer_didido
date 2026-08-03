@@ -1,51 +1,41 @@
 # Next task
 
 **Status:** Ready  
-**Type:** Architecture move (behavior-preserving shim)  
+**Type:** Architecture move  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Cue List columns **safety net** complete — see `.ai/REPORT.md` and
-`.ai/handoffs/2026-08-03_CueListColumnsSafetyNet.md`.
+**Previous:** Step 1 `cue_list_columns` → domain + shim — see `.ai/REPORT.md` and
+`.ai/handoffs/2026-08-03_CueListColumnsDomainMigrate.md`.
 
-**Prerequisite (mandatory):** `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
+**Prerequisite:** `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
 
 ---
 
 ## Current task
 
-**`ARCHITECTURE_TARGET` step 1 — move `cue_list_columns` into domain**
+**`ARCHITECTURE_TARGET` step 2 — `RemoteHost` + bridge public API only**
 
 ### Goal
 
-Move `ui/cue_list_columns` → `domain/cue_list_columns`, leave shims so existing
-imports keep working, and stop `persistence` from importing `ui.*`.
+Adopt `ports.RemoteHost` so Web Remote talks only to a public host surface —
+no MainWindow private `_` attribute access.
 
 ### In scope
 
-- `git mv` / relocate into `domain/`
-- Shim at old `ui.cue_list_columns` path
-- Update `persistence.project_store` to import from domain
-- Keep all safety-net tests green (same assertions)
-- REPORT + handoff + next → step **2**; **stop**
+- Ensure `ports.RemoteHost` is available on this line (merge ports step 0 if needed)
+- Thin public host adapter / MainWindow conformance
+- Bridge uses RemoteHost only
+- Tests + REPORT + handoff; NEXT → step 3; **stop**
 
 ### Out of scope
 
-- Behavior changes to normalize/constants
-- RemoteHost (step 2)
-- Deleting the ui shim in the same PR without proving callers updated
+- Moving web_remote package to adapters/
+- New Remote features
+- Deleting `ui.cue_list_columns` shim
 
 ### Read first
 
-1. `.ai/WORKFLOW.md`, this file, `.ai/REPORT.md`, safety-net handoff
-2. `BOUNDARY_RULES.md` + `MIGRATION_RULES.md`
-3. `tests/ui/test_cue_list_columns.py` + `tests/persistence/test_cue_list_column_order_load.py`
-
----
-
-## Queue
-
-| Order | Task | Anchor |
-|------:|------|--------|
-| 2 | RemoteHost + bridge public API | step 2 |
-| 3+ | application services / adapter moves | `ARCHITECTURE_TARGET.md` |
+1. Safety/migrate handoffs for columns (done)
+2. `BOUNDARY_RULES.md` (remote → MainWindow privates ban)
+3. `ports/remote_host.py` / `ARCHITECTURE_TARGET` step 2

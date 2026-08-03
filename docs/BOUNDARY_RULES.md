@@ -90,7 +90,7 @@ directly (as `MainWindow` does today). New code should prefer going through
 
 Known as-built violations to **eliminate on their migration step** (do not add new ones):
 
-- `persistence.project_store` → `ui.cue_list_columns` → fixed at **step 1**
+- `persistence.project_store` → `ui.cue_list_columns` → ✅ cleared at **step 1** (now `domain.cue_list_columns`; ui path is shim only)
 - `domain.media_relink` → media/persistence → clean when that helper is relocated
 - `web_remote` duck-typing MainWindow privates → fixed at **RemoteHost step**
 
