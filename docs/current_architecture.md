@@ -437,6 +437,7 @@ There is **no** separate `application/` package yet. Composition and use-cases l
 | **exporters** | Song → MA2/MA3 | Clean; UI constructs exporters directly |
 | **ui** | Widgets | Also project lifecycle, media jobs, remote host adapter, autosave orchestration |
 | **web_remote** | LAN control | Server/state unchanged; `bridge` talks only through `RemoteHost` (+ adapter) |
+| **core** | Shared in-process infra | ✅ `EventBus` (not yet wired to services/UI) |
 | **timecode / routing / util** | Helpers | Small and coherent |
 | **ports** | Protocol seams | ✅ Present; ShowHost + RemoteHost adopted; others still mostly unwired |
 | ~~**timeline/ / ltc/**~~ | — | Removed empty stubs (Task 2) |
@@ -636,6 +637,7 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
 | Export orchestration | UI + `exporters/*` | |
 | Remote command surface | `web_remote.bridge` | ✅ Talks only through `RemoteHost` |
+| **`EventBus`** | `core/event_bus.py` | ✅ Infrastructure only — not adopted by services/UI yet |
 | Playback clock / mix | `AudioEngine` | Unchanged internals |
 | Frame clock follower | `VideoSyncController` | |
 
