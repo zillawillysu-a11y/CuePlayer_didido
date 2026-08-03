@@ -2,9 +2,14 @@
 
 Consumes a pre-built ``PreflightReport`` only. Does not run validation rules,
 import exporters, or mutate project data. Navigation is signaled to the host.
+
+Export gate presentation lives in ``present_export_preflight_gate`` — allow/deny
+is decided from ``ValidationReport`` (application gate), not inside exporters.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -12,12 +17,17 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from cueplayer.application.ma_preflight_export_gate import (
+    MaPreflightExportGateResult,
+    export_allowed_from_validation,
+)
 from cueplayer.domain.validation.preflight_report import (
     PreflightIssueRow,
     PreflightReport,
@@ -73,6 +83,14 @@ def navigation_target(row: PreflightIssueRow) -> tuple[str, str, str] | None:
 class MaPreflightDialog(QDialog):
     """Modal read-only MA Preflight report viewer.
 
+    Modes
+    -----
+    ``review``
+        Tools menu — Close only.
+    ``export_gate``
+        Before export — Cancel; Continue Export when ``can_continue`` is True
+        (no errors). Errors never offer Continue.
+
     Signals
     -------
     navigate_requested(song_id, object_kind, object_id)
@@ -85,6 +103,9 @@ class MaPreflightDialog(QDialog):
         self,
         report: PreflightReport,
         parent: QWidget | None = None,
+        *,
+        mode: str = "review",
+        can_continue: bool = False,
     ) -> None:
         super().__init__(parent)
         if not isinstance(report, PreflightReport):
@@ -93,17 +114,20 @@ class MaPreflightDialog(QDialog):
             )
         self._report = report
         self._rows: tuple[PreflightIssueRow, ...] = report.issues
+        self._mode = str(mode or "review").strip().lower() or "review"
+        self._can_continue = bool(can_continue) and self._mode == "export_gate"
 
-        self.setWindowTitle("MA Preflight")
+        title = "MA Preflight — Export" if self._mode == "export_gate" else "MA Preflight"
+        self.setWindowTitle(title)
         self.resize(820, 480)
 
         layout = QVBoxLayout(self)
 
-        title = QLabel(report.summary())
-        title.setObjectName("preflightSummaryTitle")
-        title.setWordWrap(True)
-        title.setStyleSheet("font-weight: 600; font-size: 13px;")
-        layout.addWidget(title)
+        summary_title = QLabel(report.summary())
+        summary_title.setObjectName("preflightSummaryTitle")
+        summary_title.setWordWrap(True)
+        summary_title.setStyleSheet("font-weight: 600; font-size: 13px;")
+        layout.addWidget(summary_title)
 
         summary_row = QHBoxLayout()
         self.error_count_label = QLabel(f"Errors: {report.error_count}")
@@ -121,10 +145,25 @@ class MaPreflightDialog(QDialog):
         summary_row.addStretch(1)
         layout.addLayout(summary_row)
 
-        hint = QLabel(
-            "Read-only validation. Double-click a row to jump to the related "
-            "Song or mark when possible. No auto-fix."
-        )
+        if self._mode == "export_gate" and not self._can_continue:
+            hint_text = (
+                "Export blocked: fix errors before exporting. "
+                "Double-click a row to jump to the related Song or mark when possible. "
+                "No auto-fix."
+            )
+        elif self._mode == "export_gate":
+            hint_text = (
+                "Review warnings and information, then Continue Export or Cancel. "
+                "Double-click a row to jump to the related Song or mark when possible. "
+                "No auto-fix."
+            )
+        else:
+            hint_text = (
+                "Read-only validation. Double-click a row to jump to the related "
+                "Song or mark when possible. No auto-fix."
+            )
+        hint = QLabel(hint_text)
+        hint.setObjectName("preflightHint")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e;")
         layout.addWidget(hint)
@@ -145,11 +184,26 @@ class MaPreflightDialog(QDialog):
         self.table.setColumnWidth(2, 200)
         layout.addWidget(self.table, stretch=1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
-        if close_btn is not None:
-            close_btn.clicked.connect(self.accept)
+        self.continue_btn: QPushButton | None = None
+        if self._mode == "export_gate":
+            buttons = QDialogButtonBox()
+            cancel_btn = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+            cancel_btn.clicked.connect(self.reject)
+            if self._can_continue:
+                self.continue_btn = buttons.addButton(
+                    "Continue Export", QDialogButtonBox.ButtonRole.AcceptRole
+                )
+                self.continue_btn.setObjectName("preflightContinueExport")
+                self.continue_btn.clicked.connect(self.accept)
+            else:
+                close_btn = buttons.addButton(QDialogButtonBox.StandardButton.Close)
+                close_btn.clicked.connect(self.reject)
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(self.reject)
+            close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
+            if close_btn is not None:
+                close_btn.clicked.connect(self.accept)
         layout.addWidget(buttons)
 
         self.table.doubleClicked.connect(self._on_double_clicked)
@@ -158,6 +212,14 @@ class MaPreflightDialog(QDialog):
     @property
     def report(self) -> PreflightReport:
         return self._report
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def can_continue(self) -> bool:
+        return self._can_continue
 
     def _populate(self) -> None:
         self.table.setRowCount(0)
@@ -194,3 +256,38 @@ class MaPreflightDialog(QDialog):
             return
         song_id, kind, oid = target
         self.navigate_requested.emit(song_id, kind, oid)
+
+
+def present_export_preflight_gate(
+    gate: MaPreflightExportGateResult,
+    parent: QWidget | None = None,
+    *,
+    on_navigate: Callable[[str, str, str], None] | None = None,
+) -> bool:
+    """Present Preflight UI for export; return True if export may proceed.
+
+    Allow/deny is computed from ``gate.validation`` (``ValidationReport``).
+    The dialog only presents ``gate.presentation``.
+    """
+    if not isinstance(gate, MaPreflightExportGateResult):
+        raise TypeError(
+            "present_export_preflight_gate requires MaPreflightExportGateResult, "
+            f"got {type(gate).__name__}"
+        )
+    # Policy from ValidationReport only.
+    allowed = export_allowed_from_validation(gate.validation)
+    if not gate.show_dialog:
+        return allowed
+
+    dialog = MaPreflightDialog(
+        gate.presentation,
+        parent,
+        mode="export_gate",
+        can_continue=allowed,
+    )
+    if on_navigate is not None:
+        dialog.navigate_requested.connect(on_navigate)
+    result = dialog.exec()
+    if not allowed:
+        return False
+    return result == QDialog.DialogCode.Accepted

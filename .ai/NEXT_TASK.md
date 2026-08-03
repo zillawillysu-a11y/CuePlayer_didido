@@ -1,31 +1,29 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Feature — Export Integration  
+**Type:** Sprint 7 planning / MA Preflight production soak  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 6 Task 4 — Preflight UI  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6PreflightUi.md`  
-Baseline: `docs/ma_preflight.md` (ends READY FOR MA PREFLIGHT INTEGRATION)
+**Previous:** Sprint 6 Task 5 — MA Preflight Export Integration  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6PreflightExport.md`  
+Baseline: `docs/ma_preflight.md` (ends READY FOR MA PREFLIGHT PRODUCTION)
 
 ---
 
 ## Current task
 
-### Sprint 6 Task 5: Export Integration
+### Sprint 7 — (not started)
 
 **Do not auto-start until the user explicitly continues.**
 
-### Goal
+### Suggested direction (from Task 5)
 
-Gate MA Export on `PreflightReport.has_errors` (block or confirm). Optionally open Preflight dialog when blocked. No auto-fix.
-
-### Read first
-
-1. `docs/ma_preflight.md` (Task 4 § Recommendation for Task 5)
-2. `MaPreflightDialog` + Export / Show Patch entry points
+1. Production soak on real shows (MA2/MA3)
+2. Optional force-export / info-only dialog prefs
+3. Deeper validation rules
+4. Optional CLI preflight
 
 ### Done when
 
-- Export gate + tests; REPORT + handoff; STOP
+- User picks Sprint 7 scope; REPORT + handoff; STOP

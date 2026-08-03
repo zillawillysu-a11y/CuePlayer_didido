@@ -259,7 +259,7 @@ Later
 | **Sprint 6 · Task 2 — Validation Rules** | ✅ Done — `ma_preflight_rules()` MVP pack |
 | **Sprint 6 · Task 3 — Preflight Report Builder** | ✅ Done — `PreflightReport` presentation layer |
 | **Sprint 6 · Task 4 — Preflight UI** | ✅ Done — Tools → MA Preflight… |
-| Sprint 6 · Task 5 — Export Integration | **Next** |
+| **Sprint 6 · Task 5 — Export Integration** | ✅ Done — Show Patch preflight gate |
 
 ---
 
@@ -274,7 +274,7 @@ Later
 | Sprint 6 Task 2 | MA Preflight rule pack MVP (read-only; no exporters/UI) |
 | Sprint 6 Task 3 | Preflight Report Builder (`PreflightReport` / sort / serialize) |
 | Sprint 6 Task 4 | Preflight UI (`MaPreflightDialog`; read-only) |
-| Sprint 6 Task 5 | Export Integration (gate on `has_errors`) |
+| Sprint 6 Task 5 | Export Integration (gate on `ValidationReport.has_errors`) |
 | Sprint 6 explicitly deferred | Overlay compare, NDI, OSC, EventBus-as-feature, variant CRUD (runner-up), large UI redesign |
 | Why not overlay next | Align is done, but console handoff risk > paint polish for lighting shows |
 | Why not variant CRUD first | Domain ready, but export confidence unblocks more shows per week |
@@ -315,8 +315,12 @@ See [`ma_preflight.md`](ma_preflight.md) § Task 3.
 
 See [`ma_preflight.md`](ma_preflight.md) § Task 4.
 
-**Next:** Export Integration (Task 5).
+## Sprint 6 Task 5 — Export Integration (done)
+
+See [`ma_preflight.md`](ma_preflight.md) § Task 5.
+
+**Next:** Sprint 7 planning / production soak (do not auto-start).
 
 ---
 
-## READY FOR MA PREFLIGHT INTEGRATION
+## READY FOR MA PREFLIGHT PRODUCTION
