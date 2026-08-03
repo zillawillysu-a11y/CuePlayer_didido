@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 4 Feature Task 6 complete (Anchor Playback Integration)  
+**Status:** Sprint 4.5 complete (Song Variant MVP production validation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-anchor-playback-028d`
+**Scope tip:** `cursor/sprint45-variant-validation-028d`
 **Related:** [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -200,7 +200,8 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | Task 4 — Playback variant support | ✅ Done — resolve active variant → one buffer |
 | Task 5 — Anchor Mapping Foundation | ✅ Done — `domain/anchor_mapping.py` |
 | Task 6 — Anchor Playback Integration | ✅ Done — PlaybackService maps Song↔Variant |
-| Task 7 — Align Anchors UI Design | **Next** |
+| **Sprint 4.5 — Production Validation** | ✅ Done — checklist + debt/risk map (docs only) |
+| Task 7 — Align Anchors UX | **Next** |
 
 ---
 
@@ -215,8 +216,23 @@ See [`song_variant_design.md`](song_variant_design.md) §8–§10 (`I1`–`I8`).
 | Task 4 playback | PlaybackService resolves path; Song owns selection; no Align |
 | Task 5 mapping | Domain-only `anchor_mapping`; Song Time canonical; no runtime apply |
 | Task 6 playback map | PlaybackService only conversion site; engine gets Variant Time |
+| Sprint 4.5 | Docs-only validation; no runtime/UI/playback changes |
 | Explicitly deferred this slice | NDI, overlay, plugin system, UI redesign, EventBus-as-feature |
 
 ---
 
-## READY FOR ALIGN ANCHORS UI DESIGN
+## Sprint 4.5 — Validation summary
+
+Full checklist and debt tables: [`song_variant_design.md`](song_variant_design.md) §17.
+
+| Verdict | Scope |
+|---------|--------|
+| Ready | Legacy / offset-0 / single-bed desktop workflows (run on-site checklist) |
+| Conditional | Non-zero offset on desktop seek/loop (Remote + some paste paths unsafe) |
+| Not ready | Align / variant CRUD / waveform offset paint |
+
+**Next priority:** Align Anchors UX (design), then close Song-Time façade holes (Remote + paste).
+
+---
+
+## READY FOR ALIGN ANCHORS UX

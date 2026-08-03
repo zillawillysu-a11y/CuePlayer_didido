@@ -1,12 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 6 complete (Anchor Playback Integration)  
+**Status:** Sprint 4.5 complete (Production Validation — docs only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-anchor-playback-028d`  
+**Scope tip:** `cursor/sprint45-variant-validation-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Task 6 constraint:** Playback wiring only. No Timeline/Waveform redesign,
-Align Anchors UI, or automatic alignment. Cue times unchanged.
+**Sprint 4.5 constraint:** Validation / checklist / debt map only. No runtime
+code, no UI redesign, no playback changes.
 
 ---
 
@@ -698,4 +698,147 @@ Timeline paints Song Time; mapping only translates the media bed under the playh
 
 ---
 
-## READY FOR ALIGN ANCHORS UI DESIGN
+## 17. Sprint 4.5 — Production Validation (done, docs only)
+
+**Scope tip:** `cursor/sprint45-variant-validation-028d`  
+**Code changes:** none.
+
+Song Variant MVP stack (Tasks 1–6) was reviewed against real show-prep workflows.
+This section is the audit record + operator checklist.
+
+### 17.1 Architecture verification (code review)
+
+| Claim | Verdict | Evidence |
+|-------|---------|----------|
+| Song Time is canonical | ✅ Hold | Marks / video clips / MA plan use `Mark.time_seconds` / song timeline; no variant id on cues |
+| Cue timing never depends on Variant | ✅ Hold | `Song.add_mark` / exporters ignore variants; Task 6 mark-at-playhead uses `playback.position` (Song Time) |
+| Anchor mapping is the only Song↔Variant conversion | ✅ Hold (desktop playback) | Only `domain/anchor_mapping.py` defines `± offset`; PlaybackService wraps it — no duplicated formula in UI/engine |
+| Playback works for legacy (no / empty variants) | ✅ Hold by design | `active_audio_path` falls back to `audio_tracks`; offset coerce → `0.0` (identity) |
+| Playback works for multi-variant (selected one) | ✅ Hold by design | `selected_variant` + path resolve + mapping on seek/loops |
+| No duplicate mapping logic | ✅ Hold | Grep: conversion arithmetic only in `anchor_mapping`; PlaybackService delegates |
+
+**Known bypasses (not duplicate formulas, but incomplete Song-Time façade):**
+
+| Site | Issue | Severity |
+|------|-------|----------|
+| `web_remote/bridge.py` `engine.seek(...)` | Passes Song Time / mark times straight into engine (Variant Time expected when offset ≠ 0) | High when offset ≠ 0; OK at offset 0 |
+| `MainWindow` drop/paste/add-video using `engine.position` | Places content at Variant Time if offset ≠ 0 | Medium when offset ≠ 0 |
+| Waveform paint | Peaks keyed/drawn in file time; not offset-shifted | Medium visual skew when offset ≠ 0 |
+| `AudioEngine.sync_offset_seconds` | Separate monitoring-latency calibration — **not** variant anchor; do not conflate | Document only |
+
+### 17.2 Production validation checklist
+
+Use on a Windows show machine with real media. Checkboxes are for operators / QA — not automated in this sprint.
+
+#### A. Playback
+
+- [ ] Legacy project (schema v1 / empty `variants`): Open → activate song → Play/Pause/Stop audible, no crash
+- [ ] Migrated / v2 single-variant song: same bed as former main track
+- [ ] Multi-variant song with `selected_variant_id` set: correct file loads (one buffer)
+- [ ] Unicode / Chinese path still plays
+- [ ] Offset `0.0`: playhead, music, and marks feel identical to pre-MVP
+
+#### B. Seek
+
+- [ ] Timeline click-seek lands playhead on Song Time (transport / NOW agree)
+- [ ] Transport scrub / seek agrees with Timeline
+- [ ] With `anchor_offset = +0.5`: seeking to song `10.0` auditions media near `9.5` (silence/clamp near song `0` if mapped variant time `< 0`)
+- [ ] With `anchor_offset = 0`: seek numbers match media 1:1
+
+#### C. Loop
+
+- [ ] Set A/B on Timeline (Song Time); loop engages
+- [ ] Loop region audible matches Song Time handles at offset `0`
+- [ ] With non-zero offset: loop still frames the intended song region (engine stores Variant Time via PlaybackService)
+- [ ] Clear loop / disable still works
+
+#### D. Mark at playhead
+
+- [ ] While stopped/scrubbing: mark uses Timeline playhead (Song Time)
+- [ ] While playing: mark uses `playback.position` (Song Time), not raw engine media time
+- [ ] Cue list / NOW / export still show same `time_seconds` after variant path changes (offset 0)
+- [ ] Changing selection / offset later must **not** rewrite existing mark times
+
+#### E. Song switching
+
+- [ ] Setlist next/prev activates new song; waveform/PCM arm from `resolve_active_audio_path`
+- [ ] Switching away mid-play quiesces cleanly; no second clock
+- [ ] Song B with different selected variant loads that path only
+- [ ] Zoom/view keep policy unchanged for `replace_track=False` activate
+
+#### F. Legacy projects
+
+- [ ] Open pre-variant `.cueplayer` / bundle: migrates to schema v2; marks intact
+- [ ] Empty `audio_tracks` + video-only song still opens
+- [ ] Phase A still writes `audio_tracks` mirror on save
+- [ ] Relink / missing-file UX still surfaces for track paths (variant-primary scanners deferred)
+
+#### G. Multi-variant projects
+
+- [ ] Two+ variants on disk JSON; only selected/enabled audio path arms engine
+- [ ] Disabled selected variant falls back to first enabled (`selected_variant` rules)
+- [ ] Non-audio selected kind does not supply `selected_audio_path` (falls back / empty)
+- [ ] `replace_main_audio` / Open Audio collapses variants (document operator surprise until CRUD UI)
+
+#### H. Error cases
+
+- [ ] Missing media file: no crash; loading/status path; engine buffer cleared or prior behavior preserved
+- [ ] All variants disabled / no resolvable audio: activate does not throw; timeline placeholder OK
+- [ ] Corrupt / unreadable audio: existing warning dialog path
+- [ ] Remote seek with non-zero offset: **expect skew until Remote uses PlaybackService** (known gap)
+
+### 17.3 Remaining technical debt
+
+| Item | Notes |
+|------|-------|
+| Dual write `audio_tracks` + `variants` | Drift if callers assign tracks without `replace_main_audio` |
+| Remote transport bypasses PlaybackService | Seek/mark seek ignore mapping |
+| Scattered `engine.position` in MainWindow | Drop/paste/video-add/timecode refresh |
+| Waveform not offset-aware | Paint/cache ignore `anchor_offset` |
+| `replace_main_audio` collapses multi-variant | Blocks safe Open Audio while keeping alternate mixes |
+| No variant CRUD / picker UI | Selection is API/persistence only |
+| Bundle/relink still track-primary | Phase A mirror helps; scanners not variant-first |
+| Stale comment on `active_audio_path` (“playback integration later”) | Docs/code comment drift only |
+
+### 17.4 Remaining architectural risks
+
+| Risk | Why it matters | Mitigation direction |
+|------|----------------|----------------------|
+| Second timebase confusion | Operators think engine position == Song Time | Finish Song-Time façade; Remote through PlaybackService |
+| Silent offset skew on Remote / paste | Show-day wrong cue placement | Block Align UI ship until Remote + paste paths mapped |
+| Dual model drift | Wrong bed after Edit Song / Open Audio | Single write helpers; later derive tracks from variants |
+| Duration vs media length with offset | Song end ≠ file end | Explicit duration policy in Align / playback polish |
+| Conflating `sync_offset_seconds` with `anchor_offset` | Calibration vs mix align | Keep separate; never reuse engine sync for variants |
+
+### 17.5 Remaining UX gaps
+
+| Gap | Operator impact |
+|-----|-----------------|
+| No variant list / select / add / rename | Cannot manage mixes without hand-editing JSON |
+| No Align Anchors chrome | Cannot set `anchor_offset` in-app |
+| No waveform overlay / offset preview | Hard to trust align by ear alone |
+| Open Audio wipes extra variants | Easy to destroy alternate mixes |
+| No badge for “non-zero offset active” | Easy to miss why seek “sounds early/late” |
+| Remote not offset-safe | Tablet control wrong with aligned mixes |
+
+### 17.6 Recommended priority for future implementation
+
+1. **P0 — Align Anchors UX design** (next): manual anchor pair → `anchor_offset`; no cue moves; no Timeline redesign.  
+2. **P0 — Close Song-Time façade holes**: Remote seek via PlaybackService; MainWindow paste/drop/add-video use `playback.position`.  
+3. **P1 — Variant picker / CRUD (minimal)**: select + add audio as variant without collapsing on Open Audio.  
+4. **P1 — Offset-aware waveform paint** (or clear “media vs song” indicator).  
+5. **P2 — Auto / cross-correlation align**; compare-hear without second master clock.  
+6. **P2 — Bundle/relink variant-primary**; Phase B drop `audio_tracks` requirement.
+
+### 17.7 MVP readiness verdict
+
+| Area | Ready for production rehearsal? |
+|------|----------------------------------|
+| Legacy projects, offset 0, single bed | **Yes** — treat as validated by design + unit coverage; run checklist A/B/D/E/F on site |
+| Multi-variant select-one, offset 0 | **Yes** if variants authored in JSON / tests; **no in-app CRUD** |
+| Non-zero `anchor_offset` on desktop seek/loop/playhead | **Conditionally yes** for lab; Remote + some paste paths **not** safe |
+| Align / compare UX | **No** — design next |
+
+---
+
+## READY FOR ALIGN ANCHORS UX
