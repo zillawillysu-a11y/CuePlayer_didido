@@ -1,22 +1,24 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint35-architecture-snapshot-028d`  
+**Branch:** `cursor/sprint4-feature-planning-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 3.5 — **Architecture Snapshot**: complete as-built documentation after
-Sprint 3 Task 3. Docs only — no runtime code changes.
+Sprint 4 — **Feature Planning**: propose the next Feature Sprint. Docs only —
+no feature implementation.
 
 ## What was produced
 
-- `docs/architecture_overview.md` — full snapshot (layers, graphs, maps, EventBus,
-  taxonomy, MainWindow, debt, Sprint 0→3 progress, Sprint 4 + Feature candidates,
-  decisions)
-- Updated `docs/current_architecture.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`
+- `docs/roadmap.md` — Top 10 candidates, recommended pick, Task 1–N plan, extensions
+- Updated `docs/current_architecture.md`, `architecture_overview.md`, `ARCHITECTURE.md`, `CHANGELOG.md`
+
+## Recommended Feature Sprint
+
+**Multi-audio Reference lanes + Align Anchors (MVP)**
 
 ## Runtime code
 
@@ -24,5 +26,5 @@ Sprint 3 Task 3. Docs only — no runtime code changes.
 
 ## Suggested next
 
-Feature Sprint Planning (READY FOR FEATURE SPRINT PLANNING).  
-Playback events remain the recommended first architecture step inside Sprint 4.
+Feature Implementation — Task 1 (domain/persistence audit).  
+READY FOR FEATURE IMPLEMENTATION.

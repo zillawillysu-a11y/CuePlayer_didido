@@ -3,6 +3,7 @@
 Current intended layer diagram (aspirational). For a full as-built review and the
 incremental target layout, see:
 
+- [`roadmap.md`](roadmap.md) — **Sprint 4 Feature Planning** (Top 10 + pick)
 - [`architecture_overview.md`](architecture_overview.md) — **Sprint 3.5 snapshot** (maps, risks, roadmap)
 - [`current_architecture.md`](current_architecture.md) — living as-built assessment + sprint notes
 - [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review (ZH; partially stale)

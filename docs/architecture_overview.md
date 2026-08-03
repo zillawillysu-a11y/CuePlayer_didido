@@ -13,6 +13,7 @@ Related:
 | [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) | Strangler target layout |
 | [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) / [`MIGRATION_RULES.md`](MIGRATION_RULES.md) | Permanent law |
 | [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) | Product requirements |
+| [`roadmap.md`](roadmap.md) | Sprint 4 Feature Planning (Top 10 + pick) |
 | **This file** | Concise Sprint 0→3 architecture snapshot for planning |
 
 ---
@@ -189,17 +190,10 @@ Do **not** start `adapters/` tree rename or AudioEngine rewrite in Sprint 4.
 
 ## 4. Recommended Feature Sprint candidates
 
-Product-facing work that fits after the architecture snapshot (cue accuracy first; NDI last among video outs).
+Superseded for prioritization by [`roadmap.md`](roadmap.md) (Sprint 4 Feature Planning).
 
-| Candidate | Why now | Depends on |
-|-----------|---------|------------|
-| **Video / alignment UX polish** | Timeline + marks already solid; alignment is daily workflow | Existing sample-locked video |
-| **Setlist / timeline / export selection row colors** | Explicitly deferred; low architecture risk | UI chrome only |
-| **Cue list / NOW display polish** | Operator-facing; columns/IDs already shipped | Monitor widgets |
-| **BPM / LTC detect UX hardening** | Jobs still MainWindow-owned; UX > relocate | Existing media jobs |
-| **MA export / Show Patch polish** | Exporters already cleanest layer | Fixtures |
-| **NDI polish** | Only after cue accuracy remains solid | VideoSync / frame sinks |
-| **Web Remote UX polish** | Boundary now explicit; safe to improve static app | RemoteHost |
+**Sprint 4 pick:** Multi-audio Reference lanes + Align Anchors (MVP).  
+Earlier shortlist (still valid runners-up): Video/alignment UX polish; selection row colors; Cue list/NOW; BPM/LTC UX; MA Export Preview; NDI (later); Web Remote UX.
 
 Avoid bundling Feature Sprint work with EventBus clock semantics or AudioEngine redesign.
 
@@ -235,8 +229,8 @@ Sprint 2  ✅  Playback foundation → Playback boundary → SettingsService →
 Sprint 3  ✅  ShowHost Protocol → RemoteHost boundary → EventBus foundation
 Sprint 3.5 ✅ Architecture snapshot (this document)
 ──────────
-Next      → Feature Sprint Planning (product candidates + Sprint 4 arch spine)
-Queued    → Playback events (first EventBus adoption; still recommended early in Sprint 4)
+Next      → Feature Implementation (Reference + Align Anchors MVP — see roadmap.md)
+Queued    → Playback events (EventBus adoption; architecture spine, not Feature pick)
 ```
 
 | Layer | Progress |
@@ -264,4 +258,4 @@ Queued    → Playback events (first EventBus adoption; still recommended early 
 
 ---
 
-## READY FOR FEATURE SPRINT PLANNING
+## READY FOR FEATURE IMPLEMENTATION

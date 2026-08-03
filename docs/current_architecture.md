@@ -1,15 +1,16 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 3.5 complete (architecture snapshot — docs only)  
+**Status:** Sprint 4 Feature Planning complete (docs only — no implementation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint35-architecture-snapshot-028d`  
-**Constraint (3.5):** Documentation only — no runtime code changes.
+**Scope tip:** `cursor/sprint4-feature-planning-028d`  
+**Constraint (Sprint 4 Planning):** Propose Feature Sprint only — do not implement features yet.
 
 Related docs (do not treat as identical):
 
 | Doc | Role |
 |-----|------|
-| [`architecture_overview.md`](architecture_overview.md) | **Sprint 3.5 snapshot** — layers, maps, risks, Sprint 4 + Feature candidates |
+| [`roadmap.md`](roadmap.md) | **Sprint 4 Feature Planning** — Top 10, pick, task plan |
+| [`architecture_overview.md`](architecture_overview.md) | Sprint 3.5 snapshot — layers, maps, risks |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Short aspirational layer diagram |
 | [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | Earlier as-built review (ZH); partially stale |
 | [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) | Strangler target layout |
@@ -362,6 +363,15 @@ Includes: layer diagram, dependency graph, service / repository / protocol maps,
 EventBus as-built + planned taxonomy, MainWindow responsibilities, debt map,
 migration progress (Sprint 0→3), Sprint 4 roadmap, Feature Sprint candidates,
 architecture decisions log.
+
+---
+
+## Sprint 4 — Feature Planning (done)
+
+Docs-only. Canonical plan: [`roadmap.md`](roadmap.md).
+
+**Recommended Feature Sprint:** Multi-audio Reference lanes + Align Anchors (MVP).  
+**Not implemented in this task.** Architecture spine (EventBus playback events) remains backlog.
 
 ---
 ## 1. Current folder structure
@@ -809,10 +819,10 @@ Machine State and Project State must remain separate — SettingsService never o
 
 - Missing in-process EventBus primitive (now `core.EventBus`; not yet adopted)
 
-### P0 — Planning / next architecture spine
+### P0 — Next (Feature Implementation)
 
-1. **Feature Sprint Planning** — choose product candidates (see `architecture_overview.md`).
-2. **Playback events on EventBus** — discrete transport/chrome only; no sample position on the bus.
+1. **Multi-audio Reference + Align Anchors MVP** — see `docs/roadmap.md`.
+2. Architecture spine (parallel/backlog): Playback events on EventBus (no playhead ticks).
 3. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
 4. Optional: route remote transport/loop exclusively through PlaybackService.
 5. Optional SettingsService fold-in for remaining machine prefs.
@@ -865,17 +875,17 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Sprint 3 · 2 | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
 | **Sprint 3 · 3** Event Bus foundation | ✅ Done | `core.EventBus` (subscribe/unsubscribe/publish); no adopters yet |
 | **Sprint 3.5** Architecture snapshot | ✅ Done | `docs/architecture_overview.md` (docs only) |
-| **Next** Feature Sprint Planning | **Queued** | Product candidates + Sprint 4 arch spine |
-| Sprint 4 · Playback events | Recommended early | First EventBus adoption (not the clock) |
+| **Sprint 4 Planning** Feature plan | ✅ Done | `docs/roadmap.md` — pick: Reference + Align Anchors MVP |
+| **Next** Feature Implementation | **Queued** | Sprint 4 Feature Task 1 (domain/persistence audit) |
+| Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Sprint 3.5
+### After Feature Planning
 
-Prefer **Feature Sprint Planning** next (product candidates in
-`architecture_overview.md` §4), while keeping **Playback events** as the first
-architecture step inside Sprint 4.
+Implement **Multi-audio Reference lanes + Align Anchors (MVP)** per `docs/roadmap.md`
+Task 1–N. Do **not** auto-start until the user continues.
 
-Do **not** auto-start Feature or Playback work until the user continues.
+Runner-up if MVP must shrink: Video ↔ music alignment UX polish, or row-color consistency.
 
 ---
 
-## READY FOR FEATURE SPRINT PLANNING
+## READY FOR FEATURE IMPLEMENTATION
