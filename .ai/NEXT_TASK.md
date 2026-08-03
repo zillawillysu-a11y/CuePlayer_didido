@@ -1,33 +1,33 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Feature — Anchor Playback Integration  
+**Type:** Feature — Align Anchors UI Design  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 4 Feature Task 5 — Anchor Mapping Foundation  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint4AnchorMapping.md`  
-Baseline: `docs/song_variant_design.md` (ends READY FOR ANCHOR PLAYBACK INTEGRATION)
+**Previous:** Sprint 4 Feature Task 6 — Anchor Playback Integration  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint4AnchorPlayback.md`  
+Baseline: `docs/song_variant_design.md` (ends READY FOR ALIGN ANCHORS UI DESIGN)
 
 ---
 
 ## Current task
 
-### Sprint 4 Feature Task 6: Anchor Playback Integration
+### Sprint 4 Feature Task 7: Align Anchors UI Design
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Apply `domain.anchor_mapping` for the selected variant during seek / media
-index / (optional) waveform paint. AudioEngine remains sole clock. No Align UI.
+Design (docs-first) how operators edit `SongVariant.anchor_offset` via
+manual anchors without moving cues or redesigning Timeline coordinates.
 
 ### Read first
 
-1. `docs/song_variant_design.md` §15
+1. `docs/song_variant_design.md` §16.4
 2. `domain/anchor_mapping.py`
-3. PlaybackService seek / ShowSession load paths
+3. PlaybackService mapping surface
 
 ### Done when
 
-- Runtime uses mapping; tests green; REPORT + handoff; STOP
+- Design doc + REPORT + handoff; STOP

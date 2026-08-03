@@ -1381,7 +1381,7 @@ class MainWindow(QMainWindow):
         # QueuedConnection lets playhead + cue-list update finish first; decode
         # follows on the next event-loop turn (still driven by the audio clock).
         self.engine.position_changed.connect(
-            self.video_sync.update_position,
+            self._forward_engine_position_to_video,
             Qt.ConnectionType.QueuedConnection,
         )
         # Throttles video decode to a display cadence while playing, so the
@@ -4956,7 +4956,13 @@ class MainWindow(QMainWindow):
             sc.activated.connect(lambda k=key: self._add_mark_by_shortcut(k))
             self._digit_shortcuts.append(sc)
 
-    def _on_position_changed(self, seconds: float) -> None:
+    def _forward_engine_position_to_video(self, engine_seconds: float) -> None:
+        """AudioEngine emits Variant Time; video clips live on Song Time."""
+        self.video_sync.update_position(self.playback.engine_to_song_time(engine_seconds))
+
+    def _on_position_changed(self, engine_seconds: float) -> None:
+        # Engine position is Variant Time; Timeline / cues stay on Song Time.
+        seconds = self.playback.engine_to_song_time(engine_seconds)
         self.playback.sync_from_engine()
         self.timeline.set_position(seconds)
         self.transport.set_times(seconds, self.engine.duration)
@@ -4967,6 +4973,7 @@ class MainWindow(QMainWindow):
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
+        # ``seconds`` from Timeline is already Song Time.
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
@@ -7116,10 +7123,10 @@ class MainWindow(QMainWindow):
         # Preview follows the audio clock — without a position tick after add,
         # the panel stays black until the user seeks/plays. Land the playhead
         # inside the new clip when needed, then force one decode.
-        if not clip.contains(float(self.engine.position)):
+        if not clip.contains(float(self.playback.position)):
             self.playback.seek(float(clip.start_seconds))
         else:
-            self.video_sync.update_position(float(self.engine.position))
+            self.video_sync.update_position(float(self.playback.position))
         if not self._song_has_main_audio_file():
             self.engine.set_duration(self.current_song.duration_seconds)
             self.transport.set_times(0.0, self.engine.duration)
@@ -7357,7 +7364,7 @@ class MainWindow(QMainWindow):
         # While playing, read the engine's interpolated write-head so marks are
         # not quantized to the audio-block grid (often 10ms → sticky ms digit).
         if self.playback.playing and not self.timeline.is_scrubbing():
-            mark_at = float(self.engine.position)
+            mark_at = float(self.playback.position)
         else:
             mark_at = self.timeline.playhead_seconds()
         mark = self.current_song.add_mark(lane_index, mark_at)

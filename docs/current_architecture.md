@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Task 5 complete (Anchor Mapping Foundation)  
+**Status:** Sprint 4 Feature Task 6 complete (Anchor Playback Integration)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-anchor-mapping-028d`  
-**Constraint (Task 5):** Domain mapping only — no PlaybackService/Timeline/Waveform/UI; offsets not applied at runtime.
+**Scope tip:** `cursor/sprint4-anchor-playback-028d`  
+**Constraint (Task 6):** PlaybackService maps Song↔Variant; no Timeline/Waveform redesign; no Align UI.
 
 Related docs (do not treat as identical):
 
@@ -892,14 +892,14 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 4 · F3** Song Variant persistence | ✅ Done | schema v2 + `project_migrations` |
 | **Sprint 4 · F4** Playback variant MVP | ✅ Done | PlaybackService resolve → one buffer |
 | **Sprint 4 · F5** Anchor Mapping Foundation | ✅ Done | `domain/anchor_mapping.py` (no runtime apply) |
-| **Next** Anchor Playback Integration | **Queued** | Apply mapping on seek/load/paint |
+| **Sprint 4 · F6** Anchor Playback Integration | ✅ Done | PlaybackService Song↔Variant; engine Variant Time |
+| **Next** Align Anchors UI Design | **Queued** | Design editing `anchor_offset` without moving cues |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Task 5
+### After Feature Task 6
 
-Wire `song_to_variant_time` / `variant_to_song_time` into playback seek/media index (optional waveform).  
-Do **not** auto-start until the user continues.
+Design Align Anchors UI (manual offset edit). Do **not** auto-start until the user continues.
 
 ---
 
-## READY FOR ANCHOR PLAYBACK INTEGRATION
+## READY FOR ALIGN ANCHORS UI DESIGN

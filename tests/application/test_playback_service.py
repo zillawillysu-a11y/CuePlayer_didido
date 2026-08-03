@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cueplayer.application.playback_service import PlaybackService
 from cueplayer.domain.models import AudioTrack, Project, Song
 from cueplayer.domain.song_session import SongSession
@@ -248,3 +250,66 @@ def test_resolve_active_audio_path_none_without_song() -> None:
     svc = PlaybackService(engine, session)  # type: ignore[arg-type]
     assert svc.resolve_active_audio_path() is None
     assert svc.active_variant() is None
+
+
+def test_seek_identity_without_anchor_offset(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    path = tmp_path / "a.wav"
+    variant = SongVariant.create("Main", path, anchor_offset=0.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    session.set_song(song)
+    svc.seek(4.0)
+    assert ("seek", 4.0) in engine.calls
+    assert svc.position == 4.0
+    assert session.position_seconds == 4.0
+
+
+def test_seek_converts_song_time_to_variant_time(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    variant = SongVariant.create("Alt", tmp_path / "b.wav", anchor_offset=0.5)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    session.set_song(song)
+    svc.seek(10.0)
+    assert ("seek", 9.5) in engine.calls
+    assert engine._position == 9.5
+    assert svc.position == pytest.approx(10.0)
+    assert session.position_seconds == pytest.approx(10.0)
+
+
+def test_loop_region_stores_variant_time_on_engine(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    variant = SongVariant.create("Alt", tmp_path / "c.wav", anchor_offset=1.0)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    session.set_song(song)
+    svc.set_loop_region(2.0, 5.0)
+    assert engine.loop_a == pytest.approx(1.0)
+    assert engine.loop_b == pytest.approx(4.0)
+    assert svc.loop_a == pytest.approx(2.0)
+    assert svc.loop_b == pytest.approx(5.0)
+
+
+def test_legacy_song_without_variants_seek_unchanged(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    song.audio_tracks = [
+        AudioTrack(id="main", name="Main", path=tmp_path / "x.wav", role="main")
+    ]
+    session.set_song(song)
+    assert svc.active_anchor_offset() == 0.0
+    svc.seek(3.25)
+    assert ("seek", 3.25) in engine.calls
+    assert svc.position == pytest.approx(3.25)
