@@ -31,8 +31,11 @@ Design contract
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from cueplayer.domain.models import Song
 from cueplayer.domain.song_session import SongSession
+from cueplayer.domain.song_variant import SongVariant
 from cueplayer.playback.audio_engine import AudioEngine
 
 
@@ -51,6 +54,29 @@ class PlaybackService:
     @property
     def session(self) -> SongSession:
         return self._session
+
+    # --- active variant (media path for the sole clock) ----------------------
+
+    def resolve_active_audio_path(self, song: Song | None = None) -> Path | None:
+        """Return the media path that should feed ``AudioEngine`` for ``song``.
+
+        Resolution order (no alignment / offset applied):
+        1. ``song.selected_audio_path()`` when an enabled audio variant exists
+        2. Legacy main / first ``audio_tracks`` entry
+
+        Does not check whether the file exists on disk.
+        """
+        target = song if song is not None else self._session.song
+        if target is None:
+            return None
+        return target.active_audio_path()
+
+    def active_variant(self, song: Song | None = None) -> SongVariant | None:
+        """Return the enabled selected variant for ``song``, if any."""
+        target = song if song is not None else self._session.song
+        if target is None:
+            return None
+        return target.selected_variant()
 
     # --- transport -----------------------------------------------------------
 

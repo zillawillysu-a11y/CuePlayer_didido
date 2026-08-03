@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from cueplayer.application.playback_service import PlaybackService
-from cueplayer.domain.models import Project, Song
+from cueplayer.domain.models import AudioTrack, Project, Song
 from cueplayer.domain.song_session import SongSession
+from cueplayer.domain.song_variant import SongVariant
 
 
 class _FakeEngine:
@@ -210,3 +213,38 @@ def test_playback_service_loop_region_and_fresh_pair() -> None:
 
     svc.set_loop_region(1.0, 1.005)
     assert svc.try_set_loop_enabled(True) == "A / B are too close together"
+
+
+def test_resolve_active_audio_path_legacy_tracks(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    path = tmp_path / "床.wav"
+    song.audio_tracks = [AudioTrack(id="main", name="Main", path=path, role="main")]
+    session.set_song(song)
+    assert svc.resolve_active_audio_path() == Path(path)
+    assert svc.active_variant() is None
+
+
+def test_resolve_active_audio_path_selected_variant(tmp_path: Path) -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    song = Song.create("曲")
+    track = tmp_path / "track.wav"
+    variant_path = tmp_path / "variant.wav"
+    song.audio_tracks = [AudioTrack(id="main", name="Main", path=track, role="main")]
+    variant = SongVariant.create("Alt", variant_path)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    assert svc.resolve_active_audio_path(song) == Path(variant_path)
+    assert svc.active_variant(song) is variant
+
+
+def test_resolve_active_audio_path_none_without_song() -> None:
+    session = SongSession()
+    engine = _FakeEngine()
+    svc = PlaybackService(engine, session)  # type: ignore[arg-type]
+    assert svc.resolve_active_audio_path() is None
+    assert svc.active_variant() is None

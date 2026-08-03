@@ -653,6 +653,26 @@ class Song:
             return None
         return Path(variant.path)
 
+    def active_audio_path(self) -> Path | None:
+        """Media path for playback: selected audio variant, else legacy main track.
+
+        Does not check disk existence (callers decide missing-file UX).
+        Does not apply ``anchor_offset`` (Task 5).
+        """
+        selected = self.selected_audio_path()
+        if selected is not None:
+            return selected
+        main = next(
+            (t for t in self.audio_tracks if t.role == "main"),
+            self.audio_tracks[0] if self.audio_tracks else None,
+        )
+        if main is None:
+            return None
+        text = str(main.path).strip()
+        if not text or text in (".", "./"):
+            return None
+        return Path(main.path)
+
     def select_variant(self, variant_id: str) -> bool:
         """Set ``selected_variant_id`` when ``variant_id`` exists. Returns success."""
         if self.variant_by_id(variant_id) is None:
@@ -687,6 +707,37 @@ class Song:
         self.variants = created
         self.selected_variant_id = selected or (created[0].id if created else None)
         return True
+
+    def replace_main_audio(self, path: Path | str, *, name: str | None = None) -> None:
+        """Replace the main bed; keep Phase A ``audio_tracks`` / ``variants`` coherent.
+
+        Domain-only — does not load PCM, touch AudioEngine, or apply
+        ``anchor_offset``. When ``variants`` is empty, only ``audio_tracks`` is
+        updated (identical legacy single-bed behavior). When variants exist,
+        collapses to one selected audio variant (Open Audio / Edit Song
+        historically replace-only).
+        """
+        media = Path(path)
+        label = (name if name is not None else media.stem) or "Main"
+        self.audio_tracks = [
+            AudioTrack(id="main_audio", name=label, path=media, role="main")
+        ]
+        if not self.variants:
+            return
+        prev = self.selected_variant()
+        variant = SongVariant.create(label, media, kind="audio")
+        if prev is not None and prev.is_audio:
+            variant.id = prev.id
+            variant.anchor_offset = float(prev.anchor_offset)
+            variant.metadata = dict(prev.metadata)
+        self.variants = [variant]
+        self.selected_variant_id = variant.id
+
+    def clear_audio_media(self) -> None:
+        """Clear tracks and variants (Edit Song media clear). Domain-only."""
+        self.audio_tracks = []
+        self.variants = []
+        self.selected_variant_id = None
 
     def marks_for_lane(self, lane_index: int) -> list[Mark]:
         return [m for m in self.marks if m.lane_index == lane_index]

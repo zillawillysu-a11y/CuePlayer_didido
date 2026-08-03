@@ -161,3 +161,32 @@ def test_prepare_playback_only_attaches_engine() -> None:
     svc.prepare_playback(song)
     assert ("set_song", song) in host.engine.calls
     assert ("set_song_timebase", "01:02:03:04", 25.0) in host.engine.calls
+
+
+def test_refresh_waveform_loads_selected_variant_path(tmp_path) -> None:  # noqa: ANN001
+    from pathlib import Path
+
+    from cueplayer.domain.models import AudioTrack
+    from cueplayer.domain.song_variant import SongVariant
+
+    project = Project.create("P", with_song=True)
+    host = _make_host(project)
+    svc = ShowSessionService(host, host.playback)
+    song = project.songs[0]
+    track = tmp_path / "track.wav"
+    variant_path = tmp_path / "variant.wav"
+    track.write_bytes(b"x")
+    variant_path.write_bytes(b"y")
+    song.audio_tracks = [AudioTrack(id="main", name="Main", path=track, role="main")]
+    variant = SongVariant.create("Alt", variant_path)
+    song.variants = [variant]
+    song.selected_variant_id = variant.id
+    host.current_song = song
+    host.playback.session.set_song(song)
+
+    svc.refresh_waveform()
+
+    host._load_audio_path.assert_called()
+    args, kwargs = host._load_audio_path.call_args
+    assert Path(args[0]) == Path(variant_path)
+    assert kwargs.get("replace_track") is False

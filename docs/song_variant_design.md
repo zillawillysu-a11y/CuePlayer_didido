@@ -1,12 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 3 complete (Song Variant **persistence integration**)  
+**Status:** Sprint 4 Feature Task 4 complete (Playback Variant Support MVP)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-persistence-028d`  
+**Scope tip:** `cursor/sprint4-playback-variant-mvp-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Task 3 constraint:** Persistence only. No UI, playback, timeline, or project workflow changes.
-Repository remains load/save; migrations live in ``project_migrations.py``.
+**Task 4 constraint:** Playback load path only. No UI management, Timeline/Waveform
+redesign, or Anchor Alignment.
 
 ---
 
@@ -427,20 +427,108 @@ Aligns with roadmap Feature Sprint but **reframes** “Reference lanes” as **V
 
 ### Remaining migration risks
 
-- Dual write (`audio_tracks` + `variants`) can drift until playback uses `selected_audio_path`
+- Dual write (`audio_tracks` + `variants`) can still drift if callers mutate tracks without `replace_main_audio`
 - Legacy files with empty `audio_tracks` get empty variants (video-only OK)
 - `metadata` values coerced to strings only
 
-### Technical debt
+### Technical debt (after Task 3; see Task 4 for playback updates)
 
-- Playback/remote still resolve audio via `_main_audio_path_for_song` / tracks
 - Bundle/relink scanners not yet variant-path primary (tracks mirror helps)
 - No derived tracks-from-variants on save (Phase A keeps caller-owned tracks)
 
-### Recommended Feature Task 4
+---
 
-**Playback variant support** — retarget load paths to `song.selected_audio_path()` (one buffer); optional select-variant without UI redesign beyond minimal wiring. No timeline redesign.
+## 14. Task 4 status — Playback Variant Support MVP (done)
+
+| Deliverable | Status |
+|-------------|--------|
+| `Song.active_audio_path()` (variant → legacy tracks) | ✅ |
+| `Song.replace_main_audio` / `clear_audio_media` dual-write helpers | ✅ |
+| `PlaybackService.resolve_active_audio_path` / `active_variant` | ✅ |
+| `ShowSessionService` arming uses PlaybackService resolve | ✅ |
+| `MainWindow._main_audio_path_for_song` → PlaybackService | ✅ |
+| Open Audio / Edit Song replace keep variants coherent | ✅ |
+| Anchor offset applied at load | ❌ (Task 5) |
+| UI variant picker / CRUD | ❌ (later) |
+| Timeline / Waveform redesign | ❌ |
+
+### 14.1 Active variant resolution flow
+
+```text
+ShowSessionService._prepare_waveform_and_audio
+  └─ PlaybackService.resolve_active_audio_path(song)
+       └─ Song.active_audio_path()
+            1. selected_audio_path()  → enabled selected audio variant path
+            2. else legacy main / audio_tracks[0]
+  └─ host cache / _load_audio_path(path) → AudioEngine.set_buffer (one buffer)
+
+MainWindow helpers (BPM / LTC / remote listen / “has audio”)
+  └─ _main_audio_path_for_song → same resolve + is_file() gate
+```
+
+Rules:
+
+- **Song** owns `selected_variant_id` and the variant list (exactly one active selection).
+- **PlaybackService** resolves path only — no Align / offset / multi-buffer logic.
+- **Timeline / marks** stay on Song; switching the bed does not move cues.
+- **AudioEngine** still receives one media path / one PCM buffer (sole sample clock).
+
+### 14.2 Playback flow before / after
+
+| | Before | After (Task 4) |
+|--|--------|----------------|
+| Resolve | `audio_tracks` main / `[0]` in UI + ShowSession | `PlaybackService.resolve_active_audio_path` → `Song.active_audio_path` |
+| Engine | `set_buffer` one bed | unchanged |
+| Marks | Song-scoped | unchanged |
+| No variants | tracks only | same fallback (identical runtime) |
+| With variants | N/A (ignored) | selected enabled audio variant wins |
+
+### 14.3 Backward compatibility
+
+- Empty `variants` + populated `audio_tracks` → path from tracks (pre-variant / new Open Audio before dual-write creates variants).
+- Schema v2 songs with one migrated variant → same file as former main track.
+- Open Audio / Edit Song media replace: `replace_main_audio` updates tracks; if variants exist, collapses to one selected audio variant so resolve cannot stick on a stale path.
+- Media clear: `clear_audio_media` clears tracks + variants + selection.
+
+### 14.4 Remaining playback limitations
+
+- No UI to select / add / remove variants (selection is domain/API only).
+- `replace_main_audio` collapses multi-variant lists (replace-only habit) — CRUD must not rely on Open Audio for multi-mix.
+- `anchor_offset` stored but **not** applied to load / playhead / waveform paint.
+- Duration policy on shorter/longer beds unchanged (still overwrites `song.duration_seconds` from loaded buffer).
+- Remote / bundle / relink still largely track-oriented (Phase A mirror).
+
+### 14.5 Technical debt
+
+- Dual model drift if any call site still assigns `audio_tracks = […]` without `replace_main_audio`.
+- Waveform peaks keyed by file path only — no offset-aware cache key yet.
+- BPM / file-LTC still song-level; switching beds does not auto re-detect.
+- EventBus not used for “active variant changed”.
+
+### 14.6 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Stale variant after Open Audio | `replace_main_audio` syncs / collapses variants |
+| Marks “wrong” vs new mix | Expected until Task 5 offset; cues stay song-global |
+| Accidental multi-variant wipe | Document; Task 5+ CRUD must use `select_variant`, not Open Audio |
+| Clock / second buffer creep | Resolve returns one path only; engine unchanged |
+
+### 14.7 Future extension points (Anchor Alignment)
+
+| Extension | Where |
+|-----------|--------|
+| Apply `variant.anchor_offset` when mapping media time ↔ song timeline | PlaybackService or a thin align helper **called by** load/scrub — not inside AudioEngine clock math |
+| Align Anchors UI edits offset | Mutate `SongVariant.anchor_offset` on Song; keep marks fixed |
+| Compare / audition non-selected | Optional second decode **outside** the sole clock (or muted offline) — never a second master clock |
+| Offset-aware waveform | Paint transform using offset; cache key includes offset |
+
+PlaybackService must **not** embed Align UI or cross-correlation; Task 5 should add a foundation that exposes offset for load/position mapping only.
+
+### Recommended Feature Task 5
+
+**Anchor Offset Foundation** — define how `anchor_offset` shifts media vs the song cue timeline (load/scrub/paint mapping), with tests; no full Align Anchors UI, no timeline redesign.
 
 ---
 
-## READY FOR PLAYBACK VARIANT SUPPORT
+## READY FOR ANCHOR OFFSET FOUNDATION
