@@ -1,9 +1,9 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 6 Product Planning complete (docs only)  
+**Status:** Sprint 6 Task 1 complete — MA Export Preflight domain  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint6-product-planning-028d`  
-**Related:** [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
+**Scope tip:** `cursor/sprint6-ma-preflight-domain-028d`  
+**Related:** [`ma_export_validation.md`](ma_export_validation.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
 

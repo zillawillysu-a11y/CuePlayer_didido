@@ -4,6 +4,11 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 6 — Task 1: MA Export Preflight Domain (2026-08-03)
+
+- Added `domain/validation` (`ValidationReport` / `ValidationIssue` / `ValidationSeverity` / `ValidationCode` / rule registry).
+- Docs: `docs/ma_export_validation.md`. Read-only; no export/UI/auto-fix.
+
 ### Sprint 6 — Product Planning (2026-08-03)
 
 - Updated `docs/roadmap.md`: post–Align Anchors Top 10, Sprint 6 pick **MA Export Preview / Validation**.
