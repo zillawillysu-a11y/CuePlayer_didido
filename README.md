@@ -48,7 +48,7 @@ python -m cueplayer.app
 pytest
 ```
 
-## Priority pain points (vs CuePoints)
+## Priority pain points
 
 1. Multi-channel audio routing on Windows (not 2CH-only)
 2. Full Chinese / Unicode path and filename support
