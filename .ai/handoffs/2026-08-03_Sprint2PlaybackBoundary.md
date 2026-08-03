@@ -11,6 +11,11 @@
 - MainWindow no longer manipulates AudioEngine for those paths
 - Docs end **READY FOR SETTINGS SERVICE** (Task 7)
 
+## Tests
+
+- Targeted: **8 passed** (playback service + A–B loop host stub updated)
+- Full suite: **900 passed, 16 failed** (same pre-existing / Linux env set as Task 5; A–B loop stubs fixed)
+
 ## Recommendation for Task 7
 
 `application/settings_service.py` wrapping machine prefs (`audio_prefs` / QSettings)

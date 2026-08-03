@@ -48,8 +48,8 @@ Intentionally left (orchestration / device / timecode / media):
 
 ## Tests
 
-- Targeted playback tests (extended)
-- Full suite: see handoff after run
+- Targeted: **8 passed** (playback service + A–B loop)
+- Full suite: **900 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
