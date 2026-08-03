@@ -1,29 +1,30 @@
 # Next task
 
-**Status:** Queued — awaiting human start  
-**Type:** Sprint 7 planning / MA Preflight production soak  
-**Updated:** 2026-08-03  
+**Status:** Queued — awaiting human / operator soak  
+**Type:** Real-world validation (then Sprint 7 Feature Planning)  
+**Updated:** 2026-08-04  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 6 Task 5 — MA Preflight Export Integration  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint6PreflightExport.md`  
-Baseline: `docs/ma_preflight.md` (ends READY FOR MA PREFLIGHT PRODUCTION)
+**Previous:** Sprint 7 Production Soak Planning  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-04_Sprint7ProductionSoak.md`  
+Baseline: `docs/production_soak.md` (ends READY FOR REAL-WORLD VALIDATION)
 
 ---
 
 ## Current task
 
-### Sprint 7 — (not started)
+### Real-world validation (operators)
 
-**Do not auto-start until the user explicitly continues.**
+**Do not auto-start Feature Sprint 7 until soak evidence exists.**
 
-### Suggested direction (from Task 5)
+### Goal
 
-1. Production soak on real shows (MA2/MA3)
-2. Optional force-export / info-only dialog prefs
-3. Deeper validation rules
-4. Optional CLI preflight
+Run checklist / matrix in `docs/production_soak.md` on real shows; record Pass / notes / Fail.
+
+### After soak
+
+Sprint 7 Feature Planning — pick theme from soak priorities (Preflight UX pack · Variant CRUD · deeper rules · Align polish · overlay).
 
 ### Done when
 
-- User picks Sprint 7 scope; REPORT + handoff; STOP
+- Soak log filled; Feature Planning task explicitly started by user; STOP between

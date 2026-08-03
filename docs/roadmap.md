@@ -1,9 +1,9 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 6 Task 2 complete — MA Validation Rule Pack (MVP)  
-**Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint6-ma-validation-rules-028d`  
-**Related:** [`ma_preflight.md`](ma_preflight.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
+**Status:** Sprint 7 — Production Soak Planning complete (docs only)  
+**Updated:** 2026-08-04  
+**Scope tip:** `cursor/sprint7-production-soak-028d`  
+**Related:** [`production_soak.md`](production_soak.md) · [`ma_preflight.md`](ma_preflight.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
 
@@ -30,13 +30,14 @@ Prioritize by:
 | Song Variants (select one) + persistence | ✅ Production |
 | Song-Time façade + PlaybackService mapping | ✅ Production |
 | Align Anchors (draft / preview / Apply / undo / beta) | ✅ Production complete |
-| MA2 / MA3 exporters + Show Patch + golden fixtures | ✅ Exist; **preview/validation UI gap** |
+| MA2 / MA3 exporters + Show Patch + golden fixtures | ✅ Exist |
+| MA Preflight (domain → rules → report → UI → export gate) | ✅ Production MVP |
 | Timecode-only re-export mode | ✅ Exporter/UI present; operator clarity gaps |
 | Variant CRUD / picker UI | ⚠️ Debt — Align works; management chrome thin |
 | Simultaneous Reference overlay / ripple | Deferred (P1) |
 | NDI / OSC / plugin system | Deferred |
 
-**Implication:** Programming accuracy (marks on Song Time + mix align) is now strong. The next highest-value hole is **console handoff confidence** — seeing and fixing MA labels / executors / conflicts *before* importing XML.
+**Implication:** Variants + Align + Preflight export gate are ready for **real-world soak**. Next Feature Sprint waits on desk evidence ([`production_soak.md`](production_soak.md)).
 
 ---
 
@@ -260,6 +261,9 @@ Later
 | **Sprint 6 · Task 3 — Preflight Report Builder** | ✅ Done — `PreflightReport` presentation layer |
 | **Sprint 6 · Task 4 — Preflight UI** | ✅ Done — Tools → MA Preflight… |
 | **Sprint 6 · Task 5 — Export Integration** | ✅ Done — Show Patch preflight gate |
+| **Sprint 7 · Production Soak Planning** | ✅ Done — [`production_soak.md`](production_soak.md) |
+| Sprint 7 · Real-world validation | **Next** (operators; no auto feature work) |
+| Sprint 7 · Feature Planning | Queued after soak evidence |
 
 ---
 
@@ -275,9 +279,11 @@ Later
 | Sprint 6 Task 3 | Preflight Report Builder (`PreflightReport` / sort / serialize) |
 | Sprint 6 Task 4 | Preflight UI (`MaPreflightDialog`; read-only) |
 | Sprint 6 Task 5 | Export Integration (gate on `ValidationReport.has_errors`) |
+| **Sprint 7** | Production soak (Variants + Align + Preflight) — docs then real shows |
 | Sprint 6 explicitly deferred | Overlay compare, NDI, OSC, EventBus-as-feature, variant CRUD (runner-up), large UI redesign |
 | Why not overlay next | Align is done, but console handoff risk > paint polish for lighting shows |
 | Why not variant CRUD first | Domain ready, but export confidence unblocks more shows per week |
+| Why soak before Feature Sprint 7 | Evidence over speculation; measure force-export / CRUD / Preflight friction on desk |
 
 ---
 
@@ -319,8 +325,14 @@ See [`ma_preflight.md`](ma_preflight.md) § Task 4.
 
 See [`ma_preflight.md`](ma_preflight.md) § Task 5.
 
-**Next:** Sprint 7 planning / production soak (do not auto-start).
+## Sprint 7 — Production Soak Planning (done)
+
+Canonical plan: [`production_soak.md`](production_soak.md).
+
+Covers Song Variant, Align Anchors, and MA Preflight: checklist, test matrix (new/legacy/large/variants/export/recovery/media/undo/perf), risks, metrics, and Feature Planning priorities.
+
+**Next:** Real-world validation on desk (operators). Do **not** auto-start Feature Sprint 7.
 
 ---
 
-## READY FOR MA PREFLIGHT PRODUCTION
+## READY FOR REAL-WORLD VALIDATION

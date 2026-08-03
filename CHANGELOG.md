@@ -4,6 +4,11 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 7 — Production Soak Planning (2026-08-04)
+
+- Added `docs/production_soak.md`: checklist, test matrix, risks, metrics, Sprint 7 Feature Planning priorities.
+- Docs only — no runtime features. Roadmap points at real-world validation next.
+
 ### Sprint 6 — Task 5: MA Preflight Export Integration (2026-08-03)
 
 - Show Patch export runs a fresh Preflight gate: errors block; warnings allow Continue; info always shown.
