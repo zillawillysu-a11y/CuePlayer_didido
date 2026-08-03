@@ -1,5 +1,11 @@
 # CuePlayer Architecture
 
+Current intended layer diagram (aspirational). For a full as-built review and the
+incremental target layout, see:
+
+- [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) — as-built review
+- [`ARCHITECTURE_TARGET.md`](ARCHITECTURE_TARGET.md) — strangler / one-module-at-a-time plan
+
 ## Layers
 
 ```text
