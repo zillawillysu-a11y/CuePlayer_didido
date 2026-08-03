@@ -50,8 +50,8 @@ preserving QSettings schema and separating Machine State from Project State.
 
 ## Tests
 
-- Targeted settings + session/autosave tests
-- Full suite: see handoff after run
+- Targeted settings + session/autosave: **14 passed**
+- Full suite: **905 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 

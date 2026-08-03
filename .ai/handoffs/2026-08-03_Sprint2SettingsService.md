@@ -11,6 +11,11 @@
 - MainWindow routes UI session + audio through SettingsService
 - Docs end **READY FOR EVENT BUS FOUNDATION**
 
+## Tests
+
+- Targeted settings/session/autosave: **14 passed**
+- Full suite: **905 passed, 16 failed** (same pre-existing / Linux env set)
+
 ## Recommendation for Task 8
 
 Thin in-process Event Bus for MainWindow signal fan-out; do not replace
