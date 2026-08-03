@@ -1,43 +1,46 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Remote boundary  
+**Type:** Architecture / Event Bus foundation  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 3 Task 1 — ShowHost Protocol Foundation  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint3ShowHostProtocol.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR REMOTE BOUNDARY)
+**Previous:** Sprint 3 Task 2 — Remote Boundary Foundation  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint3RemoteBoundary.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR EVENT BUS FOUNDATION)
 
 ---
 
 ## Current task
 
-### Sprint 3 — Task 2: Remote boundary
+### Sprint 3 — Task 3: Event Bus foundation
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Make Web Remote talk only through `ports.RemoteHost` (expand as needed),
-removing duck-typed MainWindow private API usage from `web_remote.bridge`.
+Introduce a narrow typed Event Bus for UI fan-out (chrome / dirty / marks).
+Do **not** replace `AudioEngine` as the playback clock.
+Do **not** redesign Remote features or networking.
 
 ### Read first
 
 1. `docs/current_architecture.md`
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. `ports/remote_host.py`, `web_remote/bridge.py`
+3. `.ai/handoffs/2026-08-03_Sprint3RemoteBoundary.md`
 
 ### In scope
 
-- Expand / implement RemoteHost
-- Retarget bridge call sites
-- Tests
+- Event Bus type + minimal publishers/subscribers for a small chrome set
+- Tests + docs
 
 ### Out of scope
 
-- EventBus, ShowSessionService redesign, PlaybackService redesign
+- Second clock / position bus
+- Remote feature redesign
+- MainWindow god-object rewrite
 
 ### Done when
 
-- Bridge no longer needs MainWindow `_` privates for supported ops; REPORT + handoff; STOP
+- Bus exists and is used for a narrow fan-out path without clock semantics;
+  REPORT + handoff; STOP

@@ -19,3 +19,5 @@ __all__ = [
     "load_web_remote_prefs",
     "save_web_remote_prefs",
 ]
+
+# Adapter lives in main_window_remote_host (imported by UI construction sites).

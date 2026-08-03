@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 3 · Task 1 complete (ShowHost Protocol foundation)  
+**Status:** Sprint 3 · Task 2 complete (Remote boundary foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint3-show-host-protocol-028d`  
-**Constraint (Task 1):** Explicit `ShowHost` Protocol for ShowSessionService — no MainWindow/ShowSessionService redesign; no EventBus; no Playback/Project redesign.
+**Scope tip:** `cursor/sprint3-remote-boundary-028d`  
+**Constraint (Task 2):** Explicit `RemoteHost` + adapter; bridge talks only through the boundary — no networking redesign; no Remote feature redesign; no MainWindow/ShowSessionService redesign; no EventBus.
 
 Related docs (do not treat as identical):
 
@@ -168,7 +168,7 @@ MainWindow → ProjectService(SettingsService) → recent/autosave orchestration
 Project JSON ← persistence (project state only)
 ```
 
-**Still outside SettingsService (debt):** `web_remote.prefs`, `color_presets`, export dialog dirs, RemoteHost.
+**Still outside SettingsService (debt):** `web_remote.prefs`, `color_presets`, export dialog dirs.
 
 ---
 
@@ -235,11 +235,73 @@ Menus, dialogs, undo, setlist edits, BPM, media-warm jobs, RemoteHost, Settings 
 ### Remaining duck-typed dependencies
 
 - `getattr(host, "_show_video_track_action", None)` soft optional inside ShowSessionService
-- WebRemote still duck-types MainWindow privates (separate Remote boundary task)
 - ShowHost still lists private `_` helper names (transitional until host façade methods)
+- Web Remote private MainWindow access moved behind `MainWindowRemoteHost` (Task 2)
 
 ---
 
+## Sprint 3 Task 2 — Remote boundary foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `ports/remote_host.py` | Explicit `RemoteHost` + `RemoteEnginePort` |
+| `web_remote/main_window_remote_host.py` | Adapter: all MainWindow / engine private access lives here |
+| `web_remote/bridge.py` | Typed `host: RemoteHost` only — no `host._*`, no `engine._*`, no `host.monitor/timeline/status` |
+| MainWindow | Constructs `WebRemoteBridge(MainWindowRemoteHost(self), …)` |
+
+### Dependency graph before / after
+
+```text
+Before:
+  WebRemoteServer / WebRTC
+       └── WebRemoteBridge ──duck──► MainWindow._private + engine._private
+                                    (+ host.monitor / timeline / status)
+
+After:
+  WebRemoteServer / WebRTC          (unchanged networking)
+       └── WebRemoteBridge ──RemoteHost──► MainWindowRemoteHost
+                                                └── MainWindow privates
+                                                └── engine privates (listen helpers)
+```
+
+### Why each Protocol member exists
+
+Full member docs live in `ports/remote_host.py`. Summary:
+
+| Member group | Why it exists | Subsystem owner |
+|--------------|---------------|-----------------|
+| `project` / `current_song` / getters | Setlist + mark ops need domain reads | UI session / SongSession |
+| `get_playback_clock` / `engine` (`RemoteEnginePort`) | Transport state + play/pause/seek/mute without importing AudioEngine | Playback (AudioEngine today) |
+| `mark_dirty` / `refresh_*` / `show_status` | Keep PC chrome + dirty flag in sync after remote edits | MainWindow chrome |
+| Loop `set_loop_*` / `clear_loop` | Remote A–B controls mirror desktop loop UI | PlaybackService via MainWindow |
+| `activate_song` / `rebuild_song_list` / `selected_song_indexes` | Setlist navigation + folder collapse refresh | ShowSession + setlist UI |
+| Marks / undo / digit shortcuts / display apply | Remote mark manager + lane edits | MainWindow mark editing + timeline/monitor |
+| Waveform / stand-in / LTC helpers | Remote wave overview matches Music lane | Timeline + media caches |
+| `video_listen_*` / `playback_sample_rate` / `sync_video_output_active` | Listen + preview without second decoder | Mixer + video sync |
+
+### Intentionally excluded (other MainWindow methods)
+
+Menus, dialogs, BPM jobs, export, Settings UI, ProjectService I/O, ShowSession internals / ShowHost private loader tokens, EventBus, full AudioEngine construction, networking (HTTP/WebRTC stay in `web_remote`), redesign of remote ops.
+
+### Remaining MainWindow private access from Web Remote
+
+- **None in `bridge.py`.** All private `_` access is confined to `MainWindowRemoteHost`.
+- Adapter still calls MainWindow helpers (`_mark_dirty`, `_activate_song`, `_add_mark`, …) and engine internals (`_video_mixer`, `_playback_rate`, `_song`) — that is intentional transitional debt until those become public façades / PlaybackService paths.
+
+### Remaining duck-typed boundaries
+
+- Adapter wraps `window: Any` (not typed as MainWindow — avoids UI import cycles in ports).
+- Soft `getattr` inside adapter for optional video stand-in / sync helpers.
+- ShowHost private `_` names (separate seam; unchanged this task).
+
+### Remaining protocol technical debt
+
+- `RemoteEnginePort` still exposes a wide engine surface (`buffer`, apply settings) used by state builders — not yet a narrow DTO.
+- Video listen still reaches mixer via engine privates inside the adapter.
+- Loop / mute remote paths still go MainWindow helpers / engine rather than exclusively `PlaybackService` (behavior preserved).
+- `push_song_undo(command: Any)` accepts undo command objects without a typed port.
+
+---
 ## 1. Current folder structure
 
 ```text
@@ -324,10 +386,10 @@ There is **no** separate `application/` package yet. Composition and use-cases l
 | **media** | Decode, waveform/PCM caches, BPM, LTC detect, PyAV lock | Clear; `av_path_lock` is a cross-cutting runtime contract |
 | **persistence** | UTF-8 JSON + migrations + bundle/backup | Functional; still depends on exporters naming + (lazy) playback device default |
 | **exporters** | Song → MA2/MA3 | Clean; UI constructs exporters directly |
-| **ui** | Widgets | Also project lifecycle, media jobs, remote host, autosave orchestration |
-| **web_remote** | LAN control | Package-local server/state; `bridge` duck-types `MainWindow` private APIs |
+| **ui** | Widgets | Also project lifecycle, media jobs, remote host adapter, autosave orchestration |
+| **web_remote** | LAN control | Server/state unchanged; `bridge` talks only through `RemoteHost` (+ adapter) |
 | **timecode / routing / util** | Helpers | Small and coherent |
-| **ports** | Protocol seams | ✅ Present on tip; Protocols only — not wired yet |
+| **ports** | Protocol seams | ✅ Present; ShowHost + RemoteHost adopted; others still mostly unwired |
 | ~~**timeline/ / ltc/**~~ | — | Removed empty stubs (Task 2) |
 ### Runtime composition (as wired today)
 
@@ -355,7 +417,7 @@ flowchart TB
   AE -->|position / playing| CM
   AE -->|position / playing| TBAR
   VS -->|frames| PREV
-  WR -.->|private MainWindow APIs| MW
+  WR -.->|RemoteHost adapter| MW
   TBAR -->|play/pause/stop/seek| AE
   TL -->|seek / scrub| AE
 ```
@@ -406,8 +468,8 @@ flowchart LR
 |------|--------------------|
 | `persistence → ui` | **Cleared** (Sprint 0): uses `domain.cue_list_columns` |
 | `domain → media/persistence` | Still present via `domain.media_relink` |
-| `web_remote → MainWindow` privates | Still present (duck-typed; no hard import of `main_window`) |
-| `ports` package | ✅ Present — Protocols only; not yet adopted by bridge |
+| `web_remote → MainWindow` privates | **Cleared in bridge** (Task 2); confined to `MainWindowRemoteHost` adapter |
+| `ports` package | ✅ Present — ShowHost + RemoteHost adopted; other ports still mostly unwired |
 | `cue_list_columns` | ✅ Single path: `domain.cue_list_columns` (UI shim removed) |
 Non-UI importers of `cueplayer.ui.*`: only `app` (boot) and `web_remote.dialog` (`ui.checkbox`).
 
@@ -448,7 +510,7 @@ Not every domain import in UI is a smell (binding models to widgets is normal). 
 | **`ui/mark_manager_dialog.py`** | Lane CRUD UI + `sync_lane_cue_ids` |
 | **`ui/show_patch_page.py`** | Export plan UI + MA sanitize |
 | **`ui/missing_media_dialog.py`** | Relink UX over domain `media_relink` (acceptable thin; domain still impure) |
-| **`web_remote/bridge.py`** | Not Qt widgets, but **application service** duplicated against MainWindow private surface |
+| **`web_remote/bridge.py`** | Remote command surface over `RemoteHost` (adapter holds MainWindow privates) |
 
 Pure-ish UI (theme, checkbox, icon button, spinboxes, row_color) is comparatively clean.
 
@@ -517,12 +579,14 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | **`SettingsService`** | `application/settings_service.py` | ✅ Machine QSettings + audio_prefs façade |
 | **`ShowSessionService`** | `application/show_session_service.py` | ✅ Activate/deactivate; host typed as `ShowHost` |
 | **`ShowHost`** | `ports/show_host.py` | ✅ Explicit host Protocol for ShowSession |
+| **`RemoteHost`** | `ports/remote_host.py` | ✅ Explicit host Protocol for Web Remote |
+| **`MainWindowRemoteHost`** | `web_remote/main_window_remote_host.py` | ✅ Adapter (private access confined here) |
 | **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot (mirror) |
 | Song activate orchestration | `ShowSessionService` | MainWindow thin wrapper; host owns loaders |
 | Media job queue | `MainWindow` executors | Still UI-owned |
 | Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
 | Export orchestration | UI + `exporters/*` | |
-| Remote command surface | `web_remote.bridge` | RemoteHost port unused |
+| Remote command surface | `web_remote.bridge` | ✅ Talks only through `RemoteHost` |
 | Playback clock / mix | `AudioEngine` | Unchanged internals |
 | Frame clock follower | `VideoSyncController` | |
 
@@ -609,7 +673,7 @@ flowchart LR
   Transport -->|play/pause/stop/seek/volume| AE
   Timeline -->|seek/scrub| AE
   Space --> AE
-  Remote -->|via MainWindow| AE
+  Remote -->|RemoteHost adapter| AE
   AE -->|position_changed / playing_changed| VS
   AE --> TL
   AE --> Mon
@@ -625,6 +689,7 @@ Rules in force:
 - Video windows share one decode path through `VideoSyncController` (not a second player).
 - Song switch: `quiesce_output` → swap `current_song` → `set_song` on timeline/monitor/sync/engine → async audio load under `av_path_lock` discipline.
 - Embedded video audio mixes in `VideoAudioMixer` inside/ beside the engine path.
+- Web Remote reaches the clock only via `RemoteHost` / `RemoteEnginePort` (not MainWindow privates).
 
 ---
 
@@ -671,11 +736,15 @@ Machine State and Project State must remain separate — SettingsService never o
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Remote boundary)
+### Cleared in Sprint 3 Task 2
 
-1. **RemoteHost / WebRemote boundary** — stop duck-typing MainWindow privates; wire `ports.RemoteHost`.
-2. Event Bus foundation (UI fan-out; do not replace AudioEngine clock).
-3. Optional: lift ShowHost `_` helpers to public façade methods.
+- `web_remote.bridge` duck-typing MainWindow / engine privates
+
+### P0 — Next (Event Bus)
+
+1. **Event Bus foundation** — typed UI fan-out; do not replace AudioEngine clock.
+2. Optional: lift ShowHost / RemoteHost adapter `_` helpers to public façades.
+3. Optional: route remote transport/loop exclusively through PlaybackService.
 4. Optional SettingsService fold-in for remaining machine prefs.
 
 ### P1 — Structural risk (product-visible)
@@ -692,12 +761,13 @@ Machine State and Project State must remain separate — SettingsService never o
 10. **`models` ↔ `main_cue_id` soft cycle**.
 11. **Giant UI files** (`timeline_widget`, `cue_monitor_panel`).
 12. **No repository classes** (intentional until a later sprint; functions in `persistence/` are fine).
+13. **RemoteHost adapter still wraps engine/mixer privates** for video listen.
 
 ### P3 — Deferred
 
-13. Full `adapters/` tree rename of playback/media.
-14. Rewriting `AudioEngine` / timeline paint architecture.
-15. Product features under an “architecture” banner.
+14. Full `adapters/` tree rename of playback/media.
+15. Rewriting `AudioEngine` / timeline paint architecture.
+16. Product features under an “architecture” banner.
 
 ---
 
@@ -721,23 +791,25 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 |------|--------|-------|
 | Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
 | Sprint 2 · 5–8 | ✅ Done | Playback → boundary → Settings → ShowSession |
-| **Sprint 3 · 1** ShowHost Protocol | ✅ Done | Explicit `ports.ShowHost` |
-| **Sprint 3 · 2** Remote boundary | **Next** | Wire RemoteHost; stop MainWindow private duck-typing |
+| Sprint 3 · 1 | ✅ Done | Explicit `ports.ShowHost` |
+| **Sprint 3 · 2** Remote boundary | ✅ Done | `RemoteHost` + `MainWindowRemoteHost`; bridge clean |
+| **Sprint 3 · 3** Event Bus foundation | **Next** | Typed UI fan-out (not a second clock) |
 
-### Recommended Sprint 3 Task 2 — Remote boundary
+### Recommended Sprint 3 Task 3 — Event Bus foundation
 
-- Make Web Remote talk only through `ports.RemoteHost` (expand Protocol as needed).
-- Remove / stop adding MainWindow private `_` calls from `web_remote.bridge`.
-- Do not redesign PlaybackService or introduce EventBus in the same task.
-- Preserve identical remote runtime behavior.
+- Introduce a narrow Event Bus for UI fan-out (mark/dirty/chrome refresh signals).
+- Do **not** replace `AudioEngine` as the playback clock.
+- Do **not** redesign Remote features or networking.
+- Prefer publishing from services / adapters over growing MainWindow signal spaghetti.
 
-### Risks for Task 2
+### Risks for Task 3
 
 | Risk | Mitigation |
 |------|------------|
-| Remote needs many MainWindow helpers | Grow RemoteHost deliberately; wrap not copy |
-| Behavior drift on mute/seek/song switch | Golden remote op tests |
+| Bus becomes a second clock | Forbid position/transport on the bus; clock stays AudioEngine |
+| Over-broad event catalog | Start with 3–5 chrome events only |
+| Double-refresh / loops | One publisher per event; adapters subscribe once |
 
 ---
 
-## READY FOR REMOTE BOUNDARY
+## READY FOR EVENT BUS FOUNDATION

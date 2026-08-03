@@ -4,6 +4,14 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 3 — Task 2: Remote boundary foundation (2026-08-03)
+
+- Expanded `ports/remote_host.py` (`RemoteHost` + `RemoteEnginePort`) with member ownership docs.
+- Added `web_remote/main_window_remote_host.py` adapter (all MainWindow/engine private access confined here).
+- `WebRemoteBridge` now takes `RemoteHost` only — no `host._*` / `engine._*` / monitor-timeline duck-typing.
+- MainWindow wires `WebRemoteBridge(MainWindowRemoteHost(self), …)`; networking unchanged.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 3 — Task 1: ShowHost Protocol foundation (2026-08-03)
 
 - Added `ports/show_host.py` (`ShowHost` + nested engine/timeline/monitor/video/transport/status Protocols).
