@@ -25,6 +25,8 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 | [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) | Short intended layer diagram |
 | [`../docs/ARCHITECTURE_REVIEW.md`](../docs/ARCHITECTURE_REVIEW.md) | As-built review (coupling, SRP, large files) |
 | [`../docs/ARCHITECTURE_TARGET.md`](../docs/ARCHITECTURE_TARGET.md) | Strangler target: `ports/` / `application/` / `adapters/` |
+| [`../docs/BOUNDARY_RULES.md`](../docs/BOUNDARY_RULES.md) | **Permanent** allowed/forbidden dependency directions |
+| [`../docs/MIGRATION_RULES.md`](../docs/MIGRATION_RULES.md) | **Permanent** one-module migration procedure |
 | [`../docs/DISTRIBUTION.md`](../docs/DISTRIBUTION.md) | Windows packaging (`packaging/build_windows.ps1`) |
 
 ## Repo facts agents must know

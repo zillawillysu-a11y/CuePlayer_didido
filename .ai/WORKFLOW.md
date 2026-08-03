@@ -26,7 +26,7 @@ Never start the next queued task automatically.
 4. `.ai/prompts/cursor_system.md` when starting fresh / no prior context
 5. All docs named by the task, typically:
    - Feature → `docs/PRODUCT_SPEC.md` (relevant sections) + `AGENTS.md`
-   - Architecture move → `docs/ARCHITECTURE_TARGET.md` + `docs/ARCHITECTURE_REVIEW.md`
+   - Architecture move → `docs/ARCHITECTURE_TARGET.md` + `docs/ARCHITECTURE_REVIEW.md` + **`docs/BOUNDARY_RULES.md`** + **`docs/MIGRATION_RULES.md`**
    - Packaging → `docs/DISTRIBUTION.md`
 6. Latest `.ai/REPORT.md` and the newest file under `.ai/handoffs/` if continuing prior work
 

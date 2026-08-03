@@ -42,6 +42,7 @@ Details: `.ai/WORKFLOW.md`. Also enforced by `.cursor/rules/ai-workflow.mdc`.
 
 - **As-built:** UI hub (`ui/main_window.py`) wires engine, video, persistence, exporters, web remote. See `docs/ARCHITECTURE_REVIEW.md`.
 - **Target:** strangler toward `ports/` + `application/` + `adapters/` with behavior-preserving shims. See `docs/ARCHITECTURE_TARGET.md`.
+- **Permanent rules:** `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md` — read before any architecture move.
 - Prefer **one module move per PR**. Do not rewrite the app.
 - High-fragility shared resources: `media/av_lock.py`, mutable shared `Song`, video-audio mixer vs Preview lock contention.
 

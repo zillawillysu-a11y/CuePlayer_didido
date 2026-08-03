@@ -3,6 +3,7 @@
 **性質：** 設計文件；描述目標資料夾與「一次搬一個 Module」的順序。  
 **約束：** 不能影響目前功能；所有功能必須可逐步搬移；不要一次重寫。  
 **相關：** 現況分析見 [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md)；現行簡圖見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。  
+**永久規則：** 依賴方向見 [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md)；搬移手法見 [`MIGRATION_RULES.md`](MIGRATION_RULES.md)（Step 1 之前已插入 Guardrails）。  
 **AI 執行：** 每次只做 [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md) 寫的那一步；強制流程 [`WORKFLOW.md`](../.ai/WORKFLOW.md)（計畫 → 實作 → [`REPORT.md`](../.ai/REPORT.md) + [`handoffs/`](../.ai/handoffs/) → 停止）。  
 **日期：** 2026-08
 
@@ -174,6 +175,7 @@ src/cueplayer/ui/cue_list_columns.py    →  re-export domain.cue_list_columns
 | # | 搬哪個 Module | 做什麼（仍不改功能） | 完成定義 |
 |---|---------------|----------------------|----------|
 | **0** | `ports/` Protocol 套件 | ✅ 已落地：`src/cueplayer/ports/` 僅 Protocol（見 handoff `PortsPackageStep0`） | `import cueplayer.ports` |
+| **G** | Architecture Guardrails | ✅ `BOUNDARY_RULES.md` + `MIGRATION_RULES.md`（docs only；插在 step 1 前） | 兩份永久規則文件 |
 | **1** | `domain/cue_list_columns` | 從 `ui/cue_list_columns` 遷出；ui/persistence 兩邊 shim | persistence 不再 import `ui.*` |
 | **2** | `ports.remote_host` + bridge 適配 | 定義介面；bridge 改打公開方法（MainWindow 先實作介面） | bridge 零私有 `_` 存取 |
 | **3** | `application/autosave_service` | 從 MainWindow 剪出 timer+backup 呼叫 | MainWindow 只持有 service |
