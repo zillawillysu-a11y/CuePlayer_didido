@@ -26,6 +26,23 @@ python -m pip install -U pip
 pip install -e ".[dev]"
 ```
 
+If `pip install` fails with `Failed to build 'pygame'`, you are on an old checkout — `master` depends on **`pygame-ce`** (prebuilt wheels for Python 3.13+), not classic `pygame`.
+
+### Sync from GitHub (laptop / desktop)
+
+**Latest features** (setlist folders, video perf, waveform cache, …):
+
+```powershell
+git fetch origin
+git checkout cursor/setlist-organize-028d
+pip install -e ".[dev,midi]"
+python -m cueplayer.app
+```
+
+`master` and `cursor/pygame-ce-install-fix-028d` are older — only use the latter if you only need the pygame install fix.
+
+Replace the branch name when testing a specific PR.
+
 ## Run
 
 ```powershell

@@ -19,7 +19,7 @@ _BACKEND_READY = False
 
 
 def _ensure_mido_backend() -> None:
-    """Prefer rtmidi; fall back to pygame (reliable on Windows without a compiler)."""
+    """Prefer rtmidi; fall back to pygame-ce (reliable on Windows without a compiler)."""
     global _BACKEND_READY
     if _BACKEND_READY:
         return
