@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent
+from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFrame,
     QHeaderView,
     QLabel,
+    QMenu,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -60,6 +61,7 @@ class CueMonitorPanel(QWidget):
     delete_requested = Signal(list)  # list[str] mark ids
     selection_changed = Signal(list)  # list[str] mark ids
     note_changed = Signal(str, str, str)  # mark_id, old_name, new_name
+    now_visibility_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -138,6 +140,27 @@ class CueMonitorPanel(QWidget):
         self.secondary_cue.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.secondary_cue.setStyleSheet(_now_card_style("#52525b", secondary=True))
 
+        self._now_section = QWidget()
+        now_layout = QVBoxLayout(self._now_section)
+        now_layout.setContentsMargins(0, 0, 0, 0)
+        now_layout.setSpacing(6)
+        now_layout.addWidget(now_title)
+        now_layout.addWidget(self.primary_track)
+        now_layout.addWidget(self.primary_cue)
+        now_layout.addWidget(self.secondary_track)
+        now_layout.addWidget(self.secondary_cue)
+        self._now_section.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._now_section.customContextMenuRequested.connect(self._show_now_context_menu)
+        for widget in (
+            now_title,
+            self.primary_track,
+            self.primary_cue,
+            self.secondary_track,
+            self.secondary_cue,
+        ):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            widget.customContextMenuRequested.connect(self._show_now_context_menu)
+
         list_title = QLabel("Cue List (Shift/Ctrl to multi-select · Del to delete · click time to jump)")
         list_title.setStyleSheet("font-weight: 600; color: #a1a1aa;")
 
@@ -158,17 +181,14 @@ class CueMonitorPanel(QWidget):
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
 
         layout.addWidget(clock_frame)
-        layout.addWidget(now_title)
-        layout.addWidget(self.primary_track)
-        layout.addWidget(self.primary_cue)
-        layout.addWidget(self.secondary_track)
-        layout.addWidget(self.secondary_cue)
+        layout.addWidget(self._now_section)
         layout.addWidget(list_title)
         layout.addWidget(self.cue_table, stretch=1)
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self.refresh_list()
+        self._apply_now_panel_visibility()
         self.set_position(self._position, getattr(song, "duration_seconds", 0.0) if song else 0.0)
 
     def apply_now_display_settings(self) -> None:
@@ -176,7 +196,55 @@ class CueMonitorPanel(QWidget):
         self._secondary_cleared = False
         self._secondary_hold_mark_id = None
         self._secondary_clear_timer.stop()
+        self._apply_now_panel_visibility()
         self._sync_current(force_now=True)
+
+    def _apply_now_panel_visibility(self) -> None:
+        if self._song is None:
+            show_primary = True
+            show_secondary = True
+        else:
+            show_primary = bool(self._song.now_primary_visible)
+            show_secondary = bool(self._song.now_secondary_visible)
+        self.primary_track.setVisible(show_primary)
+        self.primary_cue.setVisible(show_primary)
+        self.secondary_track.setVisible(show_secondary)
+        if not show_secondary:
+            self.secondary_cue.setVisible(False)
+            self._secondary_clear_timer.stop()
+
+    def _show_now_context_menu(self, pos) -> None:  # noqa: ANN001
+        if self._song is None:
+            return
+        menu = QMenu(self)
+        show_primary = QAction("Show Primary display", self)
+        show_primary.setCheckable(True)
+        show_primary.setChecked(bool(self._song.now_primary_visible))
+        show_secondary = QAction("Show Secondary display", self)
+        show_secondary.setCheckable(True)
+        show_secondary.setChecked(bool(self._song.now_secondary_visible))
+
+        def _toggle_primary(checked: bool) -> None:
+            self._song.now_primary_visible = bool(checked)
+            self._apply_now_panel_visibility()
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        def _toggle_secondary(checked: bool) -> None:
+            self._song.now_secondary_visible = bool(checked)
+            self._apply_now_panel_visibility()
+            self._sync_current(force_now=True)
+            self.now_visibility_changed.emit()
+
+        show_primary.toggled.connect(_toggle_primary)
+        show_secondary.toggled.connect(_toggle_secondary)
+        menu.addAction(show_primary)
+        menu.addAction(show_secondary)
+        sender = self.sender()
+        if isinstance(sender, QWidget):
+            menu.exec(sender.mapToGlobal(pos))
+        else:
+            menu.exec(self._now_section.mapToGlobal(pos))
 
     def _on_secondary_auto_clear(self) -> None:
         self._secondary_cleared = True
@@ -368,6 +436,14 @@ class CueMonitorPanel(QWidget):
                 self._secondary_clear_timer.stop()
                 self._secondary_hold_mark_id = None
                 self._secondary_cleared = False
+            return None
+        if secondary and self._song is not None and not self._song.now_secondary_visible:
+            track.hide()
+            cue.hide()
+            return None
+        if not secondary and self._song is not None and not self._song.now_primary_visible:
+            track.hide()
+            cue.hide()
             return None
         track.show()
         cue.show()

@@ -50,6 +50,21 @@ def test_generate_ltc_various_fps(fps: float) -> None:
     assert np.any(pcm != 0)
 
 
+def test_generate_ltc_continuous_no_gaps() -> None:
+    pcm = generate_ltc_pcm(2.0, 48000, "01:00:00:00", 30.0)
+    max_gap = 0
+    gap = 0
+    for x in pcm:
+        if abs(float(x)) < 1e-6:
+            gap += 1
+            max_gap = max(max_gap, gap)
+        else:
+            gap = 0
+  # Bi-phase should stay active; old encoder left multi-sample silence between frames.
+    assert max_gap < 8
+    assert float(np.max(np.abs(pcm))) > 0.1
+
+
 def test_ltc_advances_from_start_tc() -> None:
     # Two short buffers starting at different TCs should not be identical.
     a = generate_ltc_pcm(0.1, 48000, "01:00:00:00", 30.0)

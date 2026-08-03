@@ -78,12 +78,22 @@ def encode_ltc_frame_bits(
     return bits
 
 
-def _biphase_encode(bits: list[int], samples_per_bit: int, amplitude: float) -> np.ndarray:
-    """Bi-phase mark: edge at every bit boundary; mid-bit edge iff bit == 1."""
-    spb = max(2, int(samples_per_bit))
+def _biphase_encode(
+    bits: list[int],
+    samples_per_bit: float,
+    amplitude: float,
+    *,
+    initial_level: float | None = None,
+) -> tuple[np.ndarray, float]:
+    """Bi-phase mark: edge at every bit boundary; mid-bit edge iff bit == 1.
+
+    ``initial_level`` carries polarity from the previous LTC frame so decoders
+    stay locked across frame boundaries.
+    """
+    spb = max(2, int(round(samples_per_bit)))
     half = spb // 2
     out = np.empty(len(bits) * spb, dtype=np.float32)
-    level = float(amplitude)
+    level = float(amplitude) if initial_level is None else float(initial_level)
     pos = 0
     for bit in bits:
         # Transition at start of bit.
@@ -93,7 +103,7 @@ def _biphase_encode(bits: list[int], samples_per_bit: int, amplitude: float) -> 
             level = -level
         out[pos + half : pos + spb] = level
         pos += spb
-    return out
+    return out, level
 
 
 def generate_ltc_pcm(
@@ -124,45 +134,37 @@ def generate_ltc_pcm(
         )
 
     tc = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
-    # Approximate integer samples/bit; residual drift corrected by absolute bit index.
-    spb_i = max(2, int(round(samples_per_bit)))
-
     out = np.zeros(total_samples, dtype=np.float32)
-    # How many complete LTC frames fit.
-    frame_samples = samples_per_bit * 80.0
-    n_frames = int(np.ceil(total_samples / frame_samples)) + 1
+    level = float(amplitude)
+    pos = 0
+    frame_idx = 0
+    min_frame_samples = 80 * 2
 
-    write_pos = 0.0
-    current = tc
-    for _ in range(n_frames):
-        if int(write_pos) >= total_samples:
-            break
+    while pos < total_samples:
+        target_end = int(round((frame_idx + 1) * sr / rate))
+        frame_len = min(max(0, target_end - pos), total_samples - pos)
+        if frame_len < min_frame_samples:
+            if total_samples - pos < min_frame_samples:
+                break
+            frame_len = min(total_samples - pos, max(min_frame_samples, int(round(sr / rate))))
+
         bits = encode_ltc_frame_bits(
-            current.hours,
-            current.minutes,
-            current.seconds,
-            current.frames,
+            tc.hours,
+            tc.minutes,
+            tc.seconds,
+            tc.frames,
             drop_frame=drop_frame,
         )
-        # Per-frame sample count from absolute bit clock to limit long-term drift.
-        frame_len = int(round((write_pos + frame_samples))) - int(round(write_pos))
-        if frame_len < 80 * 2:
-            frame_len = spb_i * 80
-        # Encode with uniform samples/bit for this frame, then trim/pad to frame_len.
-        spb = max(2, frame_len // 80)
-        wave = _biphase_encode(bits, spb, amplitude)
-        if wave.size < frame_len:
-            wave = np.pad(wave, (0, frame_len - wave.size))
-        elif wave.size > frame_len:
+        wave, level = _biphase_encode(bits, frame_len / 80.0, amplitude, initial_level=level)
+        if wave.size > frame_len:
             wave = wave[:frame_len]
-
-        start_i = int(round(write_pos))
-        end_i = min(total_samples, start_i + wave.size)
-        if end_i <= start_i:
-            break
-        out[start_i:end_i] = wave[: end_i - start_i]
-        write_pos += frame_samples
-        current = add_frames(current, 1, rate)
+        elif wave.size < frame_len:
+            pad = np.full(frame_len - wave.size, level, dtype=np.float32)
+            wave = np.concatenate([wave, pad])
+        out[pos : pos + frame_len] = wave
+        pos += frame_len
+        frame_idx += 1
+        tc = add_frames(tc, 1, rate)
 
     return out
 
