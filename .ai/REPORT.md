@@ -41,8 +41,8 @@ See `src/cueplayer/ports/show_host.py` (and section in user report).
 
 ## Tests
 
-- Targeted ports + show-session + song-switch
-- Full suite: see handoff after run
+- Targeted ports + show-session + song-switch: green
+- Full suite: **913 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 

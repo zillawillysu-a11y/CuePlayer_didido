@@ -11,6 +11,10 @@
 - ShowSessionService typed against ShowHost
 - Docs end **READY FOR REMOTE BOUNDARY**
 
+## Tests
+
+- Full suite: **913 passed, 16 failed** (pre-existing / Linux env)
+
 ## Recommendation for Task 2
 
 Wire Web Remote through `ports.RemoteHost`; stop MainWindow private duck-typing.
