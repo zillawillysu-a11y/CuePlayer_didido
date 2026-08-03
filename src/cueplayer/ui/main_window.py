@@ -5002,8 +5002,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
         # Safety: preview must not survive dialog close.
         if self.playback.anchor_preview_active:
-            self.playback.end_anchor_preview()
-
+            self.playback.end_anchor_preview(restore_entry=True)
     def _on_align_anchors_committed(self, command: SetVariantAnchorOffsetCommand) -> None:
         """Undo stack + dirty after Align Anchors Apply (command already applied)."""
         self._push_song_undo(command)

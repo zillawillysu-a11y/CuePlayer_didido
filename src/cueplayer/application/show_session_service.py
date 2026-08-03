@@ -66,6 +66,9 @@ class ShowSessionService:
         h = self._host
         if index < 0 or index >= len(h.project.songs):
             return
+        # Align Anchors preview must not survive a song switch.
+        if self._playback.anchor_preview_active:
+            self._playback.end_anchor_preview(restore_entry=False)
         h._audio_load_token += 1
         h._song_activate_gen += 1
         activate_gen = h._song_activate_gen
