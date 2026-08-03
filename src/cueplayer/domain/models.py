@@ -657,7 +657,7 @@ class Song:
         """Media path for playback: selected audio variant, else legacy main track.
 
         Does not check disk existence (callers decide missing-file UX).
-        Does not apply ``anchor_offset`` (Task 5).
+        Does not apply ``anchor_offset`` (playback integration later).
         """
         selected = self.selected_audio_path()
         if selected is not None:

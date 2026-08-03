@@ -58,6 +58,8 @@ class SongVariant:
 
     anchor_offset
         Why: shift media vs the song cue timeline (Align Anchors later).
+        Semantics: see ``domain.anchor_mapping`` —
+        ``variant_time = song_time - anchor_offset``.
         Future: Align Anchors / compare without moving marks.
         Optional (default ``0.0`` seconds).
 

@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 5: Anchor Mapping Foundation (2026-08-03)
+
+- Added `domain/anchor_mapping.py` (`song_to_variant_time` / `variant_to_song_time`).
+- Song Time remains canonical; offsets apply only through the mapping layer.
+- Unit tests in `tests/domain/test_anchor_mapping.py`.
+- No PlaybackService / Timeline / Waveform / UI changes; offsets not applied at runtime yet.
+
 ### Sprint 4 — Feature Task 4: Playback Variant Support MVP (2026-08-03)
 
 - `Song.active_audio_path()` / `replace_main_audio` / `clear_audio_media`.
