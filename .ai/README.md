@@ -28,6 +28,7 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 | [`../docs/BOUNDARY_RULES.md`](../docs/BOUNDARY_RULES.md) | **Permanent** allowed/forbidden dependency directions |
 | [`../docs/MIGRATION_RULES.md`](../docs/MIGRATION_RULES.md) | **Permanent** one-module migration procedure |
 | [`../docs/SPRINT_0_REVIEW.md`](../docs/SPRINT_0_REVIEW.md) | Sprint 0 retrospective (foundation complete) |
+| [`../docs/current_architecture.md`](../docs/current_architecture.md) | **Sprint 1 baseline** as-built assessment + plan |
 | [`../docs/DISTRIBUTION.md`](../docs/DISTRIBUTION.md) | Windows packaging (`packaging/build_windows.ps1`) |
 
 ## Repo facts agents must know
@@ -36,10 +37,9 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 - **Package:** `src/cueplayer/` (Python / PySide6). Tests under `tests/`. Fixtures under `fixtures/`.
 - **Clock:** `AudioEngine` sample position is the only playback clock; video Preview / Clean / NDI share one decode path.
 - **Remote:** `origin` → `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (auto-push after commits; see `.cursor/rules/auto-push.mdc`).
-- **Architecture debt:** UI-centric hub (`ui/main_window.py`); planned migration is **one module per PR**, behavior-preserving shims — see `ARCHITECTURE_TARGET.md`.
-- **Ports package (step 0 done):** `src/cueplayer/ports/` — Protocol interfaces only.
-- **Step 1 done:** `cue_list_columns` lives in `domain/`; `ui.cue_list_columns` is a shim; persistence imports domain. Next: step 2 (`RemoteHost`).
-
+- **Architecture debt:** UI-centric hub (`ui/main_window.py`); planned migration is **one module per PR**, behavior-preserving shims — see `ARCHITECTURE_TARGET.md` + `current_architecture.md`.
+- **Ports package:** Protocol sources landed on architecture Step 0 branch; **may be missing on tips that only have columns migrate** until Sprint 1 Task 2 unifies trunks. Do not assume `import cueplayer.ports` works until verified.
+- **Step 1 done:** `cue_list_columns` lives in `domain/`; `ui.cue_list_columns` is a shim; persistence imports domain. Next after tip unify: RemoteHost (Sprint 1 Task 3).
 ## Start every agent session
 
 1. Read `.ai/README.md` (this file), `.ai/WORKFLOW.md`, `.ai/NEXT_TASK.md`.

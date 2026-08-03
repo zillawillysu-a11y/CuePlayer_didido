@@ -8,6 +8,7 @@ incremental target layout, see:
 - [`BOUNDARY_RULES.md`](BOUNDARY_RULES.md) — **permanent** allowed/forbidden dependencies
 - [`MIGRATION_RULES.md`](MIGRATION_RULES.md) — **permanent** how to move one module safely
 - [`SPRINT_0_REVIEW.md`](SPRINT_0_REVIEW.md) — Sprint 0 retrospective (foundation complete)
+- [`current_architecture.md`](current_architecture.md) — **Sprint 1 baseline** as-built assessment + Sprint 1 task plan
 
 AI agents: follow [`.ai/WORKFLOW.md`](../.ai/WORKFLOW.md) end-to-end (plan → implement → [`.ai/REPORT.md`](../.ai/REPORT.md) + handoff → stop). Active task: [`.ai/NEXT_TASK.md`](../.ai/NEXT_TASK.md). Read boundary + migration rules before any architecture move.
 
