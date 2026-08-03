@@ -2,26 +2,52 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
+
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import sounddevice as sd
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from cueplayer.domain.models import AudioOutputSettings, Song, default_channel_routing
-from cueplayer.media.audio_loader import AudioBuffer
+from cueplayer.domain.models import (
+    AudioOutputSettings,
+    Song,
+    clamp_output_channels,
+    default_ltc_channels_for_device,
+)
+from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.playback.devices import (
-    build_source_route,
     find_output_device,
     list_output_devices,
+    probe_supported_output_channels,
     required_output_channels,
+    resolve_output_endpoint_for_channels,
+    resolve_output_hostapi,
     resolve_output_samplerate,
+    upgrade_device_for_channels,
+)
+from cueplayer.playback.routing_parse import (
+    SRC_FILE_LTC,
+    SRC_FILE_MUSIC,
+    SRC_LTC_BUS,
+    SRC_MUSIC_L,
+    SRC_MUSIC_R,
+    build_stereo_route_map,
+    is_ltc_route,
+    is_music_source_route,
+    parse_stereo_route,
 )
 from cueplayer.playback.mtc_output import MtcOutput
-from cueplayer.playback.resample import resample_linear
+from cueplayer.playback.resample import resample_hold_segment, resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
-from cueplayer.timecode.ltc import generate_ltc_pcm
+from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 
 
 class AudioEngine(QObject):
@@ -69,6 +95,13 @@ class AudioEngine(QObject):
         self._audio_settings = AudioOutputSettings()
         self._ltc_pcm: np.ndarray | None = None
         self._ltc_cache_key: tuple | None = None
+        self._ltc_cache_future = None
+        self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
+        self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
+        self._detected_ltc_channel: int | None = None
+        self._ltc_detect_ran = False
+        self._cached_music_indices: tuple[int, int] = (0, 1)
+        self._cached_file_ltc_idx: int | None = None
         self._song_start_tc = "01:00:00:00"
         self._song_fps = 30.0
         self._output_channel_count = 2
@@ -82,6 +115,9 @@ class AudioEngine(QObject):
         self._playback_rate = 48000
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
+        self._playback_resample_future = None
+        self._resample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-resample")
+        self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._poll = QTimer(self)
         self._poll.setInterval(16)
@@ -108,6 +144,108 @@ class AudioEngine(QObject):
     @property
     def mtc_enabled(self) -> bool:
         return bool(self._audio_settings.mtc_enabled)
+
+    @property
+    def detected_ltc_channel(self) -> int | None:
+        """0=left, 1=right when auto-detect finds striped LTC in the loaded file."""
+        return self._detected_ltc_channel
+
+    @property
+    def ltc_source_mode(self) -> str:
+        return str(self._audio_settings.ltc_source)
+
+    def _uses_generated_ltc(self) -> bool:
+        return bool(
+            self._audio_settings.ltc_enabled
+            and self._audio_settings.ltc_source == "generator"
+            and self._audio_settings.ltc_generator_enabled
+        )
+
+    def _autodetect_ltc_channel(self) -> int | None:
+        if self._ltc_detect_ran:
+            return self._detected_ltc_channel
+        self._ltc_detect_ran = True
+        buf = self._buffer
+        if buf is not None and buf.samples.ndim == 2 and buf.samples.shape[1] >= 2:
+            self._detected_ltc_channel = detect_ltc_channel(
+                buf.samples, int(buf.sample_rate)
+            )
+        else:
+            self._detected_ltc_channel = None
+        return self._detected_ltc_channel
+
+    def _is_ltc_file_channel(self, channel: int) -> bool:
+        ch = self._file_ltc_channel()
+        if ch is not None and ch == channel:
+            return True
+        eff = self._effective_ltc_source_channel()
+        return eff is not None and eff == channel
+
+    def _file_ltc_channel(self) -> int | None:
+        """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
+        s = self._audio_settings
+        uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
+        uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
+        if not uses_ltc_leg and not uses_file_bus:
+            return None
+        return self._resolved_file_ltc_channel(require_settings=True)
+
+    def _resolved_file_ltc_channel(self, *, require_settings: bool = False) -> int | None:
+        """Which loaded-file channel carries striped LTC (0=L, 1=R)."""
+        s = self._audio_settings
+        if require_settings:
+            uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
+            uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
+            if not uses_ltc_leg and not uses_file_bus:
+                return None
+        mode = s.ltc_source
+        if mode == "generator":
+            return self._autodetect_ltc_channel()
+        if mode == "source_left":
+            return 0
+        if mode == "source_right":
+            return 1
+        if mode == "auto":
+            if self._detected_ltc_channel is not None:
+                return self._detected_ltc_channel
+            return self._autodetect_ltc_channel()
+        return None
+
+    def _effective_ltc_source_channel(self) -> int | None:
+        """Source file channel for the dedicated LTC output bus."""
+        if not self._audio_settings.ltc_enabled:
+            return None
+        if self._audio_settings.ltc_source == "generator":
+            return None
+        return self._file_ltc_channel()
+
+    def _music_source_indices(self) -> tuple[int, int]:
+        """Which loaded-file channels feed the music L/R bus (mono duplicates when needed)."""
+        samples = self._playback_samples
+        if samples is None:
+            return 0, 1
+        ch_count = int(samples.shape[1]) if samples.ndim == 2 else 1
+        if ch_count <= 1:
+            return 0, 0
+        strip_ltc = (
+            is_music_source_route(self._audio_settings.music_l_route)
+            or is_music_source_route(self._audio_settings.music_r_route)
+            or is_ltc_route(self._audio_settings.music_l_route)
+            or is_ltc_route(self._audio_settings.music_r_route)
+            or self._resolved_file_ltc_channel() is not None
+        )
+        if not strip_ltc:
+            return 0, 1
+        ltc_ch = self._resolved_file_ltc_channel()
+        if ltc_ch is None:
+            ltc_ch = self._autodetect_ltc_channel()
+        if ltc_ch is not None:
+            music_chs = [i for i in range(ch_count) if i != ltc_ch]
+            if len(music_chs) >= 2:
+                return music_chs[0], music_chs[1]
+            if len(music_chs) == 1:
+                return music_chs[0], music_chs[0]
+        return 0, 1
 
     @property
     def routing_warning(self) -> str | None:
@@ -210,7 +348,7 @@ class AudioEngine(QObject):
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
 
     def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
@@ -225,21 +363,33 @@ class AudioEngine(QObject):
 
         self._audio_settings = AudioOutputSettings(
             output_device_name=settings.output_device_name,
+            output_device_index=settings.output_device_index,
+            output_hostapi=str(settings.output_hostapi or ""),
+            music_l_route=str(settings.music_l_route or "1"),
+            music_r_route=str(settings.music_r_route or "2"),
             music_left_channels=list(settings.music_left_channels),
             music_right_channels=list(settings.music_right_channels),
             ltc_enabled=bool(settings.ltc_enabled),
+            ltc_source=str(settings.ltc_source),
+            ltc_generator_enabled=bool(settings.ltc_generator_enabled),
             ltc_gain=float(min(1.5, max(0.0, settings.ltc_gain))),
             ltc_channels=list(settings.ltc_channels),
             mtc_enabled=bool(settings.mtc_enabled),
             midi_port_name=settings.midi_port_name,
         )
         self._resolve_device_and_route()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
         else:
             with self._lock:
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
+        if not self._audio_settings.ltc_enabled:
+            with self._lock:
+                self._ltc_pcm = None
+                self._ltc_cache_key = None
+
+        self._refresh_source_routing_cache()
 
         mtc_err = self._mtc.configure(
             enabled=self._audio_settings.mtc_enabled,
@@ -253,6 +403,18 @@ class AudioEngine(QObject):
             self.seek(pos)
             self.play()
         warning = self._routing_warning
+        if (
+            self._audio_settings.ltc_enabled
+            and self._audio_settings.ltc_source == "auto"
+            and self._effective_ltc_source_channel() is None
+            and self._buffer is not None
+            and self._buffer.channels >= 2
+        ):
+            auto_warn = (
+                "Could not auto-detect LTC in the loaded file — "
+                "choose Left or Right manually to avoid LTC on Music CH1–2."
+            )
+            warning = f"{warning} {auto_warn}" if warning else auto_warn
         if mtc_err:
             return mtc_err if warning is None else f"{warning} {mtc_err}"
         return warning
@@ -278,11 +440,30 @@ class AudioEngine(QObject):
     def set_loop_points(self, a: float | None, b: float | None) -> None:
         self.loop_a = a
         self.loop_b = b
-        self._refresh_loop_engage()
+        if self.loop_enabled:
+            self.engage_ab_loop()
+        else:
+            self._refresh_loop_engage()
 
     def set_loop_enabled(self, enabled: bool) -> None:
         self.loop_enabled = bool(enabled)
-        self._refresh_loop_engage()
+        if self.loop_enabled:
+            self.engage_ab_loop()
+        else:
+            with self._lock:
+                self._loop_engage = False
+
+    def engage_ab_loop(self) -> None:
+        """Arm A–B loop and jump to A when the playhead is outside the region."""
+        bounds = self._loop_bounds()
+        if not self.loop_enabled or bounds is None:
+            return
+        a, b = bounds
+        pos = self._raw_seconds()
+        if pos >= b - 1e-4 or pos < a - 1e-4:
+            self.seek(a)
+        with self._lock:
+            self._loop_engage = True
 
     def clear_loop(self) -> None:
         self.loop_a = None
@@ -330,10 +511,8 @@ class AudioEngine(QObject):
             return False
         a, b = bounds
         pos = self._raw_seconds()
-        if a - 1e-4 <= pos < b - 1e-4:
+        if not self._loop_engage and a - 1e-4 <= pos < b - 1e-4:
             self._loop_engage = True
-        elif pos < a - 1e-4:
-            self._loop_engage = False
         if self._loop_engage and pos + 1e-4 >= b:
             self.seek(a)
             return True
@@ -345,15 +524,37 @@ class AudioEngine(QObject):
         self._buffer = buffer
         if buffer is not None:
             self._duration_seconds = buffer.duration_seconds
+        else:
+            self._detected_ltc_channel = None
+            self._ltc_detect_ran = False
         self._position_frame = 0
         self.clear_calibration_clicks()
         self._invalidate_ltc_cache()
-        if self._audio_settings.ltc_enabled:
+        if self._uses_generated_ltc():
             self._ensure_ltc_cache()
         self._resolve_device_and_route()
+        self._refresh_ltc_detection()
         self.position_changed.emit(0.0)
+        if buffer is not None:
+            self._prewarm_output_stream()
         if was_playing and buffer is not None:
             self.play()
+
+    def _needs_output_stream(self) -> bool:
+        has_video_audio = self._song is not None and bool(self._song.video_clips)
+        return (
+            self._buffer is not None
+            or self._audio_settings.ltc_enabled
+            or has_video_audio
+        )
+
+    def _prewarm_output_stream(self) -> None:
+        """Open the device stream after load so Play does not hitch on ASIO open."""
+        if not self._needs_output_stream():
+            return
+        if self._uses_generated_ltc():
+            self._ensure_ltc_cache()
+        self._ensure_stream()
 
     def set_duration(self, seconds: float) -> None:
         if self._buffer is not None:
@@ -368,7 +569,6 @@ class AudioEngine(QObject):
         self._refresh_loop_engage()
         if self.position >= self.duration - 1e-4:
             self.seek(0.0)
-        self._playing = True
         self._scrubbing = False
         # A real output stream is required whenever anything could be audible:
         # loaded music, LTC, or a video clip with its own embedded audio.
@@ -376,16 +576,26 @@ class AudioEngine(QObject):
         # back to the silent bookkeeping timer and its clips' audio was never
         # actually rendered — this was the root cause of "no video audio".
         has_video_audio = self._song is not None and bool(self._song.video_clips)
-        needs_stream = (
-            self._buffer is not None or self._audio_settings.ltc_enabled or has_video_audio
-        )
+        needs_stream = self._needs_output_stream()
         if needs_stream:
-            if self._audio_settings.ltc_enabled:
+            if self._uses_generated_ltc():
                 self._ensure_ltc_cache()
-            self._start_stream()
+            if not self._ensure_stream():
+                self._playing = False
+                self._silent_timer.stop()
+                self._poll.stop()
+                self._mtc_timer.stop()
+                self._mtc.on_pause()
+                self.playing_changed.emit(False)
+                self.timecode_status_changed.emit()
+                self._emit_position()
+                return
+            self._playing = True
             self._poll.start()
             self._silent_timer.stop()
         else:
+            self._playing = True
+            self._stop_stream()
             self._silent_timer.start()
             self._poll.stop()
         self._mtc.on_play(self.raw_position)
@@ -395,9 +605,15 @@ class AudioEngine(QObject):
 
     def pause(self, *, for_scrub: bool = False) -> None:
         has_video_audio = self._song is not None and bool(self._song.video_clips)
+        has_source_ltc = self._effective_ltc_source_channel() is not None
         if (
             not for_scrub
-            and (self._buffer is not None or self._ltc_pcm is not None or has_video_audio)
+            and (
+                self._buffer is not None
+                or self._ltc_pcm is not None
+                or has_source_ltc
+                or has_video_audio
+            )
             and self._stream is not None
         ):
             lat = self.sync_offset_seconds
@@ -410,7 +626,6 @@ class AudioEngine(QObject):
         self._poll.stop()
         self._mtc_timer.stop()
         self._mtc.on_pause()
-        self._stop_stream()
         if not for_scrub:
             self.playing_changed.emit(False)
         self._emit_position()
@@ -482,7 +697,7 @@ class AudioEngine(QObject):
                 if self._playback_samples is not None:
                     end_frame = self._playback_samples.shape[0]
                 elif self._buffer is not None:
-                    end_frame = int(round(self._buffer.frames * self._sample_rate() / self._buffer.sample_rate))
+                    end_frame = self._playback_end_frame()
                 else:
                     end_frame = int(self._duration_seconds * self._sample_rate())
                 done = self._position_frame >= end_frame
@@ -496,10 +711,8 @@ class AudioEngine(QObject):
         bounds = self._loop_bounds()
         if self.loop_enabled and bounds is not None:
             a, b = bounds
-            if a - 1e-4 <= pos < b - 1e-4:
+            if not self._loop_engage and a - 1e-4 <= pos < b - 1e-4:
                 self._loop_engage = True
-            elif pos < a - 1e-4:
-                self._loop_engage = False
             if self._loop_engage and pos >= b:
                 self.seek(a)
                 return
@@ -534,66 +747,201 @@ class AudioEngine(QObject):
         self._calib_click_frames = remaining
 
     def _invalidate_ltc_cache(self) -> None:
+        self._ltc_cache_future = None
         with self._lock:
             self._ltc_pcm = None
             self._ltc_cache_key = None
+            self._ltc_cursor.reset()
+
+    def _sync_ltc_cursor(self) -> None:
+        self._ltc_cursor.configure(
+            sample_rate=self._sample_rate(),
+            fps=self._song_fps,
+            start_timecode=self._song_start_tc,
+            amplitude=1.0,
+        )
 
     def _ensure_ltc_cache(self) -> None:
+        if not self._uses_generated_ltc():
+            return
         sr = self._sample_rate()
         dur = self.duration
         key = (sr, round(dur, 6), self._song_start_tc, round(self._song_fps, 4))
         with self._lock:
             if self._ltc_cache_key == key and self._ltc_pcm is not None:
                 return
-        try:
-            pcm = generate_ltc_pcm(
-                dur,
-                sr,
-                self._song_start_tc,
-                self._song_fps,
-                amplitude=1.0,
-            )
-        except ValueError:
-            pcm = np.zeros(max(1, int(dur * sr)), dtype=np.float32)
-        with self._lock:
-            self._ltc_pcm = pcm
-            self._ltc_cache_key = key
+        if self._ltc_cache_future is not None and not self._ltc_cache_future.done():
+            return
+
+        def _build() -> tuple[tuple, np.ndarray]:
+            try:
+                pcm = generate_ltc_pcm(
+                    dur,
+                    sr,
+                    self._song_start_tc,
+                    self._song_fps,
+                    amplitude=1.0,
+                )
+            except ValueError:
+                pcm = np.zeros(max(1, int(dur * sr)), dtype=np.float32)
+            return key, pcm
+
+        future = self._ltc_executor.submit(_build)
+        self._ltc_cache_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, pcm = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if not self._uses_generated_ltc():
+                    return
+                cur_key = (
+                    self._sample_rate(),
+                    round(self.duration, 6),
+                    self._song_start_tc,
+                    round(self._song_fps, 4),
+                )
+                if cur_key == built_key:
+                    self._ltc_pcm = pcm
+                    self._ltc_cache_key = built_key
+
+        future.add_done_callback(_done)
+
+    def _ltc_bus_active(self) -> bool:
+        s = self._audio_settings
+        if not s.ltc_enabled:
+            return False
+        if s.ltc_source == "generator":
+            return bool(s.ltc_generator_enabled)
+        return self._file_ltc_channel() is not None or s.ltc_source != "generator"
+
+    def _parsed_stereo_routes(
+        self, max_ch: int
+    ) -> tuple[str, list[int], str, list[int]] | None:
+        left = parse_stereo_route(self._audio_settings.music_l_route, side="l", max_ch=max_ch)
+        right = parse_stereo_route(self._audio_settings.music_r_route, side="r", max_ch=max_ch)
+        if left is None or right is None:
+            return None
+        return left[0], left[1], right[0], right[1]
 
     def _resolve_device_and_route(self) -> None:
+        try:
+            raw_devices = list_output_devices(dedupe=False)
+        except TypeError:
+            raw_devices = list_output_devices()
+        requested_api = str(self._audio_settings.output_hostapi or "")
+        hostapi = resolve_output_hostapi(requested_api)
+        if hostapi != requested_api and requested_api:
+            note = (
+                f"Driver '{requested_api.replace('Windows ', '')}' unavailable; "
+                f"using {hostapi.replace('Windows ', '')}."
+            )
+            self._routing_warning = (
+                f"{self._routing_warning} {note}" if self._routing_warning else note
+            )
         devices = list_output_devices()
-        chosen = find_output_device(
-            devices, name=self._audio_settings.output_device_name
-        )
+        if hostapi:
+            api_devices = [d for d in raw_devices if d.hostapi_name == hostapi]
+            if api_devices:
+                devices = api_devices
+
+        chosen = None
+        prefer_idx = self._audio_settings.output_device_index
+        if prefer_idx is not None:
+            for d in raw_devices:
+                if d.index == prefer_idx and (not hostapi or d.hostapi_name == hostapi):
+                    chosen = d
+                    break
+        if chosen is None:
+            chosen = find_output_device(
+                devices, name=self._audio_settings.output_device_name
+            )
         self._device_index = chosen.index if chosen is not None else None
+
         max_ch = chosen.max_output_channels if chosen is not None else 2
+        parsed = self._parsed_stereo_routes(max_ch)
+        if parsed is None:
+            left_kind, left_ch = "channels", [0]
+            right_kind, right_ch = "channels", [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        else:
+            left_kind, left_ch, right_kind, right_ch = parsed
 
-        left = list(self._audio_settings.music_left_channels)
-        right = list(self._audio_settings.music_right_channels)
-        ltc = list(self._audio_settings.ltc_channels) if self._audio_settings.ltc_enabled else []
+        ltc = (
+            list(self._audio_settings.ltc_channels)
+            if self._ltc_bus_active()
+            else []
+        )
+        if ltc and len(ltc) > 1:
+            ltc = [max(ltc)]
 
-        # If settings still look like untouched defaults on a stereo device, drop LTC map.
-        if max_ch < 3 and ltc == [2] and left == [0] and right == [1]:
-            # Keep user intent if they explicitly enabled LTC on stereo (warn instead).
-            if not self._audio_settings.ltc_enabled:
-                ltc = []
-            d_left, d_right, d_ltc = default_channel_routing(max_ch)
-            if left == [0] and right == [1]:
-                left, right = d_left, d_right
-            if not self._audio_settings.ltc_enabled:
-                ltc = d_ltc
+        prelim = build_stereo_route_map(
+            left_kind=left_kind,
+            left_channels=left_ch,
+            right_kind=right_kind,
+            right_channels=right_ch,
+            ltc_channels=ltc,
+            ltc_bus_active=bool(ltc),
+        )
+        needed = required_output_channels(prelim)
+        native_rate_guess = float(
+            self._buffer.sample_rate if self._buffer is not None else 48000
+        )
+        if needed > 1:
+            endpoint = resolve_output_endpoint_for_channels(
+                preferred_name=self._audio_settings.output_device_name,
+                min_channels=needed,
+                samplerate=native_rate_guess,
+                raw_devices=raw_devices,
+                hostapi=hostapi,
+            )
+            if endpoint is not None:
+                chosen = endpoint
+                self._device_index = endpoint.index
+        if chosen is not None and needed > chosen.max_output_channels:
+            chosen = upgrade_device_for_channels(
+                chosen, min_channels=needed, raw_devices=raw_devices
+            )
+            self._device_index = chosen.index
 
-        route = build_source_route(music_left=left, music_right=right, ltc=ltc)
+        max_ch = chosen.max_output_channels if chosen is not None else 2
+        parsed = self._parsed_stereo_routes(max_ch)
+        if parsed is None:
+            left_kind, left_ch = "channels", [0]
+            right_kind, right_ch = "channels", [min(1, max_ch - 1)] if max_ch > 0 else [0]
+        else:
+            left_kind, left_ch, right_kind, right_ch = parsed
+
+        if self._ltc_bus_active():
+            ltc = list(self._audio_settings.ltc_channels)
+            ltc = clamp_output_channels(ltc, max_ch)
+            if not ltc:
+                ltc = default_ltc_channels_for_device(max_ch)
+        else:
+            ltc = []
+
+        route = build_stereo_route_map(
+            left_kind=left_kind,
+            left_channels=left_ch,
+            right_kind=right_kind,
+            right_channels=right_ch,
+            ltc_channels=ltc,
+            ltc_bus_active=bool(ltc),
+        )
         needed = required_output_channels(route)
         all_dests = [ch for dests in route.values() for ch in dests]
         self._routing_warning = warn_if_outputs_insufficient(all_dests, max_ch)
         self._output_channel_count = min(max(needed, 1), max_ch) if max_ch > 0 else needed
-        # Clamp destinations that exceed the opened stream.
         clamped: dict[int, list[int]] = {}
         for src, dests in route.items():
             keep = [d for d in dests if 0 <= d < self._output_channel_count]
             if keep:
                 clamped[src] = keep
-        self._route = clamped if clamped else {0: [0], 1: [min(1, self._output_channel_count - 1)]}
+        if clamped:
+            self._route = clamped
+        else:
+            self._route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [min(1, self._output_channel_count - 1)]}
 
         native_rate = self._buffer.sample_rate if self._buffer is not None else 48000
         self._playback_rate = int(
@@ -606,33 +954,143 @@ class AudioEngine(QObject):
                 )
             )
         )
+        if self._device_index is not None:
+            probed = probe_supported_output_channels(
+                self._device_index,
+                min_channels=self._output_channel_count,
+                samplerate=float(self._playback_rate),
+            )
+            if probed < self._output_channel_count:
+                if needed > probed:
+                    alt = resolve_output_endpoint_for_channels(
+                        preferred_name=self._audio_settings.output_device_name,
+                        min_channels=needed,
+                        samplerate=float(self._playback_rate),
+                        raw_devices=raw_devices,
+                        hostapi=hostapi,
+                    )
+                    if alt is not None and alt.index != self._device_index:
+                        alt_probed = probe_supported_output_channels(
+                            alt.index,
+                            min_channels=needed,
+                            samplerate=float(self._playback_rate),
+                        )
+                        if alt_probed >= needed:
+                            chosen = alt
+                            self._device_index = alt.index
+                            max_ch = alt.max_output_channels
+                            probed = alt_probed
+                            self._output_channel_count = min(max(needed, 1), max_ch)
+                            clamped = {}
+                            for src, dests in route.items():
+                                keep = [
+                                    d
+                                    for d in dests
+                                    if 0 <= d < self._output_channel_count
+                                ]
+                                if keep:
+                                    clamped[src] = keep
+                            self._route = (
+                                clamped
+                                if clamped
+                                else {
+                                    0: [0],
+                                    1: [min(1, self._output_channel_count - 1)],
+                                }
+                            )
+                if probed < self._output_channel_count:
+                    self._routing_warning = warn_if_outputs_insufficient(all_dests, probed)
+                    self._output_channel_count = max(1, probed)
+                    reclamped: dict[int, list[int]] = {}
+                    for src, dests in route.items():
+                        keep = [d for d in dests if 0 <= d < self._output_channel_count]
+                        if keep:
+                            reclamped[src] = keep
+                    self._route = reclamped if reclamped else self._route
         self._video_mixer.set_playback_rate(self._playback_rate)
         self.refresh_video_clips()
         self._refresh_playback_samples()
+        self._refresh_ltc_detection()
+
+    def _refresh_ltc_detection(self) -> None:
+        """Re-run LTC auto-detect on the native file buffer (not resampled music)."""
+        buf = self._buffer
+        if buf is None or buf.channels < 2:
+            self._detected_ltc_channel = None
+            self._ltc_detect_ran = False
+            self._refresh_source_routing_cache()
+            return
+        self._detected_ltc_channel = detect_ltc_channel(buf.samples, int(buf.sample_rate))
+        self._ltc_detect_ran = True
+        self._refresh_source_routing_cache()
+
+    def _refresh_source_routing_cache(self) -> None:
+        """Precompute routing indices so the realtime callback stays O(chunk)."""
+        self._cached_music_indices = self._music_source_indices()
+        self._cached_file_ltc_idx = self._file_ltc_channel()
+
+    def _playback_end_frame(self) -> int:
+        """Timeline length in playback-rate frames (resampled buffer when present)."""
+        if self._playback_samples is not None:
+            return int(self._playback_samples.shape[0])
+        if self._buffer is not None:
+            return int(
+                round(
+                    self._buffer.frames
+                    * float(self._playback_rate)
+                    / float(self._buffer.sample_rate)
+                )
+            )
+        return max(1, int(self._duration_seconds * self._playback_rate))
 
     def _refresh_playback_samples(self) -> None:
         """
-        Keep a copy of the loaded buffer resampled to _playback_rate, so all
-        frame math (position/LTC/clicks) can run in that single rate even
-        when it differs from the media file's native rate (e.g. a 44.1kHz
-        file on a WASAPI endpoint locked to a 48kHz mixer format).
+        Keep a copy of the loaded buffer resampled to _playback_rate.
+
+        Rate mismatches resample in a background thread so song switches stay
+        responsive. The realtime callback reads ``_playback_samples`` only
+        (silence until the cache is ready — never per-buffer resample).
         """
         buf = self._buffer
         if buf is None:
             self._playback_samples = None
             self._playback_cache_key = None
+            self._playback_resample_future = None
             return
         key = (id(buf), int(buf.sample_rate), int(self._playback_rate))
         if self._playback_cache_key == key and self._playback_samples is not None:
             return
         if int(buf.sample_rate) == int(self._playback_rate):
             self._playback_samples = buf.samples
-        else:
-            self._playback_samples = resample_linear(buf.samples, buf.sample_rate, self._playback_rate)
+            self._playback_cache_key = key
+            self._playback_resample_future = None
+            return
         self._playback_cache_key = key
+        self._playback_samples = None
+        native = buf.samples
+        src_rate = float(buf.sample_rate)
+        dst_rate = float(self._playback_rate)
+
+        def _build() -> tuple[tuple, np.ndarray]:
+            return key, resample_linear(native, src_rate, dst_rate)
+
+        future = self._resample_executor.submit(_build)
+        self._playback_resample_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, pcm = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if self._playback_cache_key == built_key:
+                    self._playback_samples = pcm
+
+        future.add_done_callback(_done)
 
     def _music_chunk(self, start: int, frames: int, sample_rate: int) -> np.ndarray:
         """Return stereo music (frames, 2), applying mute + master volume."""
+        del sample_rate  # all bookkeeping is in _playback_rate frames
         out = np.zeros((frames, 2), dtype=np.float32)
         samples = self._playback_samples
         if samples is None:
@@ -649,8 +1107,9 @@ class AudioEngine(QObject):
             out[:n, 0] = chunk[:, 0]
             out[:n, 1] = chunk[:, 0]
         else:
-            out[:n, 0] = chunk[:, 0]
-            out[:n, 1] = chunk[:, 1]
+            left_idx, right_idx = self._cached_music_indices
+            out[:n, 0] = chunk[:, left_idx]
+            out[:n, 1] = chunk[:, right_idx]
         if self._mute_music:
             out[:] = 0.0
         # Master (all-bus) gain, then the dedicated music-bed gain used for
@@ -678,33 +1137,117 @@ class AudioEngine(QObject):
             out = out * vol
         return out
 
-    def _ltc_chunk(self, start: int, frames: int) -> np.ndarray:
+    def _source_channel_chunk(self, channel: int, start: int, frames: int) -> np.ndarray:
         out = np.zeros(frames, dtype=np.float32)
-        pcm = self._ltc_pcm
-        if pcm is None or not self._audio_settings.ltc_enabled:
+        buf = self._buffer
+        if self._is_ltc_file_channel(channel) and buf is not None:
+            native = buf.samples
+            if native.ndim == 1:
+                mono = native
+            else:
+                idx = min(max(0, int(channel)), int(native.shape[1]) - 1)
+                mono = native[:, idx]
+            if int(buf.sample_rate) != int(self._playback_rate):
+                return resample_hold_segment(
+                    mono,
+                    float(buf.sample_rate),
+                    float(self._playback_rate),
+                    start,
+                    frames,
+                )
+            end = min(start + frames, mono.shape[0])
+            if end > start:
+                out[: end - start] = mono[start:end]
             return out
-        end = min(start + frames, pcm.size)
+        samples = self._playback_samples
+        if samples is None:
+            return out
+        end = min(start + frames, samples.shape[0])
         if end <= start:
             return out
-        gain = float(self._audio_settings.ltc_gain)
-        out[: end - start] = pcm[start:end] * gain
+        chunk = samples[start:end]
+        n = chunk.shape[0]
+        if chunk.ndim == 1:
+            out[:n] = chunk
+        else:
+            idx = min(max(0, int(channel)), int(chunk.shape[1]) - 1)
+            out[:n] = chunk[:, idx]
         return out
 
-    def _start_stream(self) -> None:
-        self._stop_stream()
-        self._resolve_device_and_route()
-        sample_rate = self._sample_rate()
-        out_ch = self._output_channel_count
-        device = self._device_index
-        total_frames = (
-            self._playback_samples.shape[0]
-            if self._playback_samples is not None
-            else int(self._duration_seconds * sample_rate)
+    def _ltc_chunk(self, start: int, frames: int) -> np.ndarray:
+        out = np.zeros(frames, dtype=np.float32)
+        if not self._audio_settings.ltc_enabled:
+            return out
+        gain = float(self._audio_settings.ltc_gain)
+        src_ch = self._effective_ltc_source_channel()
+        if src_ch is not None:
+            out = self._source_channel_chunk(src_ch, start, frames)
+            if gain < 1.0 - 1e-6:
+                out *= gain
+            elif gain <= 1e-6:
+                out[:] = 0.0
+            return out
+        if not self._uses_generated_ltc():
+            return out
+        pcm = self._ltc_pcm
+        if pcm is not None:
+            end = min(start + frames, pcm.size)
+            if end <= start:
+                return out
+            out[: end - start] = pcm[start:end] * gain
+            return out
+        # Cache not ready yet — stream LTC incrementally (must stay O(chunk)).
+        self._sync_ltc_cursor()
+        seg = self._ltc_cursor.render(start, frames)
+        if gain < 1.0 - 1e-6:
+            seg = seg * gain
+        elif gain <= 1e-6:
+            seg = np.zeros_like(seg)
+        out[: seg.size] = seg
+        return out
+
+    def _stream_token(self) -> tuple:
+        # Do not key on id(_playback_samples): the callback reads the live
+        # buffer, so song switches should not force an ASIO reopen on Play.
+        return (
+            self._device_index,
+            self._output_channel_count,
+            self._playback_rate,
+            tuple(sorted((k, tuple(v)) for k, v in self._route.items())),
+            bool(self._audio_settings.ltc_enabled),
         )
 
+    def _append_routing_warning(self, note: str) -> None:
+        self._routing_warning = f"{self._routing_warning} {note}" if self._routing_warning else note
+
+    def _clamp_route_to_channels(self, ch: int) -> None:
+        reclamped: dict[int, list[int]] = {}
+        for src, dests in self._route.items():
+            keep = [d for d in dests if 0 <= d < ch]
+            if keep:
+                reclamped[src] = keep
+        if reclamped:
+            self._route = reclamped
+        else:
+            self._route = {
+                SRC_MUSIC_L: [0],
+                SRC_MUSIC_R: [min(1, max(0, ch - 1))],
+            }
+
+    def _ensure_stream(self) -> bool:
+        """Open or keep the output stream; recreate only when routing/rate changes."""
+        token = self._stream_token()
+        if self._stream is not None and self._active_stream_token == token:
+            return True
+        return self._start_stream()
+
+    def _make_stream_callback(self, sample_rate: int):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
             del status, time_info
             with self._lock:
+                if not self._playing:
+                    outdata.fill(0)
+                    return
                 loop_on = (
                     self.loop_enabled
                     and self.loop_a is not None
@@ -715,15 +1258,13 @@ class AudioEngine(QObject):
                 if loop_on:
                     a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
                     b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
-                    if a_frame <= self._position_frame < b_frame:
+                    if self._loop_engage:
+                        if self._position_frame >= b_frame:
+                            self._position_frame = a_frame
+                    elif a_frame <= self._position_frame < b_frame:
                         self._loop_engage = True
-                    elif self._position_frame < a_frame:
-                        self._loop_engage = False
-                    elif self._loop_engage and self._position_frame >= b_frame:
-                        self._position_frame = a_frame
-                    else:
-                        self._loop_engage = False
                 start = self._position_frame
+                total_frames = self._playback_end_frame()
                 end = min(start + frames, total_frames)
                 if loop_on and self._loop_engage and start < b_frame:
                     end = min(end, b_frame)
@@ -756,18 +1297,30 @@ class AudioEngine(QObject):
                 np.clip(music, -1.0, 1.0, out=music)
 
                 self._mix_clicks(music, start)
-                sources = np.zeros((frames, 3), dtype=np.float32)
-                sources[:, 0] = music[:, 0]
-                sources[:, 1] = music[:, 1]
-                sources[:, 2] = ltc
-                routed = apply_routing(sources, self._route, out_ch)
+                sources = np.zeros((frames, 5), dtype=np.float32)
+                sources[:, SRC_MUSIC_L] = music[:, 0]
+                sources[:, SRC_MUSIC_R] = music[:, 1]
+                sources[:, SRC_LTC_BUS] = ltc
+                music_idx, _ = self._cached_music_indices
+                ltc_idx = self._cached_file_ltc_idx
+                if ltc_idx is not None:
+                    sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
+                        ltc_idx, start, frames
+                    )
+                sources[:, SRC_FILE_MUSIC] = self._source_channel_chunk(
+                    music_idx, start, frames
+                )
+                routed = apply_routing(sources, self._route, self._output_channel_count)
             outdata[:] = routed
 
+        return callback
+
+    def _open_output_stream(self, *, device: int | None, channels: int, sample_rate: int) -> bool:
         kwargs: dict = {
             "samplerate": sample_rate,
-            "channels": out_ch,
+            "channels": channels,
             "dtype": "float32",
-            "callback": callback,
+            "callback": self._make_stream_callback(sample_rate),
             "latency": "low",
             "blocksize": 0,
         }
@@ -776,33 +1329,84 @@ class AudioEngine(QObject):
         try:
             self._stream = sd.OutputStream(**kwargs)
             self._stream.start()
+            self._active_stream_token = self._stream_token()
+            return True
         except sd.PortAudioError:
-            # resolve_output_samplerate() should already avoid an invalid
-            # rate (PaErrorCode -9997), but driver quirks can still reject
-            # it at open time -- retry once at the device's own reported
-            # default rate before giving up. `sample_rate`/`total_frames`
-            # are re-bound here and the not-yet-started `callback` closure
-            # picks up the new values on its first real invocation.
-            fallback_rate = None
-            if device is not None:
-                for d in list_output_devices():
-                    if d.index == device:
-                        fallback_rate = d.default_samplerate
-                        break
-            if fallback_rate and int(fallback_rate) != int(sample_rate):
-                self._playback_rate = int(round(fallback_rate))
-                self._refresh_playback_samples()
-                sample_rate = self._playback_rate
-                total_frames = (
-                    self._playback_samples.shape[0]
-                    if self._playback_samples is not None
-                    else int(self._duration_seconds * sample_rate)
+            self._stream = None
+            self._active_stream_token = None
+            return False
+
+    def _start_stream(self) -> bool:
+        self._stop_stream()
+        base_device = self._device_index
+        base_channels = self._output_channel_count
+        base_rate = self._playback_rate
+        saved_route = {k: list(v) for k, v in self._route.items()}
+        sample_rate = base_rate
+        device = base_device
+        channels = base_channels
+
+        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+            return True
+
+        fallback_rate = None
+        if device is not None:
+            for d in list_output_devices(dedupe=False):
+                if d.index == device:
+                    fallback_rate = d.default_samplerate
+                    break
+        if fallback_rate and int(fallback_rate) != int(sample_rate):
+            self._playback_rate = int(round(fallback_rate))
+            self._refresh_playback_samples()
+            sample_rate = self._playback_rate
+            self._append_routing_warning(
+                f"Opened output at {sample_rate} Hz (device default)."
+            )
+            if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+                return True
+
+        if device is not None:
+            probed = probe_supported_output_channels(
+                device,
+                min_channels=1,
+                samplerate=float(sample_rate),
+            )
+            if probed < channels:
+                channels = max(1, probed)
+                self._output_channel_count = channels
+                self._clamp_route_to_channels(channels)
+                self._append_routing_warning(
+                    f"Reduced output to {channels} channel(s) for this device."
                 )
-                kwargs["samplerate"] = sample_rate
-                self._stream = sd.OutputStream(**kwargs)
-                self._stream.start()
-            else:
-                raise
+                if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+                    return True
+
+        self._route = saved_route
+        self._output_channel_count = min(2, max(1, base_channels))
+        self._clamp_route_to_channels(self._output_channel_count)
+        channels = self._output_channel_count
+        self._append_routing_warning("Fell back to stereo Music L/R routing.")
+        if self._open_output_stream(device=device, channels=channels, sample_rate=sample_rate):
+            return True
+
+        if device is not None:
+            self._device_index = None
+            channels = 2
+            self._output_channel_count = 2
+            self._route = {SRC_MUSIC_L: [0], SRC_MUSIC_R: [1]}
+            self._append_routing_warning("Using system default output device.")
+            if self._open_output_stream(device=None, channels=channels, sample_rate=sample_rate):
+                return True
+
+        self._device_index = base_device
+        self._output_channel_count = base_channels
+        self._route = saved_route
+        self._playback_rate = base_rate
+        self._refresh_playback_samples()
+        self._stream = None
+        self._active_stream_token = None
+        self._append_routing_warning("Could not open audio output stream.")
+        return False
 
     def _assemble_looped_music(
         self,
@@ -853,3 +1457,4 @@ class AudioEngine(QObject):
             except Exception:
                 pass
             self._stream = None
+        self._active_stream_token = None
