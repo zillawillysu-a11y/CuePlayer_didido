@@ -174,6 +174,51 @@ class ColorSwatchButton(QPushButton):
         self.color_changed.emit(self._color)
 
 
+class ApplyMarkSettingsDialog(QDialog):
+    """Choose how to apply a loaded mark template (stacked buttons so labels stay readable)."""
+
+    CURRENT = "current"
+    ALL = "all"
+    DEFAULT = "default"
+
+    def __init__(self, mark_count: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Apply Mark Settings")
+        self.resize(400, 280)
+        self._choice: str | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        body = QLabel(
+            f"Loaded {mark_count} Mark(s).\n\n"
+            '"All Songs" will rewrite the Mark definitions for every song in the project '
+            "(marks with no matching lane will be removed)."
+        )
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        for key, label in (
+            (self.CURRENT, "Current Song"),
+            (self.ALL, "All Songs + Default"),
+            (self.DEFAULT, "Set as Default Only"),
+        ):
+            btn = QPushButton(label)
+            btn.setMinimumHeight(40)
+            btn.clicked.connect(lambda _checked=False, k=key: self._pick(k))
+            layout.addWidget(btn)
+
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        layout.addWidget(cancel)
+
+    def _pick(self, key: str) -> None:
+        self._choice = key
+        self.accept()
+
+    def choice(self) -> str | None:
+        return self._choice
+
+
 class MarkManagerDialog(QDialog):
     """Edits mark tracks. Shape/color changes preview live."""
 
@@ -383,19 +428,10 @@ class MarkManagerDialog(QDialog):
             QMessageBox.warning(self, "Empty Settings File", "The settings file has no Marks.")
             return
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Apply Mark Settings")
-        msg.setText(
-            f"Loaded {len(lanes)} Mark(s).\n"
-            '"All Songs" will rewrite the Mark definitions for every song in the project '
-            "(marks with no matching lane will be removed)."
-        )
-        btn_current = msg.addButton("Current Song", QMessageBox.ButtonRole.AcceptRole)
-        btn_all = msg.addButton("All Songs + Default", QMessageBox.ButtonRole.ActionRole)
-        btn_default = msg.addButton("Set as Default Only", QMessageBox.ButtonRole.ActionRole)
-        msg.addButton(QMessageBox.StandardButton.Cancel)
-        msg.exec()
-        clicked = msg.clickedButton()
+        msg = ApplyMarkSettingsDialog(len(lanes), self)
+        if msg.exec() != QDialog.DialogCode.Accepted or msg.choice() is None:
+            return
+        choice = msg.choice()
 
         now_primary = data.get("now_primary_lanes")
         now_secondary = data.get("now_secondary_lanes")
@@ -404,7 +440,7 @@ class MarkManagerDialog(QDialog):
         if not isinstance(now_secondary, list):
             now_secondary = None
 
-        if clicked is btn_current:
+        if choice == ApplyMarkSettingsDialog.CURRENT:
             dropped = apply_lanes_to_song(
                 self._song,
                 lanes,
@@ -416,7 +452,7 @@ class MarkManagerDialog(QDialog):
             self.project_defaults_changed.emit()
             extra = f" ({dropped} unmatched mark(s) removed)" if dropped else ""
             QMessageBox.information(self, "Applied", f"Applied to the current song{extra}. Fine-tune and press OK.")
-        elif clicked is btn_default:
+        elif choice == ApplyMarkSettingsDialog.DEFAULT:
             if self._project is None:
                 QMessageBox.information(self, "Unable to Set", "No project object available to write the default to.")
                 return
@@ -427,7 +463,7 @@ class MarkManagerDialog(QDialog):
                 "Set as Default",
                 'New songs added later will use this Mark layout. The current song is unchanged.',
             )
-        elif clicked is btn_all:
+        elif choice == ApplyMarkSettingsDialog.ALL:
             if self._project is None:
                 QMessageBox.information(self, "Unable to Apply", "No project object available.")
                 return

@@ -68,6 +68,7 @@ def engine(monkeypatch) -> AudioEngine:
     eng = AudioEngine()
     eng.apply_audio_settings(AudioOutputSettings(output_device_name="Test"))
     eng.set_buffer(_silent_buffer())
+    eng.flush_deferred_buffer_setup()
     return eng
 
 
@@ -227,6 +228,7 @@ def test_music_volume_does_not_affect_ltc(monkeypatch) -> None:
         AudioOutputSettings(output_device_name="Test", ltc_enabled=True, ltc_channels=[1])
     )
     eng.set_buffer(_silent_buffer())
+    eng.flush_deferred_buffer_setup()
     eng.set_music_volume(0.0)
 
     ltc_before = eng._ltc_chunk(0, 500).copy()
