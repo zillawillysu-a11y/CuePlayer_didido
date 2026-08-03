@@ -68,6 +68,7 @@ def engine(monkeypatch) -> AudioEngine:
     eng = AudioEngine()
     eng.apply_audio_settings(AudioOutputSettings(output_device_name="Test"))
     eng.set_buffer(_silent_buffer())
+    eng.flush_deferred_buffer_setup()
     return eng
 
 
@@ -227,6 +228,7 @@ def test_music_volume_does_not_affect_ltc(monkeypatch) -> None:
         AudioOutputSettings(output_device_name="Test", ltc_enabled=True, ltc_channels=[1])
     )
     eng.set_buffer(_silent_buffer())
+    eng.flush_deferred_buffer_setup()
     eng.set_music_volume(0.0)
 
     ltc_before = eng._ltc_chunk(0, 500).copy()
@@ -235,8 +237,34 @@ def test_music_volume_does_not_affect_ltc(monkeypatch) -> None:
     assert np.array_equal(ltc_before, ltc_after)
 
 
-def test_set_song_applies_songs_music_volume(engine: AudioEngine) -> None:
+def test_music_source_route_applies_music_volume_and_video_audio(
+    engine: AudioEngine, monkeypatch
+) -> None:
+    """Regression: Music Source bus used a raw file channel, so Video audio
+    vanished and the Music fader did nothing whenever L/R were Music Source
+    (or File-LTC remapped speakers onto that bus)."""
+    engine.apply_audio_settings(
+        AudioOutputSettings(
+            output_device_name="Test",
+            music_l_route="Music Source",
+            music_r_route="Music Source",
+            ltc_enabled=False,
+        )
+    )
+    # Non-silent stereo music bed.
+    n = engine._playback_samples.shape[0]
+    engine._playback_samples[: min(n, 800)] = 0.8
+    engine.flush_deferred_buffer_setup()
+
     song, clip = _song_with_clip(volume=1.0)
-    song.music_volume = 0.3
     engine.set_song(song)
-    assert engine.music_volume() == pytest.approx(0.3)
+    _inject_fake_clip_audio(engine, clip, 0.6)
+    engine.set_music_volume(0.25)
+
+    engine.play()
+    outdata = np.zeros((500, 2), dtype=np.float32)
+    _FakeStream.last_callback(outdata, 500, None, None)
+
+    # Processed Music Source = mid(music*0.25 + video) on both outs.
+    # music 0.8*0.25=0.2, video 0.6 → 0.8 per channel after sum.
+    assert np.allclose(outdata, 0.8, atol=1e-4)

@@ -16,9 +16,8 @@ dependencies = [
   "soundfile>=0.12",
   "pypinyin>=0.51",
   "mido>=1.3",
-  # MIDI out on Windows: pygame backend works without a C toolchain.
-  # Prefer python-rtmidi when a wheel/compiler is available (optional).
-  "pygame>=2.5",
+  # BPM auto-detect (setlist). Lazy-imported on first detect job.
+  "librosa>=0.10",
   # Video clip decode (Timeline video clips milestone): FFmpeg bindings.
   "av>=13.0",
 ]
@@ -26,6 +25,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+]
+# Optional MIDI via mido pygame backend. Prefer pygame-ce on Python 3.14+
+# (official pygame often has no wheel). On Windows, CuePlayer also uses
+# built-in winmm.dll and does not require this extra for MTC.
+midi = [
+  "pygame-ce>=2.5",
+]
+# Optional NDI sender for Clean Video Output (Depence / other receivers).
+# Also requires NDI Tools / Runtime from ndi.video on the machine.
+ndi = [
+  "cyndilib>=0.0.7",
 ]
 
 [project.scripts]

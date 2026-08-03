@@ -14,9 +14,13 @@ from cueplayer.persistence.project_store import load_project, save_project
 def test_video_clip_roundtrip(tmp_path: Path) -> None:
     project = Project.create("演唱會")
     song = project.songs[0]
+    project_dir = tmp_path / "中文專案"
+    media = project_dir / "中文影片" / "開場.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"ftyp")
     clip = VideoClip.create(
         name="開場",
-        path=Path("中文影片/開場.mp4"),
+        path=media,
         start_seconds=1.5,
         source_in_seconds=0.5,
         duration_seconds=3.25,
@@ -25,15 +29,17 @@ def test_video_clip_roundtrip(tmp_path: Path) -> None:
     clip.hidden = False
     song.add_video_clip(clip)
 
-    path = tmp_path / "中文專案" / "show.cueplayer.json"
+    path = project_dir / "show.cueplayer.json"
     save_project(project, path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["songs"][0]["video_clips"][0]["path"] == "中文影片/開場.mp4"
     loaded = load_project(path)
 
     assert len(loaded.songs[0].video_clips) == 1
     loaded_clip = loaded.songs[0].video_clips[0]
     assert loaded_clip.id == clip.id
     assert loaded_clip.name == "開場"
-    assert loaded_clip.path == Path("中文影片/開場.mp4")
+    assert loaded_clip.path.resolve() == media.resolve()
     assert loaded_clip.start_seconds == 1.5
     assert loaded_clip.source_in_seconds == 0.5
     assert loaded_clip.duration_seconds == 3.25
@@ -45,9 +51,13 @@ def test_video_clip_roundtrip(tmp_path: Path) -> None:
 def test_video_clip_still_image_roundtrip(tmp_path: Path) -> None:
     project = Project.create("演唱會")
     song = project.songs[0]
+    project_dir = tmp_path / "show_dir"
+    media = project_dir / "中文素材" / "標題.png"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"PNG")
     clip = VideoClip.create(
         name="標題卡",
-        path=Path("中文素材/標題.png"),
+        path=media,
         start_seconds=1.0,
         duration_seconds=5.0,
         media_kind="still",
@@ -55,14 +65,14 @@ def test_video_clip_still_image_roundtrip(tmp_path: Path) -> None:
     )
     song.add_video_clip(clip)
 
-    path = tmp_path / "show.cueplayer.json"
+    path = project_dir / "show.cueplayer.json"
     save_project(project, path)
     loaded = load_project(path)
 
     loaded_clip = loaded.songs[0].video_clips[0]
     assert loaded_clip.media_kind == "still"
     assert loaded_clip.source_duration_seconds == 0.0
-    assert loaded_clip.path == Path("中文素材/標題.png")
+    assert loaded_clip.path.resolve() == media.resolve()
 
 
 def test_video_clip_volume_and_track_mute_roundtrip(tmp_path: Path) -> None:
