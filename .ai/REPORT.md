@@ -1,59 +1,49 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint2-show-session-028d`  
+**Branch:** `cursor/sprint3-show-host-protocol-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 2 · Task 8 — **ShowSession Foundation**: introduce
-`ShowSessionService` to coordinate song activate/deactivate workflows,
-moving `_activate_song` orchestration out of MainWindow without EventBus
-or engine/timeline redesigns.
+Sprint 3 · Task 1 — **Host Protocol Foundation**: replace duck-typed
+MainWindow host dependency with explicit `ports.ShowHost`.
 
 ## What was implemented
 
-- `application/show_session_service.py` with activate/deactivate, prepare
-  playback, timeline/waveform/video refresh helpers, `notify_external_sync` no-op.
-- MainWindow `_activate_song` / `_activate_song_monitor` / empty workspace
-  delegate to the service.
-- Host remains MainWindow (duck-typed) for caches and async audio loaders.
+- `ports/show_host.py` — `ShowHost` + nested surface Protocols with member docs
+- `ShowSessionService.__init__(host: ShowHost, …)` — no `Any`
+- Ports package export + purity / stub isinstance tests
+- MainWindow / activate logic unchanged (structural implementer)
 
-## MainWindow responsibilities before / after
+## Protocol definition
 
-Before: owned full activate step order (quiesce → swap song → timeline/video/
-monitor → engine → waveform load → chrome refresh).
+See `src/cueplayer/ports/show_host.py` (and section in user report).
 
-After: thin wrappers + still owns loaders/caches/dialogs/Remote/marks; service
-owns activate/deactivate coordination order.
+## Remaining duck-typed dependencies
 
-## Remaining orchestration still inside MainWindow
+- Optional `_show_video_track_action` via `getattr` in ShowSessionService
+- WebRemote → MainWindow privates (next task)
+- ShowHost still exposes private `_` helper names (transitional)
 
-- `_load_audio_path` / media warm / BPM detect / video stand-in builders
-- Mark/video clip edit refresh paths that call `timeline.set_song` directly
-- Startup empty-setlist clear (lightweight, pre-full-workspace)
-- Dialogs, RemoteHost, export, settings UI
+## Remaining MainWindow coupling
 
-## Remaining technical debt
-
-- ShowSession duck-types full MainWindow (needs host Protocol)
-- `ports.SongSession` Protocol unused by ShowSessionService
-- Event Bus still not introduced (explicitly deferred)
-- Dual naming: domain `SongSession` vs ports `SongSession` vs ShowSessionService
+- MainWindow still implements ShowHost via private helpers / tokens
+- ShowSessionService still imports `media.audio_disk_cache` (pre-existing)
 
 ## Risks
 
-- Host private API (`_load_audio_path`, tokens) still reached from application layer
-- Deferred monitor QTimer still in application service (Qt coupling)
-- Behavior drift if MainWindow wrappers diverge from service
+- runtime_checkable isinstance ignores non-method attributes
+- Private `_` names on a port are transitional debt
+- Protocol drift if ShowSessionService gains new host calls without updating port
 
 ## Tests
 
-- Targeted show-session + song-switch: green
-- Full suite: **909 passed**, **16 failed** (same pre-existing / Linux env set)
+- Targeted ports + show-session + song-switch: green
+- Full suite: **913 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
-Sprint 3 architecture planning (READY FOR SPRINT 3 ARCHITECTURE).
+Sprint 3 Task 2 — Remote boundary (READY FOR REMOTE BOUNDARY).

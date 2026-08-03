@@ -11,6 +11,7 @@ from cueplayer.ports import (
     ProjectStore,
     RemoteHost,
     ShowExporter,
+    ShowHost,
     SongSession,
     VideoAudioSource,
     VideoDecoderPort,
@@ -27,6 +28,7 @@ def test_ports_package_exports_all_target_protocols() -> None:
         "ProjectStore",
         "RemoteHost",
         "ShowExporter",
+        "ShowHost",
         "SongSession",
         "VideoAudioSource",
         "VideoDecoderPort",
@@ -48,6 +50,7 @@ def test_protocols_are_runtime_checkable_types() -> None:
         RemoteHost,
         MediaJobQueue,
         SongSession,
+        ShowHost,
     ):
         assert getattr(cls, "_is_protocol", False) or issubclass(cls, type(PlaybackClock))
         # Structural: must be usable for isinstance checks when runtime_checkable.

@@ -1,42 +1,43 @@
 # Next task
 
 **Status:** Queued — awaiting human start  
-**Type:** Architecture / Sprint 3 planning  
+**Type:** Architecture / Remote boundary  
 **Updated:** 2026-08-03  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 2 Task 8 — ShowSession Foundation  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint2ShowSession.md`  
-Baseline: `docs/current_architecture.md` (ends READY FOR SPRINT 3 ARCHITECTURE)
+**Previous:** Sprint 3 Task 1 — ShowHost Protocol Foundation  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-03_Sprint3ShowHostProtocol.md`  
+Baseline: `docs/current_architecture.md` (ends READY FOR REMOTE BOUNDARY)
 
 ---
 
 ## Current task
 
-### Sprint 3 — Architecture planning (kickoff)
+### Sprint 3 — Task 2: Remote boundary
 
 **Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Produce a Sprint 3 plan covering (in recommended order):
-
-1. Event Bus foundation (UI fan-out; do not replace AudioEngine clock)
-2. RemoteHost / WebRemote boundary wiring
-3. Narrow ShowSession host Protocol (stop duck-typing MainWindow)
-4. Optional SettingsService fold-in for web_remote / color / export prefs
+Make Web Remote talk only through `ports.RemoteHost` (expand as needed),
+removing duck-typed MainWindow private API usage from `web_remote.bridge`.
 
 ### Read first
 
 1. `docs/current_architecture.md`
 2. `docs/BOUNDARY_RULES.md` + `docs/MIGRATION_RULES.md`
-3. Latest Sprint 2 handoffs under `.ai/handoffs/`
+3. `ports/remote_host.py`, `web_remote/bridge.py`
 
-### Out of scope for the planning doc alone
+### In scope
 
-- Implementing Event Bus or RemoteHost in the same planning-only task
-  unless the user asks for implementation
+- Expand / implement RemoteHost
+- Retarget bridge call sites
+- Tests
+
+### Out of scope
+
+- EventBus, ShowSessionService redesign, PlaybackService redesign
 
 ### Done when
 
-- Written plan + REPORT + handoff; STOP (or user asks to implement item 1)
+- Bridge no longer needs MainWindow `_` privates for supported ops; REPORT + handoff; STOP

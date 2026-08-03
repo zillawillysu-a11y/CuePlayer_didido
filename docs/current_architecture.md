@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 2 · Task 8 complete (ShowSession foundation)  
+**Status:** Sprint 3 · Task 1 complete (ShowHost Protocol foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint2-show-session-028d`  
-**Constraint (Task 8):** ShowSessionService coordinates activate/deactivate — no EventBus; no AudioEngine/Timeline/Waveform/Video redesign; Playback/Project/Settings stay in their services.
+**Scope tip:** `cursor/sprint3-show-host-protocol-028d`  
+**Constraint (Task 1):** Explicit `ShowHost` Protocol for ShowSessionService — no MainWindow/ShowSessionService redesign; no EventBus; no Playback/Project redesign.
 
 Related docs (do not treat as identical):
 
@@ -204,6 +204,39 @@ MainWindow._activate_song
 ```
 
 **Still in MainWindow:** media warm/BPM jobs, dialogs, RemoteHost, mark editing, `_load_audio_path` implementation.
+
+---
+
+## Sprint 3 Task 1 — ShowHost Protocol foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `ports/show_host.py` | Explicit `ShowHost` + nested surface Protocols |
+| `ShowSessionService` | Constructor typed as `ShowHost` (no longer `Any`) |
+| MainWindow | Unchanged implementer (structural); no redesign |
+
+### Why each Protocol member exists
+
+Documented in `ports/show_host.py` docstrings. Summary:
+
+| Member group | Why |
+|--------------|-----|
+| `project` / `current_song` | Activate needs setlist index + bind current song |
+| `engine` (+ quiesce/set_song/timebase/buffer/duration) | Sole clock attach without importing AudioEngine |
+| `timeline` / `monitor` / `video_sync` / `transport` / `status` | Surface refresh coordination only |
+| `_audio_load_token` / `_song_activate_gen` | Cancel in-flight loads; ignore stale deferred monitor |
+| `_timeline_ltc_exclude` / `_media_warm_active` | Waveform/LTC display during load |
+| `_sync_*` / `_arm_*` / `_load_*` / `_apply_*` / `_refresh_*` | Host-owned helpers called by activate (names kept for no service redesign) |
+
+### Intentionally excluded
+
+Menus, dialogs, undo, setlist edits, BPM, media-warm jobs, RemoteHost, Settings UI, export, PlaybackService transport, ProjectService I/O, optional `_show_video_track_action` (soft `getattr`).
+
+### Remaining duck-typed dependencies
+
+- `getattr(host, "_show_video_track_action", None)` soft optional inside ShowSessionService
+- WebRemote still duck-types MainWindow privates (separate Remote boundary task)
+- ShowHost still lists private `_` helper names (transitional until host façade methods)
 
 ---
 
@@ -482,7 +515,8 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | **`ProjectService`** | `application/project_service.py` | Lifecycle; I/O via `ProjectRepository` |
 | **`PlaybackService`** | `application/playback_service.py` | ✅ Transport + volume/loop/scrub/nudge → AudioEngine |
 | **`SettingsService`** | `application/settings_service.py` | ✅ Machine QSettings + audio_prefs façade |
-| **`ShowSessionService`** | `application/show_session_service.py` | ✅ Activate/deactivate + surface refresh coordination |
+| **`ShowSessionService`** | `application/show_session_service.py` | ✅ Activate/deactivate; host typed as `ShowHost` |
+| **`ShowHost`** | `ports/show_host.py` | ✅ Explicit host Protocol for ShowSession |
 | **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot (mirror) |
 | Song activate orchestration | `ShowSessionService` | MainWindow thin wrapper; host owns loaders |
 | Media job queue | `MainWindow` executors | Still UI-owned |
@@ -637,12 +671,12 @@ Machine State and Project State must remain separate — SettingsService never o
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Sprint 3)
+### P0 — Next (Remote boundary)
 
-1. **Sprint 3 architecture planning** — Event Bus, RemoteHost wiring, further host decoupling from ShowSession.
-2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
-3. **ShowSession still duck-types MainWindow** — extract a narrower host port later.
-4. **Machine prefs still also in `web_remote.prefs` / `color_presets` / export dialog** — fold into SettingsService later if needed.
+1. **RemoteHost / WebRemote boundary** — stop duck-typing MainWindow privates; wire `ports.RemoteHost`.
+2. Event Bus foundation (UI fan-out; do not replace AudioEngine clock).
+3. Optional: lift ShowHost `_` helpers to public façade methods.
+4. Optional SettingsService fold-in for remaining machine prefs.
 
 ### P1 — Structural risk (product-visible)
 
@@ -686,26 +720,24 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | Task | Status | Notes |
 |------|--------|-------|
 | Sprint 1 · 1–4 | ✅ Done | Assessment → cleanup → ProjectService → ProjectRepository |
-| **Sprint 2 · 5** Playback foundation | ✅ Done | PlaybackService + SongSession |
-| **Sprint 2 · 6** Playback boundary | ✅ Done | Volume / loop / scrub / nudge via service |
-| **Sprint 2 · 7** Settings service | ✅ Done | Machine SettingsService + QSettings façade |
-| **Sprint 2 · 8** ShowSession foundation | ✅ Done | Activate/deactivate coordination |
-| **Sprint 3** Architecture | **Next** | Plan Event Bus / RemoteHost / host port |
+| Sprint 2 · 5–8 | ✅ Done | Playback → boundary → Settings → ShowSession |
+| **Sprint 3 · 1** ShowHost Protocol | ✅ Done | Explicit `ports.ShowHost` |
+| **Sprint 3 · 2** Remote boundary | **Next** | Wire RemoteHost; stop MainWindow private duck-typing |
 
-### Recommended Sprint 3 planning focus
+### Recommended Sprint 3 Task 2 — Remote boundary
 
-- Event Bus foundation (deferred from earlier Task 8 draft) for UI fan-out
-- Wire `ports.RemoteHost` / reduce WebRemote private MainWindow calls
-- Narrow ShowSession host Protocol (stop duck-typing full MainWindow)
-- Optional: fold remaining machine prefs into SettingsService
+- Make Web Remote talk only through `ports.RemoteHost` (expand Protocol as needed).
+- Remove / stop adding MainWindow private `_` calls from `web_remote.bridge`.
+- Do not redesign PlaybackService or introduce EventBus in the same task.
+- Preserve identical remote runtime behavior.
 
-### Risks for Sprint 3
+### Risks for Task 2
 
 | Risk | Mitigation |
 |------|------------|
-| Event Bus + existing Qt signals double-fire | Migrate one fan-out at a time |
-| Host Protocol too large | Start with activate-only surface methods |
+| Remote needs many MainWindow helpers | Grow RemoteHost deliberately; wrap not copy |
+| Behavior drift on mute/seek/song switch | Golden remote op tests |
 
 ---
 
-## READY FOR SPRINT 3 ARCHITECTURE
+## READY FOR REMOTE BOUNDARY

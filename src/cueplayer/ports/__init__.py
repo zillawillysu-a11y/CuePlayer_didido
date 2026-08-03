@@ -19,6 +19,15 @@ from cueplayer.ports.frame_sink import FrameSink
 from cueplayer.ports.media_jobs import MediaJobQueue
 from cueplayer.ports.project_store import ProjectStore
 from cueplayer.ports.remote_host import RemoteHost
+from cueplayer.ports.show_host import (
+    ShowHost,
+    ShowHostEngine,
+    ShowHostMonitor,
+    ShowHostStatus,
+    ShowHostTimeline,
+    ShowHostTransport,
+    ShowHostVideoSync,
+)
 from cueplayer.ports.song_session import SongSession
 from cueplayer.ports.video_audio import VideoAudioSource
 from cueplayer.ports.video_decoder import VideoDecoderPort
@@ -32,6 +41,13 @@ __all__ = [
     "ProjectStore",
     "RemoteHost",
     "ShowExporter",
+    "ShowHost",
+    "ShowHostEngine",
+    "ShowHostMonitor",
+    "ShowHostStatus",
+    "ShowHostTimeline",
+    "ShowHostTransport",
+    "ShowHostVideoSync",
     "SongSession",
     "VideoAudioSource",
     "VideoDecoderPort",

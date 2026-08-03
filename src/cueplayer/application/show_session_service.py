@@ -20,7 +20,7 @@ Design contract
   (``quiesce_output``, ``set_buffer``, ``set_duration``).
 
 **Dependencies**
-- Host window (``MainWindow``) for widgets, caches, async audio load helpers
+- ``cueplayer.ports.show_host.ShowHost`` (explicit host Protocol; MainWindow today)
 - ``cueplayer.application.playback_service.PlaybackService`` (loop clear only)
 - ``cueplayer.media.audio_disk_cache.load_cached_waveform_peaks``
 - ``PySide6.QtCore.QTimer`` (deferred cue-monitor rebuild — same as prior UI)
@@ -30,30 +30,31 @@ Design contract
   identical step order and host-owned media caches / loaders.
 - ShowSession may coordinate multiple services later (MA3/OSC) without pulling
   project lifecycle or transport control into this type.
+- Host is typed as ``ShowHost`` (not ``Any``) so alternate hosts (Web / Remote /
+  headless) can satisfy the same contract without duck-typing MainWindow.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from PySide6.QtCore import QTimer
 
 from cueplayer.application.playback_service import PlaybackService
 from cueplayer.domain.models import Song
 from cueplayer.media.audio_disk_cache import load_cached_waveform_peaks
+from cueplayer.ports.show_host import ShowHost
 
 
 class ShowSessionService:
     """Coordinates song activate / deactivate across playback + UI surfaces."""
 
-    def __init__(self, host: Any, playback: PlaybackService) -> None:
-        # Host is MainWindow today (duck-typed); keeps widget/cache ownership in UI.
+    def __init__(self, host: ShowHost, playback: PlaybackService) -> None:
         self._host = host
         self._playback = playback
 
     @property
-    def host(self) -> Any:
+    def host(self) -> ShowHost:
         return self._host
 
     @property
