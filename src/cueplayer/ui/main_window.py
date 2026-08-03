@@ -67,16 +67,24 @@ from cueplayer.domain.models import (
     Song,
     VideoClip,
 )
+from cueplayer.application.project_service import (
+    AUTOSAVE_INTERVAL_MINUTES as _AUTOSAVE_INTERVAL_MINUTES,
+    DEFAULT_AUTOSAVE_INTERVAL_SEC as _DEFAULT_AUTOSAVE_INTERVAL_SEC,
+    KEY_AUTOSAVE_ENABLED as _KEY_AUTOSAVE_ENABLED,
+    KEY_AUTOSAVE_INTERVAL_SEC as _KEY_AUTOSAVE_INTERVAL_SEC,
+    KEY_BACKUP_KEEP as _KEY_BACKUP_KEEP,
+    KEY_LAST_PROJECT as _KEY_LAST_PROJECT,
+    KEY_LAST_SONG_ID as _KEY_LAST_SONG_ID,
+    ProjectService,
+)
 from cueplayer.persistence.backup import (
-    DEFAULT_KEEP,
-    create_backup_before_save,
     list_backups,
 )
 from cueplayer.persistence.audio_prefs import (
     apply_global_audio_to_project,
     save_global_audio_output,
 )
-from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.persistence.project_store import load_project
 from cueplayer.persistence.media_layout import (
     DEFAULT_MEDIA_SUBDIR,
     heal_stale_media_paths,
@@ -181,12 +189,7 @@ _MEDIA_DIALOG_FILTER = (
 _SETTINGS_ORG = "CuePlayer"
 _SETTINGS_APP = "CuePlayer"
 MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
-_KEY_AUTOSAVE_ENABLED = "autosave/enabled"
-_KEY_AUTOSAVE_INTERVAL_SEC = "autosave/interval_seconds"
-_KEY_BACKUP_KEEP = "autosave/backup_keep"
-_DEFAULT_AUTOSAVE_INTERVAL_SEC = 300  # 5 minutes
-# User-facing Auto-Save cadence choices (minutes). Stored as seconds.
-_AUTOSAVE_INTERVAL_MINUTES = (5, 15, 30, 60, 120)
+# Autosave / session keys live on ProjectService; aliases kept for tests.
 _KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
 _KEY_CLEAN_OUTPUT_GEOMETRY = "clean_output/geometry"
 _KEY_MAIN_GEOMETRY = "mainwindow/geometry"
@@ -213,8 +216,6 @@ _KEY_CUE_LIST_HEADER = "ui/cue_list_header"
 _KEY_VIEW_MODE = "ui/view_mode"
 _KEY_SETLIST_VISIBLE = "ui/setlist_visible"
 _KEY_SETLIST_WIDTH = "ui/setlist_width"
-_KEY_LAST_PROJECT = "session/last_project_path"
-_KEY_LAST_SONG_ID = "session/last_song_id"
 
 
 @dataclass
@@ -964,8 +965,8 @@ class MainWindow(QMainWindow):
             self.current_song = self.project.songs[0]
         else:
             self.current_song = self._blank_song
-        self._project_path: Path | None = None
-        self._dirty = False
+        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        self._project_service = ProjectService(self._settings)
         self._digit_shortcuts: list[QShortcut] = []
         # Latch digit keys between press and release so held keys add one mark.
         self._mark_shortcut_latch: set[str] = set()
@@ -1267,7 +1268,6 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar(self)
         self.setStatusBar(self.status)
-        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         self._build_file_menu()
         self._setup_autosave()
         self._refresh_window_title()
@@ -1480,6 +1480,25 @@ class MainWindow(QMainWindow):
                 self.startup_ready.emit()
 
             QTimer.singleShot(0, _emit_ready)
+
+    @property
+    def _project_path(self) -> Path | None:
+        return self._project_service.path
+
+    @_project_path.setter
+    def _project_path(self, value: Path | None) -> None:
+        self._project_service.set_path(value)
+
+    @property
+    def _dirty(self) -> bool:
+        return self._project_service.is_dirty
+
+    @_dirty.setter
+    def _dirty(self, value: bool) -> None:
+        if value:
+            self._project_service.mark_dirty()
+        else:
+            self._project_service.mark_clean()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -1840,8 +1859,8 @@ class MainWindow(QMainWindow):
             mode = "setlist"
         self._settings.setValue(_KEY_VIEW_MODE, mode)
         if self._project_path is not None:
-            self._settings.setValue(_KEY_LAST_PROJECT, str(self._project_path))
-            self._settings.setValue(_KEY_LAST_SONG_ID, self.current_song.id)
+            self._project_service.remember_recent(self._project_path)
+            self._project_service.remember_last_song_id(self.current_song.id)
         self._settings.setValue(
             _KEY_CLEAN_OUTPUT_GEOMETRY, self.clean_output_window.saveGeometry()
         )
@@ -1878,14 +1897,10 @@ class MainWindow(QMainWindow):
     def _try_restore_last_project(self) -> bool:
         if self._project_path is not None:
             return False
-        raw = self._settings.value(_KEY_LAST_PROJECT)
-        if not raw:
+        path = self._project_service.last_project_path()
+        if path is None:
             return False
-        path = Path(str(raw))
-        if not path.is_file():
-            return False
-        song_id = self._settings.value(_KEY_LAST_SONG_ID)
-        song_id_str = str(song_id) if song_id else None
+        song_id_str = self._project_service.last_song_id()
         if self._open_project_path(path, song_id=song_id_str, quiet=True):
             self.status.showMessage(f"Restored: {path.name}", 3500)
             return True
@@ -1895,7 +1910,7 @@ class MainWindow(QMainWindow):
         self, path: Path, *, song_id: str | None = None, quiet: bool = False
     ) -> bool:
         try:
-            project = load_project(path)
+            project = self._project_service.open_project(path)
         except Exception as exc:  # noqa: BLE001
             if quiet:
                 self.status.showMessage(f"Could not reopen last project: {exc}", 6000)
@@ -1904,7 +1919,6 @@ class MainWindow(QMainWindow):
             return False
         self.engine.stop()
         self.project = project
-        self._project_path = path
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._apply_project(preferred_song_id=song_id)
         self._set_clean()
@@ -2068,7 +2082,7 @@ class MainWindow(QMainWindow):
 
         # Save As: switch the live session onto the bundled project.
         try:
-            loaded = load_project(result.project_path)
+            loaded = self._project_service.open_project(result.project_path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(
                 self,
@@ -2079,7 +2093,6 @@ class MainWindow(QMainWindow):
         preferred = self.current_song.id if self.project.songs else None
         self.engine.stop()
         self.project = loaded
-        self._project_path = result.project_path
         # Bundle remapped media paths + cloned LTC disk cache — remount
         # in-memory keys and reload disk so Setlist L/R badges stay lit
         # (same as Open Project; without this lamps look "off until restart").
@@ -2363,32 +2376,16 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._clean_output_action)
 
     def _autosave_enabled(self) -> bool:
-        return bool(self._settings.value(_KEY_AUTOSAVE_ENABLED, True, type=bool))
+        return self._project_service.autosave_enabled()
 
     def _autosave_interval_seconds(self) -> int:
-        raw = self._settings.value(
-            _KEY_AUTOSAVE_INTERVAL_SEC, _DEFAULT_AUTOSAVE_INTERVAL_SEC
-        )
-        try:
-            seconds = int(raw)
-        except (TypeError, ValueError):
-            seconds = _DEFAULT_AUTOSAVE_INTERVAL_SEC
-        return max(60, seconds)
+        return self._project_service.autosave_interval_seconds()
 
     def _autosave_interval_minutes(self) -> int:
-        minutes = int(round(self._autosave_interval_seconds() / 60.0))
-        if minutes in _AUTOSAVE_INTERVAL_MINUTES:
-            return minutes
-        # Snap legacy / custom values to the nearest offered choice.
-        return min(_AUTOSAVE_INTERVAL_MINUTES, key=lambda m: abs(m - minutes))
+        return self._project_service.autosave_interval_minutes()
 
     def _backup_keep_count(self) -> int:
-        raw = self._settings.value(_KEY_BACKUP_KEEP, DEFAULT_KEEP)
-        try:
-            keep = int(raw)
-        except (TypeError, ValueError):
-            keep = DEFAULT_KEEP
-        return max(1, keep)
+        return self._project_service.backup_keep_count()
 
     def _build_autosave_menu(self, file_menu: QMenu) -> None:
         """File → Auto-Save submenu: Off, or every N minutes."""
@@ -2420,12 +2417,7 @@ class MainWindow(QMainWindow):
 
     def _set_autosave_choice(self, minutes: int | None) -> None:
         """``None`` = Off; otherwise enable Auto-Save every ``minutes``."""
-        if minutes is None:
-            self._settings.setValue(_KEY_AUTOSAVE_ENABLED, False)
-        else:
-            minutes = max(1, int(minutes))
-            self._settings.setValue(_KEY_AUTOSAVE_ENABLED, True)
-            self._settings.setValue(_KEY_AUTOSAVE_INTERVAL_SEC, minutes * 60)
+        self._project_service.set_autosave_choice(minutes)
         self._setup_autosave()
         self._sync_autosave_menu_ui()
         if minutes is None:
@@ -2450,7 +2442,7 @@ class MainWindow(QMainWindow):
 
     def _set_autosave_enabled(self, enabled: bool) -> None:
         # Kept for tests / callers that toggle on/off without picking minutes.
-        self._settings.setValue(_KEY_AUTOSAVE_ENABLED, bool(enabled))
+        self._project_service.set_autosave_enabled(bool(enabled))
         self._setup_autosave()
         self._sync_autosave_menu_ui()
 
@@ -2471,15 +2463,13 @@ class MainWindow(QMainWindow):
             self._autosave_timer.stop()
 
     def _autosave_tick(self) -> None:
-        if not self._autosave_enabled():
-            return
-        if not self._dirty or self._project_path is None:
+        if not self._project_service.should_autosave():
             return
         self._file_save(quiet=True)
 
     def _backup_before_overwrite(self, path: Path) -> None:
         try:
-            create_backup_before_save(path, keep=self._backup_keep_count())
+            self._project_service.backup_before_overwrite(path)
         except OSError as exc:
             # Backup failure must not block Save; surface a soft warning.
             self.status.showMessage(f"Backup failed: {exc}", 5000)
@@ -2589,9 +2579,8 @@ class MainWindow(QMainWindow):
                 return
 
     def _mark_dirty(self) -> None:
-        if self._dirty:
+        if not self._project_service.mark_dirty():
             return
-        self._dirty = True
         self._refresh_window_title()
 
     @contextmanager
@@ -2726,7 +2715,7 @@ class MainWindow(QMainWindow):
         return len(result.copied)
 
     def _set_clean(self) -> None:
-        self._dirty = False
+        self._project_service.mark_clean()
         self._refresh_window_title()
 
     def _confirm_discard_if_dirty(self) -> bool:
@@ -2799,8 +2788,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_new_project():
             return
         self.engine.stop()
-        self.project = Project.create("Untitled Project", with_song=False)
-        self._project_path = None
+        self.project = self._project_service.new_project(with_song=False)
         self._apply_project()
         self._set_clean()
         self.status.showMessage("New project created", 2500)
@@ -2831,7 +2819,7 @@ class MainWindow(QMainWindow):
         n_media = self._sync_media_layout_for_save(self._project_path)
         self._backup_before_overwrite(self._project_path)
         try:
-            save_project(self.project, self._project_path)
+            self._project_service.save_project(self.project, self._project_path)
         except Exception as exc:  # noqa: BLE001
             if not quiet:
                 QMessageBox.warning(self, "Unable to Save Project", str(exc))
@@ -2863,29 +2851,14 @@ class MainWindow(QMainWindow):
         )
         if not path_str:
             return False
-        path = Path(path_str)
-        name_lower = path.name.lower()
-        if name_lower.endswith(".cueplayer.json"):
-            pass
-        elif path.suffix.lower() == ".json":
-            path = path.with_name(f"{path.stem}.cueplayer.json")
-        else:
-            path = path.with_name(f"{path.name}.cueplayer.json")
+        path = self._project_service.normalize_save_as_path(Path(path_str))
         self.project.clean_video_output = self.clean_output_window.current_settings()
         self.project.video_decode_quality = self.video_sync.decode_quality()
         # Arrange Media/ under the *new* project folder only when files already
         # live there. Save As into another directory leaves the original Media
         # tree alone (paths become absolute). Save As beside the original file
         # shares that Media tree — skip rearrange so the old JSON still opens.
-        shared_beside_original = False
-        if self._project_path is not None:
-            try:
-                shared_beside_original = (
-                    path.resolve() != self._project_path.resolve()
-                    and path.parent.resolve() == self._project_path.parent.resolve()
-                )
-            except OSError:
-                shared_beside_original = False
+        shared_beside_original = self._project_service.is_save_as_beside_original(path)
         n_bundled = 0
         if not shared_beside_original:
             n_bundled = self._maybe_bundle_external_media_on_save(path, quiet=False)
@@ -2897,16 +2870,11 @@ class MainWindow(QMainWindow):
         # gets a backup of whatever was previously on disk.
         self._backup_before_overwrite(path)
         try:
-            save_project(self.project, path)
+            self._project_service.save_project(self.project, path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Unable to Save Project", str(exc))
             return False
-        self._project_path = path
-        stem = path.name
-        if stem.endswith(".cueplayer.json"):
-            self.project.name = stem[: -len(".cueplayer.json")] or self.project.name
-        else:
-            self.project.name = path.stem or self.project.name
+        self._project_service.apply_name_from_path(self.project, path)
         self._set_clean()
         self._refresh_status()
         if shared_beside_original:

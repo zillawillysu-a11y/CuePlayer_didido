@@ -1,85 +1,73 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint1-transitional-cleanup-028d`  
+**Branch:** `cursor/sprint1-project-service-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 1 · Task 2 — **Transitional Layer Cleanup**. Unify ports, remove shims /
-deprecated paths / duplicate aliases. No UI/behavior/features; no Service or
-Repository layer.
+Sprint 1 · Task 3 — **Application Layer Foundation**: introduce
+`application/project_service.py` for project lifecycle without changing runtime
+behavior. No Repository. No playback/audio/timeline/UI redesign.
 
 ## What was implemented
 
-1. Restored canonical `src/cueplayer/ports/*.py` + `tests/ports/test_ports_package.py` onto this tip.
-2. Retargeted all `ui.cue_list_columns` imports → `domain.cue_list_columns`; **deleted** the UI shim.
-3. Removed unused legacy `playback/clock.py` (wall-clock; name clash with `ports.clock.PlaybackClock`).
-4. Removed empty stub packages `timeline/` and `ltc/`.
-5. Removed unused `_AUDIO_SUFFIXES` alias on `MainWindow`.
-6. Updated `docs/current_architecture.md`, created `CHANGELOG.md`, synced boundary/target notes.
-7. Full pytest suite (see handoff / this report after run).
+- New `cueplayer.application.ProjectService` — new/open/save, dirty, autosave
+  prefs, recent/last project, backup-before-overwrite helper.
+- `MainWindow` holds a service instance; `_project_path` / `_dirty` proxy to it;
+  file/autosave/session restore paths delegate I/O and prefs.
+- Dialogs, media layout/bundle, engine stop, `_apply_project` remain in UI.
+- Persistence functions unchanged.
+
+## MainWindow before / after
+
+| Responsibility | Before | After |
+|----------------|--------|-------|
+| Path + dirty flag | Local fields | `ProjectService` (property proxies) |
+| New / open / save I/O | Inline `load_project`/`save_project` | Service methods |
+| Autosave prefs + should-run | Inline QSettings | Service |
+| Last / recent projects | Last path only in QSettings | Service (list + last key) |
+| Dialogs / confirm | MainWindow | MainWindow (unchanged) |
+| Media layout / bundle | MainWindow | MainWindow (unchanged) |
+| Apply project to widgets/engine | MainWindow | MainWindow (unchanged) |
 
 ## Files modified
 
 | Path | Change |
 |------|--------|
-| `src/cueplayer/ports/*` | Restored Protocol package (canonical) |
-| `tests/ports/test_ports_package.py` | Restored smoke tests |
-| `src/cueplayer/domain/cue_list_columns.py` | Added `__all__` |
-| `src/cueplayer/ui/cue_monitor_panel.py` | Import domain columns |
-| `src/cueplayer/ui/main_window.py` | Drop `_AUDIO_SUFFIXES` alias |
-| `src/cueplayer/ui/cue_list_columns.py` | **Deleted** shim |
-| `src/cueplayer/playback/clock.py` | **Deleted** dead wall-clock |
-| `src/cueplayer/timeline/`, `ltc/` | **Deleted** empty stubs |
-| `tests/ui/test_cue_list_columns.py` | Domain-only; assert shim gone |
-| `tests/ui/test_cue_list_global_ui.py` | Domain import |
-| `tests/persistence/test_cue_list_column_order_load.py` | Domain import |
-| `docs/current_architecture.md` | Task 2 status + READY FOR SERVICE LAYER |
-| `CHANGELOG.md` | **New** |
-| `docs/BOUNDARY_RULES.md`, `ARCHITECTURE_TARGET.md` | Status sync |
-| `.ai/*` | REPORT / handoff / NEXT_TASK / README / WORKFLOW |
-
-## Compatibility layers removed
-
-- `cueplayer.ui.cue_list_columns` shim
-- `cueplayer.playback.clock` unused wall-clock
-- Empty `cueplayer.timeline` / `cueplayer.ltc` packages
-- `MainWindow._AUDIO_SUFFIXES` duplicate alias
+| `src/cueplayer/application/__init__.py` | **New** package |
+| `src/cueplayer/application/project_service.py` | **New** service |
+| `src/cueplayer/ui/main_window.py` | Delegate lifecycle |
+| `tests/application/test_project_service.py` | **New** unit tests |
+| `docs/current_architecture.md` | Task 3 + READY FOR REPOSITORY LAYER |
+| `CHANGELOG.md` | Unreleased note |
+| `.ai/REPORT.md`, handoff, `NEXT_TASK.md` | Workflow |
 
 ## Architecture decisions
 
-- One columns implementation: `domain.cue_list_columns`.
-- One ports location: `cueplayer.ports` on this tip.
-- No Service Layer / RemoteHost wiring in this task.
+1. **Service owns state + prefs + thin I/O; UI owns dialogs/side effects** — preserves identical Save As / bundle / layout behavior.
+2. **No Repository yet** — call `persistence.project_store` directly per task scope.
+3. **Recent list seeded from legacy last-project** — restore path unchanged; list is additive for future UI.
+4. **Property proxies for `_project_path` / `_dirty`** — minimize call-site churn and keep existing tests working.
 
-## Tests performed
+## Tests
 
-Full suite (`python -m pytest -q`):
+- Targeted: **26 passed** (application + autosave + session restore + new-project + persistence samples)
+- Full suite: **888 passed**, **16 failed** (same pre-existing / Linux env failures as Task 2; +6 new application tests)
 
-- **882 passed**, **16 failed**, 21 warnings (~3 min, Linux/offscreen)
-- **Cleanup-related green:** ports package, cue_list_columns (domain-only), persistence column load, LTC clamp domain tests (28/28 targeted)
+## Remaining technical debt
 
-### Failures (pre-existing / environment — not introduced by Task 2)
+- No `ProjectStore` repository/adapter
+- Song session / media jobs / RemoteHost still in MainWindow
+- Pre-existing failing tests on Linux CI
 
-| Area | Examples | Likely cause |
-|------|----------|--------------|
-| Video audio mix | `test_audio_engine_video_mix` (×7), `test_ltc_off_strips_from_music` | `_CachedPcm` not iterable — API drift vs tests |
-| Devices | DirectSound stream test | Linux CI has no DirectSound (falls back to ALSA) |
-| MTC | `test_mtc_midi_backend` (×2) | `configure()` now requires `midi_master` |
-| Domain | `test_video_clip_create_clamps_degenerate_values` | Start clamp expectation vs current model |
-| UI | shutdown quit count, setlist LTC badge, scrub font, smooth scale | Env / prior product drift |
+## Risks
 
-Also fixed orphaned import in `tests/domain/test_ltc_channel_clamp.py` (removed dead `_clamp_channel_ui_text` UI private dependency that blocked collection).
-
-## Remaining issues
-
-- Service Layer not started (Task 3).
-- RemoteHost unused.
-- Pre-existing failing tests above (recommend separate triage PR; not in Task 2 scope).
+- Any code assuming `_project_path` is a plain attribute (e.g. `__dict__`) — none found in-repo
+- Recent-list write is new QSettings key (additive; does not change restore)
 
 ## Suggested next task
 
-Sprint 1 Task 3 — `application/project_service` extract (see `NEXT_TASK.md`).
+Sprint 1 Task 4 — thin Repository / `ports.ProjectStore` adapter behind existing load/save functions.
