@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 2 — Task 8: ShowSession foundation (2026-08-03)
+
+- Added `application/show_session_service.py` (activate/deactivate song, prepare playback, timeline/waveform/video refresh coordination, MA3/OSC hook no-op).
+- `MainWindow._activate_song` and empty-workspace clear delegate to `ShowSessionService`.
+- Playback / Project / Settings services unchanged; no EventBus; AudioEngine/Timeline/Waveform/Video internals unchanged.
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 2 — Task 7: Settings service foundation (2026-08-03)
 
 - Added `application/settings_service.py` for machine prefs (QSettings, audio device, window/UI session keys, autosave/recent raw keys, fixed theme id).

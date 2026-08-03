@@ -1,58 +1,59 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/sprint2-settings-service-028d`  
+**Branch:** `cursor/sprint2-show-session-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 2 · Task 7 — **Settings Service Foundation**: introduce
-`application/settings_service.py` for machine-level preferences only,
-preserving QSettings schema and separating Machine State from Project State.
+Sprint 2 · Task 8 — **ShowSession Foundation**: introduce
+`ShowSessionService` to coordinate song activate/deactivate workflows,
+moving `_activate_song` orchestration out of MainWindow without EventBus
+or engine/timeline redesigns.
 
 ## What was implemented
 
-- `SettingsService`: QSettings owner; audio via existing `audio_prefs`; window/UI
-  chrome keys; autosave/recent raw APIs; fixed `theme_id()` = `pitch_black`.
-- MainWindow constructs `SettingsService(QSettings(...))`; `_settings` aliases
-  the service (tests keep working); audio apply/save go through the service.
-- ProjectService receives SettingsService as its SettingsStore.
-- Design contracts documented in module + `docs/current_architecture.md`.
+- `application/show_session_service.py` with activate/deactivate, prepare
+  playback, timeline/waveform/video refresh helpers, `notify_external_sync` no-op.
+- MainWindow `_activate_song` / `_activate_song_monitor` / empty workspace
+  delegate to the service.
+- Host remains MainWindow (duck-typed) for caches and async audio loaders.
 
-## Remaining MainWindow QSettings usages
+## MainWindow responsibilities before / after
 
-- Still constructs `QSettings` once to inject into `SettingsService` (test patch
-  compatibility: `patch(...main_window.QSettings)`).
-- Still calls `self._settings` / `self.settings` value/setValue for UI session
-  (now the SettingsService façade, not a raw orphaned QSettings).
+Before: owned full activate step order (quiesce → swap song → timeline/video/
+monitor → engine → waveform load → chrome refresh).
 
-## Remaining machine settings outside SettingsService
+After: thin wrappers + still owns loaders/caches/dialogs/Remote/marks; service
+owns activate/deactivate coordination order.
 
-- `web_remote/prefs.py`
-- `ui/color_presets.py`
-- `ui/export_dialog.py` (MA export dirs / last console)
-- Sync-calib / Remote mute paths unrelated to settings store
+## Remaining orchestration still inside MainWindow
+
+- `_load_audio_path` / media warm / BPM detect / video stand-in builders
+- Mark/video clip edit refresh paths that call `timeline.set_song` directly
+- Startup empty-setlist clear (lightweight, pre-full-workspace)
+- Dialogs, RemoteHost, export, settings UI
 
 ## Remaining technical debt
 
-- ProjectService still duplicates autosave/recent orchestration on same keys
-- MainWindow still has many chrome setValue call sites (routed, not extracted helpers)
-- No persisted theme switch (theme is code-fixed)
-- Project JSON still mirrors some chrome flags onto songs
+- ShowSession duck-types full MainWindow (needs host Protocol)
+- `ports.SongSession` Protocol unused by ShowSessionService
+- Event Bus still not introduced (explicitly deferred)
+- Dual naming: domain `SongSession` vs ports `SongSession` vs ShowSessionService
 
 ## Risks
 
-- Dual APIs (SettingsService + ProjectService) for autosave/recent keys
-- Injected QSettings vs audio_prefs internal QSettings (same org/app; tests
-  isolate audio_prefs separately)
+- Host private API (`_load_audio_path`, tokens) still reached from application layer
+- Deferred monitor QTimer still in application service (Qt coupling)
+- Behavior drift if MainWindow wrappers diverge from service
 
 ## Tests
 
-- Targeted settings + session/autosave: **14 passed**
-- Full suite: **905 passed**, **16 failed** (same pre-existing / Linux env set)
+- Targeted show-session + song-switch: green
+- Full suite: **909 passed**, **16 failed** (same pre-existing / Linux env set)
 
 ## Suggested next task
 
-Sprint 2 Task 8 — Event Bus foundation (READY FOR EVENT BUS FOUNDATION).
+Sprint 3 architecture planning (READY FOR SPRINT 3 ARCHITECTURE).

@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 2 · Task 7 complete (Settings service foundation)  
+**Status:** Sprint 2 · Task 8 complete (ShowSession foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint2-settings-service-028d`  
-**Constraint (Task 7):** Machine SettingsService only — preserve QSettings schema; no Project JSON in SettingsService; no AudioEngine/Timeline/Playback/RemoteHost redesign.
+**Scope tip:** `cursor/sprint2-show-session-028d`  
+**Constraint (Task 8):** ShowSessionService coordinates activate/deactivate — no EventBus; no AudioEngine/Timeline/Waveform/Video redesign; Playback/Project/Settings stay in their services.
 
 Related docs (do not treat as identical):
 
@@ -172,6 +172,41 @@ Project JSON ← persistence (project state only)
 
 ---
 
+## Sprint 2 Task 8 — ShowSession foundation (done)
+
+| Piece | Role |
+|-------|------|
+| `application/show_session_service.py` | Activate / deactivate song; prepare playback; coordinate timeline / waveform / video refresh |
+| MainWindow | Thin `_activate_song` / empty-workspace wrappers; still owns media caches & async loaders |
+| `PlaybackService` | Transport / loop only (unchanged) |
+| `notify_external_sync()` | No-op extension point for future MA3 / OSC |
+
+### Design decisions
+
+| Decision | Responsibility | Non-responsibility | Dependency | Why |
+|----------|----------------|--------------------|------------|-----|
+| ShowSessionService owns activate orchestration | Song switch step order | Transport play/pause; project I/O; QSettings | Host + PlaybackService | MainWindow must not coordinate this workflow |
+| Host remains MainWindow | Widgets, audio caches, `_load_audio_path` | Service must not import `ui.*` | Duck-typed host | Preserve identical loaders without redesign |
+| `prepare_playback` = set_song + timebase | Attach song to clock | Device open / play | `AudioEngine` via host | Clock attach ≠ transport |
+| Deferred monitor via QTimer | Same as prior UI | EventBus | Qt | Behavior identical; no EventBus this task |
+| `notify_external_sync` empty | Future MA3/OSC hook | Implementing consoles now | — | Extension point only |
+
+### Coordination graph
+
+```text
+MainWindow._activate_song
+    └── ShowSessionService.activate_song_at
+            ├── PlaybackService.clear_loop
+            ├── timeline / video_sync / monitor (via host)
+            ├── AudioEngine.set_song + timebase + quiesce/buffer (via host)
+            ├── host async audio / waveform loaders
+            └── notify_external_sync()  (no-op)
+```
+
+**Still in MainWindow:** media warm/BPM jobs, dialogs, RemoteHost, mark editing, `_load_audio_path` implementation.
+
+---
+
 ## 1. Current folder structure
 
 ```text
@@ -188,7 +223,7 @@ CuePlayer_didido/
     ├── app.py              # QApplication boot + MainWindow
     ├── __main__.py         # python -m cueplayer
     ├── domain/             # models, undo, cue id, columns, media_relink, song_session
-    ├── application/        # ProjectService, PlaybackService, SettingsService
+    ├── application/        # ProjectService, PlaybackService, SettingsService, ShowSessionService
     ├── repository/         # ProjectRepository (file I/O façade)
     ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
@@ -447,8 +482,9 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 | **`ProjectService`** | `application/project_service.py` | Lifecycle; I/O via `ProjectRepository` |
 | **`PlaybackService`** | `application/playback_service.py` | ✅ Transport + volume/loop/scrub/nudge → AudioEngine |
 | **`SettingsService`** | `application/settings_service.py` | ✅ Machine QSettings + audio_prefs façade |
+| **`ShowSessionService`** | `application/show_session_service.py` | ✅ Activate/deactivate + surface refresh coordination |
 | **`SongSession`** | `domain/song_session.py` | ✅ Current song + transport snapshot (mirror) |
-| Song activate orchestration | `MainWindow._activate_song` | Still UI-owned (timeline/video/monitor refresh) |
+| Song activate orchestration | `ShowSessionService` | MainWindow thin wrapper; host owns loaders |
 | Media job queue | `MainWindow` executors | Still UI-owned |
 | Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
 | Export orchestration | UI + `exporters/*` | |
@@ -601,11 +637,11 @@ Machine State and Project State must remain separate — SettingsService never o
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Event bus / Remote)
+### P0 — Next (Sprint 3)
 
-1. **No app-wide Event Bus** — UI still wires many Qt signals directly; next candidate: Event Bus foundation.
+1. **Sprint 3 architecture planning** — Event Bus, RemoteHost wiring, further host decoupling from ShowSession.
 2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
-3. **`_activate_song` still a large MainWindow orchestrator** — further song-session Protocol adoption later.
+3. **ShowSession still duck-types MainWindow** — extract a narrower host port later.
 4. **Machine prefs still also in `web_remote.prefs` / `color_presets` / export dialog** — fold into SettingsService later if needed.
 
 ### P1 — Structural risk (product-visible)
@@ -653,21 +689,23 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 2 · 5** Playback foundation | ✅ Done | PlaybackService + SongSession |
 | **Sprint 2 · 6** Playback boundary | ✅ Done | Volume / loop / scrub / nudge via service |
 | **Sprint 2 · 7** Settings service | ✅ Done | Machine SettingsService + QSettings façade |
-| **Sprint 2 · 8** Event Bus foundation | **Next** | Decouple UI signal fan-out |
+| **Sprint 2 · 8** ShowSession foundation | ✅ Done | Activate/deactivate coordination |
+| **Sprint 3** Architecture | **Next** | Plan Event Bus / RemoteHost / host port |
 
-### Recommended Sprint 2 Task 8 — Event Bus foundation
+### Recommended Sprint 3 planning focus
 
-- Introduce a thin in-process event bus / application events for high-value MainWindow fan-out (playhead, song activate, dirty) without redesigning Qt widgets.
-- Do not replace AudioEngine clock signals in the same task.
-- Keep behavior identical; strangler only.
+- Event Bus foundation (deferred from earlier Task 8 draft) for UI fan-out
+- Wire `ports.RemoteHost` / reduce WebRemote private MainWindow calls
+- Narrow ShowSession host Protocol (stop duck-typing full MainWindow)
+- Optional: fold remaining machine prefs into SettingsService
 
-### Risks for Task 8
+### Risks for Sprint 3
 
 | Risk | Mitigation |
 |------|------------|
-| Double-delivery if both bus and direct signals fire | Migrate one fan-out at a time |
-| Clock vs UI events mixed | Bus carries UI/domain events only; AudioEngine remains clock |
+| Event Bus + existing Qt signals double-fire | Migrate one fan-out at a time |
+| Host Protocol too large | Start with activate-only surface methods |
 
 ---
 
-## READY FOR EVENT BUS FOUNDATION
+## READY FOR SPRINT 3 ARCHITECTURE
