@@ -27,6 +27,7 @@ Chat history does **not** travel between machines; `.ai/` + `docs/` + `AGENTS.md
 | [`../docs/ARCHITECTURE_TARGET.md`](../docs/ARCHITECTURE_TARGET.md) | Strangler target: `ports/` / `application/` / `adapters/` |
 | [`../docs/BOUNDARY_RULES.md`](../docs/BOUNDARY_RULES.md) | **Permanent** allowed/forbidden dependency directions |
 | [`../docs/MIGRATION_RULES.md`](../docs/MIGRATION_RULES.md) | **Permanent** one-module migration procedure |
+| [`../docs/SPRINT_0_REVIEW.md`](../docs/SPRINT_0_REVIEW.md) | Sprint 0 retrospective (foundation complete) |
 | [`../docs/DISTRIBUTION.md`](../docs/DISTRIBUTION.md) | Windows packaging (`packaging/build_windows.ps1`) |
 
 ## Repo facts agents must know
