@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 1 — Task 3: Application layer foundation (2026-08-03)
+
+- Added `cueplayer.application.ProjectService` for project lifecycle (new/open/save, dirty, autosave prefs, recent/last projects).
+- `MainWindow` delegates lifecycle state and persistence I/O; dialogs, media layout/bundle, and widget apply stay in UI.
+- Persistence implementation unchanged (no Repository).
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 1 — Task 2: Transitional layer cleanup (2026-08-03)
 
 Cleanup only — no UI changes, no behavior changes, no Service/Repository layer.

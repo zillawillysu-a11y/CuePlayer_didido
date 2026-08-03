@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 1 · Task 2 complete (transitional cleanup)  
+**Status:** Sprint 1 · Task 3 complete (application `ProjectService`)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint1-transitional-cleanup-028d`  
-**Constraint (Task 2):** Cleanup only — unify ports, remove shims/stubs/aliases; **no** UI/behavior/features; **no** Service / Repository layer yet.
+**Scope tip:** `cursor/sprint1-project-service-028d`  
+**Constraint (Task 3):** Project lifecycle service only — identical behavior; **no** Repository; no playback/audio/timeline/UI redesign.
 
 Related docs (do not treat as identical):
 
@@ -29,7 +29,20 @@ Related docs (do not treat as identical):
 | Remove empty `timeline/` / `ltc/` stubs | Real timeline UI under `ui/`; LTC under `timecode/` + `media/` |
 | Drop `_AUDIO_SUFFIXES` alias | Use `AUDIO_SUFFIXES` from `ui.drag_drop` only |
 
-**Not done here (explicitly deferred):** Service Layer, Repository pattern, RemoteHost wiring, adapters renames.
+**Not done in Task 2:** Service Layer, Repository pattern, RemoteHost wiring, adapters renames.
+
+---
+
+## Sprint 1 Task 3 — Application layer foundation (done)
+
+| Action | Result |
+|--------|--------|
+| `application/project_service.py` | New/open/save/save-as helpers, dirty, autosave prefs, recent/last project |
+| MainWindow | Delegates lifecycle state + I/O; keeps dialogs, media layout/bundle, engine stop, apply_project |
+| Persistence | Unchanged (`load_project` / `save_project` / backup) |
+| Recent projects | QSettings list (max 10) + legacy last-project key for session restore |
+
+**Not done here:** Repository pattern, RemoteHost, other application services.
 
 ---
 
@@ -49,6 +62,7 @@ CuePlayer_didido/
     ├── app.py              # QApplication boot + MainWindow
     ├── __main__.py         # python -m cueplayer
     ├── domain/             # models, undo, cue id, columns, media_relink
+    ├── application/        # ProjectService (lifecycle); more services later
     ├── ports/              # Protocol interfaces only (canonical)
     ├── playback/           # AudioEngine (clock), video sync/mix, devices, NDI, MTC/MIDI
     ├── media/              # decode, caches, BPM, LTC detect, av_path_lock
@@ -301,22 +315,18 @@ Schema version constant lives with models (`SCHEMA_VERSION`); migrations live in
 
 ## 10. Existing services
 
-**There is no `application/` or `*Service` class layer yet.**
+| Service | Home | Notes |
+|---------|------|-------|
+| **`ProjectService`** | `application/project_service.py` | ✅ Sprint 1 Task 3 — new/open/save, dirty, autosave prefs, recent/last |
+| Song session | `MainWindow._activate_song` | Still UI-owned |
+| Media job queue | `MainWindow` executors | Still UI-owned |
+| Video output fan-out | `MainWindow` + `VideoSyncController` | Still UI-owned |
+| Export orchestration | UI + `exporters/*` | |
+| Remote command surface | `web_remote.bridge` | RemoteHost port unused |
+| Playback clock / mix | `AudioEngine` | |
+| Frame clock follower | `VideoSyncController` | |
 
-De-facto services (by behavior, not by name):
-
-| De-facto service | Current home |
-|------------------|--------------|
-| Project open/save/save-as/dirty/autosave/bundle | `MainWindow` + `persistence.*` |
-| Song session (activate song, refresh UI/engine/sync) | `MainWindow._activate_song` |
-| Media job queue (audio load, BPM, LTC detect) | `MainWindow` ThreadPoolExecutors |
-| Video output fan-out (Preview/Clean/NDI) | `MainWindow` + `VideoSyncController` + NDI helper |
-| Export orchestration | UI dialogs + `exporters/*` |
-| Remote command surface | `web_remote.bridge.WebRemoteBridge` |
-| Playback clock / mix | `playback.audio_engine.AudioEngine` |
-| Frame clock follower | `playback.video_sync.VideoSyncController` |
-
-Target names in `ARCHITECTURE_TARGET.md` (`project_service`, `song_session`, …) are **aspirational**.
+`MainWindow` still owns dialogs, media layout/bundle prompts, and applying a loaded `Project` to widgets/engine.
 
 ---
 
@@ -465,9 +475,9 @@ Implication for future `application` services: must know **which knobs are machi
 - Dead `playback.clock.PlaybackClock` wall-clock  
 - Unused `_AUDIO_SUFFIXES` re-export alias on `MainWindow`
 
-### P0 — Next (Service Layer / Remote)
+### P0 — Next (Repository / Remote)
 
-1. **No `application/` services yet** — open/save/autosave/song-activate still live in `MainWindow`.
+1. **No Repository / `ProjectStore` adapter yet** — `ProjectService` calls `persistence.project_store` functions directly.
 2. **`WebRemoteBridge` ↔ MainWindow private API** — `ports.RemoteHost` exists but is unused.
 3. **Doc overlap / stale claims** — older REVIEW / PRODUCT_SPEC status still confuse agents.
 
@@ -514,25 +524,23 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 |------|--------|-------|
 | **1** Architecture assessment | ✅ Done | This file originated here |
 | **2** Transitional layer cleanup | ✅ Done | ports unified; shims/stubs/aliases removed |
-| **3** Service Layer (first extract) | **Next** | Recommend `application/project_service` |
-| **4** RemoteHost adoption *or* further extracts | Queued | After first service proves the pattern |
+| **3** Application `ProjectService` | ✅ Done | Lifecycle only; no Repository |
+| **4** Repository layer *or* RemoteHost / next service | **Next** | Recommend thin `ProjectStore` adapter behind existing functions |
 
-### Recommended Sprint 1 Task 3 — Service Layer (first)
+### Recommended Sprint 1 Task 4 — Repository layer (first)
 
-- Create `application/project_service.py` (thin package OK) that owns project open/save/save-as/dirty/autosave orchestration currently inside `MainWindow`.
-- `MainWindow` keeps dialogs / Qt wiring; delegates persistence orchestration.
-- **No** Repository pattern yet; keep calling `persistence.project_store` functions.
-- **No** behavior or UI changes; tests: persistence + smoke open/save paths.
-- Leave RemoteHost for Task 4 once a service seam exists (ports Protocol already present).
+- Introduce a thin repository / adapter that wraps `persistence.project_store.load_project` / `save_project` (and optionally backup) behind `ports.ProjectStore`.
+- Point `ProjectService` at the port/adapter; **no** behavior change.
+- Do **not** redesign JSON schema or migrations in the same task.
+- Alternative if human prefers: RemoteHost façade or `song_session` extract.
 
-### Risks for Task 3
+### Risks for Task 4
 
 | Risk | Mitigation |
 |------|------------|
-| Save As / Media layout edge cases | Move orchestration only; leave path/dialog code; run full persistence tests |
-| Dirty-flag / autosave races | Preserve timer+flag ownership together carefully |
-| Accidental UI churn | Diff should be mostly moves + call sites |
+| Over-abstracting too early | Keep adapter one-liner wrappers; no new persistence logic |
+| Breaking autosave/save-as | Service tests + UI session restore tests |
 
 ---
 
-## READY FOR SERVICE LAYER
+## READY FOR REPOSITORY LAYER
