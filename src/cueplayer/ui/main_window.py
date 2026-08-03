@@ -78,13 +78,38 @@ from cueplayer.application.project_service import (
     KEY_LAST_SONG_ID as _KEY_LAST_SONG_ID,
     ProjectService,
 )
+from cueplayer.application.settings_service import (
+    KEY_CLEAN_OUTPUT_GEOMETRY as _KEY_CLEAN_OUTPUT_GEOMETRY,
+    KEY_CLEAN_OUTPUT_WAS_OPEN as _KEY_CLEAN_OUTPUT_WAS_OPEN,
+    KEY_CUE_LIST_COLUMN_ORDER as _KEY_CUE_LIST_COLUMN_ORDER,
+    KEY_CUE_LIST_HEADER as _KEY_CUE_LIST_HEADER,
+    KEY_CUE_LIST_SHOW_CUE_ID as _KEY_CUE_LIST_SHOW_CUE_ID,
+    KEY_CUE_LIST_VISIBLE as _KEY_CUE_LIST_VISIBLE,
+    KEY_MAIN_GEOMETRY as _KEY_MAIN_GEOMETRY,
+    KEY_MAIN_SPLITTER as _KEY_MAIN_SPLITTER,
+    KEY_MAIN_STATE as _KEY_MAIN_STATE,
+    KEY_NOW_BODY_SPLITTER as _KEY_NOW_BODY_SPLITTER,
+    KEY_NOW_PRIMARY_SHOW_CUE_ID as _KEY_NOW_PRIMARY_SHOW_CUE_ID,
+    KEY_NOW_PRIMARY_SINGLE_LINE as _KEY_NOW_PRIMARY_SINGLE_LINE,
+    KEY_NOW_PRIMARY_VISIBLE as _KEY_NOW_PRIMARY_VISIBLE,
+    KEY_NOW_SECONDARY_PLACEMENT as _KEY_NOW_SECONDARY_PLACEMENT,
+    KEY_NOW_SECONDARY_VISIBLE as _KEY_NOW_SECONDARY_VISIBLE,
+    KEY_NOW_SPLITTER as _KEY_NOW_SPLITTER,
+    KEY_NOW_SPLITTER_BELOW as _KEY_NOW_SPLITTER_BELOW,
+    KEY_NOW_SPLITTER_RIGHT as _KEY_NOW_SPLITTER_RIGHT,
+    KEY_SETLIST_VISIBLE as _KEY_SETLIST_VISIBLE,
+    KEY_SETLIST_WIDTH as _KEY_SETLIST_WIDTH,
+    KEY_TIMELINE_HEADER_WIDTH as _KEY_TIMELINE_HEADER_WIDTH,
+    KEY_TIMELINE_PREVIEW_SPLITTER as _KEY_TIMELINE_PREVIEW_SPLITTER,
+    KEY_TIMELINE_SPLITTER as _KEY_TIMELINE_SPLITTER,
+    KEY_VIEW_MODE as _KEY_VIEW_MODE,
+    SETTINGS_APP as _SETTINGS_APP,
+    SETTINGS_ORG as _SETTINGS_ORG,
+    SettingsService,
+)
 from cueplayer.domain.song_session import SongSession
 from cueplayer.persistence.backup import (
     list_backups,
-)
-from cueplayer.persistence.audio_prefs import (
-    apply_global_audio_to_project,
-    save_global_audio_output,
 )
 from cueplayer.persistence.project_store import load_project
 from cueplayer.persistence.media_layout import (
@@ -188,36 +213,10 @@ _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"
 )
-_SETTINGS_ORG = "CuePlayer"
-_SETTINGS_APP = "CuePlayer"
 MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
-# Autosave / session keys live on ProjectService; aliases kept for tests.
-_KEY_CLEAN_OUTPUT_WAS_OPEN = "clean_output/was_open"
-_KEY_CLEAN_OUTPUT_GEOMETRY = "clean_output/geometry"
-_KEY_MAIN_GEOMETRY = "mainwindow/geometry"
-_KEY_MAIN_STATE = "mainwindow/state"
-_KEY_MAIN_SPLITTER = "ui/main_splitter"
-_KEY_TIMELINE_SPLITTER = "ui/timeline_splitter"
-_KEY_TIMELINE_PREVIEW_SPLITTER = "ui/timeline_preview_splitter"
 # Floor so the Video Preview splitter cannot be dragged shut (View menu still hides).
 _VIDEO_PREVIEW_SPLIT_MIN_HEIGHT = 96
-_KEY_TIMELINE_HEADER_WIDTH = "ui/timeline_header_width"
-_KEY_NOW_SPLITTER = "ui/now_splitter"
-_KEY_NOW_SECONDARY_PLACEMENT = "ui/now_secondary_placement"
-_KEY_NOW_SPLITTER_RIGHT = "ui/now_splitter_right"
-_KEY_NOW_SPLITTER_BELOW = "ui/now_splitter_below"
-_KEY_NOW_BODY_SPLITTER = "ui/now_body_splitter"
-_KEY_NOW_PRIMARY_VISIBLE = "ui/now_primary_visible"
-_KEY_NOW_SECONDARY_VISIBLE = "ui/now_secondary_visible"
-_KEY_CUE_LIST_VISIBLE = "ui/cue_list_visible"
-_KEY_NOW_PRIMARY_SHOW_CUE_ID = "ui/now_primary_show_cue_id"
-_KEY_NOW_PRIMARY_SINGLE_LINE = "ui/now_primary_single_line"
-_KEY_CUE_LIST_SHOW_CUE_ID = "ui/cue_list_show_cue_id"
-_KEY_CUE_LIST_COLUMN_ORDER = "ui/cue_list_column_order"
-_KEY_CUE_LIST_HEADER = "ui/cue_list_header"
-_KEY_VIEW_MODE = "ui/view_mode"
-_KEY_SETLIST_VISIBLE = "ui/setlist_visible"
-_KEY_SETLIST_WIDTH = "ui/setlist_width"
+# Machine settings keys / org aliases: see application.settings_service (+ ProjectService).
 
 
 @dataclass
@@ -968,8 +967,10 @@ class MainWindow(QMainWindow):
             self.current_song = self.project.songs[0]
         else:
             self.current_song = self._blank_song
-        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
-        self._project_service = ProjectService(self._settings)
+        self.settings = SettingsService(QSettings(_SETTINGS_ORG, _SETTINGS_APP))
+        # Alias kept for existing tests / call sites that read ``_settings``.
+        self._settings = self.settings
+        self._project_service = ProjectService(self.settings)
         self._digit_shortcuts: list[QShortcut] = []
         # Latch digit keys between press and release so held keys add one mark.
         self._mark_shortcut_latch: set[str] = set()
@@ -1050,7 +1051,7 @@ class MainWindow(QMainWindow):
             self.current_song.start_timecode, self.current_song.fps
         )
         # Machine-global audio prefs (survive New / Load Project).
-        apply_global_audio_to_project(self.project)
+        self.settings.apply_audio_to_project(self.project)
         self.engine.apply_audio_settings(self.project.audio_output)
         self.playback.sync_from_engine()
 
@@ -2979,7 +2980,7 @@ class MainWindow(QMainWindow):
         self.setlist_sheet_page.set_project(self.project)
         self._sync_setlist_name_mode_ui()
         # Audio / MIDI / Timecode follow the machine, not the project file.
-        apply_global_audio_to_project(self.project)
+        self.settings.apply_audio_to_project(self.project)
         self.engine.apply_audio_settings(self.project.audio_output)
         self.clean_output_window.apply_settings(self.project.clean_video_output)
         self._apply_ndi_from_project(show_errors=False)
@@ -5570,7 +5571,7 @@ class MainWindow(QMainWindow):
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
         self.monitor.sync_output_quick_toggles(ao)
-        save_global_audio_output(ao)
+        self.settings.save_audio_output(ao)
         self._mark_dirty()
         if warning:
             self.status.showMessage(warning, 5000)
@@ -5654,7 +5655,7 @@ class MainWindow(QMainWindow):
             return
         settings = dialog.result_settings()
         self.project.audio_output = settings
-        save_global_audio_output(settings)
+        self.settings.save_audio_output(settings)
         warning = self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()

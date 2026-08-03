@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 2 — Task 7: Settings service foundation (2026-08-03)
+
+- Added `application/settings_service.py` for machine prefs (QSettings, audio device, window/UI session keys, autosave/recent raw keys, fixed theme id).
+- `MainWindow` constructs `SettingsService` and routes UI session + audio prefs through it; Project JSON stays out.
+- Existing `audio_prefs` schema and keys preserved (no persistence redesign).
+- Updated `docs/current_architecture.md`.
+
 ### Sprint 2 — Task 6: Playback boundary completion (2026-08-03)
 
 - Extended `PlaybackService` with volume / mute / music gain / waveform gain, A–B loop, scrub begin/end, and nudge.
