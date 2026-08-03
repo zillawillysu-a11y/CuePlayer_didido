@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Task 1 complete (Song Variant design — docs only)  
+**Status:** Sprint 4 Feature Task 2 complete (Song Variant domain foundation)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-design-028d`  
-**Constraint (Task 1):** Design only — no production code, no playback/UI changes.
+**Scope tip:** `cursor/sprint4-song-variant-domain-028d`  
+**Constraint (Task 2):** Domain + tests only — no persistence migration, no playback/UI changes.
 
 Related docs (do not treat as identical):
 
@@ -887,14 +887,15 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 3.5** Architecture snapshot | ✅ Done | `docs/architecture_overview.md` (docs only) |
 | **Sprint 4 Planning** Feature plan | ✅ Done | `docs/roadmap.md` |
 | **Sprint 4 · F1** Song Variant design | ✅ Done | `docs/song_variant_design.md` |
-| **Next** Song Variant implementation | **Queued** | Domain types + schema v2 (I1/I2) |
+| **Sprint 4 · F2** Song Variant domain | ✅ Done | `domain/song_variant.py` + tests |
+| **Next** Persistence integration | **Queued** | Schema v2 migrate/load/save |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Task 1
+### After Feature Task 2
 
-Implement Song Variants per `docs/song_variant_design.md` (I1+).  
-Do **not** auto-start until the user continues. No UI redesign in the first code slice.
+Wire Song Variants into project JSON (schema v2) per `docs/song_variant_design.md`.  
+Do **not** auto-start until the user continues.
 
 ---
 
-## READY FOR SONG VARIANT IMPLEMENTATION
+## READY FOR PERSISTENCE INTEGRATION

@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 2: Song Variant domain foundation (2026-08-03)
+
+- Added `domain/song_variant.py` (`SongVariant`, `VariantKind`) with field docs.
+- `Song` gains in-memory `variants` / `selected_variant_id` + selection helpers (not persisted yet).
+- Unit tests in `tests/domain/test_song_variant.py`.
+- No UI, playback, or schema migration changes.
+
 ### Sprint 4 — Feature Task 1: Song Variant design (2026-08-03)
 
 - Added `docs/song_variant_design.md` (domain audit, persistence schema v2 proposal, migration/compat, risks, implementation tasks).

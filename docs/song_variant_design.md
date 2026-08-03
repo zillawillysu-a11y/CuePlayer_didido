@@ -1,11 +1,11 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 1 complete (design only — no production code)  
+**Status:** Sprint 4 Feature Task 2 complete (Song Variant **domain foundation**)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-design-028d`  
+**Scope tip:** `cursor/sprint4-song-variant-domain-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Constraint for this task:** Design proposal only. Do **not** implement features, change playback, or redesign UI yet.
+**Task 2 constraint:** Domain model + unit tests only. No UI, no playback behavior change, no schema migration / ProjectService / Timeline changes.
 
 ---
 
@@ -110,7 +110,38 @@ Project
       └── (legacy) audio_tracks   # transitional mirror — see §7
 ```
 
-### 5.2 New types (proposed)
+### 5.2 Implemented domain types (Task 2)
+
+Flat MVP variant (Task 2) — simpler than the earlier media-bag sketch; still
+extensible via ``kind`` + ``metadata``. Multi-item media bags can return later
+without moving marks.
+
+Module: ``cueplayer.domain.song_variant``
+
+```text
+VariantKind = "audio" | "video" | "ltc" | "click"
+
+SongVariant
+  id: str                 # required — selection / future persistence
+  name: str               # required — operator label
+  kind: VariantKind       # required (default audio) — future media kinds
+  path: Path              # required — primary media file (may be missing on disk)
+  anchor_offset: float    # optional (default 0) — Align Anchors later
+  enabled: bool           # optional (default True) — soft-disable
+  metadata: dict[str,str] # optional — extensible string bag
+```
+
+Song fields (in-memory; **not** persisted yet):
+
+```text
+Song.variants: list[SongVariant]
+Song.selected_variant_id: str | None
+```
+
+Helpers: ``selected_variant()``, ``selected_audio_path()``, ``select_variant()``,
+``ensure_variants_from_legacy_audio_tracks()``, ``duplicate()`` copies variants.
+
+### 5.2b Earlier media-bag sketch (superseded for MVP)
 
 ```text
 VariantMediaKind = "audio" | "video" | "ltc" | "click"   # extend later
@@ -132,6 +163,9 @@ SongVariant
   # Probed cache (optional; song.duration_seconds remains timeline authority):
   source_duration_seconds: float | None = None
 ```
+
+**Task 2 chose the flat model** (`kind`+`path`+`anchor_offset`) for a smaller
+domain surface. Persistence (Task 3) should serialize the flat fields.
 
 ### 5.3 Song additions (proposed)
 
@@ -318,4 +352,32 @@ Aligns with roadmap Feature Sprint but **reframes** “Reference lanes” as **V
 
 ---
 
-## READY FOR SONG VARIANT IMPLEMENTATION
+## 12. Task 2 status — domain foundation (done)
+
+| Deliverable | Status |
+|-------------|--------|
+| `domain/song_variant.py` | ✅ |
+| `Song.variants` / `selected_variant_id` + helpers | ✅ |
+| Unit tests `tests/domain/test_song_variant.py` | ✅ |
+| Persistence / schema migration | ❌ next task |
+| Playback / UI | ❌ unchanged |
+
+### Open design questions (before persistence)
+
+1. Serialize `metadata` as opaque string map only, or allow nested JSON?
+2. On migrate from `audio_tracks`, should hidden tracks become `enabled=False`? (domain helper currently does)
+3. Keep emitting `audio_tracks` mirror forever in Phase A, or one schema generation only?
+
+### Risks before persistence integration
+
+- In-memory variants lost on save until schema v2  
+- Call sites still use `_main_audio_path_for_song` / `audio_tracks`  
+- Dual model drift if UI writes tracks but not variants  
+
+### Recommended Feature Task 3
+
+**Persistence integration:** schema v2, migrate 1→2, round-trip fixtures, optional derived `audio_tracks` mirror — still no UI redesign and no intentional playback behavior change beyond load accessors in a later slice.
+
+---
+
+## READY FOR PERSISTENCE INTEGRATION
