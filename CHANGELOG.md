@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 4: Playback Variant Support MVP (2026-08-03)
+
+- `Song.active_audio_path()` / `replace_main_audio` / `clear_audio_media`.
+- `PlaybackService.resolve_active_audio_path` + `active_variant`; ShowSession + MainWindow load helpers retargeted.
+- Legacy songs without variants unchanged; single-buffer AudioEngine behavior preserved.
+- No UI management, Timeline/Waveform redesign, or anchor-offset application.
+
 ### Sprint 4 — Feature Task 3: Song Variant persistence (2026-08-03)
 
 - `SCHEMA_VERSION = 2`; serialize/deserialize `Song.variants` / `selected_variant_id`.

@@ -154,6 +154,66 @@ def test_ensure_variants_noop_without_tracks() -> None:
     assert song.ensure_variants_from_legacy_audio_tracks() is False
 
 
+def test_active_audio_path_falls_back_to_legacy_tracks(tmp_path: Path) -> None:
+    song = Song.create("曲")
+    main = tmp_path / "main.wav"
+    song.audio_tracks = [AudioTrack(id="main", name="Main", path=main, role="main")]
+    assert song.variants == []
+    assert song.active_audio_path() == Path(main)
+    assert song.selected_audio_path() is None
+
+
+def test_active_audio_path_prefers_selected_variant(tmp_path: Path) -> None:
+    song = Song.create("曲")
+    track = tmp_path / "track.wav"
+    variant_path = tmp_path / "variant.wav"
+    song.audio_tracks = [AudioTrack(id="main", name="Main", path=track, role="main")]
+    a = SongVariant.create("A", variant_path)
+    song.variants = [a]
+    song.selected_variant_id = a.id
+    assert song.active_audio_path() == Path(variant_path)
+
+
+def test_replace_main_audio_legacy_only_when_no_variants(tmp_path: Path) -> None:
+    song = Song.create("曲")
+    path = tmp_path / "新.wav"
+    song.replace_main_audio(path)
+    assert len(song.audio_tracks) == 1
+    assert song.audio_tracks[0].path == path
+    assert song.variants == []
+    assert song.active_audio_path() == Path(path)
+
+
+def test_replace_main_audio_syncs_existing_variants(tmp_path: Path) -> None:
+    song = Song.create("曲")
+    old = tmp_path / "old.wav"
+    new = tmp_path / "new.wav"
+    a = SongVariant.create("A", old, anchor_offset=0.25)
+    b = SongVariant.create("B", tmp_path / "other.wav")
+    song.variants = [a, b]
+    song.selected_variant_id = a.id
+    song.replace_main_audio(new, name="Bed")
+    assert len(song.variants) == 1
+    assert song.variants[0].id == a.id
+    assert song.variants[0].path == new
+    assert song.variants[0].name == "Bed"
+    assert song.variants[0].anchor_offset == pytest.approx(0.25)
+    assert song.selected_variant_id == a.id
+    assert song.active_audio_path() == Path(new)
+    assert song.audio_tracks[0].path == new
+
+
+def test_clear_audio_media(tmp_path: Path) -> None:
+    song = Song.create("曲")
+    song.replace_main_audio(tmp_path / "a.wav")
+    song.ensure_variants_from_legacy_audio_tracks()
+    song.clear_audio_media()
+    assert song.audio_tracks == []
+    assert song.variants == []
+    assert song.selected_variant_id is None
+    assert song.active_audio_path() is None
+
+
 def test_song_duplicate_copies_variants_with_new_ids(tmp_path: Path) -> None:
     song = Song.create("Original")
     a = SongVariant.create("A", tmp_path / "a.wav", metadata={"k": "1"})

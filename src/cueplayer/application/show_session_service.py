@@ -36,8 +36,6 @@ Design contract
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QTimer
 
 from cueplayer.application.playback_service import PlaybackService
@@ -181,12 +179,8 @@ class ShowSessionService:
     def _prepare_waveform_and_audio(self, song: Song) -> None:
         """Coordinate Music-lane waveform + async PCM load (host owns loaders)."""
         h = self._host
-        main_audio = next(
-            (t for t in song.audio_tracks if t.role == "main"),
-            song.audio_tracks[0] if song.audio_tracks else None,
-        )
-        if main_audio is not None and Path(main_audio.path).is_file():
-            audio_path = Path(main_audio.path)
+        audio_path = self._playback.resolve_active_audio_path(song)
+        if audio_path is not None and audio_path.is_file():
             # RAM only — never sync-load .npz on the UI thread (that hitch
             # was the main Setlist song-switch stall after warm).
             cached = h._cached_audio_buffer(audio_path)
@@ -229,11 +223,11 @@ class ShowSessionService:
             h.engine.set_duration(song.duration_seconds)
             h.transport.set_times(0.0, h.engine.duration)
             h.monitor.set_position(0.0, h.engine.duration)
-            if main_audio is not None:
+            if audio_path is not None:
                 h.timeline.set_audio(None)
                 h.timeline.set_audio_loading(False)
                 h.status.showMessage(
-                    f"Audio file not found: {main_audio.path} "
+                    f"Audio file not found: {audio_path} "
                     "(File → Relink Missing Media…)",
                     5000,
                 )

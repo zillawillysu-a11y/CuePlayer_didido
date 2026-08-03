@@ -3349,25 +3349,18 @@ class MainWindow(QMainWindow):
 
         song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
 
-        current_audio = Path(song.audio_tracks[0].path) if song.audio_tracks else None
+        current_audio = song.active_audio_path()
         current_video = Path(song.video_clips[0].path) if song.video_clips else None
         draft_audio = Path(draft.audio_path) if draft.audio_path is not None else None
         draft_video = Path(draft.video_path) if draft.video_path is not None else None
 
         if bool(getattr(draft, "media_cleared", False)):
-            song.audio_tracks = []
+            song.clear_audio_media()
             song.video_clips = []
         else:
             if draft_audio is not None and draft_audio.is_file():
                 if not self._same_media_path(current_audio, draft_audio):
-                    song.audio_tracks = [
-                        AudioTrack(
-                            id="main_audio",
-                            name=draft_audio.stem,
-                            path=draft_audio,
-                            role="main",
-                        )
-                    ]
+                    song.replace_main_audio(draft_audio)
                     # Metadata duration now — do not wait for full waveform decode
                     # (empty project used to show 1:00 until load finished).
                     self._apply_probed_audio_duration(draft_audio, song=song)
@@ -6355,14 +6348,7 @@ class MainWindow(QMainWindow):
             return
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
-            self.current_song.audio_tracks = [
-                AudioTrack(
-                    id="main_audio",
-                    name=path.stem,
-                    path=path,
-                    role="main",
-                )
-            ]
+            self.current_song.replace_main_audio(path)
         self.engine.set_buffer(buffer)
         self.engine.ensure_playback_ready()
         self.transport.set_times(0.0, self.engine.duration)
@@ -6454,13 +6440,10 @@ class MainWindow(QMainWindow):
         )
 
     def _main_audio_path_for_song(self, song: Song) -> Path | None:
-        main_audio = next(
-            (t for t in song.audio_tracks if t.role == "main"),
-            song.audio_tracks[0] if song.audio_tracks else None,
-        )
-        if main_audio is None:
+        """Existing-file path for the song's active playback media (variant-aware)."""
+        path = self.playback.resolve_active_audio_path(song)
+        if path is None:
             return None
-        path = Path(main_audio.path)
         return path if path.is_file() else None
 
     def _song_has_main_audio_file(self, song: Song | None = None) -> bool:
@@ -6734,16 +6717,13 @@ class MainWindow(QMainWindow):
     def _audio_path_matches_current_song(self, path: Path, *, replace_track: bool) -> bool:
         if replace_track:
             return True
-        main_audio = next(
-            (t for t in self.current_song.audio_tracks if t.role == "main"),
-            self.current_song.audio_tracks[0] if self.current_song.audio_tracks else None,
-        )
-        if main_audio is None:
+        main = self.playback.resolve_active_audio_path(self.current_song)
+        if main is None:
             return False
         try:
-            return Path(main_audio.path).resolve() == path.resolve()
+            return Path(main).resolve() == path.resolve()
         except OSError:
-            return Path(main_audio.path) == path
+            return Path(main) == path
 
     def _apply_loaded_audio(
         self,
@@ -6759,14 +6739,7 @@ class MainWindow(QMainWindow):
         self.timeline.set_audio_loading(False)
         self.current_song.duration_seconds = buffer.duration_seconds
         if replace_track:
-            self.current_song.audio_tracks = [
-                AudioTrack(
-                    id="main_audio",
-                    name=path.stem,
-                    path=path,
-                    role="main",
-                )
-            ]
+            self.current_song.replace_main_audio(path)
         # Same buffer object may already be playing from _on_audio_pcm_ready
         # (peaks filled in place / progressive tail decode). Do not set_buffer
         # again — that seeks to 0 and cuts playback mid-stream.

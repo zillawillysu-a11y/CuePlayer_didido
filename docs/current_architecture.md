@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Task 3 complete (Song Variant persistence)  
+**Status:** Sprint 4 Feature Task 4 complete (Playback Variant Support MVP)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-song-variant-persistence-028d`  
-**Constraint (Task 3):** Persistence only — no UI/playback/timeline changes; Repository load/save only.
+**Scope tip:** `cursor/sprint4-playback-variant-mvp-028d`  
+**Constraint (Task 4):** Playback path resolve only — no UI/timeline redesign; no anchor offset.
 
 Related docs (do not treat as identical):
 
@@ -890,14 +890,15 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 4 · F1** Song Variant design | ✅ Done | `docs/song_variant_design.md` |
 | **Sprint 4 · F2** Song Variant domain | ✅ Done | `domain/song_variant.py` + tests |
 | **Sprint 4 · F3** Song Variant persistence | ✅ Done | schema v2 + `project_migrations` |
-| **Next** Playback variant support | **Queued** | Retarget load to `selected_audio_path` |
+| **Sprint 4 · F4** Playback variant MVP | ✅ Done | PlaybackService resolve → one buffer |
+| **Next** Anchor Offset Foundation | **Queued** | Apply/store mapping for `anchor_offset` |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Task 3
+### After Feature Task 4
 
-Wire playback load paths to `song.selected_audio_path()` (one buffer).  
+Foundation for `SongVariant.anchor_offset` vs song timeline (no full Align UI).  
 Do **not** auto-start until the user continues.
 
 ---
 
-## READY FOR PLAYBACK VARIANT SUPPORT
+## READY FOR ANCHOR OFFSET FOUNDATION
