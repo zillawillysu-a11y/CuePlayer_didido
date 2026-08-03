@@ -2,6 +2,10 @@
 
 Read `docs/PRODUCT_SPEC.md` before implementing features.
 
+**AI workflow (permanent):** [`.ai/README.md`](.ai/README.md) → [`.ai/WORKFLOW.md`](.ai/WORKFLOW.md) → [`.ai/NEXT_TASK.md`](.ai/NEXT_TASK.md).  
+Every task: **plan before code**; after code update [`.ai/REPORT.md`](.ai/REPORT.md) + a file under [`.ai/handoffs/`](.ai/handoffs/); then **stop**.  
+System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md). Cursor rule: `.cursor/rules/ai-workflow.mdc`.
+
 ## Non-negotiables
 
 - Full Unicode / Chinese support for project names, folders, and media paths from day one.
@@ -18,49 +22,25 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 
 ## Milestone order
 
-1. Skeleton + Unicode persistence tests + blank window — **done**
-2. Audio / media routing spike (Focusrite / sounddevice) — **done**
-3. MA2 / MA3 golden XML fixtures + exporters — **done**
-4. Timeline UI, marks, video clips — **done (usable 1.0.4)**
-5. UX polish + Mark Manager / NOW / Clean Output — **done (1.0.5)**
-6. LAN Web Remote (Safari / iPad) — **done (1.0.6)**
-7. Follow-ups (not required to start using 1.0.6): multi-audio version compare + Align Anchors, Missing Media Relink, MA Export Preview / naming polish
+1. Skeleton + Unicode persistence tests + blank window
+2. Audio / media routing spike (Focusrite / sounddevice)
+3. MA2 / MA3 golden XML fixtures + exporters
+4. Timeline UI, marks, video clips
+5. Optional NDI (only after cue accuracy is solid)
 
 ## Architecture
 
 UI / Domain / Playback Engine / Media / Exporters / Persistence stay separated.
 Playback Engine is the only playback clock source.
 
+**Permanent rules:** [`docs/BOUNDARY_RULES.md`](docs/BOUNDARY_RULES.md) (dependency directions) · [`docs/MIGRATION_RULES.md`](docs/MIGRATION_RULES.md) (one-module strangler). Target layout: [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md).
+
 ## Multi-machine / GitHub
 
 - Remote: `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (`origin`).
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
-- **Employee installs (no Git):** build on Windows with `packaging/build_windows.ps1` — see `docs/DISTRIBUTION.md`.
 
-## Recent handoff (2026-08-02) — **1.0.6**
+## Recent handoff (2026-07)
 
-**Ship tip:** `cursor/release-1-0-6-028d` (integrate into `master` when ready)
-
-```powershell
-git fetch origin
-git checkout cursor/release-1-0-6-028d
-git pull
-powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
-```
-
-**Version:** `1.0.6` (`pyproject.toml` / `cueplayer.__version__` / Inno default).
-
-**1.0.6 highlights (since 1.0.5):**
-- Tools → Web Remote… — LAN control from Safari / iPad
-- Listen (music-only WebRTC, HTTP fallback) + Mute PC music
-- Video Preview on remote (same decode path as desktop, WebRTC · low latency)
-- Wave scrub / pinch-zoom / mark select+drag+delete; Cue List long-press actions
-- Mark Manager on remote (incl. Cue List toggle); Set List V/LTC/L/R badges
-- iPad portrait layout + Listen lag fix
-
-**Still open after 1.0.6 (next priorities when you ask):**
-1. Multi-audio version comparison + Align Anchors
-2. Missing Media Relink
-3. MA Export Preview / Cue ID English-pinyin naming UI
-4. LTC waveform display polish vs Reaper (when file is clean)
+Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
