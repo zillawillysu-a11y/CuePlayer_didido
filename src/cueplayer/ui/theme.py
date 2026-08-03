@@ -8,6 +8,8 @@ NOW cards, timeline painting) — see AGENTS.md / theme rollout notes.
 
 from __future__ import annotations
 
+import base64
+
 from PySide6.QtGui import QColor, QPalette
 
 # Core palette -----------------------------------------------------------
@@ -54,6 +56,16 @@ QSlider::sub-page:horizontal {{
 """
 
 
+# White tick on accent fill — Qt stylesheets need an image for a visible checkmark.
+_CHECK_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 15 15'>"
+    "<path d='M3.2 7.6 L6.2 10.6 L11.8 4.4' fill='none' stroke='#ffffff' "
+    "stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/>"
+    "</svg>"
+)
+_CHECK_ICON = "data:image/svg+xml;base64," + base64.b64encode(_CHECK_SVG.encode("utf-8")).decode("ascii")
+
+
 # Selection-styling helpers ------------------------------------------------
 # Shared so any hand-painted "this is selected / this is a drop target"
 # overlay (setlist drag indicator, timeline box-select, custom-colored rows,
@@ -78,6 +90,7 @@ def contrast_text_color(hex_color: str) -> str:
 
 
 def build_stylesheet() -> str:
+    check_icon = _CHECK_ICON
     return f"""
 QWidget {{
     background-color: {BG_APP};
@@ -257,9 +270,21 @@ QCheckBox::indicator {{
 QRadioButton::indicator {{
     border-radius: 8px;
 }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+QCheckBox::indicator:checked {{
     background: {ACCENT};
     border-color: {ACCENT};
+    image: url({check_icon});
+}}
+QRadioButton::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {{
+    background: {BG_INPUT};
+}}
+QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {{
+    background: {ACCENT_HOVER};
+    border-color: {ACCENT_HOVER};
 }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
     border-color: {ACCENT_HOVER};

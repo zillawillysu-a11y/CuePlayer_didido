@@ -6,13 +6,14 @@ from pathlib import Path
 from time import monotonic_ns
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QColor,
     QCursor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QFont,
     QInputDevice,
     QKeyEvent,
     QPainter,
@@ -24,32 +25,29 @@ from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     VideoClipWaveformCache,
-    clip_local_to_source_time,
     sample_clip_peaks_for_times,
+    sample_source_peaks_for_clip_times,
+    sample_source_raw_for_clip_times,
     timeline_to_clip_local,
-    waveform_buckets_for_clip,
 )
-from cueplayer.media.video_audio_cache import get_video_audio_mono
+from cueplayer.ui.drag_drop import (
+    accept_file_drag,
+    accept_file_drop,
+    mime_looks_like_file_drop,
+    video_paths_from_mime,
+)
 from cueplayer.ui.icon_button import IconButton
 from cueplayer.ui.marker_draw import draw_marker_shape
 from cueplayer.ui.theme import ACCENT, ACCENT_HOVER, BG_APP, SLIDER_QSS, with_alpha
+from cueplayer.ui.video_clip_edit import (
+    clip_duration_after_right_trim,
+    clip_start_after_body_drag,
+)
+from cueplayer.ui.song_edit_dialog import format_setlist_number
 
 from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES
 
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
-
-
-def _video_paths_from_mime(mime) -> list[Path]:  # noqa: ANN001
-    if mime is None or not mime.hasUrls():
-        return []
-    out: list[Path] = []
-    for url in mime.urls():
-        if not url.isLocalFile():
-            continue
-        path = Path(url.toLocalFile())
-        if path.is_file() and path.suffix.lower() in _VIDEO_SUFFIXES:
-            out.append(path)
-    return out
 
 
 class TimelineWidget(QWidget):
@@ -75,6 +73,8 @@ class TimelineWidget(QWidget):
     duplicate_video_clip_requested = Signal(str)  # clip id
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
+    video_track_visibility_changed = Signal(bool)  # show_video_track
+    content_geometry_changed = Signal()  # min/content height changed — parent scroll area should resize widget
     video_clip_volume_changed = Signal(str, float)  # clip id, new volume 0..1
     music_volume_changed = Signal(float)  # new music-bed volume 0..1 (Video/Music balance)
 
@@ -82,9 +82,13 @@ class TimelineWidget(QWidget):
         super().__init__(parent)
         self._song: Song | None = None
         self._audio: AudioBuffer | None = None
+        self._audio_loading = False
+        self._audio_loading_label = ""
         self._position = 0.0
         self._pixels_per_second = 120.0
         self._scroll_x = 0.0
+        self._scroll_y = 0.0
+        self._content_height = 0
         self._auto_scroll = True
         self._header_width = 140
         self._ruler_height = 28
@@ -92,13 +96,15 @@ class TimelineWidget(QWidget):
         self._lane_height = 28
         self._video_lane_base_height = 40.0
         self._video_lane_min_height = 28.0
-        self._video_lane_max_height = 160.0
         self._video_lane_split_hit = 6
+        # Show-eye sits on the waveform bottom edge in the header (no extra lane height).
+        self._video_header_eye_row_height = 0.0
         # Expanded chrome shows two faders stacked (Video Clip volume, then
         # Music volume for alignment balancing) — see _build_video_track_overlay.
         self._video_expand_extra = 78.0
         self._video_track_expanded = False
         self._video_track_muted = False
+        self._show_video_track = True
         self._selected_clip_ids: set[str] = set()
         self._hover_clip_id: str | None = None
         self._dragging_clip: str | None = None
@@ -106,6 +112,7 @@ class TimelineWidget(QWidget):
         self._clip_drag_snapshot: dict[str, tuple[float, float, float]] = {}
         self._clip_drag_origin_x = 0.0
         self._clip_drag_moved = False
+        self._video_gesture_active = False
         self._clip_edge_hit = 8.0
         self._show_mark_tracks = True
         self._show_mark_stem = False
@@ -174,6 +181,29 @@ class TimelineWidget(QWidget):
         self._video_waveform_cache = VideoClipWaveformCache()
         self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready)
         self.video_clips_changed.connect(self.refresh_video_clip_waveforms)
+        self._register_drop_forwarding_children()
+
+    def _register_drop_forwarding_children(self) -> None:
+        """Overlay buttons/sliders sit on top of the lane — forward Explorer drops."""
+        for child in self.findChildren(QWidget):
+            if child is self:
+                continue
+            child.setAcceptDrops(True)
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        if watched is not self and self.isAncestorOf(watched):
+            et = event.type()
+            if et == QEvent.Type.DragEnter:
+                self.dragEnterEvent(event)
+                return True
+            if et == QEvent.Type.DragMove:
+                self.dragMoveEvent(event)
+                return True
+            if et == QEvent.Type.Drop:
+                self.dropEvent(event)
+                return True
+        return super().eventFilter(watched, event)
 
     def _build_zoom_overlay(self) -> None:
         """Floating controls: edit modes top-left, zoom tools top-right."""
@@ -279,8 +309,25 @@ class TimelineWidget(QWidget):
             size=btn_size,
             overlay=True,
         )
+        self.video_hide_button = IconButton(
+            "eye_off",
+            "Hide Video Track (after alignment — Preview/Clean Output keep playing). "
+            "Use the eye button in the header to show it again.",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
+        self.video_show_button = IconButton(
+            "eye",
+            "Show Video Track",
+            self,
+            size=btn_size,
+            overlay=True,
+        )
         self.video_mute_button.clicked.connect(self._toggle_video_track_muted)
         self.video_expand_button.clicked.connect(self._toggle_video_track_expanded)
+        self.video_hide_button.clicked.connect(self._hide_video_track_clicked)
+        self.video_show_button.clicked.connect(self._show_video_track_clicked)
 
         self.video_clip_volume_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.video_clip_volume_slider.setRange(0, 100)
@@ -315,22 +362,42 @@ class TimelineWidget(QWidget):
         self.music_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.music_volume_label.hide()
 
-        for w in (self.video_mute_button, self.video_expand_button):
+        for w in (
+            self.video_mute_button,
+            self.video_expand_button,
+            self.video_hide_button,
+            self.video_show_button,
+        ):
             w.raise_()
         self._layout_video_track_overlay()
+
+    def _hide_video_track_clicked(self) -> None:
+        self.set_show_video_track(False)
+
+    def _show_video_track_clicked(self) -> None:
+        self.set_show_video_track(True)
 
     def _layout_video_track_overlay(self) -> None:
         if not hasattr(self, "video_mute_button"):
             return
         visible = self._video_lane_visible()
+        eye_header = self._video_eye_header_visible()
         self.video_mute_button.setVisible(visible)
         self.video_expand_button.setVisible(visible)
+        self.video_hide_button.setVisible(visible)
+        self.video_show_button.setVisible(eye_header)
         if not visible:
             self.video_clip_volume_slider.hide()
             self.video_clip_volume_label.hide()
             self.music_volume_caption.hide()
             self.music_volume_slider.hide()
             self.music_volume_label.hide()
+            if eye_header:
+                top = self._wave_bottom_y()
+                btn_y = top - self.video_show_button.height() - 2
+                x = self._header_width - 6 - self.video_show_button.width()
+                self.video_show_button.move(x, btn_y)
+                self.video_show_button.raise_()
             return
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
@@ -339,8 +406,11 @@ class TimelineWidget(QWidget):
         self.video_mute_button.move(x, btn_y)
         x -= self.video_expand_button.width() + 3
         self.video_expand_button.move(x, btn_y)
+        x -= self.video_hide_button.width() + 3
+        self.video_hide_button.move(x, btn_y)
         self.video_mute_button.raise_()
         self.video_expand_button.raise_()
+        self.video_hide_button.raise_()
         if self._video_track_expanded:
             sub_y = top + row_h
             label_w = 32
@@ -447,6 +517,7 @@ class TimelineWidget(QWidget):
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
         self.set_video_track_muted(song.video_track_muted if song is not None else False)
+        self._show_video_track = bool(song.show_video_track) if song is not None else True
         self._sync_video_clip_volume_ui()
         self._sync_music_volume_ui()
         if song is not None:
@@ -456,7 +527,14 @@ class TimelineWidget(QWidget):
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         if song is not None and song.video_clips:
-            self._video_waveform_cache.preload(list(song.video_clips))
+            clips = list(song.video_clips)
+
+            def _preload_video_waveforms() -> None:
+                if self._song is song:
+                    self._video_waveform_cache.preload(clips)
+                    self.update()
+
+            QTimer.singleShot(0, _preload_video_waveforms)
         self._apply_layout_heights()
         self._layout_video_track_overlay()
         self.update()
@@ -523,7 +601,31 @@ class TimelineWidget(QWidget):
             self.video_clip_selection_changed.emit(list(self._selected_clip_ids))
 
     def _video_lane_visible(self) -> bool:
-        return self._song is not None
+        return self._song is not None and self._show_video_track
+
+    def _video_eye_header_visible(self) -> bool:
+        """Show-eye in the left header when the Video lane is hidden."""
+        return self._song is not None and not self._show_video_track
+
+    def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
+        """Show / hide the Video lane (Preview / Clean Output keep playing)."""
+        visible = bool(visible)
+        changed = visible != self._show_video_track or (
+            self._song is not None and self._song.show_video_track != visible
+        )
+        self._show_video_track = visible
+        if self._song is not None:
+            self._song.show_video_track = visible
+        if not visible:
+            self._video_track_expanded = False
+            if hasattr(self, "video_expand_button"):
+                self.video_expand_button.set_active(False)
+            self.set_selected_video_clip_ids([], emit=False)
+        self._apply_layout_heights()
+        self._layout_video_track_overlay()
+        self.update()
+        if emit and changed:
+            self.video_track_visibility_changed.emit(visible)
 
     @property
     def _video_lane_height(self) -> float:
@@ -535,10 +637,10 @@ class TimelineWidget(QWidget):
         return self._wave_bottom_y()
 
     def _tracks_top_y(self) -> int:
-        """Y where mark lanes begin (below waveform + video lane, if any)."""
-        if not self._video_lane_visible():
-            return self._wave_bottom_y()
-        return self._wave_bottom_y() + int(self._video_lane_height)
+        """Y where mark lanes begin (below waveform + optional video lane)."""
+        if self._video_lane_visible():
+            return self._wave_bottom_y() + int(self._video_lane_height)
+        return self._wave_bottom_y()
 
     def _video_lane_clip_bottom_y(self) -> int:
         return self._video_lane_top_y() + int(self._video_lane_base_height)
@@ -561,13 +663,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _max_video_lane_height(self) -> float:
-        visible = max(1, self._visible_lane_count())
-        extra = self._video_expand_extra if self._video_track_expanded else 0.0
-        reserved = self._ruler_height + self._wave_height + visible * 18 + 12 + extra
-        return max(
-            self._video_lane_min_height,
-            min(self._video_lane_max_height, float(self.height()) - reserved),
-        )
+        return max(self._video_lane_min_height, 2400.0)
 
     def _clamp_video_lane_height(self, height: float) -> float:
         return max(self._video_lane_min_height, min(self._max_video_lane_height(), float(height)))
@@ -724,7 +820,9 @@ class TimelineWidget(QWidget):
             return
         self._show_mark_tracks = self._song.show_mark_tracks
         self._show_mark_stem = self._song.show_mark_stem
+        self.set_show_video_track(self._song.show_video_track, emit=False)
         self._apply_layout_heights()
+        self._layout_video_track_overlay()
         self.update()
 
     def _visible_lane_count(self) -> int:
@@ -736,9 +834,19 @@ class TimelineWidget(QWidget):
     def set_audio(self, audio: AudioBuffer | None) -> None:
         self._audio = audio
         if audio is not None:
+            self._audio_loading = False
+            self._audio_loading_label = ""
             # Start moderately zoomed for beat work; user can zoom further.
             self._pixels_per_second = 150.0
             self._scroll_x = 0.0
+        self.update()
+
+    def set_audio_loading(self, loading: bool, label: str = "") -> None:
+        """Show a waveform-pane placeholder while audio decodes off the UI thread."""
+        self._audio_loading = bool(loading)
+        self._audio_loading_label = (label or "").strip()
+        if loading:
+            self._audio = None
         self.update()
 
     def set_auto_scroll(self, enabled: bool) -> None:
@@ -897,7 +1005,7 @@ class TimelineWidget(QWidget):
     def _min_pixels_per_second(self) -> float:
         view = max(1.0, self.width() - self._header_width)
         duration = max(0.1, self._duration())
-        # Whole song visible; floor 0.25 pps still covers ~1h on a wide monitor.
+        # Zoom-out stops when the whole song fits in the visible waveform width.
         return max(0.25, view / duration)
 
     def set_wave_height(self, height: int) -> None:
@@ -909,12 +1017,15 @@ class TimelineWidget(QWidget):
     def _wave_bottom_y(self) -> int:
         return self._ruler_height + self._wave_height
 
+    def _video_band_height(self) -> int:
+        """Canvas height for the Video lane (0 when hidden — eye stays in header only)."""
+        if self._video_lane_visible():
+            return int(self._video_lane_height)
+        return 0
+
     def _max_wave_height(self) -> int:
-        visible = max(1, self._visible_lane_count())
-        video_h = int(self._video_lane_height) if self._video_lane_visible() else 0
-        # Leave room for the video lane and at least thin mark lanes.
-        reserved = self._ruler_height + video_h + visible * 18 + 12
-        return max(80, self.height() - reserved)
+        # Independent from video lane — tall content scrolls in the parent scroll area.
+        return 2400
 
     def _clamp_wave_height(self, height: int | float) -> int:
         return max(80, min(self._max_wave_height(), int(height)))
@@ -956,10 +1067,12 @@ class TimelineWidget(QWidget):
         t = min(1.0, max(0.0, t))
         self._lane_height = int(round(32 - t * 14))  # 32 → 18
         visible = self._visible_lane_count()
-        video_h = int(self._video_lane_height) if self._video_lane_visible() else 0
+        video_h = self._video_band_height()
         needed = self._ruler_height + self._wave_height + video_h + visible * self._lane_height + 8
-        self.setMinimumHeight(max(needed, self._ruler_height + 80))
+        self._content_height = needed
+        self.setMinimumHeight(needed)
         self._layout_video_track_overlay()
+        self.content_geometry_changed.emit()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -1184,6 +1297,7 @@ class TimelineWidget(QWidget):
         }
         self._clip_drag_origin_x = x
         self._clip_drag_moved = False
+        self._video_gesture_active = True
         self._view_pinned = True
         self.grabMouse()
         if zone in ("left", "right"):
@@ -1207,9 +1321,8 @@ class TimelineWidget(QWidget):
             return
         start0, _src_in0, dur0 = snapshot
         dt = dx / max(1e-6, self._pixels_per_second)
-        max_start = max(0.0, self._duration() - dur0)
-        clip.start_seconds = min(max(0.0, start0 + dt), max_start)
-        self.update()
+        clip.start_seconds = clip_start_after_body_drag(start0, dt)
+        self._update_video_lane()
 
     def _update_video_clip_trim(self, x: float) -> None:
         if self._song is None or self._trimming_clip is None:
@@ -1234,10 +1347,14 @@ class TimelineWidget(QWidget):
             clip.source_in_seconds = src_in0 + delta
             clip.duration_seconds = dur0 - delta
         else:
-            max_dur = max(min_dur, self._duration() - start0)
-            clip.duration_seconds = min(max(min_dur, dur0 + dt), max_dur)
+            clip.duration_seconds = clip_duration_after_right_trim(
+                dur0,
+                dt,
+                source_in_seconds=src_in0,
+                source_duration_seconds=clip.source_duration_seconds,
+            )
         clip.source_out_seconds = clip.source_in_seconds + clip.duration_seconds
-        self.update()
+        self._update_video_lane()
 
     def _end_video_clip_gesture(self) -> None:
         """Shared release-time bookkeeping for both drag-move and trim gestures."""
@@ -1246,6 +1363,7 @@ class TimelineWidget(QWidget):
         self._dragging_clip = None
         self._trimming_clip = None
         self._clip_drag_moved = False
+        self._video_gesture_active = False
         if clip_id and moved and self._song is not None:
             clip = self._song.video_clip_by_id(clip_id)
             old = self._clip_drag_snapshot.get(clip_id)
@@ -1260,15 +1378,13 @@ class TimelineWidget(QWidget):
     def _nudge_video_clips(self, clip_ids: list[str], delta_seconds: float) -> None:
         if self._song is None:
             return
-        duration = self._duration()
         changes: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {}
         for clip_id in clip_ids:
             clip = self._song.video_clip_by_id(clip_id)
             if clip is None or clip.locked:
                 continue
             old = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
-            max_start = max(0.0, duration - clip.duration_seconds)
-            new_start = min(max(0.0, clip.start_seconds + delta_seconds), max_start)
+            new_start = clip_start_after_body_drag(clip.start_seconds, delta_seconds)
             if abs(new_start - clip.start_seconds) < 1e-9:
                 continue
             clip.start_seconds = new_start
@@ -1286,9 +1402,15 @@ class TimelineWidget(QWidget):
         time_here = self._time_for_x(x)
         if hit is None:
             add_action = menu.addAction("Add Video Clip Here…")
+            hide_track_action = menu.addAction("Hide Video Track")
+            hide_track_action.setToolTip(
+                "Collapse the Video lane after alignment — Preview/Clean Output keep playing"
+            )
             chosen = menu.exec(self.mapToGlobal(pos))
             if chosen is add_action:
                 self.add_video_clip_requested.emit(time_here)
+            elif chosen is hide_track_action:
+                self.set_show_video_track(False)
             return
 
         clip_id, _zone = hit
@@ -1301,6 +1423,8 @@ class TimelineWidget(QWidget):
 
         lock_action = menu.addAction("Unlock" if clip.locked else "Lock")
         hide_action = menu.addAction("Show" if clip.hidden else "Hide")
+        menu.addSeparator()
+        hide_track_action = menu.addAction("Hide Video Track")
         menu.addSeparator()
         can_split = clip.start_seconds + 0.02 < self._position < clip.end_seconds - 0.02
         split_action = menu.addAction("Split at Playhead")
@@ -1325,6 +1449,9 @@ class TimelineWidget(QWidget):
 
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen is hide_track_action:
+            self.set_show_video_track(False)
             return
         if chosen is lock_action:
             new_locked = not clip.locked
@@ -1359,25 +1486,33 @@ class TimelineWidget(QWidget):
                 return
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if _video_paths_from_mime(event.mimeData()):
-            event.acceptProposedAction()
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if _video_paths_from_mime(event.mimeData()):
-            event.acceptProposedAction()
+        if mime_looks_like_file_drop(event.mimeData()):
+            accept_file_drag(event)
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
-        paths = _video_paths_from_mime(event.mimeData())
+        paths = video_paths_from_mime(event.mimeData())
         if not paths:
             event.ignore()
             return
-        event.acceptProposedAction()
+        accept_file_drop(event)
         drop_time = self._time_for_x(event.position().x())
         self.video_files_dropped.emit(paths, drop_time)
+
+    def _video_lane_dirty_rect(self) -> QRect:
+        top = self._video_lane_top_y()
+        bottom = self._tracks_top_y()
+        return QRect(0, top, self.width(), max(1, bottom - top))
+
+    def _update_video_lane(self) -> None:
+        self.update(self._video_lane_dirty_rect())
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         x = event.position().x()
@@ -1911,8 +2046,8 @@ class TimelineWidget(QWidget):
         if duration <= 1e-9:
             return
 
-        peaks = self._video_waveform_cache.get_peaks(clip, buckets=waveform_buckets_for_clip(clip))
-        if peaks is None or peaks.mins.size == 0:
+        peaks = self._video_waveform_cache.peaks_for_paint(clip)
+        if peaks is None or peaks.mono.size == 0:
             return
 
         mid = rect.center().y()
@@ -1921,11 +2056,8 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        mono, sample_rate = get_video_audio_mono(clip.path)
-        samples_per_pixel = (
-            sample_rate / self._pixels_per_second if mono is not None and sample_rate > 0 else float("inf")
-        )
-        use_raw = mono is not None and sample_rate > 0 and samples_per_pixel <= 1.5
+        samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
+        use_raw = samples_per_pixel <= 1.5
 
         for x in range(x_left, x_right):
             t0 = self._time_for_x(x)
@@ -1940,26 +2072,18 @@ class TimelineWidget(QWidget):
                 clip_t1 = duration
             clip_t0 = max(0.0, min(duration, clip_t0))
             clip_t1 = max(clip_t0, min(duration, clip_t1))
-
             if use_raw:
-                assert mono is not None
-                center_local = (clip_t0 + clip_t1) * 0.5
-                src_t = clip_local_to_source_time(clip, center_local)
-                half = max(1, int(round(samples_per_pixel * 0.5)))
-                center = int(round(src_t * sample_rate))
-                s0 = max(0, center - half)
-                s1 = min(mono.size, center + half)
-                if s0 >= s1:
-                    continue
-                segment = mono[s0:s1]
-                peak = max(float(np.max(np.abs(segment))), 1e-9)
-                lo = float(segment.min()) / peak
-                hi = float(segment.max()) / peak
-            else:
-                lo, hi = sample_clip_peaks_for_times(
-                    peaks, duration=duration, clip_t0=clip_t0, clip_t1=clip_t1
+                lo, hi = sample_source_raw_for_clip_times(
+                    peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
                 )
-
+            else:
+                lo, hi = sample_source_peaks_for_clip_times(
+                    peaks,
+                    clip,
+                    clip_t0=clip_t0,
+                    clip_t1=clip_t1,
+                    samples_per_pixel=samples_per_pixel,
+                )
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
@@ -1967,11 +2091,24 @@ class TimelineWidget(QWidget):
         painter.setClipRect(0, 0, self._header_width, self.height())
         text_w = max(24, self._header_width - 16)
         fm = painter.fontMetrics()
-        if self._audio is not None:
-            name = self._audio.path.name
-            elided = fm.elidedText(name, Qt.TextElideMode.ElideMiddle, text_w)
+        if self._song is not None:
+            num = format_setlist_number(self._song.setlist_number)
+            label = f"{num}.{self._song.name}"
+            base_font = painter.font()
+            bold = QFont(base_font)
+            bold.setWeight(QFont.Weight.Bold)
+            painter.setFont(bold)
+            painter.setPen(QColor("#e4e4e7"))
+            header_h = max(20, wave_bottom - self._ruler_height - 8)
+            painter.drawText(
+                QRect(8, self._ruler_height + 4, text_w, header_h),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                label,
+            )
+            painter.setFont(base_font)
+        elif self._audio is not None:
             painter.setPen(QColor("#a1a1aa"))
-            painter.drawText(8, self._ruler_height + 22, elided)
+            painter.drawText(8, self._ruler_height + 22, self._audio.path.name)
         if self._video_lane_visible():
             painter.fillRect(0, wave_bottom, self._header_width, tracks_top - wave_bottom, QColor("#111113"))
             row_h = int(self._video_lane_base_height)
@@ -2088,6 +2225,18 @@ class TimelineWidget(QWidget):
         y0 = self._ruler_height
         y1 = y0 + self._wave_height
         painter.fillRect(self._header_width, y0, self.width(), self._wave_height, QColor("#09090b"))
+
+        if self._audio_loading:
+            painter.setPen(QColor("#a1a1aa"))
+            label = self._audio_loading_label
+            line1 = "Loading waveform…"
+            line2 = label if label else "Reading audio file"
+            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 - 8, line1)
+            painter.setPen(QColor("#71717a"))
+            painter.drawText(self._header_width + 16, y0 + self._wave_height // 2 + 14, line2)
+            painter.setPen(QColor("#27272a"))
+            painter.drawLine(0, y1 - 1, self.width(), y1 - 1)
+            return y1
 
         if self._audio is None:
             painter.setPen(QColor("#71717a"))

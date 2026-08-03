@@ -56,13 +56,14 @@ def test_engine_resolves_device_locked_rate_instead_of_media_rate(monkeypatch) -
     `sounddevice.PortAudioError: Invalid sample rate [PaErrorCode -9997]`.
     """
     device = _wasapi_speakers_locked_to_48k()
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [device])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [device])
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", _reject_all_but(48000.0))
 
     QApplication.instance() or QApplication([])
     engine = audio_engine_mod.AudioEngine()
     engine.apply_audio_settings(AudioOutputSettings(output_device_name="Realtek"))
     engine.set_buffer(_make_buffer(44100))
+    engine.flush_deferred_buffer_setup()
 
     assert engine._device_index == 22
     assert engine._playback_rate == 48000
@@ -74,7 +75,7 @@ def test_engine_resolves_device_locked_rate_instead_of_media_rate(monkeypatch) -
 def test_engine_keeps_media_rate_when_device_supports_it(monkeypatch) -> None:
     """No unnecessary resampling when the device already accepts the media rate."""
     device = _wasapi_speakers_locked_to_48k()
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [device])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [device])
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", lambda **kwargs: None)
 
     QApplication.instance() or QApplication([])
@@ -82,6 +83,7 @@ def test_engine_keeps_media_rate_when_device_supports_it(monkeypatch) -> None:
     engine.apply_audio_settings(AudioOutputSettings(output_device_name="Realtek"))
     buf = _make_buffer(44100)
     engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
 
     assert engine._playback_rate == 44100
     # No resampling needed -- same array, not a copy.
@@ -100,7 +102,7 @@ def test_emit_position_reaches_full_duration_when_resampled(monkeypatch) -> None
     playback (and the reported EOF) lands at duration * 44100/48000.
     """
     device = _wasapi_speakers_locked_to_48k()
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [device])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [device])
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", _reject_all_but(48000.0))
 
     QApplication.instance() or QApplication([])
@@ -108,6 +110,7 @@ def test_emit_position_reaches_full_duration_when_resampled(monkeypatch) -> None
     engine.apply_audio_settings(AudioOutputSettings(output_device_name="Realtek"))
     buf = _make_buffer(44100, seconds=3.0)
     engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
 
     assert engine._playback_rate == 48000
     assert engine._playback_samples.shape[0] == 3 * 48000  # resampled length, not 3 * 44100
@@ -138,7 +141,7 @@ def test_emit_position_reaches_full_duration_when_resampled(monkeypatch) -> None
 def test_emit_position_stops_at_correct_frame_when_native_matches_device(monkeypatch) -> None:
     """Sanity check: 48kHz-native songs (no resample path) are unaffected."""
     device = _wasapi_speakers_locked_to_48k()
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [device])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [device])
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", lambda **kwargs: None)
 
     QApplication.instance() or QApplication([])
@@ -146,6 +149,7 @@ def test_emit_position_stops_at_correct_frame_when_native_matches_device(monkeyp
     engine.apply_audio_settings(AudioOutputSettings(output_device_name="Realtek"))
     buf = _make_buffer(48000, seconds=2.0)
     engine.set_buffer(buf)
+    engine.flush_deferred_buffer_setup()
 
     assert engine._playback_rate == 48000
     assert engine._playback_samples is buf.samples
