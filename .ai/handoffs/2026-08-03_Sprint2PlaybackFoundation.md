@@ -10,6 +10,10 @@
 - MainWindow transport delegated; AudioEngine unchanged
 - Docs end **READY FOR SETTINGS SERVICE**
 
+## Tests
+
+Full suite: **898 passed, 16 failed** (pre-existing / Linux env). Targeted: **28 passed**.
+
 ## Recommendation for Task 6
 
 `application/settings_service.py` wrapping machine prefs (`audio_prefs` / QSettings) without schema redesign.
