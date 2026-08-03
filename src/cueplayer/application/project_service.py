@@ -1,8 +1,8 @@
 """Application service: project lifecycle orchestration.
 
 Owns new/open/save path state, dirty flag, autosave preferences, and recent
-project paths. Persistence stays in ``cueplayer.persistence.project_store``
-(no Repository layer). Qt widgets / dialogs stay in the UI.
+project paths. Document I/O goes through ``ProjectRepository`` (not persistence
+directly). Qt widgets / dialogs stay in the UI.
 """
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from cueplayer.domain.models import Project
-from cueplayer.persistence.backup import DEFAULT_KEEP, create_backup_before_save
-from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.repository.project_repository import DEFAULT_KEEP, ProjectRepository
 
 # Machine-local settings keys (QSettings org/app = CuePlayer / CuePlayer).
 KEY_AUTOSAVE_ENABLED = "autosave/enabled"
@@ -41,10 +40,19 @@ class SettingsStore(Protocol):
 class ProjectService:
     """Project lifecycle — path, dirty, autosave prefs, recent list, I/O."""
 
-    def __init__(self, settings: SettingsStore) -> None:
+    def __init__(
+        self,
+        settings: SettingsStore,
+        repository: ProjectRepository | None = None,
+    ) -> None:
         self._settings = settings
+        self._repo = repository if repository is not None else ProjectRepository()
         self._path: Path | None = None
         self._dirty = False
+
+    @property
+    def repository(self) -> ProjectRepository:
+        return self._repo
 
     # --- state ---------------------------------------------------------------
 
@@ -83,9 +91,9 @@ class ProjectService:
         return Project.create(name, with_song=with_song)
 
     def open_project(self, path: Path) -> Project:
-        """Load JSON via persistence; set path; clear dirty; record recent."""
+        """Load via repository; set path; clear dirty; record recent."""
         path = Path(path)
-        project = load_project(path)
+        project = self._repo.load(path)
         self._path = path
         self._dirty = False
         self.remember_recent(path)
@@ -93,7 +101,7 @@ class ProjectService:
 
     def save_project(self, project: Project, path: Path | None = None) -> Path:
         """
-        Write ``project`` via persistence.
+        Write ``project`` via repository.
 
         Uses ``path`` when given (Save As), otherwise the current path.
         Updates path, clears dirty, records recent. Does **not** run media
@@ -102,11 +110,26 @@ class ProjectService:
         target = Path(path) if path is not None else self._path
         if target is None:
             raise ValueError("No project path for save")
-        save_project(project, target)
+        self._repo.save(project, target)
         self._path = target
         self._dirty = False
         self.remember_recent(target)
         return target
+
+    def autosave_project(self, project: Project) -> Path:
+        """
+        Quiet overwrite of the current path via ``repository.autosave``.
+
+        Raises ``ValueError`` when there is no path or the project is not dirty
+        in a way that should autosave — callers normally gate with
+        ``should_autosave()`` first.
+        """
+        if self._path is None:
+            raise ValueError("No project path for autosave")
+        self._repo.autosave(project, self._path)
+        self._dirty = False
+        self.remember_recent(self._path)
+        return self._path
 
     def normalize_save_as_path(self, path: Path) -> Path:
         """Ensure ``*.cueplayer.json`` naming (identical to prior MainWindow rules)."""
@@ -159,7 +182,7 @@ class ProjectService:
         if not raw:
             return None
         path = Path(str(raw))
-        return path if path.is_file() else None
+        return path if self._repo.exists(path) else None
 
     def last_song_id(self) -> str | None:
         raw = self._settings.value(KEY_LAST_SONG_ID)
@@ -194,7 +217,7 @@ class ProjectService:
             if key in seen:
                 continue
             seen.add(key)
-            if path.is_file():
+            if self._repo.exists(path):
                 out.append(path)
         return out[:RECENT_PROJECTS_MAX]
 
@@ -245,4 +268,4 @@ class ProjectService:
 
     def backup_before_overwrite(self, path: Path) -> None:
         """Copy previous on-disk file into ``.cueplayer_backups/``. May raise OSError."""
-        create_backup_before_save(path, keep=self.backup_keep_count())
+        self._repo.backup(path, keep=self.backup_keep_count())

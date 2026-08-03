@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from cueplayer.application.project_service import (
     ProjectService,
 )
 from cueplayer.domain.models import Project
-from cueplayer.persistence.project_store import load_project, save_project
+from cueplayer.repository.project_repository import ProjectRepository
 
 
 class _MemSettings:
@@ -39,6 +41,14 @@ class _MemSettings:
         return None
 
 
+def test_project_service_does_not_import_persistence() -> None:
+    source = inspect.getsource(
+        importlib.import_module("cueplayer.application.project_service")
+    )
+    assert "cueplayer.persistence" not in source
+    assert "cueplayer.repository" in source
+
+
 def test_new_project_clears_path_and_dirty() -> None:
     svc = ProjectService(_MemSettings())
     svc.set_path(Path("/tmp/x.cueplayer.json"))
@@ -52,10 +62,11 @@ def test_new_project_clears_path_and_dirty() -> None:
 
 def test_open_and_save_roundtrip(tmp_path: Path) -> None:
     settings = _MemSettings()
-    svc = ProjectService(settings)
+    repo = ProjectRepository()
+    svc = ProjectService(settings, repository=repo)
     project = Project.create("測試專案", with_song=True)
     path = tmp_path / "show.cueplayer.json"
-    save_project(project, path)
+    repo.save(project, path)
 
     loaded = svc.open_project(path)
     assert loaded.name == "測試專案"
@@ -69,8 +80,26 @@ def test_open_and_save_roundtrip(tmp_path: Path) -> None:
     assert svc.should_autosave() is True  # default autosave on
     svc.save_project(loaded)
     assert svc.is_dirty is False
-    again = load_project(path)
+    again = repo.load(path)
     assert again.songs[0].name == "改名"
+
+
+def test_autosave_project_uses_repository(tmp_path: Path) -> None:
+    settings = _MemSettings()
+    repo = ProjectRepository()
+    svc = ProjectService(settings, repository=repo)
+    path = tmp_path / "auto.cueplayer.json"
+    project = Project.create("Auto", with_song=True)
+    repo.save(project, path)
+    svc.set_path(path)
+    project.songs[0].name = "SavedQuiet"
+    svc.mark_dirty()
+    assert svc.should_autosave() is True
+    svc.backup_before_overwrite(path)
+    out = svc.autosave_project(project)
+    assert out == path
+    assert svc.is_dirty is False
+    assert repo.load(path).songs[0].name == "SavedQuiet"
 
 
 def test_normalize_save_as_path() -> None:
