@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Planning (2026-08-03)
+
+- Added `docs/roadmap.md` (Top 10 feature candidates, Sprint 4 pick, task plan, extensions).
+- Recommended Feature: **Multi-audio Reference lanes + Align Anchors (MVP)**.
+- Docs only — no feature implementation.
+
 ### Sprint 3.5 — Architecture snapshot (2026-08-03)
 
 - Added `docs/architecture_overview.md` (layer diagram, dependency/service/repository/protocol maps, EventBus + planned taxonomy, MainWindow responsibilities, debt map, Sprint 0→3 progress, Sprint 4 + Feature Sprint candidates, decisions log).

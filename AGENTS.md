@@ -41,6 +41,10 @@ Playback Engine is the only playback clock source.
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
-## Recent handoff (2026-07)
+## Recent handoff (2026-08)
 
-Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
+Architecture through Sprint 3.5 + Feature Planning: services, ShowHost/RemoteHost,
+EventBus (unwired), snapshot in `docs/architecture_overview.md`, plan in
+`docs/roadmap.md`. **Next Feature:** Multi-audio Reference lanes + Align Anchors
+(MVP). Deferred chrome: selection row-color consistency. NDI only after cue
+accuracy. See `.ai/NEXT_TASK.md`.
