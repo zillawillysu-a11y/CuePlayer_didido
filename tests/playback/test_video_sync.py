@@ -355,3 +355,52 @@ def test_set_song_none_clears_state_and_emits_black_frame(
     controller.set_song(None)
     assert frames == [None]
     assert controller._decoders == {}
+
+
+def test_video_output_inactive_skips_decode(app: QApplication, red_clip_path: Path) -> None:
+    """When neither Preview nor Clean Output needs frames, decode must not run."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.set_video_output_active(False)
+    controller.update_position(0.5)
+    controller.update_position(1.0)
+
+    assert frames == []
+    assert clip.id not in controller._decoders
+
+    controller.set_video_output_active(True)
+    assert len(frames) == 1
+    assert isinstance(frames[0], np.ndarray)
+
+
+def test_video_output_reenable_uses_last_position(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_video_output_active(False)
+    controller.update_position(2.5)
+
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_video_output_active(True)
+
+    assert len(frames) == 1
+    frame = frames[0]
+    assert isinstance(frame, np.ndarray)
+    assert frame.mean(axis=(0, 1))[2] > frame.mean(axis=(0, 1))[0]

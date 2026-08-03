@@ -118,3 +118,29 @@ def test_load_video_audio_returns_none_when_no_audio_stream(tmp_path: Path) -> N
     path = tmp_path / "silent.mp4"
     _make_silent_clip(path)
     assert load_video_audio(path) is None
+
+
+def test_load_video_audio_respects_max_duration_window(tmp_path: Path) -> None:
+    path = tmp_path / "longish.mp4"
+    _make_clip_with_tone(path, seconds=2.0)
+    buf = load_video_audio(path, start_seconds=0.0, max_duration_seconds=0.4)
+    assert buf is not None
+    assert buf.frames / buf.sample_rate == pytest.approx(0.4, abs=0.15)
+
+
+def test_audio_window_for_clip_caps_long_source() -> None:
+    from cueplayer.domain.models import VideoClip
+    from cueplayer.media.video_audio_cache import audio_window_for_clip
+    from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
+
+    clip = VideoClip.create(
+        name="long",
+        path=Path("x.mp4"),
+        duration_seconds=180.0,
+        source_duration_seconds=7200.0,
+    )
+    clip.source_out_seconds = clip.source_in_seconds + 7200.0
+    start, dur = audio_window_for_clip(clip)
+    assert start == 0.0
+    assert dur == MAX_VIDEO_AUDIO_DECODE_SECONDS
+
