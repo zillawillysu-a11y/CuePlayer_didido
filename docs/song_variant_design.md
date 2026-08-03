@@ -1,12 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 4 Feature Task 5 complete (Anchor Mapping Foundation)  
+**Status:** Sprint 4 Feature Task 6 complete (Anchor Playback Integration)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-anchor-mapping-028d`  
+**Scope tip:** `cursor/sprint4-anchor-playback-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md)
 
-**Task 5 constraint:** Domain mapping only. No PlaybackService / Timeline /
-Waveform / UI changes. Offsets are **not** applied during playback yet.
+**Task 6 constraint:** Playback wiring only. No Timeline/Waveform redesign,
+Align Anchors UI, or automatic alignment. Cue times unchanged.
 
 ---
 
@@ -532,8 +532,8 @@ Rules:
 | `domain/anchor_mapping.py` | ✅ |
 | `song_to_variant_time` / `variant_to_song_time` | ✅ |
 | Unit tests `tests/domain/test_anchor_mapping.py` | ✅ |
-| PlaybackService / Timeline / Waveform / UI | ❌ unchanged |
-| Offset applied during playback | ❌ (Task 6) |
+| PlaybackService / Timeline / Waveform / UI | ❌ Task 5 unchanged (see Task 6) |
+| Offset applied during playback | ✅ Task 6 (PlaybackService + playhead bridge) |
 
 ### 15.1 Mapping API
 
@@ -597,26 +597,105 @@ No cross-correlation or multi-anchor conform in this task.
 - No-clamp default + helper utilities  
 - Module import isolation (no Qt / cueplayer runtime deps)
 
-### 15.7 Remaining playback integration work (Task 6+)
+### 15.7 Remaining work after Task 5 (superseded by Task 6 for seek)
 
-- Seek / playhead: song position → `song_to_variant_time` before engine media index  
-- Waveform paint / scrub: transform with mapping; offset-aware cache keys  
-- Duration / end-of-media when offset pushes content  
-- Optional EventBus “anchor_offset changed”  
-- Still no second clock; still one buffer for the selected variant  
+Task 6 wires seek / loop / playhead mapping. Still open after Task 6:
+
+- Waveform paint offset transform + cache keys  
+- Duration / end-of-media policy when offset pushes content  
+- Remote bridge still seeks `engine` directly (Song Time)  
+- Align Anchors UI  
 
 ### 15.8 Risks
 
 | Risk | Mitigation |
 |------|------------|
-| Second ad-hoc `± offset` in UI/engine | Single module; document formulas; Task 6 must import here |
-| Silent wrong mix until Task 6 | Expected; markers stay song-correct |
-| Clamp policy surprises | Mapping stays unclamped; playback documents policy |
-
-### Recommended Feature Task 6
-
-**Anchor Playback Integration** — apply `domain.anchor_mapping` on the selected variant during seek/load/playhead↔media index (and optionally waveform paint). No Align Anchors UI; no Timeline redesign; AudioEngine remains sole clock.
+| Second ad-hoc `± offset` in UI/engine | Single module; PlaybackService imports `anchor_mapping` only |
+| Clamp policy surprises | Engine still clamps Variant Time to `[0, duration]`; Song Time may map before 0 |
+| Remote bypass | Documented for Task 7+ |
 
 ---
 
-## READY FOR ANCHOR PLAYBACK INTEGRATION
+## 16. Task 6 status — Anchor Playback Integration (done)
+
+| Deliverable | Status |
+|-------------|--------|
+| PlaybackService uses `anchor_mapping` for seek / loops / position | ✅ |
+| AudioEngine receives Variant Time on seek / loop points | ✅ |
+| Song Time for Timeline playhead / session / mark-at-playhead | ✅ |
+| Timeline / Waveform redesign | ❌ |
+| Align Anchors UI / auto-align | ❌ |
+| Cue time fields mutated | ❌ |
+
+### 16.1 Playback mapping flow
+
+```text
+Before (offset ignored):
+  UI Song Time ──seek──► AudioEngine (treated as media time)
+  AudioEngine.position ──► Timeline playhead (same number)
+
+After (Task 6):
+  UI Song Time
+    └─ PlaybackService.seek
+         └─ song_to_variant_time (anchor_mapping only)
+              └─ AudioEngine.seek(Variant Time)
+
+  AudioEngine.position (Variant Time)
+    └─ PlaybackService.engine_to_song_time / position
+         └─ Timeline / monitor / session (Song Time)
+
+  A–B loop: Song Time at façade ↔ Variant Time stored on engine
+```
+
+Zero / missing offset ⇒ identity (legacy behavior unchanged).
+
+### 16.2 How anchor offsets are applied
+
+- Only through `domain.anchor_mapping` (`song_to_variant_time` / `variant_to_song_time`).
+- PlaybackService helpers: `song_to_engine_time` / `engine_to_song_time` / `active_anchor_offset`.
+- No duplicated `± offset` arithmetic in UI or engine.
+- Cues keep stored Song Time; export / NOW / cue list unchanged.
+
+### 16.3 Why Timeline still uses Song Time
+
+Marks, video clips, executors, and MA export are authored on the Song timeline.
+Switching variants or editing `anchor_offset` must not rewrite those coordinates.
+Timeline paints Song Time; mapping only translates the media bed under the playhead.
+
+### 16.4 Remaining work for Align Anchors UI (Task 7+)
+
+- Design: pick song anchor + variant anchor → set `SongVariant.anchor_offset`
+- No auto cross-correlation yet (manual first)
+- Optional compare hear without second master clock
+- Waveform overlay / offset-aware paint (optional follow-on)
+- Route Remote seek through PlaybackService
+
+### 16.5 Test coverage
+
+- Seek identity at offset 0 / legacy tracks  
+- Seek Song→Variant with positive offset; session/position read back Song Time  
+- Loop region Song↔Variant round-trip on façade  
+- Domain `test_anchor_mapping` still green  
+
+### 16.6 Remaining integration work
+
+- Waveform peaks paint not offset-shifted  
+- Some MainWindow helpers still read `engine.position` for drop/paste UX  
+- Web remote `engine.seek` bypass  
+- Song duration vs media duration when offset ≠ 0  
+
+### 16.7 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Engine clamp at 0 hides pre-roll Song Time | Document; Align UI can warn |
+| Direct `engine.seek` callers | Prefer PlaybackService; fix Remote later |
+| Waveform vs audio skew with offset | Task 7+ paint transform |
+
+### Recommended Feature Task 7
+
+**Align Anchors UI Design** — product/UX design for editing `anchor_offset` (manual anchor pair) without redesigning Timeline coordinates or moving cues. Implementation of chrome can follow the design doc.
+
+---
+
+## READY FOR ALIGN ANCHORS UI DESIGN

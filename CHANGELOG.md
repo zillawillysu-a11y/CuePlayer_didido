@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 4 — Feature Task 6: Anchor Playback Integration (2026-08-03)
+
+- PlaybackService converts Song Time ↔ Variant Time via `domain.anchor_mapping` on seek / loops / position.
+- AudioEngine receives Variant Time only; Timeline playhead bridged back to Song Time.
+- Zero-offset / legacy songs unchanged. No Timeline/Waveform redesign; no Align UI.
+
 ### Sprint 4 — Feature Task 5: Anchor Mapping Foundation (2026-08-03)
 
 - Added `domain/anchor_mapping.py` (`song_to_variant_time` / `variant_to_song_time`).

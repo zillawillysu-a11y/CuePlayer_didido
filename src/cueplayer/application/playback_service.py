@@ -7,8 +7,10 @@ Design contract
 - Expose volume / mute / music-bed gain / waveform gain to the UI.
 - Expose A–B loop state mutations (set A/B, drag region, enable, clear).
 - Expose scrub begin / end to the UI.
-- Delegate all of the above to ``AudioEngine`` (unchanged implementation).
-- Keep ``domain.song_session.SongSession`` transport fields in sync with the engine.
+- Convert Song Time ↔ Variant Time via ``domain.anchor_mapping`` so
+  ``AudioEngine`` receives **Variant Time only** on seek / loop points.
+- Delegate transport to ``AudioEngine`` (unchanged implementation).
+- Keep ``domain.song_session.SongSession`` transport fields in sync (Song Time).
 
 **Non-responsibilities**
 - Does not redesign or subclass ``AudioEngine``.
@@ -18,21 +20,28 @@ Design contract
 - Does not own device sample-rate selection (``AudioEngine._playback_rate``);
   that is an internal PortAudio negotiation, not a UI pitch-rate control.
 - Does not own Settings / QSettings / RemoteHost.
+- Does not invent a second offset formula (only ``anchor_mapping``).
 
 **Dependencies**
 - ``cueplayer.playback.audio_engine.AudioEngine`` (PlaybackClock + mix)
 - ``cueplayer.domain.song_session.SongSession`` (read-model mirror)
+- ``cueplayer.domain.anchor_mapping`` (Song ↔ Variant time)
 
 **Why this design**
 - Strangler: UI talks to one playback façade; engine stays the sole clock and
   source of truth. Session stays a read-only mirror so UI/tests can observe
-  transport without racing the audio thread.
+  transport without racing the audio thread. Anchor offsets never move cues.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from cueplayer.domain.anchor_mapping import (
+    resolve_anchor_offset,
+    song_to_variant_time,
+    variant_to_song_time,
+)
 from cueplayer.domain.models import Song
 from cueplayer.domain.song_session import SongSession
 from cueplayer.domain.song_variant import SongVariant
@@ -40,7 +49,7 @@ from cueplayer.playback.audio_engine import AudioEngine
 
 
 class PlaybackService:
-    """Playback façade: UI → this → AudioEngine (+ SongSession snapshot)."""
+    """Playback façade: UI (Song Time) → mapping → AudioEngine (Variant Time)."""
 
     def __init__(self, engine: AudioEngine, session: SongSession) -> None:
         self._engine = engine
@@ -60,7 +69,7 @@ class PlaybackService:
     def resolve_active_audio_path(self, song: Song | None = None) -> Path | None:
         """Return the media path that should feed ``AudioEngine`` for ``song``.
 
-        Resolution order (no alignment / offset applied):
+        Resolution order (path only; time mapping is separate):
         1. ``song.selected_audio_path()`` when an enabled audio variant exists
         2. Legacy main / first ``audio_tracks`` entry
 
@@ -78,6 +87,24 @@ class PlaybackService:
             return None
         return target.selected_variant()
 
+    # --- anchor mapping (Song Time ↔ Variant / engine Time) ------------------
+
+    def active_anchor_offset(self, song: Song | None = None) -> float:
+        """``anchor_offset`` of the active variant, else ``0.0`` (identity)."""
+        return resolve_anchor_offset(variant=self.active_variant(song))
+
+    def song_to_engine_time(self, song_time: float, song: Song | None = None) -> float:
+        """Song Time → Variant Time for ``AudioEngine`` (via ``anchor_mapping``)."""
+        return song_to_variant_time(
+            float(song_time), variant=self.active_variant(song)
+        )
+
+    def engine_to_song_time(self, engine_time: float, song: Song | None = None) -> float:
+        """Variant / engine Time → Song Time (via ``anchor_mapping``)."""
+        return variant_to_song_time(
+            float(engine_time), variant=self.active_variant(song)
+        )
+
     # --- transport -----------------------------------------------------------
 
     def play(self) -> None:
@@ -93,7 +120,8 @@ class PlaybackService:
         self.sync_from_engine()
 
     def seek(self, seconds: float) -> None:
-        self._engine.seek(float(seconds))
+        """Seek to Song Time ``seconds``; engine receives Variant Time only."""
+        self._engine.seek(self.song_to_engine_time(seconds))
         self.sync_from_engine()
 
     def toggle(self) -> None:
@@ -101,7 +129,8 @@ class PlaybackService:
         self.sync_from_engine()
 
     def nudge(self, delta_seconds: float) -> None:
-        """Nudge playhead by ``delta_seconds`` (arrow-key frame steps)."""
+        """Nudge playhead by Song Time delta (equal to Variant delta for constant offset)."""
+        # Engine nudge uses media position + delta; constant offset ⇒ Δsong == Δvariant.
         self._engine.nudge(float(delta_seconds))
         self.sync_from_engine()
 
@@ -143,15 +172,21 @@ class PlaybackService:
     def music_muted(self) -> bool:
         return bool(self._engine.music_muted)
 
-    # --- A–B loop ------------------------------------------------------------
+    # --- A–B loop (Song Time at the façade; Variant Time on the engine) ------
 
     @property
     def loop_a(self) -> float | None:
-        return self._engine.loop_a
+        raw = self._engine.loop_a
+        if raw is None:
+            return None
+        return self.engine_to_song_time(float(raw))
 
     @property
     def loop_b(self) -> float | None:
-        return self._engine.loop_b
+        raw = self._engine.loop_b
+        if raw is None:
+            return None
+        return self.engine_to_song_time(float(raw))
 
     @property
     def loop_enabled(self) -> bool:
@@ -161,9 +196,13 @@ class PlaybackService:
         self._engine.clear_loop()
 
     def set_loop_region(self, a: float | None, b: float | None) -> None:
-        """Timeline handle drag — repositions A/B; never seeks playhead."""
-        self._engine.loop_a = float(a) if a is not None else None
-        self._engine.loop_b = float(b) if b is not None else None
+        """Timeline handle drag — Song Time A/B; never seeks playhead."""
+        self._engine.loop_a = (
+            self.song_to_engine_time(float(a)) if a is not None else None
+        )
+        self._engine.loop_b = (
+            self.song_to_engine_time(float(b)) if b is not None else None
+        )
         if (
             self._engine.loop_a is not None
             and self._engine.loop_b is not None
@@ -173,30 +212,30 @@ class PlaybackService:
             self._engine.engage_ab_loop(seek_if_outside=False)
 
     def set_loop_a_at(self, t: float) -> float:
-        """Mark A at ``t``. Fresh-pair rule when A+B already formed a loop."""
+        """Mark A at Song Time ``t``. Fresh-pair rule when A+B already formed a loop."""
         t = float(t)
         if self._complete_loop_pair():
             self._engine.loop_b = None
             self._engine.loop_enabled = False
             self._engine._loop_engage = False  # noqa: SLF001 — same as prior MainWindow
-        self._engine.loop_a = t
+        self._engine.loop_a = self.song_to_engine_time(t)
         if self._complete_loop_pair():
             self._engine.loop_enabled = True
             self._engine.engage_ab_loop(seek_if_outside=False)
-        return float(self._engine.loop_a)
+        return float(self.loop_a) if self.loop_a is not None else t
 
     def set_loop_b_at(self, t: float) -> float:
-        """Mark B at ``t``. Fresh-pair rule when A+B already formed a loop."""
+        """Mark B at Song Time ``t``. Fresh-pair rule when A+B already formed a loop."""
         t = float(t)
         if self._complete_loop_pair():
             self._engine.loop_a = None
             self._engine.loop_enabled = False
             self._engine._loop_engage = False  # noqa: SLF001
-        self._engine.loop_b = t
+        self._engine.loop_b = self.song_to_engine_time(t)
         if self._complete_loop_pair():
             self._engine.loop_enabled = True
             self._engine.engage_ab_loop(seek_if_outside=False)
-        return float(self._engine.loop_b)
+        return float(self.loop_b) if self.loop_b is not None else t
 
     def try_set_loop_enabled(self, enabled: bool) -> str | None:
         """Enable/disable loop. Returns a status reason on rejection, else None."""
@@ -221,10 +260,10 @@ class PlaybackService:
         self._session.set_song(song)
 
     def sync_from_engine(self) -> None:
-        """Copy playing / position / duration from the engine into ``SongSession``."""
+        """Copy playing / position / duration; session position is Song Time."""
         self._session.update_playback_state(
             playing=bool(self._engine.playing),
-            position_seconds=float(self._engine.position),
+            position_seconds=self.engine_to_song_time(float(self._engine.position)),
             duration_seconds=float(self._engine.duration),
         )
 
@@ -234,7 +273,8 @@ class PlaybackService:
 
     @property
     def position(self) -> float:
-        return float(self._engine.position)
+        """Playhead in Song Time (engine position mapped through anchor_mapping)."""
+        return self.engine_to_song_time(float(self._engine.position))
 
     @property
     def duration(self) -> float:
