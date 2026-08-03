@@ -1,13 +1,12 @@
 # Song Variants — Domain & Persistence Design
 
-**Status:** Sprint 5 Task 1 complete (Song-Time Façade Completion)  
+**Status:** Sprint 5 Task 2 complete (Align Anchors UX Design — docs only)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint5-song-time-facade-028d`  
+**Scope tip:** `cursor/sprint5-align-anchors-ux-028d`  
 **Related:** [`roadmap.md`](roadmap.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`architecture_overview.md`](architecture_overview.md) · [`current_architecture.md`](current_architecture.md)
 
-**Sprint 5 Task 1 constraint:** Close Song-Time bypasses only. No Align UI,
-Timeline/Waveform redesign, or intentional playback behavior change (offset 0
-remains identity).
+**Sprint 5 Task 2 constraint:** UX / interaction design only. No production
+runtime code, no Playback/Timeline redesign, no automatic alignment.
 
 ---
 
@@ -894,4 +893,220 @@ RemoteHost
 
 ---
 
-## READY FOR ALIGN ANCHORS UX
+## 19. Sprint 5 Task 2 — Align Anchors UX Design (done, docs only)
+
+**Scope tip:** `cursor/sprint5-align-anchors-ux-028d`  
+**Code changes:** none.
+
+### 19.1 Design goals & non-goals
+
+| Goal | Rule |
+|------|------|
+| Operator sets `SongVariant.anchor_offset` by ear/eye | Manual only |
+| Cues / Timeline stay on Song Time | Never rewrite `Mark.time_seconds` |
+| One selected variant at a time | Align edits the **active** (or dialog-selected) variant |
+| Preview before commit | Draft offset ≠ persisted until Apply |
+| Existing mapping math | `anchor_offset = song_anchor − variant_anchor` (see §15 / `anchor_mapping`) |
+
+| Non-goal (this design) | Deferred |
+|------------------------|----------|
+| Timeline chrome redesign | Keep Song Time coordinates |
+| Waveform paint redesign | Optional “draft offset” readout only |
+| Auto cross-correlation | §19.8 |
+| Full variant CRUD | Minimal select list inside Align panel is enough for Align v1 |
+| Second playback clock / A–B compare hear | Later; sole clock remains AudioEngine |
+
+### 19.2 UX flow (operator story)
+
+```text
+1. Select Variant     → choose which mix to align (must be audio + enabled + path OK)
+2. Choose Anchor      → set Song Anchor (Song Time) + Variant Anchor (media time)
+3. Preview Offset     → system computes draft_offset; playhead seeks via PlaybackService
+4. Adjust Offset      → nudge draft (±frame / typed seconds) and re-preview
+5. Apply              → write draft → SongVariant.anchor_offset; mark project dirty
+6. Cancel             → discard draft; restore last applied offset for playback
+7. Reset              → draft = 0.0 (identity); Apply still required to persist
+```
+
+**Invariant:** Timeline marks never move. Only the media bed under Song Time shifts.
+
+### 19.3 Screen flow
+
+Prefer a **modal dialog** (or tool-window) named **Align Anchors** — not a Timeline redesign.
+
+```text
+┌─ Align Anchors ──────────────────────────────────────────────┐
+│ Variant: [ Main ▾ ]     path: …/床.wav     status: Ready     │
+│                                                              │
+│ Song Anchor (Song Time)     Variant Anchor (media)           │
+│ [ Use playhead ] [ Use mark ▾ ]   [ Use media playhead ]     │
+│  00:12.340                      00:11.840                    │
+│                                                              │
+│ Draft offset:  +0.500 s     Applied:  +0.000 s               │
+│ [ −1f ] [ −10 ms ]  [ offset field ]  [ +10 ms ] [ +1f ]    │
+│                                                              │
+│ Duration (song / media / audible span) — see §19.6           │
+│                                                              │
+│ [ Preview ]  [ Reset ]              [ Cancel ]  [ Apply ]    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Entry points (implementation later):
+
+- Tools → **Align Anchors…**
+- Optional: context on Music lane / variant badge (when picker exists)
+
+While dialog is open:
+
+- Timeline remains Song Time (unchanged paint model).
+- Transport Play/Pause/Seek still go through PlaybackService (Song Time).
+- **Preview** temporarily drives playback with `draft_offset` (session-local); **Cancel** restores applied offset.
+
+### 19.4 Interaction model
+
+| Step | Operator action | System behavior |
+|------|-----------------|-----------------|
+| Select Variant | Dropdown of song variants (audio, enabled preferred) | Selecting another variant reloads draft from that variant’s applied offset; warns if draft dirty |
+| Choose Song Anchor | **Use playhead** or pick an existing mark | Stores `song_anchor` in Song Time; does not create a mark unless operator later chooses |
+| Choose Variant Anchor | Scrub/seek then **Use media playhead** | Media playhead = current engine Variant Time (`playback` inverse); stores `variant_anchor` |
+| Preview Offset | Click **Preview** (or auto after both anchors set) | `draft = song_anchor − variant_anchor`; seek to Song Anchor via PlaybackService using draft; brief status “Previewing draft offset” |
+| Adjust Offset | Nudge buttons / typed field / mouse wheel on field | Updates draft; optional live re-preview if “Live preview” checked (default off to avoid scrub thrash) |
+| Apply | Click **Apply** | Persist `variant.anchor_offset = draft`; dirty project; close or stay open (preference: stay open with toast) |
+| Cancel | Click **Cancel** / Esc | Drop draft; re-apply last persisted offset to playback session; close |
+| Reset | Click **Reset** | Set draft to `0.0`; does **not** persist until Apply |
+
+**Anchor pair formula (must match domain):**
+
+```text
+draft_offset = song_anchor − variant_anchor
+# same as: media sample 0 aligns with song time +offset
+# song_to_variant_time(s) = s − offset
+```
+
+If only one anchor is set, Preview is disabled with hint “Set both anchors”.
+
+### 19.5 Keyboard shortcuts (proposed)
+
+| Shortcut | Context | Action |
+|----------|---------|--------|
+| `Esc` | Dialog focused | Cancel (confirm if draft dirty) |
+| `Enter` | Dialog focused, Preview enabled | Preview |
+| `Ctrl+Enter` | Dialog focused, Apply enabled | Apply |
+| `[` / `]` | Dialog focused | Nudge draft −/+ 1 frame (song fps) |
+| `Shift+[` / `]` | Dialog focused | Nudge −/+ 10 frames |
+| `A` | Dialog focused | Capture Song Anchor from Timeline playhead |
+| `Shift+A` | Dialog focused | Capture Variant Anchor from media playhead |
+
+Do **not** steal global mark-digit shortcuts while dialog is open (modal).
+
+### 19.6 Policies
+
+#### Duration display
+
+| Label | Meaning |
+|-------|---------|
+| **Song duration** | `song.duration_seconds` (canonical Timeline length; cues live here) |
+| **Media duration** | Loaded buffer / file length (Variant Time span) |
+| **Audible span (draft)** | Informational only: Song Times where mapped variant time ∈ `[0, media_duration)` |
+
+Policy for Align v1:
+
+- Timeline / transport duration **stay Song duration** (no silent rewrite on Apply).
+- If media is shorter/longer than song after offset, show warning chip: “Media ends at song T=…” / “Silence before media starts”.
+- Do **not** auto-shrink/grow `song.duration_seconds` on Apply (avoids moving relative cue layout unexpectedly). Optional later: “Fit song duration to media” checkbox (off by default).
+
+#### Negative offset handling
+
+- Allowed. Means media starts **before** song 0 (skip into file at song time 0).
+- Preview at song 0 should audition `variant_time = −offset` (positive into file).
+- Show draft with explicit sign (`+` / `−`) and a one-line gloss: “Negative: media leads the song timeline”.
+- Engine clamp at media 0 still applies when seeking to Song Times that map before file start — status: “Before media start (silence)”.
+
+#### Missing / disabled media
+
+| Case | UI |
+|------|-----|
+| Variant path missing | Status **Missing file**; Preview/Apply disabled; offer Relink (existing project relink) |
+| Variant disabled | Status **Disabled**; cannot Align until enabled (or enable toggle in dialog) |
+| Non-audio kind | Hidden from Align dropdown (v1 audio-only) |
+| No variants / legacy tracks only | Dialog offers “Use main bed” shim: treat active path as ephemeral Main; Apply writes offset onto selected/created main variant via existing domain helpers |
+| Decode failure | Preview disabled; show loader error text |
+
+### 19.7 Validation rules
+
+| Rule | Enforce |
+|------|---------|
+| Finite offset | Reject NaN/Inf; coerce like `coerce_anchor_offset` |
+| Both anchors for auto-compute | Preview from anchors requires both set |
+| Typed offset always allowed | Can Apply typed draft without anchors (power user) |
+| Confirm on Cancel if dirty | Draft ≠ applied |
+| Confirm on variant switch if dirty | Don’t lose draft silently |
+| Apply does not move marks | Hard invariant + test in implementation task |
+| Offset range soft warn | Warn if `|offset| > media_duration` or `> song.duration` (still Allow) |
+
+### 19.8 Error handling
+
+| Error | Operator message | Recovery |
+|-------|------------------|----------|
+| Missing media | “Media file not found for this variant.” | Relink / pick another variant |
+| Preview seek failed | “Could not preview offset.” | Check device / reload song |
+| Apply while no selection | “Select a variant first.” | Select |
+| Dirty Cancel | “Discard draft offset?” | Discard / Keep editing |
+| Live preview stutter | Auto-disable live preview after N seeks/sec | Manual Preview button |
+
+### 19.9 Mock interaction sequence
+
+```text
+GIVEN song「開場」with marks on Song Time; variant「Old mix」path OK; offset 0
+WHEN  operator opens Align Anchors → selects「Old mix」
+AND   seeks Timeline to kick (12.340 s) → Song Anchor = Use playhead
+AND   scrubs until Old mix kick aligns by ear → Variant Anchor = Use media playhead (11.840)
+AND   Preview → draft = +0.500 s; playhead at 12.340 sounds correct on Old mix
+AND   Adjust +10 ms → draft = +0.510 s → Preview
+AND   Apply
+THEN  SongVariant.anchor_offset == 0.510
+AND   all marks still at original Song Times
+AND   desktop + remote seek to a mark still lands the kick under that mark
+WHEN  Cancel after changing draft without Apply
+THEN  playback returns to last applied offset; marks unchanged
+WHEN  Reset → Apply
+THEN  offset == 0.0 (identity)
+```
+
+### 19.10 Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Operators think Align moves cues | Copy in dialog: “Cues stay fixed — only the mix shifts” |
+| Draft vs applied confusion | Always show both numbers; Preview badge |
+| Waveform still unshifted | Status: “Waveform shows file time; trust playhead + ear in v1” |
+| Open Audio collapsing variants | Align dropdown must not call `replace_main_audio` |
+| Conflating sync calib offset | Separate menu; never write `engine.sync_offset_seconds` from Align |
+| Modal blocks show | Allow non-modal tool window in implementation if operators need Timeline marks visible |
+
+### 19.11 Future extension — automatic alignment
+
+1. Operator marks Song Anchor (or uses selected mark).  
+2. System searches a window of the selected variant for best correlation peak → proposes `variant_anchor`.  
+3. Same Preview / Adjust / Apply path; never auto-Apply.  
+4. Still one clock; offline analysis buffer OK; no second master clock.  
+5. Multi-anchor conform / warp = out of scope until single-offset trusted.
+
+### 19.12 Recommendation for implementation tasks
+
+| ID | Task | Notes |
+|----|------|-------|
+| **I1** | Align Anchors dialog shell + variant dropdown | No Timeline redesign |
+| **I2** | Capture Song/Variant anchors + draft offset compute | Use `anchor_mapping` only |
+| **I3** | Preview/Cancel session: temporary draft offset for PlaybackService | Must not persist until Apply; Cancel restores |
+| **I4** | Apply / Reset / dirty / undo | Persist `SongVariant.anchor_offset`; undoable |
+| **I5** | Duration chips + missing-media / negative-offset copy | Policies §19.6 |
+| **I6** | Tests: marks unchanged; seek maps with draft/applied; Cancel restores | |
+| **I7** | (Later) Non-modal + optional waveform draft indicator | |
+| **I8** | (Later) Auto-correlate propose | §19.11 |
+
+**Suggested first implementation PR:** **I1–I4** (dialog + preview session + Apply), then **I5–I6**.
+
+---
+
+## READY FOR ALIGN ANCHORS IMPLEMENTATION
