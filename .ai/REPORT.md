@@ -1,64 +1,59 @@
 # Latest AI task report
 
 **Date:** 2026-08-03  
-**Branch:** `cursor/ports-package-step0-028d`  
+**Branch:** `cursor/architecture-guardrails-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Implement `ARCHITECTURE_TARGET` **step 0** with a strict interface-first approach:
-create `src/cueplayer/ports/` containing only Protocol-based boundary interfaces
-(no wiring, adapters, services, or behavior changes).
+Insert an **Architecture Guardrails** step before `ARCHITECTURE_TARGET` step 1:
+publish permanent boundary and migration rule documents. No production module
+migration and no `src/` changes.
 
 ## What was implemented
 
-- Added `cueplayer.ports` package with the ten target Protocols (+ `AudioOutputDeviceInfo` structural Protocol for devices).
-- Package `__init__` re-exports the public surface; module docs state no imports from ui/playback/media/persistence/exporters/web_remote.
-- Added `tests/ports/test_ports_package.py` import / runtime-checkable smoke tests.
-- Marked step 0 complete in `docs/ARCHITECTURE_TARGET.md`; queued step 1 in `.ai/NEXT_TASK.md`.
+- Created `docs/BOUNDARY_RULES.md` — allowed/forbidden dependency directions, module boundaries, import examples (allowed/forbidden), rationale, shared runtime fences (`av_path_lock`, shared `Song`, frame sinks).
+- Created `docs/MIGRATION_RULES.md` — one module per task, no behavior change, shim before replace, tests before removing old code, stop after each migration, REPORT + handoff required, procedure checklist.
+- Cross-linked from `ARCHITECTURE.md`, `ARCHITECTURE_TARGET.md` (step **G**), `AGENTS.md`, `.ai/README.md`, `.ai/WORKFLOW.md`, `.ai/prompts/cursor_system.md`.
+- Advanced `.ai/NEXT_TASK.md` to Step 1 with mandatory guardrails prerequisite.
 
 ## Files changed
 
 | Path | Change |
 |------|--------|
-| `src/cueplayer/ports/__init__.py` | Package exports |
-| `src/cueplayer/ports/clock.py` | `PlaybackClock` |
-| `src/cueplayer/ports/audio_device.py` | `AudioDevicePort`, `AudioOutputDeviceInfo` |
-| `src/cueplayer/ports/video_decoder.py` | `VideoDecoderPort` |
-| `src/cueplayer/ports/video_audio.py` | `VideoAudioSource` |
-| `src/cueplayer/ports/frame_sink.py` | `FrameSink` |
-| `src/cueplayer/ports/project_store.py` | `ProjectStore` |
-| `src/cueplayer/ports/exporter.py` | `ShowExporter` |
-| `src/cueplayer/ports/remote_host.py` | `RemoteHost` |
-| `src/cueplayer/ports/media_jobs.py` | `MediaJobQueue` |
-| `src/cueplayer/ports/song_session.py` | `SongSession` |
-| `tests/ports/test_ports_package.py` | Smoke tests |
-| `docs/ARCHITECTURE_TARGET.md` | Step 0 marked done |
-| `.ai/NEXT_TASK.md` | Now step 1 |
+| `docs/BOUNDARY_RULES.md` | **New** permanent dependency rules |
+| `docs/MIGRATION_RULES.md` | **New** permanent migration procedure |
+| `docs/ARCHITECTURE.md` | Links to guardrails |
+| `docs/ARCHITECTURE_TARGET.md` | Step G + links |
+| `AGENTS.md` | Architecture section points at guardrails |
+| `.ai/README.md` | Doc map |
+| `.ai/WORKFLOW.md` | Architecture-move read list |
+| `.ai/prompts/cursor_system.md` | Guardrails mention |
+| `.ai/NEXT_TASK.md` | Step 1 + prerequisite |
 | `.ai/REPORT.md` | This report |
-| `.ai/handoffs/2026-08-03_PortsPackageStep0.md` | Archive |
+| `.ai/handoffs/2026-08-03_ArchitectureGuardrails.md` | Archive |
 
 ## Architecture decisions
 
-- **Interface-first only:** Protocols describe seams; nothing implements or injects them yet.
-- **Dependency direction:** ports may reference `domain` types (`Song`, `Project`); must not import adapter packages (playback/media/persistence/exporters/ui/web_remote). Export plans / PCM / frames use `Any` or structural Protocols where needed.
-- **`PlaybackClock`** mirrors `AudioEngine` transport surface (position/duration/playing + play/pause/stop/seek/set_song) so the sample-clock rule stays explicit.
-- **`RemoteHost`** is intentionally narrow (clock + project + current song) — command surface expands at step 2 without private MainWindow access.
-- **`ShowExporter.export_show_to_directory`** matches the shared MA2/MA3 show entrypoint name; kwargs differences stay in adapters.
+- Guardrails are **docs-only** and sit between ports step 0 and cue_list_columns step 1 so agents cannot migrate without an explicit fence.
+- Boundary rules encode CuePlayer-specific forbidden edges (especially `persistence → ui`, `ports → adapters`, remote→MainWindow privates) rather than generic clean-architecture slogans.
+- Migration rules bind to the existing `.ai` REPORT/handoff/stop loop so engineering history stays in-repo for ChatGPT review.
+- No application behavior or import graph in `src/` was changed.
 
 ## Tests performed
 
-- `python -c "import cueplayer.ports"` — OK
-- `pytest tests/ports/test_ports_package.py` — 2 passed
+- Documentation review only (no `src/` changes).
+- No pytest required.
 
 ## Remaining issues
 
-- No production code implements these Protocols yet (by design).
-- This workspace tip’s `master`-based tree is older than the 1.0.6 release tip (e.g. limited `web_remote` sources here); Protocol names still match the target doc used across branches.
 - Step 1 (`cue_list_columns` → domain) not started.
+- As-built forbidden edges still exist in code until their migration steps run.
+- `PRODUCT_SPEC.md` status header may still be stale vs shipped app (out of scope).
 
 ## Suggested next task
 
-`.ai/NEXT_TASK.md`: **Step 1 — move `cue_list_columns` into `domain/` + shims; remove `persistence → ui` import.** Then REPORT + handoff + stop.
+`.ai/NEXT_TASK.md`: **Step 1 — move `cue_list_columns` into domain + shims; persistence must not import ui.**  
+Must read `BOUNDARY_RULES.md` + `MIGRATION_RULES.md` first. Then REPORT + handoff + stop.

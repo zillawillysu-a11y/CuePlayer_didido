@@ -33,6 +33,8 @@ System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md). C
 UI / Domain / Playback Engine / Media / Exporters / Persistence stay separated.
 Playback Engine is the only playback clock source.
 
+**Permanent rules:** [`docs/BOUNDARY_RULES.md`](docs/BOUNDARY_RULES.md) (dependency directions) · [`docs/MIGRATION_RULES.md`](docs/MIGRATION_RULES.md) (one-module strangler). Target layout: [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md).
+
 ## Multi-machine / GitHub
 
 - Remote: `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (`origin`).
