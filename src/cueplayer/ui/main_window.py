@@ -464,6 +464,7 @@ class MainWindow(QMainWindow):
         # direction, used to accelerate the seek step (see _nudge_frames()).
         self._nudge_hold_start: dict[int, float] = {}
         self._nudge_last_time: dict[int, float] = {}
+        self._block_clean_output_visibility_persist = False
 
         self.engine = AudioEngine(self)
         self.engine.set_duration(self.current_song.duration_seconds)
@@ -677,6 +678,7 @@ class MainWindow(QMainWindow):
         self.video_sync.frame_changed.connect(self.clean_output_window.set_frame)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
+        self.clean_output_window.visibility_changed.connect(self._persist_clean_output_was_open)
         self.clean_output_window.settings_changed.connect(self._mark_dirty)
         self.monitor.seek_requested.connect(self._seek_from_cue_list)
         self.monitor.selection_changed.connect(self._on_monitor_selection)
@@ -713,6 +715,7 @@ class MainWindow(QMainWindow):
         if demo.is_file():
             self._load_audio_path(demo, mark_dirty=False)
             self._set_clean()
+        self._restore_clean_output_visibility()
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -941,6 +944,7 @@ class MainWindow(QMainWindow):
         self.clean_output_window.apply_settings(self.project.clean_video_output)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self._sync_video_decode_quality_ui()
+        self._restore_clean_output_visibility()
         self._refresh_timecode_status()
         self._rebuild_song_list(select_indexes=[0])
         self._activate_song(0, stop_playback=True)
@@ -1690,6 +1694,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_if_dirty():
             event.ignore()
             return
+        # Remember visibility before force_close() hides this window.
+        self.project.clean_video_output.was_open = self.clean_output_window.isVisible()
         # Clean Output normally only hides on its own X button (so re-opening
         # keeps the OBS capture target valid) — but that must not let it
         # survive the main window closing, or keep the app process alive.
@@ -2093,6 +2099,29 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
         self._refresh_status()
         self.status.showMessage(f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)", 4000)
+
+    def _persist_clean_output_was_open(self, visible: bool) -> None:
+        if self._block_clean_output_visibility_persist:
+            return
+        if self.project.clean_video_output.was_open != visible:
+            self.project.clean_video_output.was_open = visible
+            self._mark_dirty()
+
+    def _restore_clean_output_visibility(self) -> None:
+        want_open = self.project.clean_video_output.was_open
+        self._block_clean_output_visibility_persist = True
+        try:
+            if want_open:
+                if not self.clean_output_window.isVisible():
+                    self.clean_output_window.show()
+                    self.clean_output_window.raise_()
+                self._clean_output_action.setChecked(True)
+            else:
+                if self.clean_output_window.isVisible():
+                    self.clean_output_window.hide()
+                self._clean_output_action.setChecked(False)
+        finally:
+            self._block_clean_output_visibility_persist = False
 
     def _toggle_clean_output(self, checked: bool) -> None:
         if checked:
