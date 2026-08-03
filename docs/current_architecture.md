@@ -1,9 +1,9 @@
 # CuePlayer — Current Architecture Assessment
 
-**Status:** Sprint 4 Feature Task 6 complete (Anchor Playback Integration)  
+**Status:** Sprint 5 Task 1 complete (Song-Time Façade Completion)  
 **Updated:** 2026-08-03  
-**Scope tip:** `cursor/sprint4-anchor-playback-028d`  
-**Constraint (Task 6):** PlaybackService maps Song↔Variant; no Timeline/Waveform redesign; no Align UI.
+**Scope tip:** `cursor/sprint5-song-time-facade-028d`  
+**Constraint (Task 1):** External transport uses Song Time → PlaybackService → AnchorMapping → AudioEngine; no Align UI / Timeline redesign.
 
 Related docs (do not treat as identical):
 
@@ -893,13 +893,17 @@ Sprint 1 should **not** delete history blindly, but can reduce agent confusion:
 | **Sprint 4 · F4** Playback variant MVP | ✅ Done | PlaybackService resolve → one buffer |
 | **Sprint 4 · F5** Anchor Mapping Foundation | ✅ Done | `domain/anchor_mapping.py` (no runtime apply) |
 | **Sprint 4 · F6** Anchor Playback Integration | ✅ Done | PlaybackService Song↔Variant; engine Variant Time |
-| **Next** Align Anchors UI Design | **Queued** | Design editing `anchor_offset` without moving cues |
+| **Sprint 4.5** Production Validation | ✅ Done | Checklist + debt map (docs only) |
+| **Sprint 5 · T1** Song-Time Façade | ✅ Done | Remote + MainWindow → PlaybackService |
+| **Next** Align Anchors UX | **Queued** | Edit `anchor_offset` without moving cues |
 | Sprint 4 arch spine · Playback events | Backlog | First EventBus adoption (not the Feature pick) |
 
-### After Feature Task 6
+### After Sprint 5 Task 1
 
-Design Align Anchors UI (manual offset edit). Do **not** auto-start until the user continues.
+Align Anchors UX (design / chrome). Do **not** auto-start until the user continues.
+
+Song-Time façade graph: `docs/song_variant_design.md` §18.
 
 ---
 
-## READY FOR ALIGN ANCHORS UI DESIGN
+## READY FOR ALIGN ANCHORS UX

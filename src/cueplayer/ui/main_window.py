@@ -2343,7 +2343,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         video_menu = tools_menu.addMenu("Vide&o")
         act_add_video = QAction("Add &Video Clip…", self)
-        act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.engine.position))
+        act_add_video.triggered.connect(lambda: self._add_video_clip_at(self.playback.position))
         video_menu.addAction(act_add_video)
         self._ndi_output_action = QAction("&NDI Video Output", self)
         self._ndi_output_action.setCheckable(True)
@@ -4763,7 +4763,7 @@ class MainWindow(QMainWindow):
             self._add_songs_from_media_paths(audio)
         elif video:
             accept_file_drop(event)
-            self._add_video_clips_from_paths(video, self.engine.position)
+            self._add_video_clips_from_paths(video, self.playback.position)
         else:
             self.status.showMessage(rejected_file_drop_reason(mime), 5000)
             event.ignore()
@@ -4902,7 +4902,7 @@ class MainWindow(QMainWindow):
                     return True
                 if video_paths and watched in {view_stack, timeline_center}:
                     accept_file_drop(event)
-                    drop_at = self.engine.position
+                    drop_at = self.playback.position
                     if watched is timeline_center:
                         local = self.timeline.mapFromGlobal(event.globalPosition().toPoint())
                         drop_at = self.timeline._time_for_x(local.x())  # noqa: SLF001
@@ -5081,7 +5081,7 @@ class MainWindow(QMainWindow):
 
     def _flush_cue_list_refresh(self) -> None:
         self.monitor.refresh_list()
-        self.monitor.set_position(self.engine.position, self.engine.duration)
+        self.monitor.set_position(self.playback.position, self.engine.duration)
 
     def _refresh_marks_ui(self) -> None:
         # Marks paint live — avoid invalidating the play/scrub backdrop per mark.
@@ -6323,7 +6323,7 @@ class MainWindow(QMainWindow):
         if target is not self.current_song:
             return
         self.engine.set_duration(float(dur))
-        pos = float(self.engine.position)
+        pos = float(self.playback.position)
         self.transport.set_times(pos, self.engine.duration)
         self.monitor.set_position(pos, self.engine.duration)
         self.timeline.update()
@@ -6773,13 +6773,15 @@ class MainWindow(QMainWindow):
             self._apply_project_mark_line_settings()
             self.monitor.set_song(self.current_song)
         if already_armed:
-            pos = float(self.engine.position)
+            pos = float(self.playback.position)
             self.transport.set_times(pos, self.engine.duration)
             self.monitor.set_position(pos, self.engine.duration)
         else:
             self.transport.set_times(0.0, self.engine.duration)
             self.monitor.set_position(0.0, self.engine.duration)
-        self._refresh_output_timecode_clock(0.0 if not already_armed else float(self.engine.position))
+        self._refresh_output_timecode_clock(
+            0.0 if not already_armed else float(self.playback.position)
+        )
         if mark_dirty:
             self._mark_dirty()
         self._refresh_status()
@@ -7295,7 +7297,7 @@ class MainWindow(QMainWindow):
         if not self._video_clip_clipboard:
             return
         anchor = min(snap.start_seconds for snap in self._video_clip_clipboard)
-        paste_at = self.engine.position
+        paste_at = self.playback.position
         new_clips: list[VideoClip] = []
         for snap in self._video_clip_clipboard:
             offset = snap.start_seconds - anchor

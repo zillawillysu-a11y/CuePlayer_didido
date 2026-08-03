@@ -215,6 +215,9 @@ def build_state(
     song: Song,
     engine: _EngineView,
     ltc_channel_for_song: Any | None = None,
+    position: float | None = None,
+    loop_a: float | None = None,
+    loop_b: float | None = None,
 ) -> dict[str, Any]:
     songs = list(project.songs)
     try:
@@ -258,7 +261,7 @@ def build_state(
         if m.get("cue_list_enabled", True) and m.get("lane_visible", True)
     ]
 
-    position = float(engine.position)
+    position = float(engine.position if position is None else position)
     duration = float(engine.duration)
 
     playhead_cue_id = ""
@@ -282,8 +285,10 @@ def build_state(
     playhead = str(getattr(project, "playhead_color", "") or "#3dd68c")
     waveform_color = str(getattr(project, "waveform_color", "") or "#616161")
     active_id = song.id if song_index >= 0 else ""
-    loop_a = getattr(engine, "loop_a", None)
-    loop_b = getattr(engine, "loop_b", None)
+    if loop_a is None:
+        loop_a = getattr(engine, "loop_a", None)
+    if loop_b is None:
+        loop_b = getattr(engine, "loop_b", None)
 
     return {
         "project_name": project.name,

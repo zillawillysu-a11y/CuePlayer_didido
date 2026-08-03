@@ -4,6 +4,13 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 5 — Task 1: Song-Time Façade Completion (2026-08-03)
+
+- RemoteHost: `seek_song_time` / `song_position` / `song_loop_*` / mapping helpers via PlaybackService.
+- Web Remote seek/clock/loops/monitor meta use Song Time; live PCM cursor stays Variant Time.
+- MainWindow paste/drop/add-video/cue-list/load transport use `playback.position`.
+- No Timeline/Waveform redesign; no Align UI; offset 0 remains identity.
+
 ### Sprint 4 — Feature Task 6: Anchor Playback Integration (2026-08-03)
 
 - PlaybackService converts Song Time ↔ Variant Time via `domain.anchor_mapping` on seek / loops / position.

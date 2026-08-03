@@ -164,6 +164,9 @@ class WebRemoteBridge(QObject):
             song=song,
             engine=engine,
             ltc_channel_for_song=host.ltc_channel_for_song,
+            position=host.song_position(),
+            loop_a=host.song_loop_a(),
+            loop_b=host.song_loop_b(),
         )
 
     def _safe_clock(self) -> dict[str, Any]:
@@ -172,7 +175,7 @@ class WebRemoteBridge(QObject):
         song = host.current_song
         engine = host.engine
         project = host.project
-        position = float(engine.position)
+        position = float(host.song_position())
         fps = float(getattr(song, "fps", None) or 30.0) or 30.0
         if fps <= 0:
             fps = 30.0
@@ -193,8 +196,8 @@ class WebRemoteBridge(QObject):
                 timecode_to_abs_seconds(song.start_timecode, fps) + position,
                 fps,
             ).format()
-        a = getattr(engine, "loop_a", None)
-        b = getattr(engine, "loop_b", None)
+        a = host.song_loop_a()
+        b = host.song_loop_b()
         return {
             "ok": True,
             "song_id": str(song.id),
@@ -367,7 +370,13 @@ class WebRemoteBridge(QObject):
         engine = host.engine
         out_rate = int(rate) if rate else 24000
         want = float(seconds) if seconds is not None else 0.35
-        t0 = float(engine.position if start is None else start)
+        song_pos = float(host.song_position())
+        if start is None:
+            t0_song = song_pos
+            t0_engine = float(engine.position)
+        else:
+            t0_song = float(start)
+            t0_engine = float(host.song_to_engine_time(t0_song))
 
         # Music + Video Track → music bed only (desktop Music-lane parity).
         if self._has_main_music_file():
@@ -376,10 +385,10 @@ class WebRemoteBridge(QObject):
             return build_monitor_pcm(
                 buf,
                 song_id=str(song.id),
-                position=float(engine.position),
+                position=song_pos,
                 playing=bool(engine.playing),
                 duration=float(engine.duration),
-                start=t0,
+                start=t0_engine,
                 seconds=want,
                 out_rate=out_rate,
                 exclude_channel=exclude,
@@ -387,6 +396,7 @@ class WebRemoteBridge(QObject):
             )
 
         # Pure video: stream embedded clip audio from the same mixer as desktop.
+        # Video clips live on Song Time — pass Song Time into the mixer.
         out_sr = max(8000, min(48000, int(out_rate) if out_rate else 24000))
         want = min(1.0, max(0.05, want))
         n = max(1, int(round(want * out_sr)))
@@ -394,9 +404,9 @@ class WebRemoteBridge(QObject):
             "ok": True,
             "song_id": str(song.id),
             "playing": bool(engine.playing),
-            "position": float(engine.position),
+            "position": song_pos,
             "duration": float(engine.duration),
-            "start": t0,
+            "start": t0_song,
             "seconds": 0.0,
             "sample_rate": out_sr,
             "channels": 1,
@@ -404,7 +414,7 @@ class WebRemoteBridge(QObject):
             "ready": False,
             "frames": 0,
         }
-        video = self._video_listen_stereo(t0, n, out_sr)
+        video = self._video_listen_stereo(t0_song, n, out_sr)
         play_sr = int(host.playback_sample_rate() or out_sr)
         mixed = mix_listen_mono(
             music_mono=None,
@@ -624,18 +634,18 @@ class WebRemoteBridge(QObject):
             return {"ok": True, "op": op, "playing": bool(host.engine.playing)}
         if op in ("stop",):
             host.engine.pause()
-            host.engine.seek(0.0)
+            host.seek_song_time(0.0)
             return {"ok": True, "op": op}
         if op == "seek":
             seconds = float(command.get("seconds", 0.0))
-            host.engine.seek(max(0.0, seconds))
+            host.seek_song_time(max(0.0, seconds))
             return {"ok": True, "op": op, "seconds": seconds}
         if op == "seek_mark":
             mark_id = str(command.get("mark_id") or "")
             mark = host.current_song.mark_by_id(mark_id)
             if mark is None:
                 return {"ok": False, "error": "mark_not_found"}
-            host.engine.seek(float(mark.time_seconds))
+            host.seek_song_time(float(mark.time_seconds))
             return {"ok": True, "op": op, "mark_id": mark_id}
         if op == "select_song":
             return self._select_song(command)
@@ -676,13 +686,13 @@ class WebRemoteBridge(QObject):
         return {"ok": False, "error": f"unknown_op:{op}"}
 
     def _loop_payload(self) -> dict[str, Any]:
-        engine = self._host.engine
-        a = getattr(engine, "loop_a", None)
-        b = getattr(engine, "loop_b", None)
+        host = self._host
+        a = host.song_loop_a()
+        b = host.song_loop_b()
         return {
             "a": None if a is None else float(a),
             "b": None if b is None else float(b),
-            "enabled": bool(getattr(engine, "loop_enabled", False)),
+            "enabled": bool(getattr(host.engine, "loop_enabled", False)),
         }
 
     def _set_loop_a(self, _command: dict[str, Any]) -> dict[str, Any]:
