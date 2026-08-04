@@ -179,6 +179,8 @@ from cueplayer.ui.audio_timecode_dialog import AudioTimecodeDialog
 from cueplayer.ui.align_anchors_dialog import AlignAnchorsDialog
 from cueplayer.ui.ma_preflight_dialog import MaPreflightDialog
 from cueplayer.domain.validation import build_preflight_report_for_project
+from cueplayer.diagnostics import perf as perf_diag
+from cueplayer.features import ENABLE_EXPERIMENTAL_FEATURES
 from cueplayer.ui.cue_monitor_panel import CueMonitorPanel
 from cueplayer.web_remote.bridge import WebRemoteBridge
 from cueplayer.web_remote.main_window_remote_host import MainWindowRemoteHost
@@ -2335,8 +2337,18 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addAction(act_web_remote)
-        tools_menu.addAction(act_align_anchors)
-        tools_menu.addAction(act_ma_preflight)
+        # Sprint 8: experimental Tools entries hidden unless flag is True.
+        if ENABLE_EXPERIMENTAL_FEATURES:
+            tools_menu.addAction(act_align_anchors)
+            tools_menu.addAction(act_ma_preflight)
+        # Developer-only when CUEPLAYER_PERF=1 (no playback behavior change).
+        if perf_diag.is_enabled():
+            act_perf = QAction("Write &Performance Report…", self)
+            act_perf.setToolTip(
+                f"Append current CUEPLAYER_PERF spans to:\n{perf_diag.log_path()}"
+            )
+            act_perf.triggered.connect(self._write_performance_report)
+            tools_menu.addAction(act_perf)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -4978,14 +4990,17 @@ class MainWindow(QMainWindow):
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
-        seconds = self.playback.engine_to_song_time(engine_seconds)
-        self.playback.sync_from_engine()
-        self.timeline.set_position(seconds)
-        self.transport.set_times(seconds, self.engine.duration)
-        self.monitor.set_position(seconds, self.engine.duration)
-        self._refresh_output_timecode_clock(seconds)
-        # Overview syncs via timeline.view_changed (set_position) — do not
-        # call _sync_timeline_overview again here (~60 Hz double work).
+        # Diagnostics only on the Qt position path — never in the audio callback.
+        with perf_diag.span("ui.position_fanout"):
+            seconds = self.playback.engine_to_song_time(engine_seconds)
+            self.playback.sync_from_engine()
+            self.timeline.set_position(seconds)
+            self.transport.set_times(seconds, self.engine.duration)
+            self.monitor.set_position(seconds, self.engine.duration)
+            self._refresh_output_timecode_clock(seconds)
+            # Overview syncs via timeline.view_changed (set_position) — do not
+            # call _sync_timeline_overview again here (~60 Hz double work).
+            perf_diag.count("ui.position_fanout.calls")
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
@@ -5018,6 +5033,28 @@ class MainWindow(QMainWindow):
         dialog = MaPreflightDialog(report, self)
         dialog.navigate_requested.connect(self._on_preflight_navigate)
         dialog.exec()
+
+    def _write_performance_report(self) -> None:
+        """Tools → Write Performance Report… (only when CUEPLAYER_PERF enabled)."""
+        if not perf_diag.is_enabled():
+            self.status.showMessage("Set CUEPLAYER_PERF=1 before launch to enable", 4000)
+            return
+        path = perf_diag.flush_report(label="manual-dump")
+        if path is None:
+            self.status.showMessage("Could not write performance log", 4000)
+            return
+        self.status.showMessage(f"Performance report → {path}", 8000)
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Performance Report",
+                f"Appended report to:\n\n{path}\n\n"
+                "Open that file in Notepad and send the last section after testing.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_preflight_navigate(
         self, song_id: str, object_kind: str, object_id: str
@@ -6371,7 +6408,8 @@ class MainWindow(QMainWindow):
                 # Handler ignores non-pending / already-peaked (cache) buffers.
                 self._audio_pcm_ready.emit(path, buffer)
 
-            return load_audio_cached(path, on_pcm_ready=_on_pcm)
+            with perf_diag.span("audio.load.worker", path=str(path.name)):
+                return load_audio_cached(path, on_pcm_ready=_on_pcm)
 
         future = executor.submit(_load)
         if key is not None:
@@ -6819,57 +6857,61 @@ class MainWindow(QMainWindow):
         refresh_song_widgets: bool = True,
         reset_view: bool | None = None,
     ) -> None:
-        self._store_audio_cache(path, buffer, schedule_ltc=True)
-        self.timeline.set_audio_loading(False)
-        self.current_song.duration_seconds = buffer.duration_seconds
-        if replace_track:
-            self.current_song.replace_main_audio(path)
-        # Same buffer object may already be playing from _on_audio_pcm_ready
-        # (peaks filled in place / progressive tail decode). Do not set_buffer
-        # again — that seeks to 0 and cuts playback mid-stream.
-        already_armed = self.engine.buffer is buffer
-        if not already_armed:
-            self.engine.set_buffer(buffer)
+        with perf_diag.span("audio.apply", path=str(Path(path).name)):
+            self._store_audio_cache(path, buffer, schedule_ltc=True)
+            self.timeline.set_audio_loading(False)
+            self.current_song.duration_seconds = buffer.duration_seconds
             if replace_track:
-                self.engine.ensure_playback_ready()
-        else:
-            # Progressive load: refresh resample snapshot now that PCM is complete.
-            self.engine.rebind_playback_samples()
-        exclude = self._ltc_channel_for_song(self.current_song)
-        self._timeline_ltc_exclude = exclude
-        # Song switch (replace_track=False) keeps the current zoom scale;
-        # importing / replacing audio still resets to the default zoom.
-        keep_zoom = replace_track is False if reset_view is None else (not reset_view)
-        self.timeline.set_audio(
-            self._waveform_for_timeline(buffer, path, exclude),
-            reset_view=not keep_zoom,
-        )
-        self._apply_timeline_ltc_lane(buffer, exclude)
-        if refresh_song_widgets:
-            self.timeline.set_song(self.current_song)
-            self._apply_project_mark_line_settings()
-            self.monitor.set_song(self.current_song)
-        if already_armed:
-            pos = float(self.playback.position)
-            self.transport.set_times(pos, self.engine.duration)
-            self.monitor.set_position(pos, self.engine.duration)
-        else:
-            self.transport.set_times(0.0, self.engine.duration)
-            self.monitor.set_position(0.0, self.engine.duration)
-        self._refresh_output_timecode_clock(
-            0.0 if not already_armed else float(self.playback.position)
-        )
-        if mark_dirty:
-            self._mark_dirty()
-        self._refresh_status()
-        if self.current_song.bpm is None:
-            self._schedule_bpm_detect_for_song(self.current_song, path)
-        msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
-        det = self.engine.detected_ltc_channel
-        if det is not None:
-            side = "Left" if det == 0 else "Right"
-            msg += f" — striped LTC detected on {side}"
-        self.status.showMessage(msg, 6000)
+                self.current_song.replace_main_audio(path)
+            # Same buffer object may already be playing from _on_audio_pcm_ready
+            # (peaks filled in place / progressive tail decode). Do not set_buffer
+            # again — that seeks to 0 and cuts playback mid-stream.
+            already_armed = self.engine.buffer is buffer
+            if not already_armed:
+                self.engine.set_buffer(buffer)
+                if replace_track:
+                    self.engine.ensure_playback_ready()
+            else:
+                # Progressive load: refresh resample snapshot now that PCM is complete.
+                self.engine.rebind_playback_samples()
+            exclude = self._ltc_channel_for_song(self.current_song)
+            self._timeline_ltc_exclude = exclude
+            # Song switch (replace_track=False) keeps the current zoom scale;
+            # importing / replacing audio still resets to the default zoom.
+            keep_zoom = replace_track is False if reset_view is None else (not reset_view)
+            with perf_diag.span("waveform.display_build"):
+                self.timeline.set_audio(
+                    self._waveform_for_timeline(buffer, path, exclude),
+                    reset_view=not keep_zoom,
+                )
+            self._apply_timeline_ltc_lane(buffer, exclude)
+            perf_diag.note("audio.playback_ready", True)
+            perf_diag.count("audio.apply.calls")
+            if refresh_song_widgets:
+                self.timeline.set_song(self.current_song)
+                self._apply_project_mark_line_settings()
+                self.monitor.set_song(self.current_song)
+            if already_armed:
+                pos = float(self.playback.position)
+                self.transport.set_times(pos, self.engine.duration)
+                self.monitor.set_position(pos, self.engine.duration)
+            else:
+                self.transport.set_times(0.0, self.engine.duration)
+                self.monitor.set_position(0.0, self.engine.duration)
+            self._refresh_output_timecode_clock(
+                0.0 if not already_armed else float(self.playback.position)
+            )
+            if mark_dirty:
+                self._mark_dirty()
+            self._refresh_status()
+            if self.current_song.bpm is None:
+                self._schedule_bpm_detect_for_song(self.current_song, path)
+            msg = f"Loaded: {path.name} ({buffer.duration_seconds:.2f}s)"
+            det = self.engine.detected_ltc_channel
+            if det is not None:
+                side = "Left" if det == 0 else "Right"
+                msg += f" — striped LTC detected on {side}"
+            self.status.showMessage(msg, 6000)
 
     def _persist_clean_output_was_open(self, visible: bool) -> None:
         if self._block_clean_output_visibility_persist:

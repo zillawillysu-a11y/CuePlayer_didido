@@ -125,6 +125,15 @@ def main() -> int:
         _boot_log(f"window icon={icon_path}")
     _boot_log(f"QApplication ready  frozen={is_frozen()}")
 
+    try:
+        from cueplayer.diagnostics import perf as perf_diag
+
+        perf_path = perf_diag.announce_if_enabled()
+        if perf_path:
+            _boot_log(f"CUEPLAYER_PERF log={perf_path}")
+    except Exception as exc:  # noqa: BLE001
+        _boot_log(f"perf announce skipped: {exc}")
+
     splash = show_startup_splash(app, message="Starting…")
     splash.set_progress(0.08, "Applying theme…")
     apply_ui_font(app)

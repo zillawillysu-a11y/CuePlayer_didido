@@ -4,6 +4,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
+
+- Hide Tools → Align Anchors / MA Preflight behind `ENABLE_EXPERIMENTAL_FEATURES` (default False); code kept.
+- Add optional `CUEPLAYER_PERF` diagnostics (`cueplayer.diagnostics.perf`); audit docs only — no speculative opts.
+- Docs: `docs/playback_performance_audit.md`, `docs/PERFORMANCE_RULES.md`.
+
 ### Sprint 7 — Production Soak Planning (2026-08-04)
 
 - Added `docs/production_soak.md`: checklist, test matrix, risks, metrics, Sprint 7 Feature Planning priorities.

@@ -1,21 +1,22 @@
 # Latest AI task report
 
 **Date:** 2026-08-04  
-**Branch:** `cursor/sprint7-production-soak-028d`  
+**Branch:** `cursor/sprint8-perf-audit-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 7 — Production Soak Planning (docs only).
+Sprint 8 Task 1 — Playback Performance Audit + Experimental Feature Hide.
 
-## What was produced
+## What was implemented
 
-- `docs/production_soak.md` — checklist, test matrix, risks, metrics, Feature Planning priorities
-- `docs/roadmap.md` updated — next = real-world validation
-- No `src/` changes
+- `ENABLE_EXPERIMENTAL_FEATURES=False` hides Align Anchors + MA Preflight Tools menus
+- `cueplayer.diagnostics.perf` spans/counters (off by default; never on audio RT callback)
+- Instrumentation on song activate, audio apply, position fan-out, timeline paint, video decode
+- Docs: PERFORMANCE_RULES + playback_performance_audit (ranked bottlenecks, Tasks 2–5 plan)
 
 ## Marker
 
-READY FOR REAL-WORLD VALIDATION
+READY FOR MEASURED PERFORMANCE OPTIMIZATION
