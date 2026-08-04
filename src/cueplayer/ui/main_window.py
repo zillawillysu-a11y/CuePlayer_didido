@@ -2341,6 +2341,14 @@ class MainWindow(QMainWindow):
         if ENABLE_EXPERIMENTAL_FEATURES:
             tools_menu.addAction(act_align_anchors)
             tools_menu.addAction(act_ma_preflight)
+        # Developer-only when CUEPLAYER_PERF=1 (no playback behavior change).
+        if perf_diag.is_enabled():
+            act_perf = QAction("Write &Performance Report…", self)
+            act_perf.setToolTip(
+                f"Append current CUEPLAYER_PERF spans to:\n{perf_diag.log_path()}"
+            )
+            act_perf.triggered.connect(self._write_performance_report)
+            tools_menu.addAction(act_perf)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -5025,6 +5033,28 @@ class MainWindow(QMainWindow):
         dialog = MaPreflightDialog(report, self)
         dialog.navigate_requested.connect(self._on_preflight_navigate)
         dialog.exec()
+
+    def _write_performance_report(self) -> None:
+        """Tools → Write Performance Report… (only when CUEPLAYER_PERF enabled)."""
+        if not perf_diag.is_enabled():
+            self.status.showMessage("Set CUEPLAYER_PERF=1 before launch to enable", 4000)
+            return
+        path = perf_diag.flush_report(label="manual-dump")
+        if path is None:
+            self.status.showMessage("Could not write performance log", 4000)
+            return
+        self.status.showMessage(f"Performance report → {path}", 8000)
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "Performance Report",
+                f"Appended report to:\n\n{path}\n\n"
+                "Open that file in Notepad and send the last section after testing.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_preflight_navigate(
         self, song_id: str, object_kind: str, object_id: str

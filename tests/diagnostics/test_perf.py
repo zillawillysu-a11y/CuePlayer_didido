@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from cueplayer.diagnostics import perf
 
 
@@ -41,3 +43,16 @@ def test_perf_records_when_enabled() -> None:
     assert "activate.song.total" in snap["last_activate_ms"]
     text = perf.report_text()
     assert "activate.song.total" in text
+
+
+def test_flush_report_writes_log(tmp_path: Path) -> None:
+    perf.set_enabled(True)
+    perf.set_log_path(tmp_path / "cueplayer_perf.log")
+    with perf.span("activate.song.total"):
+        pass
+    path = perf.flush_report(label="unit-test")
+    assert path is not None
+    assert path.is_file()
+    body = path.read_text(encoding="utf-8")
+    assert "unit-test" in body
+    assert "activate.song.total" in body

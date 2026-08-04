@@ -29,9 +29,25 @@
 ## Enabling diagnostics
 
 ```powershell
+# PowerShell — environment variable for this session
 $env:CUEPLAYER_PERF = "1"
+# Optional: custom log path
+# $env:CUEPLAYER_PERF_LOG = "C:\Users\User\Desktop\cueplayer_perf.log"
+
+cd C:\Users\User\Projects\CuePlayer_didido   # your clone path
+git checkout cursor/sprint8-perf-audit-028d
+git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
+
+**Default log file (Windows):**  
+`%LOCALAPPDATA%\CuePlayer\cueplayer_perf.log`  
+(example: `C:\Users\<you>\AppData\Local\CuePlayer\cueplayer_perf.log`)
+
+When enabled:
+- Console prints the log path at startup
+- Status bar shows “Perf log updated…” after each song switch
+- Tools → **Write Performance Report…** appends a manual dump (only if launched with `CUEPLAYER_PERF=1`)
 
 In-process (tests):
 
@@ -41,6 +57,7 @@ perf.set_enabled(True)
 perf.clear()
 # … exercise UI …
 print(perf.report_text())
+print(perf.flush_report(label="manual"))
 ```
 
 When disabled (default), `span` / `count` are near-zero-cost no-ops.

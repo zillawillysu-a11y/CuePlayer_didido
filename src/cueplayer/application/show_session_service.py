@@ -123,6 +123,13 @@ class ShowSessionService:
             with perf_diag.span("activate.video_land"):
                 h._ensure_video_preview_frame()
             self.notify_external_sync()
+        # Developer log (no-op when CUEPLAYER_PERF off).
+        if perf_diag.is_enabled():
+            song_name = getattr(h.current_song, "name", "") or ""
+            path = perf_diag.flush_report(label=f"after-activate:{song_name}")
+            status = getattr(h, "status", None)
+            if path is not None and status is not None and hasattr(status, "showMessage"):
+                status.showMessage(f"Perf log updated: {path}", 4000)
 
     def deactivate_song(self) -> None:
         """Clear song attachment on timeline / monitor / video / engine."""

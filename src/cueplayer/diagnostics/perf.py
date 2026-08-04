@@ -2,6 +2,10 @@
 
 Enable with environment variable ``CUEPLAYER_PERF=1`` or ``set_enabled(True)``.
 
+When enabled, reports are appended to a log file (see ``log_path()``) after each
+song activate and when ``flush_report()`` is called. Never touches the audio
+RT callback.
+
 Rules
 -----
 - Never call from the PortAudio / real-time audio callback.
@@ -12,11 +16,15 @@ Rules
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 import threading
 import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterator
 
 
@@ -25,8 +33,17 @@ def _env_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_log_path() -> Path | None:
+    raw = str(os.environ.get("CUEPLAYER_PERF_LOG", "") or "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
 _enabled: bool = _env_enabled()
 _lock = threading.Lock()
+_log_path: Path | None = _env_log_path()
+_announced_path = False
 
 
 @dataclass
@@ -48,6 +65,34 @@ def set_enabled(enabled: bool) -> None:
 
 def is_enabled() -> bool:
     return bool(_enabled)
+
+
+def log_path() -> Path:
+    """Writable log file for human-readable perf reports."""
+    global _log_path
+    if _log_path is not None:
+        return _log_path
+    override = _env_log_path()
+    if override is not None:
+        _log_path = override
+        return _log_path
+    # Prefer LocalAppData on Windows; fall back to temp.
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
+    if base:
+        folder = Path(base) / "CuePlayer"
+    else:
+        folder = Path(tempfile.gettempdir()) / "CuePlayer"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        folder = Path(tempfile.gettempdir())
+    _log_path = folder / "cueplayer_perf.log"
+    return _log_path
+
+
+def set_log_path(path: Path | str) -> None:
+    global _log_path
+    _log_path = Path(path)
 
 
 def clear() -> None:
@@ -119,6 +164,7 @@ def snapshot() -> dict[str, Any]:
             "counters": dict(sorted(_state.counters.items())),
             "attrs": dict(_state.attrs),
             "last_activate_ms": dict(_state.last_activate_ms),
+            "log_path": str(log_path()) if _enabled else "",
         }
 
 
@@ -127,6 +173,9 @@ def report_text() -> str:
     if not snap["enabled"] and not snap["spans"] and not snap["counters"]:
         return "CUEPLAYER_PERF: disabled (set CUEPLAYER_PERF=1 to enable)\n"
     lines = ["CUEPLAYER_PERF report", ""]
+    if snap.get("log_path"):
+        lines.append(f"log_path: {snap['log_path']}")
+        lines.append("")
     if snap["last_activate_ms"]:
         lines.append("Last activate spans (ms):")
         for k, v in sorted(snap["last_activate_ms"].items()):
@@ -151,3 +200,59 @@ def report_text() -> str:
             lines.append(f"  {k}: {v}")
         lines.append("")
     return "\n".join(lines)
+
+
+def flush_report(*, label: str = "", clear_after: bool = False) -> Path | None:
+    """Append ``report_text()`` to the perf log. Returns log path when written."""
+    if not _enabled:
+        return None
+    path = log_path()
+    stamp = datetime.now(timezone.utc).isoformat()
+    header = f"===== {stamp} {label} =====\n" if label else f"===== {stamp} =====\n"
+    body = report_text()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(header)
+            fh.write(body)
+            if not body.endswith("\n"):
+                fh.write("\n")
+            fh.write("\n")
+    except Exception:  # noqa: BLE001
+        return None
+    # Also echo a short pointer to the console when launched from a terminal.
+    global _announced_path
+    try:
+        if not _announced_path:
+            print(f"CUEPLAYER_PERF log: {path}", flush=True)
+            _announced_path = True
+        if label:
+            print(f"CUEPLAYER_PERF flushed ({label}) → {path}", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    if clear_after:
+        # Keep last_activate attrs; clear growing span/counter histories.
+        with _lock:
+            _state.spans.clear()
+            _state.counters.clear()
+    return path
+
+
+def announce_if_enabled() -> str:
+    """Startup banner; returns log path string when enabled, else empty."""
+    if not _enabled:
+        return ""
+    path = log_path()
+    msg = f"CUEPLAYER_PERF=1 — writing reports to {path}"
+    try:
+        print(msg, flush=True)
+    except Exception:  # noqa: BLE001
+        try:
+            buf = getattr(sys.stdout, "buffer", None)
+            if buf is not None:
+                buf.write((msg + "\n").encode("utf-8", errors="replace"))
+                buf.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    flush_report(label="session-start")
+    return str(path)
