@@ -36,7 +36,10 @@ Module: `cueplayer.diagnostics.perf` (off unless `CUEPLAYER_PERF=1` / `set_enabl
 | `audio.apply` / `waveform.display_build` | `_apply_loaded_audio` |
 | `ui.position_fanout` + calls counter | `MainWindow._on_position_changed` |
 | `timeline.set_position.calls` / `timeline.paint.*` | `TimelineWidget` |
-| `video.update_position.calls` / `video.decode` / `video.emit.calls` | `VideoSyncController` |
+| `video.update_position.calls` / `video.decode` / `video.decode.async` | `VideoSyncController` |
+| `video.async_schedule` / `video.async_coalesce` / `video.async_stale_drop` | Latest-wins request policy |
+| `video.convert` / `video.present` | `MainWindow._on_video_frame` (QImage + sinks) |
+| `activate.stop` / `activate.paint_before_quiesce` | Soft-stop + paint before stream teardown |
 
 **Not instrumented (by design):** PortAudio callback / any RT audio path.
 
@@ -48,9 +51,11 @@ Module: `cueplayer.diagnostics.perf` (off unless `CUEPLAYER_PERF=1` / `set_enabl
 
 ```text
 activate.song.total
-  ├─ activate.quiesce              engine.quiesce_output (if playing/stop)
+  ├─ activate.stop                 engine.stop (soft; if needs quiesce)
   ├─ activate.arm_placeholder      Music lane "Loading…"
   ├─ activate.timeline             timeline.set_song + mark-line chrome
+  ├─ activate.paint_before_quiesce processEvents (ExcludeUserInput) — perceived switch
+  ├─ activate.quiesce              engine.quiesce_output (PortAudio teardown ~150–180ms)
   ├─ activate.video_bind           video_sync.set_song (close/open decoders)
   ├─ activate.engine_attach        engine.set_song + timebase
   ├─ activate.geometry_chrome      geometry, shortcuts, TC clock
@@ -92,19 +97,30 @@ activate.song.total
 | `load_audio_cached` | **Worker** | OK; hitch if mis-called on UI (guarded: RAM-only sync) |
 | `probe_audio_duration` on arm | UI | Low–medium (metadata only) |
 | `ui.position_fanout` @ ~60 Hz | UI | Must stay cheap (already avoids double overview sync) |
-| `video.decode` (PyAV) | UI | **Primary Video Track cost** |
+| `video.decode` (PyAV land / pause) | UI | One-shot only (scrub-end / stop / land) |
+| `video.decode.async` (PyAV live) | **Worker** | Play + scrub-cold; latest-wins |
+| `video.convert` / `video.present` | UI | QImage + Preview/Clean paint |
 
 ---
 
 ## 3. Video Track bottlenecks
 
-Evidence from code (`video_sync.py`):
+### Before (Task 1 desk finding)
 
-1. **Decode on Qt UI thread** — `_decode_and_emit` runs PyAV seek/decode where `update_position` is called (queued from engine ticks).  
-2. **Throttle 30 Hz / 24 Hz** when Video Track is heavy — still competes with Timeline paints.  
-3. **Frame fan-out** — Preview + Clean Output QImage conversion on emit (deduped if same ndarray).  
-4. **Song switch** — `set_song` tears down decoders; `activate.video_land` may force a land decode.  
-5. **Unrelated UI** — playhead path already dirties playhead strip; full Timeline + tall Video pixmap blit still hurts if `update()` is full-widget.
+1. **Decode on Qt UI thread** — `_decode_and_emit` ran PyAV on every throttled play/scrub tick.  
+2. **Throttle 30 Hz / 24 Hz** still competed with Timeline paints when Video Track was open.  
+3. **Frame fan-out** — Preview + Clean Output QImage conversion on emit.  
+4. **Scrub cold path** — mouse-move could still sync-decode when scrub posters were cold.  
+5. **Song switch** — `activate.quiesce` (~150–180 ms) ran **before** timeline chrome painted.
+
+### After (Task 2)
+
+1. **Play + scrub-cold** → `_request_async_live_frame` (single worker, dedicated decoders, queue depth 1).  
+2. **Scrub warm** → scrub-cache posters on UI (cheap).  
+3. **Scrub-end / pause land / `land_frame_at`** → one-shot sync decode for accuracy.  
+4. **Stale results** dropped via `_async_req_gen`; coalesce counted as `video.async_coalesce`.  
+5. **Song switch** → soft `stop` + timeline paint + `processEvents` **before** `quiesce_output`.  
+6. **Presentation spans** — `video.convert` / `video.present` separate from decode.
 
 ---
 
@@ -151,16 +167,39 @@ Attr: `activate.waveform_path` ∈ {`ram_hit`,`peaks_hit`,`cold`,`standin_or_emp
 
 ---
 
-## 7. Implementation plan — Tasks 2–5 (evidence-based, not started)
+## 7. Implementation plan — Tasks 2–5
 
-| Task | Goal | Guardrails |
-|------|------|------------|
-| **2 — Song-switch readiness** | Raise `ram_hit`/`peaks_hit` rate; bound `activate.song.total`; clearer playback-ready | No engine redesign; keep quiesce; measure before/after |
-| **3 — Video Track budget** | Cap UI-thread decode ms; optional worker decode queue; skip work when sinks off | AudioEngine remains sole clock; no second player |
-| **4 — Cue List / chrome** | Shrink `activate.monitor_deferred`; defer non-visible work | No cue semantics change |
-| **5 — Playhead / paint** | Keep partial dirty; reduce full paints with Video Track visible | No Timeline redesign; cadence constants documented |
+| Task | Goal | Status |
+|------|------|--------|
+| **2 — Video Track responsiveness** | Off-UI latest-wins decode; paint before quiesce | **Done** (this PR) |
+| **3 — Further video budget** | Optional QImage off-UI; sink skip polish | Next if desk still shows convert cost |
+| **4 — Cue List / chrome** | Shrink `activate.monitor_deferred` | Pending |
+| **5 — Playhead / paint** | Keep partial dirty; reduce full paints | Pending |
 
 Each task PR must include before/after `CUEPLAYER_PERF` spans on the same show file.
+
+---
+
+## 7b. Windows validation — Video responsiveness (Task 2)
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+git checkout cursor/sprint8-video-responsive-028d
+git pull
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+| Scenario | What to feel / record |
+|----------|------------------------|
+| No-video playback | Timeline drag + playhead smooth (baseline) |
+| Video playback | Playhead still smooth; Preview near source FPS; check `video.decode.async` vs `ui.position_fanout` |
+| Aggressive timeline drag (Video Track on) | Pointer follows scrub; Preview may lag at ≤24 Hz; **no** UI freeze |
+| Scrub release | Final frame matches release Song Time |
+| Song switch | Selection + timeline paint before ~150–180 ms quiesce wait |
+| CPU | Task Manager while dragging with video — UI thread should not peg from PyAV |
+| Counters | `video.async_coalesce` rises under drag; `video.async_stale_drop` on scrub-end |
+
+Fill before/after from `%LOCALAPPDATA%\CuePlayer\cueplayer_perf.log` (Tools → Write Performance Report…).
 
 ---
 
@@ -181,17 +220,70 @@ Run on Windows desk with production interface:
 
 ---
 
-## 9. Performance Impact (this PR)
+## 9. Performance Impact (Task 1 audit PR)
 
 | Area | Impact |
 |------|--------|
 | **Playback** | None intended — semantics unchanged; diagnostics off by default |
-| **Timeline FPS** | Negligible when `CUEPLAYER_PERF` off (counter increments are cheap); on = extra counters |
+| **Timeline FPS** | Negligible when `CUEPLAYER_PERF` off |
 | **Song switch** | Same paths; optional spans only when enabled |
 | **Video sync** | Same clock / throttle; decode wrapped only when enabled |
 | **CPU** | ~0 when disabled; mild when enabled during play |
-| **Memory** | Span lists grow until `perf.clear()` — clear between scenarios |
+| **Memory** | Span lists grow until `perf.clear()` |
 
 ---
 
-## READY FOR MEASURED PERFORMANCE OPTIMIZATION
+## 10. Sprint 8 Task 2 — Video Track Responsiveness (done)
+
+**Branch:** `cursor/sprint8-video-responsive-028d`
+
+### Root causes confirmed
+
+1. Live PyAV decode on the Qt UI thread during play and scrub-cold.  
+2. Scrub mouse-moves could still sync-decode when the poster cache was cold.  
+3. Song activate ran `quiesce_output` (~150–180 ms) before timeline chrome painted.
+
+### Pipeline before → after
+
+| Stage | Before | After |
+|-------|--------|-------|
+| Play tick | Throttle → UI `_decode_and_emit` | Throttle → async latest-wins worker |
+| Scrub warm | Poster emit (UI) | Unchanged |
+| Scrub cold | Throttle → UI decode | Throttle → async coalesce |
+| Scrub-end / stop | Sync land | Sync land (gen invalidate first) |
+| Present | QImage on UI | Same; spans `video.convert` / `video.present` |
+| Song switch | Quiesce → timeline | Stop → timeline → paint → quiesce |
+
+### UI-thread work removed
+
+- Mid-play PyAV seek/decode/colorspace  
+- Mid-scrub cold PyAV (replaced by worker)
+
+### Request policy
+
+- Queue depth **0 or 1** (overwrite `_async_req_seconds`)  
+- `_async_req_gen` drops stale results  
+- Dedicated `_worker_decoders` (never share UI land-frame decoders)
+
+### Remaining limitations
+
+- Scrub-end / `land_frame_at` still sync-decode once (accuracy).  
+- `video.convert` (ndarray→QImage) still on UI (cheap vs PyAV).  
+- Quiesce wait duration unchanged (safety); only perceived order improved.  
+- Warm scrub still needs poster preload after drag starts.
+
+### Performance Impact (Task 2)
+
+| Area | Expected |
+|------|----------|
+| Audio playback | Unchanged (clock / RT path untouched) |
+| Timeline drag | Responsive with Video Track |
+| Playhead smoothness | Improved (no UI PyAV contention) |
+| Video FPS | Stable async present ≤30/24 Hz schedule |
+| Song-switch feel | Immediate chrome; quiesce still ~150–180 ms after paint |
+| CPU | PyAV moves to worker thread |
+| Memory | +1 ThreadPool worker + optional second decoder set per clip |
+
+---
+
+## READY FOR WINDOWS VIDEO RESPONSIVENESS VALIDATION

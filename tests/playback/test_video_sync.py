@@ -226,11 +226,12 @@ def test_scrub_end_flushes_final_position(app: QApplication, red_clip_path: Path
     controller.frame_changed.connect(frames.append)
 
     controller.set_scrubbing(True)
-    controller.update_position(0.1)  # decodes immediately (first call)
-    controller.update_position(2.5)  # thrown right after: throttled, pending
-    controller.set_scrubbing(False)  # must flush the *last* requested position
+    controller._scrub_cache.clear()
+    controller.update_position(0.1)  # cold → async schedule (no sync UI decode)
+    controller.update_position(2.5)  # coalesced / throttled pending
+    controller.set_scrubbing(False)  # must flush the *last* requested position sync
 
-    assert len(frames) >= 2
+    assert len(frames) >= 1
     last = frames[-1]
     assert last is not None
     # The flushed frame must be the blue clip (2.5s), not a stale red one.
@@ -572,3 +573,210 @@ def test_land_frame_after_set_song_while_already_active(
 
     controller.land_frame_at(0.4)
     assert isinstance(frames[-1], np.ndarray)
+
+
+def _drain_async(controller: VideoSyncController, app: QApplication, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while controller._async_inflight and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+
+
+def test_scrub_cold_does_not_sync_decode_on_ui_thread(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Aggressive scrub must not block the caller on PyAV (latest-wins async)."""
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    # Ensure scrub cache is cold so the live path is exercised.
+    controller._scrub_cache.clear()
+
+    decode_calls = {"n": 0}
+    real_decode = controller._decode_and_emit
+
+    def _counting_decode(song_arg, seconds):  # noqa: ANN001
+        decode_calls["n"] += 1
+        return real_decode(song_arg, seconds)
+
+    controller.set_scrubbing(True)
+    with patch.object(controller, "_decode_and_emit", side_effect=_counting_decode):
+        t0 = time.monotonic()
+        for i in range(40):
+            controller.update_position(0.02 * i)
+        elapsed = time.monotonic() - t0
+        # Must return immediately — no sync PyAV per mouse-move.
+        assert decode_calls["n"] == 0
+        assert elapsed < 0.25
+        controller.set_scrubbing(False)  # sync land once
+        assert decode_calls["n"] == 1
+
+
+def test_async_latest_request_wins(app: QApplication, red_clip_path: Path, blue_clip_path: Path) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_playing(True)
+
+    requested: list[float] = []
+    real_request = controller._request_async_live_frame
+
+    def _track(seconds: float) -> None:
+        requested.append(float(seconds))
+        real_request(seconds)
+
+    with patch.object(controller, "_request_async_live_frame", side_effect=_track):
+        controller._last_decode_time = 0.0
+        controller.update_position(0.1)
+        for t in (0.5, 1.0, 1.5, 2.5):
+            controller._last_decode_time = 0.0
+            controller.update_position(t)
+
+    assert requested  # at least one async schedule
+    assert requested[-1] == pytest.approx(2.5)
+    assert controller._async_req_seconds == pytest.approx(2.5)
+    _drain_async(controller, app)
+    controller.set_playing(False)
+    last = frames[-1]
+    assert last is not None
+    # Final land (stop) should be blue at 2.5s.
+    assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
+
+
+def test_async_stale_frames_discarded(app: QApplication, red_clip_path: Path) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    emitted: list[object] = []
+    controller.frame_changed.connect(emitted.append)
+    controller.set_playing(True)
+    controller.update_position(0.2)
+    stale_gen = controller._async_req_gen
+    # Invalidate before the worker result can land.
+    controller._invalidate_async_requests()
+    assert controller._async_req_gen != stale_gen
+    _drain_async(controller, app)
+    # Stale emit must not advance the picture after invalidate+no new request.
+    # (set_song already emitted None; playing update may have scheduled work.)
+    before = list(emitted)
+    controller._on_async_frame_ready(stale_gen, 0.2, np.zeros((4, 4, 3), dtype=np.uint8))
+    assert emitted == before
+
+
+def test_async_queue_bounded_during_scrub(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Coalesce: many schedule calls while inflight → still a single worker job."""
+    from cueplayer.diagnostics import perf as perf_diag
+
+    song = Song.create("Song")
+    clip = VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    song.add_video_clip(clip)
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller._scrub_cache.clear()
+    controller.set_scrubbing(True)
+
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    # Force schedule path (bypass throttle) by resetting last_decode_time each time.
+    for i in range(30):
+        controller._last_decode_time = 0.0
+        controller.update_position(0.01 * i)
+
+    snap = perf_diag.snapshot()
+    counters = snap.get("counters", snap) if isinstance(snap, dict) else {}
+    if not isinstance(counters, dict) or "video.async_schedule" not in counters:
+        # snapshot shape may nest — also accept report text.
+        report = perf_diag.report_text()
+        assert "video.async_schedule" in report
+        assert "video.async_coalesce" in report
+    else:
+        assert counters["video.async_schedule"] >= 1
+        assert counters.get("video.async_coalesce", 0) >= 1
+
+    # Never more than one inflight worker (queue depth ≤ 1).
+    assert int(controller._async_inflight) in (0, 1)
+    controller.set_scrubbing(False)
+    _drain_async(controller, app)
+    perf_diag.set_enabled(False)
+
+
+def test_scrub_end_frame_matches_release_time(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.set_scrubbing(True)
+    controller._scrub_cache.clear()
+    for t in (0.1, 0.5, 1.0, 2.5):
+        controller._last_decode_time = 0.0
+        controller.update_position(t)
+    release = 2.5
+    controller.update_position(release)
+    controller.set_scrubbing(False)
+    last = frames[-1]
+    assert last is not None
+    assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
+    assert controller._last_position_seconds == pytest.approx(release)
+
+
+def test_playback_async_still_follows_song_time(
+    app: QApplication, red_clip_path: Path, blue_clip_path: Path
+) -> None:
+    """Playback remains audio-clock driven: async present still tracks Song Time."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    song.add_video_clip(
+        VideoClip.create(name="blue", path=blue_clip_path, start_seconds=2.0, duration_seconds=2.0)
+    )
+
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_playing(True)
+    controller._last_decode_time = 0.0
+    controller.update_position(0.3)
+    _drain_async(controller, app)
+    assert any(isinstance(f, np.ndarray) for f in frames)
+    red = next(f for f in frames if isinstance(f, np.ndarray))
+    assert red.mean(axis=(0, 1))[0] > red.mean(axis=(0, 1))[2]
+
+    controller._last_decode_time = 0.0
+    controller.update_position(2.4)
+    _drain_async(controller, app)
+    controller.set_playing(False)
+    last = frames[-1]
+    assert last is not None
+    assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]

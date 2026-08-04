@@ -2197,34 +2197,39 @@ class MainWindow(QMainWindow):
         Preview + Clean share a single QImage conversion. NDI keeps the
         ndarray. Invisible sinks are skipped so opening Clean Output does not
         pay for a hidden Preview panel copy. Web Remote copies RGB for WebRTC.
+
+        Decode runs off-UI (async worker / land sync). This path only converts
+        and presents — instrumented separately from ``video.decode``.
         """
-        preview_vis = self._video_preview_visible()
-        clean_vis = self._clean_output_visible()
-        ndi_on = bool(self.project.clean_video_output.ndi_enabled)
-        remote = getattr(self, "_web_remote", None)
-        remote_prev = bool(remote is not None and remote.remote_preview_wanted)
+        with perf_diag.span("video.present"):
+            preview_vis = self._video_preview_visible()
+            clean_vis = self._clean_output_visible()
+            ndi_on = bool(self.project.clean_video_output.ndi_enabled)
+            remote = getattr(self, "_web_remote", None)
+            remote_prev = bool(remote is not None and remote.remote_preview_wanted)
 
-        if frame is None:
-            if preview_vis:
-                self.video_preview.set_qimage(None)
-            if clean_vis:
-                self.clean_output_window.set_qimage(None)
+            if frame is None:
+                if preview_vis:
+                    self.video_preview.set_qimage(None)
+                if clean_vis:
+                    self.clean_output_window.set_qimage(None)
+                if ndi_on:
+                    self._ndi_output.send_frame(None)
+                if remote_prev and remote is not None:
+                    remote.push_preview_frame(None)
+                return
+
+            if preview_vis or clean_vis:
+                with perf_diag.span("video.convert"):
+                    image = rgb_frame_to_qimage(frame)
+                if preview_vis:
+                    self.video_preview.set_qimage(image)
+                if clean_vis:
+                    self.clean_output_window.set_qimage(image)
             if ndi_on:
-                self._ndi_output.send_frame(None)
+                self._ndi_output.send_frame(frame)
             if remote_prev and remote is not None:
-                remote.push_preview_frame(None)
-            return
-
-        if preview_vis or clean_vis:
-            image = rgb_frame_to_qimage(frame)
-            if preview_vis:
-                self.video_preview.set_qimage(image)
-            if clean_vis:
-                self.clean_output_window.set_qimage(image)
-        if ndi_on:
-            self._ndi_output.send_frame(frame)
-        if remote_prev and remote is not None:
-            remote.push_preview_frame(frame)
+                remote.push_preview_frame(frame)
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""

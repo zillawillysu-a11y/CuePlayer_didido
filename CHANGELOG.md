@@ -4,6 +4,14 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 8 — Task 2: Video Track Responsiveness (2026-08-05)
+
+- Play + scrub-cold video decode moves to a latest-wins async worker (dedicated decoders; queue depth 1).
+- Scrub-end / pause land remain one-shot sync for frame accuracy; stale async frames discarded.
+- Song activate paints timeline chrome before PortAudio quiesce (~150–180 ms wait no longer blocks perceived switch).
+- Perf spans: `video.decode.async`, `video.convert`, `video.present`, async coalesce/stale counters.
+- Docs: audit § Task 2 + Windows validation checklist.
+
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 
 - Hide Tools → Align Anchors / MA Preflight behind `ENABLE_EXPERIMENTAL_FEATURES` (default False); code kept.

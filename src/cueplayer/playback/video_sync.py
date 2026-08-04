@@ -11,11 +11,13 @@ widgets to paint. No independent video clock, no second player.
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 from time import monotonic
 
 import numpy as np
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import (
@@ -49,9 +51,12 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # lighter trailing-edge throttle (_MIN_SEEK_DECODE_INTERVAL) so rapid jumps
 # only decode the latest land frame.
 #
-# Play decode stays on the UI thread (throttled). A background play-decode
-# worker was tried and removed: seek/scrub while Clean Output was open raced
-# a second PyAV container on the same path (hourglass → hard crash).
+# Play decode used to run on the UI thread (throttled). Sprint 8 Task 2 moves
+# scrub-cold and play-time live decode onto a single latest-wins worker with
+# *dedicated* decoders (never shared with the UI land-frame path) so Timeline
+# drag/playhead paint are not stalled by PyAV. Scrub-end / paused land still
+# use a one-shot sync decode for frame accuracy.
+#
 # Cap Preview/Clean emit rate for UI-thread budget. Frame *selection* still
 # follows the file's own timestamps (source FPS); this only limits how often
 # we convert+paint. 30 Hz is the target for smooth Clean Output; when the
@@ -76,12 +81,18 @@ class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for black
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
+    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None)
+    _async_frame_ready = Signal(int, float, object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._song: Song | None = None
         self._decoders: dict[str, MediaDecoder] = {}
         self._decoder_paths: dict[str, Path] = {}
+        # Dedicated decoders for the async worker only — never shared with UI.
+        self._worker_decoders: dict[str, MediaDecoder] = {}
+        self._worker_decoder_paths: dict[str, Path] = {}
+        self._worker_lock = Lock()
         self._active_clip_id: str | None = None
         self._warned_overlap_keys: set[frozenset[str]] = set()
         self._decode_quality: VideoDecodeQuality = "full"
@@ -128,6 +139,17 @@ class VideoSyncController(QObject):
         # When True, skip live PyAV during play so VideoAudioMixer can own
         # ``av_path_lock`` without a rising Preview stutter before each seam.
         self._defer_live_decode: Callable[[], bool] | None = None
+        # Latest-wins async live decode (play + scrub-cold). Queue depth is
+        # always 0 or 1: overwrite request fields; never stack jobs.
+        self._async_req_gen = 0
+        self._async_req_seconds = 0.0
+        self._async_inflight = False
+        self._async_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="video-live-decode"
+        )
+        self._async_frame_ready.connect(
+            self._on_async_frame_ready, Qt.ConnectionType.QueuedConnection
+        )
 
     def set_defer_live_decode(self, check: Callable[[], bool] | None) -> None:
         """Optional gate: skip play-time frame decode while ``check()`` is True."""
@@ -156,6 +178,7 @@ class VideoSyncController(QObject):
             return
         self._video_output_active = active
         if not active:
+            self._invalidate_async_requests()
             self._cancel_pending()
             self._close_all_decoders()
             self._scrub_cache.clear()
@@ -191,8 +214,9 @@ class VideoSyncController(QObject):
         """Call from the timeline's scrub_started/scrub_ended signals.
 
         While dragging, Preview/Clean prefer the prebuilt scrub-frame cache
-        (no UI-thread PyAV seek). On release, flush the exact land frame via
-        the live decoder.
+        (no UI-thread PyAV seek). Cold cache / live path uses async
+        latest-wins decode. On release, invalidate in-flight workers and
+        sync-decode the exact land frame.
         """
         active = bool(active)
         if active == self._scrubbing:
@@ -205,8 +229,8 @@ class VideoSyncController(QObject):
                 self._scrub_preload_timer.start()
         else:
             self._scrub_preload_timer.stop()
-            # Scrub just ended: make sure the exact release-point frame —
-            # not a sparse scrub poster — is what's on screen.
+            # Drop obsolete async frames so they cannot overwrite the land.
+            self._invalidate_async_requests()
             self._flush_timer.stop()
             self._flush_pending()
 
@@ -225,6 +249,7 @@ class VideoSyncController(QObject):
         seconds = self._last_position_seconds
         if song is None or seconds is None:
             return
+        self._invalidate_async_requests()
         self._decode_and_emit(song, seconds)
 
     def land_frame_at(self, seconds: float | None = None) -> None:
@@ -242,6 +267,7 @@ class VideoSyncController(QObject):
         pos = self._last_position_seconds
         if song is None or pos is None:
             return
+        self._invalidate_async_requests()
         self._flush_timer.stop()
         self._pending_clip = None
         self._pending_seconds = None
@@ -254,14 +280,11 @@ class VideoSyncController(QObject):
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.
 
-        While playing, decode work is throttled to _MAX_PLAY_DECODE_HZ (see
-        module constants) — this is the fix for the timeline becoming
-        unusable while a video clip plays: without it, every ~16ms
-        position_changed tick from AudioEngine's poll timer would reach all
-        the way into a PyAV decode + colorspace conversion on the same
-        thread that has to paint/scroll/zoom the timeline and handle mouse
-        input. Paused/stopped ticks stay unthrottled (frame-accurate for
-        programmatic seeks, mark navigation, etc).
+        While playing, decode work is throttled to _MAX_PLAY_DECODE_HZ and
+        runs on the latest-wins worker (dedicated decoders). Without the
+        throttle + off-UI decode, every ~16ms position_changed tick would
+        stall the same thread that paints the timeline. Stop lands with a
+        one-shot sync decode for frame accuracy.
         """
         active = bool(active)
         if active == self._playing:
@@ -269,7 +292,8 @@ class VideoSyncController(QObject):
         self._playing = active
         if not active:
             # Playback just stopped: land on the exact final position, not
-            # a throttled stand-in from the last active window.
+            # a throttled / in-flight async stand-in.
+            self._invalidate_async_requests()
             self._flush_timer.stop()
             self._flush_pending()
 
@@ -289,6 +313,7 @@ class VideoSyncController(QObject):
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
+        self._invalidate_async_requests()
         self._cancel_pending()
         self._close_all_decoders()
         self._scrub_cache.clear()
@@ -311,6 +336,11 @@ class VideoSyncController(QObject):
                 self._decoders.pop(clip_id).close()
                 self._decoder_paths.pop(clip_id, None)
                 self._scrub_cache.drop_clip(clip_id)
+        with self._worker_lock:
+            for clip_id in list(self._worker_decoders):
+                if clip_id not in valid_ids:
+                    self._worker_decoders.pop(clip_id).close()
+                    self._worker_decoder_paths.pop(clip_id, None)
         # Only refresh scrub posters if the user is mid-drag; otherwise wait
         # for the next scrub_started to avoid contending with live decode.
         if self._scrubbing and self._video_output_active:
@@ -341,8 +371,8 @@ class VideoSyncController(QObject):
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
 
-        # Scrub: prefer prebuilt posters (no UI-thread PyAV seek). If the
-        # ladder is still cold, fall through to the throttled live path.
+        # Scrub: prefer prebuilt posters (no UI-thread PyAV). Cold cache falls
+        # through to throttled async live decode — never sync PyAV on drag.
         if self._scrubbing:
             self._pending_clip = primary
             self._pending_seconds = seconds
@@ -375,7 +405,14 @@ class VideoSyncController(QObject):
             except Exception:
                 pass
 
-        self._decode_and_emit(song, seconds)
+        self._pending_clip = primary
+        self._pending_seconds = seconds
+        if self._scrubbing or self._playing:
+            # Mark schedule time so throttle bounds request rate (queue depth 1).
+            self._last_decode_time = monotonic()
+            self._request_async_live_frame(seconds)
+        else:
+            self._decode_and_emit(song, seconds)
 
     def _current_min_decode_interval(self) -> float:
         """Minimum seconds between actual decode+emit work. Scrubbing takes
@@ -437,62 +474,113 @@ class VideoSyncController(QObject):
             self._last_decode_time = monotonic()
             self._pending_clip = None
             self._pending_seconds = None
-            clips = song.active_video_clips_at(seconds)
-            if not clips:
-                self._emit_frame(None)
+            frame = self._decode_frame_array(song, seconds, worker=False)
+            self._emit_frame(frame)
+
+    def _invalidate_async_requests(self) -> None:
+        """Bump generation so in-flight worker results are discarded."""
+        self._async_req_gen += 1
+        perf_diag.count("video.async_invalidate")
+
+    def _request_async_live_frame(self, seconds: float) -> None:
+        """Latest-wins schedule: overwrite pending time; at most one worker job."""
+        self._async_req_gen += 1
+        self._async_req_seconds = float(seconds)
+        perf_diag.count("video.async_schedule")
+        if self._async_inflight:
+            perf_diag.count("video.async_coalesce")
+            return
+        self._async_inflight = True
+        self._async_pool.submit(self._async_worker_loop)
+
+    def _async_worker_loop(self) -> None:
+        """Decode on a background thread with dedicated decoders (never UI pool)."""
+        gen = self._async_req_gen
+        try:
+            while True:
+                gen = self._async_req_gen
+                seconds = float(self._async_req_seconds)
+                song = self._song
+                frame: np.ndarray | None = None
+                if song is not None and self._video_output_active:
+                    try:
+                        with perf_diag.span("video.decode.async"):
+                            frame = self._decode_frame_array(song, seconds, worker=True)
+                    except Exception:
+                        frame = None
+                if gen == self._async_req_gen:
+                    self._async_frame_ready.emit(gen, seconds, frame)
+                if self._async_req_gen == gen:
+                    break
+                perf_diag.count("video.async_redecode")
+        finally:
+            self._async_inflight = False
+            # Coalesced request arrived after the exit check — re-arm once.
+            if self._async_req_gen != gen and self._video_output_active:
+                self._async_inflight = True
+                self._async_pool.submit(self._async_worker_loop)
+
+    def _on_async_frame_ready(self, gen: int, seconds: float, frame: object) -> None:
+        if gen != self._async_req_gen:
+            perf_diag.count("video.async_stale_drop")
+            return
+        if not self._video_output_active:
+            return
+        # Prefer the latest scrub poster if one landed while we were decoding.
+        if self._scrubbing and self._song is not None:
+            poster = self._scrub_composite(self._song, float(seconds))
+            if poster is not None:
+                self._last_decode_time = monotonic()
+                self._emit_frame(poster)
                 return
-            weighted: list[tuple[VideoClip, float]] = []
-            for clip in clips:
-                weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
-                if weight > 1e-6:
-                    weighted.append((clip, weight))
-            if not weighted:
-                self._emit_frame(None)
-                return
-            if len(weighted) == 1:
-                clip, _weight = weighted[0]
-                decoder = self._decoder_for(clip)
-                if decoder is None:
-                    self._emit_frame(None)
-                    return
-                try:
-                    frame = decoder.frame_at(clip.source_time_for(seconds))
-                except Exception:
-                    frame = None
-                self._emit_frame(frame)
-                return
-            # Near 0/1 weights: skip float32 composite (common outside crossfade).
-            dominant = max(weighted, key=lambda item: item[1])
-            if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
-                clip = dominant[0]
-                decoder = self._decoder_for(clip)
-                if decoder is None:
-                    self._emit_frame(None)
-                    return
-                try:
-                    frame = decoder.frame_at(clip.source_time_for(seconds))
-                except Exception:
-                    frame = None
-                self._emit_frame(frame)
-                return
-            total_weight = sum(w for _clip, w in weighted)
-            composite: np.ndarray | None = None
-            for clip, weight in weighted:
-                decoder = self._decoder_for(clip)
-                if decoder is None:
-                    continue
-                try:
-                    frame = decoder.frame_at(clip.source_time_for(seconds))
-                except Exception:
-                    frame = None
-                if frame is None:
-                    continue
-                scaled = frame.astype(np.float32) * (weight / total_weight)
-                composite = scaled if composite is None else composite + scaled
-            if composite is None:
-                self._emit_frame(None)
-                return
-            self._emit_frame(np.clip(composite, 0, 255).astype(np.uint8))
+        self._last_decode_time = monotonic()
+        if frame is None or isinstance(frame, np.ndarray):
+            self._emit_frame(frame)  # type: ignore[arg-type]
+        else:
+            self._emit_frame(None)
+
+    def _decode_frame_array(
+        self, song: Song, seconds: float, *, worker: bool
+    ) -> np.ndarray | None:
+        """Decode RGB frame at song time. ``worker=True`` uses dedicated decoders."""
+        clips = song.active_video_clips_at(seconds)
+        if not clips:
+            return None
+        weighted: list[tuple[VideoClip, float]] = []
+        for clip in clips:
+            weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
+            if weight > 1e-6:
+                weighted.append((clip, weight))
+        if not weighted:
+            return None
+
+        def _frame_for(clip: VideoClip) -> np.ndarray | None:
+            decoder = (
+                self._worker_decoder_for(clip) if worker else self._decoder_for(clip)
+            )
+            if decoder is None:
+                return None
+            try:
+                return decoder.frame_at(clip.source_time_for(seconds))
+            except Exception:
+                return None
+
+        if len(weighted) == 1:
+            return _frame_for(weighted[0][0])
+        dominant = max(weighted, key=lambda item: item[1])
+        if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
+            return _frame_for(dominant[0])
+        total_weight = sum(w for _clip, w in weighted)
+        composite: np.ndarray | None = None
+        for clip, weight in weighted:
+            frame = _frame_for(clip)
+            if frame is None:
+                continue
+            scaled = frame.astype(np.float32) * (weight / total_weight)
+            composite = scaled if composite is None else composite + scaled
+        if composite is None:
+            return None
+        return np.clip(composite, 0, 255).astype(np.uint8)
 
     def _emit_frame(self, frame: np.ndarray | None) -> None:
         """Skip emitting (and the Preview/Clean Output QImage copy + repaint
@@ -516,7 +604,11 @@ class VideoSyncController(QObject):
             self._pending_clip = None
             self._pending_seconds = None
             return
-        self._decode_and_emit(self._song, seconds)
+        if self._scrubbing or self._playing:
+            self._last_decode_time = monotonic()
+            self._request_async_live_frame(float(seconds))
+            return
+        self._decode_and_emit(self._song, float(seconds))
 
     def _cancel_pending(self) -> None:
         self._flush_timer.stop()
@@ -546,6 +638,29 @@ class VideoSyncController(QObject):
         self._decoder_paths[clip.id] = clip.path
         return decoder
 
+    def _worker_decoder_for(self, clip: VideoClip) -> MediaDecoder | None:
+        """Open/reuse a decoder owned exclusively by the async worker thread."""
+        with self._worker_lock:
+            cached_path = self._worker_decoder_paths.get(clip.id)
+            if cached_path == clip.path and clip.id in self._worker_decoders:
+                return self._worker_decoders[clip.id]
+            old = self._worker_decoders.pop(clip.id, None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            try:
+                decoder = open_media_decoder(
+                    clip.path, max_decode_height=self._decode_max_height
+                )
+            except Exception:
+                self._worker_decoder_paths.pop(clip.id, None)
+                return None
+            self._worker_decoders[clip.id] = decoder
+            self._worker_decoder_paths[clip.id] = clip.path
+            return decoder
+
     def _maybe_warn_overlap(self, song: Song, seconds: float) -> None:
         active_here = [c for c in song.video_clips if not c.hidden and c.contains(seconds)]
         if len(active_here) <= 1:
@@ -559,8 +674,19 @@ class VideoSyncController(QObject):
             f"Overlapping video clips at {seconds:.2f}s ({names}) — auto crossfade applied."
         )
 
+    def _close_worker_decoders(self) -> None:
+        with self._worker_lock:
+            for decoder in self._worker_decoders.values():
+                try:
+                    decoder.close()
+                except Exception:
+                    pass
+            self._worker_decoders.clear()
+            self._worker_decoder_paths.clear()
+
     def _close_all_decoders(self) -> None:
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()
         self._decoder_paths.clear()
+        self._close_worker_decoders()

@@ -36,7 +36,7 @@ Design contract
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 from cueplayer.application.playback_service import PlaybackService
 from cueplayer.diagnostics import perf as perf_diag
@@ -74,12 +74,16 @@ class ShowSessionService:
             h._audio_load_token += 1
             h._song_activate_gen += 1
             activate_gen = h._song_activate_gen
-            # Tear down PortAudio + video decode before swapping song media.
-            # Leaving the stream open (pause/stop alone) races PyAV close with the
-            # audio callback and is a common mid-play / song-switch hard crash.
-            with perf_diag.span("activate.quiesce"):
-                if stop_playback or bool(getattr(h.engine, "playing", False)):
-                    h.engine.quiesce_output()
+            was_playing = bool(getattr(h.engine, "playing", False))
+            needs_quiesce = bool(stop_playback or was_playing)
+            # Soft-stop first so audio is not wrong-song over the new timeline
+            # chrome. Full PortAudio teardown (quiesce) still runs after paint —
+            # that wait is ~150–180ms and must not block perceived selection.
+            if needs_quiesce:
+                stop = getattr(h.engine, "stop", None)
+                if callable(stop):
+                    with perf_diag.span("activate.stop"):
+                        stop()
             h.current_song = h.project.songs[index]
             h._sync_undo_context()
             self._playback.clear_loop()
@@ -92,6 +96,18 @@ class ShowSessionService:
                 h._arm_timeline_audio_loading_placeholder(h.current_song)
             with perf_diag.span("activate.timeline"):
                 self.refresh_timeline()
+            # Paint Setlist selection + timeline before stream quiesce blocks.
+            app = QCoreApplication.instance()
+            if app is not None:
+                with perf_diag.span("activate.paint_before_quiesce"):
+                    app.processEvents(
+                        QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+                    )
+            # Tear down PortAudio before swapping song media buffers.
+            # Leaving the stream open races PyAV close with the audio callback.
+            with perf_diag.span("activate.quiesce"):
+                if needs_quiesce:
+                    h.engine.quiesce_output()
             # Cue List rebuild is relatively heavy — defer so Setlist selection
             # + timeline swap paint first (feels like an instant song switch).
             QTimer.singleShot(
