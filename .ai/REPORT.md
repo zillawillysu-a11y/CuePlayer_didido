@@ -1,23 +1,21 @@
 # Latest AI task report
 
-**Date:** 2026-08-03  
-**Branch:** `cursor/sprint6-preflight-export-028d`  
+**Date:** 2026-08-04  
+**Branch:** `cursor/sprint7-production-soak-028d`  
 **Audience:** ChatGPT / future Cursor review
 
 ---
 
 ## Task objective
 
-Sprint 6 Feature Task 5 — MA Preflight Export Integration.
+Sprint 7 — Production Soak Planning (docs only).
 
-## What was implemented
+## What was produced
 
-- `application/ma_preflight_export_gate.py` — fresh evaluate; allow/deny from ValidationReport
-- Show Patch `_export` runs gate before exporters; dialog Continue vs block
-- Errors block; warnings allow Continue; information always shown
-- Exporters unchanged; no auto-fix / no cache
-- Tests: application + UI + integration green
+- `docs/production_soak.md` — checklist, test matrix, risks, metrics, Feature Planning priorities
+- `docs/roadmap.md` updated — next = real-world validation
+- No `src/` changes
 
 ## Marker
 
-READY FOR MA PREFLIGHT PRODUCTION
+READY FOR REAL-WORLD VALIDATION
