@@ -17,6 +17,7 @@ from time import monotonic
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import (
     VIDEO_DECODE_QUALITY_MAX_HEIGHT,
     Song,
@@ -317,6 +318,7 @@ class VideoSyncController(QObject):
 
     def update_position(self, seconds: float) -> None:
         """Call on every AudioEngine.position_changed tick (the master clock)."""
+        perf_diag.count("video.update_position.calls")
         self._last_position_seconds = float(seconds)
         if not self._video_output_active:
             return
@@ -431,65 +433,66 @@ class VideoSyncController(QObject):
         return np.clip(composite, 0, 255).astype(np.uint8)
 
     def _decode_and_emit(self, song: Song, seconds: float) -> None:
-        self._last_decode_time = monotonic()
-        self._pending_clip = None
-        self._pending_seconds = None
-        clips = song.active_video_clips_at(seconds)
-        if not clips:
-            self._emit_frame(None)
-            return
-        weighted: list[tuple[VideoClip, float]] = []
-        for clip in clips:
-            weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
-            if weight > 1e-6:
-                weighted.append((clip, weight))
-        if not weighted:
-            self._emit_frame(None)
-            return
-        if len(weighted) == 1:
-            clip, _weight = weighted[0]
-            decoder = self._decoder_for(clip)
-            if decoder is None:
+        with perf_diag.span("video.decode"):
+            self._last_decode_time = monotonic()
+            self._pending_clip = None
+            self._pending_seconds = None
+            clips = song.active_video_clips_at(seconds)
+            if not clips:
                 self._emit_frame(None)
                 return
-            try:
-                frame = decoder.frame_at(clip.source_time_for(seconds))
-            except Exception:
-                frame = None
-            self._emit_frame(frame)
-            return
-        # Near 0/1 weights: skip float32 composite (common outside crossfade).
-        dominant = max(weighted, key=lambda item: item[1])
-        if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
-            clip = dominant[0]
-            decoder = self._decoder_for(clip)
-            if decoder is None:
+            weighted: list[tuple[VideoClip, float]] = []
+            for clip in clips:
+                weight = video_clip_crossfade_weight(clip, seconds, song.video_clips)
+                if weight > 1e-6:
+                    weighted.append((clip, weight))
+            if not weighted:
                 self._emit_frame(None)
                 return
-            try:
-                frame = decoder.frame_at(clip.source_time_for(seconds))
-            except Exception:
-                frame = None
-            self._emit_frame(frame)
-            return
-        total_weight = sum(w for _clip, w in weighted)
-        composite: np.ndarray | None = None
-        for clip, weight in weighted:
-            decoder = self._decoder_for(clip)
-            if decoder is None:
-                continue
-            try:
-                frame = decoder.frame_at(clip.source_time_for(seconds))
-            except Exception:
-                frame = None
-            if frame is None:
-                continue
-            scaled = frame.astype(np.float32) * (weight / total_weight)
-            composite = scaled if composite is None else composite + scaled
-        if composite is None:
-            self._emit_frame(None)
-            return
-        self._emit_frame(np.clip(composite, 0, 255).astype(np.uint8))
+            if len(weighted) == 1:
+                clip, _weight = weighted[0]
+                decoder = self._decoder_for(clip)
+                if decoder is None:
+                    self._emit_frame(None)
+                    return
+                try:
+                    frame = decoder.frame_at(clip.source_time_for(seconds))
+                except Exception:
+                    frame = None
+                self._emit_frame(frame)
+                return
+            # Near 0/1 weights: skip float32 composite (common outside crossfade).
+            dominant = max(weighted, key=lambda item: item[1])
+            if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
+                clip = dominant[0]
+                decoder = self._decoder_for(clip)
+                if decoder is None:
+                    self._emit_frame(None)
+                    return
+                try:
+                    frame = decoder.frame_at(clip.source_time_for(seconds))
+                except Exception:
+                    frame = None
+                self._emit_frame(frame)
+                return
+            total_weight = sum(w for _clip, w in weighted)
+            composite: np.ndarray | None = None
+            for clip, weight in weighted:
+                decoder = self._decoder_for(clip)
+                if decoder is None:
+                    continue
+                try:
+                    frame = decoder.frame_at(clip.source_time_for(seconds))
+                except Exception:
+                    frame = None
+                if frame is None:
+                    continue
+                scaled = frame.astype(np.float32) * (weight / total_weight)
+                composite = scaled if composite is None else composite + scaled
+            if composite is None:
+                self._emit_frame(None)
+                return
+            self._emit_frame(np.clip(composite, 0, 255).astype(np.uint8))
 
     def _emit_frame(self, frame: np.ndarray | None) -> None:
         """Skip emitting (and the Preview/Clean Output QImage copy + repaint
@@ -502,6 +505,7 @@ class VideoSyncController(QObject):
         if frame is self._last_emitted_frame:
             return
         self._last_emitted_frame = frame
+        perf_diag.count("video.emit.calls")
         self.frame_changed.emit(frame)
 
     def _flush_pending(self) -> None:

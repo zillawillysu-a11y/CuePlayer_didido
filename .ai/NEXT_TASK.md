@@ -1,30 +1,31 @@
 # Next task
 
-**Status:** Queued — awaiting human / operator soak  
-**Type:** Real-world validation (then Sprint 7 Feature Planning)  
+**Status:** Queued — awaiting human start  
+**Type:** Sprint 8 Task 2 — Song-switch readiness (measured)  
 **Updated:** 2026-08-04  
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
-**Previous:** Sprint 7 Production Soak Planning  
-See `.ai/REPORT.md` and `.ai/handoffs/2026-08-04_Sprint7ProductionSoak.md`  
-Baseline: `docs/production_soak.md` (ends READY FOR REAL-WORLD VALIDATION)
+**Previous:** Sprint 8 Task 1 — Perf audit + experimental hide  
+See `.ai/REPORT.md` and `.ai/handoffs/2026-08-04_Sprint8PerfAudit.md`  
+Baseline: `docs/playback_performance_audit.md` (ends READY FOR MEASURED PERFORMANCE OPTIMIZATION)
 
 ---
 
 ## Current task
 
-### Real-world validation (operators)
+### Sprint 8 Task 2: Song-switch readiness (measured)
 
-**Do not auto-start Feature Sprint 7 until soak evidence exists.**
+**Do not auto-start until the user explicitly continues.**
 
 ### Goal
 
-Run checklist / matrix in `docs/production_soak.md` on real shows; record Pass / notes / Fail.
+Improve cold/warm song-switch waveform + playback readiness using Task 1 spans. No AudioEngine redesign.
 
-### After soak
+### Read first
 
-Sprint 7 Feature Planning — pick theme from soak priorities (Preflight UX pack · Variant CRUD · deeper rules · Align polish · overlay).
+1. `docs/playback_performance_audit.md` §6–§7  
+2. `docs/PERFORMANCE_RULES.md`
 
 ### Done when
 
-- Soak log filled; Feature Planning task explicitly started by user; STOP between
+- Measured before/after; REPORT + handoff; STOP

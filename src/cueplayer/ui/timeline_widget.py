@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QSlider, QWidget
 
 from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     ClipWaveformPeaks,
@@ -1677,6 +1678,7 @@ class TimelineWidget(QWidget):
             # Playhead is owned by the scrub gesture; ignore engine ticks so
             # a delayed seek cannot yank the line away from the cursor.
             return
+        perf_diag.count("timeline.set_position.calls")
         self._position = seconds
         scroll_moved = False
         if self._auto_scroll:
@@ -3444,7 +3446,12 @@ class TimelineWidget(QWidget):
         event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: ANN001
+        perf_diag.count("timeline.paint.calls")
         dirty = event.rect() if event is not None else self.rect()
+        if dirty.width() < self.width() - 1 or dirty.height() < self.height() - 1:
+            perf_diag.count("timeline.paint.partial")
+        else:
+            perf_diag.count("timeline.paint.full")
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
