@@ -208,6 +208,36 @@ git pull origin cursor/sprint8-video-responsive-028d
 
 ---
 
+## 7c. Windows validation — Live scrub preview Round 3
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\User\Projects\CuePlayer_didido
+git fetch origin
+git checkout cursor/sprint8-video-responsive-028d
+git pull origin cursor/sprint8-video-responsive-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+**Scrub preview target:** 16 FPS (`video.scrub.preview_target_fps`)
+
+| Test | Pass |
+|------|------|
+| Slow drag across a cut | Preview visibly follows during drag |
+| Fast back/forth | Timeline stays fluid; video skips but updates toward latest |
+| Drag + pause (hold) | Preview settles on paused location without release |
+| Release on recognizable frame | Relevant frame ASAP; exact land quickly; no old-frame flash |
+| Play after release | Continues from release time; no stale pre-scrub flash |
+| vs no-video | Timeline hand feel nearly identical |
+
+**Log counters to check (last section only):**
+`video.scrub.raw_position_events`, `preview_ticks`, `preview_requests`,
+`preview_presented`, `preview_coalesced`, `pause_priority_requests`,
+`final_land_requests`, `final_land_presented`, spans
+`video.scrub.final_land_first_relevant_ms` / `final_land_exact_ms`.
+
+---
+
 ## 8. Baseline performance test checklist
 
 Run on Windows desk with production interface:
@@ -274,7 +304,18 @@ scrub-end/stop sync land with timeout.
 - Auto-scroll still needs full viewport blit when scroll moves (content must shift).
 - `video.convert` still on UI (lighter than PyAV).
 - Quiesce duration unchanged.
+- Exact land may be limited by GOP/keyframe distance on some codecs; Round 3
+  shows nearest relevant immediately, then exact when ready.
+
+### Round 3 — live scrub preview + fast final-land
+
+| Policy | Behavior |
+|--------|----------|
+| Drag | `scrub_target_changed` every move; ~16 Hz preview timer + pause-priority |
+| Queue | Depth 1 latest-wins; stale gen dropped |
+| Release | Invalidate gen → nearest poster → brief sync try → async land |
+| Resume | `_min_present_seconds` rejects pre-release frames |
 
 ---
 
-## READY FOR WINDOWS VIDEO RESPONSIVENESS VALIDATION — ROUND 2
+## READY FOR WINDOWS LIVE SCRUB PREVIEW VALIDATION

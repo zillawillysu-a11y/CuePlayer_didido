@@ -7,9 +7,10 @@ All notable project changes are recorded here. Product version remains in `pypro
 ### Sprint 8 — Task 2: Video Track Responsiveness (2026-08-05)
 
 - Round 1: async latest-wins worker + paint-before-quiesce.
-- Round 2 (desk REQUEST CHANGES): prove pipeline in perf log; single engine
-  video schedule (no Queued backlog); scrub partial paints; lock_timeout to
-  kill multi-second decode spikes; always-list async/convert/present counters.
+- Round 2: prove pipeline in perf log; single engine schedule; scrub partial paints;
+  lock_timeout against multi-second spikes.
+- Round 3: live scrub preview (~16 FPS latest-wins) + fast final-land on release
+  (nearest relevant then exact; reject stale generations; no UI lock wait).
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

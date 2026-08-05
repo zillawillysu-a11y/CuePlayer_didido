@@ -60,6 +60,8 @@ class TimelineWidget(QWidget):
     # Mid-scrub Preview/Clean update (local playhead time). Does not move
     # the audio engine — that stays on seek_requested (press + release).
     scrub_preview_requested = Signal(float)
+    # Unthrottled scrub Song Time for VideoSync target (every mouse move).
+    scrub_target_changed = Signal(float)
     selection_changed = Signal(list)  # list[str] mark ids
     delete_requested = Signal(list)  # list[str] mark ids
     marks_changed = Signal()
@@ -2114,8 +2116,10 @@ class TimelineWidget(QWidget):
         self._clamp_scroll()
 
         self._position = min(self._time_for_x(x), self._duration())
+        # Always publish the latest target for VideoSync (coalesces decode).
+        self.scrub_target_changed.emit(self._position)
         now_ms = monotonic_ns() // 1_000_000
-        # ~24 Hz — scrub posters are cache lookups; keep Preview following.
+        # ~24 Hz chrome (transport / cue list) — not video decode.
         if force or now_ms - self._last_scrub_preview_ms >= 40:
             self._last_scrub_preview_ms = now_ms
             self.scrub_preview_requested.emit(self._position)

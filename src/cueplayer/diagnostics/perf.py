@@ -192,6 +192,15 @@ def report_text() -> str:
         "video.schedule.source.scrub",
         "video.update_position.calls",
         "video.emit.calls",
+        "video.scrub.raw_position_events",
+        "video.scrub.preview_ticks",
+        "video.scrub.preview_requests",
+        "video.scrub.preview_presented",
+        "video.scrub.preview_coalesced",
+        "video.scrub.preview_stale_drop",
+        "video.scrub.pause_priority_requests",
+        "video.scrub.final_land_requests",
+        "video.scrub.final_land_presented",
     )
     counters = snap.get("counters") or {}
     lines.append("Video pipeline counters (0 if unused this session):")

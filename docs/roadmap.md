@@ -345,12 +345,12 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 
 ## Sprint 8 Task 2 — Video Track Responsiveness
 
-- Round 1: async latest-wins + paint-before-quiesce (~50% desk improve; not acceptance).
-- Round 2: prove pipeline in log; single engine schedule; scrub partial paints;
-  lock_timeout against multi-second spikes.
+- Round 1: async latest-wins + paint-before-quiesce (~50% desk improve).
+- Round 2: Timeline/playhead acceptance; prove pipeline; lock_timeout.
+- Round 3: **Live scrub preview** (~16 FPS) + **fast final-land** on release.
 
-**Next:** Windows A/B Round 2 validation (acceptance = nearly indistinguishable from no-video).
+**Next:** Windows live scrub preview validation.
 
 ---
 
-## READY FOR WINDOWS VIDEO RESPONSIVENESS VALIDATION — ROUND 2
+## READY FOR WINDOWS LIVE SCRUB PREVIEW VALIDATION

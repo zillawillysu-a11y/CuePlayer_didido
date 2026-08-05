@@ -22,20 +22,27 @@ def test_play_path_does_not_queue_separate_video_forward() -> None:
     """
     source = inspect.getsource(mw_mod.MainWindow.__init__)
     assert "_forward_engine_position_to_video" not in source
-    assert "position_changed.connect" in inspect.getsource(mw_mod.MainWindow._on_position_changed) or True
     fanout = inspect.getsource(mw_mod.MainWindow._on_position_changed)
     assert 'source="engine"' in fanout
     assert "video_sync.update_position" in fanout
     assert "is_scrubbing" in fanout
 
 
+def test_scrub_target_changed_wires_video_not_throttled_preview() -> None:
+    source = inspect.getsource(mw_mod.MainWindow.__init__)
+    assert "scrub_target_changed.connect" in source
+    assert 'source="scrub"' in source
+    # Throttled scrub_preview must not also drive video (would double-schedule).
+    assert "scrub_preview_requested.connect(\n            lambda t: self.video_sync.update_position" not in source
+    assert "scrub_preview_requested.connect(self._on_scrub_preview)" in source
+
+
 def test_frame_changed_only_presents_not_timeline_update() -> None:
     source = inspect.getsource(mw_mod.MainWindow.__init__)
-    # frame_changed → _on_video_frame only (no timeline.update fan-out).
     assert "video_sync.frame_changed.connect(self._on_video_frame)" in source
     assert "video_sync.frame_changed.connect(self.timeline" not in source
     present = inspect.getsource(mw_mod.MainWindow._on_video_frame)
-    assert "timeline" not in present.lower() or "timeline" not in present
+    assert "self.timeline" not in present
     assert "video.present" in present
     assert "video.convert" in present
 

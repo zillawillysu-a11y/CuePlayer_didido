@@ -1351,9 +1351,11 @@ class MainWindow(QMainWindow):
         # preview uses scrub_preview_requested (not full engine seek).
         self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
         self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
-        self.timeline.scrub_preview_requested.connect(
+        # Unthrottled target → video scrub scheduler (latest-wins, ~16 Hz decode).
+        self.timeline.scrub_target_changed.connect(
             lambda t: self.video_sync.update_position(t, source="scrub")
         )
+        # Throttled chrome only (transport / cue list / clock).
         self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
