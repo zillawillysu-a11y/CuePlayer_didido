@@ -347,7 +347,8 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 
 - Round 1: async latest-wins + paint-before-quiesce (~50% desk improve).
 - Round 2: Timeline/playhead acceptance; prove pipeline; lock_timeout.
-- Round 3: **Live scrub preview** (~16 FPS) + **fast final-land** on release.
+- Round 3: **Live scrub preview** (~16 FPS) + **fast final-land** on release
+  (async exact land only — no UI-thread sync try).
 
 **Next:** Windows live scrub preview validation.
 

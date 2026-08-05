@@ -287,7 +287,13 @@ class VideoSyncController(QObject):
             self._finalize_scrub_release()
 
     def _finalize_scrub_release(self) -> None:
-        """High-priority exact land after mouse release (never block UI long)."""
+        """High-priority exact land after mouse release (UI never waits on PyAV).
+
+        Round 3 briefly tried a 50 ms sync land on the Qt thread — that *does*
+        block the UI (lock wait + possible seek/decode). Release now only:
+        1) paints a cheap scrub-poster if warm, then
+        2) schedules exact land on the async worker.
+        """
         song = self._song
         seconds = self._last_position_seconds
         release_mono = monotonic()
@@ -308,7 +314,7 @@ class VideoSyncController(QObject):
         self._maybe_warn_overlap(song, seconds)
         primary = song.active_video_clip_at(seconds)
         self._set_active(primary.id if primary else None)
-        # 1) Instant relevant frame from scrub posters (or keep last if none).
+        # Instant relevant frame from scrub posters only (cache lookup — no PyAV).
         poster = self._scrub_composite(song, seconds)
         if poster is not None:
             self._emit_frame(poster)
@@ -316,22 +322,7 @@ class VideoSyncController(QObject):
                 "video.scrub.final_land_first_relevant_ms",
                 (monotonic() - release_mono) * 1000.0,
             )
-        # 2) Brief non-blocking sync attempt (warm decoder / free lock).
-        frame = self._decode_frame_array(
-            song, seconds, worker=False, lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
-        )
-        if frame is not None:
-            self._emit_frame(frame)
-            self._scrub_land_pending = False
-            self._last_decode_time = monotonic()
-            perf_diag.count("video.scrub.final_land_presented")
-            perf_diag.record_ms(
-                "video.scrub.final_land_exact_ms",
-                (monotonic() - release_mono) * 1000.0,
-            )
-            return
-        perf_diag.count("video.scrub.decoder_lock_timeout_on_release")
-        # 3) High-priority async exact land (longer lock wait on worker).
+        # Exact land entirely off the UI thread.
         self._request_async_live_frame(
             seconds, kind="land", lock_timeout=_ASYNC_LAND_LOCK_TIMEOUT_S
         )

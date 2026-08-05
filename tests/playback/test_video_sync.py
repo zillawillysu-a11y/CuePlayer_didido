@@ -615,8 +615,8 @@ def test_scrub_cold_does_not_sync_decode_on_ui_thread(
         # Preview tick may async-request; still no sync.
         controller._on_scrub_preview_tick()
         assert decode_calls["n"] == 0
-        controller.set_scrubbing(False)  # final land may brief-sync
-        assert decode_calls["n"] == 0  # finalize uses _decode_frame_array, not _decode_and_emit
+        controller.set_scrubbing(False)  # final land is async-only (no UI PyAV)
+        assert decode_calls["n"] == 0
 
 
 def test_async_latest_request_wins(app: QApplication, red_clip_path: Path, blue_clip_path: Path) -> None:
@@ -1003,4 +1003,27 @@ def test_queue_depth_one_during_scrub_preview(
         controller._on_scrub_preview_tick()
     assert int(controller._async_inflight) in (0, 1)
     controller.set_scrubbing(False)
+    _drain_async(controller, app)
+
+
+def test_scrub_release_does_not_sync_decode_on_ui_thread(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Release must not call UI-thread PyAV (former 50 ms sync try blocked Qt)."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_scrubbing(True)
+    controller.update_position(0.8, source="scrub")
+
+    def _guard_decode(song_arg, seconds, *, worker: bool, lock_timeout=None):  # noqa: ANN001
+        assert worker is True, "scrub release must not sync-decode on the UI thread"
+        return None
+
+    with patch.object(controller, "_decode_frame_array", side_effect=_guard_decode):
+        controller.set_scrubbing(False)
+    assert controller._scrub_land_pending or controller._async_req_kind == "land"
     _drain_async(controller, app)

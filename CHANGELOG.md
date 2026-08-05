@@ -10,7 +10,7 @@ All notable project changes are recorded here. Product version remains in `pypro
 - Round 2: prove pipeline in perf log; single engine schedule; scrub partial paints;
   lock_timeout against multi-second spikes.
 - Round 3: live scrub preview (~16 FPS latest-wins) + fast final-land on release
-  (nearest relevant then exact; reject stale generations; no UI lock wait).
+  (nearest relevant then exact async land; no UI-thread sync try).
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

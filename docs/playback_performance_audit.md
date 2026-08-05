@@ -313,7 +313,7 @@ scrub-end/stop sync land with timeout.
 |--------|----------|
 | Drag | `scrub_target_changed` every move; ~16 Hz preview timer + pause-priority |
 | Queue | Depth 1 latest-wins; stale gen dropped |
-| Release | Invalidate gen → nearest poster → brief sync try → async land |
+| Release | Invalidate gen → nearest poster → **async exact land only** (no UI sync try) |
 | Resume | `_min_present_seconds` rejects pre-release frames |
 
 ---
