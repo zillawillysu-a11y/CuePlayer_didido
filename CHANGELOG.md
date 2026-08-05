@@ -22,6 +22,9 @@ All notable project changes are recorded here. Product version remains in `pypro
   in-flight within tolerance; engine gated during scrub) + mandatory resume
   after playing land (`resume_required`/`completed`/`recovered` split) +
   separate play vs scrub decoder maps; resume recovery on watchdog.
+- Round 7: **instrumentation only** — structured `VIDEO_SM` state-machine
+  trace to locate the post-land ~20 s freeze (no speculative pipeline fix).
+  See `docs/video_sm_freeze_diagnosis.md`.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 
