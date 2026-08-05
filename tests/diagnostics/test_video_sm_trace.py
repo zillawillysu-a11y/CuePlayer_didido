@@ -162,3 +162,52 @@ def test_sm_trace_included_in_perf_report() -> None:
     assert "VIDEO_SM" in text
     assert "RESUME_BEGIN" in text
     perf_diag.set_enabled(False)
+
+
+def test_worker_runtime_states_and_request_id() -> None:
+    perf_diag.set_enabled(True)
+    sm_trace.clear()
+    assert sm_trace.worker_runtime() == sm_trace.WorkerRuntime.IDLE
+    rid = sm_trace.next_request_id()
+    sm_trace.set_worker_runtime(
+        sm_trace.WorkerRuntime.SEEKING,
+        request_id=rid,
+        reason="test_seek",
+        pipeline_state="RESUME_PLAYBACK",
+    )
+    assert sm_trace.worker_runtime() == sm_trace.WorkerRuntime.SEEKING
+    snap = sm_trace.worker_snapshot()
+    assert snap["current_request_id"] == rid
+    assert snap["worker_runtime_request_id"] == rid
+    sm_trace.set_worker_runtime(sm_trace.WorkerRuntime.DECODING, request_id=rid)
+    sm_trace.set_worker_runtime(sm_trace.WorkerRuntime.WAITING_FRAME, request_id=rid)
+    sm_trace.set_worker_runtime(sm_trace.WorkerRuntime.PRESENTING, request_id=rid)
+    sm_trace.set_worker_runtime(sm_trace.WorkerRuntime.IDLE, request_id=rid)
+    runtimes = [
+        e.get("worker_runtime")
+        for e in sm_trace.events()
+        if e.get("event") == "WORKER_RUNTIME"
+    ]
+    assert sm_trace.WorkerRuntime.SEEKING in runtimes
+    assert sm_trace.WorkerRuntime.DECODING in runtimes
+    assert sm_trace.WorkerRuntime.IDLE in runtimes
+    # Every event carries worker_runtime + request id fields.
+    for e in sm_trace.events():
+        assert "worker_runtime" in e
+        assert e.get("request_id") is not None or e.get("current_request_id") is not None
+    text = sm_trace.report_text()
+    assert "worker_runtime=" in text
+    assert "live worker_runtime=IDLE" in text
+    perf_diag.set_enabled(False)
+
+
+def test_classify_does_not_assume_worker_busy_without_evidence() -> None:
+    perf_diag.set_enabled(True)
+    sm_trace.clear()
+    sm_trace.trace("FINAL_LAND_PRESENT", state="FINAL_LANDING", request_id=1)
+    sm_trace.trace("RESUME_BEGIN", state="RESUME_PLAYBACK", request_id=1)
+    sm_trace.set_worker_runtime(sm_trace.WorkerRuntime.IDLE, request_id=1)
+    cls = sm_trace.classify_post_land_gap()
+    # No schedules + idle → B or unknown; must NOT force A.
+    assert cls["hypothesis"] != "A_worker_occupied"
+    perf_diag.set_enabled(False)

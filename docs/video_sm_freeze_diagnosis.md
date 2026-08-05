@@ -30,7 +30,10 @@ request_id, reason/scheduler):
 | `RESUME_BEGIN` | `_enter_resume_playback` |
 | `SCHEDULE_NEXT_PLAY` | every play schedule (tagged with `scheduler=`) |
 | `FIRST_PLAY_FRAME` / `PLAY_PRESENT` | play present path |
+| `WORKER_RUNTIME` | IDLE/SEEKING/DECODING/WAITING_FRAME/PRESENTING/CANCELLED |
 | `STALE_DROP` / `DISCARD` | reject paths |
+
+Every line includes `worker_runtime=` and `request_id` / `cur_req=`.
 
 **Who schedules the next play frame after `FINAL_LAND_PRESENT`:**
 
@@ -47,59 +50,51 @@ a `VIDEO_SM` section with `LAND→FIRST_PLAY_FRAME gap_ms` and post-land
 Breadcrumbs are also appended live to `%LOCALAPPDATA%\CuePlayer\cueplayer_perf.log`
 as `VIDEO_SM …` lines.
 
-## Code-path diagnosis (where the pipeline stops)
+## Code-path note (hypothesis only — **not proven**)
 
-**Precise freeze window:** after `FINAL_LAND_PRESENT` / `RESUME_BEGIN`, before
-`FIRST_PLAY_FRAME` / continuous `PLAY_PRESENT`.
+Round 7 initially suspected a single-worker coalesce stall. That remains a
+**candidate**, not a conclusion.
 
-**What does *not* stop:**
+Windows VIDEO_SM is the **source of truth**. Before Round 8 changes anything,
+the log must distinguish:
 
-- Timeline / AudioEngine clock (desk reports smooth drag + playhead).
-- State transition into `RESUME_PLAYBACK` (Resume is entered from land).
-- Engine fan-out after leaving `FINAL_LANDING` (`engine_video_gated()` is false
-  for `RESUME_PLAYBACK` / `PLAYBACK`).
+| Hypothesis | Evidence in VIDEO_SM |
+|------------|----------------------|
+| **A — worker occupied** | After `RESUME_BEGIN`, `worker_runtime` stays in `SEEKING` / `DECODING` / `WAITING_FRAME` for the freeze; `SCHEDULE_NEXT_PLAY` may continue with `reason=coalesce_worker_busy` and matching `request_id` / `current_request_id` |
+| **B — scheduler stopped** | After `RESUME_BEGIN`, `worker_runtime=IDLE` and **no** (or abruptly stops) `SCHEDULE_NEXT_PLAY`; no `SEEKING`/`DECODING` for the freeze window |
 
-**What blocks presentation:**
+Every VIDEO_SM line now includes `worker_runtime=` and `cur_req=` /
+`request_id=`. `WORKER_RUNTIME` events fire on transitions:
 
-CuePlayer has **one** live-decode worker (`ThreadPoolExecutor max_workers=1`,
-`video-live-decode:1`). Play schedules while `_async_inflight` is true only
-**coalesce** (overwrite `latest_target`) — they cannot start a second decode.
+`IDLE` → `SEEKING` → `DECODING` → `WAITING_FRAME` → `PRESENTING` → `IDLE`
+(plus `CANCELLED` on generation mismatch).
 
-So if the worker is inside a long `video.decode.async` (land exact seek, or the
-first play-decoder seek after scrub), every post-land schedule looks like:
+Perf report also prints a local heuristic `post_land_hypothesis` — treat it as
+a hint only; use the Windows log to decide A vs B.
 
+**Do not redesign the pipeline. Do not implement Round 8 until A or B is confirmed.**
+
+### Suspected transition patterns (to confirm)
+
+**A:**
 ```text
 FINAL_LAND_PRESENT
 RESUME_BEGIN
-SCHEDULE_NEXT_PLAY scheduler=enter_resume_playback reason=submit_or_idle|coalesce_worker_busy
-SCHEDULE_NEXT_PLAY scheduler=mainwindow_position_fanout reason=engine_fanout_coalesce_while_busy  (× many)
-… seconds with NO FIRST_PLAY_FRAME / PLAY_PRESENT …
-(FIRST_PLAY_FRAME only when the blocked worker finally finishes)
+SCHEDULE_NEXT_PLAY …
+WORKER_RUNTIME … worker_runtime=SEEKING|DECODING req=…
+SCHEDULE_NEXT_PLAY … reason=coalesce_worker_busy worker_runtime=SEEKING|DECODING
+… long gap …
+FIRST_PLAY_FRAME
 ```
 
-The resume watchdog (400 ms + 400 ms) **invalidates generation and re-requests**,
-but it **cannot preempt** the in-flight PyAV seek on the same single worker.
-`_complete_resume(reason="recovery")` may flip state to `PLAYBACK` without a new
-frame — UI keeps showing the landed still until the worker returns.
-
-This matches “final frame correct → frozen up to ~20 s → then updates again”
-without Timeline jank: the presentation loop is waiting on the busy worker, not
-on pointer/engine scheduling.
-
-### Suspected transition (to confirm on Windows log)
-
+**B:**
 ```text
 FINAL_LAND_PRESENT
-  → RESUME_BEGIN
-  → SCHEDULE_NEXT_PLAY (enter_resume_playback)
-  → [worker still in FINAL_LAND_DECODE_* or long play seek]
-  → SCHEDULE_NEXT_PLAY … reason=coalesce_worker_busy  (repeated)
-  → gap until FIRST_PLAY_FRAME / PLAY_PRESENT
+RESUME_BEGIN
+WORKER_RUNTIME … worker_runtime=IDLE
+(no SCHEDULE_NEXT_PLAY / no SEEKING|DECODING)
+… long gap …
 ```
-
-**Not** a missing Resume enter. **Not** engine permanently gated after land.
-**Is** presentation stalled waiting for the single async worker to leave a long
-decode/seek before any post-land play frame can present.
 
 ## Windows capture procedure
 
@@ -117,13 +112,18 @@ git pull origin cursor/sprint8-video-sm-trace-028d
 3. Search for `VIDEO_SM` and especially:
    - `FINAL_LAND_PRESENT`
    - `RESUME_BEGIN`
-   - `SCHEDULE_NEXT_PLAY` (`scheduler=` + `reason=coalesce_worker_busy`)
+   - `SCHEDULE_NEXT_PLAY` (`scheduler=` + `reason=` + `worker_runtime=`)
+   - `WORKER_RUNTIME` (`SEEKING` / `DECODING` / `WAITING_FRAME` / `IDLE`)
+   - `request_id` / `cur_req=` / `current_request_id`
    - `FIRST_PLAY_FRAME` / `PLAY_PRESENT`
    - `LAND→FIRST_PLAY_FRAME gap_ms`
+   - `post_land_hypothesis` (hint only)
+
+Decide **A vs B** from that log before any Round 8 change.
 
 ## STOP
 
-Round 7 ships **instrumentation + diagnosis only**. No speculative fix in this
-change. Next round should use the Windows `VIDEO_SM` log to confirm the
-coalesce-while-busy gap, then fix that specific stall (without redesigning
-Timeline / AudioEngine).
+Round 7 ships **instrumentation + diagnosis only**. No speculative fix.
+Do **not** assume single-worker PyAV seek is proven. Next round only after
+Windows VIDEO_SM confirms A or B — then fix that stall without redesigning
+Timeline / AudioEngine.
