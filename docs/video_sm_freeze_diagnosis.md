@@ -168,7 +168,21 @@ PLAY_PRESENT …
 `playback.frame_drop.reason.generation_mismatch` should stay ~0 for ordinary
 clock advancement.
 
+## Round 8b — Deterministic seek / handoff / no-black
+
+Windows showed position-dependent freezes (e.g. ~90 s / ~150 s differ from
+~120 s) and black Preview on activate/click even when Video exists.
+
+| Area | Fix |
+|------|-----|
+| Handoff | `PLAYBACK_DECODER_PREPARING` → first play frame → `READY` / `FIRST_PLAYBACK_FRAME_PRESENTED`; keep land frame visible |
+| Seek | Keyframe seek + decode-forward; `SeekTelemetry`; deadline recreate once |
+| Display | `video.display_source`; `set_song` with Video does not clear to empty widget; posters on click/activate |
+
+Expected VIDEO_SM extras: `PLAYBACK_DECODER_PREPARING`, `PLAYBACK_DECODER_READY`,
+`FIRST_PLAYBACK_FRAME_PRESENTED`, plus `video.seek.*` notes in the perf report.
+
 ## STOP (Round 7 historical)
 
-Round 7 shipped **instrumentation + diagnosis only**. Round 8 implements the
-confirmed A+B fix without redesigning Timeline / AudioEngine.
+Round 7 shipped **instrumentation + diagnosis only**. Round 8 / 8b implement
+the confirmed fixes without redesigning Timeline / AudioEngine.

@@ -366,10 +366,13 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
   Root Cause A (IDLE + fake fanout, no submit) and B (gen starvation).
   Immediate post-land play submit; pending-latest for PLAYBACK; no gen bump
   on ordinary clock; present within lateness tolerance.
+- Round 8b: **Deterministic seek** — position-dependent freezes (GOP/handoff);
+  explicit playback-decoder handoff; seek deadline recreate; no empty black
+  widget while Video exists; seek telemetry (`video.seek.*`).
 
-**Next:** Windows validate LAND→FIRST_PLAY_FRAME with no 5–20 s freeze after
-fast scrub-release (20 cycles).
+**Next:** Windows validate seeks at 0:05 / 0:30 / 1:00 / 1:30 / 2:00 / 2:30 /
+3:00 / near-end — paused, playing, scrub-release, Play-after-seek.
 
 ---
 
-## READY FOR WINDOWS POST-LAND PLAYBACK STARVATION VALIDATION
+## READY FOR WINDOWS DETERMINISTIC VIDEO SEEK VALIDATION

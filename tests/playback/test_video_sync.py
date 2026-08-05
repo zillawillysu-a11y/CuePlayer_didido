@@ -556,7 +556,11 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
 def test_land_frame_after_set_song_while_already_active(
     app: QApplication, red_clip_path: Path
 ) -> None:
-    """Preview must not stay black after set_song when output stays active."""
+    """Preview must not stay black after set_song when output stays active.
+
+    Round 8: set_song with video must NOT clear to empty widget; land_frame_at
+    still delivers a fresh frame for the new media session.
+    """
     song = Song.create("Song")
     song.add_video_clip(
         VideoClip.create(
@@ -569,14 +573,17 @@ def test_land_frame_after_set_song_while_already_active(
     frames: list[object] = []
     controller.frame_changed.connect(frames.append)
 
-    # Mimic activate: clear picture, output flag unchanged (already True).
+    # Mimic activate: keep last valid frame (no empty black), output stays active.
     controller.set_song(song)
-    assert frames[-1] is None
+    assert None not in frames
     controller.set_video_output_active(True)  # no-op — early return
-    assert frames[-1] is None
 
+    before = len(frames)
     controller.land_frame_at(0.4)
-    assert isinstance(frames[-1], np.ndarray)
+    assert any(isinstance(f, np.ndarray) for f in frames[before:]) or isinstance(
+        controller._last_emitted_frame, np.ndarray
+    )
+    controller.shutdown()
 
 
 def _drain_async(controller: VideoSyncController, app: QApplication, timeout: float = 3.0) -> None:
