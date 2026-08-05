@@ -40,6 +40,12 @@ All notable project changes are recorded here. Product version remains in `pypro
 - Dense Mark perf: prove Mark-density coupling via position-fanout sub-spans;
   bisect Mark lookup; viewport-bounded Mark paint; skip NOW rebuild when Cue
   unchanged. Video decoder untouched. See `docs/dense_mark_perf.md`.
+- **Instrumentation fix:** scrub preview previously bypassed `ui.position_fanout`,
+  so Windows Dense Mark A/B dumps were empty while `video.seek.*` still looked
+  live. Scrub now shares fan-out spans; report has INSTRUMENTATION LIVE CHECK;
+  Tools dialog warns on invalid dumps; optional 5s cProfile. Seek telemetry
+  adds keyframe distance / GOP frame estimate for `frames_to_target=88`.
+  See `docs/dense_mark_instrumentation_fix.md`.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 
