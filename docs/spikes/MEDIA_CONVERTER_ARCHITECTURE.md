@@ -1,29 +1,55 @@
 # CuePlayer Media Converter — Architecture Investigation
 
 **Status:** Design / investigation only (no converter implementation)  
-**Date:** 2026-08-05  
+**Revised:** 2026-08-05 (final product-priority revision)  
 **Branch:** `cursor/media-converter-architecture-d910`  
+**PR:** [#235](https://github.com/zillawillysu-a11y/CuePlayer_didido/pull/235) (documentation-only)  
 **Base inspected:** `master` (+ read-only review of Sprint 4–8 tip branches)  
-**Constraint:** Do not modify Sprint 8 playback work; do not change Song Time semantics, Export UI, or current playback behavior in this investigation.
+
+**Hard constraints for this document and PR #235:**
+
+- Do **not** implement the converter yet.
+- Do **not** modify Sprint 8 playback, `VideoSyncController`, `AudioEngine`, Export UI, Song Time semantics, or existing project behavior.
+
+**Sprint 8 reference (corrected):** Video Track Responsiveness is **PR [#232](https://github.com/zillawillysu-a11y/CuePlayer_didido/pull/232)** (`cursor/sprint8-video-responsive-028d`). PR #234 is a later Round 8 follow-up (`postland-starvation`), not the primary responsiveness PR.
 
 ---
 
-## 0. Audio proxy requirement (authoritative clarification)
+## 0. Final product priorities (locked)
 
-The audio proxy is **not** a mastering / “better sounding” stage. Goal: **playback efficiency with no audible quality loss and no timing difference** vs the original decoded audio.
+### 0.1 User goal
 
-| Rule | Decision |
+1. Audio with **no noticeable audible change**
+2. **No** audio timing drift or synchronization error
+3. A video proxy **meaningfully smaller** than the original
+4. The **smoothest possible** CuePlayer performance experience
+5. A **simple one-click** workflow
+
+### 0.2 Priority order (optimization rule)
+
+Meet Windows playback, seek, scrub, and UI responsiveness targets **first**. Then minimize proxy video size **within** those performance requirements.
+
+| Rank | Priority |
 |------|----------|
-| Sample rate | **Do not force 48 kHz.** Preserve source sample rate unless/until CuePlayer’s output device path must resample at **playback** time (already true today via WASAPI). |
-| Container / codec | PCM WAV only — **no lossy re-encode**. |
-| Bit depth | **16-bit PCM** for MP3, AAC, and genuine 16-bit PCM sources. **Preserve 24-bit only** when the source is real 24-bit PCM. |
-| Channels | Preserve original channel layout / count. No remix. |
-| Processing | **Forbidden:** normalization, gain, limiter, fades, denoise, EQ, channel remix. |
-| Timing | Handle codec delay / encoder priming / padding / timestamp offsets correctly. |
-| Validation | Compare **decoded sample count, duration, start, end** — not container duration alone. |
-| Drift | Proxy must not introduce cumulative drift vs Song Time, marks, LTC, video, or waveforms. |
-| Residual offset | If an unavoidable start offset remains, record it in the **manifest** and compensate deterministically at playback. |
-| Originals | Never modify or overwrite original media. |
+| 1 | Timeline drag and scrub responsiveness |
+| 2 | Playhead and Qt UI smoothness |
+| 3 | Stable video presentation |
+| 4 | Exact Song Time synchronization |
+| 5 | No noticeable audio change |
+| 6 | Reduce proxy video size as much as possible after performance targets are satisfied |
+| 7 | Fast song switching and waveform display |
+
+### 0.3 User-facing workflow (locked direction)
+
+```text
+Drop audio and video → Convert → CuePlayer Optimized
+```
+
+- Default user-facing preset name: **CuePlayer Optimized**
+- Normal users must **not** need to understand WAV, codec, GOP, CRF, CFR, keyframes, bit depth, or encoder selection.
+- Advanced technical settings are optional / hidden; not required for normal use.
+
+Internally, **CuePlayer Optimized** maps to a Windows-benchmarked short-GOP H.264 profile (§5). All-Intra is a **diagnostic / fallback** candidate only — not the default unless short-GOP fails responsiveness targets.
 
 ---
 
@@ -50,7 +76,7 @@ PRODUCT_SPEC already notes preview-proxy strategy as **undecided** (§7 Media).
 | Playback resample | `cueplayer.playback.resample.resample_linear` + `AudioEngine._playback_source` | Resamples **at open-stream time** if device rate ≠ media rate — **not** a reason to bake 48 kHz into proxies |
 | Tests | `tests/media/test_audio_loader.py`, Chinese fixture under `fixtures/media/中文測試/` | Unicode path coverage |
 
-**Implication for converter:** Proxy WAV should match source rate/channels/decoded length so `load_audio` + Song Time stay identity-mapped. Device resampling remains a **runtime** concern, identical for original or proxy.
+**Implication for converter:** Proxy PCM should preserve source rate, channel count/layout/order, and decoded sample timing so Song Time mapping stays identity (aside from explicitly recorded trims/offsets). Device resampling remains a **runtime** concern, identical for original or proxy.
 
 ### 1.3 Video loading / seek / scrub / presentation
 
@@ -62,7 +88,7 @@ PRODUCT_SPEC already notes preview-proxy strategy as **undecided** (§7 Media).
 | Clip model | `domain.models.VideoClip` | Timeline placement + `source_in` / duration / loop via `source_time_for` |
 | Embedded audio | `media.video_audio_loader.load_video_audio`, `video_audio_cache`, `playback.video_audio_mixer.VideoAudioMixer` | Whole-clip PCM decode once; mixed on sample clock; video proxies should omit unnecessary audio when main bed is separate |
 
-**Sprint 8 tip (`origin/cursor/sprint8-video-responsive-028d`, related PR #234):** async latest-wins decode worker, `ScrubFrameCache` (sparse ~10 fps / 360p posters), `av_path_lock`, play/scrub pipeline states, perf audit in `docs/playback_performance_audit.md`. **Converter design must not replace or conflict with this runtime pipeline** — proxies should make PyAV seek cheaper so Sprint 8 work stays valid.
+**Sprint 8 (PR #232):** async latest-wins decode worker, `ScrubFrameCache`, `av_path_lock`, play/scrub pipeline states, perf audit in `docs/playback_performance_audit.md` (on that tip). **Converter design must not replace or conflict with this runtime pipeline** — proxies should make PyAV seek cheaper so Sprint 8 work stays valid.
 
 ### 1.4 Waveform generation / cache (today)
 
@@ -72,48 +98,46 @@ PRODUCT_SPEC already notes preview-proxy strategy as **undecided** (§7 Media).
 | Video-clip lane | `media.video_clip_waveform.VideoClipWaveformCache` (ThreadPoolExecutor) | Same idea + heavier play-time deferral |
 | Invalidation | N/A on master (rebuild each load) | Path + mtime (+ size); adopt/clone helpers when Media/ relocates |
 
-**Gap:** No project-local, versioned, converter-produced peak package yet. Converter should emit a **deterministic peak cache** colocated with the media package (not only the global user cache).
+**Gap:** No project-local, generation-published, converter-produced peak package yet.
 
 ### 1.5 Song Time / variants / anchors
 
-**On `master`:** Song timeline is implicit song seconds; `AudioTrack.offset_seconds` exists but product paths are largely **single main bed** (`_load_audio_path` replace-only). Marks store `Mark.time_seconds` on the song.
+**On `master`:** Song timeline is implicit song seconds; `AudioTrack.offset_seconds` exists but product paths are largely **single main bed**. Marks store `Mark.time_seconds` on the song.
 
-**On Sprint 4–5 tips (not merged into this investigation’s `master` tip, but authoritative for future integration):**
+**On Sprint 4–5 tips:**
 
 | Concept | Module / doc | Rule |
 |---------|--------------|------|
 | Song Variant | `domain.song_variant.SongVariant` | Switchable media package; marks stay on Song |
 | Song Time ↔ Variant Time | `domain.anchor_mapping` | `variant_time = song_time - anchor_offset`; `song_time = variant_time + anchor_offset` |
-| Design | `docs/song_variant_design.md`, handoff `Sprint5SongTimeFacade` | PlaybackService / remote already pushed toward Song Time façade |
 
-**Converter rule:** Proxies attach to a **media package / variant path**. Marks, LTC generation, loops, remote control continue to use **Song Time**. Any proxy priming offset is **extra media metadata**, applied when mapping Song Time → media read position — **never** by shifting marks.
+**Converter rule:** Proxies attach to a media package. Marks, LTC, loops, remote control continue to use **Song Time**. Codec priming / proxy trim / media start offsets are **separate** fields — **never** compensated by moving marks or changing Song Time.
 
-### 1.6 Persistence / where metadata should live
+### 1.6 Persistence / output location context
 
 | Item | Location |
 |------|----------|
 | Project JSON | `persistence.project_store` — UTF-8 JSON, `SCHEMA_VERSION = 1` on master |
-| Paths | `AudioTrack.path`, `VideoClip.path` (absolute/relative); Chinese paths required |
+| Paths | `AudioTrack.path`, `VideoClip.path`; Chinese paths required |
 | Media folder layout (Sprint tip) | `persistence.media_layout` — `Media/<Setlist>/<Song>/` under project root |
-| Relink | Missing-media flows / heal helpers on advanced branches |
 
-**Recommendation:** Converter outputs live in a **sidecar package directory** next to (or under) song media; project JSON gains optional `media_package` / proxy path fields via a future schema bump — originals remain the source of truth when no valid package exists.
+Original-media directories are **not** assumed writable (read-only media, external drives, network paths). See §3.2 for output location priority.
 
 ### 1.7 PyAV / FFmpeg dependencies today
 
 | Dependency | Role |
 |------------|------|
-| `av>=13` (`pyproject.toml`) | Video probe/decode + embedded audio extract (links against FFmpeg libs inside the wheel) |
+| `av>=13` (`pyproject.toml`) | Video probe/decode + embedded audio extract |
 | `soundfile` + libsndfile | Primary music load |
 | System / CLI `ffmpeg` | **Not** required by CuePlayer today |
-| Packaging (Sprint tip `docs/DISTRIBUTION.md`) | Windows zip/Setup via PyInstaller; build already ships Qt + PyAV/FFmpeg libs |
+| Packaging (Sprint tip) | Windows zip/Setup via PyInstaller; Qt + PyAV/FFmpeg libs |
 
 ### 1.8 Qt threading patterns already in use
 
 - `QTimer` engine poll (~16 ms) on UI thread  
-- `ThreadPoolExecutor` for video-clip waveforms; Sprint 8 adds audio load workers, scrub cache worker, async video decode, and `ports.media_jobs.MediaJobQueue` as the future submission surface  
+- `ThreadPoolExecutor` for video-clip waveforms; Sprint 8 adds audio load workers, scrub cache worker, async video decode, and `ports.media_jobs.MediaJobQueue`  
 
-**Converter must** use a worker / subprocess outside the Qt UI thread (same discipline as Sprint 8 media jobs).
+**Converter must** run outside the Qt UI thread (worker / subprocess).
 
 ---
 
@@ -121,131 +145,367 @@ PRODUCT_SPEC already notes preview-proxy strategy as **undecided** (§7 Media).
 
 ### 2.1 Product form (first version)
 
-**Recommendation: separate companion executable that shares CuePlayer library modules** (`CuePlayer Media Converter`), not an in-app dialog and not a fully independent codebase.
+**Recommendation: separate companion executable that shares CuePlayer library modules** (`CuePlayer Media Converter`).
 
 | Option | Verdict |
 |--------|---------|
-| A. Separate companion app (own window, shared `cueplayer.media` / future `cueplayer.converter`) | **Choose for v1** — isolates long FFmpeg jobs from show playback; can ship beside CuePlayer.zip without touching Sprint 8 UI |
-| B. Same process, Tools dialog | Later (v1.1+) once job queue + cancel UX prove stable |
-| C. Totally separate repo / no shared modules | Reject — duplicates Unicode path, peak format, manifest schema |
-
-Entry points:
+| A. Companion app (shared `cueplayer.converter`) | **Choose for v1** |
+| B. In-app Tools dialog | Later (v1.1+) |
+| C. Totally separate repo | Reject |
 
 ```text
 cueplayer                 → existing app
-cueplayer-media-converter → thin PySide6 shell + converter engine
+cueplayer-media-converter → thin UI + converter engine
 ```
 
-Both packaged on Windows; converter may also run headless (`--manifest` / CI).
+User sees: **Drop → Convert → CuePlayer Optimized**. Technical presets stay internal.
 
-### 2.2 Module split (future code — not implemented now)
+### 2.2 Module split (future; MC-1 is a tiny subset)
 
 ```text
 cueplayer/converter/
-  probe.py          # ffprobe / PyAV / soundfile metadata + decoded timing
-  audio_proxy.py    # PCM WAV encode rules (clarified in §0)
-  video_proxy.py    # preset → ffmpeg argv
-  peaks.py          # write peak pyramid compatible with AudioBuffer
-  seek_index.py     # optional keyframe / thumbnail index
-  manifest.py       # schema read/write + validation
-  package.py        # atomic directory publish
-  jobs.py           # cancel, progress, cleanup
-  ffmpeg_locate.py  # bundled → env → PATH discovery
+  __init__.py
+  models.py         # MC-1: schema models, rational rate, sample timing
+  manifest.py       # MC-1: Unicode JSON read/write + validation
+  package.py        # MC-1: generations, publish, cleanup
+  errors.py         # MC-1: typed failures
+  probe.py          # later
+  audio_proxy.py    # later
+  video_proxy.py    # later
+  peaks.py          # later
+  jobs.py           # later
+  ffmpeg_locate.py  # later
 ```
 
-CuePlayer playback later gains a thin **resolver**: prefer valid proxy paths from manifest; else original path (backward compatible).
+Custom seek-index modules are **deferred** until benchmarks prove PyAV/Sprint 8 can use them beneficially — **not** in MC-1.
 
-### 2.3 Runtime vs convert-time responsibilities
+### 2.3 Runtime vs convert-time
 
-| Concern | Convert-time | Playback-time (unchanged semantics) |
-|---------|--------------|-------------------------------------|
-| Original files | Read-only | Relink / missing media |
-| PCM proxy | Write deterministic WAV | `load_audio(proxy)` |
-| Video proxy | CFR short-GOP / All-Intra | Existing `VideoDecoder` / Sprint 8 async+scrub cache |
-| Peaks | Precompute package peaks | Instant paint; may still refresh if mtime changes |
-| Song Time / marks | Record relationship + offsets only | Marks stay on Song Time |
-| Device sample rate | Preserve source in proxy | `resolve_output_samplerate` + optional linear resample |
+| Concern | Convert-time | Playback-time |
+|---------|--------------|---------------|
+| Originals | Read-only | Relink / missing media |
+| Audio proxy | PCM WAV/RF64 per §4 | Load proxy when package valid |
+| Video proxy | CuePlayer Optimized (short-GOP first) | Existing decoder + Sprint 8 pipeline |
+| Peaks | Later PR | Instant paint |
+| Song Time | Record relationships only | Unchanged |
+| Device rate | Preserve source in proxy | Runtime resample if needed |
 
 ---
 
-## 3. Recommended media package directory structure
+## 3. Package directory, output location, Windows-safe publishing
 
-Sidecar package (Unicode-safe paths; never overwrite originals):
-
-```text
-MySong_concert/
-  original/                         # optional copies OR only path refs in manifest
-    (not required — prefer external originals by absolute/relative path)
-  cueplayer_media/                  # package root
-    manifest.json                   # only valid when status=ready
-    manifest.json.partial           # in-progress (never treated as ready)
-    audio/
-      main.proxy.wav                # PCM per §0
-      main.peaks.npz                # peak pyramid (same arrays as disk-cache tip)
-    video/
-      vj.proxy.mp4                  # or .mov for ProRes experiments
-      vj.seek.json                  # optional keyframe PTS list
-      thumbs/                       # optional contact sheet / sparse JPG
-        000000.jpg
-    logs/
-      convert.log
-      ffmpeg_audio.stderr.txt
-      ffmpeg_video.stderr.txt
-    tmp/                            # deleted on success; wiped on cancel/fail
-```
-
-Project integration (later schema):
+### 3.1 Generation-based layout (locked)
 
 ```text
-ProjectDir/
-  Media/<Setlist>/<Song>/
-    原版.wav                        # original (untouched)
-    show.mp4                        # original
-    cueplayer_media/                # package beside originals
-      manifest.json
-      ...
+cueplayer_media/
+  manifest.json                 # ONLY exists when package is fully valid/ready
+  manifest.partial.json         # in-progress job state (never consumed by CuePlayer)
+  manifest.failed.json          # optional diagnostics (never consumed)
+  generations/
+    <package-id>/
+      audio/
+        main.proxy.wav          # or .wav with RF64 as needed
+      video/
+        vj.proxy.mp4
+      peaks/                    # later; not MC-1
+        main.peaks.npz
+      logs/
+        convert.log
+        ffmpeg_audio.stderr.txt
+        ffmpeg_video.stderr.txt
 ```
 
-Fingerprint fields in manifest point at **original** path + size + mtime_ns (+ optional content hash). Proxy filenames are stable for a given `(conversion_version, preset, source fingerprint)`.
+- `<package-id>` is a new immutable generation id per conversion attempt.  
+- Artifact paths inside the final manifest are **relative** to `cueplayer_media/` (or to the generation root — schema must pick one; recommend relative to `cueplayer_media/` including `generations/<id>/…`).  
+- Do **not** overwrite a generation currently referenced by the published `manifest.json` while CuePlayer may be reading it.  
+- On failure/cancel: discard the new generation; **keep** the previous valid generation + its `manifest.json`.  
+- Clean old unused generations only when no longer active (policy details deferred).  
+- A crash must never leave a package that **appears** valid: absence of final `manifest.json`, or a stale pointer, means “use originals”.
+
+### 3.2 Output location priority (locked)
+
+Do **not** assume the original-media directory is writable.
+
+1. **CuePlayer project Media directory** (preferred when a project context exists)  
+2. **User-selected output location**  
+3. **Original-file sidecar** (`<original_dir>/cueplayer_media/`) **only when writable**
+
+Must account for: read-only media, external drives, network paths, Chinese filenames/directories, Windows long paths (`\\?\` / pathlib-safe handling).
+
+### 3.3 Manifest lifecycle (locked)
+
+| File | Role |
+|------|------|
+| `manifest.partial.json` | In-progress job: package-id, paths, progress, tool versions |
+| `manifest.failed.json` | Optional post-failure diagnostics |
+| `manifest.json` | **Exists only after complete validation**; represents a ready package |
+
+**Corrections vs earlier draft:**
+
+- Final `manifest.json` does **not** carry `status=pending/running/failed/cancelled`.  
+- Presence of valid `manifest.json` + resolvable relative artifacts + matching fingerprints **is** the ready signal.  
+- CuePlayer must **never** consume partial, failed, or cancelled output.
+
+### 3.4 Publish sequence
+
+1. Create new immutable `generations/<package-id>/`.  
+2. Write all outputs into that generation (future encode PRs).  
+3. Validate every required artifact.  
+4. Atomically publish the small final `manifest.json` (write temp + replace) pointing at the new generation.  
+5. Remove `manifest.partial.json`.  
+6. On cancel/fail: delete the new generation (best-effort), write optional `manifest.failed.json`, leave previous `manifest.json` intact if any.  
+7. Never modify original media files.
 
 ---
 
-## 4. Recommended manifest schema
+## 4. Audio proxy requirements (locked)
 
-`conversion_version`: start at `1`.  
-`status`: `pending` | `running` | `ready` | `failed` | `cancelled` — CuePlayer only consumes **`ready`**.
+The audio proxy is a **disposable CuePlayer working file/cache**, not a new master.
+
+### 4.1 Meaning of “no audio change”
+
+- No **noticeable audible** change vs normal playback of the source.  
+- No timing / channel-order / layout change.  
+- Bit-identical preservation of compressed MP3/AAC bitstreams is **not** required.
+
+### 4.2 Rules
+
+| Topic | Rule |
+|-------|------|
+| Originals | Untouched |
+| Processing | Forbidden: normalize, gain, limiter, fades, EQ, denoise, remix, duplicate, swap |
+| Re-encode | No lossy re-encode; PCM WAV only |
+| Sample rate | Preserve source rate unless runtime device playback requires resampling |
+| Bit depth | 16-bit PCM for MP3/AAC/normal 16-bit sources; preserve 24-bit **only** when source is genuine 24-bit PCM |
+| Channels | Preserve **count, layout, and order explicitly**; do **not** use bare `-ac N` as “preservation” (FFmpeg may remix) |
+| Large files | Use RF64 automatically when WAV would exceed RIFF 4 GB (`-rf64 auto`) |
+| Drift | Must not create cumulative drift vs Song Time, marks, LTC, video, waveforms, loops, remote |
+| Future validation | Explicit `L=LTC, R=Music` fixture proving no swap/remix/duplication |
+
+### 4.3 Authoritative timing: integer samples (locked)
+
+**Do not** use floating-point seconds as the authoritative audio timing representation.
+
+Authoritative fields:
+
+| Field | Meaning |
+|-------|---------|
+| `sample_rate` | Hz (integer) |
+| `source_start_sample` | First source PCM sample index mapped into the proxy (usually 0 after trim policy) |
+| `proxy_start_sample` | First sample index in the proxy file corresponding to that source sample (usually 0) |
+| `leading_trim_samples` | Non-negative count of source/decoder leading samples **removed** from the proxy (priming/padding discarded at head) |
+| `trailing_trim_samples` | Non-negative count removed at tail |
+| `decoded_sample_count` | Samples present in the proxy PCM (per channel frame count) |
+
+Seconds may be **derived for display only**: `seconds = samples / sample_rate`.
+
+### 4.4 Keep these concepts separate (locked)
+
+| Concept | Owns | Must not be used for |
+|---------|------|----------------------|
+| **Song Time** | Marks, LTC timeline, loops, remote, UI playhead semantics | Encoder priming compensation |
+| **Variant anchor offset** | Align Anchors / media shift vs song (`anchor_mapping`) | Codec delay |
+| **Codec priming** | Encoder/decoder delay inherent to source codec | Moving marks |
+| **Proxy trim** | `leading_trim_samples` / `trailing_trim_samples` applied while building proxy | Song Time edits |
+| **Proxy media start offset** | Residual mapping if proxy sample 0 ≠ intended media origin after trim | Silent mark shifts |
+
+**Never** compensate for codec priming by moving marks or changing Song Time.
+
+### 4.5 Offset convention (exact)
+
+Define media-read compensation in **integer samples** (same rate):
+
+```text
+# Positive leading_trim_samples means those early source samples were dropped from the proxy.
+# Therefore proxy sample 0 corresponds to source sample = leading_trim_samples
+# (when source_start_sample == leading_trim_samples and proxy_start_sample == 0).
+
+source_sample = song_to_variant_sample(song_sample)   # via anchor_offset in samples at this rate
+proxy_sample  = source_sample - leading_trim_samples + proxy_start_sample - source_start_sample
+```
+
+**Examples:**
+
+1. **Clean WAV identity**  
+   `leading_trim=0`, `trailing_trim=0`, `source_start=0`, `proxy_start=0`, counts equal.  
+   → `proxy_sample == source_sample`.
+
+2. **AAC with 2112-sample priming discarded into leading trim**  
+   `leading_trim_samples=2112`, `proxy_start=0`, `source_start=2112`.  
+   → Song/media time that pointed at source sample 2112 reads proxy sample 0.  
+   Marks on Song Time unchanged.
+
+3. **Forbidden**  
+   Subtracting 2112 samples from every mark’s Song Time to “fix” priming.
+
+If residual mapping cannot be expressed exactly with the integer fields above, conversion **fails validation** (do not publish `manifest.json`).
+
+### 4.6 Channel preservation (encode guidance)
+
+- Probe and store `channel_count`, `channel_layout` (e.g. `stereo`, `5.1`), and explicit order.  
+- Prefer stream copy of decoded planar/interleaved PCM into WAV with matching channel count **without** `-ac` remix filters.  
+- If a layout must be named for WAV/WAVEFORMATEX, choose a mapping that is **verified** not to swap L/R.  
+- Validation: per-channel correlation / known LTC-left fixture (`L=LTC, R=Music`).
+
+### 4.7 Illustrative FFmpeg audio pattern (not MC-1)
+
+```bash
+ffmpeg -hide_banner -y \
+  -i "<original_audio>" \
+  -map 0:a:0 \
+  -vn \
+  -c:a pcm_s16le \
+  -ar <SOURCE_RATE> \
+  -rf64 auto \
+  "<generation>/audio/main.proxy.wav"
+```
+
+- Bit depth: `pcm_s16le` or `pcm_s24le` per §4.2.  
+- **Avoid** `-ac <N>` unless tests prove it is a no-op for that layout.  
+- Avoid loudnorm/volume/pan/aresample-as-remix. Any `aresample` usage must be justified and sample-count validated.  
+- Final GOP/CRF/audio filter details remain subject to Windows validation in later PRs.
+
+---
+
+## 5. Video proxy requirements
+
+### 5.1 Goals
+
+- Meaningfully **smaller** than original.  
+- Must **not** sacrifice timeline responsiveness to chase size.  
+- Existing Sprint 8 async decode + scrub architecture remains intact.
+
+### 5.2 Default internal profile for **CuePlayer Optimized** (benchmark candidate)
+
+| Knob | Initial candidate |
+|------|-------------------|
+| Resolution | 720p |
+| Codec | H.264 |
+| GOP | Short GOP (exact length TBD by Windows benchmarks) |
+| B-frames | None (`-bf 0`) |
+| Frame rate | CFR; exact rational rates (§5.4) |
+| Audio | No embedded audio when separate main audio is used (`-an`) |
+| Rate control | Balanced CRF/bitrate (final values deferred) |
+
+**Do not permanently choose All-Intra** unless Windows testing proves short-GOP cannot meet responsiveness targets. All-Intra may remain diagnostic/fallback.
+
+### 5.3 Illustrative short-GOP command (candidate; finals deferred)
+
+```bash
+ffmpeg -hide_banner -y \
+  -i "<original_video>" \
+  -an \
+  -map 0:v:0 \
+  -vf "scale=-2:720:flags=bicubic,fps=<FPS_NUM>/<FPS_DEN>,format=yuv420p" \
+  -c:v libx264 \
+  -preset veryfast \
+  -crf <TBD> \
+  -profile:v high \
+  -g <TBD_SHORT_GOP> \
+  -keyint_min <TBD_SHORT_GOP> \
+  -sc_threshold 0 \
+  -bf 0 \
+  -pix_fmt yuv420p \
+  -movflags +faststart \
+  "<generation>/video/vj.proxy.mp4"
+```
+
+All-Intra fallback (diagnostic only): `-g 1` / `keyint=1` — not default.
+
+### 5.4 Exact frame-rate rules (locked)
+
+**Do not** convert 29.97 → 30 or 59.94 → 60 merely because they are “close”.
+
+Preserve exact standard rational rates, including:
+
+| Rate | Fraction |
+|------|----------|
+| 23.976 | `24000/1001` |
+| 24 | `24/1` |
+| 25 | `25/1` |
+| 29.97 | `30000/1001` |
+| 30 | `30/1` |
+| 50 | `50/1` |
+| 59.94 | `60000/1001` |
+| 60 | `60/1` |
+
+Manifest stores `fps_num` + `fps_den` (integers). Decimal floats are display-only.
+
+**Genuine VFR sources:** do not assume 30 FPS is always correct. Document a deterministic CFR policy in a later decision (deferred): e.g. prefer dominant mode rate if it matches a standard rational; else prefer song FPS if standard; else fail with explicit user choice in advanced UI. Validation must compare output frame count vs expected CFR duration within a defined tolerance and confirm constant `r_frame_rate`/`avg_frame_rate` equality on the proxy.
+
+### 5.5 Windows performance validation (required before locking GOP/CRF)
+
+Measure with the **Sprint 8 decoder** on Windows:
+
+- Random seek p50 / p95  
+- Scrub preview delivery rate  
+- Pointer-follow responsiveness  
+- First-frame latency  
+- Resume-after-scrub behavior  
+- CPU usage  
+- Proxy file size  
+- Stable presentation at 29.97, 30, 59.94, 60 FPS  
+- Long-duration video ↔ Song Time alignment  
+
+Do **not** assume lower bitrate alone improves scrubbing. GOP, keyframe placement, B-frames, CFR, decode cost, color conversion, and disk I/O all matter.
+
+### 5.6 Seek index
+
+**Defer** custom packet-position seek indexes until benchmarks prove benefit with current PyAV / Sprint 8 decoder. **Not in MC-1.**
+
+### 5.7 Codec trade-offs (summary)
+
+| Mode | Role |
+|------|------|
+| H.264 short-GOP, no B-frames | **Default CuePlayer Optimized candidate** — size + seek balance |
+| H.264 All-Intra | Fallback / diagnostic if short-GOP fails scrub targets |
+| MJPEG / ProRes / DNxHR | Deferred experiments; size or licensing cost usually wrong for show floor |
+
+---
+
+## 6. Manifest schema (v1 shape for MC-1+)
+
+Final `manifest.json` example (ready package only — **no** lifecycle status field):
 
 ```json
 {
   "schema": "cueplayer.media_package",
   "conversion_version": 1,
-  "status": "ready",
   "created_utc": "2026-08-05T12:00:00Z",
-  "preset": "performance",
+  "preset": "cueplayer_optimized",
+  "package_id": "01JABC…",
+  "generation_relpath": "generations/01JABC…",
   "tool": { "name": "cueplayer-media-converter", "version": "0.1.0" },
-  "ffmpeg": { "path": "...", "version": "...", "license": "LGPL|GPL", "configuration_excerpt": "..." },
 
-  "song_time": {
-    "note": "Marks/LTC/loops remain on Song Time; proxies are Variant/media time",
-    "anchor_offset_seconds": 0.0,
-    "proxy_audio_start_offset_seconds": 0.0,
-    "proxy_video_start_offset_seconds": 0.0,
-    "offset_reason": null
+  "timing_model": {
+    "audio_authoritative_unit": "samples",
+    "video_authoritative_unit": "pts_ticks_plus_time_base"
+  },
+
+  "relationships": {
+    "song_time_note": "Marks/LTC/loops/remote remain on Song Time",
+    "variant_anchor_offset_samples": null,
+    "concepts_separated": [
+      "song_time",
+      "variant_anchor_offset",
+      "codec_priming",
+      "proxy_trim",
+      "proxy_media_start_offset"
+    ]
   },
 
   "originals": {
     "audio": {
       "path": "原版.wav",
-      "path_resolved": "D:/Shows/.../原版.wav",
       "size_bytes": 123,
       "mtime_ns": 456,
-      "sha256": null,
       "codec": "pcm_s24le",
       "sample_rate": 48000,
-      "channels": 2,
+      "channel_count": 2,
+      "channel_layout": "stereo",
+      "channel_order": ["L", "R"],
       "bit_depth": 24,
-      "decoded_frames": 12345678,
-      "decoded_duration_seconds": 257.201625
+      "decoded_sample_count": 12345678
     },
     "video": {
       "path": "show.mp4",
@@ -254,328 +514,245 @@ Fingerprint fields in manifest point at **original** path + size + mtime_ns (+ o
       "codec": "h264",
       "width": 1920,
       "height": 1080,
-      "avg_fps": 29.97,
-      "time_base": "1/30000",
+      "fps_num": 30000,
+      "fps_den": 1001,
+      "time_base_num": 1,
+      "time_base_den": 30000,
       "is_cfr": false,
-      "decoded_frame_count": 7716,
-      "decoded_duration_seconds": 257.2
+      "decoded_frame_count": 7716
     }
   },
 
   "proxies": {
     "audio": {
-      "path": "audio/main.proxy.wav",
-      "format": "wav",
+      "path": "generations/01JABC…/audio/main.proxy.wav",
       "codec": "pcm_s16le",
       "sample_rate": 48000,
-      "channels": 2,
+      "channel_count": 2,
+      "channel_layout": "stereo",
+      "channel_order": ["L", "R"],
       "bit_depth": 16,
-      "decoded_frames": 12345678,
-      "decoded_duration_seconds": 257.201625,
-      "validation": {
-        "frames_match_source": true,
-        "max_abs_sample_error": null,
-        "start_pts_seconds": 0.0,
-        "end_pts_seconds": 257.201625
-      }
+      "rf64": false,
+      "source_start_sample": 0,
+      "proxy_start_sample": 0,
+      "leading_trim_samples": 0,
+      "trailing_trim_samples": 0,
+      "decoded_sample_count": 12345678
     },
     "video": {
-      "path": "video/vj.proxy.mp4",
+      "path": "generations/01JABC…/video/vj.proxy.mp4",
       "codec": "h264",
       "width": 1280,
       "height": 720,
-      "fps": 30,
-      "gop": 15,
-      "pix_fmt": "yuv420p",
-      "audio_streams": 0,
-      "seek_index_path": "video/vj.seek.json"
-    },
-    "waveform_peaks": { "path": "audio/main.peaks.npz", "format": "cueplayer.peaks.v1" },
-    "thumbnails": { "dir": "video/thumbs", "interval_seconds": 1.0 }
+      "fps_num": 30000,
+      "fps_den": 1001,
+      "gop": null,
+      "audio_streams": 0
+    }
   },
 
-  "invalidation": {
+  "fingerprints": {
     "strategy": "path+mtime_ns+size",
     "content_hash_optional": true
   }
 }
 ```
 
-**Playback compensation (deterministic):**
-
-```text
-media_read_time = song_to_variant_time(song_time) - proxy_*_start_offset_seconds
-```
-
-If both offsets are 0 (expected for clean WAV/CFR proxies), behavior matches originals.
+`manifest.partial.json` may include job progress fields; it is never a CuePlayer playback input.
 
 ---
 
-## 5. Exact FFmpeg settings proposed per preset
+## 7. Windows FFmpeg packaging (deferred finals)
 
-Paths must be passed carefully for Chinese Windows paths (prefer subprocess list argv; avoid shell; UTF-8 / long-path aware).
+Discovery order (when encode PRs land):
 
-### 5.1 Audio proxy (both presets — identical rules)
+1. Bundled converter `ffmpeg.exe`  
+2. `CUEPLAYER_FFMPEG`  
+3. `PATH` (dev only)
 
-Bit-depth selection (probe with ffprobe / soundfile / PyAV):
+Licensing choice (**deferred**): LGPL shared build vs GPL libx264 companion binary vs OpenH264/MF. Do not silently enlarge CuePlayer’s playback dependency set; keep encode tooling with the converter.
 
-| Source | Output |
-|--------|--------|
-| PCM 24-bit (or higher intentional PCM) | `pcm_s24le` WAV |
-| PCM 16-bit | `pcm_s16le` WAV |
-| MP3 / AAC / other lossy | `pcm_s16le` WAV (decode once; no second lossy encode) |
-| Float WAV | Prefer `pcm_s24le` only if source bits warrant; else document as unresolved — default **do not up-invent 24-bit**; store float→PCM policy in conversion_version notes |
-
-**Canonical decode → WAV (timing-safe pattern):**
-
-```bash
-ffmpeg -hide_banner -y \
-  -i "<original_audio>" \
-  -map 0:a:0 \
-  -vn \
-  -af "aresample=async=0:first_pts=0" \
-  -c:a pcm_s16le \
-  -ar <SOURCE_RATE> \
-  -ac <SOURCE_CHANNELS> \
-  -f wav \
-  "<tmp>/main.proxy.wav"
-```
-
-Notes:
-
-- `-ar` / `-ac` set to **probed source** values (never hardcode 48000).  
-- For true 24-bit PCM sources use `-c:a pcm_s24le`.  
-- Prefer **decoded frame-count validation** after write (PyAV or soundfile).  
-- If priming/padding cannot be stripped to exact identity, set `proxy_audio_start_offset_seconds` and fail validation if drift exceeds a tiny threshold (e.g. 1 sample).  
-- Do **not** use loudnorm, volume, pan, or mono downmix filters.
-
-### 5.2 Video — Preset `performance`
-
-Goals: balanced size, short GOP, CFR, no embedded audio, 720p.
-
-```bash
-ffmpeg -hide_banner -y \
-  -i "<original_video>" \
-  -an \
-  -map 0:v:0 \
-  -vf "scale=-2:720:flags=bicubic,fps=<TARGET_FPS>,format=yuv420p" \
-  -c:v libx264 \
-  -preset veryfast \
-  -crf 20 \
-  -profile:v high \
-  -level 4.1 \
-  -g 15 \
-  -keyint_min 15 \
-  -sc_threshold 0 \
-  -bf 0 \
-  -pix_fmt yuv420p \
-  -movflags +faststart \
-  "<tmp>/vj.proxy.mp4"
-```
-
-`TARGET_FPS`:
-
-- If source is already near 24/25/30/50/60 CFR → preserve that family.  
-- If VFR / messy → constant **30** (or song FPS when it matches a standard rate).  
-- `-sc_threshold 0` + fixed `-g` → predictable keyframes for scrub.  
-- `-bf 0` → no B-frames (cheaper random access / decode).
-
-### 5.3 Video — Preset `smooth_scrub`
-
-Goals: maximum seek/scrub responsiveness; larger files; 720p default, optional 1080p.
-
-**Primary (H.264 All-Intra):**
-
-```bash
-ffmpeg -hide_banner -y \
-  -i "<original_video>" \
-  -an \
-  -map 0:v:0 \
-  -vf "scale=-2:720:flags=bicubic,fps=<TARGET_FPS>,format=yuv420p" \
-  -c:v libx264 \
-  -preset ultrafast \
-  -crf 18 \
-  -g 1 \
-  -keyint_min 1 \
-  -sc_threshold 0 \
-  -bf 0 \
-  -x264-params "keyint=1:min-keyint=1:scenecut=0" \
-  -pix_fmt yuv420p \
-  -movflags +faststart \
-  "<tmp>/vj.proxy.mp4"
-```
-
-Optional 1080p: `scale=-2:1080`.
-
-**Extremely short GOP fallback** (if All-Intra size unacceptable): `-g 2` / `-g 3` with same CFR/no-B-frame rules.
-
-### 5.4 Peaks / seek index / thumbs (post steps)
-
-- Peaks: decode proxy WAV (or source PCM) with the same `build_peak_pyramid` logic; write `main.peaks.npz`.  
-- Seek index: list of `{pts_seconds, packet_pos}` for keyframes (ffprobe `-show_frames` / `-skip_frame nokey`).  
-- Thumbs: `fps=1` image2 under `video/thumbs/` (optional).
+PyAV remains the in-process decode/validation path; CLI FFmpeg is for cancelable long encodes.
 
 ---
 
-## 6. Codec trade-offs for CuePlayer scrubbing
+## 8. UI workflow (companion)
 
-| Codec / mode | Seek / scrub | Decode CPU | Size | Windows / PyAV fit | Verdict |
-|--------------|--------------|------------|------|--------------------|---------|
-| **H.264 short-GOP** (`performance`) | Good if GOP≤15, no B-frames | Low–medium | Small–medium | Excellent (already primary path) | **Default preset** |
-| **H.264 All-Intra** (`smooth_scrub`) | Excellent (every frame IDR) | Low per seek | Large | Excellent | **Scrub preset** |
-| **MJPEG** | Excellent | Easy but higher bitrate CPU/IO | Very large | Good | Optional experiment; weaker compression than intra-H.264 |
-| **ProRes** | Excellent | Easy | Very large | Needs ProRes encode path; licensing/size heavy | Defer — editor interchange, not show-floor default |
-| **DNxHR** | Excellent | Easy | Very large | Less common in current PyAV Windows wheels | Defer |
-
-**Do not assume bitrate reduction alone improves scrubbing.** Scrub cost is dominated by **distance to previous keyframe + sequential decode + colorspace convert** (see `VideoDecoder._seek` / Sprint 8 audit). Short GOP / All-Intra / CFR matter more than CRF alone.
-
----
-
-## 7. Windows FFmpeg packaging recommendation
-
-### 7.1 Discovery order
-
-1. Bundled `ffmpeg.exe` + DLLs next to converter (`tools/ffmpeg/`)  
-2. `CUEPLAYER_FFMPEG` env override  
-3. System `PATH` (dev only; warn if license/version mismatch)
-
-PyAV remains for **in-process decode/validation**; CLI FFmpeg is for **long encode jobs** (cancelable subprocess).
-
-### 7.2 Licensing / redistribution
-
-| Build | Notes |
-|-------|-------|
-| **LGPL shared** | Preferred for product redistribution: no `--enable-gpl` / `--enable-nonfree`; ship `COPYING.LGPLv2.1`, About credit, matching sources |
-| **GPL (libx264)** | Common for H.264 encode (`libx264` is GPL). Shipping GPL `ffmpeg.exe` as a **separate companion binary** invoked by subprocess is the usual practical approach; still requires GPL notices + source offer for **that** binary. Does **not** automatically force CuePlayer’s Python code GPL if kept as separate executable + subprocess, but legal review should confirm distribution model |
-| **`--enable-nonfree`** | **Do not redistribute** |
-| System chocolatey / gyan.dev GPL builds | Fine for **dev**; pin a known build for employee zip |
-
-**Practical v1 recommendation:**
-
-- Ship a **pinned windows-x64 FFmpeg build** used only by the converter subprocess.  
-- Prefer documenting GPL companion status clearly if libx264 is required.  
-- Longer-term evaluate **OpenH264** or Media Foundation H.264 encode for LGPL-friendlier employee builds (quality/GOP control must meet scrub goals — unresolved).  
-- Do **not** silently add a second multi-hundred-MB dependency into the main CuePlayer playback critical path; keep it in the converter package.
-
-### 7.3 PyAV relationship
-
-CuePlayer already ships FFmpeg **libraries** via `av` wheels for decode. Converter CLI FFmpeg is an **additional encode tool**, not a replacement for PyAV playback.
+1. Drop audio and/or video (Unicode OK).  
+2. Quiet auto-probe (technical details hidden).  
+3. Default preset label: **CuePlayer Optimized**.  
+4. Choose output via §3.2 priority (do not require sidecar-on-original).  
+5. One **Convert** button.  
+6. Progress + Cancel.  
+7. Success → ready package (`manifest.json` published).  
+8. Failure/cancel → previous ready package preserved if any; new generation discarded.
 
 ---
 
-## 8. Proposed UI workflow (converter companion)
-
-1. Drop zone: audio and/or video (Unicode names OK).  
-2. Auto-probe: rate, channels, bit depth, fps, VFR warning, duration (decoded).  
-3. Preset: **Performance** (default) / **Smooth Scrub** (+ optional 1080p).  
-4. Output folder default: `<original_dir>/cueplayer_media/` (never inside a write over originals).  
-5. One primary **Convert** button.  
-6. Progress: audio % / video % / peaks / validate; Cancel always available.  
-7. On success: show package path + “ready” summary (rates, frames matched, offsets).  
-8. On failure/cancel: package not ready; tmp wiped; message + log path.
-
-Later CuePlayer integration: “Open package…” / auto-detect `cueplayer_media/manifest.json` beside song media; badge when proxies active.
-
----
-
-## 9. Failure and cancellation behavior
+## 9. Failure / cancellation / crash
 
 | Event | Behavior |
 |-------|----------|
-| Start | Write `manifest.json.partial` (`status=running`); create `tmp/` |
-| Success | Validate sample/frame counts; move artifacts from `tmp/` → final names; write `manifest.json` with `status=ready`; delete `.partial` and `tmp/` |
-| Cancel | Kill ffmpeg process group; delete `tmp/`; delete `.partial`; **do not** leave a `ready` manifest; remove any half-published proxy names |
-| Fail | Same cleanup as cancel; optional `manifest.failed.json` with error for support (not loaded as ready) |
-| Crash mid-job | Next launch treats missing/`partial` as invalid; refuses proxies |
+| Start | Write `manifest.partial.json`; create new `generations/<id>/` |
+| Success | Validate → atomic write `manifest.json` → delete partial |
+| Cancel / fail | Discard new generation; optional `manifest.failed.json`; **keep** previous `manifest.json` |
+| Crash | Missing/incomplete final manifest ⇒ CuePlayer uses originals; orphan generation eligible for cleanup |
 
-**Invariant:** A directory never looks like a valid package unless `manifest.json` exists with `status=ready` and all referenced files exist with matching fingerprints.
+Invariant: only a fully validated `manifest.json` makes a package appear valid.
 
 ---
 
 ## 10. Test strategy
 
-| Layer | Tests |
+| Layer | Focus |
 |-------|-------|
-| Unicode | Chinese source paths + Chinese output dirs (extend `tests/unicode/`) |
-| Audio timing | MP3/AAC priming cases: decoded frame count / start / end vs source; assert offset field when needed |
-| Audio fidelity | PCM 16/24 round-trip: sample-accurate or max abs error ≤ 1 LSB; no channel swap |
-| No processing | Hash / sample compare proves no gain/normalize |
-| Video CFR | Probe proxy `avg_frame_rate` == `r_frame_rate`; keyframe interval ≈ GOP |
-| Seek cost | Synthetic: random seeks N times on original vs proxy (PyAV `frame_at`) — expect lower p95 on short-GOP/All-Intra |
-| Invalidation | Touch mtime/size → package marked stale |
-| Cancel | SIGINT/kill during encode → no ready manifest |
-| Playback compat | Load proxy via existing `load_audio` / `VideoDecoder` without Song Time drift (marks at fixed seconds still align) |
-| Golden | Small fixtures under `fixtures/media/` + checked-in expected manifest fields (not huge binaries) |
+| MC-1 | Manifest/package lifecycle, Unicode paths, generation publish/cancel/crash, no original mutation |
+| Audio (later) | Integer sample timing; channel order; `L=LTC,R=Music`; RF64; MP3/AAC priming trims |
+| Video (later) | Exact rational FPS; CFR validation; Windows seek/scrub benches vs Sprint 8 decoder |
+| Compat | Projects without packages unchanged; Song Time untouched |
 
 ---
 
-## 11. Migration and backward compatibility
+## 11. Migration / backward compatibility
 
-1. Projects **without** packages behave exactly as today (original paths).  
-2. Resolver: if `cueplayer_media/manifest.json` ready **and** fingerprints match → use proxies for decode/waveform; Song Time unchanged.  
-3. If original changed → ignore proxies; show “Reconvert” (do not auto-delete without user action).  
-4. Schema: additive fields only; old CuePlayer versions ignore package dirs.  
-5. Sprint 8 scrub cache / async decode continue to work; proxies should **reduce** cold-decode cost, not require removing those systems.  
-6. Song Variant / anchor_offset (Sprint 4–5) compose with `proxy_*_start_offset_seconds` as specified in §4 — do not overload `anchor_offset` for encoder priming.
+1. No package / invalid package → originals (today’s behavior).  
+2. Valid `manifest.json` + matching fingerprints → prefer proxies.  
+3. Original changed → ignore package; offer reconvert.  
+4. Sprint 8 pipeline stays; proxies reduce decode cost rather than replacing async/scrub design.  
+5. Do not overload `anchor_offset` with codec priming — use proxy trim / sample fields.
 
 ---
 
-## 12. Implementation plan (PR-sized tasks)
+## 12. Implementation plan
 
 | PR | Scope |
 |----|-------|
-| **MC-0** | This design doc + decision log (this document) |
-| **MC-1** | `cueplayer.converter` skeleton: probe + manifest schema + package atomic publish (no UI encode yet) |
-| **MC-2** | Audio proxy encoder + validation harness (PCM rules §0); Chinese path tests |
-| **MC-3** | Peak writer compatible with `AudioBuffer` / disk-cache tip format |
-| **MC-4** | Video `performance` preset + CFR/GOP validation |
-| **MC-5** | Video `smooth_scrub` All-Intra + seek benchmark tests |
-| **MC-6** | FFmpeg locate/bundle docs + license notices; Windows packaging hook for converter exe |
-| **MC-7** | Companion UI: drop → Convert → progress/cancel |
-| **MC-8** | CuePlayer resolver (opt-in): prefer ready package; stale detection — **after** Sprint 8 video responsiveness merges |
-| **MC-9** | Optional thumbs/seek index; 1080p smooth option |
+| **MC-0** | This architecture document (PR #235) |
+| **MC-1** | Manifest + package generation skeleton only (§12.1) — **not started in this PR** |
+| **MC-2** | Audio proxy encode + sample/channel validation (+ RF64, LTC L/R fixture) |
+| **MC-3** | Peak writer into `peaks/` |
+| **MC-4** | Video CuePlayer Optimized short-GOP + Windows bench harness |
+| **MC-5** | All-Intra fallback path + compare benches |
+| **MC-6** | FFmpeg bundle/license docs for converter |
+| **MC-7** | Companion UI: Drop → Convert → CuePlayer Optimized |
+| **MC-8** | CuePlayer resolver — **after** Sprint 8 PR #232 lineage lands |
+| **MC-9+** | Optional thumbs; seek index only if benches prove value |
 
-**Hard rule:** MC-8+ must land on a branch that already contains Sprint 8 playback, and must not rewrite `VideoSyncController` pipeline modes.
+### 12.1 MC-1 file and test plan (approved scope; do not implement yet)
+
+**Files:**
+
+```text
+src/cueplayer/converter/
+  __init__.py
+  models.py
+  manifest.py
+  package.py
+  errors.py
+
+tests/converter/
+  test_manifest.py
+  test_package.py
+```
+
+**MC-1 may implement only:**
+
+- Manifest v1 models/schema  
+- Exact rational frame-rate model (`fps_num`/`fps_den`)  
+- Integer sample / PTS timing model fields  
+- Package ID  
+- Generation directory layout  
+- Relative artifact-path validation  
+- Source fingerprint model  
+- Unicode-safe manifest read/write  
+- Staging generation creation  
+- Successful publish (atomic final manifest)  
+- Cancel/failure cleanup  
+- Crash-recovery behavior (no false-valid package)  
+- Preservation of previous valid generation  
+- Protection against modifying original media  
+
+**MC-1 must not implement:**
+
+- FFmpeg execution  
+- Audio / video conversion  
+- Companion UI  
+- Playback resolver  
+- Waveform peak generation  
+- Custom seek index  
+- Sprint 8 integration  
+- Export UI changes  
+- Song Time changes  
 
 ---
 
-## 13. Risks and unresolved decisions
+## 13. Decisions locked vs deferred
 
-1. **libx264 GPL vs LGPL employee builds** — product/legal choice; OpenH264 quality/GOP unknown for scrub.  
-2. **Float WAV / >24-bit PCM policy** — default conservative; confirm with real show files.  
-3. **VFR concert cameras** — fps pick (song FPS vs 30) needs a desk decision.  
-4. **Whether to copy originals into package** vs reference external paths (portable Bundle vs disk savings).  
-5. **Content hash** (SHA-256) vs mtime+size only — hash is safer, slower on huge files.  
-6. **Proxy video + embedded audio alignment** — when users still need clip audio for alignment, either keep a separate audio extract or allow an “include stereo AAC” escape hatch (default still `-an` when main bed exists).  
-7. **Exact merge base for MC-8** — wait for Sprint 8 Task 2 PR (#234 lineage) to settle.  
-8. **Companion vs in-app** for v1 — recommended companion; product may still prefer a Tools dialog later.
+### 13.1 Locked now
+
+- Product priority order (§0.2) and optimization rule  
+- User workflow / default label **CuePlayer Optimized**  
+- Audio: disposable PCM cache; no processing; preserve rate; bit-depth policy; explicit channel preservation (no casual `-ac`); RF64 auto; integer-sample authoritative timing; concept separation; offset examples  
+- Video: short-GOP H.264 720p candidate as default; All-Intra not default without proof; exact rational FPS; no 29.97→30 “rounding”  
+- Manifest lifecycle: partial / failed / final; final has no status enum  
+- Generation-based Windows-safe publishing; keep previous valid generation  
+- Output location priority (project Media → user-selected → writable sidecar)  
+- Seek index deferred; not in MC-1  
+- Sprint 8 primary reference = PR **#232**  
+- PR #235 remains documentation-only; MC-1 not started here  
+- Companion exe for v1; resolver only after Sprint 8  
+
+### 13.2 Intentionally deferred
+
+- Final FFmpeg redistribution / licensing choice  
+- libx264 GPL companion vs LGPL-compatible encoder path  
+- Final GOP and CRF values  
+- Short-GOP vs All-Intra fallback threshold  
+- VFR target-frame-rate selection policy  
+- Float WAV and >24-bit source policy  
+- Optional thumbnail cache  
+- Final cleanup policy for old generations  
+- Content-hash vs mtime+size as mandatory invalidation  
+- Whether packages ever copy originals vs reference only  
 
 ---
 
 ## 14. Concise handoff block (for ChatGPT)
 
 ```text
-HANDOFF — CuePlayer Media Converter Architecture (investigation only)
+HANDOFF — CuePlayer Media Converter Architecture (REVISED, docs only)
 Date: 2026-08-05
 Branch: cursor/media-converter-architecture-d910
+PR: #235 (documentation-only — do not implement converter here)
 Doc: docs/spikes/MEDIA_CONVERTER_ARCHITECTURE.md
 
-Done:
-- Audited master media/playback paths + Sprint 4–8 tip designs (Song Time, disk cache, Sprint 8 async video)
-- Locked audio proxy rules: preserve sample rate; PCM WAV; 16-bit for lossy/16-bit; 24-bit only for real 24-bit PCM; no processing; validate decoded frames; manifest offsets if needed
-- Recommended companion exe sharing modules; package dir + manifest schema; Performance vs Smooth Scrub ffmpeg settings; Windows FFmpeg packaging/licensing notes
-- PR-sized implementation plan that waits to wire playback resolver until after Sprint 8 video work
+Locked product order:
+1) timeline drag/scrub  2) playhead/UI smoothness  3) stable video
+4) exact Song Time sync  5) no noticeable audio change
+6) minimize video proxy size after performance met  7) fast song switch/waveform
 
-Do NOT:
-- Implement converter yet
-- Touch Sprint 8 playback / Export UI / Song Time semantics
-- Force 48 kHz audio proxies
+User flow: Drop → Convert → “CuePlayer Optimized” (hide codecs/GOP/CRF from normal UI)
 
-Next:
-- Architecture review / decide GPL libx264 companion vs LGPL encode path
-- Then MC-1 skeleton on a new branch off agreed base
+Audio: disposable PCM WAV/RF64 cache; preserve sample rate; 16-bit for MP3/AAC/16-bit;
+24-bit only if source is real 24-bit PCM; NO -ac remix; preserve channel count/layout/order;
+authoritative timing = integer samples + trims; never move marks for priming;
+validate L=LTC,R=Music later.
+
+Video: default candidate = 720p H.264 short-GOP, no B-frames, CFR, no embedded audio;
+All-Intra = fallback only after Windows benches fail short-GOP;
+preserve exact rationals (30000/1001 etc); never “round” 29.97→30.
+Seek index deferred. Sprint 8 reference = PR #232.
+
+Package: cueplayer_media/generations/<id>/ + atomic final manifest.json only when valid;
+manifest.partial.json / manifest.failed.json never consumed; keep previous generation on fail.
+Output: project Media → user folder → sidecar only if writable.
+
+MC-1 (NOT started): converter/{models,manifest,package,errors}.py + tests only;
+no ffmpeg/UI/resolver/peaks/seek-index/Sprint8/Export/SongTime changes.
+
+Next: architecture re-review approval, then a separate branch for MC-1.
 ```
 
 ---
 
-READY FOR MEDIA CONVERTER ARCHITECTURE REVIEW
+READY FOR MEDIA CONVERTER ARCHITECTURE RE-REVIEW
