@@ -2213,10 +2213,23 @@ class MainWindow(QMainWindow):
                     remote.push_preview_frame(None)
                 return
 
+            # Reject zero-size / invalid buffers before converting.
+            try:
+                h, w = int(frame.shape[0]), int(frame.shape[1])
+            except Exception:
+                perf_diag.count("video.zero_size_frame_rejected")
+                return
+            if h <= 0 or w <= 0:
+                perf_diag.count("video.zero_size_frame_rejected")
+                return
+
             if preview_vis or clean_vis:
                 with perf_diag.span("video.convert"):
                     perf_diag.count("video.convert.calls")
                     image = rgb_frame_to_qimage(frame)
+                if image is None or image.isNull() or image.width() <= 0 or image.height() <= 0:
+                    perf_diag.count("video.null_image_rejected")
+                    return
                 if preview_vis:
                     self.video_preview.set_qimage(image)
                 if clean_vis:

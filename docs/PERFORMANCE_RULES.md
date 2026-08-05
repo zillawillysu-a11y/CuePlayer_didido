@@ -1,6 +1,6 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 Round 4 (final-land priority + resume)  
+**Status:** Sprint 8 Task 2 Round 5 (empty-frame + recovery)  
 **Updated:** 2026-08-05  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md)
 

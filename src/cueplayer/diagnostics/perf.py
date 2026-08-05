@@ -213,6 +213,16 @@ def report_text() -> str:
         "video.scrub.engine_requests_blocked_after_land",
         "video.scrub.valid_frames_rejected_after_land",
         "video.scrub.min_present_seconds_cleared",
+        "video.scrub.final_land_retry",
+        "video.scrub.final_land_deadline_exit",
+        "video.scrub.final_land_recoverable_failure",
+        "video.scrub.final_land_completed_without_resume",
+        "video.scrub.resume_timeout",
+        "video.black_present.attempt",
+        "video.null_image_rejected",
+        "video.zero_size_frame_rejected",
+        "video.decoder_reset.worker",
+        "video.async_empty_keep_last",
     )
     counters = snap.get("counters") or {}
     lines.append("Video pipeline counters (0 if unused this session):")

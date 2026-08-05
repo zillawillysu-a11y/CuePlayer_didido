@@ -15,6 +15,9 @@ All notable project changes are recorded here. Product version remains in `pypro
   `SCRUB_PREVIEW` / `FINAL_LANDING` / `RESUME_PLAYBACK`); final-land exclusive
   priority (engine gated/dropped during land); land retries on lock miss;
   resume continues after exact land (no second freeze).
+- Round 5: explicit Song→media target outcomes (no ambiguous None);
+  empty decode never clears a valid preview; land retries capped (≤5 / 500 ms);
+  one-to-one resume with watchdog; bounded worker-decoder reset.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

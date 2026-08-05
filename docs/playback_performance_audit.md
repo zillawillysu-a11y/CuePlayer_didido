@@ -360,6 +360,49 @@ git pull origin cursor/sprint8-video-responsive-028d
 `engine_requests_blocked_during_land` > 0 when releasing mid-play;
 `video.pipeline_state` returns to `PLAYBACK`.
 
+### Round 5 — empty decode, target resolution, bounded recovery
+
+**Windows Round 4 failure:** `release_target_media_time=None`,
+`final_land_cache_miss=170` / `retry=163` / `completed=0`,
+`async_empty_keep_last=173`, accidental black during drag, >10 s freeze.
+
+| Root cause | Fix |
+|------------|-----|
+| Gap/out-of-range release still scheduled land with None media time | `_resolve_release_target` → explicit `VALID`/`GAP`/`OUT_OF_RANGE`/`MISSING`/`INVALID`; no land decode for non-valid |
+| `_emit_frame(None)` on gap / miss | Keep last valid unless intentional `allow_clear`; reject zero-size |
+| `_LAND_MAX_RETRIES=120` (~2 s+) | Cap ≤5 retries and 500 ms deadline; exit FINAL_LANDING safely |
+| resume_started ≠ resume_completed | Resume watchdog + complete on first post-land play frame |
+| Stuck empty decoder | Bounded worker decoder reset after repeated empties |
+
+**Retry policy after:** max 5 retries, 500 ms wall deadline, only for transient
+lock/seek empties on a `VALID_MEDIA_TARGET`. Gaps/missing/invalid exit immediately.
+
 ---
 
-## READY FOR WINDOWS FINAL-LAND AND RESUME VALIDATION
+## 7e. Windows validation — Empty-frame + recovery Round 5
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\willy\Projects\CuePlayer_v2
+git fetch origin
+git checkout cursor/sprint8-video-responsive-028d
+git pull origin cursor/sprint8-video-responsive-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+| Test | Pass |
+|------|------|
+| A slow drag | Follows; no accidental black |
+| B fast back/forth | Timeline smooth; video may skip, never clears black |
+| C release while playing | Relevant/exact quickly; continues; no 10 s load |
+| D release while paused | Lands and stays; Play from there |
+| E clip start/end/before/after/gap | Intentional; no retry storm |
+| F 20× | No stuck FINAL_LANDING; resume completes when playing |
+
+**Log checks:** `release_target_kind` always set; `final_land_retry` ≤5 per txn;
+`final_land_deadline_exit` / `recoverable_failure` rare; `black_present.attempt`
+only when reject; playing scrub → `resume_started` ≈ `resume_completed`.
+
+---
+
+## READY FOR WINDOWS VIDEO EMPTY-FRAME AND RECOVERY VALIDATION

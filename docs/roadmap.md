@@ -352,9 +352,12 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Round 4: **Final-land priority + resume** — pipeline states, engine gated
   during `FINAL_LANDING`, land cannot be overwritten by play, resume after
   exact land (fixes 1–4 s land delay + second freeze).
+- Round 5: **Empty-frame + recovery** — explicit release target outcomes,
+  no accidental black, bounded retries (≤5 / 500 ms), resume watchdog,
+  decoder reset after repeated empties.
 
-**Next:** Windows final-land + resume validation.
+**Next:** Windows empty-frame and recovery validation.
 
 ---
 
-## READY FOR WINDOWS FINAL-LAND AND RESUME VALIDATION
+## READY FOR WINDOWS VIDEO EMPTY-FRAME AND RECOVERY VALIDATION

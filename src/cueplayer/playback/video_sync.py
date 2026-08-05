@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from time import monotonic
@@ -92,15 +93,19 @@ _SYNC_LAND_LOCK_TIMEOUT_S = 0.05
 # How near a cached preview/poster must be to count as "relevant" on release.
 _RELEASE_RELEVANT_TOLERANCE_S = 0.35
 _FRAME_TOLERANCE_S = 0.05
-_LAND_RETRY_MS = 16
-_LAND_MAX_RETRIES = 120  # ~2s of retries; superseded cancels earlier
+# Round 5: bounded land retries (count + wall deadline). Never 100+ retries.
+_LAND_RETRY_MS = 40
+_LAND_MAX_RETRIES = 5
+_LAND_DEADLINE_S = 0.50
+_EMPTY_DECODE_RESET_AFTER = 3
+_RESUME_WATCHDOG_MS = 250
 
 PIPELINE_MODE = "async_latest_wins"
 SCRUB_PREVIEW_TARGET_FPS = _SCRUB_PREVIEW_HZ
 
 
 class VideoPipelineState:
-    """Explicit Video schedule ownership (Sprint 8 Task 2 Round 4)."""
+    """Explicit Video schedule ownership (Sprint 8 Task 2 Round 4+)."""
 
     PLAYBACK = "PLAYBACK"
     SCRUB_PREVIEW = "SCRUB_PREVIEW"
@@ -108,12 +113,39 @@ class VideoPipelineState:
     RESUME_PLAYBACK = "RESUME_PLAYBACK"
 
 
+class ReleaseTargetKind:
+    """Explicit Song Time → media target outcomes (Round 5)."""
+
+    VALID_MEDIA_TARGET = "VALID_MEDIA_TARGET"
+    TIMELINE_GAP = "TIMELINE_GAP"
+    OUT_OF_RANGE = "OUT_OF_RANGE"
+    MISSING_MEDIA = "MISSING_MEDIA"
+    INVALID_CLIP = "INVALID_CLIP"
+
+
+@dataclass(frozen=True)
+class ReleaseTarget:
+    kind: str
+    song_seconds: float
+    media_seconds: float | None = None
+    clip_id: str | None = None
+    reason: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        return (
+            self.kind == ReleaseTargetKind.VALID_MEDIA_TARGET
+            and self.media_seconds is not None
+            and self.clip_id is not None
+        )
+
+
 class VideoSyncController(QObject):
-    frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for black
+    frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for intentional gap
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
-    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind)
-    _async_frame_ready = Signal(int, float, object, str)
+    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind, empty_reason)
+    _async_frame_ready = Signal(int, float, object, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -204,10 +236,20 @@ class VideoSyncController(QObject):
         self._land_retry_count = 0
         self._land_request_mono = 0.0
         self._land_worker_start_mono = 0.0
+        self._land_deadline_mono = 0.0
         self._last_scrub_preview_seconds: float | None = None
         self._last_presented_song_seconds: float | None = None
+        self._last_valid_frame: np.ndarray | None = None
+        self._last_valid_frame_mono = 0.0
+        self._last_valid_frame_song_seconds: float | None = None
         self._resume_started_mono = 0.0
         self._resume_first_engine_noted = False
+        self._release_target: ReleaseTarget | None = None
+        self._scrub_transaction_id = 0
+        self._final_land_transaction_id = 0
+        self._resume_transaction_id = 0
+        self._empty_decode_streak = 0
+        self._worker_reset_count = 0
         self._scrub_preview_timer = QTimer(self)
         self._scrub_preview_timer.setInterval(_SCRUB_PREVIEW_INTERVAL_MS)
         self._scrub_preview_timer.timeout.connect(self._on_scrub_preview_tick)
@@ -219,6 +261,10 @@ class VideoSyncController(QObject):
         self._land_retry_timer.setSingleShot(True)
         self._land_retry_timer.setInterval(_LAND_RETRY_MS)
         self._land_retry_timer.timeout.connect(self._retry_final_land_if_pending)
+        self._resume_watchdog = QTimer(self)
+        self._resume_watchdog.setSingleShot(True)
+        self._resume_watchdog.setInterval(_RESUME_WATCHDOG_MS)
+        self._resume_watchdog.timeout.connect(self._on_resume_watchdog)
         # Prove which pipeline the Windows desk build is running.
         perf_diag.note("video.pipeline_mode", PIPELINE_MODE)
         perf_diag.note("video.pipeline_state", self._pipeline_state)
@@ -255,18 +301,25 @@ class VideoSyncController(QObject):
         perf_diag.note("video.pipeline_state.changed_at", now)
         perf_diag.count(f"video.pipeline_state.to.{state}")
 
-    def _cancel_scrub_resume_transaction(self) -> None:
+    def _cancel_scrub_resume_transaction(self, *, reason: str = "cancel") -> None:
         """Invalidate land/resume state (new scrub, song switch, track change)."""
         self._land_retry_timer.stop()
+        self._resume_watchdog.stop()
         if self._final_land_pending:
             perf_diag.count("video.scrub.final_land_superseded")
+        if self._resume_pending:
+            perf_diag.note("video.scrub.resume_cancel_reason", reason)
+            perf_diag.count("video.scrub.resume_cancel")
         self._scrub_land_pending = False
         self._final_land_pending = False
         self._resume_pending = False
         self._decoder_position_established = False
         self._release_target_song_time = None
         self._release_target_media_time = None
+        self._release_target = None
         self._land_retry_count = 0
+        self._land_deadline_mono = 0.0
+        self._empty_decode_streak = 0
         self._min_present_seconds = None
         perf_diag.count("video.scrub.min_present_seconds_cleared")
         perf_diag.note("video.scrub.min_present_seconds_value", None)
@@ -343,8 +396,12 @@ class VideoSyncController(QObject):
             return
         self._scrubbing = active
         if active:
-            self._cancel_scrub_resume_transaction()
+            self._cancel_scrub_resume_transaction(reason="new_scrub")
             self._scrub_session_gen += 1
+            self._scrub_transaction_id += 1
+            perf_diag.note(
+                "video.scrub.transaction_id", self._scrub_transaction_id
+            )
             self._scrub_last_requested_seconds = None
             self._scrub_preview_presented = 0
             self._last_scrub_preview_seconds = None
@@ -366,18 +423,105 @@ class VideoSyncController(QObject):
             self._scrub_pause_timer.stop()
             self._finalize_scrub_release()
 
+    def _resolve_release_target(self, song: Song, seconds: float) -> ReleaseTarget:
+        """Map Song Time to an explicit media-target outcome (never ambiguous None)."""
+        seconds = float(seconds)
+        if not np.isfinite(seconds):
+            return ReleaseTarget(
+                ReleaseTargetKind.OUT_OF_RANGE,
+                song_seconds=seconds,
+                reason="non_finite_song_time",
+            )
+        clips = [c for c in song.video_clips if not c.hidden]
+        if not clips:
+            return ReleaseTarget(
+                ReleaseTargetKind.TIMELINE_GAP,
+                song_seconds=seconds,
+                reason="no_visible_clips",
+            )
+        primary = song.active_video_clip_at(seconds)
+        if primary is None:
+            starts = [c.start_seconds for c in clips]
+            ends = [c.end_seconds for c in clips]
+            if seconds < min(starts) - 1e-6:
+                return ReleaseTarget(
+                    ReleaseTargetKind.OUT_OF_RANGE,
+                    song_seconds=seconds,
+                    reason="before_first_clip",
+                )
+            if seconds >= max(ends) - 1e-6:
+                return ReleaseTarget(
+                    ReleaseTargetKind.OUT_OF_RANGE,
+                    song_seconds=seconds,
+                    reason="after_last_clip",
+                )
+            return ReleaseTarget(
+                ReleaseTargetKind.TIMELINE_GAP,
+                song_seconds=seconds,
+                reason="gap_between_clips",
+            )
+        path = Path(primary.path)
+        try:
+            exists = path.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            return ReleaseTarget(
+                ReleaseTargetKind.MISSING_MEDIA,
+                song_seconds=seconds,
+                clip_id=primary.id,
+                reason="path_missing",
+            )
+        try:
+            media_t = float(primary.source_time_for(seconds))
+        except Exception as exc:  # noqa: BLE001
+            return ReleaseTarget(
+                ReleaseTargetKind.INVALID_CLIP,
+                song_seconds=seconds,
+                clip_id=primary.id,
+                reason=f"source_time_error:{type(exc).__name__}",
+            )
+        if not np.isfinite(media_t) or media_t < 0.0:
+            # Clamp tiny negatives; reject absurd values.
+            if np.isfinite(media_t) and -1e-3 <= media_t < 0.0:
+                media_t = 0.0
+            else:
+                return ReleaseTarget(
+                    ReleaseTargetKind.INVALID_CLIP,
+                    song_seconds=seconds,
+                    clip_id=primary.id,
+                    reason="invalid_media_time",
+                )
+        src_dur = primary.source_duration_seconds
+        if src_dur is not None and float(src_dur) > 0.0:
+            # Allow seek at/near EOF; clamp slightly inside for decoder friendliness.
+            if media_t > float(src_dur):
+                media_t = max(0.0, float(src_dur) - 1e-3)
+        return ReleaseTarget(
+            ReleaseTargetKind.VALID_MEDIA_TARGET,
+            song_seconds=seconds,
+            media_seconds=media_t,
+            clip_id=primary.id,
+            reason="ok",
+        )
+
     def _finalize_scrub_release(self) -> None:
         """Exclusive final-land after mouse release (UI never waits on PyAV).
 
-        Round 4: FINAL_LANDING owns the worker until decoder position is
-        established. Engine play requests are gated/dropped. Immediate
-        relevant frame from preview/poster cache; exact async replaces it.
+        Round 5: enter FINAL_LANDING only with an explicit target outcome.
+        Invalid/gap targets resolve immediately — no decode retry storm.
         """
         song = self._song
         seconds = self._last_position_seconds
         release_mono = monotonic()
         self._scrub_release_mono = release_mono
         self._land_retry_count = 0
+        self._empty_decode_streak = 0
+        self._land_deadline_mono = release_mono + _LAND_DEADLINE_S
+        self._final_land_transaction_id = int(self._scrub_transaction_id)
+        perf_diag.note(
+            "video.scrub.final_land_transaction_id", self._final_land_transaction_id
+        )
         self._set_pipeline_state(VideoPipelineState.FINAL_LANDING)
         perf_diag.count("video.scrub.final_land_requests")
         perf_diag.note("video.scrub.release_timestamp", release_mono)
@@ -394,85 +538,124 @@ class VideoSyncController(QObject):
             self._scrub_land_pending = False
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             return
-        seconds = float(seconds)
-        self._release_target_song_time = seconds
-        self._min_present_seconds = seconds
-        perf_diag.note("video.scrub.min_present_seconds_value", seconds)
-        self._scrub_land_pending = True
-        self._final_land_pending = True
-        self._maybe_warn_overlap(song, seconds)
-        primary = song.active_video_clip_at(seconds)
-        self._set_active(primary.id if primary else None)
-        media_t: float | None = None
-        if primary is not None:
-            try:
-                media_t = float(primary.source_time_for(seconds))
-            except Exception:
-                media_t = None
-        self._release_target_media_time = media_t
-        perf_diag.note("video.scrub.release_target_song_time", seconds)
-        perf_diag.note("video.scrub.release_target_media_time", media_t)
 
-        # Immediate relevant frame (no PyAV): preview near target → poster → keep.
-        first_src = self._present_immediate_release_frame(song, seconds, release_mono)
+        seconds = float(seconds)
+        target = self._resolve_release_target(song, seconds)
+        self._release_target = target
+        self._release_target_song_time = float(target.song_seconds)
+        self._release_target_media_time = (
+            float(target.media_seconds) if target.media_seconds is not None else None
+        )
+        self._min_present_seconds = float(target.song_seconds)
+        perf_diag.note("video.scrub.min_present_seconds_value", self._min_present_seconds)
+        perf_diag.note("video.scrub.release_target_kind", target.kind)
+        perf_diag.note("video.scrub.release_target_reason", target.reason)
+        perf_diag.note("video.scrub.release_target_song_time", target.song_seconds)
+        # Always note media time explicitly (None only for non-valid outcomes).
+        perf_diag.note(
+            "video.scrub.release_target_media_time",
+            target.media_seconds if target.is_valid else f"n/a:{target.kind}",
+        )
+        if target.clip_id:
+            perf_diag.note("video.scrub.release_target_clip_id", target.clip_id)
+
+        self._maybe_warn_overlap(song, seconds)
+        if target.clip_id:
+            self._set_active(target.clip_id)
+        else:
+            self._set_active(None)
+
+        # Immediate relevant frame (no PyAV) — never accidental black.
+        first_src = self._present_immediate_release_frame(
+            song, seconds, release_mono, target=target
+        )
         perf_diag.note("video.scrub.final_land_first_relevant_source", first_src)
-        if first_src in ("preview_cache", "poster_cache"):
+        if first_src in ("preview_cache", "poster_cache", "keep_last"):
             perf_diag.count("video.scrub.final_land_cache_hit")
-        elif first_src == "none":
+        elif first_src in ("none", "gap_keep_last", "intentional_gap"):
             perf_diag.count("video.scrub.final_land_cache_miss")
 
-        # Exact land exclusively on the async worker (cannot be overwritten by play).
-        self._schedule_final_land(seconds)
+        if not target.is_valid:
+            # No decode retries for gap / missing / invalid / out-of-range.
+            perf_diag.count(f"video.scrub.release_outcome.{target.kind}")
+            self._resolve_non_valid_release(target)
+            return
+
+        self._scrub_land_pending = True
+        self._final_land_pending = True
+        self._schedule_final_land(float(target.song_seconds))
+
+    def _resolve_non_valid_release(self, target: ReleaseTarget) -> None:
+        """Exit FINAL_LANDING without a decode retry loop."""
+        self._final_land_pending = False
+        self._scrub_land_pending = False
+        self._land_retry_timer.stop()
+        self._decoder_position_established = True
+        perf_diag.count("video.scrub.final_land_completed")
+        perf_diag.note("video.scrub.final_land_completed_without_exact", target.kind)
+        if self._pre_scrub_was_playing:
+            self._enter_resume_playback()
+        else:
+            self._set_pipeline_state(VideoPipelineState.PLAYBACK)
+            self._resume_pending = False
+            perf_diag.count("video.scrub.final_land_completed_without_resume")
 
     def _present_immediate_release_frame(
-        self, song: Song, seconds: float, release_mono: float
+        self,
+        song: Song,
+        seconds: float,
+        release_mono: float,
+        *,
+        target: ReleaseTarget,
     ) -> str:
-        """Show nearest relevant cached frame on release. Returns source tag."""
+        """Show nearest relevant cached frame on release. Never accidental black."""
         tol = _RELEASE_RELEVANT_TOLERANCE_S
         preview_t = self._last_scrub_preview_seconds
-        # Last scrub-preview present is already on screen — if near target, keep it.
+
+        def _note_relevant(src: str) -> str:
+            perf_diag.record_ms(
+                "video.scrub.final_land_first_relevant_ms",
+                (monotonic() - release_mono) * 1000.0,
+            )
+            return src
+
+        # Gap / out-of-range / missing: keep last valid frame (no black flash).
+        if not target.is_valid:
+            if self._last_valid_frame is not None:
+                return _note_relevant("gap_keep_last")
+            # No prior frame — intentional empty only when nothing was ever shown.
+            self._emit_frame(None, allow_clear=True, reason=f"intentional:{target.kind}")
+            return _note_relevant("intentional_gap")
+
         if (
             preview_t is not None
             and abs(float(preview_t) - seconds) <= tol
-            and self._last_emitted_frame is not _UNSET
-            and self._last_emitted_frame is not None
+            and self._is_valid_frame_array(self._last_emitted_frame)
         ):
-            perf_diag.record_ms(
-                "video.scrub.final_land_first_relevant_ms",
-                (monotonic() - release_mono) * 1000.0,
-            )
-            return "preview_cache"
+            return _note_relevant("preview_cache")
         poster = self._scrub_composite(song, seconds)
-        if poster is not None:
+        if self._is_valid_frame_array(poster):
             self._emit_frame(poster)
             self._last_presented_song_seconds = seconds
-            perf_diag.record_ms(
-                "video.scrub.final_land_first_relevant_ms",
-                (monotonic() - release_mono) * 1000.0,
-            )
-            return "poster_cache"
-        # Unrelated pre-scrub frame: clear to neutral rather than freeze wrong image.
+            return _note_relevant("poster_cache")
         if (
-            preview_t is None
-            or abs(float(preview_t) - seconds) > tol
+            self._last_presented_song_seconds is not None
+            and abs(float(self._last_presented_song_seconds) - seconds) <= tol
+            and self._last_valid_frame is not None
         ):
-            # Keep last only when it was a near scrub preview; else pending/neutral.
-            if (
-                self._last_presented_song_seconds is not None
-                and abs(float(self._last_presented_song_seconds) - seconds) <= tol
-            ):
-                return "preview_cache"
-            self._last_emitted_frame = _UNSET
-            self._emit_frame(None)
-            return "none"
-        return "preview_cache"
+            return _note_relevant("keep_last")
+        if self._last_valid_frame is not None:
+            # Prefer last valid over clearing to black while exact land runs.
+            return _note_relevant("keep_last")
+        return _note_relevant("none")
 
     def _schedule_final_land(self, seconds: float) -> None:
         """Queue exclusive land; replaces any older land target."""
         if self._pipeline_state != VideoPipelineState.FINAL_LANDING:
             return
+        if self._release_target is not None and not self._release_target.is_valid:
+            return
         if self._final_land_pending and self._async_req_kind == "land":
-            # Newer release / retry replaces prior land target (same pending txn).
             if abs(float(seconds) - float(self._async_req_seconds)) > 1e-6:
                 perf_diag.count("video.scrub.final_land_superseded")
         self._land_request_mono = monotonic()
@@ -485,6 +668,13 @@ class VideoSyncController(QObject):
         self._final_land_generation = int(self._async_req_gen)
         perf_diag.note("video.scrub.final_land_generation", self._final_land_generation)
 
+    def _land_budget_exhausted(self) -> bool:
+        if self._land_retry_count >= _LAND_MAX_RETRIES:
+            return True
+        if self._land_deadline_mono > 0.0 and monotonic() >= self._land_deadline_mono:
+            return True
+        return False
+
     def _retry_final_land_if_pending(self) -> None:
         if (
             self._pipeline_state != VideoPipelineState.FINAL_LANDING
@@ -492,45 +682,97 @@ class VideoSyncController(QObject):
             or not self._video_output_active
         ):
             return
+        if self._release_target is not None and not self._release_target.is_valid:
+            self._resolve_non_valid_release(self._release_target)
+            return
         target = self._release_target_song_time
         if target is None:
+            self._fail_final_land_recoverable(reason="missing_song_target")
+            return
+        if self._land_budget_exhausted():
+            perf_diag.count("video.scrub.final_land_deadline_exit")
+            self._fail_final_land_recoverable(reason="retry_deadline")
             return
         self._land_retry_count += 1
-        if self._land_retry_count > _LAND_MAX_RETRIES:
-            perf_diag.count("video.scrub.final_land_cache_miss")
-            # Give up exclusive gate so playback can recover rather than stick.
-            self._fail_final_land_stuck()
-            return
         perf_diag.count("video.scrub.final_land_retry")
+        perf_diag.note("video.scrub.final_land_retry_count", self._land_retry_count)
+        # Bounded decoder reset after repeated empties.
+        if (
+            self._empty_decode_streak >= _EMPTY_DECODE_RESET_AFTER
+            and self._release_target is not None
+            and self._release_target.clip_id
+        ):
+            self._reset_worker_decoder(self._release_target.clip_id)
+            self._empty_decode_streak = 0
         self._schedule_final_land(float(target))
 
-    def _fail_final_land_stuck(self) -> None:
-        """Exit FINAL_LANDING if exact land cannot complete (should be rare)."""
+    def _fail_final_land_recoverable(self, *, reason: str) -> None:
+        """Exit FINAL_LANDING after bounded failure; restore play scheduling."""
         self._final_land_pending = False
         self._scrub_land_pending = False
-        self._decoder_position_established = True  # unblock; best-effort
+        self._land_retry_timer.stop()
+        self._decoder_position_established = True
+        perf_diag.note("video.scrub.resume_failed_reason", reason)
+        perf_diag.count("video.scrub.final_land_recoverable_failure")
+        # Keep nearest valid frame on screen (already shown).
         if self._pre_scrub_was_playing:
             self._enter_resume_playback()
         else:
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             self._resume_pending = False
+            perf_diag.count("video.scrub.final_land_completed_without_resume")
 
     def _enter_resume_playback(self) -> None:
         self._playback_resume_generation += 1
+        self._resume_transaction_id = int(self._final_land_transaction_id)
         self._resume_pending = True
         self._resume_started_mono = monotonic()
         self._resume_first_engine_noted = False
         self._set_pipeline_state(VideoPipelineState.RESUME_PLAYBACK)
         perf_diag.count("video.scrub.resume_started")
         perf_diag.note(
+            "video.scrub.resume_transaction_id", self._resume_transaction_id
+        )
+        perf_diag.note(
             "video.scrub.resume_generation", self._playback_resume_generation
         )
-        # Soft floor: reject only frames before release target.
         if self._release_target_song_time is not None:
             self._min_present_seconds = float(self._release_target_song_time)
             perf_diag.note(
                 "video.scrub.min_present_seconds_value", self._min_present_seconds
             )
+        self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
+
+    def _on_resume_watchdog(self) -> None:
+        """Force-complete resume if engine/decode has not delivered a new frame."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return
+        if not self._resume_pending:
+            return
+        perf_diag.count("video.scrub.resume_timeout")
+        self._complete_resume(reason="watchdog")
+
+    def _complete_resume(self, *, reason: str = "frame") -> None:
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return
+        self._resume_watchdog.stop()
+        self._resume_pending = False
+        if self._resume_started_mono > 0.0:
+            elapsed = (monotonic() - self._resume_started_mono) * 1000.0
+            perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
+            if reason == "frame":
+                perf_diag.record_ms("video.scrub.resume_first_decode_ms", elapsed)
+        if self._release_target_media_time is not None:
+            perf_diag.note(
+                "video.scrub.decoder_timestamp_at_first_resume",
+                float(self._release_target_media_time),
+            )
+        self._set_pipeline_state(VideoPipelineState.PLAYBACK)
+        perf_diag.count("video.scrub.resume_completed")
+        perf_diag.note("video.scrub.resume_complete_reason", reason)
+        self._min_present_seconds = None
+        perf_diag.count("video.scrub.min_present_seconds_cleared")
+        perf_diag.note("video.scrub.min_present_seconds_value", None)
 
     def _complete_final_land(self, seconds: float, frame: np.ndarray) -> None:
         """Exact land presented → establish decoder position → resume or pause."""
@@ -546,6 +788,7 @@ class VideoSyncController(QObject):
         self._scrub_land_pending = False
         self._land_retry_timer.stop()
         self._decoder_position_established = True
+        self._empty_decode_streak = 0
         perf_diag.count("video.scrub.final_land_presented")
         perf_diag.count("video.scrub.final_land_completed")
         perf_diag.note("video.scrub.final_presented_song_time", float(seconds))
@@ -558,8 +801,6 @@ class VideoSyncController(QObject):
             elapsed = (monotonic() - self._scrub_release_mono) * 1000.0
             perf_diag.record_ms("video.scrub.final_land_exact_ms", elapsed)
             perf_diag.record_ms("video.scrub.resume_first_frame_ms", elapsed)
-        # Keep floor at release target (not drifted land seconds) so resume
-        # frames at/after release are accepted.
         if self._release_target_song_time is not None:
             self._min_present_seconds = float(self._release_target_song_time)
         else:
@@ -571,12 +812,10 @@ class VideoSyncController(QObject):
         if self._pre_scrub_was_playing:
             self._enter_resume_playback()
         else:
-            # Paused scrub: stay visually landed; no repeated decode.
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             self._resume_pending = False
-            # Allow later Play from this position; keep soft floor briefly so
-            # a late obsolete land cannot flash an older frame.
             self._playback_resume_generation += 1
+            perf_diag.count("video.scrub.final_land_completed_without_resume")
 
     def _maybe_preload_scrub(self) -> None:
         if not self._scrubbing or not self._video_output_active:
@@ -669,15 +908,18 @@ class VideoSyncController(QObject):
         self._cancel_pending()
         self._scrub_preview_timer.stop()
         self._scrub_pause_timer.stop()
-        self._cancel_scrub_resume_transaction()
+        self._cancel_scrub_resume_transaction(reason="song_switch")
         self._scrubbing = False
         self._set_pipeline_state(VideoPipelineState.PLAYBACK)
         self._close_all_decoders()
         self._scrub_cache.clear()
         self._warned_overlap_keys.clear()
         self._set_active(None)
+        self._last_valid_frame = None
+        self._last_valid_frame_mono = 0.0
+        self._last_valid_frame_song_seconds = None
         self._last_emitted_frame = _UNSET  # force this emit through even if unchanged
-        self._emit_frame(None)
+        self._emit_frame(None, allow_clear=True, reason="song_switch")
         # Do not preload scrub ladders here — song switch + Clean Output used
         # to start a PyAV storm that blocked live decode via av_path_lock.
 
@@ -741,6 +983,8 @@ class VideoSyncController(QObject):
                 "video.scrub.resume_first_engine_request_ms",
                 (monotonic() - self._resume_started_mono) * 1000.0,
             )
+            # Engine is advancing — resume is live even before next unique frame.
+            # Watchdog still covers decode stalls; first play present also completes.
 
         if not self._video_output_active:
             return
@@ -748,7 +992,7 @@ class VideoSyncController(QObject):
         if song is None:
             self._cancel_pending()
             self._set_active(None)
-            self._emit_frame(None)
+            self._emit_frame(None, allow_clear=True, reason="no_song")
             return
 
         self._maybe_warn_overlap(song, seconds)
@@ -757,7 +1001,19 @@ class VideoSyncController(QObject):
         if not clips:
             self._cancel_pending()
             self._set_active(None)
-            self._emit_frame(None)
+            # Scrub / final-land: never clear a valid preview on a timeline gap.
+            if (
+                self._scrubbing
+                or self._pipeline_state
+                in (
+                    VideoPipelineState.SCRUB_PREVIEW,
+                    VideoPipelineState.FINAL_LANDING,
+                )
+            ):
+                perf_diag.count("video.empty_decode.reason.timeline_gap")
+                return
+            # Playback into a gap: intentional no-media (allow clear).
+            self._emit_frame(None, allow_clear=True, reason="timeline_gap_playback")
             return
 
         primary = song.active_video_clip_at(seconds)
@@ -956,7 +1212,9 @@ class VideoSyncController(QObject):
                     seconds, kind="land", lock_timeout=_ASYNC_LAND_LOCK_TIMEOUT_S
                 )
                 return
-            self._emit_frame(None)
+            # Keep last valid frame — do not clear on empty sync decode.
+            perf_diag.count("video.async_empty_keep_last")
+            perf_diag.count("video.empty_decode.reason.sync_empty")
 
     def _invalidate_async_requests(self) -> None:
         """Bump generation so in-flight worker results are discarded."""
@@ -1023,6 +1281,7 @@ class VideoSyncController(QObject):
                 lock_timeout = float(self._async_lock_timeout)
                 song = self._song
                 frame: np.ndarray | None = None
+                empty_reason = ""
                 decode_t0 = monotonic()
                 if kind == "land":
                     self._land_worker_start_mono = decode_t0
@@ -1039,23 +1298,40 @@ class VideoSyncController(QObject):
                     elif kind == "land":
                         perf_diag.count("video.scrub.final_land_superseded")
                     continue
-                if song is not None and self._video_output_active:
-                    try:
-                        with perf_diag.span("video.decode.async"):
-                            frame = self._decode_frame_array(
-                                song,
-                                seconds,
-                                worker=True,
-                                lock_timeout=lock_timeout,
-                                stale_on_timeout=(kind != "land"),
-                            )
-                    except Exception:
-                        frame = None
+                if song is None:
+                    empty_reason = "no_song"
+                elif not self._video_output_active:
+                    empty_reason = "output_inactive"
+                else:
+                    # Refuse land decode when target is not a valid media target.
                     if kind == "land":
-                        perf_diag.record_ms(
-                            "video.scrub.final_land_decode_ms",
-                            (monotonic() - decode_t0) * 1000.0,
-                        )
+                        tgt = self._release_target
+                        if tgt is not None and not tgt.is_valid:
+                            empty_reason = f"invalid_target:{tgt.kind}"
+                        elif song.active_video_clip_at(seconds) is None:
+                            empty_reason = "timeline_gap"
+                    if not empty_reason:
+                        try:
+                            with perf_diag.span("video.decode.async"):
+                                frame = self._decode_frame_array(
+                                    song,
+                                    seconds,
+                                    worker=True,
+                                    lock_timeout=lock_timeout,
+                                    stale_on_timeout=(kind != "land"),
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            frame = None
+                            empty_reason = f"decode_exception:{type(exc).__name__}"
+                        if kind == "land":
+                            perf_diag.record_ms(
+                                "video.scrub.final_land_decode_ms",
+                                (monotonic() - decode_t0) * 1000.0,
+                            )
+                        if frame is None and not empty_reason:
+                            empty_reason = self._classify_empty_decode(
+                                song, seconds, kind=kind
+                            )
                 # Generation check after decode — do not present obsolete work.
                 if gen != self._async_req_gen:
                     perf_diag.count("video.async_stale_drop")
@@ -1067,7 +1343,9 @@ class VideoSyncController(QObject):
                         perf_diag.count("video.scrub.old_generation_drop_after_release")
                 elif gen == self._async_req_gen:
                     perf_diag.count("video.async_decoded")
-                    self._async_frame_ready.emit(gen, seconds, frame, kind)
+                    self._async_frame_ready.emit(
+                        gen, seconds, frame, kind, empty_reason or ""
+                    )
                 if self._async_req_gen == gen:
                     break
                 perf_diag.count("video.async_redecode")
@@ -1079,8 +1357,29 @@ class VideoSyncController(QObject):
                 perf_diag.note("video.worker_inflight", True)
                 self._async_pool.submit(self._async_worker_loop)
 
+    def _classify_empty_decode(
+        self, song: Song, seconds: float, *, kind: str
+    ) -> str:
+        """Best-effort empty-decode reason for diagnostics (UI thread or worker)."""
+        clip = song.active_video_clip_at(seconds)
+        if clip is None:
+            return "timeline_gap"
+        try:
+            if not Path(clip.path).exists():
+                return "missing_media"
+        except OSError:
+            return "missing_media"
+        if kind == "land":
+            return "lock_or_seek_empty"
+        return "decode_empty"
+
     def _on_async_frame_ready(
-        self, gen: int, seconds: float, frame: object, kind: str = "play"
+        self,
+        gen: int,
+        seconds: float,
+        frame: object,
+        kind: str = "play",
+        empty_reason: str = "",
     ) -> None:
         if gen != self._async_req_gen:
             perf_diag.count("video.async_stale_drop")
@@ -1116,7 +1415,6 @@ class VideoSyncController(QObject):
                     VideoPipelineState.PLAYBACK,
                 ):
                     perf_diag.count("video.scrub.valid_frames_rejected_after_land")
-                    # If engine is blocked incorrectly after land, count it.
                     if self._decoder_position_established:
                         perf_diag.count(
                             "video.scrub.engine_requests_blocked_after_land"
@@ -1128,7 +1426,7 @@ class VideoSyncController(QObject):
         # Prefer a warm scrub poster over a failed/None async result while dragging.
         if self._scrubbing and self._song is not None and kind != "land":
             poster = self._scrub_composite(self._song, float(seconds))
-            if poster is not None:
+            if self._is_valid_frame_array(poster):
                 self._last_decode_time = monotonic()
                 self._emit_frame(poster)
                 self._last_scrub_preview_seconds = float(seconds)
@@ -1137,31 +1435,66 @@ class VideoSyncController(QObject):
                 self._scrub_preview_presented += 1
                 return
 
-        # Land miss (lock timeout / contended): retry — do NOT stick forever.
-        if frame is None and kind == "land" and self._final_land_pending:
+        # Empty / invalid frame handling — never accidental black.
+        if frame is None or not self._is_valid_frame_array(frame):
+            reason = empty_reason or (
+                "zero_size" if frame is not None else "decode_empty"
+            )
             perf_diag.count("video.async_empty_keep_last")
-            perf_diag.count("video.scrub.final_land_cache_miss")
-            if not self._land_retry_timer.isActive():
-                self._land_retry_timer.start(_LAND_RETRY_MS)
+            perf_diag.count(f"video.empty_decode.reason.{reason}")
+            if frame is not None and not self._is_valid_frame_array(frame):
+                perf_diag.count("video.zero_size_frame_rejected")
+            self._empty_decode_streak += 1
+            if self._last_valid_frame_mono > 0.0:
+                age_ms = (monotonic() - self._last_valid_frame_mono) * 1000.0
+                perf_diag.note("video.last_valid_frame_age_ms", age_ms)
+                if self._last_valid_frame_song_seconds is not None:
+                    dist_ms = (
+                        abs(float(seconds) - float(self._last_valid_frame_song_seconds))
+                        * 1000.0
+                    )
+                    perf_diag.note(
+                        "video.last_valid_frame_distance_from_target_ms", dist_ms
+                    )
+
+            if kind == "land" and self._final_land_pending:
+                # Non-transient outcomes: exit without retry storm.
+                if reason in (
+                    "timeline_gap",
+                    "missing_media",
+                    "invalid_target:TIMELINE_GAP",
+                    "invalid_target:OUT_OF_RANGE",
+                    "invalid_target:MISSING_MEDIA",
+                    "invalid_target:INVALID_CLIP",
+                    "no_song",
+                ) or reason.startswith("invalid_target:"):
+                    if self._release_target is not None:
+                        self._resolve_non_valid_release(self._release_target)
+                    else:
+                        self._fail_final_land_recoverable(reason=reason)
+                    return
+                if self._land_budget_exhausted():
+                    perf_diag.count("video.scrub.final_land_deadline_exit")
+                    self._fail_final_land_recoverable(reason="retry_deadline")
+                    return
+                if not self._land_retry_timer.isActive():
+                    self._land_retry_timer.start(_LAND_RETRY_MS)
+                return
+            # Scrub/play empty: keep last valid frame on screen.
             return
 
-        # Never paint black over a good frame when the worker timed out on the lock.
-        if frame is None:
-            perf_diag.count("video.async_empty_keep_last")
-            return
-        if not isinstance(frame, np.ndarray):
-            return
-
+        assert isinstance(frame, np.ndarray)
+        self._empty_decode_streak = 0
         self._last_decode_time = monotonic()
 
         if kind == "land" and self._final_land_pending:
-            # Exact land replaces approximate frame and completes the transaction.
             if (
                 self._release_target_song_time is not None
-                and abs(float(seconds) - float(self._release_target_song_time))
-                > 0.5
+                and abs(float(seconds) - float(self._release_target_song_time)) > 0.5
             ):
-                # Land target drifted — reschedule exact release time.
+                if self._land_budget_exhausted():
+                    self._fail_final_land_recoverable(reason="target_drift")
+                    return
                 perf_diag.count("video.scrub.final_land_retry")
                 self._schedule_final_land(float(self._release_target_song_time))
                 return
@@ -1177,24 +1510,40 @@ class VideoSyncController(QObject):
             if self._scrub_release_mono <= 0.0:
                 perf_diag.record_ms("video.scrub.request_to_present_ms", 0.0)
 
-        # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame.
+        # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame
+        # (even if emit skipped identical ndarray — land frame may match).
         if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
-            if self._resume_started_mono > 0.0:
-                elapsed = (monotonic() - self._resume_started_mono) * 1000.0
-                perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
-                perf_diag.record_ms("video.scrub.resume_first_decode_ms", elapsed)
-            if self._release_target_media_time is not None:
-                perf_diag.note(
-                    "video.scrub.decoder_timestamp_at_first_resume",
-                    float(self._release_target_media_time),
-                )
-            self._resume_pending = False
-            self._set_pipeline_state(VideoPipelineState.PLAYBACK)
-            perf_diag.count("video.scrub.resume_completed")
-            # Soft floor can clear after first valid resume present.
-            self._min_present_seconds = None
-            perf_diag.count("video.scrub.min_present_seconds_cleared")
-            perf_diag.note("video.scrub.min_present_seconds_value", None)
+            self._complete_resume(reason="frame")
+
+    def _is_valid_frame_array(self, frame: object) -> bool:
+        if frame is None or frame is _UNSET:
+            return False
+        if not isinstance(frame, np.ndarray):
+            return False
+        if frame.ndim < 2:
+            return False
+        h = int(frame.shape[0])
+        w = int(frame.shape[1])
+        if h <= 0 or w <= 0:
+            return False
+        if frame.ndim >= 3 and int(frame.shape[2]) < 3:
+            return False
+        return True
+
+    def _reset_worker_decoder(self, clip_id: str) -> None:
+        """Bounded recovery: recreate one worker decoder after repeated empties."""
+        with self._worker_lock:
+            old = self._worker_decoders.pop(clip_id, None)
+            self._worker_decoder_paths.pop(clip_id, None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        self._worker_reset_count += 1
+        perf_diag.count("video.decoder_reset.worker")
+        perf_diag.note("video.decoder_reset.clip_id", clip_id)
+        perf_diag.note("video.decoder_reset.count", self._worker_reset_count)
 
     def _decode_frame_array(
         self,
@@ -1249,17 +1598,45 @@ class VideoSyncController(QObject):
             return None
         return np.clip(composite, 0, 255).astype(np.uint8)
 
-    def _emit_frame(self, frame: np.ndarray | None) -> None:
-        """Skip emitting (and the Preview/Clean Output QImage copy + repaint
-        that follows) when `frame` is literally the same object as last
-        time. Normal during playback: VideoDecoder.frame_at() hands back the
-        exact same cached ndarray on every tick that lands within the same
-        source frame's duration (see video_loader.py), so without this
-        check every ~16ms poll tick would still push an unchanged frame
-        through to both preview widgets."""
+    def _emit_frame(
+        self,
+        frame: np.ndarray | None,
+        *,
+        allow_clear: bool = False,
+        reason: str = "",
+    ) -> None:
+        """Present a frame. Never accidentally clear a valid preview to black.
+
+        Identical-object skip keeps Preview/Clean from repainting the same
+        ndarray every engine tick. ``allow_clear=True`` is only for intentional
+        gap / song-switch / no-media states.
+        """
+        if frame is None:
+            if not allow_clear and self._is_valid_frame_array(self._last_emitted_frame):
+                perf_diag.count("video.black_present.attempt")
+                perf_diag.note(
+                    "video.preview_cleared.reason", f"rejected:{reason or 'none'}"
+                )
+                return
+            if frame is self._last_emitted_frame:
+                return
+            self._last_emitted_frame = None
+            perf_diag.count("video.emit.calls")
+            if allow_clear:
+                perf_diag.note("video.preview_cleared.reason", reason or "intentional")
+            self.frame_changed.emit(None)
+            return
+        if not self._is_valid_frame_array(frame):
+            perf_diag.count("video.zero_size_frame_rejected")
+            perf_diag.count("video.black_present.attempt")
+            return
         if frame is self._last_emitted_frame:
             return
         self._last_emitted_frame = frame
+        self._last_valid_frame = frame
+        self._last_valid_frame_mono = monotonic()
+        if self._last_position_seconds is not None:
+            self._last_valid_frame_song_seconds = float(self._last_position_seconds)
         perf_diag.count("video.emit.calls")
         self.frame_changed.emit(frame)
 
