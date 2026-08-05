@@ -1351,7 +1351,9 @@ class MainWindow(QMainWindow):
         # preview uses scrub_preview_requested (not full engine seek).
         self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
         self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
-        self.timeline.scrub_preview_requested.connect(self.video_sync.update_position)
+        self.timeline.scrub_preview_requested.connect(
+            lambda t: self.video_sync.update_position(t, source="scrub")
+        )
         self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
@@ -1383,16 +1385,10 @@ class MainWindow(QMainWindow):
         self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
         self.timeline.mark_track_colors_changed.connect(self._on_mark_track_colors_changed)
         self.timeline.add_mark_requested.connect(self._add_mark)
-        # Video decode must not run ahead of timeline/MIDI on the UI thread.
-        # QueuedConnection lets playhead + cue-list update finish first; decode
-        # follows on the next event-loop turn (still driven by the audio clock).
-        self.engine.position_changed.connect(
-            self._forward_engine_position_to_video,
-            Qt.ConnectionType.QueuedConnection,
-        )
-        # Throttles video decode to a display cadence while playing, so the
-        # audio clock's ~60Hz position ticks can't starve the UI thread the
-        # timeline also lives on — see VideoSyncController.set_playing().
+        # Video decode must not run ahead of timeline paint, and must not pile
+        # QueuedConnection backlog while the UI is busy. Single canonical path:
+        # position fan-out → timeline first → then video_sync.update_position.
+        # Scrub uses scrub_preview_requested only (engine forward skipped).
         self.engine.playing_changed.connect(self.video_sync.set_playing)
         # One RGB→QImage conversion shared by Preview + Clean Output (avoids
         # double memcpy when Clean Output is open with a video track).
@@ -2202,6 +2198,7 @@ class MainWindow(QMainWindow):
         and presents — instrumented separately from ``video.decode``.
         """
         with perf_diag.span("video.present"):
+            perf_diag.count("video.present.calls")
             preview_vis = self._video_preview_visible()
             clean_vis = self._clean_output_visible()
             ndi_on = bool(self.project.clean_video_output.ndi_enabled)
@@ -2221,6 +2218,7 @@ class MainWindow(QMainWindow):
 
             if preview_vis or clean_vis:
                 with perf_diag.span("video.convert"):
+                    perf_diag.count("video.convert.calls")
                     image = rgb_frame_to_qimage(frame)
                 if preview_vis:
                     self.video_preview.set_qimage(image)
@@ -4990,8 +4988,12 @@ class MainWindow(QMainWindow):
             self._digit_shortcuts.append(sc)
 
     def _forward_engine_position_to_video(self, engine_seconds: float) -> None:
-        """AudioEngine emits Variant Time; video clips live on Song Time."""
-        self.video_sync.update_position(self.playback.engine_to_song_time(engine_seconds))
+        """Legacy hook — play path now schedules video inside position fan-out."""
+        if self.video_sync.is_scrubbing():
+            return
+        self.video_sync.update_position(
+            self.playback.engine_to_song_time(engine_seconds), source="engine"
+        )
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
@@ -5003,6 +5005,10 @@ class MainWindow(QMainWindow):
             self.transport.set_times(seconds, self.engine.duration)
             self.monitor.set_position(seconds, self.engine.duration)
             self._refresh_output_timecode_clock(seconds)
+            # Canonical video schedule (after playhead). Skip while scrubbing —
+            # Timeline scrub_preview_requested owns video then.
+            if not self.video_sync.is_scrubbing():
+                self.video_sync.update_position(seconds, source="engine")
             # Overview syncs via timeline.view_changed (set_position) — do not
             # call _sync_timeline_overview again here (~60 Hz double work).
             perf_diag.count("ui.position_fanout.calls")
@@ -5010,10 +5016,11 @@ class MainWindow(QMainWindow):
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
         # ``seconds`` from Timeline is already Song Time.
+        # Overview is updated via throttled timeline.view_changed during scrub —
+        # do not sync it on every preview tick (was doubling overview work).
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
-        self._sync_timeline_overview()
 
     def _open_align_anchors(self) -> None:
         """Tools → Align Anchors… — draft, preview session, Apply via undo."""
@@ -5052,11 +5059,16 @@ class MainWindow(QMainWindow):
         try:
             from PySide6.QtWidgets import QMessageBox
 
+            mode = self.video_sync.pipeline_mode()
             QMessageBox.information(
                 self,
                 "Performance Report",
                 f"Appended report to:\n\n{path}\n\n"
-                "Open that file in Notepad and send the last section after testing.",
+                f"video.pipeline_mode = {mode}\n\n"
+                "Open that file in Notepad. Use ONLY the last ===== section "
+                "(this session). Confirm it lists video.decode.async / "
+                "video.async_coalesce — if pipeline_mode is missing, you are "
+                "not on the Task 2 Round 2 build.",
             )
         except Exception:  # noqa: BLE001
             pass

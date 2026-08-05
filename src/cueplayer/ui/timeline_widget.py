@@ -191,6 +191,8 @@ class TimelineWidget(QWidget):
         self._scrub_edge = 64.0
         self._wave_split_hit = 6
         self._last_scrub_preview_ms = 0
+        self._last_scrub_view_changed_ns = 0
+        self._scrub_view_changed_interval_ns = 66_000_000  # ~15 Hz overview while scrubbing
         self._selected_mark_ids: set[str] = set()
         self._box_selecting = False
         self._box_additive = False
@@ -1707,11 +1709,13 @@ class TimelineWidget(QWidget):
                 if scroll_moved:
                     self._reset_playhead_dirty_tracking()
                     self.update()
+                    perf_diag.count("timeline.paint.request.full.scroll_follow")
                 else:
                     # Auto Scroll off (or playhead still in view): only dirty the
                     # old+new playhead columns. Full-widget update every tick was
                     # blitting the tall Video Track pixmap + live marks for free.
                     self._update_playhead_dirty_region()
+                    perf_diag.count("timeline.paint.request.partial.playhead")
             if now - self._last_view_changed_ns >= self._play_view_changed_interval_ns:
                 self._last_view_changed_ns = now
                 self.view_changed.emit()
@@ -1749,10 +1753,12 @@ class TimelineWidget(QWidget):
             # Scroll/zoom moved the green line in screen space — a narrow strip
             # from the pre-transform X would leave a ghost playhead behind.
             self.update()
+            perf_diag.count("timeline.paint.request.full.playhead_view")
             return
         left = min(prev, x) - margin
         width = abs(x - prev) + 2 * margin
         self.update(QRect(max(0, left), 0, max(2 * margin, width), h))
+        perf_diag.count("timeline.paint.request.partial.playhead")
 
     def set_zoom(self, pixels_per_second: float, anchor_x: float | None = None) -> None:
         lo = self._min_pixels_per_second()
@@ -2115,10 +2121,25 @@ class TimelineWidget(QWidget):
             self.scrub_preview_requested.emit(self._position)
         if force:
             self._seek_from_x(x)
-        if abs(self._scroll_x - prev_scroll) > 0.5:
-            self._invalidate_scrub_backdrop()
-        self.update()
-        self.view_changed.emit()
+        scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
+        if scroll_moved:
+            # Do NOT eagerly drop the backdrop — overscan blit rebuilds when
+            # scroll leaves the margin. Eager invalidate forced full Video
+            # Track rasterization on every edge-pan mouse-move.
+            self._reset_playhead_dirty_tracking()
+            self.update()
+            perf_diag.count("timeline.paint.request.full.scrub_scroll")
+        else:
+            self._update_playhead_dirty_region()
+            perf_diag.count("timeline.paint.request.partial.scrub_playhead")
+        now_ns = monotonic_ns()
+        if (
+            force
+            or now_ns - self._last_scrub_view_changed_ns
+            >= self._scrub_view_changed_interval_ns
+        ):
+            self._last_scrub_view_changed_ns = now_ns
+            self.view_changed.emit()
 
     def _paint_right(self) -> int:
         """Right edge used by static-layer painters (may be wider during overscan bake)."""

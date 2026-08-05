@@ -343,15 +343,14 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Tools → Align Anchors / MA Preflight hidden via `ENABLE_EXPERIMENTAL_FEATURES=False`.
 - Optional `CUEPLAYER_PERF=1` diagnostics; no speculative optimizations.
 
-## Sprint 8 Task 2 — Video Track Responsiveness (done)
+## Sprint 8 Task 2 — Video Track Responsiveness
 
-- Play / scrub-cold: latest-wins async PyAV on dedicated worker decoders.
-- Scrub-end / pause land: one-shot sync decode for accuracy.
-- Song activate: soft-stop + timeline paint before `quiesce_output`.
-- Diagnostics: `video.decode.async`, `video.convert`, `video.present`, async coalesce counters.
+- Round 1: async latest-wins + paint-before-quiesce (~50% desk improve; not acceptance).
+- Round 2: prove pipeline in log; single engine schedule; scrub partial paints;
+  lock_timeout against multi-second spikes.
 
-**Next:** Tasks 3–5 if desk validation still shows convert/paint or Cue List cost.
+**Next:** Windows A/B Round 2 validation (acceptance = nearly indistinguishable from no-video).
 
 ---
 
-## READY FOR WINDOWS VIDEO RESPONSIVENESS VALIDATION
+## READY FOR WINDOWS VIDEO RESPONSIVENESS VALIDATION — ROUND 2

@@ -76,6 +76,13 @@ _MIN_SEEK_DECODE_INTERVAL = 1.0 / _MAX_SEEK_DECODE_HZ
 
 _UNSET = object()
 
+# Async worker never blocks > this on av_path_lock (drop frame / retry later).
+_ASYNC_LOCK_TIMEOUT_S = 0.05
+# Scrub-end / stop land: bound sync wait so UI cannot freeze for seconds.
+_SYNC_LAND_LOCK_TIMEOUT_S = 0.12
+
+PIPELINE_MODE = "async_latest_wins"
+
 
 class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for black
@@ -150,6 +157,15 @@ class VideoSyncController(QObject):
         self._async_frame_ready.connect(
             self._on_async_frame_ready, Qt.ConnectionType.QueuedConnection
         )
+        # Prove which pipeline the Windows desk build is running.
+        perf_diag.note("video.pipeline_mode", PIPELINE_MODE)
+        perf_diag.note("video.worker_pool", "video-live-decode:1")
+
+    def is_scrubbing(self) -> bool:
+        return bool(self._scrubbing)
+
+    def pipeline_mode(self) -> str:
+        return PIPELINE_MODE
 
     def set_defer_live_decode(self, check: Callable[[], bool] | None) -> None:
         """Optional gate: skip play-time frame decode while ``check()`` is True."""
@@ -250,7 +266,9 @@ class VideoSyncController(QObject):
         if song is None or seconds is None:
             return
         self._invalidate_async_requests()
-        self._decode_and_emit(song, seconds)
+        self._decode_and_emit(
+            song, seconds, lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
+        )
 
     def land_frame_at(self, seconds: float | None = None) -> None:
         """Decode+emit one frame now, ignoring seek/play throttle.
@@ -275,7 +293,9 @@ class VideoSyncController(QObject):
         self._maybe_warn_overlap(song, float(pos))
         primary = song.active_video_clip_at(float(pos))
         self._set_active(primary.id if primary else None)
-        self._decode_and_emit(song, float(pos))
+        self._decode_and_emit(
+            song, float(pos), lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
+        )
 
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.
@@ -346,9 +366,16 @@ class VideoSyncController(QObject):
         if self._scrubbing and self._video_output_active:
             self._scrub_cache.preload(list(self._song.video_clips))
 
-    def update_position(self, seconds: float) -> None:
-        """Call on every AudioEngine.position_changed tick (the master clock)."""
+    def update_position(self, seconds: float, *, source: str = "engine") -> None:
+        """Schedule video for Song Time ``seconds``.
+
+        Canonical sources (exactly one during normal play):
+        - ``source="engine"`` — MainWindow position fan-out (AudioEngine clock)
+        - ``source="scrub"`` — Timeline scrub_preview_requested while dragging
+        """
         perf_diag.count("video.update_position.calls")
+        perf_diag.count(f"video.schedule.source.{source}")
+        perf_diag.note("video.pipeline_mode", PIPELINE_MODE)
         self._last_position_seconds = float(seconds)
         if not self._video_output_active:
             return
@@ -412,7 +439,7 @@ class VideoSyncController(QObject):
             self._last_decode_time = monotonic()
             self._request_async_live_frame(seconds)
         else:
-            self._decode_and_emit(song, seconds)
+            self._decode_and_emit(song, seconds, lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S)
 
     def _current_min_decode_interval(self) -> float:
         """Minimum seconds between actual decode+emit work. Scrubbing takes
@@ -469,13 +496,30 @@ class VideoSyncController(QObject):
             return None
         return np.clip(composite, 0, 255).astype(np.uint8)
 
-    def _decode_and_emit(self, song: Song, seconds: float) -> None:
-        with perf_diag.span("video.decode"):
+    def _decode_and_emit(
+        self,
+        song: Song,
+        seconds: float,
+        *,
+        lock_timeout: float | None = _SYNC_LAND_LOCK_TIMEOUT_S,
+    ) -> None:
+        with perf_diag.span("video.decode.sync"):
             self._last_decode_time = monotonic()
             self._pending_clip = None
             self._pending_seconds = None
-            frame = self._decode_frame_array(song, seconds, worker=False)
-            self._emit_frame(frame)
+            frame = self._decode_frame_array(
+                song, seconds, worker=False, lock_timeout=lock_timeout
+            )
+            if frame is not None:
+                self._emit_frame(frame)
+                return
+            # Contended lock / cold miss: do not paint black or block for seconds —
+            # follow up on the async worker (latest-wins).
+            if lock_timeout is not None and self._video_output_active:
+                perf_diag.count("video.sync_land_fallback_async")
+                self._request_async_live_frame(seconds)
+                return
+            self._emit_frame(None)
 
     def _invalidate_async_requests(self) -> None:
         """Bump generation so in-flight worker results are discarded."""
@@ -487,6 +531,7 @@ class VideoSyncController(QObject):
         self._async_req_gen += 1
         self._async_req_seconds = float(seconds)
         perf_diag.count("video.async_schedule")
+        perf_diag.note("video.worker_inflight", True)
         if self._async_inflight:
             perf_diag.count("video.async_coalesce")
             return
@@ -503,21 +548,36 @@ class VideoSyncController(QObject):
                 song = self._song
                 frame: np.ndarray | None = None
                 if song is not None and self._video_output_active:
+                    # Abandon before expensive work if a newer request won.
+                    if gen != self._async_req_gen:
+                        perf_diag.count("video.async_stale_drop")
+                        continue
                     try:
                         with perf_diag.span("video.decode.async"):
-                            frame = self._decode_frame_array(song, seconds, worker=True)
+                            frame = self._decode_frame_array(
+                                song,
+                                seconds,
+                                worker=True,
+                                lock_timeout=_ASYNC_LOCK_TIMEOUT_S,
+                            )
                     except Exception:
                         frame = None
-                if gen == self._async_req_gen:
+                # Drop after decode if superseded (never present stale).
+                if gen != self._async_req_gen:
+                    perf_diag.count("video.async_stale_drop")
+                elif gen == self._async_req_gen:
+                    perf_diag.count("video.async_decoded")
                     self._async_frame_ready.emit(gen, seconds, frame)
                 if self._async_req_gen == gen:
                     break
                 perf_diag.count("video.async_redecode")
         finally:
             self._async_inflight = False
+            perf_diag.note("video.worker_inflight", False)
             # Coalesced request arrived after the exit check — re-arm once.
             if self._async_req_gen != gen and self._video_output_active:
                 self._async_inflight = True
+                perf_diag.note("video.worker_inflight", True)
                 self._async_pool.submit(self._async_worker_loop)
 
     def _on_async_frame_ready(self, gen: int, seconds: float, frame: object) -> None:
@@ -540,7 +600,12 @@ class VideoSyncController(QObject):
             self._emit_frame(None)
 
     def _decode_frame_array(
-        self, song: Song, seconds: float, *, worker: bool
+        self,
+        song: Song,
+        seconds: float,
+        *,
+        worker: bool,
+        lock_timeout: float | None = None,
     ) -> np.ndarray | None:
         """Decode RGB frame at song time. ``worker=True`` uses dedicated decoders."""
         clips = song.active_video_clips_at(seconds)
@@ -561,7 +626,9 @@ class VideoSyncController(QObject):
             if decoder is None:
                 return None
             try:
-                return decoder.frame_at(clip.source_time_for(seconds))
+                return decoder.frame_at(
+                    clip.source_time_for(seconds), lock_timeout=lock_timeout
+                )
             except Exception:
                 return None
 
@@ -608,7 +675,9 @@ class VideoSyncController(QObject):
             self._last_decode_time = monotonic()
             self._request_async_live_frame(float(seconds))
             return
-        self._decode_and_emit(self._song, float(seconds))
+        self._decode_and_emit(
+            self._song, float(seconds), lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
+        )
 
     def _cancel_pending(self) -> None:
         self._flush_timer.stop()

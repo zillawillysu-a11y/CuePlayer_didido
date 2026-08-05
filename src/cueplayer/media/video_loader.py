@@ -153,12 +153,19 @@ class VideoDecoder:
             self._cached_ndarray = None
             self._cached_ndarray_source = None
 
-    def frame_at(self, seconds: float) -> np.ndarray | None:
+    def frame_at(
+        self, seconds: float, *, lock_timeout: float | None = None
+    ) -> np.ndarray | None:
         """RGB24 (H, W, 3) array for the frame active at `seconds`, or None.
 
         If the mixer is holding ``av_path_lock`` for an audio-window decode,
         wait briefly then reuse the last good frame instead of blocking the UI
         thread (that hitch is what users see right before an audio seam).
+
+        ``lock_timeout`` (seconds): when set, never block longer than this —
+        used by the async video worker so a contended mixer cannot create
+        multi-second decode spikes. Cold start without a timeout still waits
+        (land-frame accuracy), but the worker always passes a short timeout.
         """
         if self._closed:
             return None
@@ -170,15 +177,19 @@ class VideoDecoder:
 
         lock = av_path_lock(self._path)
         stale = self._cached_ndarray
-        # Cold start: must block. Otherwise prefer a short wait + hold-last-frame.
-        if stale is None:
+        if lock_timeout is not None:
+            got = lock.acquire(timeout=float(lock_timeout))
+            if not got:
+                return stale
+        elif stale is None:
+            # Cold land-frame: must block for a real picture.
             lock.acquire()
             got = True
         else:
             # ~1–2 preview frames; long enough to usually win between mixer yields.
             got = lock.acquire(timeout=0.08)
-        if not got:
-            return stale
+            if not got:
+                return stale
         try:
             if self._closed:
                 return None
@@ -294,7 +305,9 @@ class StillImageDecoder:
         self._closed = True
         self._frame = None
 
-    def frame_at(self, seconds: float) -> np.ndarray | None:  # noqa: ARG002
+    def frame_at(
+        self, seconds: float, *, lock_timeout: float | None = None
+    ) -> np.ndarray | None:  # noqa: ARG002
         if self._closed:
             return None
         return self._frame

@@ -599,9 +599,9 @@ def test_scrub_cold_does_not_sync_decode_on_ui_thread(
     decode_calls = {"n": 0}
     real_decode = controller._decode_and_emit
 
-    def _counting_decode(song_arg, seconds):  # noqa: ANN001
+    def _counting_decode(song_arg, seconds, **kwargs):  # noqa: ANN001
         decode_calls["n"] += 1
-        return real_decode(song_arg, seconds)
+        return real_decode(song_arg, seconds, **kwargs)
 
     controller.set_scrubbing(True)
     with patch.object(controller, "_decode_and_emit", side_effect=_counting_decode):
@@ -780,3 +780,80 @@ def test_playback_async_still_follows_song_time(
     last = frames[-1]
     assert last is not None
     assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
+
+
+def test_pipeline_mode_and_async_metrics_in_perf_report(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import PIPELINE_MODE
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    controller = VideoSyncController()
+    assert controller.pipeline_mode() == PIPELINE_MODE
+
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    perf_diag.note("video.pipeline_mode", PIPELINE_MODE)
+    controller.set_song(song)
+    controller.set_playing(True)
+    controller._last_decode_time = 0.0
+    controller.update_position(0.4, source="engine")
+    _drain_async(controller, app)
+
+    report = perf_diag.report_text()
+    assert "video.pipeline_mode: async_latest_wins" in report
+    assert "video.decode.async" in report or "video.async_schedule" in report
+    assert "video.async_schedule:" in report
+    assert "video.schedule.source.engine:" in report
+    # Sync path renamed — old bare "video.decode:" without suffix must not be the only span.
+    snap = perf_diag.snapshot()
+    assert "video.decode" not in snap["spans"] or "video.decode.sync" in snap["spans"]
+    perf_diag.set_enabled(False)
+
+
+def test_play_schedule_source_is_engine_not_scrub(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_playing(True)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller._last_decode_time = 0.0
+    controller.update_position(0.2, source="engine")
+    snap = perf_diag.snapshot()["counters"]
+    assert snap.get("video.schedule.source.engine", 0) >= 1
+    assert snap.get("video.schedule.source.scrub", 0) == 0
+    perf_diag.set_enabled(False)
+
+
+def test_stale_async_never_emitted_after_newer_request(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0)
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_playing(True)
+    controller._last_decode_time = 0.0
+    controller.update_position(0.1, source="engine")
+    stale_gen = controller._async_req_gen
+    controller._invalidate_async_requests()
+    before = list(frames)
+    fake = np.full((8, 8, 3), 123, dtype=np.uint8)
+    controller._on_async_frame_ready(stale_gen, 0.1, fake)
+    assert frames == before

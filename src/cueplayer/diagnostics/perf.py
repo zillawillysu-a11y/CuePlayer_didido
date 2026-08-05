@@ -176,6 +176,46 @@ def report_text() -> str:
     if snap.get("log_path"):
         lines.append(f"log_path: {snap['log_path']}")
         lines.append("")
+    # Always surface video pipeline proof first (Task 2 round 2).
+    attrs = snap.get("attrs") or {}
+    pipeline = attrs.get("video.pipeline_mode", "(unset — not Task2+ build?)")
+    lines.append(f"video.pipeline_mode: {pipeline}")
+    lines.append(f"video.worker_inflight: {attrs.get('video.worker_inflight', False)}")
+    lines.append("")
+    expected_video_counters = (
+        "video.async_schedule",
+        "video.async_coalesce",
+        "video.async_stale_drop",
+        "video.async_decoded",
+        "video.async_invalidate",
+        "video.schedule.source.engine",
+        "video.schedule.source.scrub",
+        "video.update_position.calls",
+        "video.emit.calls",
+    )
+    counters = snap.get("counters") or {}
+    lines.append("Video pipeline counters (0 if unused this session):")
+    for name in expected_video_counters:
+        lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    lines.append("")
+    expected_video_spans = (
+        "video.decode.async",
+        "video.decode.sync",
+        "video.convert",
+        "video.present",
+        "ui.position_fanout",
+    )
+    spans = snap.get("spans") or {}
+    lines.append("Video/UI spans present:")
+    for name in expected_video_spans:
+        if name in spans:
+            st = spans[name]
+            lines.append(
+                f"  {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  {name}: (none this session)")
+    lines.append("")
     if snap["last_activate_ms"]:
         lines.append("Last activate spans (ms):")
         for k, v in sorted(snap["last_activate_ms"].items()):
@@ -243,7 +283,13 @@ def announce_if_enabled() -> str:
     if not _enabled:
         return ""
     path = log_path()
-    msg = f"CUEPLAYER_PERF=1 — writing reports to {path}"
+    # New app process → new session section; clear prior in-memory spans so a
+    # manual dump cannot mix yesterday's Task1 numbers with this run.
+    clear()
+    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    note("perf.session_id", session_id)
+    note("video.pipeline_mode", "async_latest_wins")
+    msg = f"CUEPLAYER_PERF=1 — session={session_id} — writing reports to {path}"
     try:
         print(msg, flush=True)
     except Exception:  # noqa: BLE001
@@ -254,5 +300,5 @@ def announce_if_enabled() -> str:
                 buf.flush()
         except Exception:  # noqa: BLE001
             pass
-    flush_report(label="session-start")
+    flush_report(label=f"session-start:{session_id}")
     return str(path)

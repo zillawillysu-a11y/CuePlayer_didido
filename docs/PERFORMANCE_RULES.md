@@ -1,6 +1,6 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 (video track responsiveness)  
+**Status:** Sprint 8 Task 2 Round 2 (video responsiveness)  
 **Updated:** 2026-08-05  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md)
 
