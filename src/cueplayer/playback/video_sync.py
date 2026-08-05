@@ -108,6 +108,8 @@ _PREVIEW_CANCEL_DELTA_S = 2.0
 # Round 8: present a completed play frame if its Song Time is within this of
 # the current AudioEngine Song Time (do not use generation equality).
 _PLAYBACK_LATENESS_TOLERANCE_S = 0.35
+# Seek + decode-forward budget before recreating the playback decoder.
+_PLAYBACK_SEEK_DEADLINE_S = 1.5
 
 PIPELINE_MODE = "async_latest_wins"
 SCRUB_PREVIEW_TARGET_FPS = _SCRUB_PREVIEW_HZ
@@ -120,6 +122,27 @@ class VideoPipelineState:
     SCRUB_PREVIEW = "SCRUB_PREVIEW"
     FINAL_LANDING = "FINAL_LANDING"
     RESUME_PLAYBACK = "RESUME_PLAYBACK"
+
+
+class PlaybackDecoderHandoff:
+    """Scrub → playback decoder handoff (Round 8 deterministic seek)."""
+
+    IDLE = "IDLE"
+    PLAYBACK_DECODER_PREPARING = "PLAYBACK_DECODER_PREPARING"
+    PLAYBACK_DECODER_READY = "PLAYBACK_DECODER_READY"
+    FIRST_PLAYBACK_FRAME_PRESENTED = "FIRST_PLAYBACK_FRAME_PRESENTED"
+
+
+class DisplaySource:
+    """What the Video widget is currently showing (never silent empty)."""
+
+    LAST_VALID = "last_valid"
+    SCRUB_FRAME = "scrub_frame"
+    FINAL_LAND = "final_land"
+    PLAYBACK_FRAME = "playback_frame"
+    POSTER = "poster"
+    INTENTIONAL_GAP = "intentional_gap"
+    EMPTY_WIDGET = "empty_widget"
 
 
 class ReleaseTargetKind:
@@ -242,6 +265,12 @@ class VideoSyncController(QObject):
         self._playback_request_seq = 0
         self._play_pending_seconds: float | None = None
         self._worker_idle_since_mono: float | None = None
+        self._playback_handoff = PlaybackDecoderHandoff.IDLE
+        self._display_source = DisplaySource.EMPTY_WIDGET
+        self._song_activate_mono: float | None = None
+        self._empty_widget_since_mono: float | None = None
+        self._seek_after_mono: float | None = None
+        self._play_seek_recovery_attempted = False
         self._scrub_land_pending = False
         self._scrub_release_mono = 0.0
         self._scrub_preview_presented = 0
@@ -860,6 +889,7 @@ class VideoSyncController(QObject):
         # has not been delivered yet after end_scrub().
         if self._pre_scrub_was_playing:
             self._playing = True
+        self._scrubbing = False  # release already ended; do not keep scrub UI path
         self._set_pipeline_state(VideoPipelineState.RESUME_PLAYBACK)
         perf_diag.count("video.scrub.resume_started")
         perf_diag.note(
@@ -873,8 +903,17 @@ class VideoSyncController(QObject):
             perf_diag.note(
                 "video.scrub.min_present_seconds_value", self._min_present_seconds
             )
-        # Round 8: FINAL_LAND_PRESENT → immediately submit exactly one play decode.
+        # Round 8: FINAL_LAND_PRESENT → explicit play-decoder handoff.
+        # Keep showing the land frame while the play decoder repositions.
         land_t = self._release_target_song_time
+        self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_PREPARING)
+        self._note_display_source(DisplaySource.FINAL_LAND)
+        self._play_seek_recovery_attempted = False
+        # Reposition play decoder to release media time (do not reuse scrub EOF).
+        if not self._async_inflight:
+            self._close_play_worker_decoders()
+        else:
+            self._play_decoder_reset_pending = True
         sm_trace.mark_resume_begin()
         self._sm_trace(
             "RESUME_BEGIN",
@@ -888,6 +927,7 @@ class VideoSyncController(QObject):
             extra={
                 "resume_transaction_id": self._resume_transaction_id,
                 "ms_since_land_present": sm_trace.gap_ms_since_land_present(),
+                "playback_handoff": self._playback_handoff,
             },
         )
         perf_diag.count("video.scrub.post_land_submit_attempt")
@@ -976,10 +1016,16 @@ class VideoSyncController(QObject):
         """Reset play decoder and seek to current clock — do not stay frozen."""
         perf_diag.count("video.scrub.resume_recovery_started")
         perf_diag.note("video.scrub.resume_recovery_reason", "decoder_reset_seek")
+        perf_diag.note("video.seek.recovery_reason", "resume_watchdog")
+        self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_PREPARING)
+        # Keep last valid land/scrub frame — never clear to black during recovery.
+        if self._is_valid_frame_array(self._last_valid_frame):
+            self._note_display_source(DisplaySource.LAST_VALID)
         # Invalidate first so in-flight play work drops, then reset only when idle.
         self._invalidate_async_requests()
         if not self._async_inflight:
             self._close_play_worker_decoders()
+            perf_diag.count("video.seek.decoder_recreated")
         else:
             # Worker still finishing — reopen on next schedule after result drops.
             self._play_decoder_reset_pending = True
@@ -1013,6 +1059,13 @@ class VideoSyncController(QObject):
         self._resume_watchdog.stop()
         self._resume_pending = False
         self._resume_required = False
+        if reason == "frame":
+            self._set_playback_handoff(
+                PlaybackDecoderHandoff.FIRST_PLAYBACK_FRAME_PRESENTED
+            )
+            self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
+        else:
+            self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
         if self._resume_started_mono > 0.0:
             elapsed = (monotonic() - self._resume_started_mono) * 1000.0
             perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
@@ -1038,10 +1091,50 @@ class VideoSyncController(QObject):
         perf_diag.count("video.scrub.min_present_seconds_cleared")
         perf_diag.note("video.scrub.min_present_seconds_value", None)
 
+    def _set_playback_handoff(self, state: str) -> None:
+        self._playback_handoff = str(state)
+        perf_diag.note("video.playback_decoder_handoff", self._playback_handoff)
+        if state in (
+            PlaybackDecoderHandoff.PLAYBACK_DECODER_PREPARING,
+            PlaybackDecoderHandoff.PLAYBACK_DECODER_READY,
+            PlaybackDecoderHandoff.FIRST_PLAYBACK_FRAME_PRESENTED,
+        ):
+            self._sm_trace(
+                state,
+                song_time=self._last_position_seconds,
+                scheduler="playback_decoder_handoff",
+                extra={"display_source": self._display_source},
+            )
+
+    def _note_display_source(self, source: str) -> None:
+        prev = self._display_source
+        self._display_source = str(source)
+        perf_diag.note("video.display_source", self._display_source)
+        if source == DisplaySource.EMPTY_WIDGET:
+            if self._empty_widget_since_mono is None:
+                self._empty_widget_since_mono = monotonic()
+        else:
+            if self._empty_widget_since_mono is not None:
+                age = (monotonic() - self._empty_widget_since_mono) * 1000.0
+                perf_diag.record_ms("video.empty_widget_visible_ms", age)
+                self._empty_widget_since_mono = None
+            if prev == DisplaySource.EMPTY_WIDGET and self._song_activate_mono:
+                perf_diag.record_ms(
+                    "video.first_valid_frame_after_song_activate_ms",
+                    (monotonic() - self._song_activate_mono) * 1000.0,
+                )
+            if self._seek_after_mono is not None:
+                perf_diag.record_ms(
+                    "video.first_valid_frame_after_seek_ms",
+                    (monotonic() - self._seek_after_mono) * 1000.0,
+                )
+                self._seek_after_mono = None
+
     def _complete_final_land(self, seconds: float, frame: np.ndarray) -> None:
         """Exact land presented → establish decoder position → resume or pause."""
         present_t0 = monotonic()
-        self._emit_frame(frame)
+        self._emit_frame(frame, reason="final_land")
+        self._note_display_source(DisplaySource.FINAL_LAND)
         self._last_presented_song_seconds = float(seconds)
         if self._land_request_mono > 0.0:
             perf_diag.record_ms(
@@ -1138,9 +1231,18 @@ class VideoSyncController(QObject):
         self._pending_clip = None
         self._pending_seconds = None
         self._last_decode_time = 0.0
+        self._seek_after_mono = monotonic()
         self._maybe_warn_overlap(song, float(pos))
         primary = song.active_video_clip_at(float(pos))
         self._set_active(primary.id if primary else None)
+        # Prefer a warm poster immediately so the widget is never empty.
+        poster = self._scrub_composite(song, float(pos))
+        if self._is_valid_frame_array(poster):
+            assert isinstance(poster, np.ndarray)
+            self._emit_frame(poster, reason="activate_poster")
+            self._note_display_source(DisplaySource.POSTER)
+        elif self._is_valid_frame_array(self._last_valid_frame):
+            self._note_display_source(DisplaySource.LAST_VALID)
         self._decode_and_emit(
             song, float(pos), lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
         )
@@ -1195,15 +1297,44 @@ class VideoSyncController(QObject):
         self._cancel_scrub_resume_transaction(reason="song_switch")
         self._scrubbing = False
         self._set_pipeline_state(VideoPipelineState.PLAYBACK)
+        self._set_playback_handoff(PlaybackDecoderHandoff.IDLE)
         self._close_all_decoders()
         self._scrub_cache.clear()
         self._warned_overlap_keys.clear()
         self._set_active(None)
-        self._last_valid_frame = None
-        self._last_valid_frame_mono = 0.0
-        self._last_valid_frame_song_seconds = None
-        self._last_emitted_frame = _UNSET  # force this emit through even if unchanged
-        self._emit_frame(None, allow_clear=True, reason="song_switch")
+        self._play_seek_recovery_attempted = False
+        has_video = bool(
+            song is not None
+            and any(not c.hidden for c in song.video_clips)
+        )
+        if song is None or not has_video:
+            # Intentional clear only when there is truly no video media.
+            self._last_valid_frame = None
+            self._last_valid_frame_mono = 0.0
+            self._last_valid_frame_song_seconds = None
+            self._last_emitted_frame = _UNSET
+            self._song_activate_mono = None
+            self._emit_frame(
+                None,
+                allow_clear=True,
+                reason="song_switch" if song is None else "no_video_clips",
+            )
+            self._note_display_source(
+                DisplaySource.EMPTY_WIDGET
+                if song is None
+                else DisplaySource.INTENTIONAL_GAP
+            )
+        else:
+            # Round 8: keep last valid frame until first poster arrives —
+            # do not expose the empty black widget during activation.
+            self._song_activate_mono = monotonic()
+            if self._is_valid_frame_array(self._last_emitted_frame) or self._is_valid_frame_array(
+                self._last_valid_frame
+            ):
+                self._note_display_source(DisplaySource.LAST_VALID)
+            else:
+                self._note_display_source(DisplaySource.EMPTY_WIDGET)
+            # First valid frame is requested by land_frame_at / ensure_video_preview.
         # Do not preload scrub ladders here — song switch + Clean Output used
         # to start a PyAV storm that blocked live decode via av_path_lock.
 
@@ -1377,6 +1508,15 @@ class VideoSyncController(QObject):
 
         self._pending_clip = primary
         self._pending_seconds = seconds
+        self._seek_after_mono = monotonic()
+        # Immediate poster / keep-last while decoder prepares (no empty black).
+        poster = self._scrub_composite(song, float(seconds))
+        if self._is_valid_frame_array(poster):
+            assert isinstance(poster, np.ndarray)
+            self._emit_frame(poster, reason="seek_poster")
+            self._note_display_source(DisplaySource.POSTER)
+        elif self._is_valid_frame_array(self._last_valid_frame):
+            self._note_display_source(DisplaySource.LAST_VALID)
         self._decode_and_emit(song, seconds, lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S)
 
     def _schedule_playback_target(
@@ -2395,6 +2535,8 @@ class VideoSyncController(QObject):
         elif kind == "play":
             perf_diag.count("video.playback.frame_accept")
             perf_diag.count("video.playback.decode_presented")
+            self._note_display_source(DisplaySource.PLAYBACK_FRAME)
+            self._play_seek_recovery_attempted = False
             is_first = sm_trace.consume_first_play_pending()
             event = "FIRST_PLAY_FRAME" if is_first else "PLAY_PRESENT"
             self._sm_trace(
@@ -2409,6 +2551,8 @@ class VideoSyncController(QObject):
                     "playback_request_sequence": self._playback_request_seq,
                     "media_session_generation": self._media_session_gen,
                     "scrub_transaction_generation": self._scrub_session_gen,
+                    "playback_handoff": self._playback_handoff,
+                    "display_source": self._display_source,
                 },
             )
 
@@ -2427,6 +2571,7 @@ class VideoSyncController(QObject):
     def _note_preview_presented(self, seconds: float) -> None:
         self._last_scrub_preview_seconds = float(seconds)
         self._last_presented_song_seconds = float(seconds)
+        self._note_display_source(DisplaySource.SCRUB_FRAME)
         perf_diag.count("video.scrub.preview_presented")
         self._scrub_preview_presented += 1
         self._sm_trace(
@@ -2489,6 +2634,7 @@ class VideoSyncController(QObject):
         lock_timeout: float | None = None,
         stale_on_timeout: bool = True,
         scrub_decoder: bool = False,
+        deadline_s: float | None = None,
     ) -> np.ndarray | None:
         """Decode RGB frame at song time. ``worker=True`` uses dedicated decoders."""
         clips = song.active_video_clips_at(seconds)
@@ -2502,6 +2648,10 @@ class VideoSyncController(QObject):
         if not weighted:
             return None
 
+        seek_deadline = deadline_s
+        if seek_deadline is None and worker and not scrub_decoder:
+            seek_deadline = _PLAYBACK_SEEK_DEADLINE_S
+
         def _frame_for(clip: VideoClip) -> np.ndarray | None:
             if not worker:
                 decoder = self._decoder_for(clip)
@@ -2512,20 +2662,51 @@ class VideoSyncController(QObject):
             if decoder is None:
                 return None
             try:
-                return decoder.frame_at(
+                frame = decoder.frame_at(
                     clip.source_time_for(seconds),
                     lock_timeout=lock_timeout,
                     stale_on_timeout=stale_on_timeout,
+                    deadline_s=seek_deadline,
                 )
             except Exception:
                 return None
+            # Long-GOP stall: recreate play decoder once and retry at engine time.
+            if (
+                worker
+                and not scrub_decoder
+                and getattr(decoder, "seek_timed_out", False)
+                and not self._play_seek_recovery_attempted
+            ):
+                self._play_seek_recovery_attempted = True
+                perf_diag.count("video.seek.decoder_recreated")
+                perf_diag.note("video.seek.recovery_reason", "seek_deadline")
+                self._close_play_worker_decoders()
+                decoder = self._worker_decoder_for(clip)
+                if decoder is None:
+                    return frame
+                try:
+                    if hasattr(decoder, "last_seek"):
+                        decoder.last_seek.decoder_recreated = True  # type: ignore[attr-defined]
+                    frame2 = decoder.frame_at(
+                        clip.source_time_for(seconds),
+                        lock_timeout=lock_timeout,
+                        stale_on_timeout=stale_on_timeout,
+                        deadline_s=seek_deadline,
+                    )
+                    return frame2 if frame2 is not None else frame
+                except Exception:
+                    return frame
+            if worker and not scrub_decoder and getattr(decoder, "seek_timed_out", False):
+                # Already recovered once this handoff — keep last valid on UI.
+                perf_diag.count("video.seek.deadline_timeout_unrecovered")
+            return frame
 
         if len(weighted) == 1:
             return _frame_for(weighted[0][0])
         dominant = max(weighted, key=lambda item: item[1])
         if dominant[1] / max(1e-9, sum(w for _c, w in weighted)) >= 0.98:
             return _frame_for(dominant[0])
-        total_weight = sum(w for _clip, w in weighted)
+        total_weight = sum(w for _c, w in weighted)
         composite: np.ndarray | None = None
         for clip, weight in weighted:
             frame = _frame_for(clip)
@@ -2556,6 +2737,7 @@ class VideoSyncController(QObject):
                 perf_diag.note(
                     "video.preview_cleared.reason", f"rejected:{reason or 'none'}"
                 )
+                self._note_display_source(DisplaySource.LAST_VALID)
                 return
             if frame is self._last_emitted_frame:
                 return
@@ -2563,6 +2745,11 @@ class VideoSyncController(QObject):
             perf_diag.count("video.emit.calls")
             if allow_clear:
                 perf_diag.note("video.preview_cleared.reason", reason or "intentional")
+                self._note_display_source(
+                    DisplaySource.INTENTIONAL_GAP
+                    if reason and "gap" in reason
+                    else DisplaySource.EMPTY_WIDGET
+                )
             self.frame_changed.emit(None)
             return
         if not self._is_valid_frame_array(frame):
@@ -2577,6 +2764,17 @@ class VideoSyncController(QObject):
         if self._last_position_seconds is not None:
             self._last_valid_frame_song_seconds = float(self._last_position_seconds)
         perf_diag.count("video.emit.calls")
+        if reason in ("seek_poster", "activate_poster"):
+            self._note_display_source(DisplaySource.POSTER)
+        elif reason == "final_land":
+            self._note_display_source(DisplaySource.FINAL_LAND)
+        elif reason.startswith("intentional"):
+            self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+        elif self._display_source in (
+            DisplaySource.EMPTY_WIDGET,
+            DisplaySource.INTENTIONAL_GAP,
+        ):
+            self._note_display_source(DisplaySource.LAST_VALID)
         self.frame_changed.emit(frame)
 
     def _flush_pending(self) -> None:

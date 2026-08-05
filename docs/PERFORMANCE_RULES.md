@@ -43,6 +43,12 @@
    Scrub begin / song change still invalidate. `playback.frame_drop.reason.generation_mismatch`  
    must stay ~0 for ordinary clock advancement.
 
+10. **Deterministic seek + no empty black (Round 8b).**  
+    Scrub land frame stays visible while playback decoder PREPARING.  
+    Keyframe seek + decode-forward with deadline; recreate play decoder once on stall.  
+    `set_song` with Video must not clear to empty widget before first poster/land.  
+    `video.display_source` tracks last_valid / poster / final_land / playback_frame.
+
 ---
 
 ## Enabling diagnostics
@@ -55,7 +61,7 @@ $env:CUEPLAYER_PERF = "1"
 
 cd C:\Users\willy\Projects\CuePlayer_v2   # your clone path
 git fetch origin
-git checkout cursor/sprint8-postland-starvation-028d
+git checkout cursor/sprint8-deterministic-seek-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```

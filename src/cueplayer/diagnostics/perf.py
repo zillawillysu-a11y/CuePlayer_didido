@@ -261,6 +261,11 @@ def report_text() -> str:
         "video.playback.frame_drop.reason.session_changed",
         "video.playback.frame_drop.reason.newer_already_presented",
         "video.playback.frame_drop.reason.generation_mismatch",
+        # Round 8b — deterministic seek / handoff / no-black
+        "video.seek.deadline_timeout",
+        "video.seek.eof_hit",
+        "video.seek.decoder_recreated",
+        "video.seek.deadline_timeout_unrecovered",
     )
     counters = snap.get("counters") or {}
     lines.append("Video pipeline counters (0 if unused this session):")

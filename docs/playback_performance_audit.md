@@ -474,4 +474,33 @@ git pull origin cursor/sprint8-postland-starvation-028d
 
 ---
 
-## READY FOR WINDOWS POST-LAND PLAYBACK STARVATION VALIDATION
+## 7h. Windows validation — Deterministic seek Round 8b
+
+**Symptom:** seeks at some Song Times (e.g. ~1:30 / ~2:30) freeze 5–20 s while
+others (~2:00 / ~3:00) play immediately; activate/click can show black Preview
+even though Video exists.
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\willy\Projects\CuePlayer_v2
+git fetch origin
+git checkout cursor/sprint8-deterministic-seek-028d
+git pull origin cursor/sprint8-deterministic-seek-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+Test timestamps on the same source Video: **0:05, 0:30, 1:00, 1:30, 2:00,
+2:30, 3:00, near end** — for each: paused click, playing seek, scrub-release,
+Play after paused seek.
+
+| Pass | Check |
+|------|--------|
+| Relevant frame quickly at every position | |
+| No position-specific 5–20 s freeze | |
+| No empty black while Video exists | |
+| `PLAYBACK_DECODER_PREPARING` → `FIRST_PLAY_FRAME` | |
+| `video.seek.total_ms` / `frames_to_target` logged | |
+
+---
+
+## READY FOR WINDOWS DETERMINISTIC VIDEO SEEK VALIDATION
