@@ -55,6 +55,16 @@
     Measure sparse vs dense with `ui.position_fanout` sub-spans — see
     [`dense_mark_perf.md`](dense_mark_perf.md). Do not change Video decoder for this.
 
+12. **Dense Mark A/B dumps must pass LIVE CHECK.**  
+    Prefer Tools → Write Performance Report after play/scrub.  
+    If `ui.position_fanout.calls=0`, the dump is invalid — do not interpret.  
+    Scrub chrome must share fan-out spans with the engine play path.  
+    See [`dense_mark_instrumentation_fix.md`](dense_mark_instrumentation_fix.md).
+
+13. **`video.seek.frames_to_target` is GOP decode-forward, not Mark cost.**  
+    Keyframe seek then decode to target; ~88 frames ≈ multi-second H.264 GOP.  
+    Use `video.seek.keyframe_distance_s` before blaming the decoder.
+
 ---
 
 ## Enabling diagnostics
@@ -67,7 +77,7 @@ $env:CUEPLAYER_PERF = "1"
 
 cd C:\Users\willy\Projects\CuePlayer_v2   # your clone path
 git fetch origin
-git checkout cursor/sprint8-dense-mark-perf-028d
+git checkout cursor/sprint8-perf-instrumentation-fix-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```

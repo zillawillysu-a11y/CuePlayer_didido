@@ -1,8 +1,13 @@
 # Dense Mark Region Performance (Sprint 8 Task 2)
 
-**Branch:** `cursor/sprint8-dense-mark-perf-028d`  
+**Branch:** `cursor/sprint8-dense-mark-perf-028d` (+ instrumentation fix)  
 **Status:** instrumentation + indexed lookup + bounded NOW/Cue updates  
 **Does not change:** Video decoder, AudioEngine, Export, Timeline feel goals
+
+> If Dense Mark spans are all `(none)` / `calls=0`, the dump is **invalid**.
+> Scrub used to bypass fan-out hooks — see
+> [`dense_mark_instrumentation_fix.md`](dense_mark_instrumentation_fix.md)
+> and require **INSTRUMENTATION LIVE CHECK: OK** before interpreting A/B.
 
 ## Hypothesis
 
@@ -52,7 +57,7 @@ Video decoder / seek path intentionally untouched in this PR.
 $env:CUEPLAYER_PERF = "1"
 cd C:\Users\willy\Projects\CuePlayer_v2
 git fetch origin
-git checkout cursor/sprint8-dense-mark-perf-028d
+git checkout cursor/sprint8-perf-instrumentation-fix-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
@@ -60,10 +65,10 @@ git pull
 1. Open the Song that has the ~10 Cues/s stress region.
 2. Play through a **sparse** 10 s → note report / feel.
 3. Play / seek / scrub through the **dense** region → note report / feel.
-4. Tools → Write Performance Report… and paste the
-   `Dense Mark / position-fanout (A/B)` section.
+4. Tools → Write Performance Report… — require **LIVE CHECK: OK** — paste the
+   `INSTRUMENTATION LIVE CHECK` + `Dense Mark / position-fanout (A/B)` sections.
 
 Compare sparse vs dense: `ui.position_fanout` mean/max, `now_card.*`,
 `mark.paint_ms`, `video.schedule_ms`, `slow_samples` + `slow_marks_near`.
 
-READY FOR WINDOWS DENSE MARK REGION VALIDATION
+READY FOR WINDOWS DENSE MARK INSTRUMENTATION VALIDATION

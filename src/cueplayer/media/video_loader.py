@@ -328,7 +328,15 @@ class VideoDecoder:
         perf_diag.note("video.seek.requested_time", requested)
         if actual is not None:
             perf_diag.note("video.seek.actual_time", actual)
+            perf_diag.note("video.seek.keyframe_pts", actual)
+            # First decoded PTS after keyframe seek ≈ keyframe position.
+            # Distance to target estimates how far we decode-forward (GOP depth).
+            distance = max(0.0, float(requested) - float(actual))
+            perf_diag.note("video.seek.keyframe_distance_s", round(distance, 4))
         perf_diag.note("video.seek.frames_to_target", frames)
+        # frames_to_target counts decode-forward from keyframe through target.
+        # At ~30 fps, 88 frames ≈ 2.9 s GOP — expected for long-GOP H.264.
+        perf_diag.note("video.seek.gop_frames_estimate", frames)
         perf_diag.record_ms("video.seek.total_ms", total_ms)
         perf_diag.record_ms("video.seek.decode_to_target_ms", decode_ms)
         perf_diag.record_ms("video.seek.keyframe_seek_ms", seek_ms)

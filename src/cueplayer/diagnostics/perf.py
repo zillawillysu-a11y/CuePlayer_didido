@@ -272,11 +272,42 @@ def report_text() -> str:
     for name in expected_video_counters:
         lines.append(f"  {name}: {int(counters.get(name, 0))}")
     lines.append("")
+    # Instrumentation live check — empty Dense Mark dumps are usually session-start
+    # / after-activate sections or scrub-only sessions before scrub was hooked.
+    lines.append("INSTRUMENTATION LIVE CHECK:")
+    lines.append(f"  enabled: {snap.get('enabled')}")
+    fanout_calls = int(counters.get("ui.position_fanout.calls", 0))
+    scrub_calls = int(counters.get("ui.scrub_fanout.calls", 0))
+    lines.append(f"  ui.position_fanout.calls: {fanout_calls}")
+    lines.append(f"  ui.scrub_fanout.calls: {scrub_calls}")
+    lines.append(
+        f"  last tick source: {attrs.get('perf.position_tick_source', '(none)')}"
+    )
+    lines.append(
+        f"  last tick song_time: {attrs.get('perf.position_tick_song_time', '(none)')}"
+    )
+    tick_mono = attrs.get("perf.position_tick_mono")
+    if isinstance(tick_mono, (int, float)):
+        ago_ms = max(0.0, (time.monotonic() - float(tick_mono)) * 1000.0)
+        lines.append(f"  last tick age_ms: {ago_ms:.1f}")
+    else:
+        lines.append("  last tick age_ms: (none)")
+    if fanout_calls <= 0 and scrub_calls <= 0:
+        lines.append(
+            "  RESULT: INVALID — no UI position ticks recorded. "
+            "Play or scrub for several seconds, then Tools → Write Performance Report. "
+            "Ignore session-start / after-activate sections for Dense Mark A/B."
+        )
+    else:
+        lines.append("  RESULT: OK — position path observed")
+    lines.append("")
     # Dense Mark / position-fanout A/B (Sprint 8 Task 2).
     lines.append("Dense Mark / position-fanout (A/B):")
     for name in (
         "ui.position_fanout",
         "ui.position_fanout.total_ms",
+        "ui.scrub_fanout",
+        "ui.scrub_fanout.total_ms",
         "timeline.set_position",
         "mark.lookup_ms",
         "mark.geometry_ms",
@@ -290,6 +321,7 @@ def report_text() -> str:
         "repaint.request_dispatch",
         "video.frame_ready_to_present_ms",
         "video.present.queue_delay_ms",
+        "perf.position_tick_interval_ms",
     ):
         if name in (snap.get("spans") or {}):
             st = snap["spans"][name]
@@ -309,10 +341,16 @@ def report_text() -> str:
         "ui.position_fanout.slow_marks_near",
         "ui.position_fanout.slow_video_ready_waiting",
         "ui.position_fanout.slow_worker_runtime",
+        "video.seek.frames_to_target",
+        "video.seek.keyframe_pts",
+        "video.seek.keyframe_distance_s",
+        "video.seek.requested_time",
+        "video.seek.gop_frames_estimate",
     ):
         lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
     for name in (
         "ui.position_fanout.calls",
+        "ui.scrub_fanout.calls",
         "ui.position_fanout.slow_samples",
         "now_card.position_sync.skipped_unchanged",
         "now_card.position_sync.updated",

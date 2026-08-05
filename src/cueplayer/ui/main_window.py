@@ -1,8 +1,9 @@
-"""Main application window with waveform timeline and marking."""
+﻿"""Main application window with waveform timeline and marking."""
 
 from __future__ import annotations
 
 import time
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -2362,6 +2363,13 @@ class MainWindow(QMainWindow):
             )
             act_perf.triggered.connect(self._write_performance_report)
             tools_menu.addAction(act_perf)
+            act_profile = QAction("Profile &UI 5s (cProfile)…", self)
+            act_profile.setToolTip(
+                "Run stdlib cProfile for 5 seconds while you play/scrub. "
+                "Use when Dense Mark spans are empty or to compare sparse vs dense."
+            )
+            act_profile.triggered.connect(self._profile_ui_5s)
+            tools_menu.addAction(act_profile)
         tools_menu.addSeparator()
 
         bpm_menu = tools_menu.addMenu("&BPM")
@@ -5025,31 +5033,11 @@ class MainWindow(QMainWindow):
         with perf_diag.span("ui.position_fanout"):
             seconds = self.playback.engine_to_song_time(engine_seconds)
             self.playback.sync_from_engine()
+            self._perf_note_position_tick(seconds, source="engine")
 
             # Dense-mark A/B metrics (correlate slow fanout with cue density).
             song = self.current_song
-            if song is not None and perf_diag.is_enabled():
-                with perf_diag.span("mark.lookup_ms"):
-                    total = len(song.marks)
-                    near = song.mark_count_in_window(seconds, 0.5)
-                    # Approximate "per second" bucket for stress zones (~10 cues/s).
-                    per_sec = song.mark_count_in_window(seconds, 0.5)
-                    perf_diag.note("mark.total_count", total)
-                    perf_diag.note("mark.count_in_current_second", per_sec)
-                    perf_diag.note("mark.count_near_playhead", near)
-                    # Crossings this tick vs previous (bounded range, not per-mark UI).
-                    prev = getattr(self, "_fanout_prev_seconds", None)
-                    if prev is not None:
-                        lo, hi = sorted((float(prev), float(seconds)))
-                        crossed = len(song.mark_slice_in_time_range(lo, hi))
-                        perf_diag.note("mark.crossings_per_position_update", crossed)
-                        perf_diag.count("mark.crossings_total", crossed)
-                    self._fanout_prev_seconds = float(seconds)
-                    try:
-                        zoom = float(self.timeline.pixels_per_second())
-                    except Exception:
-                        zoom = -1.0
-                    perf_diag.note("timeline.zoom_pps", zoom)
+            self._perf_record_mark_density(seconds, song)
 
             with perf_diag.span("timeline.set_position"):
                 self.timeline.set_position(seconds)
@@ -5126,6 +5114,45 @@ class MainWindow(QMainWindow):
             # call _sync_timeline_overview again here (~60 Hz double work).
             perf_diag.count("ui.position_fanout.calls")
 
+    def _perf_note_position_tick(self, seconds: float, *, source: str) -> None:
+        """Prove the UI position path is alive (dump-time live check)."""
+        if not perf_diag.is_enabled():
+            return
+        now = time.monotonic()
+        perf_diag.note("perf.position_tick_source", source)
+        perf_diag.note("perf.position_tick_song_time", float(seconds))
+        perf_diag.note("perf.position_tick_mono", now)
+        prev = getattr(self, "_perf_tick_mono", None)
+        if prev is not None:
+            perf_diag.record_ms(
+                "perf.position_tick_interval_ms", (now - float(prev)) * 1000.0
+            )
+        self._perf_tick_mono = now
+
+    def _perf_record_mark_density(self, seconds: float, song) -> None:  # noqa: ANN001
+        if song is None or not perf_diag.is_enabled():
+            return
+        with perf_diag.span("mark.lookup_ms"):
+            total = len(song.marks)
+            near = song.mark_count_in_window(seconds, 0.5)
+            # ±0.5 s window ≈ "current second" for ~10 cues/s stress zones.
+            per_sec = near
+            perf_diag.note("mark.total_count", total)
+            perf_diag.note("mark.count_in_current_second", per_sec)
+            perf_diag.note("mark.count_near_playhead", near)
+            prev = getattr(self, "_fanout_prev_seconds", None)
+            if prev is not None:
+                lo, hi = sorted((float(prev), float(seconds)))
+                crossed = len(song.mark_slice_in_time_range(lo, hi))
+                perf_diag.note("mark.crossings_per_position_update", crossed)
+                perf_diag.count("mark.crossings_total", crossed)
+            self._fanout_prev_seconds = float(seconds)
+            try:
+                zoom = float(self.timeline.pixels_per_second())
+            except Exception:
+                zoom = -1.0
+            perf_diag.note("timeline.zoom_pps", zoom)
+
     @staticmethod
     def _sm_trace_worker_waiting(video_sync) -> bool:  # noqa: ANN001
         """True when a decoded frame may be waiting on the UI thread."""
@@ -5140,13 +5167,45 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_scrub_preview(self, seconds: float) -> None:
-        """Update transport + cue list while dragging the timeline playhead."""
-        # ``seconds`` from Timeline is already Song Time.
-        # Overview is updated via throttled timeline.view_changed during scrub —
-        # do not sync it on every preview tick (was doubling overview work).
-        self.transport.set_times(seconds, self.engine.duration)
-        self.monitor.set_position(seconds, self.engine.duration)
-        self._refresh_output_timecode_clock(seconds)
+        """Update transport + cue list while dragging the timeline playhead.
+
+        Must share Dense Mark / fan-out instrumentation with the engine play
+        path. Scrub previously bypassed ``ui.position_fanout`` entirely, so
+        seek/scrub-heavy Windows sessions dumped empty A/B sections while
+        ``video.seek.*`` attrs still looked live.
+        """
+        from time import monotonic
+
+        fanout_t0 = monotonic()
+        with perf_diag.span("ui.position_fanout"):
+            with perf_diag.span("ui.scrub_fanout"):
+                self._perf_note_position_tick(seconds, source="scrub")
+                song = self.current_song
+                self._perf_record_mark_density(seconds, song)
+                # Timeline already moved the playhead locally; still time the
+                # chrome that Dense Mark A/B needs (NOW / Cue List / clock).
+                with perf_diag.span("transport.position_sync_ms"):
+                    self.transport.set_times(seconds, self.engine.duration)
+                with perf_diag.span("monitor.position_sync_ms"):
+                    self.monitor.set_position(seconds, self.engine.duration)
+                with perf_diag.span("status.timecode_refresh_ms"):
+                    self._refresh_output_timecode_clock(seconds)
+                # Overview is updated via throttled timeline.view_changed during
+                # scrub — do not sync it on every preview tick.
+            if perf_diag.is_enabled():
+                fanout_ms = (monotonic() - fanout_t0) * 1000.0
+                perf_diag.record_ms("ui.position_fanout.total_ms", fanout_ms)
+                perf_diag.record_ms("ui.scrub_fanout.total_ms", fanout_ms)
+                if fanout_ms >= 16.7:
+                    perf_diag.count("ui.position_fanout.slow_samples")
+                    perf_diag.note("ui.position_fanout.slow_song_time", float(seconds))
+                    if song is not None:
+                        perf_diag.note(
+                            "ui.position_fanout.slow_marks_near",
+                            song.mark_count_in_window(seconds, 0.5),
+                        )
+            perf_diag.count("ui.position_fanout.calls")
+            perf_diag.count("ui.scrub_fanout.calls")
 
     def _open_align_anchors(self) -> None:
         """Tools → Align Anchors… — draft, preview session, Apply via undo."""
@@ -5177,6 +5236,10 @@ class MainWindow(QMainWindow):
         if not perf_diag.is_enabled():
             self.status.showMessage("Set CUEPLAYER_PERF=1 before launch to enable", 4000)
             return
+        snap = perf_diag.snapshot()
+        counters = snap.get("counters") or {}
+        fanout_calls = int(counters.get("ui.position_fanout.calls", 0))
+        scrub_calls = int(counters.get("ui.scrub_fanout.calls", 0))
         path = perf_diag.flush_report(label="manual-dump")
         if path is None:
             self.status.showMessage("Could not write performance log", 4000)
@@ -5186,18 +5249,82 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QMessageBox
 
             mode = self.video_sync.pipeline_mode()
+            attrs = snap.get("attrs") or {}
+            live_src = attrs.get("perf.position_tick_source", "(none)")
+            live_t = attrs.get("perf.position_tick_song_time", "(none)")
+            valid = fanout_calls > 0 or scrub_calls > 0
+            warning = ""
+            if not valid:
+                warning = (
+                    "\n\n⚠ INVALID A/B DUMP: ui.position_fanout.calls=0 and "
+                    "ui.scrub_fanout.calls=0.\n"
+                    "Play or scrub for several seconds FIRST, then dump again.\n"
+                    "Do not use session-start / after-activate sections for Dense Mark."
+                )
             QMessageBox.information(
                 self,
                 "Performance Report",
                 f"Appended report to:\n\n{path}\n\n"
-                f"video.pipeline_mode = {mode}\n\n"
-                "Open that file in Notepad. Use ONLY the last ===== section "
-                "(this session). Confirm it lists video.decode.async / "
-                "video.async_coalesce — if pipeline_mode is missing, you are "
-                "not on the Task 2 Round 2 build.",
+                f"video.pipeline_mode = {mode}\n"
+                f"ui.position_fanout.calls = {fanout_calls}\n"
+                f"ui.scrub_fanout.calls = {scrub_calls}\n"
+                f"last tick source = {live_src} @ song_t={live_t}\n"
+                f"{'LIVE CHECK: OK' if valid else 'LIVE CHECK: FAILED'}"
+                f"{warning}\n\n"
+                "Open that file in Notepad. Use ONLY the last ===== manual-dump "
+                "section. Dense Mark spans must show n>0 — if all (none), the "
+                "dump is invalid.",
             )
         except Exception:  # noqa: BLE001
             pass
+
+    def _profile_ui_5s(self) -> None:
+        """Tools → Profile UI 5s — stdlib cProfile of the Qt event loop."""
+        if getattr(self, "_ui_profile_active", False):
+            self.status.showMessage("UI profile already running", 3000)
+            return
+        import cProfile
+        import pstats
+        from io import StringIO
+
+        self._ui_profile_active = True
+        profiler = cProfile.Profile()
+        profiler.enable()
+        self.status.showMessage(
+            "Profiling UI thread for 5s — play/scrub sparse then dense now…", 5000
+        )
+
+        def _finish() -> None:
+            profiler.disable()
+            self._ui_profile_active = False
+            stream = StringIO()
+            stats = pstats.Stats(profiler, stream=stream)
+            stats.sort_stats("cumulative")
+            stats.print_stats(40)
+            text = stream.getvalue()
+            path = perf_diag.log_path().with_name("cueplayer_ui_profile.txt")
+            try:
+                path.write_text(text, encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                path = Path(tempfile.gettempdir()) / "cueplayer_ui_profile.txt"
+                path.write_text(text, encoding="utf-8")
+            if perf_diag.is_enabled():
+                perf_diag.note("perf.ui_profile_path", str(path))
+                perf_diag.flush_report(label="ui-profile-5s")
+            self.status.showMessage(f"UI profile → {path}", 8000)
+            try:
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.information(
+                    self,
+                    "UI Profile (5s)",
+                    f"Wrote cProfile cumulative top-40 to:\n\n{path}\n\n"
+                    "Compare sparse vs dense by running this twice.",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        QTimer.singleShot(5000, _finish)
 
     def _on_preflight_navigate(
         self, song_id: str, object_kind: str, object_id: str

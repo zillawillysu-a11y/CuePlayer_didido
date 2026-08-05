@@ -371,9 +371,13 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
   widget while Video exists; seek telemetry (`video.seek.*`).
 - **Dense Mark region** — A/B fan-out instrumentation; indexed Mark lookup;
   viewport paint; NOW skip-if-unchanged. See [`dense_mark_perf.md`](dense_mark_perf.md).
+- **Instrumentation fix** — scrub path now records fan-out (empty Windows dumps);
+  LIVE CHECK in report; seek GOP notes. See
+  [`dense_mark_instrumentation_fix.md`](dense_mark_instrumentation_fix.md).
 
-**Next:** Windows A/B sparse vs dense Cue regions with `CUEPLAYER_PERF=1`.
+**Next:** Windows re-dump with LIVE CHECK OK — then interpret sparse vs dense.
+Do not optimize further until measurements are valid.
 
 ---
 
-## READY FOR WINDOWS DENSE MARK REGION VALIDATION
+## READY FOR WINDOWS DENSE MARK INSTRUMENTATION VALIDATION
