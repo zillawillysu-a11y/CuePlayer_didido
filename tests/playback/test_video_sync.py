@@ -203,11 +203,12 @@ def test_scrubbing_throttles_rapid_decodes(app: QApplication, red_clip_path: Pat
 
     controller.set_scrubbing(True)
     for i in range(20):
-        controller.update_position(0.01 * i)
+        controller.update_position(0.01 * i, source="scrub")
     # 20 calls fired back-to-back (sub-millisecond apart) must not all decode.
     assert len(frames) < 20
 
-    controller.set_scrubbing(False)  # flush: the last requested position must land.
+    controller.set_scrubbing(False)  # async land the last requested position
+    _drain_async(controller, app)
     assert len(frames) >= 1
 
 
@@ -227,9 +228,10 @@ def test_scrub_end_flushes_final_position(app: QApplication, red_clip_path: Path
 
     controller.set_scrubbing(True)
     controller._scrub_cache.clear()
-    controller.update_position(0.1)  # cold → async schedule (no sync UI decode)
-    controller.update_position(2.5)  # coalesced / throttled pending
-    controller.set_scrubbing(False)  # must flush the *last* requested position sync
+    controller.update_position(0.1, source="scrub")
+    controller.update_position(2.5, source="scrub")
+    controller.set_scrubbing(False)  # async land last target
+    _drain_async(controller, app)
 
     assert len(frames) >= 1
     last = frames[-1]
@@ -536,17 +538,18 @@ def test_scrubbing_uses_preloaded_cache_without_live_decoder(
     controller.set_scrubbing(True)
     # Pretend preload already ran (deferred timer would normally do this).
     controller._scrub_preload_timer.stop()
-    controller.update_position(0.3)
-    controller.update_position(1.2)
+    controller.update_position(0.3, source="scrub")
+    controller.update_position(1.2, source="scrub")
 
     assert len(frames) >= 1
     assert all(isinstance(f, np.ndarray) for f in frames if f is not None)
-    # Mid-scrub must not have opened the live decoder.
+    # Mid-scrub must not have opened the live UI decoder.
     assert clip.id not in controller._decoders
 
     controller.set_scrubbing(False)
-    # Mouse-up flush may open the live decoder for the exact land frame.
-    assert clip.id in controller._decoders
+    _drain_async(controller, app)
+    # Exact land is async on the worker pool — UI decoder must stay unused.
+    assert clip.id not in controller._decoders
 
 
 def test_land_frame_after_set_song_while_already_active(
@@ -742,10 +745,11 @@ def test_scrub_end_frame_matches_release_time(
     controller._scrub_cache.clear()
     for t in (0.1, 0.5, 1.0, 2.5):
         controller._last_decode_time = 0.0
-        controller.update_position(t)
+        controller.update_position(t, source="scrub")
     release = 2.5
-    controller.update_position(release)
+    controller.update_position(release, source="scrub")
     controller.set_scrubbing(False)
+    _drain_async(controller, app)
     last = frames[-1]
     assert last is not None
     assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
