@@ -264,6 +264,7 @@ def test_playing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path)
 
     controller.set_playing(False)  # flush: the last requested position must land.
     assert len(frames) >= 1
+    controller.shutdown()
 
 
 def test_paused_seeks_coalesce_rapid_jumps(
@@ -672,15 +673,19 @@ def test_async_latest_request_wins(app: QApplication, red_clip_path: Path, blue_
             controller._last_decode_time = 0.0
             controller.update_position(t)
 
-    assert requested  # at least one async schedule
-    assert requested[-1] == pytest.approx(2.5)
-    assert controller._async_req_seconds == pytest.approx(2.5)
+    assert requested  # at least one async schedule (idle submit)
+    # Later engine ticks must not each open a new request while busy —
+    # they overwrite the single pending latest target.
+    assert controller._play_pending_seconds == pytest.approx(2.5) or (
+        controller._async_req_seconds == pytest.approx(2.5)
+    )
     _drain_async(controller, app)
     controller.set_playing(False)
     last = frames[-1]
     assert last is not None
     # Final land (stop) should be blue at 2.5s.
     assert last.mean(axis=(0, 1))[2] > last.mean(axis=(0, 1))[0]
+    controller.shutdown()
 
 
 def test_async_stale_frames_discarded(app: QApplication, red_clip_path: Path) -> None:

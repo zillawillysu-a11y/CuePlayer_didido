@@ -247,6 +247,20 @@ def report_text() -> str:
         "video.scrub.preview_reject_reason.beyond_tolerance",
         "video.scrub.preview_reject_reason.session_changed",
         "video.scrub.preview_reject_reason.far_cancel",
+        # Round 8 — post-land submit + playback lateness (no gen starvation)
+        "video.scrub.post_land_submit_attempt",
+        "video.scrub.post_land_submit_success",
+        "post_land_submit_attempt",
+        "post_land_submit_success",
+        "video.playback.frame_accept",
+        "video.playback.decode_completed",
+        "video.playback.decode_presented",
+        "video.playback.decode_starved",
+        "video.playback.inflight_supersede_count",
+        "video.playback.frame_drop.reason.too_late",
+        "video.playback.frame_drop.reason.session_changed",
+        "video.playback.frame_drop.reason.newer_already_presented",
+        "video.playback.frame_drop.reason.generation_mismatch",
     )
     counters = snap.get("counters") or {}
     lines.append("Video pipeline counters (0 if unused this session):")

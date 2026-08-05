@@ -5029,36 +5029,9 @@ class MainWindow(QMainWindow):
             # Canonical video schedule (after playhead). Gate while scrub
             # preview or final-land owns the Video pipeline.
             if not self.video_sync.engine_video_gated():
-                # Round 7: engine is the continuous scheduler after land/resume.
-                # Log only when the worker is busy (coalesce evidence) or the
-                # first few post-land ticks — avoid 60 Hz disk spam.
-                from cueplayer.diagnostics import video_sm_trace as sm_trace
-
-                gap = sm_trace.gap_ms_since_land_present()
-                if gap is not None and self.video_sync.pipeline_state() in (
-                    "RESUME_PLAYBACK",
-                    "PLAYBACK",
-                ):
-                    inflight = bool(self.video_sync._async_inflight)
-                    if inflight or gap < 250.0:
-                        sm_trace.trace(
-                            "SCHEDULE_NEXT_PLAY",
-                            state=self.video_sync.pipeline_state(),
-                            generation=int(self.video_sync._async_req_gen),
-                            song_time=float(seconds),
-                            scheduler="mainwindow_position_fanout",
-                            kind="play",
-                            inflight=inflight,
-                            reason=(
-                                "engine_fanout_coalesce_while_busy"
-                                if inflight
-                                else "engine_fanout_post_land"
-                            ),
-                            extra={
-                                "ms_since_land_present": gap,
-                                "playing": bool(self.video_sync._playing),
-                            },
-                        )
+                # Round 8: schedule/skip reasons live only in VideoSyncController.
+                # Do not log fake SCHEDULE_NEXT_PLAY here before update_position
+                # (that produced IDLE + engine_fanout_post_land with no submit).
                 self.video_sync.update_position(seconds, source="engine")
             elif perf_diag.is_enabled():
                 from cueplayer.diagnostics import video_sm_trace as sm_trace

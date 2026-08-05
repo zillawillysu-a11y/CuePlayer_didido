@@ -117,9 +117,10 @@ def test_sm_trace_scrub_land_resume_sequence(app: QApplication, red_clip_path: P
     perf_diag.set_enabled(False)
 
 
-def test_sm_trace_records_coalesce_while_worker_busy(
+def test_sm_trace_records_pending_latest_while_worker_busy(
     app: QApplication, red_clip_path: Path
 ) -> None:
+    """Round 8: busy play + new target → pending_latest_only (no gen bump)."""
     song = Song.create("Song")
     song.add_video_clip(_clip(red_clip_path))
     controller = VideoSyncController()
@@ -128,20 +129,22 @@ def test_sm_trace_records_coalesce_while_worker_busy(
     sm_trace.clear()
     sm_trace.mark_land_present()
     controller._pipeline_state = VideoPipelineState.RESUME_PLAYBACK
+    controller._playing = True
     controller._async_inflight = True
     controller._async_req_kind = "play"
     controller._async_req_seconds = 0.2
-    controller._request_async_live_frame(
-        0.5, kind="play", force=True, scheduler="enter_resume_playback"
-    )
+    gen_before = int(controller._async_req_gen)
+    controller._schedule_playback_target(0.5, scheduler="enter_resume_playback")
     hits = [
         e
         for e in sm_trace.events()
         if e.get("event") == "SCHEDULE_NEXT_PLAY"
-        and e.get("reason") == "coalesce_worker_busy"
+        and e.get("reason") == "pending_latest_only"
     ]
     assert hits
     assert hits[-1].get("scheduler") == "enter_resume_playback"
+    assert int(controller._async_req_gen) == gen_before
+    assert controller._play_pending_seconds == pytest.approx(0.5)
     controller._async_inflight = False
     controller.shutdown()
     perf_diag.set_enabled(False)

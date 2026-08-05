@@ -448,4 +448,30 @@ playing → `resume_required` == `resume_started` == `resume_completed` + `resum
 
 ---
 
-## READY FOR WINDOWS SCRUB PREVIEW AND RESUME VALIDATION
+## 7g. Windows validation — Post-land starvation Round 8
+
+**Windows Round 7 confirmation:**
+
+| Root cause | Evidence | Fix |
+|------------|----------|-----|
+| **A** Post-land submit gap | `IDLE` + repeated `engine_fanout_post_land`, `request_id` unchanged | Immediate `post_land_submit_*`; no fake MainWindow SCHEDULE |
+| **B** Gen starvation | `generation_mismatch_after_decode` on ordinary clock | No gen bump on play clock; pending-latest; lateness present |
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\willy\Projects\CuePlayer_v2
+git fetch origin
+git checkout cursor/sprint8-postland-starvation-028d
+git pull origin cursor/sprint8-postland-starvation-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+| Test | Pass |
+|------|------|
+| Playing scrub release | `FINAL_LAND_PRESENT` → `post_land_submit_success` → `FIRST_PLAY_FRAME` without multi-second idle |
+| 20× fast scrub-release | No 5–20 s freeze; continuous `PLAY_PRESENT` after each release |
+| Perf counters | `generation_mismatch` ~0 for clock; `decode_presented` tracks completes |
+
+---
+
+## READY FOR WINDOWS POST-LAND PLAYBACK STARVATION VALIDATION
