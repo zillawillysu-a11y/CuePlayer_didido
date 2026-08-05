@@ -46,6 +46,10 @@ All notable project changes are recorded here. Product version remains in `pypro
   Tools dialog warns on invalid dumps; optional 5s cProfile. Seek telemetry
   adds keyframe distance / GOP frame estimate for `frames_to_target=88`.
   See `docs/dense_mark_instrumentation_fix.md`.
+- **Cached Timeline / Video presentation (measured):** bake Marks into static
+  backdrop (play ticks overlay selection only); coalesce zoom with temporary
+  scaled preview; immediate activation poster/loading (no ~7s empty widget);
+  buffer VIDEO_SM file I/O. See `docs/cached_timeline_video_presentation.md`.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

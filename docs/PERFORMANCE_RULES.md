@@ -65,6 +65,11 @@
     Keyframe seek then decode to target; ~88 frames ≈ multi-second H.264 GOP.  
     Use `video.seek.keyframe_distance_s` before blaming the decoder.
 
+14. **Dense Mark paint must use a cached static backdrop (measured).**  
+    Do not redraw all marker shapes on every play tick. Zoom coalesces to one
+    idle rebuild. Activation must present a poster/loading slate immediately.
+    See [`cached_timeline_video_presentation.md`](cached_timeline_video_presentation.md).
+
 ---
 
 ## Enabling diagnostics
@@ -77,7 +82,7 @@ $env:CUEPLAYER_PERF = "1"
 
 cd C:\Users\willy\Projects\CuePlayer_v2   # your clone path
 git fetch origin
-git checkout cursor/sprint8-perf-instrumentation-fix-028d
+git checkout cursor/sprint8-cached-timeline-poster-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```

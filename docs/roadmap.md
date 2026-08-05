@@ -374,10 +374,12 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - **Instrumentation fix** — scrub path now records fan-out (empty Windows dumps);
   LIVE CHECK in report; seek GOP notes. See
   [`dense_mark_instrumentation_fix.md`](dense_mark_instrumentation_fix.md).
+- **Cached Timeline / Video presentation** — Marks baked into static backdrop;
+  zoom coalesce; activation poster. See
+  [`cached_timeline_video_presentation.md`](cached_timeline_video_presentation.md).
 
-**Next:** Windows re-dump with LIVE CHECK OK — then interpret sparse vs dense.
-Do not optimize further until measurements are valid.
+**Next:** Windows validation of cached Marks + zoom + activation poster.
 
 ---
 
-## READY FOR WINDOWS DENSE MARK INSTRUMENTATION VALIDATION
+## READY FOR WINDOWS CACHED TIMELINE / VIDEO PRESENTATION VALIDATION

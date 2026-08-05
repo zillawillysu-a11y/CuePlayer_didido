@@ -50,6 +50,7 @@ class VideoPreviewWidget(QWidget):
         self._placeholder_text = placeholder_text
         self._smooth_scale = bool(smooth_scale)
         self._decode_quality: str = "1080p"
+        self._loading = False
         self.setStyleSheet("background: black;")
         self.setMinimumSize(120, 68)
         if context_menu:
@@ -84,6 +85,7 @@ class VideoPreviewWidget(QWidget):
         """Paint a pre-built QImage (may be shared across sinks; not mutated)."""
         if image is not None and not self.isVisible():
             return
+        self._loading = False
         if image is None or image.isNull():
             if self._image is not None:
                 self._image = None
@@ -91,6 +93,24 @@ class VideoPreviewWidget(QWidget):
             return
         self._image = image
         self.update()
+
+    def set_loading(self, loading: bool = True, text: str = "Loading video…") -> None:
+        """Show an intentional non-empty loading state (never empty black)."""
+        self._loading = bool(loading)
+        if loading:
+            self._placeholder_text = text or "Loading video…"
+            # Keep last image if any; otherwise paint placeholder text on dark.
+            if self._image is None:
+                # Tiny non-null slate so callers can treat Preview as non-empty.
+                slate = QImage(16, 9, QImage.Format.Format_RGB888)
+                slate.fill(QColor("#18181b"))
+                self._image = slate
+            self.update()
+        else:
+            self.update()
+
+    def has_image(self) -> bool:
+        return self._image is not None and not self._image.isNull()
 
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
@@ -128,16 +148,27 @@ class VideoPreviewWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: ANN001
         del event
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("black"))
+        painter.fillRect(self.rect(), QColor("#09090b" if self._loading else "black"))
         if self._image is None or self._image.isNull():
             if self._placeholder_text:
-                painter.setPen(QColor("#52525b"))
-                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._placeholder_text)
+                painter.setPen(QColor("#a1a1aa" if self._loading else "#52525b"))
+                painter.drawText(
+                    self.rect(), Qt.AlignmentFlag.AlignCenter, self._placeholder_text
+                )
             return
 
         target = self.rect()
         img_w, img_h = self._image.width(), self._image.height()
         if img_w <= 0 or img_h <= 0 or target.width() <= 0 or target.height() <= 0:
+            return
+        # Tiny activation slate — show loading text instead of stretching 16x9 noise.
+        if self._loading and img_w <= 32 and img_h <= 32:
+            painter.setPen(QColor("#a1a1aa"))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                self._placeholder_text or "Loading video…",
+            )
             return
         scale_fit = min(target.width() / img_w, target.height() / img_h)
         scale_fill = max(target.width() / img_w, target.height() / img_h)

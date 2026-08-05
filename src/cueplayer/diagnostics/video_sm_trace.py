@@ -56,6 +56,13 @@ _worker_runtime_request_id: int | None = None
 _worker_runtime_changed_mono: float | None = None
 _current_request_id: int | None = None
 
+# Buffered VIDEO_SM file lines — never open the log on every tick (Windows
+# cProfile showed video_sm_trace.trace ~1.17s from per-event file I/O).
+_pending_log_lines: list[str] = []
+_MAX_PENDING_LOG_LINES = 400
+_last_log_flush_mono = 0.0
+_LOG_FLUSH_INTERVAL_S = 1.0
+
 
 class WorkerRuntime:
     IDLE = "IDLE"
@@ -96,9 +103,10 @@ EVENT_NAMES = (
 def clear() -> None:
     global _request_seq, _first_play_after_land, _land_present_mono, _resume_begin_mono
     global _worker_runtime, _worker_runtime_request_id, _worker_runtime_changed_mono
-    global _current_request_id
+    global _current_request_id, _last_log_flush_mono
     with _lock:
         _events.clear()
+        _pending_log_lines.clear()
         _request_seq = 0
         _first_play_after_land = False
         _land_present_mono = None
@@ -107,6 +115,41 @@ def clear() -> None:
         _worker_runtime_request_id = None
         _worker_runtime_changed_mono = None
         _current_request_id = None
+        _last_log_flush_mono = 0.0
+
+
+def flush_log(*, force: bool = False) -> None:
+    """Flush buffered VIDEO_SM lines to the perf log (call from Tools dump)."""
+    global _last_log_flush_mono
+    with _lock:
+        if not _pending_log_lines:
+            return
+        now = time.perf_counter()
+        if (
+            not force
+            and _last_log_flush_mono > 0.0
+            and (now - _last_log_flush_mono) < _LOG_FLUSH_INTERVAL_S
+            and len(_pending_log_lines) < _MAX_PENDING_LOG_LINES
+        ):
+            return
+        lines = list(_pending_log_lines)
+        _pending_log_lines.clear()
+        _last_log_flush_mono = now
+    try:
+        path = perf_diag.log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except Exception:
+        pass
+
+
+def _queue_log_line(line: str) -> None:
+    with _lock:
+        _pending_log_lines.append(line)
+        overflow = len(_pending_log_lines) >= _MAX_PENDING_LOG_LINES
+    if overflow:
+        flush_log(force=True)
 
 
 def next_request_id() -> int:
@@ -381,9 +424,8 @@ def trace(
     perf_diag.note("video.sm.event_count", n)
     perf_diag.note("video.sm.worker_runtime", snap.get("worker_runtime"))
     perf_diag.note("video.sm.current_request_id", snap.get("current_request_id"))
-    # Always mirror to the perf log as a one-line breadcrumb.
+    # Buffer file I/O — flush on Tools dump / interval / overflow.
     try:
-        path = perf_diag.log_path()
         line = (
             f"VIDEO_SM {event}"
             f" state={compact.get('state')}"
@@ -399,9 +441,8 @@ def trace(
             f" inflight={compact.get('inflight')}"
             f"\n"
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+        _queue_log_line(line)
+        flush_log(force=False)
     except Exception:
         pass
 
