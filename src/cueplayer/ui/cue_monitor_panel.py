@@ -41,6 +41,7 @@ from cueplayer.domain.main_cue_id import (
     normalize_main_cue_id_text,
 )
 from cueplayer.domain.models import AudioOutputSettings, Mark, Song
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.cue_list_columns import (
     CUE_LIST_FIELD_LABELS,
     CUE_LIST_FIELDS,
@@ -2468,7 +2469,6 @@ class CueMonitorPanel(QWidget):
         self._apply_card_style(self.primary_cue, accent)
 
     def _sync_current(self, *, force_now: bool = False) -> None:
-        del force_now
         if self._song is None:
             self._current_mark_ids = set()
             self.primary_track.setText("PRIMARY")
@@ -2484,33 +2484,65 @@ class CueMonitorPanel(QWidget):
             self._schedule_now_card_fit()
             return
 
-        primary, secondary = self._song.resolve_now_groups()
-        active_ids: set[str] = set()
-        scroll_id = self._fill_now_slot(
-            track=self.primary_track,
-            cue=self.primary_cue,
-            lane_indices=primary,
-            title="PRIMARY",
-            secondary=False,
-            active_ids=active_ids,
-        )
-        sec_id = self._fill_now_slot(
-            track=self.secondary_track,
-            cue=self.secondary_cue,
-            lane_indices=secondary,
-            title="SECONDARY",
-            secondary=True,
-            active_ids=active_ids,
-        )
-        if scroll_id is None:
-            scroll_id = sec_id
+        # Dense-mark path: indexed lookup first. Skip NOW card rebuild / fit
+        # when the active Cue set has not changed (still follow Cue List).
+        with perf_diag.span("now_card.position_sync_ms"):
+            with perf_diag.span("mark.lookup_ms"):
+                primary, secondary = self._song.resolve_now_groups()
+                primary_mark = (
+                    self._song.active_mark_among_lanes(primary, self._position)
+                    if primary
+                    else None
+                )
+                secondary_mark = (
+                    self._song.active_mark_among_lanes(secondary, self._position)
+                    if secondary
+                    else None
+                )
+            active_ids: set[str] = set()
+            if primary_mark is not None:
+                active_ids.add(primary_mark.id)
+            if secondary_mark is not None and not self._secondary_cleared:
+                active_ids.add(secondary_mark.id)
 
-        changed = active_ids != self._current_mark_ids
-        self._current_mark_ids = active_ids
-        self._apply_now_highlight()
-        del changed, scroll_id
-        self._schedule_now_card_fit()
-        self._follow_cue_list_to_playhead()
+            hold_changed = (
+                secondary_mark is not None
+                and secondary_mark.id != self._secondary_hold_mark_id
+            )
+            changed = (
+                force_now
+                or active_ids != self._current_mark_ids
+                or hold_changed
+                or bool(self._secondary_cleared and secondary_mark is not None)
+            )
+
+            if not changed:
+                perf_diag.count("now_card.position_sync.skipped_unchanged")
+            else:
+                active_ids = set()
+                self._fill_now_slot(
+                    track=self.primary_track,
+                    cue=self.primary_cue,
+                    lane_indices=primary,
+                    title="PRIMARY",
+                    secondary=False,
+                    active_ids=active_ids,
+                )
+                self._fill_now_slot(
+                    track=self.secondary_track,
+                    cue=self.secondary_cue,
+                    lane_indices=secondary,
+                    title="SECONDARY",
+                    secondary=True,
+                    active_ids=active_ids,
+                )
+                self._current_mark_ids = active_ids
+                self._apply_now_highlight()
+                self._schedule_now_card_fit()
+                perf_diag.count("now_card.position_sync.updated")
+
+        with perf_diag.span("cue_list.position_sync_ms"):
+            self._follow_cue_list_to_playhead()
 
     def _on_user_cue_list_scroll(self) -> None:
         """User moved Cue List — pause auto-scroll; resume when they scroll back to the lit cue."""

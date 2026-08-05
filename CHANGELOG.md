@@ -37,6 +37,9 @@ All notable project changes are recorded here. Product version remains in `pypro
   explicit `PLAYBACK_DECODER_PREPARING/READY/FIRST_PLAYBACK_FRAME_PRESENTED`;
   keyframe seek telemetry + deadline recreate; keep last valid / poster during
   preparation; `set_song` with video no longer clears to empty widget.
+- Dense Mark perf: prove Mark-density coupling via position-fanout sub-spans;
+  bisect Mark lookup; viewport-bounded Mark paint; skip NOW rebuild when Cue
+  unchanged. Video decoder untouched. See `docs/dense_mark_perf.md`.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -781,66 +782,131 @@ class Song:
         primary, secondary = self.resolve_now_groups()
         return [*primary, *secondary]
 
+    def mark_times(self) -> list[float]:
+        """Song-time keys for the sorted ``marks`` list (diagnostics / tests)."""
+        return [float(m.time_seconds) for m in self.marks]
+
+    def mark_index_at_or_before(self, position: float) -> int:
+        """Index of last mark with ``time_seconds <= position``, or -1.
+
+        ``marks`` must stay time-sorted (``sort_marks``). O(log n) via bisect.
+        """
+        if not self.marks:
+            return -1
+        # bisect key= avoids building an O(n) float list on every clock tick.
+        return (
+            bisect_right(
+                self.marks,
+                float(position) + 1e-4,
+                key=lambda m: float(m.time_seconds),
+            )
+            - 1
+        )
+
+    def mark_count_in_window(self, center: float, half_width: float = 0.5) -> int:
+        """Marks with time in ``[center - half_width, center + half_width]``."""
+        if not self.marks:
+            return 0
+        lo = float(center) - float(half_width)
+        hi = float(center) + float(half_width)
+        i0 = bisect_left(
+            self.marks, lo, key=lambda m: float(m.time_seconds)
+        )
+        i1 = bisect_right(
+            self.marks, hi, key=lambda m: float(m.time_seconds)
+        )
+        return i1 - i0
+
+    def mark_slice_in_time_range(
+        self, start: float, end: float
+    ) -> list[Mark]:
+        """Marks intersecting ``[start, end]`` via bisect (O(log n + k))."""
+        if not self.marks:
+            return []
+        i0 = bisect_left(
+            self.marks, float(start), key=lambda m: float(m.time_seconds)
+        )
+        i1 = bisect_right(
+            self.marks, float(end), key=lambda m: float(m.time_seconds)
+        )
+        return self.marks[i0:i1]
+
     def active_mark_among_lanes(self, lane_indices: list[int], position: float) -> Mark | None:
         """Latest mark at or before position among the given lanes (for NOW switching)."""
         allowed = set(lane_indices)
         if not allowed:
             return None
-        active: Mark | None = None
-        for mark in self.marks:
-            if mark.time_seconds > position + 1e-4:
-                break
+        i = self.mark_index_at_or_before(position)
+        while i >= 0:
+            mark = self.marks[i]
             if mark.lane_index in allowed:
-                active = mark
-        return active
+                return mark
+            i -= 1
+        return None
 
     def last_mark_at_or_before(self, position: float) -> Mark | None:
         """Latest visible mark at or before position (chronological, all lanes)."""
-        active: Mark | None = None
-        for mark in self.marks:
+        i = self.mark_index_at_or_before(position)
+        while i >= 0:
+            mark = self.marks[i]
             lane = self.lane_by_index(mark.lane_index)
-            if lane is not None and not lane.visible:
-                continue
-            if mark.time_seconds > position + 1e-4:
-                break
-            active = mark
-        return active
+            if lane is None or lane.visible:
+                return mark
+            i -= 1
+        return None
 
     def last_cue_list_mark_at_or_before(self, position: float) -> Mark | None:
         """Latest Cue List row mark at or before position (visible + cue_list_enabled)."""
-        active: Mark | None = None
-        for mark in self.marks:
+        i = self.mark_index_at_or_before(position)
+        while i >= 0:
+            mark = self.marks[i]
             lane = self.lane_by_index(mark.lane_index)
-            if lane is None or not lane.visible or not lane.cue_list_enabled:
-                continue
-            if mark.time_seconds > position + 1e-4:
-                break
-            active = mark
-        return active
+            if lane is not None and lane.visible and lane.cue_list_enabled:
+                return mark
+            i -= 1
+        return None
 
     def next_mark_among_lanes(self, lane_indices: list[int], position: float) -> Mark | None:
         allowed = set(lane_indices)
         if not allowed:
             return None
-        for mark in self.marks:
-            if mark.lane_index in allowed and mark.time_seconds > position + 1e-4:
+        if not self.marks:
+            return None
+        i = bisect_right(
+            self.marks,
+            float(position) + 1e-4,
+            key=lambda m: float(m.time_seconds),
+        )
+        while i < len(self.marks):
+            mark = self.marks[i]
+            if mark.lane_index in allowed:
                 return mark
+            i += 1
         return None
 
     def active_mark_for_lane(self, lane_index: int, position: float) -> Mark | None:
         """Latest mark on this lane at or before position."""
-        active: Mark | None = None
-        for mark in self.marks:
-            if mark.time_seconds > position + 1e-4:
-                break
+        i = self.mark_index_at_or_before(position)
+        while i >= 0:
+            mark = self.marks[i]
             if mark.lane_index == lane_index:
-                active = mark
-        return active
+                return mark
+            i -= 1
+        return None
 
     def next_mark_for_lane(self, lane_index: int, position: float) -> Mark | None:
-        for mark in self.marks:
-            if mark.lane_index == lane_index and mark.time_seconds > position + 1e-4:
+        if not self.marks:
+            return None
+        i = bisect_right(
+            self.marks,
+            float(position) + 1e-4,
+            key=lambda m: float(m.time_seconds),
+        )
+        while i < len(self.marks):
+            mark = self.marks[i]
+            if mark.lane_index == lane_index:
                 return mark
+            i += 1
         return None
 
     def sort_video_clips(self) -> None:

@@ -1,4 +1,4 @@
-﻿"""Main application window with waveform timeline and marking."""
+"""Main application window with waveform timeline and marking."""
 
 from __future__ import annotations
 
@@ -5019,20 +5019,63 @@ class MainWindow(QMainWindow):
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
         # Diagnostics only on the Qt position path — never in the audio callback.
+        from time import monotonic
+
+        fanout_t0 = monotonic()
         with perf_diag.span("ui.position_fanout"):
             seconds = self.playback.engine_to_song_time(engine_seconds)
             self.playback.sync_from_engine()
-            self.timeline.set_position(seconds)
-            self.transport.set_times(seconds, self.engine.duration)
-            self.monitor.set_position(seconds, self.engine.duration)
-            self._refresh_output_timecode_clock(seconds)
+
+            # Dense-mark A/B metrics (correlate slow fanout with cue density).
+            song = self.current_song
+            if song is not None and perf_diag.is_enabled():
+                with perf_diag.span("mark.lookup_ms"):
+                    total = len(song.marks)
+                    near = song.mark_count_in_window(seconds, 0.5)
+                    # Approximate "per second" bucket for stress zones (~10 cues/s).
+                    per_sec = song.mark_count_in_window(seconds, 0.5)
+                    perf_diag.note("mark.total_count", total)
+                    perf_diag.note("mark.count_in_current_second", per_sec)
+                    perf_diag.note("mark.count_near_playhead", near)
+                    # Crossings this tick vs previous (bounded range, not per-mark UI).
+                    prev = getattr(self, "_fanout_prev_seconds", None)
+                    if prev is not None:
+                        lo, hi = sorted((float(prev), float(seconds)))
+                        crossed = len(song.mark_slice_in_time_range(lo, hi))
+                        perf_diag.note("mark.crossings_per_position_update", crossed)
+                        perf_diag.count("mark.crossings_total", crossed)
+                    self._fanout_prev_seconds = float(seconds)
+                    try:
+                        zoom = float(self.timeline.pixels_per_second())
+                    except Exception:
+                        zoom = -1.0
+                    perf_diag.note("timeline.zoom_pps", zoom)
+
+            with perf_diag.span("timeline.set_position"):
+                self.timeline.set_position(seconds)
+            with perf_diag.span("transport.position_sync_ms"):
+                self.transport.set_times(seconds, self.engine.duration)
+            with perf_diag.span("monitor.position_sync_ms"):
+                self.monitor.set_position(seconds, self.engine.duration)
+            with perf_diag.span("status.timecode_refresh_ms"):
+                self._refresh_output_timecode_clock(seconds)
+
             # Canonical video schedule (after playhead). Gate while scrub
             # preview or final-land owns the Video pipeline.
+            video_ready_waiting = False
             if not self.video_sync.engine_video_gated():
-                # Round 8: schedule/skip reasons live only in VideoSyncController.
-                # Do not log fake SCHEDULE_NEXT_PLAY here before update_position
-                # (that produced IDLE + engine_fanout_post_land with no submit).
-                self.video_sync.update_position(seconds, source="engine")
+                with perf_diag.span("video.schedule_ms"):
+                    self.video_sync.update_position(seconds, source="engine")
+                # Frame already decoded but UI thread was busy in fanout?
+                if perf_diag.is_enabled():
+                    try:
+                        waiting = bool(
+                            getattr(self.video_sync, "_async_inflight", False) is False
+                            and self._sm_trace_worker_waiting(self.video_sync)
+                        )
+                        video_ready_waiting = waiting
+                    except Exception:
+                        video_ready_waiting = False
             elif perf_diag.is_enabled():
                 from cueplayer.diagnostics import video_sm_trace as sm_trace
 
@@ -5048,9 +5091,53 @@ class MainWindow(QMainWindow):
                         reason="engine_video_gated",
                         inflight=bool(self.video_sync._async_inflight),
                     )
+
+            if perf_diag.is_enabled():
+                from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+                remote = getattr(self, "_web_remote", None)
+                if remote is not None and getattr(remote, "running", False):
+                    with perf_diag.span("remote.position_sync_ms"):
+                        # Remote polls on its own timer — do not push full mark
+                        # lists here. Span exists so A/B can prove absence of work.
+                        perf_diag.count("remote.position_fanout.noop")
+
+                fanout_ms = (monotonic() - fanout_t0) * 1000.0
+                perf_diag.record_ms("ui.position_fanout.total_ms", fanout_ms)
+                # Correlate slow samples (> one frame budget) with mark density.
+                if fanout_ms >= 16.7:
+                    perf_diag.count("ui.position_fanout.slow_samples")
+                    perf_diag.note("ui.position_fanout.slow_song_time", float(seconds))
+                    if song is not None:
+                        perf_diag.note(
+                            "ui.position_fanout.slow_marks_near",
+                            song.mark_count_in_window(seconds, 0.5),
+                        )
+                    perf_diag.note(
+                        "ui.position_fanout.slow_video_ready_waiting",
+                        video_ready_waiting,
+                    )
+                    perf_diag.note(
+                        "ui.position_fanout.slow_worker_runtime",
+                        sm_trace.worker_runtime(),
+                    )
+
             # Overview syncs via timeline.view_changed (set_position) — do not
             # call _sync_timeline_overview again here (~60 Hz double work).
             perf_diag.count("ui.position_fanout.calls")
+
+    @staticmethod
+    def _sm_trace_worker_waiting(video_sync) -> bool:  # noqa: ANN001
+        """True when a decoded frame may be waiting on the UI thread."""
+        try:
+            from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+            return sm_trace.worker_runtime() in (
+                sm_trace.WorkerRuntime.WAITING_FRAME,
+                sm_trace.WorkerRuntime.PRESENTING,
+            )
+        except Exception:
+            return False
 
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
