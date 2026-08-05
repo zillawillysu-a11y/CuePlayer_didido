@@ -121,9 +121,54 @@ git pull origin cursor/sprint8-video-sm-trace-028d
 
 Decide **A vs B** from that log before any Round 8 change.
 
-## STOP
+## Round 8 — Confirmed fix (Windows VIDEO_SM)
 
-Round 7 ships **instrumentation + diagnosis only**. No speculative fix.
-Do **not** assume single-worker PyAV seek is proven. Next round only after
-Windows VIDEO_SM confirms A or B — then fix that stall without redesigning
-Timeline / AudioEngine.
+Windows confirmed **Root Cause A + B**:
+
+### A — Post-land submit gap
+```text
+FINAL_LAND_PRESENT
+WORKER_RUNTIME … IDLE reason=after_final_land_present
+SCHEDULE_NEXT_PLAY … reason=engine_fanout_post_land   (repeated)
+```
+MainWindow logged `engine_fanout_post_land` **before** `update_position`, which
+often throttled/skipped without advancing `request_id`. Worker stayed IDLE.
+
+**Fix:** `_enter_resume_playback` submits exactly one play decode immediately
+(`post_land_submit_attempt` / `success` / `skipped_reason`). Do not force
+`IDLE after_final_land_present` over an already-submitted SEEKING worker.
+MainWindow no longer emits fake SCHEDULE before `update_position`; skips
+report `reason=skip:…` from VideoSync.
+
+### B — Playback generation starvation
+Ordinary clock used to bump `_async_req_gen` on every play schedule →
+`generation_mismatch_after_decode` → frames never presented.
+
+**Fix — generation scopes:**
+| Scope | Changes when |
+|-------|----------------|
+| `media_session_generation` | song / video track / clip binding |
+| `scrub_transaction_generation` | scrub begin / release / new scrub |
+| `playback_request_sequence` | diagnostics/order only — **does not invalidate** |
+
+PLAYBACK / RESUME: pending-latest while busy; present if within
+`_PLAYBACK_LATENESS_TOLERANCE_S` (0.35 s); drop only session change / scrub /
+too late / newer already presented / real invalidate.
+
+### Expected healthy post-land sequence
+```text
+FINAL_LAND_PRESENT
+RESUME_BEGIN
+SCHEDULE_NEXT_PLAY reason=post_land_submit_success  (request_id advances)
+WORKER_RUNTIME SEEKING / DECODING / …
+FIRST_PLAY_FRAME
+PLAY_PRESENT …
+```
+
+`playback.frame_drop.reason.generation_mismatch` should stay ~0 for ordinary
+clock advancement.
+
+## STOP (Round 7 historical)
+
+Round 7 shipped **instrumentation + diagnosis only**. Round 8 implements the
+confirmed A+B fix without redesigning Timeline / AudioEngine.

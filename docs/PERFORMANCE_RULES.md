@@ -1,6 +1,6 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 Round 7 (state-machine trace / freeze diagnosis)  
+**Status:** Sprint 8 Task 2 Round 8 (post-land submit + playback lateness)  
 **Updated:** 2026-08-05  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md), [`video_sm_freeze_diagnosis.md`](video_sm_freeze_diagnosis.md)
 
@@ -35,6 +35,14 @@
    In-flight preview completes unless the pointer jumps far (≥2 s). Present within ~0.75 s tolerance.  
    Engine Video is gated during `SCRUB_PREVIEW`. Playing release: `resume_required == resume_started == resume_completed + resume_recovered`.
 
+9. **Post-land play must submit immediately (Round 8).**  
+   `FINAL_LAND_PRESENT` while `pre_scrub_was_playing` submits exactly one play decode.  
+   Do not rely on incidental engine fan-out / throttle to wake playback.  
+   PLAYBACK / RESUME: do **not** bump `_async_req_gen` on ordinary clock ticks;  
+   keep one pending-latest target while busy; present if within ~0.35 s lateness.  
+   Scrub begin / song change still invalidate. `playback.frame_drop.reason.generation_mismatch`  
+   must stay ~0 for ordinary clock advancement.
+
 ---
 
 ## Enabling diagnostics
@@ -45,8 +53,9 @@ $env:CUEPLAYER_PERF = "1"
 # Optional: custom log path
 # $env:CUEPLAYER_PERF_LOG = "C:\Users\User\Desktop\cueplayer_perf.log"
 
-cd C:\Users\User\Projects\CuePlayer_didido   # your clone path
-git checkout cursor/sprint8-video-responsive-028d
+cd C:\Users\willy\Projects\CuePlayer_v2   # your clone path
+git fetch origin
+git checkout cursor/sprint8-postland-starvation-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```

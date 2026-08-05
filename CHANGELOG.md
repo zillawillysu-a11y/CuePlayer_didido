@@ -27,6 +27,12 @@ All notable project changes are recorded here. Product version remains in `pypro
   Worker runtime states (IDLE/SEEKING/DECODING/WAITING_FRAME/PRESENTING/
   CANCELLED) + request_id to distinguish occupied-worker vs stopped-scheduler.
   See `docs/video_sm_freeze_diagnosis.md`. Windows VIDEO_SM is source of truth.
+- Round 8: **post-land submit gap + playback generation starvation** —
+  `FINAL_LAND_PRESENT` immediately submits one play decode when previously
+  playing; PLAYBACK keeps one pending-latest target (no gen bump on clock
+  ticks); present by lateness tolerance (~0.35 s). MainWindow no longer logs
+  fake `engine_fanout_post_land` before `update_position`.
+  See `docs/video_sm_freeze_diagnosis.md` Round 8 section.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

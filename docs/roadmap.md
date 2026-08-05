@@ -362,10 +362,14 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Round 7: **State-machine trace (diagnosis only)** — `VIDEO_SM` events for
   scrub → land → resume → play; identify post-land freeze without redesign.
   See [`video_sm_freeze_diagnosis.md`](video_sm_freeze_diagnosis.md).
+- Round 8: **Post-land submit + playback lateness** — Windows confirmed
+  Root Cause A (IDLE + fake fanout, no submit) and B (gen starvation).
+  Immediate post-land play submit; pending-latest for PLAYBACK; no gen bump
+  on ordinary clock; present within lateness tolerance.
 
-**Next:** Confirm Windows `VIDEO_SM` log (`LAND→FIRST_PLAY_FRAME gap` +
-`coalesce_worker_busy`), then fix that stall only.
+**Next:** Windows validate LAND→FIRST_PLAY_FRAME with no 5–20 s freeze after
+fast scrub-release (20 cycles).
 
 ---
 
-## READY FOR WINDOWS VIDEO SM TRACE CAPTURE
+## READY FOR WINDOWS POST-LAND PLAYBACK STARVATION VALIDATION
