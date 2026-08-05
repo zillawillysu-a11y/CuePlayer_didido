@@ -316,6 +316,50 @@ scrub-end/stop sync land with timeout.
 | Release | Invalidate gen → nearest poster → **async exact land only** (no UI sync try) |
 | Resume | `_min_present_seconds` rejects pre-release frames |
 
+### Round 4 — final-land priority + continuous resume
+
+**Windows Round 3 failure:** `final_land_exact_ms` mean ~1132 ms / max ~4690 ms;
+only 9/16 lands presented; after correct frame, Video froze again.
+
+| Root cause | Fix |
+|------------|-----|
+| Engine resumed before land → queue-depth-1 play overwrote land | `FINAL_LANDING` gates engine; play cannot replace `kind=land` |
+| `scrub_ended` ran `end_scrub` before video finalize | MainWindow: video `set_scrubbing(False)` **before** `end_scrub` |
+| Land `None` (lock timeout) left `_scrub_land_pending` stuck | Retry land; land uses `stale_on_timeout=False` |
+| No explicit resume transition | `RESUME_PLAYBACK` → accept engine → `PLAYBACK` after first valid frame |
+| Unrelated pre-scrub freeze on release | Immediate preview/poster; else neutral pending |
+
+**Pipeline:** `PLAYBACK` → `SCRUB_PREVIEW` → `FINAL_LANDING` → `RESUME_PLAYBACK` → `PLAYBACK`
+
+**New diagnostics:** `video.pipeline_state`, `final_land_superseded`,
+`final_land_cache_hit/miss`, `final_land_worker_queue_wait_ms`,
+`final_land_decode_ms`, `engine_requests_blocked_during_land`,
+`final_land_overwritten_attempts`, `resume_*`, `min_present_seconds_*`.
+
 ---
 
-## READY FOR WINDOWS LIVE SCRUB PREVIEW VALIDATION
+## 7d. Windows validation — Final-land + resume Round 4
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\User\Projects\CuePlayer_didido
+git fetch origin
+git checkout cursor/sprint8-video-responsive-028d
+git pull origin cursor/sprint8-video-responsive-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+| Test | Pass |
+|------|------|
+| A — scrub while playing | Relevant/exact quickly; continuous play from release; **no second freeze** |
+| B — scrub while paused | Landed frame stays; Play starts immediately from release |
+| C — repeat 10× | No stuck `FINAL_LANDING`; no stale flash |
+
+**Log checks:** `final_land_presented` ≈ `final_land_requests` (minus superseded);
+`final_land_exact_ms` not multi-second; `resume_completed` after play-scrub;
+`engine_requests_blocked_during_land` > 0 when releasing mid-play;
+`video.pipeline_state` returns to `PLAYBACK`.
+
+---
+
+## READY FOR WINDOWS FINAL-LAND AND RESUME VALIDATION

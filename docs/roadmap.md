@@ -349,9 +349,12 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Round 2: Timeline/playhead acceptance; prove pipeline; lock_timeout.
 - Round 3: **Live scrub preview** (~16 FPS) + **fast final-land** on release
   (async exact land only — no UI-thread sync try).
+- Round 4: **Final-land priority + resume** — pipeline states, engine gated
+  during `FINAL_LANDING`, land cannot be overwritten by play, resume after
+  exact land (fixes 1–4 s land delay + second freeze).
 
-**Next:** Windows live scrub preview validation.
+**Next:** Windows final-land + resume validation.
 
 ---
 
-## READY FOR WINDOWS LIVE SCRUB PREVIEW VALIDATION
+## READY FOR WINDOWS FINAL-LAND AND RESUME VALIDATION

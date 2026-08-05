@@ -1,6 +1,6 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 Round 2 (video responsiveness)  
+**Status:** Sprint 8 Task 2 Round 4 (final-land priority + resume)  
 **Updated:** 2026-08-05  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md)
 
@@ -25,7 +25,10 @@
 5. **Feature flags for unfinished UX** must hide entry points only — never delete domain / persistence / tests.
 
 6. **Video live decode must not stall Timeline/Playhead.**  
-   Play + scrub-cold use latest-wins async decode (dedicated worker decoders). UI presents prepared frames. Scrub-end / pause land may sync-decode once for accuracy.
+   Play + scrub-cold use latest-wins async decode (dedicated worker decoders). UI presents prepared frames. Scrub release uses exclusive async final-land (never UI-thread PyAV).
+
+7. **Final-land owns the schedule until decoder position is established.**  
+   Engine play requests must not overwrite `kind=land`. After land, resume continuous play (or stay paused) without a second freeze.
 
 ---
 

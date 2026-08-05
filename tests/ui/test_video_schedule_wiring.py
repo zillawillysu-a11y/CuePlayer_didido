@@ -25,7 +25,22 @@ def test_play_path_does_not_queue_separate_video_forward() -> None:
     fanout = inspect.getsource(mw_mod.MainWindow._on_position_changed)
     assert 'source="engine"' in fanout
     assert "video_sync.update_position" in fanout
-    assert "is_scrubbing" in fanout
+    assert "engine_video_gated" in fanout
+
+
+def test_scrub_end_finalizes_video_before_audio_resume() -> None:
+    """FINAL_LANDING must arm before end_scrub so engine cannot overwrite land."""
+    started = inspect.getsource(mw_mod.MainWindow._on_timeline_scrub_started)
+    ended = inspect.getsource(mw_mod.MainWindow._on_timeline_scrub_ended)
+    assert "set_scrubbing(True" in started
+    assert "begin_scrub" in started
+    assert started.index("set_scrubbing") < started.index("begin_scrub")
+    assert "set_scrubbing(False)" in ended
+    assert "end_scrub" in ended
+    assert ended.index("set_scrubbing") < ended.index("end_scrub")
+    init = inspect.getsource(mw_mod.MainWindow.__init__)
+    assert "scrub_started.connect(self._on_timeline_scrub_started)" in init
+    assert "scrub_ended.connect(self._on_timeline_scrub_ended)" in init
 
 
 def test_scrub_target_changed_wires_video_not_throttled_preview() -> None:

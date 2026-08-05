@@ -11,6 +11,10 @@ All notable project changes are recorded here. Product version remains in `pypro
   lock_timeout against multi-second spikes.
 - Round 3: live scrub preview (~16 FPS latest-wins) + fast final-land on release
   (nearest relevant then exact async land; no UI-thread sync try).
+- Round 4: explicit Video pipeline state machine (`PLAYBACK` /
+  `SCRUB_PREVIEW` / `FINAL_LANDING` / `RESUME_PLAYBACK`); final-land exclusive
+  priority (engine gated/dropped during land); land retries on lock miss;
+  resume continues after exact land (no second freeze).
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 

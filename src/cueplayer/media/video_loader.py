@@ -154,7 +154,11 @@ class VideoDecoder:
             self._cached_ndarray_source = None
 
     def frame_at(
-        self, seconds: float, *, lock_timeout: float | None = None
+        self,
+        seconds: float,
+        *,
+        lock_timeout: float | None = None,
+        stale_on_timeout: bool = True,
     ) -> np.ndarray | None:
         """RGB24 (H, W, 3) array for the frame active at `seconds`, or None.
 
@@ -166,6 +170,9 @@ class VideoDecoder:
         used by the async video worker so a contended mixer cannot create
         multi-second decode spikes. Cold start without a timeout still waits
         (land-frame accuracy), but the worker always passes a short timeout.
+
+        ``stale_on_timeout``: when False (final-land), a lock miss returns None
+        so callers can retry instead of presenting an unrelated cached frame.
         """
         if self._closed:
             return None
@@ -180,7 +187,7 @@ class VideoDecoder:
         if lock_timeout is not None:
             got = lock.acquire(timeout=float(lock_timeout))
             if not got:
-                return stale
+                return stale if stale_on_timeout else None
         elif stale is None:
             # Cold land-frame: must block for a real picture.
             lock.acquire()
@@ -189,7 +196,7 @@ class VideoDecoder:
             # ~1–2 preview frames; long enough to usually win between mixer yields.
             got = lock.acquire(timeout=0.08)
             if not got:
-                return stale
+                return stale if stale_on_timeout else None
         try:
             if self._closed:
                 return None
@@ -306,7 +313,11 @@ class StillImageDecoder:
         self._frame = None
 
     def frame_at(
-        self, seconds: float, *, lock_timeout: float | None = None
+        self,
+        seconds: float,
+        *,
+        lock_timeout: float | None = None,
+        stale_on_timeout: bool = True,
     ) -> np.ndarray | None:  # noqa: ARG002
         if self._closed:
             return None

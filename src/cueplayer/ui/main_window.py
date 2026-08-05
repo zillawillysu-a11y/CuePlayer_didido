@@ -1344,13 +1344,8 @@ class MainWindow(QMainWindow):
         self.transport.seek_requested.connect(self.playback.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
-        self.timeline.scrub_started.connect(self.playback.begin_scrub)
-        self.timeline.scrub_ended.connect(self.playback.end_scrub)
-        # Throttle video decode while the playhead is actively being
-        # dragged — see VideoSyncController.set_scrubbing(). Mid-drag
-        # preview uses scrub_preview_requested (not full engine seek).
-        self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
-        self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
+        self.timeline.scrub_started.connect(self._on_timeline_scrub_started)
+        self.timeline.scrub_ended.connect(self._on_timeline_scrub_ended)
         # Unthrottled target → video scrub scheduler (latest-wins, ~16 Hz decode).
         self.timeline.scrub_target_changed.connect(
             lambda t: self.video_sync.update_position(t, source="scrub")
@@ -4991,11 +4986,22 @@ class MainWindow(QMainWindow):
 
     def _forward_engine_position_to_video(self, engine_seconds: float) -> None:
         """Legacy hook — play path now schedules video inside position fan-out."""
-        if self.video_sync.is_scrubbing():
+        if self.video_sync.engine_video_gated():
             return
         self.video_sync.update_position(
             self.playback.engine_to_song_time(engine_seconds), source="engine"
         )
+
+    def _on_timeline_scrub_started(self) -> None:
+        """Enter SCRUB_PREVIEW before audio scrub pause so Video owns the schedule."""
+        was_playing = bool(self.playback.playing)
+        self.video_sync.set_scrubbing(True, was_playing=was_playing)
+        self.playback.begin_scrub()
+
+    def _on_timeline_scrub_ended(self) -> None:
+        """Finalize Video (FINAL_LANDING) before audio resume so engine cannot overwrite land."""
+        self.video_sync.set_scrubbing(False)
+        self.playback.end_scrub()
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
@@ -5007,9 +5013,9 @@ class MainWindow(QMainWindow):
             self.transport.set_times(seconds, self.engine.duration)
             self.monitor.set_position(seconds, self.engine.duration)
             self._refresh_output_timecode_clock(seconds)
-            # Canonical video schedule (after playhead). Skip while scrubbing —
-            # Timeline scrub_preview_requested owns video then.
-            if not self.video_sync.is_scrubbing():
+            # Canonical video schedule (after playhead). Gate while scrub
+            # preview or final-land owns the Video pipeline.
+            if not self.video_sync.engine_video_gated():
                 self.video_sync.update_position(seconds, source="engine")
             # Overview syncs via timeline.view_changed (set_position) — do not
             # call _sync_timeline_overview again here (~60 Hz double work).

@@ -201,11 +201,43 @@ def report_text() -> str:
         "video.scrub.pause_priority_requests",
         "video.scrub.final_land_requests",
         "video.scrub.final_land_presented",
+        "video.scrub.final_land_superseded",
+        "video.scrub.final_land_cache_hit",
+        "video.scrub.final_land_cache_miss",
+        "video.scrub.engine_requests_blocked_during_land",
+        "video.scrub.engine_requests_dropped_during_land",
+        "video.scrub.final_land_overwritten_attempts",
+        "video.scrub.final_land_completed",
+        "video.scrub.resume_started",
+        "video.scrub.resume_completed",
+        "video.scrub.engine_requests_blocked_after_land",
+        "video.scrub.valid_frames_rejected_after_land",
+        "video.scrub.min_present_seconds_cleared",
     )
     counters = snap.get("counters") or {}
     lines.append("Video pipeline counters (0 if unused this session):")
     for name in expected_video_counters:
         lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    lines.append("")
+    lines.append(
+        f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.final_land_generation: "
+        f"{attrs.get('video.scrub.final_land_generation', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.pre_scrub_was_playing: "
+        f"{attrs.get('video.scrub.pre_scrub_was_playing', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.min_present_seconds_value: "
+        f"{attrs.get('video.scrub.min_present_seconds_value', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.final_land_first_relevant_source: "
+        f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
+    )
     lines.append("")
     expected_video_spans = (
         "video.decode.async",
