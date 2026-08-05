@@ -4,6 +4,25 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+### Sprint 8 — Task 2: Video Track Responsiveness (2026-08-05)
+
+- Round 1: async latest-wins worker + paint-before-quiesce.
+- Round 2: prove pipeline in perf log; single engine schedule; scrub partial paints;
+  lock_timeout against multi-second spikes.
+- Round 3: live scrub preview (~16 FPS latest-wins) + fast final-land on release
+  (nearest relevant then exact async land; no UI-thread sync try).
+- Round 4: explicit Video pipeline state machine (`PLAYBACK` /
+  `SCRUB_PREVIEW` / `FINAL_LANDING` / `RESUME_PLAYBACK`); final-land exclusive
+  priority (engine gated/dropped during land); land retries on lock miss;
+  resume continues after exact land (no second freeze).
+- Round 5: explicit Song→media target outcomes (no ambiguous None);
+  empty decode never clears a valid preview; land retries capped (≤5 / 500 ms);
+  one-to-one resume with watchdog; bounded worker-decoder reset.
+- Round 6: scrub preview delivery (session gen ≠ per-move gen; present
+  in-flight within tolerance; engine gated during scrub) + mandatory resume
+  after playing land (`resume_required`/`completed`/`recovered` split) +
+  separate play vs scrub decoder maps; resume recovery on watchdog.
+
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 
 - Hide Tools → Align Anchors / MA Preflight behind `ENABLE_EXPERIMENTAL_FEATURES` (default False); code kept.

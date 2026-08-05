@@ -1344,14 +1344,13 @@ class MainWindow(QMainWindow):
         self.transport.seek_requested.connect(self.playback.seek)
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
-        self.timeline.scrub_started.connect(self.playback.begin_scrub)
-        self.timeline.scrub_ended.connect(self.playback.end_scrub)
-        # Throttle video decode while the playhead is actively being
-        # dragged — see VideoSyncController.set_scrubbing(). Mid-drag
-        # preview uses scrub_preview_requested (not full engine seek).
-        self.timeline.scrub_started.connect(lambda: self.video_sync.set_scrubbing(True))
-        self.timeline.scrub_ended.connect(lambda: self.video_sync.set_scrubbing(False))
-        self.timeline.scrub_preview_requested.connect(self.video_sync.update_position)
+        self.timeline.scrub_started.connect(self._on_timeline_scrub_started)
+        self.timeline.scrub_ended.connect(self._on_timeline_scrub_ended)
+        # Unthrottled target → video scrub scheduler (latest-wins, ~16 Hz decode).
+        self.timeline.scrub_target_changed.connect(
+            lambda t: self.video_sync.update_position(t, source="scrub")
+        )
+        # Throttled chrome only (transport / cue list / clock).
         self.timeline.scrub_preview_requested.connect(self._on_scrub_preview)
         self.timeline.selection_changed.connect(self._on_timeline_selection)
         self.timeline.delete_requested.connect(self._delete_marks)
@@ -1383,16 +1382,10 @@ class MainWindow(QMainWindow):
         self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
         self.timeline.mark_track_colors_changed.connect(self._on_mark_track_colors_changed)
         self.timeline.add_mark_requested.connect(self._add_mark)
-        # Video decode must not run ahead of timeline/MIDI on the UI thread.
-        # QueuedConnection lets playhead + cue-list update finish first; decode
-        # follows on the next event-loop turn (still driven by the audio clock).
-        self.engine.position_changed.connect(
-            self._forward_engine_position_to_video,
-            Qt.ConnectionType.QueuedConnection,
-        )
-        # Throttles video decode to a display cadence while playing, so the
-        # audio clock's ~60Hz position ticks can't starve the UI thread the
-        # timeline also lives on — see VideoSyncController.set_playing().
+        # Video decode must not run ahead of timeline paint, and must not pile
+        # QueuedConnection backlog while the UI is busy. Single canonical path:
+        # position fan-out → timeline first → then video_sync.update_position.
+        # Scrub uses scrub_preview_requested only (engine forward skipped).
         self.engine.playing_changed.connect(self.video_sync.set_playing)
         # One RGB→QImage conversion shared by Preview + Clean Output (avoids
         # double memcpy when Clean Output is open with a video track).
@@ -2197,34 +2190,54 @@ class MainWindow(QMainWindow):
         Preview + Clean share a single QImage conversion. NDI keeps the
         ndarray. Invisible sinks are skipped so opening Clean Output does not
         pay for a hidden Preview panel copy. Web Remote copies RGB for WebRTC.
+
+        Decode runs off-UI (async worker / land sync). This path only converts
+        and presents — instrumented separately from ``video.decode``.
         """
-        preview_vis = self._video_preview_visible()
-        clean_vis = self._clean_output_visible()
-        ndi_on = bool(self.project.clean_video_output.ndi_enabled)
-        remote = getattr(self, "_web_remote", None)
-        remote_prev = bool(remote is not None and remote.remote_preview_wanted)
+        with perf_diag.span("video.present"):
+            perf_diag.count("video.present.calls")
+            preview_vis = self._video_preview_visible()
+            clean_vis = self._clean_output_visible()
+            ndi_on = bool(self.project.clean_video_output.ndi_enabled)
+            remote = getattr(self, "_web_remote", None)
+            remote_prev = bool(remote is not None and remote.remote_preview_wanted)
 
-        if frame is None:
-            if preview_vis:
-                self.video_preview.set_qimage(None)
-            if clean_vis:
-                self.clean_output_window.set_qimage(None)
+            if frame is None:
+                if preview_vis:
+                    self.video_preview.set_qimage(None)
+                if clean_vis:
+                    self.clean_output_window.set_qimage(None)
+                if ndi_on:
+                    self._ndi_output.send_frame(None)
+                if remote_prev and remote is not None:
+                    remote.push_preview_frame(None)
+                return
+
+            # Reject zero-size / invalid buffers before converting.
+            try:
+                h, w = int(frame.shape[0]), int(frame.shape[1])
+            except Exception:
+                perf_diag.count("video.zero_size_frame_rejected")
+                return
+            if h <= 0 or w <= 0:
+                perf_diag.count("video.zero_size_frame_rejected")
+                return
+
+            if preview_vis or clean_vis:
+                with perf_diag.span("video.convert"):
+                    perf_diag.count("video.convert.calls")
+                    image = rgb_frame_to_qimage(frame)
+                if image is None or image.isNull() or image.width() <= 0 or image.height() <= 0:
+                    perf_diag.count("video.null_image_rejected")
+                    return
+                if preview_vis:
+                    self.video_preview.set_qimage(image)
+                if clean_vis:
+                    self.clean_output_window.set_qimage(image)
             if ndi_on:
-                self._ndi_output.send_frame(None)
+                self._ndi_output.send_frame(frame)
             if remote_prev and remote is not None:
-                remote.push_preview_frame(None)
-            return
-
-        if preview_vis or clean_vis:
-            image = rgb_frame_to_qimage(frame)
-            if preview_vis:
-                self.video_preview.set_qimage(image)
-            if clean_vis:
-                self.clean_output_window.set_qimage(image)
-        if ndi_on:
-            self._ndi_output.send_frame(frame)
-        if remote_prev and remote is not None:
-            remote.push_preview_frame(frame)
+                remote.push_preview_frame(frame)
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""
@@ -4985,8 +4998,23 @@ class MainWindow(QMainWindow):
             self._digit_shortcuts.append(sc)
 
     def _forward_engine_position_to_video(self, engine_seconds: float) -> None:
-        """AudioEngine emits Variant Time; video clips live on Song Time."""
-        self.video_sync.update_position(self.playback.engine_to_song_time(engine_seconds))
+        """Legacy hook — play path now schedules video inside position fan-out."""
+        if self.video_sync.engine_video_gated():
+            return
+        self.video_sync.update_position(
+            self.playback.engine_to_song_time(engine_seconds), source="engine"
+        )
+
+    def _on_timeline_scrub_started(self) -> None:
+        """Enter SCRUB_PREVIEW before audio scrub pause so Video owns the schedule."""
+        was_playing = bool(self.playback.playing)
+        self.video_sync.set_scrubbing(True, was_playing=was_playing)
+        self.playback.begin_scrub()
+
+    def _on_timeline_scrub_ended(self) -> None:
+        """Finalize Video (FINAL_LANDING) before audio resume so engine cannot overwrite land."""
+        self.video_sync.set_scrubbing(False)
+        self.playback.end_scrub()
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
@@ -4998,6 +5026,10 @@ class MainWindow(QMainWindow):
             self.transport.set_times(seconds, self.engine.duration)
             self.monitor.set_position(seconds, self.engine.duration)
             self._refresh_output_timecode_clock(seconds)
+            # Canonical video schedule (after playhead). Gate while scrub
+            # preview or final-land owns the Video pipeline.
+            if not self.video_sync.engine_video_gated():
+                self.video_sync.update_position(seconds, source="engine")
             # Overview syncs via timeline.view_changed (set_position) — do not
             # call _sync_timeline_overview again here (~60 Hz double work).
             perf_diag.count("ui.position_fanout.calls")
@@ -5005,10 +5037,11 @@ class MainWindow(QMainWindow):
     def _on_scrub_preview(self, seconds: float) -> None:
         """Update transport + cue list while dragging the timeline playhead."""
         # ``seconds`` from Timeline is already Song Time.
+        # Overview is updated via throttled timeline.view_changed during scrub —
+        # do not sync it on every preview tick (was doubling overview work).
         self.transport.set_times(seconds, self.engine.duration)
         self.monitor.set_position(seconds, self.engine.duration)
         self._refresh_output_timecode_clock(seconds)
-        self._sync_timeline_overview()
 
     def _open_align_anchors(self) -> None:
         """Tools → Align Anchors… — draft, preview session, Apply via undo."""
@@ -5047,11 +5080,16 @@ class MainWindow(QMainWindow):
         try:
             from PySide6.QtWidgets import QMessageBox
 
+            mode = self.video_sync.pipeline_mode()
             QMessageBox.information(
                 self,
                 "Performance Report",
                 f"Appended report to:\n\n{path}\n\n"
-                "Open that file in Notepad and send the last section after testing.",
+                f"video.pipeline_mode = {mode}\n\n"
+                "Open that file in Notepad. Use ONLY the last ===== section "
+                "(this session). Confirm it lists video.decode.async / "
+                "video.async_coalesce — if pipeline_mode is missing, you are "
+                "not on the Task 2 Round 2 build.",
             )
         except Exception:  # noqa: BLE001
             pass

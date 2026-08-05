@@ -1,8 +1,8 @@
 # CuePlayer — Product & Architecture Roadmap
 
-**Status:** Sprint 8 Task 1 — Playback Performance Audit + Experimental Hide  
-**Updated:** 2026-08-04  
-**Scope tip:** `cursor/sprint8-perf-audit-028d`  
+**Status:** Sprint 8 Task 2 — Video Track Responsiveness  
+**Updated:** 2026-08-05  
+**Scope tip:** `cursor/sprint8-video-responsive-028d`  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFORMANCE_RULES.md`](PERFORMANCE_RULES.md) · [`production_soak.md`](production_soak.md) · [`ma_preflight.md`](ma_preflight.md) · [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md) · [`song_variant_design.md`](song_variant_design.md) · [`AGENTS.md`](../AGENTS.md)
 
 ---
@@ -264,7 +264,8 @@ Later
 | **Sprint 7 · Production Soak Planning** | ✅ Done — [`production_soak.md`](production_soak.md) |
 | Sprint 7 · Real-world validation | Ongoing (operators) |
 | **Sprint 8 · Task 1 — Perf audit + experimental hide** | ✅ Done — [`playback_performance_audit.md`](playback_performance_audit.md) |
-| Sprint 8 · Tasks 2–5 — Measured optimizations | **Next** (evidence-based) |
+| **Sprint 8 · Task 2 — Video Track responsiveness** | ✅ Done — async latest-wins decode + paint-before-quiesce |
+| Sprint 8 · Tasks 3–5 — Further measured optimizations | **Next** |
 
 ---
 
@@ -283,6 +284,7 @@ Later
 | **Sprint 7** | Production soak (Variants + Align + Preflight) — docs then real shows |
 | **Sprint 8 pick** | Playback smoothness (audit first; then measured Tasks 2–5) |
 | Sprint 8 Task 1 | Hide Align/Preflight Tools entries; perf diagnostics only |
+| Sprint 8 Task 2 | Video off-UI latest-wins decode; song chrome before quiesce |
 | Sprint 6 explicitly deferred | Overlay compare, NDI, OSC, EventBus-as-feature, variant CRUD (runner-up), large UI redesign |
 | Why not overlay next | Align is done, but console handoff risk > paint polish for lighting shows |
 | Why not variant CRUD first | Domain ready, but export confidence unblocks more shows per week |
@@ -341,8 +343,25 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Tools → Align Anchors / MA Preflight hidden via `ENABLE_EXPERIMENTAL_FEATURES=False`.
 - Optional `CUEPLAYER_PERF=1` diagnostics; no speculative optimizations.
 
-**Next:** Measured optimization Tasks 2–5 (do not start without desk spans).
+## Sprint 8 Task 2 — Video Track Responsiveness
+
+- Round 1: async latest-wins + paint-before-quiesce (~50% desk improve).
+- Round 2: Timeline/playhead acceptance; prove pipeline; lock_timeout.
+- Round 3: **Live scrub preview** (~16 FPS) + **fast final-land** on release
+  (async exact land only — no UI-thread sync try).
+- Round 4: **Final-land priority + resume** — pipeline states, engine gated
+  during `FINAL_LANDING`, land cannot be overwritten by play, resume after
+  exact land (fixes 1–4 s land delay + second freeze).
+- Round 5: **Empty-frame + recovery** — explicit release target outcomes,
+  no accidental black, bounded retries (≤5 / 500 ms), resume watchdog,
+  decoder reset after repeated empties.
+- Round 6: **Scrub preview delivery + deterministic resume** — session vs
+  request generation; present in-flight preview within tolerance; engine
+  gated during scrub; `resume_required` invariant with recovery; separate
+  play/scrub decoder contexts.
+
+**Next:** Windows scrub preview and resume validation.
 
 ---
 
-## READY FOR MEASURED PERFORMANCE OPTIMIZATION
+## READY FOR WINDOWS SCRUB PREVIEW AND RESUME VALIDATION

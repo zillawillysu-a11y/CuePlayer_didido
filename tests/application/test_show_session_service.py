@@ -37,6 +37,11 @@ class _FakeEngine:
     def quiesce_output(self) -> None:
         self.calls.append(("quiesce_output",))
 
+    def stop(self) -> None:
+        self.calls.append(("stop",))
+        self.playing = False
+        self._playing = False
+
     def set_song(self, song) -> None:  # noqa: ANN001
         self.calls.append(("set_song", song))
         self._song = song
@@ -128,6 +133,7 @@ def test_activate_song_at_quiesces_and_prepares(monkeypatch) -> None:  # noqa: A
     svc.activate_song_at(1, stop_playback=True)
 
     assert ("quiesce_output",) in host.engine.calls
+    assert ("stop",) in host.engine.calls
     assert host.current_song is project.songs[1]
     assert any(c[0] == "set_song" for c in host.engine.calls)
     assert any(c[0] == "set_song_timebase" for c in host.engine.calls)
@@ -136,6 +142,30 @@ def test_activate_song_at_quiesces_and_prepares(monkeypatch) -> None:  # noqa: A
     host._schedule_video_music_standin.assert_called_once()
     host.playback.clear_loop  # noqa: B018 — attribute exists
     assert called == ["ext"]
+    engine_names = [c[0] for c in host.engine.calls]
+    assert engine_names.index("stop") < engine_names.index("quiesce_output")
+
+
+def test_activate_timeline_before_quiesce(monkeypatch) -> None:  # noqa: ANN001
+    """Setlist/timeline chrome must update before quiesce blocks (~150–180ms)."""
+    project = Project.create("P", with_song=True)
+    project.songs.append(project.new_song("Second"))
+    project.songs[1].audio_tracks.clear()
+    host = _make_host(project)
+    svc = ShowSessionService(host, host.playback)
+    monkeypatch.setattr(svc, "notify_external_sync", lambda: None)
+
+    order: list[str] = []
+    host.timeline.set_song.side_effect = lambda *_a, **_k: order.append("timeline")
+    _orig_quiesce = host.engine.quiesce_output
+
+    def _quiesce() -> None:
+        order.append("quiesce")
+        _orig_quiesce()
+
+    host.engine.quiesce_output = _quiesce  # type: ignore[method-assign]
+    svc.activate_song_at(1, stop_playback=True)
+    assert order.index("timeline") < order.index("quiesce")
 
 
 def test_deactivate_and_empty_workspace() -> None:

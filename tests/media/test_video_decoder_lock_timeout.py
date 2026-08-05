@@ -66,3 +66,34 @@ def test_frame_at_returns_stale_when_path_lock_held(tmp_path: Path) -> None:
     finally:
         release.set()
         decoder.close()
+
+
+def test_frame_at_lock_timeout_cold_returns_none_quickly(tmp_path: Path) -> None:
+    """Worker/cold path with lock_timeout must not block for seconds."""
+    path = tmp_path / "cold.mp4"
+    _make_clip(path)
+    release = threading.Event()
+    decoder = VideoDecoder(path)
+    try:
+        held = threading.Event()
+
+        def _hold() -> None:
+            with av_path_lock(path):
+                held.set()
+                assert release.wait(timeout=2.0)
+
+        t = threading.Thread(target=_hold, daemon=True)
+        t.start()
+        assert held.wait(timeout=1.0)
+
+        t0 = time.monotonic()
+        frame = decoder.frame_at(0.2, lock_timeout=0.05)
+        elapsed = time.monotonic() - t0
+        release.set()
+        t.join(timeout=1.0)
+
+        assert frame is None  # cold + timeout → no stale
+        assert elapsed < 0.2
+    finally:
+        release.set()
+        decoder.close()

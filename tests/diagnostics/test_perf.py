@@ -56,3 +56,16 @@ def test_flush_report_writes_log(tmp_path: Path) -> None:
     body = path.read_text(encoding="utf-8")
     assert "unit-test" in body
     assert "activate.song.total" in body
+
+
+def test_report_always_lists_video_pipeline_counters() -> None:
+    perf.set_enabled(True)
+    perf.clear()
+    perf.note("video.pipeline_mode", "async_latest_wins")
+    text = perf.report_text()
+    assert "video.pipeline_mode: async_latest_wins" in text
+    assert "video.async_schedule:" in text
+    assert "video.async_coalesce:" in text
+    assert "video.decode.async:" in text or "video.decode.async: (none" in text
+    assert "video.convert:" in text or "video.convert: (none" in text
+    assert "video.present:" in text or "video.present: (none" in text

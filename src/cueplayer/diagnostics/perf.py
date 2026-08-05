@@ -176,6 +176,115 @@ def report_text() -> str:
     if snap.get("log_path"):
         lines.append(f"log_path: {snap['log_path']}")
         lines.append("")
+    # Always surface video pipeline proof first (Task 2 round 2).
+    attrs = snap.get("attrs") or {}
+    pipeline = attrs.get("video.pipeline_mode", "(unset — not Task2+ build?)")
+    lines.append(f"video.pipeline_mode: {pipeline}")
+    lines.append(f"video.worker_inflight: {attrs.get('video.worker_inflight', False)}")
+    lines.append("")
+    expected_video_counters = (
+        "video.async_schedule",
+        "video.async_coalesce",
+        "video.async_stale_drop",
+        "video.async_decoded",
+        "video.async_invalidate",
+        "video.schedule.source.engine",
+        "video.schedule.source.scrub",
+        "video.update_position.calls",
+        "video.emit.calls",
+        "video.scrub.raw_position_events",
+        "video.scrub.preview_ticks",
+        "video.scrub.preview_requests",
+        "video.scrub.preview_presented",
+        "video.scrub.preview_coalesced",
+        "video.scrub.preview_stale_drop",
+        "video.scrub.pause_priority_requests",
+        "video.scrub.final_land_requests",
+        "video.scrub.final_land_presented",
+        "video.scrub.final_land_superseded",
+        "video.scrub.final_land_cache_hit",
+        "video.scrub.final_land_cache_miss",
+        "video.scrub.engine_requests_blocked_during_land",
+        "video.scrub.engine_requests_dropped_during_land",
+        "video.scrub.final_land_overwritten_attempts",
+        "video.scrub.final_land_completed",
+        "video.scrub.resume_started",
+        "video.scrub.resume_completed",
+        "video.scrub.engine_requests_blocked_after_land",
+        "video.scrub.valid_frames_rejected_after_land",
+        "video.scrub.min_present_seconds_cleared",
+        "video.scrub.final_land_retry",
+        "video.scrub.final_land_deadline_exit",
+        "video.scrub.final_land_recoverable_failure",
+        "video.scrub.final_land_completed_without_resume",
+        "video.scrub.resume_timeout",
+        "video.black_present.attempt",
+        "video.null_image_rejected",
+        "video.zero_size_frame_rejected",
+        "video.decoder_reset.worker",
+        "video.async_empty_keep_last",
+        "video.scrub.resume_required",
+        "video.scrub.resume_not_required",
+        "video.scrub.resume_recovery_started",
+        "video.scrub.resume_recovered",
+        "video.scrub.resume_recovery_completed",
+        "video.scrub.preview_stale_drop",
+        "video.scrub.engine_requests_gated_during_scrub",
+        "video.scrub.final_land_completed_playing",
+        "video.scrub.final_land_completed_paused",
+        "video.scrub.final_land_completed_gap",
+        "video.scrub.final_land_completed_out_of_range",
+        "video.scrub.preview_superseded_after_decode",
+        "video.scrub.preview_generation_mismatch",
+        "video.scrub.preview_decoder_reset",
+        "video.scrub.preview_reject_reason.generation_mismatch",
+        "video.scrub.preview_reject_reason.beyond_tolerance",
+        "video.scrub.preview_reject_reason.session_changed",
+        "video.scrub.preview_reject_reason.far_cancel",
+    )
+    counters = snap.get("counters") or {}
+    lines.append("Video pipeline counters (0 if unused this session):")
+    for name in expected_video_counters:
+        lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    lines.append("")
+    lines.append(
+        f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.final_land_generation: "
+        f"{attrs.get('video.scrub.final_land_generation', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.pre_scrub_was_playing: "
+        f"{attrs.get('video.scrub.pre_scrub_was_playing', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.min_present_seconds_value: "
+        f"{attrs.get('video.scrub.min_present_seconds_value', '(unset)')}"
+    )
+    lines.append(
+        f"video.scrub.final_land_first_relevant_source: "
+        f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
+    )
+    lines.append("")
+    expected_video_spans = (
+        "video.decode.async",
+        "video.decode.sync",
+        "video.convert",
+        "video.present",
+        "ui.position_fanout",
+    )
+    spans = snap.get("spans") or {}
+    lines.append("Video/UI spans present:")
+    for name in expected_video_spans:
+        if name in spans:
+            st = spans[name]
+            lines.append(
+                f"  {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  {name}: (none this session)")
+    lines.append("")
     if snap["last_activate_ms"]:
         lines.append("Last activate spans (ms):")
         for k, v in sorted(snap["last_activate_ms"].items()):
@@ -243,7 +352,13 @@ def announce_if_enabled() -> str:
     if not _enabled:
         return ""
     path = log_path()
-    msg = f"CUEPLAYER_PERF=1 — writing reports to {path}"
+    # New app process → new session section; clear prior in-memory spans so a
+    # manual dump cannot mix yesterday's Task1 numbers with this run.
+    clear()
+    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    note("perf.session_id", session_id)
+    note("video.pipeline_mode", "async_latest_wins")
+    msg = f"CUEPLAYER_PERF=1 — session={session_id} — writing reports to {path}"
     try:
         print(msg, flush=True)
     except Exception:  # noqa: BLE001
@@ -254,5 +369,5 @@ def announce_if_enabled() -> str:
                 buf.flush()
         except Exception:  # noqa: BLE001
             pass
-    flush_report(label="session-start")
+    flush_report(label=f"session-start:{session_id}")
     return str(path)
