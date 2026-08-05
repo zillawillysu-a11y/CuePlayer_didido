@@ -405,4 +405,47 @@ only when reject; playing scrub → `resume_started` ≈ `resume_completed`.
 
 ---
 
-## READY FOR WINDOWS VIDEO EMPTY-FRAME AND RECOVERY VALIDATION
+## 7f. Windows validation — Scrub preview + resume Round 6
+
+**Windows Round 5 failure:** `preview_requests=160` / `preview_presented=3` /
+`preview_coalesced=148` / `preview_stale_drop=82` (drag does not follow);
+`final_land_completed=14` / `resume_started=7` / `resume_completed=6` /
+`final_land_completed_without_resume=7` / `resume_timeout=3`;
+`video.decode.async` max ~2896 ms.
+
+| Root cause | Fix |
+|------------|-----|
+| Every coalesce bumped `_async_req_gen` → almost all preview stale-dropped | Coalesce updates target only; cancel only on ≥2 s jump |
+| Session gen confused with per-request gen | `scrub_session_gen` (begin/end only) + `preview_request_seq` |
+| Exact timestamp match for present | Present within `_PREVIEW_PRESENT_TOLERANCE_S` (0.75 s) |
+| Engine gate during scrub was unreachable (after `return`) | Gate engine before mutating last position |
+| Paused/gap lands counted as without_resume | Split `resume_required` / `not_required` + playing/paused/gap |
+| Watchdog “completed” resume without a frame | Recovery resets play decoder + seeks; recovered XOR completed |
+| Scrub seeks polluted playback decoder | Separate `_worker_decoders` vs `_scrub_worker_decoders` |
+
+```powershell
+$env:CUEPLAYER_PERF = "1"
+cd C:\Users\willy\Projects\CuePlayer_v2
+git fetch origin
+git checkout cursor/sprint8-video-responsive-028d
+git pull origin cursor/sprint8-video-responsive-028d
+.\.venv\Scripts\python.exe -m cueplayer.app
+```
+
+| Test | Pass |
+|------|------|
+| A slow drag 10 s | Video follows throughout; several preview FPS |
+| B fast drag | Timeline smooth; video skips but updates; no multi-second freeze |
+| C playing release | Land quickly; continues automatically; no long still |
+| D 20× playing drag-release | `resume_required == resume_started == resume_completed + resume_recovered` |
+| E paused release | Land and stay paused; Play from landed point |
+
+**Log checks:** `preview_presented` / `preview_requests` ≫ Round 5 (~2%);
+`preview_effective_fps` ≥ ~10 where decode allows;
+`engine_requests_gated_during_scrub` > 0;
+`final_land_completed_without_resume` only when resume was required and skipped (should be 0);
+playing → `resume_required` == `resume_started` == `resume_completed` + `resume_recovered`.
+
+---
+
+## READY FOR WINDOWS SCRUB PREVIEW AND RESUME VALIDATION

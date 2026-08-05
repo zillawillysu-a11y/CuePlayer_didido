@@ -1860,3 +1860,610 @@ def test_eof_seek_backward_recovers(
     _drain_async(controller, app)
     assert any(isinstance(f, np.ndarray) for f in frames)
     assert controller._final_land_pending is False
+
+# --- Sprint 8 Task 2 Round 6: scrub preview delivery + deterministic resume ---
+
+
+def _shutdown_ctrl(controller: VideoSyncController) -> None:
+    try:
+        controller.shutdown()
+    except Exception:
+        pass
+
+
+def test_slow_drag_presents_multiple_preview_frames_before_release(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    try:
+        controller.set_song(song)
+        controller._scrub_cache.clear()
+        frames: list[object] = []
+        controller.frame_changed.connect(frames.append)
+        n = {"i": 0}
+
+        def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False):  # noqa: ANN001
+            if kind != "scrub_preview":
+                return
+            n["i"] += 1
+            frame = np.full((8, 8, 3), n["i"] % 200, dtype=np.uint8)
+            controller._emit_frame(frame)
+            controller._note_preview_presented(float(seconds))
+
+        with patch.object(controller, "_request_async_live_frame", side_effect=_immediate):
+            controller.set_scrubbing(True, was_playing=True)
+            controller._scrub_preload_timer.stop()
+            for i in range(16):
+                controller.update_position(0.05 * i, source="scrub")
+                controller._on_scrub_preview_tick()
+            mid = [f for f in frames if isinstance(f, np.ndarray)]
+            assert len(mid) >= 8
+            assert controller._scrub_preview_presented >= 8
+            assert controller.is_scrubbing()
+            controller._scrubbing = False
+            controller._final_land_pending = False
+    finally:
+        _shutdown_ctrl(controller)
+
+
+def test_preview_coalesce_does_not_invalidate_inflight_generation(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Mouse moves must not bump gen on every coalesce (Round 5 failure mode)."""
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller._scrub_cache.clear()
+    controller.set_scrubbing(True, was_playing=False)
+    controller._async_inflight = True
+    controller._async_req_kind = "scrub_preview"
+    controller._async_req_seconds = 0.2
+    gen_before = controller._async_req_gen
+    session_before = controller._scrub_session_gen
+    # Many coalesced moves near the target — must NOT bump generation.
+    for i in range(20):
+        controller._request_async_live_frame(
+            0.2 + 0.01 * i, kind="scrub_preview", lock_timeout=0.08
+        )
+    assert controller._async_req_gen == gen_before
+    assert controller._scrub_session_gen == session_before
+    assert abs(controller._async_req_seconds - 0.39) < 0.05
+    controller._async_inflight = False
+    controller._scrubbing = False
+    controller._scrub_preview_timer.stop()
+    controller._scrub_pause_timer.stop()
+    controller._set_pipeline_state("PLAYBACK")
+    _shutdown_ctrl(controller)
+
+
+def test_preview_result_within_tolerance_can_be_presented(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+    controller.set_scrubbing(True, was_playing=False)
+    controller.update_position(0.5, source="scrub")
+    session = controller._scrub_session_gen
+    stale_gen = controller._async_req_gen - 1
+    controller._scrub_target_seconds = 0.55
+    fake = np.full((8, 8, 3), 90, dtype=np.uint8)
+    controller._on_async_frame_ready(
+        stale_gen, 0.5, fake, "scrub_preview", "", session
+    )
+    assert any(f is fake for f in frames)
+    controller.set_scrubbing(False)
+    _shutdown_ctrl(controller)
+
+
+def test_mouse_move_does_not_change_scrub_session_generation(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_scrubbing(True, was_playing=False)
+    session = controller._scrub_session_gen
+    for i in range(30):
+        controller.update_position(0.01 * i, source="scrub")
+    assert controller._scrub_session_gen == session
+    controller.set_scrubbing(False)
+    _shutdown_ctrl(controller)
+
+
+def test_every_playing_successful_land_requires_resume(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import ReleaseTarget, ReleaseTargetKind
+
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller.set_scrubbing(True, was_playing=True)
+    controller.update_position(0.6, source="scrub")
+    controller._scrubbing = False
+    controller._scrub_preview_timer.stop()
+    controller._release_target = ReleaseTarget(
+        ReleaseTargetKind.VALID_MEDIA_TARGET,
+        song_seconds=0.6,
+        media_seconds=0.6,
+        clip_id=clip.id,
+    )
+    controller._release_target_song_time = 0.6
+    controller._release_target_media_time = 0.6
+    controller._final_land_transaction_id = controller._scrub_transaction_id
+    controller._pre_scrub_was_playing = True
+    frame = np.full((8, 8, 3), 70, dtype=np.uint8)
+    controller._complete_final_land(0.6, frame)
+    snap = perf_diag.snapshot()["counters"]
+    assert snap.get("video.scrub.resume_required", 0) >= 1
+    assert snap.get("video.scrub.resume_started", 0) >= 1
+    assert snap.get("video.scrub.resume_not_required", 0) == 0
+    controller._resume_watchdog.stop()
+    controller._final_land_pending = False
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_paused_land_does_not_require_resume(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import ReleaseTarget, ReleaseTargetKind
+
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller.set_scrubbing(True, was_playing=False)
+    controller.update_position(0.6, source="scrub")
+    controller._scrubbing = False
+    controller._scrub_preview_timer.stop()
+    controller._release_target = ReleaseTarget(
+        ReleaseTargetKind.VALID_MEDIA_TARGET,
+        song_seconds=0.6,
+        media_seconds=0.6,
+        clip_id=clip.id,
+    )
+    controller._release_target_song_time = 0.6
+    controller._pre_scrub_was_playing = False
+    controller._complete_final_land(0.6, np.full((8, 8, 3), 71, dtype=np.uint8))
+    snap = perf_diag.snapshot()["counters"]
+    assert snap.get("video.scrub.resume_not_required", 0) >= 1
+    assert snap.get("video.scrub.resume_started", 0) == 0
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_gap_outcome_not_counted_as_resume_failure(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=1.0
+        )
+    )
+    song.add_video_clip(
+        VideoClip.create(
+            name="red2", path=red_clip_path, start_seconds=3.0, duration_seconds=1.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller.set_scrubbing(True, was_playing=False)
+    controller.update_position(2.0, source="scrub")
+    controller.set_scrubbing(False)
+    snap = perf_diag.snapshot()["counters"]
+    assert snap.get("video.scrub.final_land_completed_gap", 0) >= 1
+    assert snap.get("video.scrub.resume_started", 0) == 0
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_first_resumed_frame_at_or_after_release_target(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.playback.video_sync import VideoPipelineState
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    with patch.object(controller, "_request_async_live_frame", return_value=None):
+        controller.set_scrubbing(True, was_playing=True)
+        controller._scrub_preload_timer.stop()
+        controller._scrub_preview_timer.stop()
+        controller.update_position(0.8, source="scrub")
+        controller._scrubbing = False
+        controller._scrub_preview_timer.stop()
+        controller._scrub_pause_timer.stop()
+        controller._release_target_song_time = 0.8
+        controller._release_target_media_time = 0.8
+        controller._min_present_seconds = 0.8
+        controller._final_land_transaction_id = controller._scrub_transaction_id
+        controller._pre_scrub_was_playing = True
+        controller._decoder_position_established = True
+        controller._final_land_pending = False
+        controller._async_inflight = False
+        controller._enter_resume_playback()
+        release = float(controller._release_target_song_time)
+        controller._async_req_gen += 1
+        gen = controller._async_req_gen
+        # Pre-release frame must be rejected.
+        controller._on_async_frame_ready(
+            gen, release - 0.2, np.full((8, 8, 3), 1, dtype=np.uint8), "play", "", -1
+        )
+        assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
+        # Post-release accepted → completes resume.
+        controller._on_async_frame_ready(
+            gen, release + 0.05, np.full((8, 8, 3), 33, dtype=np.uint8), "play", "", -1
+        )
+        assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+        assert controller._last_presented_song_seconds is not None
+        assert controller._last_presented_song_seconds >= release - 0.05
+    controller._resume_watchdog.stop()
+    controller._async_inflight = False
+    _shutdown_ctrl(controller)
+
+
+def test_resume_timeout_triggers_recovery(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import VideoPipelineState
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    with patch.object(controller, "_request_async_live_frame", return_value=None):
+        controller.set_scrubbing(True, was_playing=True)
+        controller._scrub_preload_timer.stop()
+        controller._scrub_preview_timer.stop()
+        controller.update_position(0.4, source="scrub")
+        controller._scrubbing = False
+        controller._scrub_preview_timer.stop()
+        controller._scrub_pause_timer.stop()
+        controller._release_target_song_time = 0.4
+        controller._release_target_media_time = 0.4
+        controller._final_land_transaction_id = controller._scrub_transaction_id
+        controller._pre_scrub_was_playing = True
+        controller._decoder_position_established = True
+        controller._final_land_pending = False
+        controller._async_inflight = False
+        controller._enter_resume_playback()
+        assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
+        controller._on_resume_watchdog()
+        controller._on_resume_watchdog()
+    snap = perf_diag.snapshot()["counters"]
+    assert snap.get("video.scrub.resume_timeout", 0) >= 1
+    assert snap.get("video.scrub.resume_recovery_started", 0) >= 1
+    assert snap.get("video.scrub.resume_recovered", 0) >= 1
+    assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+    controller._resume_watchdog.stop()
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_twenty_playing_drag_release_no_stuck(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import ReleaseTarget, ReleaseTargetKind, VideoPipelineState
+
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+
+    # No ThreadPool work — assert the land→resume invariant on the state machine.
+    with patch.object(controller, "_request_async_live_frame", return_value=None):
+        for i in range(20):
+            t = 0.1 + 0.08 * (i % 10)
+            controller.set_scrubbing(True, was_playing=True)
+            controller._scrub_preload_timer.stop()
+            controller._scrub_preview_timer.stop()
+            controller.update_position(t, source="scrub")
+            controller._scrubbing = False
+            controller._scrub_preview_timer.stop()
+            controller._scrub_pause_timer.stop()
+            controller._release_target = ReleaseTarget(
+                ReleaseTargetKind.VALID_MEDIA_TARGET,
+                song_seconds=t,
+                media_seconds=t,
+                clip_id=clip.id,
+            )
+            controller._release_target_song_time = t
+            controller._release_target_media_time = t
+            controller._min_present_seconds = t
+            controller._final_land_transaction_id = controller._scrub_transaction_id
+            controller._pre_scrub_was_playing = True
+            controller._set_pipeline_state(VideoPipelineState.FINAL_LANDING)
+            controller._final_land_pending = True
+            controller._async_inflight = False
+            controller._complete_final_land(
+                t, np.full((8, 8, 3), 40 + i, dtype=np.uint8)
+            )
+            assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
+            assert int(perf_diag.snapshot()["counters"].get(
+                "video.scrub.resume_started", 0
+            )) >= i + 1
+            # First valid post-land play frame completes resume.
+            controller._async_req_gen += 1
+            gen = controller._async_req_gen
+            controller._on_async_frame_ready(
+                gen,
+                t + 0.01,
+                np.full((8, 8, 3), 50 + i, dtype=np.uint8),
+                "play",
+                "",
+                -1,
+            )
+            if controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK:
+                controller._complete_resume(reason="drain")
+            assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+            assert controller._final_land_pending is False
+            assert controller.engine_video_gated() is False
+            controller._resume_watchdog.stop()
+    snap = perf_diag.snapshot()["counters"]
+    req = int(snap.get("video.scrub.resume_required", 0))
+    started = int(snap.get("video.scrub.resume_started", 0))
+    done = int(snap.get("video.scrub.resume_completed", 0)) + int(
+        snap.get("video.scrub.resume_recovered", 0)
+    )
+    assert req >= 20
+    assert req == started
+    assert done == started
+    assert int(snap.get("video.scrub.final_land_completed_without_resume", 0)) == 0
+    controller._land_retry_timer.stop()
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_engine_video_gated_during_scrub_preview(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller.set_scrubbing(True, was_playing=True)
+    controller.update_position(0.5, source="scrub")
+    scrub_t = controller._scrub_target_seconds
+    controller.update_position(1.9, source="engine")
+    assert abs(controller._scrub_target_seconds - scrub_t) < 1e-9
+    assert abs(float(controller._last_position_seconds) - 0.5) < 1e-9
+    assert int(perf_diag.snapshot()["counters"].get(
+        "video.scrub.engine_requests_gated_during_scrub", 0
+    )) >= 1
+    controller._scrub_preview_timer.stop()
+    controller._scrub_pause_timer.stop()
+    controller._scrubbing = False
+    controller._set_pipeline_state("PLAYBACK")
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_preview_queue_remains_depth_one(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller.set_scrubbing(True, was_playing=False)
+    controller._scrub_preload_timer.stop()
+    controller._scrub_preview_timer.stop()
+    # Simulate one inflight scrub_preview; coalesced moves must not stack jobs.
+    controller._async_inflight = True
+    controller._async_req_kind = "scrub_preview"
+    controller._async_req_seconds = 0.1
+    gen0 = controller._async_req_gen
+    for i in range(50):
+        controller._request_async_live_frame(
+            0.1 + 0.01 * i, kind="scrub_preview", lock_timeout=0.08
+        )
+    assert controller._async_inflight is True
+    assert controller._async_req_gen == gen0  # no per-move invalidate
+    assert abs(controller._async_req_seconds - 0.59) < 0.05
+    controller._async_inflight = False
+    controller._scrubbing = False
+    controller._set_pipeline_state("PLAYBACK")
+    _shutdown_ctrl(controller)
+
+
+def test_many_preview_requests_present_under_fast_decode(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Regression: Round 5 presented 3/160 — must not collapse under fast decode."""
+    from cueplayer.diagnostics import perf as perf_diag
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller._scrub_cache.clear()
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    n = {"i": 0}
+
+    def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False):  # noqa: ANN001
+        if kind != "scrub_preview":
+            return
+        n["i"] += 1
+        perf_diag.count("video.scrub.preview_requests")
+        frame = np.full((4, 4, 3), n["i"] % 200, dtype=np.uint8)
+        controller._emit_frame(frame)
+        controller._note_preview_presented(float(seconds))
+
+    with patch.object(controller, "_request_async_live_frame", side_effect=_immediate):
+        controller.set_scrubbing(True, was_playing=False)
+        controller._scrub_preload_timer.stop()
+        controller._scrub_preview_timer.stop()
+        for i in range(40):
+            controller.update_position(0.02 * i, source="scrub")
+            controller._on_scrub_preview_tick()
+    snap = perf_diag.snapshot()["counters"]
+    presented = int(snap.get("video.scrub.preview_presented", 0))
+    requests = int(snap.get("video.scrub.preview_requests", 0))
+    assert requests >= 10
+    assert presented >= 10
+    assert presented / max(1, requests) >= 0.25
+    controller._scrubbing = False
+    controller._set_pipeline_state("PLAYBACK")
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+
+def test_scrub_and_playback_decoders_are_separate(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    play = controller._worker_decoder_for(clip)
+    scrub = controller._scrub_worker_decoder_for(clip)
+    assert play is not None and scrub is not None
+    assert play is not scrub
+    assert clip.id in controller._worker_decoders
+    assert clip.id in controller._scrub_worker_decoders
+    controller._close_scrub_worker_decoders()
+    assert clip.id in controller._worker_decoders
+    assert clip.id not in controller._scrub_worker_decoders
+    controller._close_play_worker_decoders()
+    _shutdown_ctrl(controller)
+
+
+def test_started_resume_completes_or_recovers(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    from cueplayer.diagnostics import perf as perf_diag
+    from cueplayer.playback.video_sync import ReleaseTarget, ReleaseTargetKind, VideoPipelineState
+
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="red", path=red_clip_path, start_seconds=0.0, duration_seconds=2.0
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    controller.set_scrubbing(True, was_playing=True)
+    controller._scrub_preload_timer.stop()
+    controller._scrub_preview_timer.stop()
+    controller.update_position(0.55, source="scrub")
+    controller._scrubbing = False
+    controller._scrub_preview_timer.stop()
+    controller._release_target = ReleaseTarget(
+        ReleaseTargetKind.VALID_MEDIA_TARGET,
+        song_seconds=0.55,
+        media_seconds=0.55,
+        clip_id=clip.id,
+    )
+    controller._release_target_song_time = 0.55
+    controller._final_land_transaction_id = controller._scrub_transaction_id
+    controller._pre_scrub_was_playing = True
+    controller._set_pipeline_state(VideoPipelineState.FINAL_LANDING)
+    controller._complete_final_land(0.55, np.full((8, 8, 3), 55, dtype=np.uint8))
+    assert int(perf_diag.snapshot()["counters"].get("video.scrub.resume_started", 0)) >= 1
+    gen = controller._async_req_gen
+    controller._on_async_frame_ready(
+        gen, 0.56, np.full((8, 8, 3), 56, dtype=np.uint8), "play", "", -1
+    )
+    if controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK:
+        controller._complete_resume(reason="drain")
+    snap = perf_diag.snapshot()["counters"]
+    started = int(snap.get("video.scrub.resume_started", 0))
+    done = int(snap.get("video.scrub.resume_completed", 0)) + int(
+        snap.get("video.scrub.resume_recovered", 0)
+    )
+    assert started >= 1
+    assert done == started
+    controller._resume_watchdog.stop()
+    controller._invalidate_async_requests()
+    controller._async_inflight = False
+    perf_diag.set_enabled(False)
+    _shutdown_ctrl(controller)
+
+

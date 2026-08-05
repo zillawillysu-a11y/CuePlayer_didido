@@ -1,6 +1,6 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 Round 5 (empty-frame + recovery)  
+**Status:** Sprint 8 Task 2 Round 6 (scrub preview delivery + deterministic resume)  
 **Updated:** 2026-08-05  
 **Related:** [`playback_performance_audit.md`](playback_performance_audit.md)
 
@@ -29,6 +29,11 @@
 
 7. **Final-land owns the schedule until decoder position is established.**  
    Engine play requests must not overwrite `kind=land`. After land, resume continuous play (or stay paused) without a second freeze.
+
+8. **Scrub preview must present while dragging (Round 6).**  
+   Mouse moves update `latest_target` only — do not bump scrub session generation.  
+   In-flight preview completes unless the pointer jumps far (≥2 s). Present within ~0.75 s tolerance.  
+   Engine Video is gated during `SCRUB_PREVIEW`. Playing release: `resume_required == resume_started == resume_completed + resume_recovered`.
 
 ---
 

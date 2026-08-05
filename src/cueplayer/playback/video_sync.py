@@ -98,7 +98,12 @@ _LAND_RETRY_MS = 40
 _LAND_MAX_RETRIES = 5
 _LAND_DEADLINE_S = 0.50
 _EMPTY_DECODE_RESET_AFTER = 3
-_RESUME_WATCHDOG_MS = 250
+_RESUME_WATCHDOG_MS = 400
+_RESUME_RECOVERY_MS = 400
+# Round 6: present preview frames within this of the current pointer target.
+_PREVIEW_PRESENT_TOLERANCE_S = 0.75
+# Only cancel an in-flight scrub preview when the pointer jumped this far.
+_PREVIEW_CANCEL_DELTA_S = 2.0
 
 PIPELINE_MODE = "async_latest_wins"
 SCRUB_PREVIEW_TARGET_FPS = _SCRUB_PREVIEW_HZ
@@ -144,8 +149,8 @@ class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for intentional gap
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
-    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind, empty_reason)
-    _async_frame_ready = Signal(int, float, object, str, str)
+    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind, empty_reason, scrub_session)
+    _async_frame_ready = Signal(int, float, object, str, str, int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -153,8 +158,12 @@ class VideoSyncController(QObject):
         self._decoders: dict[str, MediaDecoder] = {}
         self._decoder_paths: dict[str, Path] = {}
         # Dedicated decoders for the async worker only — never shared with UI.
+        # Round 6: separate play vs scrub/land decoder maps so scrub seeks do
+        # not leave the sequential playback decoder at a distant EOF/seek point.
         self._worker_decoders: dict[str, MediaDecoder] = {}
         self._worker_decoder_paths: dict[str, Path] = {}
+        self._scrub_worker_decoders: dict[str, MediaDecoder] = {}
+        self._scrub_worker_decoder_paths: dict[str, Path] = {}
         self._worker_lock = Lock()
         self._active_clip_id: str | None = None
         self._warned_overlap_keys: set[frozenset[str]] = set()
@@ -209,6 +218,8 @@ class VideoSyncController(QObject):
         self._async_inflight = False
         self._async_lock_timeout = _ASYNC_LOCK_TIMEOUT_S
         self._async_req_kind = "play"  # play | scrub_preview | land
+        self._async_req_session = 0  # scrub session captured at schedule
+        self._async_req_started_mono = 0.0
         self._async_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="video-live-decode"
         )
@@ -219,9 +230,11 @@ class VideoSyncController(QObject):
         self._scrub_target_seconds = 0.0
         self._scrub_last_requested_seconds: float | None = None
         self._scrub_session_gen = 0
+        self._preview_request_seq = 0
         self._scrub_land_pending = False
         self._scrub_release_mono = 0.0
         self._scrub_preview_presented = 0
+        self._scrub_preview_present_times: list[float] = []
         self._min_present_seconds: float | None = None
         # Round 4 — explicit pipeline state + resume transaction.
         self._pipeline_state = VideoPipelineState.PLAYBACK
@@ -233,6 +246,8 @@ class VideoSyncController(QObject):
         self._decoder_position_established = False
         self._final_land_pending = False
         self._resume_pending = False
+        self._resume_required = False
+        self._resume_recovery_attempted = False
         self._land_retry_count = 0
         self._land_request_mono = 0.0
         self._land_worker_start_mono = 0.0
@@ -250,6 +265,7 @@ class VideoSyncController(QObject):
         self._resume_transaction_id = 0
         self._empty_decode_streak = 0
         self._worker_reset_count = 0
+        self._play_decoder_reset_pending = False
         self._scrub_preview_timer = QTimer(self)
         self._scrub_preview_timer.setInterval(_SCRUB_PREVIEW_INTERVAL_MS)
         self._scrub_preview_timer.timeout.connect(self._on_scrub_preview_tick)
@@ -270,6 +286,7 @@ class VideoSyncController(QObject):
         perf_diag.note("video.pipeline_state", self._pipeline_state)
         perf_diag.note("video.worker_pool", "video-live-decode:1")
         perf_diag.note("video.scrub.preview_target_fps", SCRUB_PREVIEW_TARGET_FPS)
+        perf_diag.note("video.decoder_contexts", "play+scrub")
 
     def is_scrubbing(self) -> bool:
         return bool(self._scrubbing)
@@ -397,13 +414,17 @@ class VideoSyncController(QObject):
         self._scrubbing = active
         if active:
             self._cancel_scrub_resume_transaction(reason="new_scrub")
+            self._invalidate_async_requests()
             self._scrub_session_gen += 1
             self._scrub_transaction_id += 1
+            self._preview_request_seq = 0
+            self._scrub_preview_presented = 0
+            self._scrub_preview_present_times = []
             perf_diag.note(
                 "video.scrub.transaction_id", self._scrub_transaction_id
             )
+            perf_diag.note("video.scrub.session_generation", self._scrub_session_gen)
             self._scrub_last_requested_seconds = None
-            self._scrub_preview_presented = 0
             self._last_scrub_preview_seconds = None
             if was_playing is None:
                 was_playing = bool(self._playing)
@@ -585,6 +606,28 @@ class VideoSyncController(QObject):
         self._final_land_pending = True
         self._schedule_final_land(float(target.song_seconds))
 
+    def _note_land_complete_metrics(self) -> None:
+        """Split land outcomes so paused/gap are not Resume failures."""
+        target = self._release_target
+        if target is not None and not target.is_valid:
+            if target.kind == ReleaseTargetKind.TIMELINE_GAP:
+                perf_diag.count("video.scrub.final_land_completed_gap")
+            elif target.kind == ReleaseTargetKind.OUT_OF_RANGE:
+                perf_diag.count("video.scrub.final_land_completed_out_of_range")
+            else:
+                perf_diag.count(f"video.scrub.final_land_completed_{target.kind.lower()}")
+            if self._pre_scrub_was_playing:
+                perf_diag.count("video.scrub.resume_required")
+            else:
+                perf_diag.count("video.scrub.resume_not_required")
+            return
+        if self._pre_scrub_was_playing:
+            perf_diag.count("video.scrub.final_land_completed_playing")
+            perf_diag.count("video.scrub.resume_required")
+        else:
+            perf_diag.count("video.scrub.final_land_completed_paused")
+            perf_diag.count("video.scrub.resume_not_required")
+
     def _resolve_non_valid_release(self, target: ReleaseTarget) -> None:
         """Exit FINAL_LANDING without a decode retry loop."""
         self._final_land_pending = False
@@ -593,12 +636,13 @@ class VideoSyncController(QObject):
         self._decoder_position_established = True
         perf_diag.count("video.scrub.final_land_completed")
         perf_diag.note("video.scrub.final_land_completed_without_exact", target.kind)
+        self._note_land_complete_metrics()
         if self._pre_scrub_was_playing:
             self._enter_resume_playback()
         else:
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             self._resume_pending = False
-            perf_diag.count("video.scrub.final_land_completed_without_resume")
+            self._resume_required = False
 
     def _present_immediate_release_frame(
         self,
@@ -714,18 +758,21 @@ class VideoSyncController(QObject):
         self._decoder_position_established = True
         perf_diag.note("video.scrub.resume_failed_reason", reason)
         perf_diag.count("video.scrub.final_land_recoverable_failure")
-        # Keep nearest valid frame on screen (already shown).
+        perf_diag.count("video.scrub.final_land_completed")
+        self._note_land_complete_metrics()
         if self._pre_scrub_was_playing:
             self._enter_resume_playback()
         else:
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             self._resume_pending = False
-            perf_diag.count("video.scrub.final_land_completed_without_resume")
+            self._resume_required = False
 
     def _enter_resume_playback(self) -> None:
         self._playback_resume_generation += 1
         self._resume_transaction_id = int(self._final_land_transaction_id)
         self._resume_pending = True
+        self._resume_required = True
+        self._resume_recovery_attempted = False
         self._resume_started_mono = monotonic()
         self._resume_first_engine_noted = False
         self._set_pipeline_state(VideoPipelineState.RESUME_PLAYBACK)
@@ -741,34 +788,87 @@ class VideoSyncController(QObject):
             perf_diag.note(
                 "video.scrub.min_present_seconds_value", self._min_present_seconds
             )
+        # Kick play decode immediately from landed Song Time.
+        land_t = self._release_target_song_time
+        if land_t is not None and self._video_output_active:
+            self._last_decode_time = 0.0
+            self._request_async_live_frame(
+                float(land_t),
+                kind="play",
+                lock_timeout=_ASYNC_LOCK_TIMEOUT_S,
+                force=True,
+            )
         self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
 
     def _on_resume_watchdog(self) -> None:
-        """Force-complete resume if engine/decode has not delivered a new frame."""
+        """Recover if resume has not presented a post-land playback frame."""
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
             return
         perf_diag.count("video.scrub.resume_timeout")
-        self._complete_resume(reason="watchdog")
+        self._recover_resume_playback()
+
+    def _recover_resume_playback(self) -> None:
+        """Reset play decoder and seek to current clock — do not stay frozen."""
+        perf_diag.count("video.scrub.resume_recovery_started")
+        perf_diag.note("video.scrub.resume_recovery_reason", "decoder_reset_seek")
+        # Invalidate first so in-flight play work drops, then reset only when idle.
+        self._invalidate_async_requests()
+        if not self._async_inflight:
+            self._close_play_worker_decoders()
+        else:
+            # Worker still finishing — reopen on next schedule after result drops.
+            self._play_decoder_reset_pending = True
+        song = self._song
+        t = self._last_position_seconds
+        if t is None:
+            t = self._release_target_song_time
+        if song is not None and t is not None and self._video_output_active:
+            recover_t0 = monotonic()
+            self._request_async_live_frame(
+                float(t),
+                kind="play",
+                lock_timeout=_ASYNC_LAND_LOCK_TIMEOUT_S,
+                force=True,
+            )
+            perf_diag.record_ms(
+                "video.scrub.playback_decoder_ready_ms",
+                (monotonic() - recover_t0) * 1000.0,
+            )
+        if not self._resume_recovery_attempted:
+            self._resume_recovery_attempted = True
+            self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+            return
+        # Bound freeze: leave RESUME even if decode still empty.
+        self._complete_resume(reason="recovery")
 
     def _complete_resume(self, *, reason: str = "frame") -> None:
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         self._resume_watchdog.stop()
         self._resume_pending = False
+        self._resume_required = False
         if self._resume_started_mono > 0.0:
             elapsed = (monotonic() - self._resume_started_mono) * 1000.0
             perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
             if reason == "frame":
                 perf_diag.record_ms("video.scrub.resume_first_decode_ms", elapsed)
+                perf_diag.record_ms(
+                    "video.scrub.first_playback_frame_after_resume_ms", elapsed
+                )
         if self._release_target_media_time is not None:
             perf_diag.note(
                 "video.scrub.decoder_timestamp_at_first_resume",
                 float(self._release_target_media_time),
             )
         self._set_pipeline_state(VideoPipelineState.PLAYBACK)
-        perf_diag.count("video.scrub.resume_completed")
+        # Mutual exclusion: completed XOR recovered (Windows invariant).
+        if reason == "recovery":
+            perf_diag.count("video.scrub.resume_recovered")
+            perf_diag.count("video.scrub.resume_recovery_completed")
+        else:
+            perf_diag.count("video.scrub.resume_completed")
         perf_diag.note("video.scrub.resume_complete_reason", reason)
         self._min_present_seconds = None
         perf_diag.count("video.scrub.min_present_seconds_cleared")
@@ -791,6 +891,7 @@ class VideoSyncController(QObject):
         self._empty_decode_streak = 0
         perf_diag.count("video.scrub.final_land_presented")
         perf_diag.count("video.scrub.final_land_completed")
+        self._note_land_complete_metrics()
         perf_diag.note("video.scrub.final_presented_song_time", float(seconds))
         if self._release_target_media_time is not None:
             perf_diag.note(
@@ -814,8 +915,8 @@ class VideoSyncController(QObject):
         else:
             self._set_pipeline_state(VideoPipelineState.PLAYBACK)
             self._resume_pending = False
+            self._resume_required = False
             self._playback_resume_generation += 1
-            perf_diag.count("video.scrub.final_land_completed_without_resume")
 
     def _maybe_preload_scrub(self) -> None:
         if not self._scrubbing or not self._video_output_active:
@@ -940,6 +1041,10 @@ class VideoSyncController(QObject):
                 if clip_id not in valid_ids:
                     self._worker_decoders.pop(clip_id).close()
                     self._worker_decoder_paths.pop(clip_id, None)
+            for clip_id in list(self._scrub_worker_decoders):
+                if clip_id not in valid_ids:
+                    self._scrub_worker_decoders.pop(clip_id).close()
+                    self._scrub_worker_decoder_paths.pop(clip_id, None)
         # Only refresh scrub posters if the user is mid-drag; otherwise wait
         # for the next scrub_started to avoid contending with live decode.
         if self._scrubbing and self._video_output_active:
@@ -956,21 +1061,22 @@ class VideoSyncController(QObject):
         perf_diag.count(f"video.schedule.source.{source}")
         perf_diag.note("video.pipeline_mode", PIPELINE_MODE)
         perf_diag.note("video.pipeline_state", self._pipeline_state)
+
+        # Scrub / final-land own Video: gate engine BEFORE mutating last position
+        # (otherwise a late clock tick can overwrite the release target).
+        if source == "engine":
+            if (
+                self._scrubbing
+                or self._pipeline_state == VideoPipelineState.SCRUB_PREVIEW
+            ):
+                perf_diag.count("video.scrub.engine_requests_gated_during_scrub")
+                return
+            if self._pipeline_state == VideoPipelineState.FINAL_LANDING:
+                perf_diag.count("video.scrub.engine_requests_blocked_during_land")
+                return
+
         self._last_position_seconds = float(seconds)
 
-        # FINAL_LANDING: only the release land path may schedule decode.
-        if (
-            source == "engine"
-            and self._pipeline_state == VideoPipelineState.FINAL_LANDING
-        ):
-            perf_diag.count("video.scrub.engine_requests_blocked_during_land")
-            return
-        if (
-            source == "engine"
-            and self._pipeline_state == VideoPipelineState.SCRUB_PREVIEW
-        ):
-            perf_diag.count("video.scrub.engine_requests_blocked_during_land")
-            return
         if (
             source == "engine"
             and self._decoder_position_established
@@ -1038,10 +1144,7 @@ class VideoSyncController(QObject):
             ):
                 self._last_decode_time = now
                 self._emit_frame(frame)
-                self._last_scrub_preview_seconds = float(seconds)
-                self._last_presented_song_seconds = float(seconds)
-                perf_diag.count("video.scrub.preview_presented")
-                self._scrub_preview_presented += 1
+                self._note_preview_presented(float(seconds))
             # Restart pause-priority: when the pointer settles, decode now.
             if self._video_output_active:
                 self._scrub_pause_timer.start()
@@ -1120,10 +1223,7 @@ class VideoSyncController(QObject):
             self._last_decode_time = monotonic()
             self._scrub_last_requested_seconds = target
             self._emit_frame(poster)
-            self._last_scrub_preview_seconds = target
-            self._last_presented_song_seconds = target
-            perf_diag.count("video.scrub.preview_presented")
-            self._scrub_preview_presented += 1
+            self._note_preview_presented(target)
             return
         self._scrub_last_requested_seconds = target
         perf_diag.count("video.scrub.preview_requests")
@@ -1231,8 +1331,10 @@ class VideoSyncController(QObject):
     ) -> None:
         """Latest-wins schedule: overwrite pending time; at most one worker job.
 
-        During FINAL_LANDING, only ``kind="land"`` may own the slot — normal
-        play/preview requests are dropped (not coalesced over land).
+        Round 6 scrub preview policy: while a scrub_preview decode is in flight,
+        only update the latest target — do **not** bump generation (that caused
+        160 requests → 3 presents). After the in-flight decode completes, the
+        worker redoes if the target moved. Far jumps may cancel.
         """
         kind = str(kind)
         # Critical priority: land cannot be overwritten by play/preview.
@@ -1254,12 +1356,42 @@ class VideoSyncController(QObject):
             perf_diag.count("video.scrub.final_land_overwritten_attempts")
             return
 
+        # Scrub preview coalesce: update target only — keep in-flight gen alive.
+        if (
+            kind == "scrub_preview"
+            and self._async_inflight
+            and self._async_req_kind == "scrub_preview"
+            and not force
+        ):
+            prev = float(self._async_req_seconds)
+            self._async_req_seconds = float(seconds)
+            self._async_lock_timeout = float(lock_timeout)
+            perf_diag.count("video.async_coalesce")
+            perf_diag.count("video.scrub.preview_coalesced")
+            # Far jump: cancel expensive obsolete seek.
+            if abs(float(seconds) - prev) >= _PREVIEW_CANCEL_DELTA_S:
+                self._async_req_gen += 1
+                self._preview_request_seq += 1
+                perf_diag.count("video.scrub.preview_reject_reason.far_cancel")
+            return
+
         self._async_req_gen += 1
+        if kind == "scrub_preview":
+            self._preview_request_seq += 1
         self._async_req_seconds = float(seconds)
         self._async_req_kind = kind
         self._async_lock_timeout = float(lock_timeout)
+        self._async_req_session = int(self._scrub_session_gen)
+        self._async_req_started_mono = monotonic()
         if kind == "land":
             self._land_request_mono = monotonic()
+        if (
+            kind == "play"
+            and self._play_decoder_reset_pending
+            and not self._async_inflight
+        ):
+            self._play_decoder_reset_pending = False
+            self._close_play_worker_decoders()
         perf_diag.count("video.async_schedule")
         perf_diag.note("video.worker_inflight", True)
         if self._async_inflight:
@@ -1279,10 +1411,12 @@ class VideoSyncController(QObject):
                 seconds = float(self._async_req_seconds)
                 kind = self._async_req_kind
                 lock_timeout = float(self._async_lock_timeout)
+                session = int(self._async_req_session)
                 song = self._song
                 frame: np.ndarray | None = None
                 empty_reason = ""
                 decode_t0 = monotonic()
+                use_scrub_decoder = kind in ("scrub_preview", "land")
                 if kind == "land":
                     self._land_worker_start_mono = decode_t0
                     if self._land_request_mono > 0.0:
@@ -1290,11 +1424,19 @@ class VideoSyncController(QObject):
                             "video.scrub.final_land_worker_queue_wait_ms",
                             (decode_t0 - self._land_request_mono) * 1000.0,
                         )
+                if kind == "scrub_preview" and self._async_req_started_mono > 0.0:
+                    perf_diag.record_ms(
+                        "video.scrub.preview_worker_busy_ms",
+                        (decode_t0 - self._async_req_started_mono) * 1000.0,
+                    )
                 # Generation check before expensive seek/decode.
                 if gen != self._async_req_gen:
                     perf_diag.count("video.async_stale_drop")
                     if kind == "scrub_preview":
                         perf_diag.count("video.scrub.preview_stale_drop")
+                        perf_diag.count(
+                            "video.scrub.preview_reject_reason.generation_mismatch"
+                        )
                     elif kind == "land":
                         perf_diag.count("video.scrub.final_land_superseded")
                     continue
@@ -1303,7 +1445,6 @@ class VideoSyncController(QObject):
                 elif not self._video_output_active:
                     empty_reason = "output_inactive"
                 else:
-                    # Refuse land decode when target is not a valid media target.
                     if kind == "land":
                         tgt = self._release_target
                         if tgt is not None and not tgt.is_valid:
@@ -1319,6 +1460,7 @@ class VideoSyncController(QObject):
                                     worker=True,
                                     lock_timeout=lock_timeout,
                                     stale_on_timeout=(kind != "land"),
+                                    scrub_decoder=use_scrub_decoder,
                                 )
                         except Exception as exc:  # noqa: BLE001
                             frame = None
@@ -1332,11 +1474,25 @@ class VideoSyncController(QObject):
                             empty_reason = self._classify_empty_decode(
                                 song, seconds, kind=kind
                             )
-                # Generation check after decode — do not present obsolete work.
+                # Generation check after decode.
                 if gen != self._async_req_gen:
                     perf_diag.count("video.async_stale_drop")
                     if kind == "scrub_preview":
                         perf_diag.count("video.scrub.preview_stale_drop")
+                        # Still emit if within tolerance of latest target (Round 6).
+                        latest = float(self._async_req_seconds)
+                        if (
+                            session == self._scrub_session_gen
+                            and abs(seconds - latest) <= _PREVIEW_PRESENT_TOLERANCE_S
+                        ):
+                            perf_diag.count("video.async_decoded")
+                            self._async_frame_ready.emit(
+                                gen, seconds, frame, kind, empty_reason or "", session
+                            )
+                        else:
+                            perf_diag.count(
+                                "video.scrub.preview_superseded_after_decode"
+                            )
                     elif kind == "land":
                         perf_diag.count("video.scrub.final_land_superseded")
                     elif self._scrub_land_pending or self._final_land_pending:
@@ -1344,14 +1500,27 @@ class VideoSyncController(QObject):
                 elif gen == self._async_req_gen:
                     perf_diag.count("video.async_decoded")
                     self._async_frame_ready.emit(
-                        gen, seconds, frame, kind, empty_reason or ""
+                        gen, seconds, frame, kind, empty_reason or "", session
                     )
+                # Scrub preview: redo newest target without invalidating session.
+                if (
+                    kind == "scrub_preview"
+                    and self._async_req_kind == "scrub_preview"
+                    and self._scrubbing
+                    and abs(float(self._async_req_seconds) - seconds)
+                    >= _SCRUB_MIN_TARGET_DELTA_S
+                ):
+                    # Keep same gen if not cancelled; continue loop for latest.
+                    if self._async_req_gen == gen:
+                        perf_diag.count("video.async_redecode")
+                        continue
                 if self._async_req_gen == gen:
                     break
                 perf_diag.count("video.async_redecode")
         finally:
             self._async_inflight = False
             perf_diag.note("video.worker_inflight", False)
+            # Never close PyAV containers from the worker finally — UI owns reset.
             if self._async_req_gen != gen and self._video_output_active:
                 self._async_inflight = True
                 perf_diag.note("video.worker_inflight", True)
@@ -1380,8 +1549,32 @@ class VideoSyncController(QObject):
         frame: object,
         kind: str = "play",
         empty_reason: str = "",
+        scrub_session: int = -1,
     ) -> None:
-        if gen != self._async_req_gen:
+        kind = str(kind or self._async_req_kind)
+        session_ok = (
+            scrub_session < 0 or int(scrub_session) == int(self._scrub_session_gen)
+        )
+
+        # Round 6 preview: accept in-session frames within tolerance even if
+        # gen advanced (coalesce / far-cancel after decode started).
+        if kind == "scrub_preview" and self._scrubbing:
+            if not session_ok:
+                perf_diag.count("video.scrub.preview_generation_mismatch")
+                perf_diag.count("video.scrub.preview_reject_reason.session_changed")
+                return
+            if gen != self._async_req_gen:
+                if abs(float(seconds) - float(self._scrub_target_seconds)) > (
+                    _PREVIEW_PRESENT_TOLERANCE_S
+                ):
+                    perf_diag.count("video.scrub.preview_stale_drop")
+                    perf_diag.count(
+                        "video.scrub.preview_reject_reason.beyond_tolerance"
+                    )
+                    return
+                perf_diag.count("video.scrub.preview_superseded_after_decode")
+                # Fall through — still present within tolerance.
+        elif gen != self._async_req_gen:
             perf_diag.count("video.async_stale_drop")
             if self._final_land_pending or self._scrub_land_pending or not self._scrubbing:
                 perf_diag.count("video.scrub.old_generation_drop_after_release")
@@ -1390,8 +1583,6 @@ class VideoSyncController(QObject):
             return
         if not self._video_output_active:
             return
-
-        kind = str(kind or self._async_req_kind)
 
         # Late exact-land must not overwrite a newer resumed playback frame.
         if kind == "land" and self._pipeline_state in (
@@ -1408,7 +1599,7 @@ class VideoSyncController(QObject):
                     return
 
         # Soft floor: reject frames before release target (stale play pipeline).
-        if self._min_present_seconds is not None:
+        if self._min_present_seconds is not None and kind != "scrub_preview":
             if float(seconds) < float(self._min_present_seconds) - _FRAME_TOLERANCE_S:
                 if self._pipeline_state in (
                     VideoPipelineState.RESUME_PLAYBACK,
@@ -1429,10 +1620,7 @@ class VideoSyncController(QObject):
             if self._is_valid_frame_array(poster):
                 self._last_decode_time = monotonic()
                 self._emit_frame(poster)
-                self._last_scrub_preview_seconds = float(seconds)
-                self._last_presented_song_seconds = float(seconds)
-                perf_diag.count("video.scrub.preview_presented")
-                self._scrub_preview_presented += 1
+                self._note_preview_presented(float(seconds))
                 return
 
         # Empty / invalid frame handling — never accidental black.
@@ -1458,7 +1646,6 @@ class VideoSyncController(QObject):
                     )
 
             if kind == "land" and self._final_land_pending:
-                # Non-transient outcomes: exit without retry storm.
                 if reason in (
                     "timeline_gap",
                     "missing_media",
@@ -1480,7 +1667,6 @@ class VideoSyncController(QObject):
                 if not self._land_retry_timer.isActive():
                     self._land_retry_timer.start(_LAND_RETRY_MS)
                 return
-            # Scrub/play empty: keep last valid frame on screen.
             return
 
         assert isinstance(frame, np.ndarray)
@@ -1504,16 +1690,35 @@ class VideoSyncController(QObject):
         self._emit_frame(frame)
         self._last_presented_song_seconds = float(seconds)
         if self._scrubbing or kind == "scrub_preview":
-            self._last_scrub_preview_seconds = float(seconds)
-            perf_diag.count("video.scrub.preview_presented")
-            self._scrub_preview_presented += 1
-            if self._scrub_release_mono <= 0.0:
-                perf_diag.record_ms("video.scrub.request_to_present_ms", 0.0)
+            self._note_preview_presented(float(seconds))
+            if self._async_req_started_mono > 0.0:
+                perf_diag.record_ms(
+                    "video.scrub.preview_request_to_present_ms",
+                    (monotonic() - self._async_req_started_mono) * 1000.0,
+                )
 
-        # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame
-        # (even if emit skipped identical ndarray — land frame may match).
-        if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
+        # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame.
+        if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK and kind == "play":
             self._complete_resume(reason="frame")
+
+    def _note_preview_presented(self, seconds: float) -> None:
+        self._last_scrub_preview_seconds = float(seconds)
+        self._last_presented_song_seconds = float(seconds)
+        perf_diag.count("video.scrub.preview_presented")
+        self._scrub_preview_presented += 1
+        now = monotonic()
+        self._scrub_preview_present_times.append(now)
+        # Keep ~2s window for effective FPS.
+        cutoff = now - 2.0
+        self._scrub_preview_present_times = [
+            t for t in self._scrub_preview_present_times if t >= cutoff
+        ]
+        n = len(self._scrub_preview_present_times)
+        if n >= 2:
+            span = self._scrub_preview_present_times[-1] - self._scrub_preview_present_times[0]
+            if span > 1e-3:
+                fps = (n - 1) / span
+                perf_diag.note("video.scrub.preview_effective_fps", round(fps, 2))
 
     def _is_valid_frame_array(self, frame: object) -> bool:
         if frame is None or frame is _UNSET:
@@ -1531,10 +1736,10 @@ class VideoSyncController(QObject):
         return True
 
     def _reset_worker_decoder(self, clip_id: str) -> None:
-        """Bounded recovery: recreate one worker decoder after repeated empties."""
+        """Bounded recovery: recreate scrub worker decoder after repeated empties."""
         with self._worker_lock:
-            old = self._worker_decoders.pop(clip_id, None)
-            self._worker_decoder_paths.pop(clip_id, None)
+            old = self._scrub_worker_decoders.pop(clip_id, None)
+            self._scrub_worker_decoder_paths.pop(clip_id, None)
         if old is not None:
             try:
                 old.close()
@@ -1542,6 +1747,7 @@ class VideoSyncController(QObject):
                 pass
         self._worker_reset_count += 1
         perf_diag.count("video.decoder_reset.worker")
+        perf_diag.count("video.scrub.preview_decoder_reset")
         perf_diag.note("video.decoder_reset.clip_id", clip_id)
         perf_diag.note("video.decoder_reset.count", self._worker_reset_count)
 
@@ -1553,6 +1759,7 @@ class VideoSyncController(QObject):
         worker: bool,
         lock_timeout: float | None = None,
         stale_on_timeout: bool = True,
+        scrub_decoder: bool = False,
     ) -> np.ndarray | None:
         """Decode RGB frame at song time. ``worker=True`` uses dedicated decoders."""
         clips = song.active_video_clips_at(seconds)
@@ -1567,9 +1774,12 @@ class VideoSyncController(QObject):
             return None
 
         def _frame_for(clip: VideoClip) -> np.ndarray | None:
-            decoder = (
-                self._worker_decoder_for(clip) if worker else self._decoder_for(clip)
-            )
+            if not worker:
+                decoder = self._decoder_for(clip)
+            elif scrub_decoder:
+                decoder = self._scrub_worker_decoder_for(clip)
+            else:
+                decoder = self._worker_decoder_for(clip)
             if decoder is None:
                 return None
             try:
@@ -1695,7 +1905,7 @@ class VideoSyncController(QObject):
         return decoder
 
     def _worker_decoder_for(self, clip: VideoClip) -> MediaDecoder | None:
-        """Open/reuse a decoder owned exclusively by the async worker thread."""
+        """Open/reuse the sequential *playback* worker decoder."""
         with self._worker_lock:
             cached_path = self._worker_decoder_paths.get(clip.id)
             if cached_path == clip.path and clip.id in self._worker_decoders:
@@ -1717,6 +1927,29 @@ class VideoSyncController(QObject):
             self._worker_decoder_paths[clip.id] = clip.path
             return decoder
 
+    def _scrub_worker_decoder_for(self, clip: VideoClip) -> MediaDecoder | None:
+        """Open/reuse the scrub-preview / final-land worker decoder."""
+        with self._worker_lock:
+            cached_path = self._scrub_worker_decoder_paths.get(clip.id)
+            if cached_path == clip.path and clip.id in self._scrub_worker_decoders:
+                return self._scrub_worker_decoders[clip.id]
+            old = self._scrub_worker_decoders.pop(clip.id, None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            try:
+                decoder = open_media_decoder(
+                    clip.path, max_decode_height=self._decode_max_height
+                )
+            except Exception:
+                self._scrub_worker_decoder_paths.pop(clip.id, None)
+                return None
+            self._scrub_worker_decoders[clip.id] = decoder
+            self._scrub_worker_decoder_paths[clip.id] = clip.path
+            return decoder
+
     def _maybe_warn_overlap(self, song: Song, seconds: float) -> None:
         active_here = [c for c in song.video_clips if not c.hidden and c.contains(seconds)]
         if len(active_here) <= 1:
@@ -1730,7 +1963,7 @@ class VideoSyncController(QObject):
             f"Overlapping video clips at {seconds:.2f}s ({names}) — auto crossfade applied."
         )
 
-    def _close_worker_decoders(self) -> None:
+    def _close_play_worker_decoders(self) -> None:
         with self._worker_lock:
             for decoder in self._worker_decoders.values():
                 try:
@@ -1740,9 +1973,54 @@ class VideoSyncController(QObject):
             self._worker_decoders.clear()
             self._worker_decoder_paths.clear()
 
+    def _close_scrub_worker_decoders(self) -> None:
+        with self._worker_lock:
+            for decoder in self._scrub_worker_decoders.values():
+                try:
+                    decoder.close()
+                except Exception:
+                    pass
+            self._scrub_worker_decoders.clear()
+            self._scrub_worker_decoder_paths.clear()
+
+    def _close_worker_decoders(self) -> None:
+        self._close_play_worker_decoders()
+        self._close_scrub_worker_decoders()
+
     def _close_all_decoders(self) -> None:
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()
         self._decoder_paths.clear()
         self._close_worker_decoders()
+
+    def shutdown(self) -> None:
+        """Stop timers and the live-decode pool (tests / app teardown)."""
+        for timer in (
+            self._flush_timer,
+            self._scrub_preload_timer,
+            self._scrub_preview_timer,
+            self._scrub_pause_timer,
+            self._land_retry_timer,
+            self._resume_watchdog,
+        ):
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._scrubbing = False
+        self._final_land_pending = False
+        self._scrub_land_pending = False
+        self._resume_pending = False
+        self._invalidate_async_requests()
+        self._async_inflight = False
+        self._pipeline_state = VideoPipelineState.PLAYBACK
+        try:
+            self._async_pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python <3.9 cancel_futures
+            self._async_pool.shutdown(wait=False)
+        except Exception:
+            pass
+        self._close_all_decoders()
+        self._scrub_cache.clear()

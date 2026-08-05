@@ -355,9 +355,13 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Round 5: **Empty-frame + recovery** — explicit release target outcomes,
   no accidental black, bounded retries (≤5 / 500 ms), resume watchdog,
   decoder reset after repeated empties.
+- Round 6: **Scrub preview delivery + deterministic resume** — session vs
+  request generation; present in-flight preview within tolerance; engine
+  gated during scrub; `resume_required` invariant with recovery; separate
+  play/scrub decoder contexts.
 
-**Next:** Windows empty-frame and recovery validation.
+**Next:** Windows scrub preview and resume validation.
 
 ---
 
-## READY FOR WINDOWS VIDEO EMPTY-FRAME AND RECOVERY VALIDATION
+## READY FOR WINDOWS SCRUB PREVIEW AND RESUME VALIDATION

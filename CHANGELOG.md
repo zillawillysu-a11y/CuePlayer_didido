@@ -18,6 +18,10 @@ All notable project changes are recorded here. Product version remains in `pypro
 - Round 5: explicit Song→media target outcomes (no ambiguous None);
   empty decode never clears a valid preview; land retries capped (≤5 / 500 ms);
   one-to-one resume with watchdog; bounded worker-decoder reset.
+- Round 6: scrub preview delivery (session gen ≠ per-move gen; present
+  in-flight within tolerance; engine gated during scrub) + mandatory resume
+  after playing land (`resume_required`/`completed`/`recovered` split) +
+  separate play vs scrub decoder maps; resume recovery on watchdog.
 
 ### Sprint 8 — Task 1: Playback Performance Audit + Experimental Hide (2026-08-04)
 
