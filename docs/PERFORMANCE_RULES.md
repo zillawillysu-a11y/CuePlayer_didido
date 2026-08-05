@@ -1,8 +1,8 @@
 # CuePlayer — Performance Rules
 
-**Status:** Sprint 8 Task 2 Round 6 (scrub preview delivery + deterministic resume)  
+**Status:** Sprint 8 Task 2 Round 7 (state-machine trace / freeze diagnosis)  
 **Updated:** 2026-08-05  
-**Related:** [`playback_performance_audit.md`](playback_performance_audit.md)
+**Related:** [`playback_performance_audit.md`](playback_performance_audit.md), [`video_sm_freeze_diagnosis.md`](video_sm_freeze_diagnosis.md)
 
 ---
 

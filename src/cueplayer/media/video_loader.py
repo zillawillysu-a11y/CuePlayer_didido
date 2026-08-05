@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.av_lock import av_path_lock
 
 import av
@@ -201,7 +202,24 @@ class VideoDecoder:
             if self._closed:
                 return None
             if needs_seek:
+                if perf_diag.is_enabled():
+                    from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+                    sm_trace.set_worker_runtime(
+                        sm_trace.WorkerRuntime.SEEKING,
+                        reason="media_decoder_seek",
+                        emit_event=True,
+                    )
                 self._seek_unlocked(seconds)
+
+            if perf_diag.is_enabled():
+                from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+                sm_trace.set_worker_runtime(
+                    sm_trace.WorkerRuntime.DECODING,
+                    reason="media_decoder_decode_loop",
+                    emit_event=True,
+                )
 
             result = self._last_frame
             if self._pending_frame is not None and self._pending_pts_seconds is not None:

@@ -359,9 +359,13 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
   request generation; present in-flight preview within tolerance; engine
   gated during scrub; `resume_required` invariant with recovery; separate
   play/scrub decoder contexts.
+- Round 7: **State-machine trace (diagnosis only)** — `VIDEO_SM` events for
+  scrub → land → resume → play; identify post-land freeze without redesign.
+  See [`video_sm_freeze_diagnosis.md`](video_sm_freeze_diagnosis.md).
 
-**Next:** Windows scrub preview and resume validation.
+**Next:** Confirm Windows `VIDEO_SM` log (`LAND→FIRST_PLAY_FRAME gap` +
+`coalesce_worker_busy`), then fix that stall only.
 
 ---
 
-## READY FOR WINDOWS SCRUB PREVIEW AND RESUME VALIDATION
+## READY FOR WINDOWS VIDEO SM TRACE CAPTURE

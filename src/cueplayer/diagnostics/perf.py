@@ -101,6 +101,12 @@ def clear() -> None:
         _state.counters.clear()
         _state.attrs.clear()
         _state.last_activate_ms.clear()
+    try:
+        from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+        sm_trace.clear()
+    except Exception:
+        pass
 
 
 def count(name: str, n: int = 1) -> None:
@@ -267,6 +273,15 @@ def report_text() -> str:
         f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
     )
     lines.append("")
+    # Round 7 — Video state-machine trace (land → resume freeze diagnosis).
+    try:
+        from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+        lines.append(sm_trace.report_text(limit=100).rstrip())
+        lines.append("")
+    except Exception:
+        lines.append("VIDEO_SM: (unavailable)")
+        lines.append("")
     expected_video_spans = (
         "video.decode.async",
         "video.decode.sync",

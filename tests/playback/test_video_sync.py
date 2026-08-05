@@ -1888,7 +1888,7 @@ def test_slow_drag_presents_multiple_preview_frames_before_release(
         controller.frame_changed.connect(frames.append)
         n = {"i": 0}
 
-        def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False):  # noqa: ANN001
+        def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False, **_kw):  # noqa: ANN001
             if kind != "scrub_preview":
                 return
             n["i"] += 1
@@ -2362,7 +2362,7 @@ def test_many_preview_requests_present_under_fast_decode(
     perf_diag.clear()
     n = {"i": 0}
 
-    def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False):  # noqa: ANN001
+    def _immediate(seconds, *, kind="play", lock_timeout=0.05, force=False, **_kw):  # noqa: ANN001
         if kind != "scrub_preview":
             return
         n["i"] += 1
