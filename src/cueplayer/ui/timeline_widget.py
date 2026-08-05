@@ -1682,49 +1682,54 @@ class TimelineWidget(QWidget):
             # Playhead is owned by the scrub gesture; ignore engine ticks so
             # a delayed seek cannot yank the line away from the cursor.
             return
-        perf_diag.count("timeline.set_position.calls")
-        self._position = seconds
-        scroll_moved = False
-        if self._auto_scroll:
-            prev_scroll = self._scroll_x
-            if self._view_pinned:
-                # Keep a click-seek / scrub pin until the playhead leaves the
-                # visible waveform; then auto-follow again (no wheel needed).
-                if self._playing and self._playhead_outside_view(margin=48.0):
-                    self._view_pinned = False
-                    self._follow_playhead()
-            else:
-                self._follow_playhead()
-            scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
-            # While playing/scrubbing, keep the static backdrop and blit it with
-            # a scroll offset (see paintEvent). Invalidating here forced a full
-            # waveform rebuild every tick at the follow edge → visible jitter.
-            if scroll_moved and not (self._playing or self._scrubbing):
-                self._invalidate_scrub_backdrop()
-        if self._playing:
-            now = monotonic_ns()
-            # Always honor the play paint cadence — even when auto-scroll
-            # moves _scroll_x every tick. Bypassing on scroll_moved forced
-            # ~60 Hz blit + live marks and made Video Track play feel low-FPS.
-            if now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
-                self._last_play_repaint_ns = now
-                if scroll_moved:
-                    self._reset_playhead_dirty_tracking()
-                    self.update()
-                    perf_diag.count("timeline.paint.request.full.scroll_follow")
+        with perf_diag.span("timeline.set_position"):
+            perf_diag.count("timeline.set_position.calls")
+            self._position = seconds
+            scroll_moved = False
+            if self._auto_scroll:
+                prev_scroll = self._scroll_x
+                if self._view_pinned:
+                    # Keep a click-seek / scrub pin until the playhead leaves the
+                    # visible waveform; then auto-follow again (no wheel needed).
+                    if self._playing and self._playhead_outside_view(margin=48.0):
+                        self._view_pinned = False
+                        self._follow_playhead()
                 else:
-                    # Auto Scroll off (or playhead still in view): only dirty the
-                    # old+new playhead columns. Full-widget update every tick was
-                    # blitting the tall Video Track pixmap + live marks for free.
-                    self._update_playhead_dirty_region()
-                    perf_diag.count("timeline.paint.request.partial.playhead")
-            if now - self._last_view_changed_ns >= self._play_view_changed_interval_ns:
-                self._last_view_changed_ns = now
-                self.view_changed.emit()
-        else:
-            self._reset_playhead_dirty_tracking()
-            self.update()
-            self.view_changed.emit()
+                    self._follow_playhead()
+                scroll_moved = abs(self._scroll_x - prev_scroll) > 0.5
+                # While playing/scrubbing, keep the static backdrop and blit it with
+                # a scroll offset (see paintEvent). Invalidating here forced a full
+                # waveform rebuild every tick at the follow edge → visible jitter.
+                if scroll_moved and not (self._playing or self._scrubbing):
+                    self._invalidate_scrub_backdrop()
+            if self._playing:
+                now = monotonic_ns()
+                # Always honor the play paint cadence — even when auto-scroll
+                # moves _scroll_x every tick. Bypassing on scroll_moved forced
+                # ~60 Hz blit + live marks and made Video Track play feel low-FPS.
+                if now - self._last_play_repaint_ns >= self._play_repaint_interval_ns:
+                    self._last_play_repaint_ns = now
+                    with perf_diag.span("repaint.request_dispatch"):
+                        if scroll_moved:
+                            self._reset_playhead_dirty_tracking()
+                            self.update()
+                            perf_diag.count("timeline.paint.request.full.scroll_follow")
+                        else:
+                            # Auto Scroll off (or playhead still in view): only dirty the
+                            # old+new playhead columns. Full-widget update every tick was
+                            # blitting the tall Video Track pixmap + live marks for free.
+                            self._update_playhead_dirty_region()
+                            perf_diag.count("timeline.paint.request.partial.playhead")
+                if now - self._last_view_changed_ns >= self._play_view_changed_interval_ns:
+                    self._last_view_changed_ns = now
+                    with perf_diag.span("overview.position_sync_ms"):
+                        self.view_changed.emit()
+            else:
+                self._reset_playhead_dirty_tracking()
+                with perf_diag.span("repaint.request_dispatch"):
+                    self.update()
+                with perf_diag.span("overview.position_sync_ms"):
+                    self.view_changed.emit()
 
     def _reset_playhead_dirty_tracking(self) -> None:
         """Drop dirty-rect playhead cache after scroll/zoom/play-state changes."""
@@ -4359,10 +4364,36 @@ class TimelineWidget(QWidget):
     ) -> None:
         if self._song is None:
             return
+        with perf_diag.span("mark.paint_ms"):
+            self._paint_marks_impl(
+                painter,
+                start_y=start_y,
+                waveform_lines=waveform_lines,
+                lane_shapes=lane_shapes,
+            )
+
+    def _paint_marks_impl(
+        self,
+        painter: QPainter,
+        *,
+        start_y: int,
+        waveform_lines: bool = True,
+        lane_shapes: bool = True,
+    ) -> None:
+        if self._song is None:
+            return
         lane_y = {lane_index: y0 for lane_index, y0, _y1 in self._lane_rects()}
         right = self._paint_right()
+        # Dense marks: only iterate marks that can intersect the visible strip
+        # (plus a small margin). Full O(n) per paint froze Video in stress zones.
+        t_lo = self._time_for_x(float(self._header_width)) - 0.25
+        t_hi = self._time_for_x(float(right)) + 0.25
+        with perf_diag.span("mark.geometry_ms"):
+            visible_marks = self._song.mark_slice_in_time_range(t_lo, t_hi)
+            perf_diag.note("mark.visible_count", len(visible_marks))
+            perf_diag.note("mark.total_count", len(self._song.marks))
 
-        for mark in self._song.marks:
+        for mark in visible_marks:
             lane = self._song.lane_by_index(mark.lane_index)
             if lane is not None and not lane.visible:
                 continue

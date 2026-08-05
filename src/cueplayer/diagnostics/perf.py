@@ -272,6 +272,55 @@ def report_text() -> str:
     for name in expected_video_counters:
         lines.append(f"  {name}: {int(counters.get(name, 0))}")
     lines.append("")
+    # Dense Mark / position-fanout A/B (Sprint 8 Task 2).
+    lines.append("Dense Mark / position-fanout (A/B):")
+    for name in (
+        "ui.position_fanout",
+        "ui.position_fanout.total_ms",
+        "timeline.set_position",
+        "mark.lookup_ms",
+        "mark.geometry_ms",
+        "mark.paint_ms",
+        "now_card.position_sync_ms",
+        "cue_list.position_sync_ms",
+        "overview.position_sync_ms",
+        "monitor.position_sync_ms",
+        "remote.position_sync_ms",
+        "video.schedule_ms",
+        "repaint.request_dispatch",
+        "video.frame_ready_to_present_ms",
+        "video.present.queue_delay_ms",
+    ):
+        if name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  span {name}: (none)")
+    for name in (
+        "mark.total_count",
+        "mark.visible_count",
+        "mark.count_in_current_second",
+        "mark.count_near_playhead",
+        "mark.crossings_per_position_update",
+        "timeline.zoom_pps",
+        "ui.position_fanout.slow_song_time",
+        "ui.position_fanout.slow_marks_near",
+        "ui.position_fanout.slow_video_ready_waiting",
+        "ui.position_fanout.slow_worker_runtime",
+    ):
+        lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
+    for name in (
+        "ui.position_fanout.calls",
+        "ui.position_fanout.slow_samples",
+        "now_card.position_sync.skipped_unchanged",
+        "now_card.position_sync.updated",
+        "remote.position_fanout.noop",
+        "mark.crossings_total",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    lines.append("")
     lines.append(
         f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"
     )

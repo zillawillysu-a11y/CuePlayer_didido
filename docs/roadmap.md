@@ -369,10 +369,11 @@ See [`playback_performance_audit.md`](playback_performance_audit.md) · [`PERFOR
 - Round 8b: **Deterministic seek** — position-dependent freezes (GOP/handoff);
   explicit playback-decoder handoff; seek deadline recreate; no empty black
   widget while Video exists; seek telemetry (`video.seek.*`).
+- **Dense Mark region** — A/B fan-out instrumentation; indexed Mark lookup;
+  viewport paint; NOW skip-if-unchanged. See [`dense_mark_perf.md`](dense_mark_perf.md).
 
-**Next:** Windows validate seeks at 0:05 / 0:30 / 1:00 / 1:30 / 2:00 / 2:30 /
-3:00 / near-end — paused, playing, scrub-release, Play-after-seek.
+**Next:** Windows A/B sparse vs dense Cue regions with `CUEPLAYER_PERF=1`.
 
 ---
 
-## READY FOR WINDOWS DETERMINISTIC VIDEO SEEK VALIDATION
+## READY FOR WINDOWS DENSE MARK REGION VALIDATION

@@ -2535,6 +2535,13 @@ class VideoSyncController(QObject):
         elif kind == "play":
             perf_diag.count("video.playback.frame_accept")
             perf_diag.count("video.playback.decode_presented")
+            if self._async_req_started_mono > 0.0:
+                ready_ms = (monotonic() - self._async_req_started_mono) * 1000.0
+                perf_diag.record_ms("video.frame_ready_to_present_ms", ready_ms)
+                # Queue delay proxy: time from decode-done emit to UI present.
+                # Worker sets WAITING_FRAME just before emit; we only have
+                # request-start here — still useful for dense-mark A/B.
+                perf_diag.record_ms("video.present.queue_delay_ms", ready_ms)
             self._note_display_source(DisplaySource.PLAYBACK_FRAME)
             self._play_seek_recovery_attempted = False
             is_first = sm_trace.consume_first_play_pending()

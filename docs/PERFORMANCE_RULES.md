@@ -49,6 +49,12 @@
     `set_song` with Video must not clear to empty widget before first poster/land.  
     `video.display_source` tracks last_valid / poster / final_land / playback_frame.
 
+11. **Dense Marks must not starve Video (position fan-out).**  
+    Mark lookup is O(log n) (bisect). Paint only visible-time Marks.  
+    NOW/Cue List update only when the active Cue changes.  
+    Measure sparse vs dense with `ui.position_fanout` sub-spans — see
+    [`dense_mark_perf.md`](dense_mark_perf.md). Do not change Video decoder for this.
+
 ---
 
 ## Enabling diagnostics
@@ -61,7 +67,7 @@ $env:CUEPLAYER_PERF = "1"
 
 cd C:\Users\willy\Projects\CuePlayer_v2   # your clone path
 git fetch origin
-git checkout cursor/sprint8-deterministic-seek-028d
+git checkout cursor/sprint8-dense-mark-perf-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
