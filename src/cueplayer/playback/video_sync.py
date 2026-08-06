@@ -176,6 +176,8 @@ class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for intentional gap
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
+    # UI should show intentional loading chrome (never empty black).
+    activation_loading = Signal(str)
     # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind, empty_reason, scrub_session)
     _async_frame_ready = Signal(int, float, object, str, str, int)
 
@@ -1235,17 +1237,71 @@ class VideoSyncController(QObject):
         self._maybe_warn_overlap(song, float(pos))
         primary = song.active_video_clip_at(float(pos))
         self._set_active(primary.id if primary else None)
-        # Prefer a warm poster immediately so the widget is never empty.
-        poster = self._scrub_composite(song, float(pos))
+        # Immediate non-empty Preview, then async land — never block UI ~6s
+        # on a full GOP decode-forward for activation.
+        self._present_activation_preview(song, float(pos))
+        self._request_async_live_frame(
+            float(pos),
+            kind="land",
+            lock_timeout=_ASYNC_LAND_LOCK_TIMEOUT_S,
+            force=True,
+            scheduler="land_frame_at",
+        )
+
+    def _present_activation_preview(self, song: Song, seconds: float) -> None:
+        """Poster / keep-last / loading slate before normal decoder first frame."""
+        t0 = monotonic()
+        poster = self._scrub_composite(song, float(seconds))
         if self._is_valid_frame_array(poster):
             assert isinstance(poster, np.ndarray)
             self._emit_frame(poster, reason="activate_poster")
             self._note_display_source(DisplaySource.POSTER)
-        elif self._is_valid_frame_array(self._last_valid_frame):
-            self._note_display_source(DisplaySource.LAST_VALID)
-        self._decode_and_emit(
-            song, float(pos), lock_timeout=_SYNC_LAND_LOCK_TIMEOUT_S
+            perf_diag.note("video.activation_poster.source", "scrub_cache")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+        # Short-deadline sync poster: accept first decoded frame near keyframe
+        # rather than waiting for full GOP forward (frames_to_target ~88).
+        frame = self._decode_frame_array(
+            song,
+            float(seconds),
+            worker=False,
+            lock_timeout=0.05,
+            deadline_s=0.35,
         )
+        if self._is_valid_frame_array(frame):
+            assert isinstance(frame, np.ndarray)
+            self._emit_frame(frame, reason="activate_poster")
+            self._note_display_source(DisplaySource.POSTER)
+            perf_diag.note("video.activation_poster.source", "sync_short_deadline")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+        if self._is_valid_frame_array(self._last_valid_frame):
+            # Same process last frame — only keep if we already noted LAST_VALID.
+            self._note_display_source(DisplaySource.LAST_VALID)
+            perf_diag.note("video.activation_poster.source", "last_valid")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            self.activation_loading.emit("Loading video…")
+            return
+        # Intentional non-empty loading placeholder — never empty/null widget.
+        self._emit_loading_placeholder()
+        perf_diag.note("video.activation_poster.source", "loading_placeholder")
+        perf_diag.record_ms(
+            "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+        )
+
+    def _emit_loading_placeholder(self) -> None:
+        """Emit a tiny dark slate so Preview is never an empty/null widget."""
+        slate = np.zeros((9, 16, 3), dtype=np.uint8)
+        slate[:, :] = (24, 24, 27)
+        self._emit_frame(slate, reason="activate_poster")
+        self._note_display_source(DisplaySource.POSTER)
+        self.activation_loading.emit("Loading video…")
 
     def set_playing(self, active: bool) -> None:
         """Call from AudioEngine.playing_changed.
@@ -1325,16 +1381,19 @@ class VideoSyncController(QObject):
                 else DisplaySource.INTENTIONAL_GAP
             )
         else:
-            # Round 8: keep last valid frame until first poster arrives —
-            # do not expose the empty black widget during activation.
+            # Never expose empty black while waiting for the playback decoder.
             self._song_activate_mono = monotonic()
-            if self._is_valid_frame_array(self._last_emitted_frame) or self._is_valid_frame_array(
-                self._last_valid_frame
-            ):
-                self._note_display_source(DisplaySource.LAST_VALID)
+            self._last_position_seconds = 0.0
+            # Clear cross-song last frame so we do not flash the previous Song.
+            self._last_valid_frame = None
+            self._last_valid_frame_mono = 0.0
+            self._last_valid_frame_song_seconds = None
+            self._last_emitted_frame = _UNSET
+            if self._video_output_active:
+                self._present_activation_preview(song, 0.0)
             else:
                 self._note_display_source(DisplaySource.EMPTY_WIDGET)
-            # First valid frame is requested by land_frame_at / ensure_video_preview.
+            # First accurate frame follows via land_frame_at / ensure_video_preview.
         # Do not preload scrub ladders here — song switch + Clean Output used
         # to start a PyAV storm that blocked live decode via av_path_lock.
 

@@ -359,6 +359,44 @@ def report_text() -> str:
     ):
         lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     lines.append("")
+    # Cached timeline / zoom / activation poster (measured fix).
+    lines.append("Cached Timeline / Zoom / Activation Poster:")
+    for name in (
+        "timeline.mark_backdrop.rebuild_ms",
+        "timeline.dynamic_overlay.paint_ms",
+        "timeline.zoom.temporary_transform_ms",
+        "timeline.zoom.overview_ms",
+        "video.activation_poster_present_ms",
+        "video.empty_widget_visible_ms",
+        "video.first_valid_frame_after_song_activate_ms",
+        "video.frame_ready_to_present_ms",
+        "video.present.queue_delay_ms",
+        "video.present_delayed_by_timeline_ms",
+    ):
+        if name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  span {name}: (none)")
+    for name in (
+        "timeline.mark_backdrop.cache_hit",
+        "timeline.mark_backdrop.cache_miss",
+        "timeline.mark_backdrop.draw_marker_shape_count",
+        "timeline.zoom.raw_events",
+        "timeline.zoom.coalesced_events",
+        "timeline.zoom.final_rebuilds",
+        "video.frames_ready_while_ui_busy",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    for name in (
+        "video.activation_poster.source",
+        "timeline.mark_backdrop.last_static_shape_count",
+        "timeline.mark_backdrop.last_overlay_shape_count",
+    ):
+        lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
+    lines.append("")
     lines.append(
         f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"
     )
@@ -465,6 +503,12 @@ def flush_report(*, label: str = "", clear_after: bool = False) -> Path | None:
         with _lock:
             _state.spans.clear()
             _state.counters.clear()
+    try:
+        from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+        sm_trace.flush_log(force=True)
+    except Exception:
+        pass
     return path
 
 

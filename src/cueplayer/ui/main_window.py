@@ -1391,6 +1391,7 @@ class MainWindow(QMainWindow):
         # One RGB→QImage conversion shared by Preview + Clean Output (avoids
         # double memcpy when Clean Output is open with a video track).
         self.video_sync.frame_changed.connect(self._on_video_frame)
+        self.video_sync.activation_loading.connect(self._on_video_activation_loading)
         self.video_sync.overlap_warning.connect(lambda msg: self.status.showMessage(msg, 4000))
         self.clean_output_window.visibility_changed.connect(self._clean_output_action.setChecked)
         self.clean_output_window.visibility_changed.connect(self._sync_video_output_active)
@@ -2197,6 +2198,15 @@ class MainWindow(QMainWindow):
         """
         with perf_diag.span("video.present"):
             perf_diag.count("video.present.calls")
+            present_t0 = time.monotonic()
+            timeline = getattr(self, "timeline", None)
+            zoom_busy = bool(
+                timeline is not None
+                and hasattr(timeline, "is_view_transform_busy")
+                and timeline.is_view_transform_busy()
+            )
+            if zoom_busy:
+                perf_diag.count("video.frames_ready_while_ui_busy")
             preview_vis = self._video_preview_visible()
             clean_vis = self._clean_output_visible()
             ndi_on = bool(self.project.clean_video_output.ndi_enabled)
@@ -2231,6 +2241,7 @@ class MainWindow(QMainWindow):
                 if image is None or image.isNull() or image.width() <= 0 or image.height() <= 0:
                     perf_diag.count("video.null_image_rejected")
                     return
+                # Real frames clear the intentional loading chrome.
                 if preview_vis:
                     self.video_preview.set_qimage(image)
                 if clean_vis:
@@ -2239,6 +2250,15 @@ class MainWindow(QMainWindow):
                 self._ndi_output.send_frame(frame)
             if remote_prev and remote is not None:
                 remote.push_preview_frame(frame)
+            if zoom_busy:
+                delay_ms = (time.monotonic() - present_t0) * 1000.0
+                perf_diag.record_ms("video.present_delayed_by_timeline_ms", delay_ms)
+
+    def _on_video_activation_loading(self, text: str) -> None:
+        """Intentional non-empty Preview while activation poster is cold."""
+        preview = getattr(self, "video_preview", None)
+        if preview is not None and hasattr(preview, "set_loading"):
+            preview.set_loading(True, text or "Loading video…")
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""
@@ -5456,6 +5476,7 @@ class MainWindow(QMainWindow):
             self._delete_marks(ids)
 
     def _on_marks_changed(self) -> None:
+        self.timeline.bump_mark_backdrop_revision(reason="marks_changed")
         self.timeline.update()
         self._schedule_cue_list_refresh()
         self._refresh_status()
@@ -5468,7 +5489,8 @@ class MainWindow(QMainWindow):
         self.monitor.set_position(self.playback.position, self.engine.duration)
 
     def _refresh_marks_ui(self) -> None:
-        # Marks paint live — avoid invalidating the play/scrub backdrop per mark.
+        # Marks are baked into the play/scrub backdrop — invalidate once.
+        self.timeline.bump_mark_backdrop_revision(reason="marks_ui_refresh")
         self.timeline.update()
         self._schedule_cue_list_refresh()
         self._refresh_status()

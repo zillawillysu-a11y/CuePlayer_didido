@@ -154,8 +154,13 @@ def test_no_empty_widget_when_video_exists_on_activate(
         frames: list[object] = []
         controller.frame_changed.connect(frames.append)
         controller.set_song(_song(red_clip_path))
-        assert None not in frames
-        assert controller._display_source == DisplaySource.LAST_VALID
+        # Must never emit intentional None/clear while Video exists.
+        assert all(f is not None for f in frames)
+        assert controller._display_source != DisplaySource.EMPTY_WIDGET
+        assert controller._display_source in (
+            DisplaySource.POSTER,
+            DisplaySource.LAST_VALID,
+        )
         assert controller._song_activate_mono is not None
     finally:
         _shutdown(controller)
