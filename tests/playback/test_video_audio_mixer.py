@@ -1035,3 +1035,69 @@ def test_ten_boundary_assembly_no_gap_after_warmup(
         np.testing.assert_allclose(out, ref[pos : pos + 1024], atol=1e-7)
         pos += 1024
     assert mixer._cb_gap_fill == 0
+
+
+def test_contiguous_keys_excludes_disjoint_past_windows() -> None:
+    """Regression: start<=frontier must NOT mark disjoint past holes as contiguous.
+
+    Windows log showed preserved_contiguous with holes like
+    1845 → 1872 (27s) and 1917 → 1944 (27s), which let eviction drop true
+    forward grid cells and caused publish_late / gap_fill.
+    """
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    # Contiguous local chain at 1944+, plus disjoint past islands.
+    for origin in (1836.0, 1845.0, 1872.0, 1881.0, 1917.0, 1944.0, 1953.0, 1962.0):
+        mixer._install_window(
+            clip_id,
+            _pcm(
+                _constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    pin_frame = int(1952.0 * SR)
+    keys = mixer._contiguous_keys(clip_id, pin_frame)
+    starts = sorted(k[2] for k in keys)
+    assert starts == [1944.0, 1953.0, 1962.0]
+    assert 1845.0 not in starts
+    assert 1872.0 not in starts
+    assert 1917.0 not in starts
+    fr = mixer._contiguous_frontier_frame(clip_id, pin_frame)
+    assert fr == pytest.approx(int(1974.0 * SR), abs=1)
+
+
+def test_eviction_does_not_drop_forward_chain_for_disjoint_past() -> None:
+    """When cache is full, disjoint past islands are evicted before forward cells."""
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    mixer._pin_source_time = 1952.0
+    # Fill with forward chain + disjoint past (holes 1854/1863, 1926/1935).
+    for origin in (1836.0, 1845.0, 1872.0, 1881.0, 1890.0, 1944.0, 1953.0, 1962.0):
+        mixer._install_window(
+            clip_id,
+            _pcm(
+                _constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    assert len(mixer._cache[clip_id]) == 8
+    # Publishing next forward window must keep 1944/1953/1962/1971 and drop past.
+    mixer._install_window(
+        clip_id,
+        _pcm(
+            _constant(12.0, 0.4),
+            origin_seconds=1971.0,
+            key=("c.mp4", SR, 1971.0, 12.0),
+        ),
+    )
+    starts = sorted(k[2] for k in mixer._cache[clip_id])
+    assert 1971.0 in starts
+    assert 1944.0 in starts
+    assert 1953.0 in starts
+    assert 1962.0 in starts
+    # Disjoint past islands should be preferred victims.
+    assert 1836.0 not in starts or 1845.0 not in starts or 1872.0 not in starts

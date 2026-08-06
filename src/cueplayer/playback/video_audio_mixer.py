@@ -332,21 +332,25 @@ class VideoAudioMixer:
         except Exception:
             return False
 
-    def _contiguous_frontier_frame(
+    def _contiguous_component(
         self,
         clip_id: str,
         source_frame: int,
         *,
         windows: tuple[_CachedPcm, ...] | None = None,
-    ) -> int | None:
-        """Exclusive end frame of *published* PCM contiguous from ``source_frame``.
+    ) -> tuple[int | None, set[tuple]]:
+        """Return ``(frontier_end_frame, keys)`` for the contiguous component
+        containing ``source_frame``.
 
-        Disjoint far-future windows are ignored. Overlap or ≤1-sample adjacency
-        extends the frontier. In-flight windows are never counted here.
+        A window joins the component only when it overlaps or touches the
+        growing union within ``_CONTIGUOUS_ADJACENCY_FRAMES``. Windows that
+        merely satisfy ``start <= frontier`` (i.e. any past window) must NOT
+        join — that bug marked disjoint holes as "contiguous", so eviction
+        dropped true forward grid cells and caused publish_late / gap_fill.
         """
         snap = windows if windows is not None else (self._rt_snapshot.get(clip_id) or ())
         if not snap:
-            return None
+            return None, set()
         intervals: list[tuple[int, int, _CachedPcm]] = []
         for pcm in snap:
             n = int(pcm.samples.shape[0])
@@ -355,59 +359,49 @@ class VideoAudioMixer:
             start = int(pcm.origin_frame)
             intervals.append((start, start + n, pcm))
         if not intervals:
-            return None
-        intervals.sort(key=lambda iv: iv[0])
+            return None, set()
         covering = [iv for iv in intervals if iv[0] <= int(source_frame) < iv[1]]
         if not covering:
-            return None
-        frontier = max(iv[1] for iv in covering)
-        used = {id(iv[2]) for iv in covering}
+            return None, set()
+        adj = _CONTIGUOUS_ADJACENCY_FRAMES
+        u_start = min(iv[0] for iv in covering)
+        u_end = max(iv[1] for iv in covering)
+        keys = {iv[2].key for iv in covering}
         changed = True
         while changed:
             changed = False
             for start, end, pcm in intervals:
-                if id(pcm) in used:
+                if pcm.key in keys:
                     continue
-                if start <= frontier + _CONTIGUOUS_ADJACENCY_FRAMES:
-                    used.add(id(pcm))
-                    if end > frontier:
-                        frontier = end
-                        changed = True
-        return int(frontier)
+                # True interval merge: must overlap/touch the current UNION,
+                # not merely start before the frontier tip.
+                if start <= u_end + adj and end + adj >= u_start:
+                    keys.add(pcm.key)
+                    if start < u_start:
+                        u_start = start
+                    if end > u_end:
+                        u_end = end
+                    changed = True
+        return int(u_end), keys
+
+    def _contiguous_frontier_frame(
+        self,
+        clip_id: str,
+        source_frame: int,
+        *,
+        windows: tuple[_CachedPcm, ...] | None = None,
+    ) -> int | None:
+        """Exclusive end frame of *published* PCM contiguous from ``source_frame``."""
+        frontier, _keys = self._contiguous_component(
+            clip_id, source_frame, windows=windows
+        )
+        return frontier
 
     def _contiguous_keys(
         self, clip_id: str, source_frame: int
     ) -> set[tuple]:
         """Keys of published windows on the contiguous chain from ``source_frame``."""
-        snap = self._rt_snapshot.get(clip_id) or ()
-        if not snap:
-            return set()
-        intervals: list[tuple[int, int, _CachedPcm]] = []
-        for pcm in snap:
-            n = int(pcm.samples.shape[0])
-            if n <= 0:
-                continue
-            start = int(pcm.origin_frame)
-            intervals.append((start, start + n, pcm))
-        intervals.sort(key=lambda iv: iv[0])
-        covering = [iv for iv in intervals if iv[0] <= int(source_frame) < iv[1]]
-        if not covering:
-            return set()
-        frontier = max(iv[1] for iv in covering)
-        keys = {iv[2].key for iv in covering}
-        used = {id(iv[2]) for iv in covering}
-        changed = True
-        while changed:
-            changed = False
-            for start, end, pcm in intervals:
-                if id(pcm) in used:
-                    continue
-                if start <= frontier + _CONTIGUOUS_ADJACENCY_FRAMES:
-                    used.add(id(pcm))
-                    keys.add(pcm.key)
-                    if end > frontier:
-                        frontier = end
-                        changed = True
+        _frontier, keys = self._contiguous_component(clip_id, source_frame)
         return keys
 
     def _note_coverage_diag(
@@ -738,6 +732,13 @@ class VideoAudioMixer:
                 self._publish_snapshot_locked()
                 cont_keys = self._contiguous_keys(clip_id, int(pin_frame))
             victim_key = None
+
+            def _mid(c: _CachedPcm) -> int:
+                return int(c.origin_frame) + int(c.samples.shape[0]) // 2
+
+            def _end(c: _CachedPcm) -> int:
+                return int(c.origin_frame) + int(c.samples.shape[0])
+
             # 1) Disjoint from contiguous chain, farthest from pin first.
             disjoint: list[tuple[tuple, _CachedPcm]] = [
                 (k, c)
@@ -746,17 +747,32 @@ class VideoAudioMixer:
             ]
             if disjoint and pin_frame is not None:
                 disjoint.sort(
-                    key=lambda kc: abs(
-                        int(kc[1].origin_frame) + int(kc[1].samples.shape[0]) // 2
-                        - int(pin_frame)
-                    ),
+                    key=lambda kc: abs(_mid(kc[1]) - int(pin_frame)),
                     reverse=True,
                 )
                 victim_key = disjoint[0][0]
             elif disjoint:
                 victim_key = disjoint[0][0]
+
+            # 2) Fully behind the playhead (even if wrongly kept): never drop
+            #    the covering window or anything still ahead of pin.
+            if victim_key is None and pin_frame is not None:
+                behind: list[tuple[tuple, _CachedPcm]] = []
+                for key, cand in windows.items():
+                    if key == pcm.key or key in cont_keys:
+                        # Contiguous-behind cells are still droppable once the
+                        # playhead has left them — free room for forward fill.
+                        if key in cont_keys and _end(cand) <= int(pin_frame):
+                            behind.append((key, cand))
+                        continue
+                    if _end(cand) <= int(pin_frame):
+                        behind.append((key, cand))
+                if behind:
+                    behind.sort(key=lambda kc: _end(kc[1]))  # oldest end first
+                    victim_key = behind[0][0]
+
             if victim_key is None:
-                # 2) Never evict the pinned covering window if possible.
+                # 3) Last resort: oldest non-covering, non-newest.
                 for key, cand in windows.items():
                     if key == pcm.key:
                         continue
@@ -771,6 +787,24 @@ class VideoAudioMixer:
                         break
             if victim_key is None:
                 break
+            # Never evict a window that still covers the pin if another victim exists.
+            if (
+                pin is not None
+                and victim_key in windows
+                and self._has_sample(windows[victim_key], float(pin))
+            ):
+                alt = None
+                for key, cand in windows.items():
+                    if key in (pcm.key, victim_key):
+                        continue
+                    if self._has_sample(cand, float(pin)):
+                        continue
+                    alt = key
+                    break
+                if alt is not None:
+                    victim_key = alt
+                else:
+                    break
             windows.pop(victim_key, None)
             perf_diag.count("video_audio.lru_eviction")
             self._record_event(

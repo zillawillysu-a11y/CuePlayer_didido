@@ -1,62 +1,62 @@
-# Sprint 8 follow-up — Video P0 PASS; Video Audio contiguous coverage
+# Sprint 8 — Video PASS; Audio contiguous-keys eviction hole (A)
 
-**Branch:** `cursor/sprint8-zoom-cue-video-state-028d`  
-**Base:** `cursor/sprint8-cached-timeline-poster-028d` (PR #239)  
-**PR:** #240  
-**Prior tip (Video Mark-jump PASS):** `e9a2a313db48cc92b82070eadb2d8c479f4a2e8a`  
-**Status:** Ready for Windows VIDEO AUDIO CONTIGUOUS COVERAGE validation  
-**(do not merge #239/#240; do not claim Audio P0 solved until Windows passes)**
+**Tip under test:** `7cb1bf1fd815e125f23ef8db5b7ee730526af58f`  
+**Follow-up tip:** (see latest commit on this branch)  
+**PR:** #240 — do not merge #239/#240; Audio P0 still open until Windows re-validates  
+**Video:** PASS — frozen (Mark-jump path not modified)
 
-Preserved (do not regress): Timeline visuals, Mark seek-jump Video path
-(`_canonical_seek`, discontinuous-seek floor reset, seek-jump stale protection,
-decode scheduling), AudioEngine sample clock, Mark/Cue semantics, Export, zoom.
+## Decision tree
 
-## Video P0 — PASS (Windows @ e9a2a31)
+**A applies:** `publish_late` 6→7, `steady_gap_fill_delta=16384`, `steady_gap_fill_samples=16384`.
 
-- Mark backward jump frames_at_250/500/1000ms = 5 / 11 / 22
-- engine_advance_at_1000ms ≈ 1.002 s; last-present age ≈ 7.9 ms
-- No `liveness_fail_single_frame`
+Not B-only: coverage was still missing at seams. Boundary deltas also exist
+(secondary), but late publish + gap_fill explain the cable-unplug clicks.
 
-**Freeze that Video path.** This change is Video Audio mixer scheduling only.
+## Totals (manual-dump @ 2026-08-06T13:54:30Z)
 
-## Remaining failure — Video Track Audio coverage gaps
+| Field | Value |
+|---|---|
+| steady_gap_fill_delta | 16384 (~0.34 s) |
+| steady_gap_fill_samples | 16384 |
+| cold_seek_gap_fill_delta | 14336 |
+| gap_fill | 30720 |
+| publish_late | 6 (7 after ui-profile) |
+| publish_lead_seconds (last) | 35.90 (healthy tail) |
+| publish_lead_ms | n=48 mean≈23119 max≈35925 |
+| contiguous_ahead_seconds | 46.29 (end-of-report; masks earlier holes) |
+| owner_switch | 26 |
+| callback deadline_miss | 0 |
+| callback exec mean/max | 0.265 ms / 32.5 ms |
+| PortAudio underflow/flags | 0 |
 
-Measured @ e9a2a31:
+## Timestamp correlation
 
-- `video_audio.gap_fill = 422360` samples (~8.8 s of zero-fill @ 48 kHz)
-- reject_nonfinite / reject_short = 0; PortAudio underflow/flags = 0
-- Event ring: decode starts at ~1704 / 1713 / 1722 (9 s cadence) **after**
-  gap_fill (~822 / ~4022 / ~4150 samples) — cable-unplug click = silence then
-  abrupt return on publish
+User MM:SS treated as **song time**; media ≈ song + 600 s (from scrub traces).
 
-### Root cause
+| User | Song | Media≈ | Ring evidence |
+|---|---|---|---|
+| 18:42–19:54 | 1122–1194 | 1722–1794 | Aged out of 80-deep ring (report taken later) |
+| 20:11 | 1211 | 1811 | `owner_switch` 1800→1809 + `boundary_delta` max_adj=0.273 @ media 1812 |
 
-`_coverage_end()` used **global max** window end. After seeks, a disjoint
-far-future cached window made `_maybe_prefetch()` believe ahead was healthy,
-so the next **contiguous** cell was requested only after the current window
-ended → measured gap-fill bursts.
+Later measured gap/late sequence (song ~1277 / 1352):
 
-### Fix
+1. Seek → late publish **1899** lead=**-7.45 s**
+2. Gap_fill @ media **1877** (~5×1024) → late publish **1872** lead=**-5.20 s** → switch 1800→1872
+3. Gap_fill @ media **1951.8–1952.0** (~9×1024) → late publish **1944** lead=**-8.03 s** → switch 1872→1944 (jumped a hole)
+4. `boundary_delta` @ 1956 (0.042) and 1983 (0.155)
 
-- Contiguous coverage frontier from the current source frame (integer samples)
-- Overlap / ≤1-sample adjacency extends the frontier; disjoint future ignored
-- In-flight suppresses duplicates but does **not** count as published coverage
-- Prefetch next quantized window while contiguous ahead &lt; 36 s (before seam)
-- `note_discontinuous_seek` on AudioEngine seek rebuilds local current+next
-- Evict disjoint far windows before current / contiguous forward chain
-- Off-RT PERF: frontier, ahead, request/publish mono, publish lead,
-  steady vs cold-seek gap_fill deltas
+`preserved_contiguous` listed holes **1845→1872 (27 s)** and **1917→1944 (27 s)** — 3×9 s grid.
 
-No crossfade to hide steady-state gaps. No AudioEngine timing change.
+## Root cause
 
-## Windows validation
+`_contiguous_keys` treated any window with `start <= frontier` as contiguous.
+Disjoint past islands polluted the protected set; eviction then dropped true
+forward 9 s cells → holes → gap_fill → publish_late → audible drop.
 
-A. Continuous VA ≥2–3 min, ≥10 heavy boundaries, no seeks — no cable clicks;
-   after warm-up `steady_gap_fill_delta` / `steady_gap_fill_samples` = 0;
-   every next window publishes before first required sample (`publish_lead_seconds` &gt; 0).
+## Fix (mixer only; Video untouched)
 
-B. Play → backward jump → ≥60 s continuous — no recurring 9 s gap.
+- Contiguous component = true interval-union merge (must overlap/touch the union)
+- Eviction prefers disjoint / fully-behind; never drops pin-covering window
+- Regression: keys exclude disjoint past; forward chain survives full cache
 
-C. Several Mark backward jumps — Video as responsive as e9a2a31.
-
-READY FOR WINDOWS VIDEO AUDIO CONTIGUOUS COVERAGE VALIDATION
+READY FOR WINDOWS VIDEO AUDIO CONTIGUOUS-KEYS / EVICTION HOLE VALIDATION
