@@ -44,6 +44,9 @@ _enabled: bool = _env_enabled()
 _lock = threading.Lock()
 _log_path: Path | None = _env_log_path()
 _announced_path = False
+# Bound raw span samples so high-rate ticks stay O(1) and memory-stable.
+# Expensive aggregation (mean/sum) happens only in snapshot()/report_text().
+_MAX_SPAN_SAMPLES = 4096
 
 
 @dataclass
@@ -128,11 +131,26 @@ def note(key: str, value: Any) -> None:
         _state.attrs[str(key)] = value
 
 
+def get_attr(key: str, default: Any = None) -> Any:
+    """O(1) attr read — safe on the position-tick path (no aggregation)."""
+    with _lock:
+        return _state.attrs.get(str(key), default)
+
+
+def _append_span_sample(name: str, elapsed_ms: float) -> None:
+    """Append one sample; drop oldest when the ring exceeds ``_MAX_SPAN_SAMPLES``."""
+    samples = _state.spans[name]
+    samples.append(float(elapsed_ms))
+    overflow = len(samples) - _MAX_SPAN_SAMPLES
+    if overflow > 0:
+        del samples[0:overflow]
+
+
 def record_ms(name: str, elapsed_ms: float) -> None:
     if not _enabled:
         return
     with _lock:
-        _state.spans[name].append(float(elapsed_ms))
+        _append_span_sample(name, elapsed_ms)
 
 
 @contextmanager
@@ -147,7 +165,7 @@ def span(name: str, **attrs: Any) -> Iterator[None]:
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         with _lock:
-            _state.spans[name].append(elapsed_ms)
+            _append_span_sample(name, elapsed_ms)
             if attrs:
                 for k, v in attrs.items():
                     _state.attrs[f"{name}.{k}"] = v
@@ -156,7 +174,11 @@ def span(name: str, **attrs: Any) -> Iterator[None]:
 
 
 def snapshot() -> dict[str, Any]:
-    """JSON-serializable summary of recorded spans / counters."""
+    """JSON-serializable summary of recorded spans / counters.
+
+    Expensive: walks all samples. Call only from Tools → Write Performance
+    Report / flush_report — never from the position-tick hot path.
+    """
     with _lock:
         span_summary: dict[str, Any] = {}
         for name, samples in sorted(_state.spans.items()):

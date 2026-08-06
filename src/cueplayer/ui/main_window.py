@@ -5139,7 +5139,12 @@ class MainWindow(QMainWindow):
             perf_diag.count("ui.position_fanout.calls")
 
     def _perf_note_position_tick(self, seconds: float, *, source: str) -> None:
-        """Prove the UI position path is alive (dump-time live check)."""
+        """Prove the UI position path is alive (dump-time live check).
+
+        Must stay O(1): notes + one bounded ``record_ms``. Never call
+        ``perf.snapshot()`` here — aggregating all samples on every tick was a
+        multi-second cProfile hotspot with CUEPLAYER_PERF enabled.
+        """
         if not perf_diag.is_enabled():
             return
         now = time.monotonic()
@@ -5148,11 +5153,7 @@ class MainWindow(QMainWindow):
         perf_diag.note("perf.position_tick_mono", now)
         # Reset baseline across PERF session / song-activate clears so a quiet
         # gap cannot produce multi-million-ms fake max intervals.
-        session = None
-        try:
-            session = perf_diag.snapshot().get("attrs", {}).get("perf.session_id")
-        except Exception:
-            session = None
+        session = perf_diag.get_attr("perf.session_id")
         if getattr(self, "_perf_session_id", None) != session:
             self._perf_session_id = session
             self._perf_tick_mono = None

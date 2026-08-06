@@ -1516,19 +1516,23 @@ class CueMonitorPanel(QWidget):
         px = self._clock_font_px
         font = self._mono_clock_font(px, bold=True)
         self.clock_label.setFont(font)
-        self.clock_label.setStyleSheet(
+        qss = (
             f"color: #e4e4e7; background: transparent; font-size: {px}px; font-weight: 700;"
             "font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        if getattr(self, "_clock_label_qss", None) != qss:
+            self._clock_label_qss = qss
+            self.clock_label.setStyleSheet(qss)
         self.clock_label.setMinimumHeight(QFontMetrics(font).height() + 4)
 
     def _apply_duration_label_style(self) -> None:
         px = self._duration_font_px
         font = self._mono_clock_font(px, bold=False)
         self.duration_label.setFont(font)
-        self.duration_label.setStyleSheet(
-            f"color: #a1a1aa; background: transparent; font-size: {px}px;"
-        )
+        qss = f"color: #a1a1aa; background: transparent; font-size: {px}px;"
+        if getattr(self, "_duration_label_qss", None) != qss:
+            self._duration_label_qss = qss
+            self.duration_label.setStyleSheet(qss)
         self.duration_label.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     @staticmethod
@@ -1564,10 +1568,13 @@ class CueMonitorPanel(QWidget):
         font = self._mono_clock_font(px, bold=True)
         self.tc_output_status.setFont(font)
         # No letter-spacing — tracking made narrow panels clip the last glyph.
-        self.tc_output_status.setStyleSheet(
+        qss = (
             f"color: {color}; background: transparent; font-size: {px}px;"
             "font-weight: 600; letter-spacing: 0;"
         )
+        if getattr(self, "_tc_status_qss", None) != qss:
+            self._tc_status_qss = qss
+            self.tc_output_status.setStyleSheet(qss)
         self.tc_output_status.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     def _apply_tc_value_style(self) -> None:
@@ -1575,14 +1582,21 @@ class CueMonitorPanel(QWidget):
         color = self._tc_value_color
         font = self._mono_clock_font(px, bold=True)
         self.tc_output_value.setFont(font)
-        self.tc_output_value.setStyleSheet(
+        qss = (
             f"color: {color}; background: transparent; font-size: {px}px;"
             "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        if getattr(self, "_tc_value_qss", None) != qss:
+            self._tc_value_qss = qss
+            self.tc_output_value.setStyleSheet(qss)
         self.tc_output_value.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     def _fit_clock_fonts(self) -> None:
-        """Shrink clock digits to fit when the right panel is narrow."""
+        """Shrink clock digits to fit when the right panel is narrow.
+
+        No-ops when geometry and computed fonts are unchanged so position-tick
+        TC refresh does not thrash ``setStyleSheet``.
+        """
         frame_w = self._clock_frame.width()
         if frame_w <= 1:
             return
@@ -1590,6 +1604,12 @@ class CueMonitorPanel(QWidget):
         # With TC + toggles visible, use tighter padding so the block stays compact
         # inside the scrollable column.
         dense = self._tc_output_block.isVisible() or self.output_quick_toggles.isVisible()
+        if dense:
+            margins = (6, 8, 6, 8)
+        elif frame_w < 280:
+            margins = (8, 12, 8, 12)
+        else:
+            margins = (12, 16, 12, 16)
         if layout is not None:
             if frame_w < 220 or dense:
                 layout.setContentsMargins(6, 8, 6, 8)
@@ -1646,7 +1666,29 @@ class CueMonitorPanel(QWidget):
                 min_px=_TC_STATUS_FONT_MIN_PX,
             )
             full_status = compact_status
-        self.tc_output_status.setText(full_status)
+        fit_key = (
+            frame_w,
+            budget,
+            margins,
+            clock_px,
+            duration_px,
+            tc_px,
+            status_px,
+            status_compact,
+            self._tc_value_color,
+            bool(self._tc_status_sending),
+            tuple(self._tc_status_outputs),
+            bool(self._tc_output_block.isVisible()),
+            bool(self.output_quick_toggles.isVisible()),
+        )
+        if getattr(self, "_clock_fit_key", None) == fit_key:
+            # Still refresh status text when compact mode chose a different label.
+            if self.tc_output_status.text() != full_status:
+                self.tc_output_status.setText(full_status)
+            return
+        self._clock_fit_key = fit_key
+        if self.tc_output_status.text() != full_status:
+            self.tc_output_status.setText(full_status)
         if self._tc_status_outputs:
             self.tc_output_status.setToolTip(" · ".join(self._tc_status_outputs))
         else:
@@ -2203,19 +2245,39 @@ class CueMonitorPanel(QWidget):
         if not self._show_output_tc_clock:
             return
         outs = tuple(outputs)
+        sending_b = bool(sending)
+        tc_text = str(timecode)
+        value_color = (
+            (self._tc_clock_color if sending_b else "#a1a1aa") if outs else "#52525b"
+        )
+        present_key = (tc_text, outs, sending_b, self._tc_clock_color, value_color)
+        if getattr(self, "_output_tc_present_key", None) == present_key:
+            return
+        prev = getattr(self, "_output_tc_present_key", None)
+        self._output_tc_present_key = present_key
         self._tc_status_outputs = outs
-        self._tc_status_sending = bool(sending)
+        self._tc_status_sending = sending_b
+        self._tc_value_color = value_color
         if outs:
-            self.tc_output_status.setText(self._format_tc_status_text(compact=False))
-            self.tc_output_value.setText(timecode)
-            self._tc_value_color = self._tc_clock_color if sending else "#a1a1aa"
+            status_text = self._format_tc_status_text(compact=False)
+            if self.tc_output_status.text() != status_text:
+                self.tc_output_status.setText(status_text)
+            if self.tc_output_value.text() != tc_text:
+                self.tc_output_value.setText(tc_text)
         else:
-            self.tc_output_status.setText("TC off")
-            self.tc_output_value.setText("—")
-            self._tc_value_color = "#52525b"
+            if self.tc_output_status.text() != "TC off":
+                self.tc_output_status.setText("TC off")
+            if self.tc_output_value.text() != "—":
+                self.tc_output_value.setText("—")
         self._apply_tc_status_style()
         self._apply_tc_value_style()
-        self._fit_clock_fonts()
+        # Refit only when layout-affecting fields change (not every SMPTE tick).
+        layout_key = (outs, sending_b, self._tc_clock_color)
+        prev_layout = None
+        if isinstance(prev, tuple) and len(prev) >= 4:
+            prev_layout = (prev[1], prev[2], prev[3])
+        if prev_layout != layout_key:
+            self._fit_clock_fonts()
 
     def _apply_output_timecode_style(self) -> None:
         self._tc_output_block.setVisible(self._show_output_tc_clock)
