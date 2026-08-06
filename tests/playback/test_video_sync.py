@@ -2167,7 +2167,10 @@ def test_resume_timeout_triggers_recovery(
     app: QApplication, red_clip_path: Path
 ) -> None:
     from cueplayer.diagnostics import perf as perf_diag
-    from cueplayer.playback.video_sync import VideoPipelineState
+    from cueplayer.playback.video_sync import (
+        PlaybackDecoderHandoff,
+        VideoPipelineState,
+    )
 
     song = Song.create("Song")
     song.add_video_clip(
@@ -2197,12 +2200,35 @@ def test_resume_timeout_triggers_recovery(
         controller._enter_resume_playback()
         assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
         controller._on_resume_watchdog()
+        # Second timeout must NOT false-complete — stay in RESUME until a frame.
         controller._on_resume_watchdog()
-    snap = perf_diag.snapshot()["counters"]
-    assert snap.get("video.scrub.resume_timeout", 0) >= 1
-    assert snap.get("video.scrub.resume_recovery_started", 0) >= 1
-    assert snap.get("video.scrub.resume_recovered", 0) >= 1
-    assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+        assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
+        assert (
+            controller._playback_handoff
+            == PlaybackDecoderHandoff.PLAYBACK_DECODER_PREPARING
+        )
+        snap = perf_diag.snapshot()["counters"]
+        assert snap.get("video.scrub.resume_timeout", 0) >= 2
+        assert snap.get("video.scrub.resume_recovery_started", 0) == 1
+        assert snap.get("video.scrub.resume_recovery_completed", 0) == 0
+        assert snap.get("video.scrub.resume_complete_rejected", 0) == 0
+        # Current-generation playback frame completes recovery.
+        controller._async_req_gen += 1
+        gen = controller._async_req_gen
+        controller._last_position_seconds = 0.45
+        controller._on_async_frame_ready(
+            gen,
+            0.45,
+            np.full((8, 8, 3), 77, dtype=np.uint8),
+            "play",
+            "",
+            -1,
+        )
+        assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+        snap2 = perf_diag.snapshot()["counters"]
+        assert snap2.get("video.scrub.resume_recovery_started", 0) == 1
+        assert snap2.get("video.scrub.resume_recovery_completed", 0) == 1
+        assert snap2.get("video.scrub.resume_recovered", 0) == 1
     controller._resume_watchdog.stop()
     controller._async_inflight = False
     perf_diag.set_enabled(False)
