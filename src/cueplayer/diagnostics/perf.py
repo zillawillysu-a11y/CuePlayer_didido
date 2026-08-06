@@ -392,10 +392,23 @@ def report_text() -> str:
         lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     for name in (
         "video.activation_poster.source",
+        "video.preview_state",
         "timeline.mark_backdrop.last_static_shape_count",
         "timeline.mark_backdrop.last_overlay_shape_count",
+        "timeline.zoom.annotation_sprite_count",
     ):
         lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
+    for name in (
+        "cue_list.mark_id_at_row.calls",
+        "cue_list.position_sync_ms",
+    ):
+        if name.endswith("_ms") and name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     lines.append("")
     lines.append(
         f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"

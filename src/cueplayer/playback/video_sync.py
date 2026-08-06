@@ -143,6 +143,16 @@ class DisplaySource:
     POSTER = "poster"
     INTENTIONAL_GAP = "intentional_gap"
     EMPTY_WIDGET = "empty_widget"
+    LOADING = "loading"
+
+
+class PreviewVideoState:
+    """User-visible Preview state (distinct from DisplaySource telemetry)."""
+
+    NO_VIDEO_FOR_SONG = "NO_VIDEO_FOR_SONG"
+    VIDEO_TIMELINE_GAP = "VIDEO_TIMELINE_GAP"
+    VALID_VIDEO_TARGET_PENDING = "VALID_VIDEO_TARGET_PENDING"
+    VALID_VIDEO_FRAME = "VALID_VIDEO_FRAME"
 
 
 class ReleaseTargetKind:
@@ -269,8 +279,10 @@ class VideoSyncController(QObject):
         self._worker_idle_since_mono: float | None = None
         self._playback_handoff = PlaybackDecoderHandoff.IDLE
         self._display_source = DisplaySource.EMPTY_WIDGET
+        self._preview_video_state = PreviewVideoState.NO_VIDEO_FOR_SONG
         self._song_activate_mono: float | None = None
         self._empty_widget_since_mono: float | None = None
+        self._first_valid_frame_recorded_for_session = False
         self._seek_after_mono: float | None = None
         self._play_seek_recovery_attempted = False
         self._scrub_land_pending = False
@@ -299,6 +311,8 @@ class VideoSyncController(QObject):
         self._last_valid_frame: np.ndarray | None = None
         self._last_valid_frame_mono = 0.0
         self._last_valid_frame_song_seconds: float | None = None
+        self._last_valid_frame_clip_id: str | None = None
+        self._last_valid_frame_session: int = -1
         self._resume_started_mono = 0.0
         self._resume_first_engine_noted = False
         self._release_target: ReleaseTarget | None = None
@@ -764,11 +778,13 @@ class VideoSyncController(QObject):
             )
             return src
 
-        # Gap / out-of-range / missing: keep last valid frame (no black flash).
+        # Gap / out-of-range / missing: intentional blank (not Loading / not stale other-clip).
         if not target.is_valid:
-            if self._last_valid_frame is not None:
+            if target.kind == ReleaseTargetKind.TIMELINE_GAP:
+                self._present_timeline_gap(reason="release_timeline_gap")
+                return _note_relevant("intentional_gap")
+            if self._same_session_last_valid(target.clip_id):
                 return _note_relevant("gap_keep_last")
-            # No prior frame — intentional empty only when nothing was ever shown.
             self._emit_frame(None, allow_clear=True, reason=f"intentional:{target.kind}")
             return _note_relevant("intentional_gap")
 
@@ -1112,6 +1128,8 @@ class VideoSyncController(QObject):
         prev = self._display_source
         self._display_source = str(source)
         perf_diag.note("video.display_source", self._display_source)
+        # Only true empty-widget exposure counts toward empty_widget_visible_ms.
+        # NO_VIDEO / TIMELINE_GAP use INTENTIONAL_GAP and must not pollute this.
         if source == DisplaySource.EMPTY_WIDGET:
             if self._empty_widget_since_mono is None:
                 self._empty_widget_since_mono = monotonic()
@@ -1120,17 +1138,64 @@ class VideoSyncController(QObject):
                 age = (monotonic() - self._empty_widget_since_mono) * 1000.0
                 perf_diag.record_ms("video.empty_widget_visible_ms", age)
                 self._empty_widget_since_mono = None
-            if prev == DisplaySource.EMPTY_WIDGET and self._song_activate_mono:
-                perf_diag.record_ms(
-                    "video.first_valid_frame_after_song_activate_ms",
-                    (monotonic() - self._song_activate_mono) * 1000.0,
-                )
-            if self._seek_after_mono is not None:
-                perf_diag.record_ms(
-                    "video.first_valid_frame_after_seek_ms",
-                    (monotonic() - self._seek_after_mono) * 1000.0,
-                )
-                self._seek_after_mono = None
+
+    def _record_first_valid_frame_metrics(self) -> None:
+        """first_valid_frame_* only for a real decoded frame of this session."""
+        if (
+            not self._first_valid_frame_recorded_for_session
+            and self._song_activate_mono is not None
+        ):
+            perf_diag.record_ms(
+                "video.first_valid_frame_after_song_activate_ms",
+                (monotonic() - self._song_activate_mono) * 1000.0,
+            )
+            self._first_valid_frame_recorded_for_session = True
+        if self._seek_after_mono is not None:
+            perf_diag.record_ms(
+                "video.first_valid_frame_after_seek_ms",
+                (monotonic() - self._seek_after_mono) * 1000.0,
+            )
+            self._seek_after_mono = None
+
+    def _set_preview_video_state(self, state: str) -> None:
+        self._preview_video_state = str(state)
+        perf_diag.note("video.preview_state", self._preview_video_state)
+
+    def _song_has_visible_video(self, song: Song | None) -> bool:
+        if song is None:
+            return False
+        return any(not c.hidden for c in song.video_clips)
+
+    def _same_session_last_valid(self, clip_id: str | None) -> bool:
+        """last_valid may only reuse a frame from the same clip + media session."""
+        if not self._is_valid_frame_array(self._last_valid_frame):
+            return False
+        if int(self._last_valid_frame_session) != int(self._media_session_gen):
+            return False
+        if not clip_id or not self._last_valid_frame_clip_id:
+            return False
+        return str(self._last_valid_frame_clip_id) == str(clip_id)
+
+    def _clear_last_valid_frame(self) -> None:
+        self._last_valid_frame = None
+        self._last_valid_frame_mono = 0.0
+        self._last_valid_frame_song_seconds = None
+        self._last_valid_frame_clip_id = None
+        self._last_valid_frame_session = -1
+
+    def _present_no_video_state(self) -> None:
+        """NO_VIDEO_FOR_SONG — neutral Preview, never Loading Video."""
+        self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+        self.activation_loading.emit("")
+        self._emit_frame(None, allow_clear=True, reason="no_video_for_song")
+        self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+
+    def _present_timeline_gap(self, *, reason: str = "timeline_gap") -> None:
+        """VIDEO_TIMELINE_GAP — intentional blank; no Loading / no early poster."""
+        self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+        self.activation_loading.emit("")
+        self._emit_frame(None, allow_clear=True, reason=f"intentional:{reason}")
+        self._note_display_source(DisplaySource.INTENTIONAL_GAP)
 
     def _complete_final_land(self, seconds: float, frame: np.ndarray) -> None:
         """Exact land presented → establish decoder position → resume or pause."""
@@ -1228,6 +1293,9 @@ class VideoSyncController(QObject):
         pos = self._last_position_seconds
         if song is None or pos is None:
             return
+        if not self._song_has_visible_video(song):
+            self._present_no_video_state()
+            return
         self._invalidate_async_requests()
         self._flush_timer.stop()
         self._pending_clip = None
@@ -1237,9 +1305,11 @@ class VideoSyncController(QObject):
         self._maybe_warn_overlap(song, float(pos))
         primary = song.active_video_clip_at(float(pos))
         self._set_active(primary.id if primary else None)
-        # Immediate non-empty Preview, then async land — never block UI ~6s
-        # on a full GOP decode-forward for activation.
+        # Immediate Preview state, then async land when a valid target exists.
         self._present_activation_preview(song, float(pos))
+        if primary is None:
+            # Timeline gap — do not schedule a decode for a non-target.
+            return
         self._request_async_live_frame(
             float(pos),
             kind="land",
@@ -1249,8 +1319,26 @@ class VideoSyncController(QObject):
         )
 
     def _present_activation_preview(self, song: Song, seconds: float) -> None:
-        """Poster / keep-last / loading slate before normal decoder first frame."""
+        """Poster / keep-last / loading only for a valid active Video target."""
         t0 = monotonic()
+        if not self._song_has_visible_video(song):
+            self._present_no_video_state()
+            perf_diag.note("video.activation_poster.source", "no_video_for_song")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+        primary = song.active_video_clip_at(float(seconds))
+        if primary is None:
+            # Song has Video, but Song Time maps to a timeline gap.
+            self._present_timeline_gap(reason="activation_gap")
+            perf_diag.note("video.activation_poster.source", "timeline_gap")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_TARGET_PENDING)
         poster = self._scrub_composite(song, float(seconds))
         if self._is_valid_frame_array(poster):
             assert isinstance(poster, np.ndarray)
@@ -1279,8 +1367,7 @@ class VideoSyncController(QObject):
                 "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
             )
             return
-        if self._is_valid_frame_array(self._last_valid_frame):
-            # Same process last frame — only keep if we already noted LAST_VALID.
+        if self._same_session_last_valid(primary.id):
             self._note_display_source(DisplaySource.LAST_VALID)
             perf_diag.note("video.activation_poster.source", "last_valid")
             perf_diag.record_ms(
@@ -1288,7 +1375,7 @@ class VideoSyncController(QObject):
             )
             self.activation_loading.emit("Loading video…")
             return
-        # Intentional non-empty loading placeholder — never empty/null widget.
+        # Intentional loading placeholder — only for a valid pending target.
         self._emit_loading_placeholder()
         perf_diag.note("video.activation_poster.source", "loading_placeholder")
         perf_diag.record_ms(
@@ -1297,10 +1384,11 @@ class VideoSyncController(QObject):
 
     def _emit_loading_placeholder(self) -> None:
         """Emit a tiny dark slate so Preview is never an empty/null widget."""
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_TARGET_PENDING)
         slate = np.zeros((9, 16, 3), dtype=np.uint8)
         slate[:, :] = (24, 24, 27)
         self._emit_frame(slate, reason="activate_poster")
-        self._note_display_source(DisplaySource.POSTER)
+        self._note_display_source(DisplaySource.LOADING)
         self.activation_loading.emit("Loading video…")
 
     def set_playing(self, active: bool) -> None:
@@ -1359,40 +1447,34 @@ class VideoSyncController(QObject):
         self._warned_overlap_keys.clear()
         self._set_active(None)
         self._play_seek_recovery_attempted = False
-        has_video = bool(
-            song is not None
-            and any(not c.hidden for c in song.video_clips)
-        )
+        self._first_valid_frame_recorded_for_session = False
+        # Always drop cross-song / cross-session last frame.
+        self._clear_last_valid_frame()
+        self._last_emitted_frame = _UNSET
+        has_video = self._song_has_visible_video(song)
         if song is None or not has_video:
-            # Intentional clear only when there is truly no video media.
-            self._last_valid_frame = None
-            self._last_valid_frame_mono = 0.0
-            self._last_valid_frame_song_seconds = None
-            self._last_emitted_frame = _UNSET
             self._song_activate_mono = None
-            self._emit_frame(
-                None,
-                allow_clear=True,
-                reason="song_switch" if song is None else "no_video_clips",
-            )
-            self._note_display_source(
-                DisplaySource.EMPTY_WIDGET
-                if song is None
-                else DisplaySource.INTENTIONAL_GAP
-            )
+            if song is None:
+                self.activation_loading.emit("")
+                self._emit_frame(None, allow_clear=True, reason="song_switch")
+                self._note_display_source(DisplaySource.EMPTY_WIDGET)
+                self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+            else:
+                self._present_no_video_state()
         else:
             # Never expose empty black while waiting for the playback decoder.
             self._song_activate_mono = monotonic()
             self._last_position_seconds = 0.0
-            # Clear cross-song last frame so we do not flash the previous Song.
-            self._last_valid_frame = None
-            self._last_valid_frame_mono = 0.0
-            self._last_valid_frame_song_seconds = None
-            self._last_emitted_frame = _UNSET
             if self._video_output_active:
+                # Gate on active clip at t=0 — gap songs must not show Loading.
                 self._present_activation_preview(song, 0.0)
             else:
                 self._note_display_source(DisplaySource.EMPTY_WIDGET)
+                self._set_preview_video_state(
+                    PreviewVideoState.VIDEO_TIMELINE_GAP
+                    if song.active_video_clip_at(0.0) is None
+                    else PreviewVideoState.VALID_VIDEO_TARGET_PENDING
+                )
             # First accurate frame follows via land_frame_at / ensure_video_preview.
         # Do not preload scrub ladders here — song switch + Clean Output used
         # to start a PyAV storm that blocked live decode via av_path_lock.
@@ -1491,8 +1573,11 @@ class VideoSyncController(QObject):
             ):
                 perf_diag.count("video.empty_decode.reason.timeline_gap")
                 return
-            # Playback into a gap: intentional no-media (allow clear).
-            self._emit_frame(None, allow_clear=True, reason="timeline_gap_playback")
+            # Playback into a gap: intentional blank (not Loading Video).
+            if not self._song_has_visible_video(song):
+                self._present_no_video_state()
+            else:
+                self._present_timeline_gap(reason="timeline_gap_playback")
             return
 
         primary = song.active_video_clip_at(seconds)
@@ -2602,6 +2687,9 @@ class VideoSyncController(QObject):
                 # request-start here — still useful for dense-mark A/B.
                 perf_diag.record_ms("video.present.queue_delay_ms", ready_ms)
             self._note_display_source(DisplaySource.PLAYBACK_FRAME)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
             self._play_seek_recovery_attempted = False
             is_first = sm_trace.consume_first_play_pending()
             event = "FIRST_PLAY_FRAME" if is_first else "PLAY_PRESENT"
@@ -2638,6 +2726,9 @@ class VideoSyncController(QObject):
         self._last_scrub_preview_seconds = float(seconds)
         self._last_presented_song_seconds = float(seconds)
         self._note_display_source(DisplaySource.SCRUB_FRAME)
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+        self._record_first_valid_frame_metrics()
+        self.activation_loading.emit("")
         perf_diag.count("video.scrub.preview_presented")
         self._scrub_preview_presented += 1
         self._sm_trace(
@@ -2811,11 +2902,20 @@ class VideoSyncController(QObject):
             perf_diag.count("video.emit.calls")
             if allow_clear:
                 perf_diag.note("video.preview_cleared.reason", reason or "intentional")
-                self._note_display_source(
-                    DisplaySource.INTENTIONAL_GAP
-                    if reason and "gap" in reason
-                    else DisplaySource.EMPTY_WIDGET
-                )
+                if reason in ("no_video_for_song", "no_video_clips") or (
+                    reason and "no_video" in reason
+                ):
+                    self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+                    self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+                elif reason and (
+                    "gap" in reason
+                    or "TIMELINE_GAP" in reason
+                    or "intentional" in reason
+                ):
+                    self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+                    self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+                else:
+                    self._note_display_source(DisplaySource.EMPTY_WIDGET)
             self.frame_changed.emit(None)
             return
         if not self._is_valid_frame_array(frame):
@@ -2825,22 +2925,41 @@ class VideoSyncController(QObject):
         if frame is self._last_emitted_frame:
             return
         self._last_emitted_frame = frame
-        self._last_valid_frame = frame
-        self._last_valid_frame_mono = monotonic()
-        if self._last_position_seconds is not None:
-            self._last_valid_frame_song_seconds = float(self._last_position_seconds)
+        is_tiny_slate = frame.shape[0] <= 16 and frame.shape[1] <= 32
+        if not is_tiny_slate and self._active_clip_id:
+            self._last_valid_frame = frame
+            self._last_valid_frame_mono = monotonic()
+            if self._last_position_seconds is not None:
+                self._last_valid_frame_song_seconds = float(self._last_position_seconds)
+            self._last_valid_frame_clip_id = str(self._active_clip_id)
+            self._last_valid_frame_session = int(self._media_session_gen)
         perf_diag.count("video.emit.calls")
         if reason in ("seek_poster", "activate_poster"):
-            self._note_display_source(DisplaySource.POSTER)
+            if not is_tiny_slate:
+                self._note_display_source(DisplaySource.POSTER)
+                self._set_preview_video_state(
+                    PreviewVideoState.VALID_VIDEO_TARGET_PENDING
+                )
+            # Tiny loading slate: caller sets DisplaySource.LOADING.
         elif reason == "final_land":
             self._note_display_source(DisplaySource.FINAL_LAND)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
         elif reason.startswith("intentional"):
             self._note_display_source(DisplaySource.INTENTIONAL_GAP)
-        elif self._display_source in (
+            self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+        elif not is_tiny_slate and self._display_source in (
             DisplaySource.EMPTY_WIDGET,
             DisplaySource.INTENTIONAL_GAP,
+            DisplaySource.LOADING,
+            DisplaySource.POSTER,
+            DisplaySource.LAST_VALID,
         ):
-            self._note_display_source(DisplaySource.LAST_VALID)
+            self._note_display_source(DisplaySource.PLAYBACK_FRAME)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
         self.frame_changed.emit(frame)
 
     def _flush_pending(self) -> None:

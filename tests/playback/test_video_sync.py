@@ -575,7 +575,7 @@ def test_land_frame_after_set_song_while_already_active(
 
     # Mimic activate: keep last valid frame (no empty black), output stays active.
     controller.set_song(song)
-    assert None not in frames
+    assert not any(f is None for f in frames)
     controller.set_video_output_active(True)  # no-op — early return
 
     before = len(frames)

@@ -2255,10 +2255,14 @@ class MainWindow(QMainWindow):
                 perf_diag.record_ms("video.present_delayed_by_timeline_ms", delay_ms)
 
     def _on_video_activation_loading(self, text: str) -> None:
-        """Intentional non-empty Preview while activation poster is cold."""
+        """Show Loading only while a valid Video target is pending; clear otherwise."""
         preview = getattr(self, "video_preview", None)
-        if preview is not None and hasattr(preview, "set_loading"):
-            preview.set_loading(True, text or "Loading video…")
+        if preview is None or not hasattr(preview, "set_loading"):
+            return
+        if text:
+            preview.set_loading(True, text)
+        else:
+            preview.set_loading(False)
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""

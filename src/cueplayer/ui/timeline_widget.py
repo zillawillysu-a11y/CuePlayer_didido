@@ -239,19 +239,25 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_pps = 0.0
         self._scrub_backdrop_size = QSize()
         self._scrub_backdrop_overscan = 0
+        # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
+        # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
+        self._spatial_backdrop: QPixmap | None = None
+        self._mark_annotation_sprites: list[dict] = []
         # When rebuilding a wide play-cache, paint as if the widget were wider.
         self._paint_width_override: int | None = None
         # Marks are baked into the static backdrop; live paint only overlays
         # selection / hover / drag (PART A — stop 7–24 ms mark.paint per tick).
         self._mark_backdrop_revision = 0
         self._mark_backdrop_baked_revision = -1
-        # Rapid zoom/pan: scale cached backdrop; coalesce expensive rebuilds.
+        # Rapid zoom/pan: scale spatial backdrop; coalesce expensive rebuilds.
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = 0
         self._view_transform_last_view_changed_ns = 0
         self._view_transform_view_changed_interval_ns = 66_000_000
-        self._view_transform_debounce_ms = 64
+        # 140 ms: fewer final rebuilds during continuous wheel gestures (~64 ms
+        # produced ~103 rebuilds / 10 s on Windows).
+        self._view_transform_debounce_ms = 140
         self._zoom_quality_timer = QTimer(self)
         self._zoom_quality_timer.setSingleShot(True)
         self._zoom_quality_timer.setInterval(self._view_transform_debounce_ms)
@@ -1882,12 +1888,16 @@ class TimelineWidget(QWidget):
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = monotonic_ns()
         with perf_diag.span("timeline.zoom.repaint_dispatch_ms"):
-            self._invalidate_scrub_backdrop(reason="zoom_idle")
+            # Atomic rebuild: never clear the live cache before the replacement
+            # is ready (blank flash between scaled preview and final bake).
             if self.width() > 0 and self.height() > 0:
                 self._rebuild_scrub_backdrop(reason="zoom_idle")
+            else:
+                self._invalidate_scrub_backdrop(reason="zoom_idle_empty")
+            # Timeline-only repaint — do not force a main-window/global update.
             self.update()
-            self.view_changed.emit()
-            perf_diag.count("timeline.view_changed.calls")
+            # Overview can wait for the next throttled emit; avoid flash cascades.
+            self._emit_view_changed_throttled()
             perf_diag.count("timeline.zoom.final_rebuilds")
 
     def _emit_view_changed_throttled(self) -> None:
@@ -2265,6 +2275,8 @@ class TimelineWidget(QWidget):
 
     def _invalidate_scrub_backdrop(self, reason: str = "generic") -> None:
         self._scrub_backdrop = None
+        self._spatial_backdrop = None
+        self._mark_annotation_sprites = []
         self._scrub_backdrop_overscan = 0
         self._mark_backdrop_baked_revision = -1
         # Backdrop drop usually means scroll/zoom/content changed — don't keep a
@@ -2376,9 +2388,16 @@ class TimelineWidget(QWidget):
         return True
 
     def _blit_zoom_preview(self, painter: QPainter) -> bool:
-        """Temporary scaled backdrop while zoom/pan is coalescing."""
-        pm = self._scrub_backdrop
-        if pm is None or pm.isNull():
+        """Temporary zoom preview: scale spatial layers; keep annotations fixed-size.
+
+        Waveform / grid / clips scale with the time transform. Cue Notes, seconds
+        text, and marker glyphs keep constant pixel/font size and only move in X.
+        """
+        spatial = self._spatial_backdrop
+        if spatial is None or spatial.isNull():
+            # Fallback: old full backdrop (may scale text — last resort only).
+            spatial = self._scrub_backdrop
+        if spatial is None or spatial.isNull():
             return False
         old_pps = float(self._scrub_backdrop_pps)
         if old_pps <= 1e-9:
@@ -2390,17 +2409,17 @@ class TimelineWidget(QWidget):
         if w <= 0 or h <= 0:
             return False
         painter.fillRect(0, 0, w, h, QColor(BG_APP))
-        dpr = max(1.0, float(pm.devicePixelRatio()))
+        dpr = max(1.0, float(spatial.devicePixelRatio()))
 
         def _dev(logical: float) -> int:
             return int(round(float(logical) * dpr))
 
-        header_blit_w = min(hw, w, int(pm.width() / dpr) if dpr else pm.width())
+        header_blit_w = min(hw, w, int(spatial.width() / dpr) if dpr else spatial.width())
         if header_blit_w > 0:
             painter.save()
             painter.setClipRect(0, 0, header_blit_w, h)
             painter.drawPixmap(
-                0, 0, header_blit_w, h, pm, 0, 0, _dev(header_blit_w), _dev(h)
+                0, 0, header_blit_w, h, spatial, 0, 0, _dev(header_blit_w), _dev(h)
             )
             painter.restore()
         if content_w <= 0:
@@ -2415,15 +2434,50 @@ class TimelineWidget(QWidget):
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
-            hw, 0, content_w, h, pm, _dev(src_left), 0, _dev(src_w), _dev(h)
+            hw, 0, content_w, h, spatial, _dev(src_left), 0, _dev(src_w), _dev(h)
         )
         painter.restore()
+        # Screen-space annotations (constant pixel size) on top of scaled spatial.
+        self._paint_zoom_screen_annotations(painter)
         return True
 
+    def _paint_zoom_screen_annotations(self, painter: QPainter) -> None:
+        """Fixed-size ruler labels + cached Mark glyphs during zoom preview."""
+        self._paint_ruler_labels(painter)
+        sprites = self._mark_annotation_sprites
+        if not sprites:
+            return
+        right = float(self.width())
+        hw = float(self._header_width)
+        tracks_top = self._tracks_top_y()
+        for sprite in sprites:
+            t = float(sprite["time_seconds"])
+            x = self._x_for_time(t)
+            if x < hw - 4.0 or x > right + 4.0:
+                continue
+            color = QColor(sprite["color"])
+            # Waveform stem — 1 px screen-space (do not inherit scaled thickness).
+            painter.setPen(self._mark_overlay_pen(color))
+            painter.drawLine(
+                QPointF(x, self._ruler_height), QPointF(x, tracks_top)
+            )
+            pm: QPixmap = sprite["pixmap"]
+            if pm is None or pm.isNull():
+                continue
+            hotspot_x = float(sprite["hotspot_x"])
+            y = float(sprite["y"])
+            painter.drawPixmap(int(round(x - hotspot_x)), int(round(y)), pm)
+
     def _rebuild_scrub_backdrop(self, reason: str = "rebuild") -> None:
-        """Rasterize static timeline layers once (waveform + Marks + lanes)."""
+        """Rasterize static timeline layers once (waveform + Marks + lanes).
+
+        Builds spatial + full caches off-screen, then swaps atomically so zoom
+        preview never exposes a blank/invalid cache mid-gesture.
+        """
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
+            self._spatial_backdrop = None
+            self._mark_annotation_sprites = []
             self._scrub_backdrop_overscan = 0
             return
         t0 = monotonic_ns()
@@ -2436,21 +2490,48 @@ class TimelineWidget(QWidget):
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
         self._paint_width_override = paint_w
+        spatial_pm: QPixmap | None = None
+        full_pm: QPixmap | None = None
+        sprites: list[dict] = []
         try:
             dpr = max(1.0, float(self.devicePixelRatioF()))
-            pm = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
-            pm.setDevicePixelRatio(dpr)
-            pm.fill(QColor(BG_APP))
-            painter = QPainter(pm)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-            painter.setFont(self.font())
+            # 1) Spatial layers only (scalable during zoom).
+            spatial_pm = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
+            spatial_pm.setDevicePixelRatio(dpr)
+            spatial_pm.fill(QColor(BG_APP))
+            sp = QPainter(spatial_pm)
+            sp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            sp.setFont(self.font())
             with perf_diag.span("timeline.mark_backdrop.rebuild_ms"):
-                self._paint_static_layers(painter)
-            painter.end()
+                self._paint_static_layers(
+                    sp, include_marks=False, include_ruler_labels=False
+                )
+            sp.end()
+
+            # 2) Full bake = spatial copy + marks/labels (play/scrub when PPS matches).
+            full_pm = QPixmap(spatial_pm)
+            fp = QPainter(full_pm)
+            fp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            fp.setFont(self.font())
+            tracks_top = self._tracks_top_y()
+            self._paint_ruler_labels(fp)
+            self._paint_marks(
+                fp,
+                start_y=tracks_top,
+                waveform_lines=True,
+                lane_shapes=True,
+                mode="static",
+            )
+            # Headers were already in spatial; marks draw on top of content.
+            sprites = self._bake_mark_annotation_sprites()
+            fp.end()
         finally:
             self._scroll_x = saved_scroll
             self._paint_width_override = None
-        self._scrub_backdrop = pm
+        # Atomic swap — keep prior caches until replacements are complete.
+        self._scrub_backdrop = full_pm
+        self._spatial_backdrop = spatial_pm
+        self._mark_annotation_sprites = sprites
         self._scrub_backdrop_scroll = saved_scroll
         self._scrub_backdrop_pps = self._pixels_per_second
         self._scrub_backdrop_size = QSize(self.size())
@@ -2461,6 +2542,112 @@ class TimelineWidget(QWidget):
             perf_diag.record_ms("ui.event_loop_long_task_ms", elapsed)
         if perf_diag.is_enabled():
             perf_diag.count(f"timeline.mark_backdrop.rebuild_reason.{reason}")
+            perf_diag.note(
+                "timeline.zoom.annotation_sprite_count", len(sprites)
+            )
+
+    def _bake_mark_annotation_sprites(self) -> list[dict]:
+        """Fixed-size Mark glyph/text pixmaps for zoom preview (positions move, size does not)."""
+        if self._song is None:
+            return []
+        lane_y = {lane_index: y0 for lane_index, y0, _y1 in self._lane_rects()}
+        right = self._paint_right()
+        t_lo = self._time_for_x(float(self._header_width)) - 0.25
+        t_hi = self._time_for_x(float(right)) + 0.25
+        visible = self._song.mark_slice_in_time_range(t_lo, t_hi)
+        out: list[dict] = []
+        for mark in visible:
+            lane = self._song.lane_by_index(mark.lane_index)
+            if lane is not None and not lane.visible:
+                continue
+            y0 = lane_y.get(mark.lane_index)
+            if y0 is None:
+                continue
+            color = QColor(lane.color if lane else "#ffffff")
+            shape = lane.marker_shape if lane is not None else "circle"
+            size = max(5.0, self._lane_height * 0.28)
+            # Text block to the right of the marker (Cue Note / Cue ID).
+            cue_text = ""
+            note_text = ""
+            if lane is not None:
+                show_cue = bool(getattr(lane, "show_cue_id_on_wave", False))
+                show_note = bool(getattr(lane, "show_note_on_wave", False))
+                if show_cue and bool(getattr(lane, "cue_id_enabled", False)):
+                    cue_text = (mark.main_cue_id or "").strip()
+                if show_note:
+                    note_text = (mark.display_name or "").strip()
+            font = QFont(self.font())
+            font.setBold(True)
+            font.setPointSize(int(self._wave_label_font_px))
+            fm_probe = QPixmap(1, 1)
+            fm_probe.fill(Qt.GlobalColor.transparent)
+            probe = QPainter(fm_probe)
+            probe.setFont(font)
+            metrics = probe.fontMetrics()
+            probe.end()
+            text_w = 0
+            text_h = 0
+            lines: list[str] = []
+            if cue_text:
+                lines.append(
+                    metrics.elidedText(
+                        f"Cue {cue_text}", Qt.TextElideMode.ElideRight, 100
+                    )
+                )
+            if note_text:
+                lines.append(
+                    metrics.elidedText(note_text, Qt.TextElideMode.ElideRight, 140)
+                )
+            if lines:
+                text_w = max(metrics.horizontalAdvance(s) for s in lines) + 8
+                text_h = metrics.height() * len(lines) + 4
+            glyph_r = int(math.ceil(size)) + 4
+            pad_l = glyph_r + 2
+            pad_r = max(glyph_r + 2, text_w)
+            pad_t = max(glyph_r + 2, 2)
+            pad_b = max(glyph_r + 2, text_h)
+            pm_w = pad_l + pad_r
+            pm_h = max(self._lane_height + 4, pad_t + pad_b)
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            pm = QPixmap(int(pm_w * dpr), int(pm_h * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            cx = float(pad_l)
+            cy = float(self._lane_height / 2 + 2)
+            if self._show_mark_stem:
+                p.setPen(QPen(color, 2))
+                p.drawLine(QPointF(cx, 3), QPointF(cx, self._lane_height - 1))
+            draw_marker_shape(
+                p,
+                cx,
+                cy,
+                color,
+                shape,
+                size=size,
+                outline=QColor(255, 255, 255, 210),
+                outline_width=1.8,
+            )
+            if lines:
+                p.setPen(color)
+                p.setFont(font)
+                ty = float(metrics.ascent() + 2)
+                for line in lines:
+                    p.drawText(QPointF(cx + 5, ty), line)
+                    ty += metrics.height()
+            p.end()
+            out.append(
+                {
+                    "mark_id": mark.id,
+                    "time_seconds": float(mark.time_seconds),
+                    "color": color.name(),
+                    "pixmap": pm,
+                    "hotspot_x": cx,
+                    "y": float(y0),
+                }
+            )
+        return out
 
     def _can_use_static_backdrop(self) -> bool:
         """Blit cached static layers while scrubbing, playing, or zoom-coalescing."""
@@ -2481,22 +2668,29 @@ class TimelineWidget(QWidget):
             return True
         return self._scrubbing or self._playing
 
-    def _paint_static_layers(self, painter: QPainter) -> None:
-        self._paint_ruler(painter)
+    def _paint_static_layers(
+        self,
+        painter: QPainter,
+        *,
+        include_marks: bool = True,
+        include_ruler_labels: bool = True,
+    ) -> None:
+        self._paint_ruler(painter, include_labels=include_ruler_labels)
         wave_bottom = self._paint_waveform(painter)
         self._paint_video_lane(painter)
         self._paint_ltc_lane(painter)
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
-        # Bake Marks into the static cache — play ticks must not redraw hundreds
-        # of marker shapes (Windows: mark.paint_ms mean ~7 / max ~24).
-        self._paint_marks(
-            painter,
-            start_y=tracks_top,
-            waveform_lines=True,
-            lane_shapes=True,
-            mode="static",
-        )
+        if include_marks:
+            # Bake Marks into the static cache — play ticks must not redraw hundreds
+            # of marker shapes (Windows: mark.paint_ms mean ~7 / max ~24).
+            self._paint_marks(
+                painter,
+                start_y=tracks_top,
+                waveform_lines=True,
+                lane_shapes=True,
+                mode="static",
+            )
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
         self._paint_mark_lane_splitter(painter)
@@ -4111,7 +4305,7 @@ class TimelineWidget(QWidget):
         )
         painter.restore()
 
-    def _paint_ruler(self, painter: QPainter) -> None:
+    def _paint_ruler(self, painter: QPainter, *, include_labels: bool = True) -> None:
         right = self._paint_right()
         painter.fillRect(self._header_width, 0, right, self._ruler_height, QColor("#09090b"))
         duration = self._duration()
@@ -4134,15 +4328,33 @@ class TimelineWidget(QWidget):
 
         painter.setPen(QColor("#a1a1aa"))
         t = (t0 // major) * major
-        last_label_x = -1e9
-        min_label_gap = 70.0
         while t <= t1 + 1e-12:
             x = self._x_for_time(t)
             if x >= self._header_width:
                 painter.drawLine(QPointF(x, 0), QPointF(x, self._ruler_height))
-                if x - last_label_x >= min_label_gap:
-                    painter.drawText(int(x + 4), 18, self._format_ruler_time(t, major))
-                    last_label_x = x
+            t += major
+        if include_labels:
+            self._paint_ruler_labels(painter)
+
+    def _paint_ruler_labels(self, painter: QPainter) -> None:
+        """Screen-space seconds text — constant font size during zoom preview."""
+        right = self._paint_right()
+        duration = self._duration()
+        major, _minor = self._ruler_steps()
+        t0 = max(0.0, self._time_for_x(self._header_width) - major)
+        t1 = min(duration, self._time_for_x(right) + major)
+        painter.setPen(QColor("#a1a1aa"))
+        font = painter.font()
+        # Keep label size stable (do not inherit a scaled transform).
+        painter.setFont(font)
+        t = (t0 // major) * major
+        last_label_x = -1e9
+        min_label_gap = 70.0
+        while t <= t1 + 1e-12:
+            x = self._x_for_time(t)
+            if x >= self._header_width and x - last_label_x >= min_label_gap:
+                painter.drawText(int(x + 4), 18, self._format_ruler_time(t, major))
+                last_label_x = x
             t += major
 
     def _ruler_steps(self) -> tuple[float, float]:

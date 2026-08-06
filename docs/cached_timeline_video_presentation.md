@@ -1,6 +1,7 @@
 # Cached Timeline / Video Presentation (Sprint 8 measured fix)
 
 **Branch:** `cursor/sprint8-cached-timeline-poster-028d`  
+**Follow-up:** `cursor/sprint8-zoom-cue-video-state-028d` (zoom visual / Cue follow / video states) — see `docs/sprint8_zoom_cue_video_state.md`  
 **Status:** PART A Mark backdrop cache + PART B zoom coalesce + PART C activation poster  
 **Does not change:** AudioEngine, Cue semantics, Export, Video seek SM broadly, zoom anchor
 
@@ -19,9 +20,11 @@ Indexed Mark lookup was **not** the remaining bottleneck.
 **STATIC/CACHEABLE backdrop (QPixmap):** waveform, ruler, lanes, **Mark stems/shapes/labels**  
 **DYNAMIC overlay:** playhead, selection/hover/drag Marks only, scrub chrome, loop
 
-**Zoom:** raw wheel → latest target + temporary scale of cached pixmap → debounce (~64 ms) → one quality rebuild
+**Zoom (initial):** raw wheel → latest target + temporary scale of cached pixmap → debounce (~64 ms) → one quality rebuild  
 
-**Activation:** scrub poster / short-deadline sync poster / loading slate → async land. Never empty/null Preview while Video exists.
+**Zoom (follow-up branch):** scale **spatial** cache only; Cue Notes / seconds / glyphs stay fixed screen-space size via annotation sprites; debounce **140 ms**; atomic cache swap (no blank flash).
+
+**Activation (follow-up):** gate Loading on `VALID_VIDEO_TARGET_PENDING` only — not `NO_VIDEO_FOR_SONG` / `VIDEO_TIMELINE_GAP`.
 
 **Diagnostics:** VIDEO_SM file I/O buffered (was ~1.17s of profile time from per-event opens).
 
@@ -31,10 +34,12 @@ Indexed Mark lookup was **not** the remaining bottleneck.
 $env:CUEPLAYER_PERF = "1"
 cd C:\Users\willy\Projects\CuePlayer_v2
 git fetch origin
-git checkout cursor/sprint8-cached-timeline-poster-028d
+git checkout cursor/sprint8-zoom-cue-video-state-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
+
+Prefer the follow-up branch above for the three remaining UX failures. Original #239 checklist:
 
 A. Open Video song → poster/loading immediately; no 6–7s empty black  
 B. Play dense Mark region → Video keeps updating  

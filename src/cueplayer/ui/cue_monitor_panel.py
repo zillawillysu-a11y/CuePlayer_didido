@@ -308,6 +308,10 @@ class CueMonitorPanel(QWidget):
         self._position = 0.0
         self._current_mark_ids: set[str] = set()
         self._playhead_list_mark_id: str | None = None
+        # O(1) Cue List row lookup — rebuilt in refresh_list (not scanned each tick).
+        self._mark_id_to_row: dict[str, int] = {}
+        self._now_highlight_rows: set[int] = set()
+        self._follow_target_row: int = -1
         # User scrolled Cue List away — don't yank back until they scroll the
         # playhead cue back into view, seek, or choose Follow playhead.
         self._cue_list_follow_suspended = False
@@ -729,6 +733,9 @@ class CueMonitorPanel(QWidget):
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._playhead_list_mark_id = None
+        self._mark_id_to_row = {}
+        self._now_highlight_rows = set()
+        self._follow_target_row = -1
         self._cue_list_follow_suspended = False
         self._cue_list_follow_left_viewport = False
         # Column order / NOW visibility come from global monitor UI prefs — do
@@ -877,11 +884,26 @@ class CueMonitorPanel(QWidget):
         self._sync_current(force_now=True)
 
     def _mark_id_at_row(self, row: int) -> str | None:
+        perf_diag.count("cue_list.mark_id_at_row.calls")
         time_item = self.cue_table.item(row, self._time_col())
         if time_item is None:
             return None
         mark_id = time_item.data(Qt.ItemDataRole.UserRole)
         return str(mark_id) if mark_id else None
+
+    def _row_for_mark_id(self, mark_id: str) -> int:
+        """O(1) Cue List row lookup (rebuilt in ``refresh_list``)."""
+        if not mark_id:
+            return -1
+        row = self._mark_id_to_row.get(mark_id, -1)
+        if row < 0:
+            return -1
+        # Stale map guard (rare): verify without scanning the whole table.
+        if row >= self.cue_table.rowCount():
+            return -1
+        if self._mark_id_at_row(row) != mark_id:
+            return -1
+        return int(row)
 
     def apply_now_display_settings(self) -> None:
         """Reload NOW lane slots after Display dialog changes."""
@@ -2024,6 +2046,9 @@ class CueMonitorPanel(QWidget):
         self.cue_table.blockSignals(True)
         try:
             self.cue_table.setRowCount(0)
+            self._mark_id_to_row = {}
+            self._now_highlight_rows = set()
+            self._follow_target_row = -1
             cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
             time_col = self._time_col()
             type_col = self._col_for_field("type")
@@ -2040,6 +2065,7 @@ class CueMonitorPanel(QWidget):
                         continue
                     row = self.cue_table.rowCount()
                     self.cue_table.insertRow(row)
+                    self._mark_id_to_row[mark.id] = row
 
                     time_item = QTableWidgetItem(format_time(mark.time_seconds))
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -2101,6 +2127,7 @@ class CueMonitorPanel(QWidget):
         # follow re-scrolls (otherwise a mark added during the deferred refresh
         # window caches the new id before its row exists, then skips scroll).
         self._playhead_list_mark_id = None
+        self._follow_target_row = -1
         self._sync_current()
 
     def selected_mark_ids(self) -> list[str]:
@@ -2334,23 +2361,38 @@ class CueMonitorPanel(QWidget):
         self.cue_id_changed.emit(str(mark.id), old_id, new_id)
 
     def _apply_now_highlight(self) -> None:
-        """Tint rows that are currently active in NOW slots."""
+        """Tint rows that are currently active in NOW slots (O(changed rows))."""
         clear = QColor(0, 0, 0, 0)
-        for row in range(self.cue_table.rowCount()):
-            mark_id = self._mark_id_at_row(row)
-            is_now = mark_id in self._current_mark_ids
-            bg = QColor("#243044") if is_now else clear
-            if is_now and self._song is not None and mark_id:
-                mark = self._song.mark_by_id(mark_id)
-                lane = self._song.lane_by_index(mark.lane_index) if mark else None
-                if lane is not None:
-                    c = QColor(lane.color)
-                    bg = QColor(c.red(), c.green(), c.blue(), 40)
+        wanted_rows: set[int] = set()
+        for mark_id in self._current_mark_ids:
+            row = self._row_for_mark_id(mark_id)
+            if row >= 0:
+                wanted_rows.add(row)
+
+        def _paint_row(row: int, *, is_now: bool, mark_id: str | None) -> None:
+            bg = clear
+            if is_now:
+                bg = QColor("#243044")
+                if self._song is not None and mark_id:
+                    mark = self._song.mark_by_id(mark_id)
+                    lane = self._song.lane_by_index(mark.lane_index) if mark else None
+                    if lane is not None:
+                        c = QColor(lane.color)
+                        bg = QColor(c.red(), c.green(), c.blue(), 40)
             for col in range(_COL_COUNT):
                 item = self.cue_table.item(row, col)
                 if item is None:
                     continue
                 item.setBackground(bg)
+
+        # Clear rows that left NOW.
+        for row in self._now_highlight_rows - wanted_rows:
+            _paint_row(row, is_now=False, mark_id=None)
+        # Paint new / still-active NOW rows.
+        for row in wanted_rows:
+            mark_id = self._mark_id_at_row(row)
+            _paint_row(row, is_now=True, mark_id=mark_id)
+        self._now_highlight_rows = wanted_rows
 
     def _fill_now_slot(
         self,
@@ -2555,11 +2597,7 @@ class CueMonitorPanel(QWidget):
         mark_id = self._playhead_list_mark_id
         if not mark_id or not self.cue_table.isVisible():
             return False
-        row = -1
-        for candidate in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(candidate) == mark_id:
-                row = candidate
-                break
+        row = self._row_for_mark_id(mark_id)
         if row < 0:
             return False
         index = self.cue_table.model().index(row, 0)
@@ -2589,6 +2627,7 @@ class CueMonitorPanel(QWidget):
         self._cue_list_follow_suspended = False
         self._cue_list_follow_left_viewport = False
         self._playhead_list_mark_id = None
+        self._follow_target_row = -1
         self._follow_cue_list_to_playhead()
 
     def _follow_cue_list_to_playhead(self) -> None:
@@ -2600,20 +2639,29 @@ class CueMonitorPanel(QWidget):
         mark = self._song.last_cue_list_mark_at_or_before(self._position)
         if mark is None:
             return
+        row = self._row_for_mark_id(mark.id)
+        if row < 0:
+            return
         if self._cue_list_follow_suspended:
             # User scrolled away to inspect — keep their scroll position, but still
             # advance the selected/highlighted row with the playhead.
             if mark.id != self._playhead_list_mark_id:
                 if self._select_mark_row(mark.id, scroll=False, emit_selection=True):
                     self._playhead_list_mark_id = mark.id
+                    self._follow_target_row = row
+            return
+        # Same Mark + same row: skip highlight/scroll/layout work entirely.
+        if mark.id == self._playhead_list_mark_id and row == self._follow_target_row:
             return
         if mark.id == self._playhead_list_mark_id:
-            # Same cue as last follow — still re-scroll if the row drifted out
-            # of the Cue List viewport (tiny height or deferred rebuild).
+            # Same cue, different tracked row (table rebuild) — scroll only if
+            # the row is outside the visible range.
             self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
+            self._follow_target_row = row
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=True):
             self._playhead_list_mark_id = mark.id
+            self._follow_target_row = row
 
     def _ensure_playhead_cue_visible(self) -> None:
         """Re-scroll the playhead cue after layout changes (NOW collapse, resize)."""
@@ -2631,6 +2679,7 @@ class CueMonitorPanel(QWidget):
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=False):
             self._playhead_list_mark_id = mark.id
+            self._follow_target_row = self._row_for_mark_id(mark.id)
 
     def _scroll_cue_row_into_view(
         self,
@@ -2648,11 +2697,7 @@ class CueMonitorPanel(QWidget):
             return
         if not self.cue_table.isVisible():
             return
-        row = -1
-        for candidate in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(candidate) == mark_id:
-                row = candidate
-                break
+        row = self._row_for_mark_id(mark_id)
         if row < 0:
             return
         item = self.cue_table.item(row, 0)
@@ -2697,11 +2742,9 @@ class CueMonitorPanel(QWidget):
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
-        found = False
-        for row in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(row) != mark_id:
-                continue
-            found = True
+        row = self._row_for_mark_id(mark_id)
+        found = row >= 0
+        if found:
             model.select(
                 self.cue_table.model().index(row, 0),
                 model.SelectionFlag.Select | model.SelectionFlag.Rows,
@@ -2711,7 +2754,6 @@ class CueMonitorPanel(QWidget):
                 QTimer.singleShot(
                     0, lambda mid=mark_id: self._scroll_cue_row_into_view(mid)
                 )
-            break
         self._syncing_selection = False
         if pinned_scroll is not None and bar is not None:
             bar.setValue(pinned_scroll)
