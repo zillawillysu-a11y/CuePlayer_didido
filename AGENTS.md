@@ -43,5 +43,8 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-08)
 
-Song Variants **persisted** (schema v2). **Next:** playback uses
-`selected_audio_path()`. See `docs/song_variant_design.md` / `.ai/NEXT_TASK.md`.
+**1.0.7 ship tip:** `cursor/release-1-0-7-028d` (from Sprint 8 tip
+`d8810ec` — Video / VA / waveform / Zoom / Mark-jump Windows PASS).
+Build on Windows: `packaging\build_windows.ps1`. Video decode remains
+CPU PyAV (`av.open` + RGB24 → QWidget); no GPU hwaccel.
+Song Variants **persisted** (schema v2). See `docs/song_variant_design.md`.

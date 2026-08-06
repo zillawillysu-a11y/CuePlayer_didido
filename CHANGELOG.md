@@ -4,6 +4,18 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+## [1.0.7] — 2026-08-06
+
+Windows-validated Sprint 8 ship tip (`d8810ec` / `cursor/release-1-0-7-028d`).
+
+### Highlights
+
+- Video playback + backward Mark jumps live and stable (seek-jump / handoff path).
+- Video Audio: contiguous-keys interval-union + eviction hole fix (no cable-unplug gaps from protected past islands).
+- Video Track waveform restored: async waveform-ready bumps backdrop epoch and rebuilds once (always-static cache).
+- Cached Timeline / Zoom coalesce preserved; play ticks do not rebuild static waveform/Marks.
+- GPU-path audit: software PyAV/FFmpeg decode only; Preview = QImage + QWidget/QPainter; AudioEngine sample clock independent of video presentation.
+
 ### Sprint 8 — Task 2: Video Track Responsiveness (2026-08-05)
 
 - Round 1: async latest-wins worker + paint-before-quiesce.

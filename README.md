@@ -6,9 +6,9 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-**1.0.6** — LAN Web Remote (Safari / iPad control + Listen) on top of the 1.0.5 polish milestone.
+**1.0.7** — Sprint 8 Video / Video Audio / waveform / Zoom / Mark-jump soak tip (CPU PyAV decode).
 
-Ship tip / integrate to `master`: `cursor/release-1-0-6-028d`
+Ship tip / integrate to `master`: `cursor/release-1-0-7-028d`
 
 Product requirements: `docs/PRODUCT_SPEC.md`  
 User tips (shortcuts / Bundle / Relink): `docs/USER_MANUAL.md`  
@@ -36,7 +36,7 @@ Then send `dist\CuePlayer-*-win64.zip` (unzip → run `CuePlayer.exe`) or
 ```powershell
 cd C:\Users\User\Projects\CuePlayer_didido
 git fetch origin
-git checkout cursor/release-1-0-6-028d
+git checkout cursor/release-1-0-7-028d
 git pull
 
 .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
@@ -70,11 +70,11 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## Next after 1.0.6
+## Next after 1.0.7
 
 1. Multi-audio version comparison + Align Anchors
-2. Missing Media Relink for rehearsals
+2. Production soak / Depence GPU contention notes (CPU decode path)
 3. MA Export Preview / Cue ID English–pinyin naming UI
-4. LTC waveform display polish (when the file is clean)
+4. Optional NDI polish only after cue accuracy stays solid
 
 NDI OUTPUT is already shipped (needs NDI Tools/Runtime on each PC).
