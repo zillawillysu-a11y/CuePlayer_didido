@@ -7085,6 +7085,10 @@ class MainWindow(QMainWindow):
                     clip_snapshot,
                     timeline_duration=duration,
                     cancel_check=_cancel,
+                    pause_check=lambda: bool(getattr(self.engine, "playing", False)),
+                    on_progress=lambda buf: self._video_standin_finished.emit(
+                        token, ("progress", buf)
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 self._video_standin_finished.emit(token, exc)
@@ -7114,6 +7118,18 @@ class MainWindow(QMainWindow):
             if clip is not None and getattr(self.timeline, "_audio", None) is None:
                 self.timeline.set_audio_loading(True, f"{clip.name} (video)")
             return
+        # Progressive coalesced updates from the shared continuous artifact.
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == "progress"
+            and isinstance(result[1], AudioBuffer)
+        ):
+            partial = result[1]
+            self.timeline.set_audio(partial, reset_view=False)
+            self.timeline.set_audio_loading(True, "video waveform…")
+            self._sync_timeline_overview()
+            return
         if result is None:
             self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
@@ -7135,11 +7151,15 @@ class MainWindow(QMainWindow):
             )
             if key is not None:
                 self._video_standin_cache[key] = result
-                self._audio_prefetch_executor.submit(
-                    save_cached_video_standin, key, result
-                )
+                # Only persist complete (no pending NaN) stand-ins.
+                import numpy as _np
+
+                if not bool(_np.any(_np.isnan(result.mono))):
+                    self._audio_prefetch_executor.submit(
+                        save_cached_video_standin, key, result
+                    )
         # Display only — playback stays on VideoAudioMixer so we don't double.
-        self.timeline.set_audio(result, reset_view=True)
+        self.timeline.set_audio(result, reset_view=False)
         self._sync_timeline_overview()
         self.status.showMessage(
             f"Music waveform from video audio ({result.duration_seconds / 60.0:.0f} min)",

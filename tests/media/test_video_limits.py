@@ -61,7 +61,8 @@ def test_scrub_cache_skips_heavy_clips() -> None:
         executor.submit.assert_not_called()
 
 
-def test_waveform_preload_skips_heavy_clips() -> None:
+def test_waveform_preload_submits_heavy_clips_via_shared_artifact() -> None:
+    """Heavy clips use the continuous artifact path — preload must submit."""
     clip = VideoClip.create(
         name="rehearsal",
         path=Path("r.mp4"),
@@ -71,7 +72,7 @@ def test_waveform_preload_skips_heavy_clips() -> None:
     cache = VideoClipWaveformCache()
     with patch.object(cache, "get_peaks") as get_peaks:
         cache.preload([clip])
-        get_peaks.assert_not_called()
+        get_peaks.assert_called_once_with(clip)
 
 
 def test_mixer_preload_still_loads_heavy_clips() -> None:

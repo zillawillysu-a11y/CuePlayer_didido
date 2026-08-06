@@ -4340,6 +4340,9 @@ class TimelineWidget(QWidget):
                         clip_t1=clip_t1,
                         samples_per_pixel=samples_per_pixel * step,
                     )
+                # Pending / uncovered bins are NaN — never fabricate zero silence.
+                if not (lo == lo and hi == hi):  # NaN check
+                    continue
                 painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
         except Exception:
             # Corrupt / partially-built peaks must never take down the UI.
@@ -4699,7 +4702,12 @@ class TimelineWidget(QWidget):
         view_right = right
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
-        if samples_per_pixel <= 1.5:
+        # Video stand-in progressive peaks use NaN for pending bins — paint via
+        # mono so we never draw fabricated zero silence from the zero-filled pyramid.
+        use_raw = samples_per_pixel <= 1.5 or bool(
+            np.any(np.isnan(self._audio.mono))
+        )
+        if use_raw:
             self._paint_waveform_raw(
                 painter, self._audio, mid, amp, view_left, view_right
             )
@@ -4869,8 +4877,11 @@ class TimelineWidget(QWidget):
             segment = mono[s0:s1]
             if segment.size == 0:
                 continue
-            lo = float(segment.min())
-            hi = float(segment.max())
+            if not np.any(np.isfinite(segment)):
+                # Pending / uncovered — do not paint as zero silence.
+                continue
+            lo = float(np.nanmin(segment))
+            hi = float(np.nanmax(segment))
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
     def _paint_lanes(self, painter: QPainter, *, start_y: int) -> None:
