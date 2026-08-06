@@ -125,9 +125,10 @@ def test_play_uses_coarse_video_wave_and_wider_overscan(
     widget.set_playing(True)
     assert widget._playing is True
 
-    # Wider overscan while playing → fewer mid-play rebuilds.
+    # Always-static backdrop: PLAYING/PAUSED share the same overscan factor
+    # (view_w * 1.25) so transport state never selects a different raster layout.
     widget._rebuild_scrub_backdrop()
-    assert widget._scrub_backdrop_overscan >= int(widget._view_width() * 1.4)
+    assert widget._scrub_backdrop_overscan >= int(widget._view_width() * 1.25)
 
     pm = QPixmap(200, 40)
     pm.fill()

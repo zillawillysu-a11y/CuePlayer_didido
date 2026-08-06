@@ -223,6 +223,11 @@ class TimelineWidget(QWidget):
         self._setup_mode = False
         self._playing = False
         self._video_waveform_pending_refresh = False
+        # Content epoch for Video Track peaks baked into the static backdrop.
+        # Bumped on every async waveform-ready; bake stores the matching value so
+        # an empty pre-ready pixmap cannot be reused after peaks land.
+        self._video_waveform_revision = 0
+        self._video_waveform_baked_revision = -1
         self._last_play_repaint_ns = 0
         # ~30 Hz playhead blit is enough; 60 Hz with Video Track + follow was
         # starving the UI thread whenever auto-scroll moved every tick.
@@ -241,6 +246,7 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_pps = 0.0
         self._scrub_backdrop_size = QSize()
         self._scrub_backdrop_overscan = 0
+        self._scrub_backdrop_dpr = 0.0
         # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
         # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
         self._spatial_backdrop: QPixmap | None = None
@@ -717,14 +723,21 @@ class TimelineWidget(QWidget):
         self._video_waveforms_ready.emit()
 
     def _apply_video_waveform_ready(self) -> None:
-        """GUI-thread slot: refresh static backdrop once peaks land."""
-        if self._playing:
-            # Avoid rebuilding the wide play-cache mid-playback (heavy + races
-            # with background PyAV work on the same clip file).
-            self._video_waveform_pending_refresh = True
-            return
+        """GUI-thread slot: refresh static backdrop once peaks land.
+
+        Always bump the waveform revision and drop the retained static cache.
+        Peaks are already in ``VideoClipWaveformCache`` — the rebuild only paints
+        from cache (no mid-play PyAV submit). Leaving a geometry-matched empty
+        bake after ready permanently hid the Video Track waveform while playing.
+        """
+        self._video_waveform_revision = int(self._video_waveform_revision) + 1
         self._video_waveform_pending_refresh = False
-        self._invalidate_scrub_backdrop()
+        self._invalidate_scrub_backdrop(reason="video_waveform_ready")
+        if perf_diag.is_enabled():
+            perf_diag.note(
+                "timeline.video_waveform.revision", int(self._video_waveform_revision)
+            )
+            perf_diag.count("timeline.video_waveform.ready_invalidate")
         self.update()
 
     def set_song(self, song: Song | None) -> None:
@@ -753,14 +766,15 @@ class TimelineWidget(QWidget):
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         self._video_waveform_pending_refresh = False
-        self._invalidate_scrub_backdrop()
+        self._video_waveform_revision = int(self._video_waveform_revision) + 1
+        self._invalidate_scrub_backdrop(reason="set_song")
         if song is not None and song.video_clips:
             clips = list(song.video_clips)
 
             def _preload_video_waveforms() -> None:
                 if self._song is song:
                     self._video_waveform_cache.preload(clips)
-                    self._invalidate_scrub_backdrop()
+                    self._invalidate_scrub_backdrop(reason="video_waveform_preload")
                     self.update()
 
             QTimer.singleShot(0, _preload_video_waveforms)
@@ -2312,6 +2326,7 @@ class TimelineWidget(QWidget):
         self._mark_annotation_sprites = []
         self._scrub_backdrop_overscan = 0
         self._mark_backdrop_baked_revision = -1
+        self._video_waveform_baked_revision = -1
         # Backdrop drop usually means scroll/zoom/content changed — don't keep a
         # stale playhead X for dirty-rect erasing (ghost green line).
         self._reset_playhead_dirty_tracking()
@@ -2324,11 +2339,18 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop(reason=reason)
 
     def _scrub_backdrop_geometry_ok(self) -> bool:
-        """True when the cached backdrop matches zoom + widget size (scroll may drift)."""
+        """True when the cached backdrop matches zoom, size, DPR, and wave epoch."""
         pm = self._scrub_backdrop
         if pm is None or pm.isNull():
             return False
         if self._scrub_backdrop_overscan < 0:
+            return False
+        if int(self._video_waveform_baked_revision) != int(
+            self._video_waveform_revision
+        ):
+            return False
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        if abs(dpr - float(self._scrub_backdrop_dpr)) > 1e-3:
             return False
         return (
             abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
@@ -2615,7 +2637,9 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_pps = self._pixels_per_second
         self._scrub_backdrop_size = QSize(self.size())
         self._scrub_backdrop_overscan = overscan
+        self._scrub_backdrop_dpr = float(dpr)
         self._mark_backdrop_baked_revision = int(self._mark_backdrop_revision)
+        self._video_waveform_baked_revision = int(self._video_waveform_revision)
         elapsed = (monotonic_ns() - t0) / 1_000_000.0
         if elapsed >= 16.7:
             perf_diag.record_ms("ui.event_loop_long_task_ms", elapsed)
