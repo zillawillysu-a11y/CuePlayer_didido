@@ -2707,15 +2707,13 @@ class TimelineWidget(QWidget):
         return out
 
     def _can_use_static_backdrop(self) -> bool:
-        """Blit retained native static layers for PLAYING / PAUSED / STOPPED / scrub.
+        """Blit retained native static layers for all ordinary interactions.
 
-        Transport state must not select a different Mark/waveform rendering path.
-        Only zoom/pan gestures (view-transform) or interactive edits leave this path.
+        Mouse-up / mouse-down / dragging / PLAYING / PAUSED / STOPPED must share
+        one canonical static backdrop. Only geometry edits leave this path.
+        Selection, hover, and drag chrome are painted as dynamic overlays.
         """
-        if self._box_selecting or self._dragging_marks or self._dragging_clip is not None:
-            return False
-        if self._trimming_clip is not None:
-            return False
+        # Geometry changes require a fresh bake — not ordinary mouse press/drag.
         if self._dragging_audio_gain:
             return False
         if (
@@ -2725,8 +2723,8 @@ class TimelineWidget(QWidget):
             or self._resizing_header
         ):
             return False
-        # Always prefer retained native cache for ordinary transport; rebuild
-        # on demand inside the blit path when missing/mismatched.
+        # Mark drag / box select / clip drag|trim: keep the same static cache;
+        # overlays paint selection / hover / drag indication only.
         return True
 
     def _device_snap(self, logical: float) -> float:
