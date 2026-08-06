@@ -1343,8 +1343,10 @@ class MainWindow(QMainWindow):
         self.transport.volume_changed.connect(self.playback.set_volume)
         self.transport.music_mute_toggled.connect(self._set_music_muted_from_ui)
         self.engine.music_muted_changed.connect(self.transport.set_music_muted)
-        self.timeline.seek_requested.connect(self.playback.seek)
-        self.transport.seek_requested.connect(self.playback.seek)
+        self.timeline.seek_requested.connect(self._on_timeline_seek_requested)
+        self.transport.seek_requested.connect(
+            lambda t: self._canonical_seek(float(t), input_source="overview")
+        )
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
         self.timeline.scrub_started.connect(self._on_timeline_scrub_started)
@@ -5464,8 +5466,37 @@ class MainWindow(QMainWindow):
         self._rebuild_digit_shortcuts()
         self.timeline.update()
 
+    def _on_timeline_seek_requested(self, seconds: float) -> None:
+        source = "timeline"
+        try:
+            source = self.timeline.consume_seek_input_source()
+        except Exception:
+            source = "timeline"
+        self._canonical_seek(float(seconds), input_source=source)
+
+    def _canonical_seek(self, seconds: float, *, input_source: str) -> None:
+        """Single seek endpoint for Mark / cue / overview / empty-timeline jumps.
+
+        Timeline scrub still owns FINAL_LAND via scrub_ended; this path covers
+        position-changing clicks that previously called ``playback.seek`` only.
+        """
+        try:
+            from_t = float(self.playback.engine_to_song_time(self.engine.position))
+        except Exception:
+            from_t = float(seconds)
+        try:
+            self.video_sync.note_discontinuous_seek(
+                float(seconds),
+                from_seconds=from_t,
+                input_source=str(input_source),
+                playing=bool(self.playback.playing),
+            )
+        except Exception:
+            pass
+        self.playback.seek(float(seconds))
+
     def _seek_from_cue_list(self, seconds: float) -> None:
-        self.playback.seek(seconds)
+        self._canonical_seek(float(seconds), input_source="cue_list")
         self.timeline.set_position(seconds)
         self.status.showMessage(f"Jumped to Cue @ {seconds:.3f}s", 1500)
 

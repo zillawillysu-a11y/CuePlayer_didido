@@ -207,6 +207,8 @@ class TimelineWidget(QWidget):
         self._drag_start_times: dict[str, float] = {}
         self._drag_origin_x = 0.0
         self._drag_click_seek: float | None = None
+        # Consumed by MainWindow on seek_requested (mark_object / waveform / …).
+        self._next_seek_input_source: str = "timeline"
         # Plain click on one mark inside a multi-selection → collapse to that mark on release.
         self._pending_single_select: str | None = None
         self._mark_hit_radius = 10.0
@@ -1687,6 +1689,16 @@ class TimelineWidget(QWidget):
         self.loop_changed.emit(self._loop_a, self._loop_b)
         self.update()
 
+    def consume_seek_input_source(self) -> str:
+        """Return and reset the input source for the latest seek_requested."""
+        src = str(self._next_seek_input_source or "timeline")
+        self._next_seek_input_source = "timeline"
+        return src
+
+    def _emit_seek(self, seconds: float, *, input_source: str) -> None:
+        self._next_seek_input_source = str(input_source)
+        self.seek_requested.emit(float(seconds))
+
     def playhead_seconds(self) -> float:
         """Visual playhead time — authoritative while scrubbing mid-drag.
 
@@ -2235,7 +2247,11 @@ class TimelineWidget(QWidget):
 
     def _seek_from_x(self, x: float) -> None:
         x = min(max(x, float(self._header_width)), float(self.width()))
-        self.seek_requested.emit(min(self._time_for_x(x), self._duration()))
+        y = float(self.mapFromGlobal(QCursor.pos()).y())
+        source = "ruler" if y < float(self._ruler_height) else "waveform"
+        if self._scrubbing:
+            source = source  # scrub force land uses waveform/ruler
+        self._emit_seek(min(self._time_for_x(x), self._duration()), input_source=source)
 
     def _scrub_at(self, x: float, *, force: bool = False) -> None:
         """Move playhead under cursor; pan view near left/right edges.
@@ -3494,7 +3510,7 @@ class TimelineWidget(QWidget):
             self._pan_click_seek = None
             self.releaseMouse()
             if click_seek is not None:
-                self.seek_requested.emit(click_seek)
+                self._emit_seek(click_seek, input_source="waveform")
                 self._position = click_seek
             self._invalidate_scrub_backdrop()
             self._restore_hover_cursor(event.position().x(), event.position().y())
@@ -3513,7 +3529,7 @@ class TimelineWidget(QWidget):
                 t = self._loop_a if which == "a" else self._loop_b
                 if t is not None:
                     self._view_pinned = True
-                    self.seek_requested.emit(float(t))
+                    self._emit_seek(float(t), input_source="loop_handle")
                     self._position = float(t)
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
@@ -3580,14 +3596,14 @@ class TimelineWidget(QWidget):
                 if not moved and box_click_seek is not None:
                     self.clear_selection()
                     self._view_pinned = True
-                    self.seek_requested.emit(box_click_seek)
+                    self._emit_seek(box_click_seek, input_source="waveform")
                     self._position = box_click_seek
                 else:
                     self._box_current = event.position()
                     self._emit_box_preview()
                     self.selection_changed.emit(list(self._selected_mark_ids))
             if was_drag and not drag_moved and click_seek is not None:
-                self.seek_requested.emit(click_seek)
+                self._emit_seek(click_seek, input_source="mark_object")
                 self._position = click_seek
                 if self._pending_single_select is not None:
                     self.set_selected_mark_ids([self._pending_single_select])

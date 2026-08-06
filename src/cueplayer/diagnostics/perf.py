@@ -497,6 +497,52 @@ def report_text() -> str:
         "video_audio.schedule_resumed",
     ):
         lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    for name in (
+        "video_audio.reject_nonfinite",
+        "video_audio.reject_short",
+        "video_audio.owner_switch",
+        "video_audio.gap_fill",
+        "video_audio.lock_wait_ns",
+        "video_audio.last_window_key",
+    ):
+        lines.append(f"  {name}: {attrs.get(name, '(unset)')}")
+    va_events = attrs.get("video_audio.event_ring")
+    if va_events:
+        lines.append("  event_ring (newest last, capped):")
+        try:
+            for ev in list(va_events)[-40:]:
+                lines.append(f"    {ev}")
+        except Exception:
+            lines.append(f"    {va_events!r}")
+    lines.append("")
+    lines.append("Seek jump liveness:")
+    for name in (
+        "video.seek_jump.id",
+        "video.seek_jump.input_source",
+        "video.seek_jump.from_seconds",
+        "video.seek_jump.target_seconds",
+        "video.seek_jump.direction",
+        "video.seek_jump.playing",
+        "video.seek_jump.used_scrub_path",
+        "video.seek_jump.frames_at_250ms",
+        "video.seek_jump.frames_at_500ms",
+        "video.seek_jump.frames_at_1000ms",
+        "video.seek_jump.last_present_age_at_1000ms",
+        "video.seek_jump.engine_advance_at_1000ms",
+        "video.seek_jump.pipeline_state",
+        "video.seek_jump.worker_inflight",
+    ):
+        lines.append(f"  {name}: {attrs.get(name, '(unset)')}")
+    for name in (
+        "video.seek_jump.started",
+        "video.seek_jump.first_frame_presented",
+        "video.seek_jump.liveness_ok",
+        "video.seek_jump.liveness_fail_single_frame",
+        "video.seek_jump.deferred_during_scrub_land",
+        "video.playback.frame_drop.reason.seek_jump_stale",
+        "video.playback.frame_drop.reason.newer_already_presented",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     lines.append("")
     # Audio callback continuity (no AudioEngine retiming — measurement only).
     lines.append("Audio callback continuity:")

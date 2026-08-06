@@ -1933,81 +1933,102 @@ class AudioEngine(QObject):
             self._cb_status_flags_or |= int(flags)
 
             del time_info
-            with self._lock:
-                if not self._playing:
-                    outdata.fill(0)
-                    exec_s = time.monotonic() - cb_t0
-                    self._cb_exec_sum += exec_s
-                    if exec_s > self._cb_exec_max:
-                        self._cb_exec_max = exec_s
-                    return
-                loop_on = (
-                    self.loop_enabled
-                    and self.loop_a is not None
-                    and self.loop_b is not None
-                    and abs(self.loop_b - self.loop_a) >= 0.01
-                )
-                a_frame = b_frame = 0
-                if loop_on:
-                    a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
-                    b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
-                    if self._loop_engage:
-                        if self._position_frame >= b_frame:
-                            self._position_frame = a_frame
-                    elif a_frame <= self._position_frame < b_frame:
-                        self._loop_engage = True
-                start = self._position_frame
-                total_frames = self._playback_end_frame()
-                end = min(start + frames, total_frames)
-                if loop_on and self._loop_engage and start < b_frame:
-                    end = min(end, b_frame)
+            try:
+                with self._lock:
+                    if not self._playing:
+                        outdata.fill(0)
+                        exec_s = time.monotonic() - cb_t0
+                        self._cb_exec_sum += exec_s
+                        if exec_s > self._cb_exec_max:
+                            self._cb_exec_max = exec_s
+                        return
+                    loop_on = (
+                        self.loop_enabled
+                        and self.loop_a is not None
+                        and self.loop_b is not None
+                        and abs(self.loop_b - self.loop_a) >= 0.01
+                    )
+                    a_frame = b_frame = 0
+                    if loop_on:
+                        a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
+                        b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
+                        if self._loop_engage:
+                            if self._position_frame >= b_frame:
+                                self._position_frame = a_frame
+                        elif a_frame <= self._position_frame < b_frame:
+                            self._loop_engage = True
+                    start = self._position_frame
+                    total_frames = self._playback_end_frame()
+                    end = min(start + frames, total_frames)
+                    if loop_on and self._loop_engage and start < b_frame:
+                        end = min(end, b_frame)
 
-                # Advance / wrap position bookkeeping (music may pad).
-                if end - start < frames:
-                    if loop_on and self._loop_engage and end >= b_frame:
-                        need = frames - (end - start)
-                        self._position_frame = a_frame + need
-                        # Rebuild as contiguous logical block starting at `start`.
-                        music = self._assemble_looped_music(start, frames, a_frame, b_frame, sample_rate)
-                        ltc = self._assemble_looped_ltc(start, frames, a_frame, b_frame)
-                        video = self._assemble_looped_video(start, frames, a_frame, b_frame)
+                    # Advance / wrap position bookkeeping (music may pad).
+                    if end - start < frames:
+                        if loop_on and self._loop_engage and end >= b_frame:
+                            need = frames - (end - start)
+                            self._position_frame = a_frame + need
+                            # Rebuild as contiguous logical block starting at `start`.
+                            music = self._assemble_looped_music(
+                                start, frames, a_frame, b_frame, sample_rate
+                            )
+                            ltc = self._assemble_looped_ltc(
+                                start, frames, a_frame, b_frame
+                            )
+                            video = self._assemble_looped_video(
+                                start, frames, a_frame, b_frame
+                            )
+                        else:
+                            music = self._music_chunk(start, frames, sample_rate)
+                            ltc = self._ltc_chunk(start, frames)
+                            video = self._video_chunk(start, frames)
+                            self._position_frame = total_frames
+                            self._playing = False
                     else:
                         music = self._music_chunk(start, frames, sample_rate)
                         ltc = self._ltc_chunk(start, frames)
                         video = self._video_chunk(start, frames)
-                        self._position_frame = total_frames
-                        self._playing = False
-                else:
-                    music = self._music_chunk(start, frames, sample_rate)
-                    ltc = self._ltc_chunk(start, frames)
-                    video = self._video_chunk(start, frames)
-                    self._position_frame = end
+                        self._position_frame = end
 
-                # Video clips' own audio shares the music bus/output channels
-                # (so it's audible wherever Music is routed) — mixed in at the
-                # exact write-head frame, i.e. the same sample clock as music.
-                music[:, :2] += video[:, :2]
-                np.clip(music, -1.0, 1.0, out=music)
+                    # Reject corrupt Video Audio contribution (NaN/Inf already
+                    # zeroed inside mixer; enforce shape + finite here too).
+                    if (
+                        video is None
+                        or int(getattr(video, "shape", (0, 0))[0]) != int(frames)
+                        or not np.isfinite(video).all()
+                    ):
+                        video = np.zeros((frames, 2), dtype=np.float32)
 
-                self._mix_clicks(music, start)
-                sources = np.zeros((frames, 5), dtype=np.float32)
-                sources[:, SRC_MUSIC_L] = music[:, 0]
-                sources[:, SRC_MUSIC_R] = music[:, 1]
-                sources[:, SRC_LTC_BUS] = ltc
-                ltc_idx = self._cached_file_ltc_idx
-                if ltc_idx is not None:
-                    sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
-                        ltc_idx, start, frames
+                    # Video clips' own audio shares the music bus/output channels
+                    # (so it's audible wherever Music is routed) — mixed in at the
+                    # exact write-head frame, i.e. the same sample clock as music.
+                    music[:, :2] += video[:, :2]
+                    np.clip(music, -1.0, 1.0, out=music)
+
+                    self._mix_clicks(music, start)
+                    sources = np.zeros((frames, 5), dtype=np.float32)
+                    sources[:, SRC_MUSIC_L] = music[:, 0]
+                    sources[:, SRC_MUSIC_R] = music[:, 1]
+                    sources[:, SRC_LTC_BUS] = ltc
+                    ltc_idx = self._cached_file_ltc_idx
+                    if ltc_idx is not None:
+                        sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
+                            ltc_idx, start, frames
+                        )
+                    # Music Source destinations must hear the *processed* bed
+                    # (LTC-stripped + music_volume + video clip audio), not a raw
+                    # file channel — otherwise Video Track audio vanishes and the
+                    # Music fader appears dead whenever L/R routes are Music Source
+                    # or File-LTC remaps speakers onto that bus.
+                    sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
+                    routed = apply_routing(
+                        sources, self._route, self._output_channel_count
                     )
-                # Music Source destinations must hear the *processed* bed
-                # (LTC-stripped + music_volume + video clip audio), not a raw
-                # file channel — otherwise Video Track audio vanishes and the
-                # Music fader appears dead whenever L/R routes are Music Source
-                # or File-LTC remaps speakers onto that bus.
-                sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
-                routed = apply_routing(sources, self._route, self._output_channel_count)
-                self._stamp_write_head_unlocked()
-            outdata[:] = routed
+                    self._stamp_write_head_unlocked()
+                # Always fully overwrite outdata (never leave uninitialized).
+                outdata[:] = routed
+            except Exception:
+                outdata.fill(0)
             exec_s = time.monotonic() - cb_t0
             self._cb_exec_sum += exec_s
             if exec_s > self._cb_exec_max:
@@ -2050,6 +2071,16 @@ class AudioEngine(QObject):
                     6,
                 ),
             )
+        try:
+            va_stats = self._video_mixer.exceptional_callback_stats()
+            for key, value in va_stats.items():
+                perf_diag.note(f"video_audio.{key}", value)
+            events = self._video_mixer.drain_events()
+            if events:
+                # Keep a bounded tail for correlation with wall/song/media times.
+                perf_diag.note("video_audio.event_ring", events[-80:])
+        except Exception:
+            pass
 
     def _open_output_stream(
         self,

@@ -1,57 +1,75 @@
-# Sprint 8 follow-up — Backward Final Land / Video Audio continuity
+# Sprint 8 follow-up — Mark seek-jump liveness + periodic Video Audio windows
 
 **Branch:** `cursor/sprint8-zoom-cue-video-state-028d`  
 **Base:** `cursor/sprint8-cached-timeline-poster-028d` (PR #239)  
 **PR:** #240  
-**Tip context:** after `eb935e2` Windows gate  
-**Status:** Ready for Windows BACKWARD FINAL-LAND / VIDEO-AUDIO CONTINUITY validation  
-**(do not merge #239/#240; do not claim Video P0 solved)**
+**Status:** Ready for Windows BACKWARD MARK-JUMP / PERIODIC VIDEO AUDIO WINDOW validation  
+**(do not merge #239/#240; do not claim Video / Audio P0 solved)**
 
 Preserved: Timeline mouse/static visuals, AudioEngine sample clock, Mark/Cue
 timestamps, Export, Preview states, zoom anchor, no GPU / broad decoder redesign.
 
 ## Confirmed still good (do not regress)
 
-- Resume emit/ack parity; first-present ~122ms mean
-- Stable PLAYBACK decode ~22–24 Hz (not ~51 Hz)
+- Normal Timeline scrub resume (~92–122 ms first frame)
+- Forward play into dense Marks
+- Continuous Audio stutter largely gone; PERF on/off parity
+- PLAYBACK decode ~23–24 Hz
 
-## A — Backward click never reached Final Land
+## A — Backward Mark-object jump froze Video
 
-Trace: SCRUB_PREVIEW_REQUEST → WAITING_FRAME → **no** SCRUB_PREVIEW_PRESENT /
-FINAL_LAND_REQUEST / RESUME_BEGIN. Root cause: scrub finalize depended on a
-single `mouseReleaseEvent`.
+**Root cause:** Mark / cue / overview clicks called `playback.seek` only (no
+scrub FINAL_LAND/RESUME). After a backward jump, in-flight play frames from the
+old Song Time re-armed `_last_presented_song_seconds`, then new frames failed
+`newer_already_presented`. One bootstrap-style present was not required for
+liveness — progression stopped after the floor was wrong.
 
-**Fix:** idempotent `_end_scrub_once`; scrub-timer + move + window-deactivate
-fallback when LeftButton is up; Final Land owned by release (does not wait for
-preview present). Traces: `TIMELINE_SCRUB_PRESS/RELEASE/FALLBACK_RELEASE`,
-`END_SCRUB_CALLED`, `FINAL_LAND_REQUEST` (+ scrub transaction id).
+**Also:** Mark-object vs empty-Timeline previously used **different paths**
+(Mark = bare seek; empty Timeline scrub = begin/end scrub + FINAL_LAND/RESUME).
 
-## B/C — Video Audio was the stutter owner; reverse priority removed
+**Fix:**
+- `MainWindow._canonical_seek` for Mark / cue / overview / Timeline
+  `seek_requested` (input source tagged: `mark_object` / `waveform` / `ruler` / …)
+- `VideoSyncController.note_discontinuous_seek`: invalidate async, clear
+  presentation floor, set `_min_present_seconds`, force schedule, drop
+  `seek_jump_stale` frames during a short guard
+- Liveness watch at 250/500/1000 ms (`video.seek_jump.frames_at_*ms`); fail if
+  fewer than 2 presents by 1000 ms (first frame alone is not healthy)
+- Dedicated `_seek_jump_mono` (must not share `_seek_after_mono`, which first-valid
+  metrics clear)
 
-cProfile: `_decode_window` ~2.86s / 5s; callback interval max ~724ms with VA
-windows on the miss. `set_defer_live_decode(engine.video_audio_decoding)` held
-Video frames during VA decode — **removed** (`set_defer_live_decode(None)`).
+## B — Periodic ~8–9 s Video Audio corruption
 
-## D — Realtime callback is read-only
+**Hypothesis (instrumented, not claimed solved until Windows):** 9 s heavy-window
+step + float gather / lock-contended cache reads at publish boundaries.
 
-`chunk_at` only snapshots/mixes cache (silence on miss). No executor / av.open /
-resample from the PortAudio path. `schedule_for_song_time` runs from
-`AudioEngine._emit_position` (poll).
-
-## E — Quantized windows + true LRU
-
-Heavy windows on a 9s grid (12s length); coverage-hit suppresses duplicate
-decodes; LRU of 8 (no 36s-behind prune); mute + SCRUB/LAND/RESUME suspend
-scheduling/chaining.
+**Fix / hardening:**
+- Integer canonical source-sample indices in `_gather_samples`
+- Older-window wins on overlap (stable ownership; no publish oscillation)
+- Lock-free immutable `_rt_snapshot` for RT reads (callback never waits on worker)
+- Pin playhead window against LRU eviction
+- NaN/Inf / short PCM rejected → silence for that contribution only; counters
+- Ring-buffer events (`window_decode_start/publish/eviction`, `owner_switch`,
+  `callback_window_switch`, `boundary_delta`, `gap_fill`, `pcm_nonfinite_rejected`)
+  flushed via PERF report (not every-callback file I/O)
+- Audio callback always fully overwrites `outdata`
 
 ## Windows validation
 
-1. Video Audio **unmuted**: forward through dense → ~1018s → left-click back to
-   ~947.8 → wait 10s.
-2. Repeat **muted**.
+### A — Backward Mark jump (×10)
 
-Pass if: always `FINAL_LAND_REQUEST`; never stuck in `SCRUB_PREVIEW` after
-LeftButton up; Video resumes; unmuted ≈ muted smoothness; no ~724ms callback
-gaps; VA does not defer Video; ~24 Hz play decode; AudioEngine unchanged.
+1. Play beyond dense Marks, click a Mark object inside the dense region, wait ≥3 s.
+2. Compare empty-Timeline click at the same target.
+3. Pass: Video keeps advancing every time; `frames_at_1000ms` ≥ 2; no multi-second freeze.
 
-READY FOR WINDOWS BACKWARD FINAL-LAND / VIDEO-AUDIO CONTINUITY VALIDATION
+### B — Periodic VA (wall clock ~07:45→08:35 style continuous play)
+
+1. Continuous play ≥2 min Video Audio **enabled**, then **muted**; reopen song; repeat.
+2. Correlate glitch wall times with `video_audio.event_ring` (publish / owner_switch /
+   boundary_delta / eviction / gap_fill) and callback deadline misses.
+3. Pass: no severe noise bursts; no repeated A/V stalls; callback exec &lt; period in
+   steady play; no non-finite PCM; muted vs enabled both smooth.
+
+READY FOR WINDOWS BACKWARD MARK-JUMP / VIDEO AUDIO GLITCH VALIDATION
+
+READY FOR WINDOWS PERIODIC VIDEO AUDIO WINDOW VALIDATION

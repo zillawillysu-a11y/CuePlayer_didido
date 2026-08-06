@@ -382,6 +382,27 @@ class VideoSyncController(QObject):
         self._land_retry_timer.timeout.connect(self._retry_final_land_if_pending)
         self._resume_watchdog = QTimer(self)
         self._resume_watchdog.setSingleShot(True)
+        # Discontinuous seek (Mark / cue / overview) — presentation floor reset.
+        self._seek_jump_guard_until_mono = 0.0
+        self._seek_jump_target: float | None = None
+        self._seek_jump_from: float | None = None
+        self._seek_jump_input_source: str = "unknown"
+        self._seek_jump_id = 0
+        # Dedicated clock for jump liveness — must NOT share _seek_after_mono
+        # (first-valid-frame metrics clear that stamp and would starve counts).
+        self._seek_jump_mono: float | None = None
+        self._seek_liveness_frames = 0
+        self._seek_liveness_first_mono = 0.0
+        self._seek_liveness_timer = QTimer(self)
+        self._seek_liveness_timer.setSingleShot(True)
+        self._seek_liveness_timer.timeout.connect(self._on_seek_liveness_tick)
+        self._seek_liveness_marks_ms = (250, 500, 1000)
+        self._seek_liveness_reported: set[int] = set()
+        self._seek_liveness_engine_t0: float | None = None
+        self._seek_liveness_engine_t1: float | None = None
+        self._seek_liveness_last_present_mono = 0.0
+        self._seek_liveness_submissions = 0
+        self._seek_liveness_presented = 0
         self._resume_watchdog.setInterval(_RESUME_WATCHDOG_MS)
         self._resume_watchdog.timeout.connect(self._on_resume_watchdog)
         # Prove which pipeline the Windows desk build is running.
@@ -512,6 +533,199 @@ class VideoSyncController(QObject):
     ) -> None:
         """Notify host when Video pipeline state changes (e.g. VA schedule suspend)."""
         self._pipeline_state_listener = listener
+
+    def note_discontinuous_seek(
+        self,
+        target_seconds: float,
+        *,
+        from_seconds: float | None,
+        input_source: str = "unknown",
+        playing: bool | None = None,
+    ) -> None:
+        """Canonical seek jump (Mark / cue / overview) — not Timeline scrub.
+
+        Mark clicks historically skipped FINAL_LAND/RESUME and could freeze Video
+        after a backward jump: in-flight play frames from the old Song Time
+        re-armed ``_last_presented_song_seconds``, then new frames failed
+        ``newer_already_presented``. Reset the presentation floor, invalidate
+        stale work, and force the latest Audio-clock target.
+        """
+        target = float(target_seconds)
+        prev = (
+            float(from_seconds)
+            if from_seconds is not None
+            else (
+                float(self._last_position_seconds)
+                if self._last_position_seconds is not None
+                else target
+            )
+        )
+        is_playing = bool(self._playing if playing is None else playing)
+        direction = "backward" if target < prev - 1e-3 else (
+            "forward" if target > prev + 1e-3 else "in_place"
+        )
+        self._seek_jump_id += 1
+        jump_id = int(self._seek_jump_id)
+        self._seek_jump_input_source = str(input_source or "unknown")
+        self._seek_jump_from = prev
+        self._seek_jump_target = target
+        self._seek_jump_guard_until_mono = monotonic() + 1.25
+        self._last_position_seconds = target
+        perf_diag.count("video.seek_jump.started")
+        perf_diag.count(f"video.seek_jump.source.{self._seek_jump_input_source}")
+        perf_diag.count(f"video.seek_jump.direction.{direction}")
+        perf_diag.note("video.seek_jump.id", jump_id)
+        perf_diag.note("video.seek_jump.input_source", self._seek_jump_input_source)
+        perf_diag.note("video.seek_jump.from_seconds", prev)
+        perf_diag.note("video.seek_jump.target_seconds", target)
+        perf_diag.note("video.seek_jump.direction", direction)
+        perf_diag.note("video.seek_jump.playing", is_playing)
+        perf_diag.note(
+            "video.seek_jump.used_scrub_path",
+            False,
+        )
+        self._sm_trace(
+            "SEEK_JUMP",
+            song_time=target,
+            media_time=self._media_time_for_song(target),
+            scheduler="note_discontinuous_seek",
+            reason=direction,
+            extra={
+                "input_source": self._seek_jump_input_source,
+                "from_seconds": prev,
+                "seek_jump_id": jump_id,
+                "playing": is_playing,
+                "pipeline_state": self._pipeline_state,
+            },
+        )
+        # Do not steal an in-progress Timeline scrub / final-land transaction.
+        if self._pipeline_state in (
+            VideoPipelineState.SCRUB_PREVIEW,
+            VideoPipelineState.FINAL_LANDING,
+        ):
+            perf_diag.count("video.seek_jump.deferred_during_scrub_land")
+            return
+        self._invalidate_async_requests()
+        self._play_pending_seconds = None
+        self._play_budget_timer.stop()
+        # Critical: clear the "already presented newer" floor so backward
+        # targets are not dropped against a pre-seek last_presented.
+        self._last_presented_song_seconds = None
+        self._min_present_seconds = float(target)
+        perf_diag.note("video.scrub.min_present_seconds_value", self._min_present_seconds)
+        self._seek_after_mono = monotonic()
+        self._seek_jump_mono = float(self._seek_after_mono)
+        self._start_seek_liveness_watch(jump_id, target, prev)
+        if is_playing and self._video_output_active:
+            self._playing = True
+            self._schedule_playback_target(
+                target,
+                scheduler=f"seek_jump_{self._seek_jump_input_source}",
+                force=True,
+            )
+
+    def _start_seek_liveness_watch(
+        self, jump_id: int, target: float, from_seconds: float
+    ) -> None:
+        del jump_id, from_seconds
+        self._seek_liveness_frames = 0
+        self._seek_liveness_first_mono = 0.0
+        self._seek_liveness_reported = set()
+        self._seek_liveness_engine_t0 = float(
+            self._last_position_seconds
+            if self._last_position_seconds is not None
+            else target
+        )
+        self._seek_liveness_engine_t1 = self._seek_liveness_engine_t0
+        self._seek_liveness_last_present_mono = 0.0
+        self._seek_liveness_submissions = 0
+        self._seek_liveness_presented = 0
+        self._seek_liveness_timer.stop()
+        self._seek_liveness_timer.start(250)
+
+    def _on_seek_liveness_tick(self) -> None:
+        """Report post-seek frame progression at 250/500/1000 ms."""
+        if self._seek_jump_target is None:
+            return
+        t0 = float(self._seek_jump_mono or 0.0)
+        if t0 <= 0.0:
+            return
+        age_ms = int(round((monotonic() - t0) * 1000.0))
+        for mark in self._seek_liveness_marks_ms:
+            if age_ms + 20 >= mark and mark not in self._seek_liveness_reported:
+                self._seek_liveness_reported.add(mark)
+                engine_now = (
+                    float(self._last_position_seconds)
+                    if self._last_position_seconds is not None
+                    else None
+                )
+                self._seek_liveness_engine_t1 = engine_now
+                last_age = (
+                    None
+                    if self._seek_liveness_last_present_mono <= 0.0
+                    else round(
+                        (monotonic() - self._seek_liveness_last_present_mono) * 1000.0,
+                        3,
+                    )
+                )
+                perf_diag.note(
+                    f"video.seek_jump.frames_at_{mark}ms",
+                    int(self._seek_liveness_presented),
+                )
+                perf_diag.note(
+                    f"video.seek_jump.last_present_age_at_{mark}ms",
+                    last_age,
+                )
+                if (
+                    self._seek_liveness_engine_t0 is not None
+                    and engine_now is not None
+                ):
+                    perf_diag.note(
+                        f"video.seek_jump.engine_advance_at_{mark}ms",
+                        round(engine_now - float(self._seek_liveness_engine_t0), 6),
+                    )
+                perf_diag.note(
+                    "video.seek_jump.pipeline_state", self._pipeline_state
+                )
+                perf_diag.note(
+                    "video.seek_jump.worker_inflight", bool(self._async_inflight)
+                )
+                if mark >= 1000 and self._seek_liveness_presented < 2:
+                    perf_diag.count("video.seek_jump.liveness_fail_single_frame")
+                    self._sm_trace(
+                        "SEEK_JUMP_LIVENESS_FAIL",
+                        song_time=self._seek_jump_target,
+                        reason="insufficient_post_seek_frames",
+                        extra={
+                            "frames_presented": int(self._seek_liveness_presented),
+                            "input_source": self._seek_jump_input_source,
+                            "last_present_age_ms": last_age,
+                        },
+                    )
+                elif mark >= 1000:
+                    perf_diag.count("video.seek_jump.liveness_ok")
+                    self._seek_jump_mono = None
+        if age_ms < 1000:
+            self._seek_liveness_timer.start(250)
+
+    def _note_seek_liveness_present(self, seconds: float) -> None:
+        del seconds
+        if self._seek_jump_target is None:
+            return
+        t0 = self._seek_jump_mono
+        if t0 is None:
+            return
+        if monotonic() > self._seek_jump_guard_until_mono + 0.05:
+            return
+        self._seek_liveness_presented += 1
+        self._seek_liveness_last_present_mono = monotonic()
+        if self._seek_liveness_first_mono <= 0.0:
+            self._seek_liveness_first_mono = monotonic()
+            perf_diag.count("video.seek_jump.first_frame_presented")
+            perf_diag.record_ms(
+                "video.seek_jump.first_frame_ms",
+                (self._seek_liveness_first_mono - float(t0)) * 1000.0,
+            )
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -3239,6 +3453,28 @@ class VideoSyncController(QObject):
                     },
                 )
                 return
+            # After a discontinuous seek, reject stale pre-seek frames that are
+            # far from the Audio-clock target (would re-arm last_presented).
+            if (
+                self._seek_jump_guard_until_mono > 0.0
+                and monotonic() < self._seek_jump_guard_until_mono
+                and engine_t is not None
+                and abs(float(seconds) - float(engine_t))
+                > max(_PLAYBACK_LATENESS_TOLERANCE_S, 0.5)
+            ):
+                perf_diag.count("video.playback.frame_drop.reason.seek_jump_stale")
+                self._sm_trace(
+                    "STALE_DROP",
+                    song_time=float(seconds),
+                    kind="play",
+                    reason="seek_jump_stale",
+                    extra={
+                        "engine_song_time": float(engine_t),
+                        "seek_jump_target": self._seek_jump_target,
+                        "input_source": self._seek_jump_input_source,
+                    },
+                )
+                return
         elif gen != self._async_req_gen:
             perf_diag.count("video.async_stale_drop")
             self._sm_trace(
@@ -3458,6 +3694,7 @@ class VideoSyncController(QObject):
             self._record_first_valid_frame_metrics()
             self.activation_loading.emit("")
             self._play_seek_recovery_attempted = False
+            self._note_seek_liveness_present(float(seconds))
             is_first = sm_trace.consume_first_play_pending()
             event = "FIRST_PLAY_FRAME" if is_first else "PLAY_PRESENT"
             self._sm_trace(
