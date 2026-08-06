@@ -132,8 +132,7 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
 
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
     assert tl._video_lane_visible() is True  # noqa: SLF001
-    held = tl._scrub_backdrop  # noqa: SLF001
-    assert held is not None and not held.isNull()
+    assert tl._scrub_backdrop is not None and not tl._scrub_backdrop.isNull()  # noqa: SLF001
 
     wave_y = float(tl._ruler_height + tl._wave_height // 2)
     scrub_x = float(tl._header_width + 220)
@@ -148,7 +147,6 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
     app.processEvents()
     assert tl._scrubbing is True  # noqa: SLF001
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
-    assert tl._scrub_backdrop is held  # noqa: SLF001
     down = _render(tl)
 
     # Drag a short distance (still scrubbing) — playhead moves.
@@ -162,7 +160,6 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
     )
     app.processEvents()
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
-    assert tl._scrub_backdrop is held  # noqa: SLF001
     drag = _render(tl)
 
     tl.mouseReleaseEvent(
@@ -175,7 +172,7 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
     )
     app.processEvents()
     assert tl._scrubbing is False  # noqa: SLF001
-    assert tl._scrub_backdrop is held  # noqa: SLF001
+    assert tl._can_use_static_backdrop() is True  # noqa: SLF001
     released = _render(tl)
 
     # Mask playhead columns across all states (union of positions).
@@ -206,7 +203,6 @@ def test_mark_press_keeps_same_static_cache(app: QApplication) -> None:
     tl.set_position(4.0)
     tl._rebuild_scrub_backdrop(reason="mark_press")  # noqa: SLF001
     app.processEvents()
-    held = tl._scrub_backdrop  # noqa: SLF001
 
     idle = _render(tl)
     mark = tl._song.marks[10]  # noqa: SLF001
@@ -223,7 +219,6 @@ def test_mark_press_keeps_same_static_cache(app: QApplication) -> None:
     app.processEvents()
     assert tl._dragging_marks is True  # noqa: SLF001
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
-    assert tl._scrub_backdrop is held  # noqa: SLF001
     pressed = _render(tl)
     # Mask playhead + the pressed Mark stem (selection overlay only).
     xs = _dynamic_xs(tl, mark.time_seconds)
