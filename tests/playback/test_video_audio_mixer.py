@@ -298,7 +298,8 @@ def test_schedule_for_song_time_prefetches_when_ahead_is_low(
     _inject(mixer, clip, _constant(12.0, 0.4))
     requested: list[float] = []
 
-    def _capture(c: VideoClip, source_time: float) -> None:
+    def _capture(c: VideoClip, source_time: float, **kwargs) -> None:  # noqa: ANN003
+        del kwargs
         requested.append(float(source_time))
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
@@ -323,7 +324,7 @@ def test_chunk_at_does_not_schedule_on_miss(monkeypatch: pytest.MonkeyPatch) -> 
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
     requested: list[float] = []
-    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
     out = mixer.chunk_at(0, 256)
     assert np.all(out == 0.0)
     assert requested == []
@@ -354,7 +355,7 @@ def test_heavy_idle_when_ahead_is_healthy(monkeypatch: pytest.MonkeyPatch) -> No
             ),
         )
     requested: list[float] = []
-    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
     # Off-RT schedule with healthy ahead must not thrash.
     mixer.schedule_for_song_time(5.0)
     out = mixer.chunk_at(int(5.0 * SR), 256)
@@ -377,7 +378,7 @@ def test_mute_stops_window_scheduling(monkeypatch: pytest.MonkeyPatch) -> None:
     mixer.set_song(song)
     mixer.set_muted(True)
     requested: list[float] = []
-    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
     mixer.schedule_for_song_time(10.0)
     mixer.preload([clip])
     assert requested == []
@@ -398,7 +399,7 @@ def test_suspend_stops_scheduling_and_chaining(monkeypatch: pytest.MonkeyPatch) 
     mixer.set_song(song)
     mixer.set_schedule_suspended(True)
     requested: list[float] = []
-    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
     mixer.schedule_for_song_time(10.0)
     assert requested == []
 
@@ -468,7 +469,7 @@ def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> No
     mixer.set_song(song)
     _inject(mixer, clip, _constant(180.0, 0.4))
     requested: list[float] = []
-    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
     out = mixer.chunk_at(int(60.0 * SR), 256)
     assert float(np.max(np.abs(out))) > 0.0
     assert requested == []
@@ -793,3 +794,244 @@ def test_repeated_boundary_gather_no_dup_or_omit() -> None:
         pos += n
     got = np.concatenate(assembled, axis=0)[: 27 * SR]
     np.testing.assert_allclose(got, ref[: 27 * SR], atol=1e-7)
+
+
+def _heavy_clip(**kwargs) -> VideoClip:
+    defaults = dict(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=3600.0,
+        source_duration_seconds=3600.0,
+    )
+    defaults.update(kwargs)
+    return VideoClip.create(**defaults)
+
+
+def test_far_future_cache_does_not_suppress_local_prefetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disjoint window at ~1800s must not make ahead look healthy at ~1688s."""
+    song = Song.create("Song")
+    clip = _heavy_clip()
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    mixer._install_window(
+        clip.id,
+        _pcm(
+            _constant(12.0, 0.4),
+            origin_seconds=1800.0,
+            key=("c.mp4", SR, 1800.0, 12.0),
+        ),
+    )
+    requested: list[float] = []
+    monkeypatch.setattr(
+        mixer, "_request_window", lambda c, t, **kw: requested.append(float(t))
+    )
+    mixer.schedule_for_song_time(1688.0)
+    assert requested, "local prefetch must run despite far-future cache"
+    # Must request near the 1683/1692 grid, never treat 1800 as local coverage.
+    assert min(requested) < 1700.0
+    assert all(t < 1790.0 for t in requested)
+
+
+def test_backward_seek_contiguous_prefetch_ignores_old_future(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    song = Song.create("Song")
+    clip = _heavy_clip()
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    for origin in (1800.0, 1809.0, 1818.0):
+        mixer._install_window(
+            clip.id,
+            _pcm(
+                _constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    requested: list[float] = []
+
+    def _capture(c: VideoClip, source_time: float, **kwargs) -> None:  # noqa: ANN003
+        del c, kwargs
+        requested.append(float(source_time))
+
+    monkeypatch.setattr(mixer, "_request_window", _capture)
+    mixer.note_discontinuous_seek(1688.0)
+    assert requested
+    assert min(requested) < 1700.0
+    # Quantized cells around 1683 / 1692 / 1701…
+    assert any(abs(t - 1683.0) < 1.0 or abs(t - 1688.0) < 1.0 for t in requested)
+    fr = mixer._contiguous_frontier_frame(clip.id, int(1688.0 * SR))
+    assert fr is None  # no published local window yet
+
+
+def test_contiguous_frontier_ignores_disjoint_future() -> None:
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    mixer._install_window(
+        clip_id,
+        _pcm(_constant(12.0, 0.4), origin_seconds=0.0, key=("a", SR, 0.0, 12.0)),
+    )
+    mixer._install_window(
+        clip_id,
+        _pcm(_constant(12.0, 0.4), origin_seconds=9.0, key=("b", SR, 9.0, 12.0)),
+    )
+    mixer._install_window(
+        clip_id,
+        _pcm(
+            _constant(12.0, 0.4), origin_seconds=1800.0, key=("far", SR, 1800.0, 12.0)
+        ),
+    )
+    fr = mixer._contiguous_frontier_frame(clip_id, int(5.0 * SR))
+    assert fr == pytest.approx(21 * SR, abs=1)
+    # Far window alone does not cover local playhead.
+    assert mixer._contiguous_frontier_frame(clip_id, int(1688.0 * SR)) is None
+
+
+def test_inflight_does_not_count_as_published_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    song = Song.create("Song")
+    clip = _heavy_clip()
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    started = threading.Event()
+    release = threading.Event()
+
+    def _fake_get(path, *, start_seconds=0.0, max_duration_seconds=None):  # noqa: ANN001
+        del path, max_duration_seconds
+        started.set()
+        assert release.wait(timeout=2.0)
+        n = int(12.0 * SR)
+        return VideoAudioBuffer(
+            path=Path("c.mp4"),
+            sample_rate=SR,
+            samples=np.zeros((n, 2), dtype=np.float32),
+            origin_seconds=float(start_seconds),
+        )
+
+    monkeypatch.setattr(
+        "cueplayer.playback.video_audio_mixer.get_video_audio", _fake_get
+    )
+    mixer._request_window(clip, 10.0)
+    assert started.wait(timeout=2.0)
+    # In-flight covers 9..21 on the grid, but published frontier must stay None.
+    assert mixer._covers_source(clip.id, 10.0)
+    assert not mixer._covers_source_published(clip.id, 10.0)
+    assert mixer._contiguous_frontier_frame(clip.id, int(10.0 * SR)) is None
+    # Second request for same key must not duplicate submit.
+    before = len(mixer._req_meta)
+    mixer._request_window(clip, 10.0)
+    assert mixer._inflight.get(clip.id) is not None
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while mixer.is_decoding() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert mixer._contiguous_frontier_frame(clip.id, int(10.0 * SR)) is not None
+    del before
+
+
+def test_eviction_prefers_disjoint_far_over_contiguous_forward() -> None:
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    mixer._pin_source_time = 5.0
+    # Contiguous chain 0..63+12 and one disjoint far window.
+    for origin in (0.0, 9.0, 18.0, 27.0, 36.0, 45.0, 54.0):
+        mixer._install_window(
+            clip_id,
+            _pcm(
+                _constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    mixer._install_window(
+        clip_id,
+        _pcm(
+            _constant(12.0, 0.4),
+            origin_seconds=1800.0,
+            key=("c.mp4", SR, 1800.0, 12.0),
+        ),
+    )
+    assert len(mixer._cache[clip_id]) == 8
+    # Adding another contiguous forward window should evict the far one.
+    mixer._install_window(
+        clip_id,
+        _pcm(
+            _constant(12.0, 0.4),
+            origin_seconds=63.0,
+            key=("c.mp4", SR, 63.0, 12.0),
+        ),
+    )
+    assert ("c.mp4", SR, 1800.0, 12.0) not in mixer._cache[clip_id]
+    assert mixer._find_covering(clip_id, 5.0) is not None
+    assert mixer._find_covering(clip_id, 65.0) is not None
+
+
+def test_continuous_schedule_requests_next_before_frontier_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    song = Song.create("Song")
+    clip = _heavy_clip()
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    # Only first window published — ahead ~11s from t=1, must prefetch next.
+    mixer._install_window(
+        clip.id,
+        _pcm(_constant(12.0, 0.4), origin_seconds=0.0, key=("c.mp4", SR, 0.0, 12.0)),
+    )
+    requested: list[float] = []
+    monkeypatch.setattr(
+        mixer, "_request_window", lambda c, t, **kw: requested.append(float(t))
+    )
+    mixer.schedule_for_song_time(1.0)
+    assert requested
+    assert min(requested) >= 11.0  # at/after frontier (~12s)
+
+
+def test_ten_boundary_assembly_no_gap_after_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assemble across ten 9s seams with all windows pre-published — no gap_fill."""
+    import cueplayer.playback.video_audio_mixer as vam
+
+    monkeypatch.setattr(vam, "_MAX_WINDOWS_PER_CLIP", 16)
+    song = Song.create("Song")
+    clip = _heavy_clip()
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    total = int(100 * SR)
+    ref = _ramp(total, 0)
+    for i in range(12):
+        origin_s = float(i * 9)
+        o = int(origin_s * SR)
+        mixer._install_window(
+            clip.id,
+            _pcm(
+                ref[o : o + 12 * SR].copy(),
+                origin_seconds=origin_s,
+                key=("c", SR, origin_s, 12.0),
+            ),
+        )
+    mixer._cb_gap_fill = 0
+    pos = int(5 * SR)
+    end = int(5 * SR + 10 * 9 * SR)  # ten 9s boundaries
+    while pos < end:
+        out = mixer.chunk_at(pos, 1024)
+        np.testing.assert_allclose(out, ref[pos : pos + 1024], atol=1e-7)
+        pos += 1024
+    assert mixer._cb_gap_fill == 0

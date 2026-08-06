@@ -1177,6 +1177,13 @@ class AudioEngine(QObject):
         self._mtc.on_seek(seconds, playing=self._playing)
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
+        # Off-RT: rebuild contiguous Video Audio coverage from the new playhead
+        # so disjoint far-future cache entries cannot suppress local prefetch.
+        if not self._scrubbing:
+            try:
+                self._video_mixer.note_discontinuous_seek(float(self.position))
+            except Exception:
+                pass
 
     def nudge(self, delta_seconds: float) -> None:
         self.seek(self.position + delta_seconds)
@@ -2075,6 +2082,7 @@ class AudioEngine(QObject):
             va_stats = self._video_mixer.exceptional_callback_stats()
             for key, value in va_stats.items():
                 perf_diag.note(f"video_audio.{key}", value)
+            self._video_mixer.publish_coverage_to_perf()
             events = self._video_mixer.drain_events()
             if events:
                 # Keep a bounded tail for correlation with wall/song/media times.

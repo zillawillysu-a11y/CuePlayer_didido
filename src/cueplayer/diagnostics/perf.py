@@ -495,6 +495,10 @@ def report_text() -> str:
         "video_audio.mute_cleared_pending",
         "video_audio.schedule_suspended",
         "video_audio.schedule_resumed",
+        "video_audio.discontinuous_seek",
+        "video_audio.publish_late",
+        "video_audio.steady_gap_fill_samples",
+        "video_audio.cold_seek_gap_fill_samples",
     ):
         lines.append(f"  {name}: {int(counters.get(name, 0))}")
     for name in (
@@ -504,8 +508,24 @@ def report_text() -> str:
         "video_audio.gap_fill",
         "video_audio.lock_wait_ns",
         "video_audio.last_window_key",
+        "video_audio.steady_gap_fill_delta",
+        "video_audio.cold_seek_gap_fill_delta",
+        "video_audio.current_source_frame",
+        "video_audio.contiguous_frontier_frame",
+        "video_audio.contiguous_ahead_samples",
+        "video_audio.contiguous_ahead_seconds",
+        "video_audio.next_required_window_key",
+        "video_audio.publish_lead_seconds",
+        "video_audio.last_window_request_mono",
+        "video_audio.last_window_publish_mono",
     ):
         lines.append(f"  {name}: {attrs.get(name, '(unset)')}")
+    if "video_audio.publish_lead_ms" in (snap.get("spans") or {}):
+        st = snap["spans"]["video_audio.publish_lead_ms"]
+        lines.append(
+            f"  span video_audio.publish_lead_ms: n={st['count']} "
+            f"mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+        )
     va_events = attrs.get("video_audio.event_ring")
     if va_events:
         lines.append("  event_ring (newest last, capped):")
