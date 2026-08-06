@@ -159,6 +159,12 @@ class VideoAudioMixer:
         start: float,
         dur: float,
     ) -> None:
+        try:
+            from cueplayer.playback import media_load_probe as _mlp
+
+            _mlp.note_va_decode_window()
+        except Exception:
+            pass
         samples: np.ndarray | None
         origin = float(start)
         heavy = clip_is_heavy(clip)

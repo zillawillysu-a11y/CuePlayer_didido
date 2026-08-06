@@ -54,6 +54,7 @@ from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.midi_cue_notes import MidiCueNotes
 from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
@@ -103,6 +104,22 @@ class AudioEngine(QObject):
         self._resume_after_scrub = False
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
+        # Audio callback continuity (lock-free reads for report; written only
+        # from the PortAudio callback thread — no file I/O, no extra locks).
+        self._cb_count = 0
+        self._cb_underflow = 0
+        self._cb_status_flags_or = 0
+        self._cb_interval_sum = 0.0
+        self._cb_interval_max = 0.0
+        self._cb_exec_sum = 0.0
+        self._cb_exec_max = 0.0
+        self._cb_deadline_miss = 0
+        self._cb_last_mono = 0.0
+        self._cb_expected_period = 0.0
+        self._cb_miss_play_decode_sum = 0
+        self._cb_miss_va_window_sum = 0
+        self._cb_miss_play_decode_last = 0
+        self._cb_miss_va_window_last = 0
         # Total monitoring offset (seconds). Prefer calibration over guessing.
         self.sync_offset_seconds = 0.0
         self.loop_a: float | None = None
@@ -1856,10 +1873,58 @@ class AudioEngine(QObject):
 
     def _make_stream_callback(self, sample_rate: int):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
-            del status, time_info
+            # Continuity probes — no file I/O, no extra locks beyond the
+            # existing mix lock. Do not redesign AudioEngine timing here.
+            cb_t0 = time.monotonic()
+            expected = float(self._cb_expected_period)
+            if expected <= 0.0 and sample_rate > 0:
+                expected = float(frames) / float(sample_rate)
+                self._cb_expected_period = expected
+            flags = 0
+            try:
+                flags = int(status)
+            except Exception:
+                flags = 0
+            underflow = False
+            try:
+                underflow = bool(getattr(status, "output_underflow", False))
+            except Exception:
+                underflow = False
+            if not underflow and flags:
+                # PortAudio paOutputUnderflowed is bit 1 (value 2).
+                underflow = bool(flags & 2)
+            if self._cb_last_mono > 0.0:
+                interval = cb_t0 - self._cb_last_mono
+                self._cb_interval_sum += interval
+                if interval > self._cb_interval_max:
+                    self._cb_interval_max = interval
+                # Deadline miss: gap significantly larger than one period.
+                if expected > 0.0 and interval > expected * 1.75:
+                    self._cb_deadline_miss += 1
+                    try:
+                        from cueplayer.playback import media_load_probe as _mlp
+
+                        pd, va = _mlp.snapshot()
+                        self._cb_miss_play_decode_last = int(pd)
+                        self._cb_miss_va_window_last = int(va)
+                        self._cb_miss_play_decode_sum += int(pd)
+                        self._cb_miss_va_window_sum += int(va)
+                    except Exception:
+                        pass
+            self._cb_last_mono = cb_t0
+            self._cb_count += 1
+            if underflow:
+                self._cb_underflow += 1
+            self._cb_status_flags_or |= int(flags)
+
+            del time_info
             with self._lock:
                 if not self._playing:
                     outdata.fill(0)
+                    exec_s = time.monotonic() - cb_t0
+                    self._cb_exec_sum += exec_s
+                    if exec_s > self._cb_exec_max:
+                        self._cb_exec_max = exec_s
                     return
                 loop_on = (
                     self.loop_enabled
@@ -1928,8 +1993,48 @@ class AudioEngine(QObject):
                 routed = apply_routing(sources, self._route, self._output_channel_count)
                 self._stamp_write_head_unlocked()
             outdata[:] = routed
+            exec_s = time.monotonic() - cb_t0
+            self._cb_exec_sum += exec_s
+            if exec_s > self._cb_exec_max:
+                self._cb_exec_max = exec_s
 
         return callback
+
+    def audio_callback_continuity(self) -> dict[str, float | int]:
+        """Low-overhead PortAudio continuity snapshot (no AudioEngine retiming)."""
+        n = int(self._cb_count)
+        return {
+            "callback_count": n,
+            "output_underflow_count": int(self._cb_underflow),
+            "status_flags_or": int(self._cb_status_flags_or),
+            "expected_period_s": float(self._cb_expected_period),
+            "interval_mean_s": (
+                float(self._cb_interval_sum) / max(1, n - 1) if n > 1 else 0.0
+            ),
+            "interval_max_s": float(self._cb_interval_max),
+            "exec_mean_s": float(self._cb_exec_sum) / max(1, n) if n else 0.0,
+            "exec_max_s": float(self._cb_exec_max),
+            "deadline_miss_count": int(self._cb_deadline_miss),
+            "miss_play_decode_submits_last": int(self._cb_miss_play_decode_last),
+            "miss_va_decode_windows_last": int(self._cb_miss_va_window_last),
+            "miss_play_decode_submits_sum": int(self._cb_miss_play_decode_sum),
+            "miss_va_decode_windows_sum": int(self._cb_miss_va_window_sum),
+        }
+
+    def publish_audio_continuity_to_perf(self) -> None:
+        """Copy continuity counters into PERF attrs (call from report path only)."""
+        snap = self.audio_callback_continuity()
+        for key, value in snap.items():
+            perf_diag.note(f"audio.callback.{key}", value)
+        if int(snap["callback_count"]) > 0:
+            perf_diag.note(
+                "audio.callback.underflow_rate",
+                round(
+                    float(snap["output_underflow_count"])
+                    / float(snap["callback_count"]),
+                    6,
+                ),
+            )
 
     def _open_output_stream(
         self,

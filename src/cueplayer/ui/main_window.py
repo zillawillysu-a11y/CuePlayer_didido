@@ -5272,6 +5272,10 @@ class MainWindow(QMainWindow):
         if not perf_diag.is_enabled():
             self.status.showMessage("Set CUEPLAYER_PERF=1 before launch to enable", 4000)
             return
+        try:
+            self.engine.publish_audio_continuity_to_perf()
+        except Exception:
+            pass
         snap = perf_diag.snapshot()
         counters = snap.get("counters") or {}
         fanout_calls = int(counters.get("ui.position_fanout.calls", 0))

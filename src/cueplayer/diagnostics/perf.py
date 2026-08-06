@@ -282,12 +282,28 @@ def report_text() -> str:
         "video.playback.frame_accept",
         "video.playback.decode_completed",
         "video.playback.decode_presented",
+        "video.playback.decode_submissions",
+        "video.playback.frames_presented",
+        "video.playback.engine_position_ticks",
+        "video.playback.budget_deferred",
+        "video.playback.budget_deadline_fire",
+        "video.playback.pending_latest_replacements",
         "video.playback.decode_starved",
         "video.playback.inflight_supersede_count",
         "video.playback.frame_drop.reason.too_late",
         "video.playback.frame_drop.reason.session_changed",
         "video.playback.frame_drop.reason.newer_already_presented",
         "video.playback.frame_drop.reason.generation_mismatch",
+        "video.scrub.queued_result_emitted",
+        "video.scrub.queued_result_acknowledged",
+        "video.scrub.queued_valid_frame",
+        "video.scrub.queued_invalid_result",
+        "video.scrub.queued_result_unacknowledged",
+        "video.scrub.resume_not_required_timeline_gap",
+        "video.scrub.resume_terminal.intentional_gap",
+        "video.scrub.resume_terminal.completed",
+        "video.scrub.resume_terminal.canceled",
+        "video.scrub.resume_invalid_decode_resubmit",
         # Round 8b — deterministic seek / handoff / no-black
         "video.seek.deadline_timeout",
         "video.seek.eof_hit",
@@ -466,6 +482,24 @@ def report_text() -> str:
         f"video.scrub.final_land_first_relevant_source: "
         f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
     )
+    lines.append("")
+    # Audio callback continuity (no AudioEngine retiming — measurement only).
+    lines.append("Audio callback continuity:")
+    for key in (
+        "audio.callback.callback_count",
+        "audio.callback.output_underflow_count",
+        "audio.callback.status_flags_or",
+        "audio.callback.expected_period_s",
+        "audio.callback.interval_mean_s",
+        "audio.callback.interval_max_s",
+        "audio.callback.exec_mean_s",
+        "audio.callback.exec_max_s",
+        "audio.callback.deadline_miss_count",
+        "audio.callback.miss_play_decode_submits_last",
+        "audio.callback.miss_va_decode_windows_last",
+        "audio.callback.underflow_rate",
+    ):
+        lines.append(f"  {key}: {attrs.get(key, '(unset)')}")
     lines.append("")
     # Round 7 — Video state-machine trace (land → resume freeze diagnosis).
     try:

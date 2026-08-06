@@ -75,7 +75,17 @@ def _enter_resume(controller: VideoSyncController, t: float) -> None:
 def _present_play_frame(controller: VideoSyncController, t: float) -> None:
     controller._async_req_gen += 1
     gen = controller._async_req_gen
+    rid = int(controller._async_req_id) + 1
+    controller._async_req_id = rid
     controller._last_position_seconds = float(t)
+    controller._note_resume_queued_result(
+        gen=gen,
+        request_id=rid,
+        song_time=float(t),
+        media_session=int(controller._media_session_gen),
+        scrub_session=int(controller._scrub_session_gen),
+        valid_frame=True,
+    )
     controller._on_async_frame_ready(
         gen,
         float(t),
@@ -83,6 +93,7 @@ def _present_play_frame(controller: VideoSyncController, t: float) -> None:
         "play",
         "",
         -1,
+        rid,
     )
 
 
@@ -152,6 +163,7 @@ def test_recovery_too_late_bootstrap_accepts_then_catchup(
             song_time=1.0,
             media_session=int(controller._media_session_gen),
             scrub_session=int(controller._scrub_session_gen),
+            valid_frame=True,
         )
         # Engine advanced while UI callback was delayed.
         controller._last_position_seconds = 2.0
@@ -162,6 +174,7 @@ def test_recovery_too_late_bootstrap_accepts_then_catchup(
             "play",
             "",
             -1,
+            99,
         )
         assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
         snap = perf_diag.snapshot()["counters"]
@@ -208,6 +221,7 @@ def test_generation_mismatch_keeps_request_not_false_ready(
             np.full((8, 8, 3), 55, dtype=np.uint8),
             "play",
             "",
+            -1,
             -1,
         )
         assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
@@ -306,6 +320,7 @@ def test_watchdog_defers_while_waiting_frame_beyond_deadline(
             song_time=0.6,
             media_session=int(controller._media_session_gen),
             scrub_session=int(controller._scrub_session_gen),
+            valid_frame=True,
         )
         sm_trace.set_worker_runtime(
             sm_trace.WorkerRuntime.WAITING_FRAME,
@@ -332,6 +347,7 @@ def test_watchdog_defers_while_waiting_frame_beyond_deadline(
             "play",
             "",
             -1,
+            1472,
         )
         assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
         assert (
