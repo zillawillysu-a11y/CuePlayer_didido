@@ -291,11 +291,11 @@ Authoritative fields:
 | Field | Meaning |
 |-------|---------|
 | `sample_rate` | Hz (integer) |
-| `source_start_sample` | First source PCM sample index mapped into the proxy (usually 0 after trim policy) |
-| `proxy_start_sample` | First sample index in the proxy file corresponding to that source sample (usually 0) |
-| `leading_trim_samples` | Non-negative count of source/decoder leading samples **removed** from the proxy (priming/padding discarded at head) |
-| `trailing_trim_samples` | Non-negative count removed at tail |
-| `decoded_sample_count` | Samples present in the proxy PCM (per channel frame count) |
+| `source_start_sample` | Source-domain sample index that corresponds to `proxy_start_sample` (first retained source sample) |
+| `proxy_start_sample` | Proxy-file sample index paired with `source_start_sample` (normally `0`) |
+| `leading_trim_samples` | Descriptive/validation metadata: how many leading decoded source samples were removed during conversion. In the normal trimmed case `source_start_sample == leading_trim_samples`. **Not** subtracted again in the playback affine map |
+| `trailing_trim_samples` | Descriptive/validation metadata for how many trailing samples were removed; affects valid range / end checks, **not** the affine start-position formula |
+| `decoded_sample_count` | Samples present in the proxy PCM (frame count per channel layout) |
 
 Seconds may be **derived for display only**: `seconds = samples / sample_rate`.
 
@@ -313,30 +313,46 @@ Seconds may be **derived for display only**: `seconds = samples / sample_rate`.
 
 ### 4.5 Offset convention (exact)
 
-Define media-read compensation in **integer samples** (same rate):
+Authoritative affine mapping in **integer samples** (same rate).  
+`leading_trim_samples` is **not** part of this formula (it must not be subtracted a second time when `source_start_sample` already names the first retained source sample):
 
 ```text
-# Positive leading_trim_samples means those early source samples were dropped from the proxy.
-# Therefore proxy sample 0 corresponds to source sample = leading_trim_samples
-# (when source_start_sample == leading_trim_samples and proxy_start_sample == 0).
-
 source_sample = song_to_variant_sample(song_sample)   # via anchor_offset in samples at this rate
-proxy_sample  = source_sample - leading_trim_samples + proxy_start_sample - source_start_sample
+proxy_sample  = proxy_start_sample + (source_sample - source_start_sample)
+```
+
+**Definitions:**
+
+- `source_start_sample` — source-domain sample corresponding to `proxy_start_sample`
+- `proxy_start_sample` — normally `0`
+- `leading_trim_samples` — how many leading decoded source samples were removed; normally equals `source_start_sample`; descriptive/validation only
+- `trailing_trim_samples` — affects valid range / end validation only, not this start map
+
+**Valid source range for a published proxy:**
+
+```text
+source_start_sample <= source_sample < source_start_sample + decoded_sample_count
 ```
 
 **Examples:**
 
 1. **Clean WAV identity**  
-   `leading_trim=0`, `trailing_trim=0`, `source_start=0`, `proxy_start=0`, counts equal.  
-   → `proxy_sample == source_sample`.
+   `source_start_sample = 0`, `proxy_start_sample = 0`, `source_sample = 0`  
+   → `proxy_sample = 0 + (0 - 0) = 0`
 
-2. **AAC with 2112-sample priming discarded into leading trim**  
-   `leading_trim_samples=2112`, `proxy_start=0`, `source_start=2112`.  
-   → Song/media time that pointed at source sample 2112 reads proxy sample 0.  
+2. **AAC with 2112 leading samples removed**  
+   `leading_trim_samples = 2112`, `source_start_sample = 2112`, `proxy_start_sample = 0`, `source_sample = 2112`  
+   → `proxy_sample = 0 + (2112 - 2112) = 0`  
    Marks on Song Time unchanged.
 
-3. **Forbidden**  
-   Subtracting 2112 samples from every mark’s Song Time to “fix” priming.
+3. **Later retained sample**  
+   `source_start_sample = 2112`, `proxy_start_sample = 0`, `source_sample = 6912`  
+   → `proxy_sample = 0 + (6912 - 2112) = 4800`
+
+4. **Forbidden**  
+   Subtracting priming from every mark’s Song Time, or using  
+   `source_sample - leading_trim_samples + proxy_start_sample - source_start_sample`  
+   (that double-subtracts when `source_start_sample == leading_trim_samples`).
 
 If residual mapping cannot be expressed exactly with the integer fields above, conversion **fails validation** (do not publish `manifest.json`).
 
@@ -653,6 +669,7 @@ src/cueplayer/converter/
 tests/converter/
   test_manifest.py
   test_package.py
+  test_sample_mapping.py   # mandatory §4.5 affine map cases
 ```
 
 **MC-1 may implement only:**
@@ -660,6 +677,7 @@ tests/converter/
 - Manifest v1 models/schema  
 - Exact rational frame-rate model (`fps_num`/`fps_den`)  
 - Integer sample / PTS timing model fields  
+- Pure helper for §4.5: `proxy_sample = proxy_start_sample + (source_sample - source_start_sample)` plus valid-range check (no FFmpeg)  
 - Package ID  
 - Generation directory layout  
 - Relative artifact-path validation  
@@ -671,6 +689,14 @@ tests/converter/
 - Crash-recovery behavior (no false-valid package)  
 - Preservation of previous valid generation  
 - Protection against modifying original media  
+
+**Mandatory MC-1 unit tests (`test_sample_mapping.py`):**
+
+- Clean WAV identity → `proxy_sample == 0`  
+- AAC leading trim (`leading_trim=2112`, `source_start=2112`, `source_sample=2112`) → `proxy_sample == 0`  
+- Later retained sample (`source_sample=6912`) → `proxy_sample == 4800`  
+- Valid range: `source_start <= source_sample < source_start + decoded_sample_count`  
+- Assert mapping does **not** also subtract `leading_trim_samples`  
 
 **MC-1 must not implement:**
 
@@ -692,7 +718,7 @@ tests/converter/
 
 - Product priority order (§0.2) and optimization rule  
 - User workflow / default label **CuePlayer Optimized**  
-- Audio: disposable PCM cache; no processing; preserve rate; bit-depth policy; explicit channel preservation (no casual `-ac`); RF64 auto; integer-sample authoritative timing; concept separation; offset examples  
+- Audio: disposable PCM cache; no processing; preserve rate; bit-depth policy; explicit channel preservation (no casual `-ac`); RF64 auto; integer-sample authoritative timing with affine map `proxy_sample = proxy_start_sample + (source_sample - source_start_sample)`; `leading_trim_samples` descriptive only; concept separation  
 - Video: short-GOP H.264 720p candidate as default; All-Intra not default without proof; exact rational FPS; no 29.97→30 “rounding”  
 - Manifest lifecycle: partial / failed / final; final has no status enum  
 - Generation-based Windows-safe publishing; keep previous valid generation  
@@ -735,7 +761,8 @@ User flow: Drop → Convert → “CuePlayer Optimized” (hide codecs/GOP/CRF f
 
 Audio: disposable PCM WAV/RF64 cache; preserve sample rate; 16-bit for MP3/AAC/16-bit;
 24-bit only if source is real 24-bit PCM; NO -ac remix; preserve channel count/layout/order;
-authoritative timing = integer samples + trims; never move marks for priming;
+authoritative map: proxy_sample = proxy_start_sample + (source_sample - source_start_sample);
+leading_trim_samples is metadata only (do not double-subtract); never move marks for priming;
 validate L=LTC,R=Music later.
 
 Video: default candidate = 720p H.264 short-GOP, no B-frames, CFR, no embedded audio;
@@ -755,4 +782,4 @@ Next: architecture re-review approval, then a separate branch for MC-1.
 
 ---
 
-READY FOR MEDIA CONVERTER ARCHITECTURE RE-REVIEW
+READY FOR FINAL MEDIA CONVERTER ARCHITECTURE APPROVAL
