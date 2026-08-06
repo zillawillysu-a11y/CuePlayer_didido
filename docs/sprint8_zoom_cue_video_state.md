@@ -1,57 +1,46 @@
-# Sprint 8 follow-up — Static render parity / low-overhead PERF / resume recovery
+# Sprint 8 follow-up — Resume WAITING_FRAME liveness / mouse static parity
 
 **Branch:** `cursor/sprint8-zoom-cue-video-state-028d`  
 **Base:** `cursor/sprint8-cached-timeline-poster-028d` (PR #239)  
 **PR:** #240  
-**Status:** Ready for Windows STATIC RENDER / LOW-OVERHEAD PERF / RESUME RECOVERY validation  
+**Status:** Ready for Windows RESUME LIVENESS / MOUSE STATIC PARITY validation  
 **(do not merge #239/#240 until Windows validation passes)**
 
-Does not change: AudioEngine / sample clock, Mark Cue timestamps, Export, Video Preview state matrix, decoder architecture, GPU decode, normal ~0.3 s seek latency budget, Mark lookup / Cue List further optimization.
+Does not change: AudioEngine / sample clock, Mark timestamps / Cue semantics, Export, Preview state matrix, zoom anchor, edge-Mark overlap, ~0.3 s normal seek budget, GPU decode / decoder redesign.
 
-## Commits on #240 (latest three)
+## Root cause (A) — WAITING_FRAME self-cancel
 
-1. **Static Timeline render parity** — PLAYING / PAUSED / STOPPED share one native retained static path; video header caption always paints; video-clip bake quality no longer depends on transport; play/pause pixel regression (mask playhead only).
-2. **Low-overhead PERF** — position tick no longer calls `perf.snapshot()`; `get_attr` + bounded span rings; output TC `setStyleSheet` / font-fit skip when unchanged.
-3. **Resume recovery invariant** — RESUME→PLAYBACK / READY only after current-generation playback frame presented; no false-ready on second watchdog; too_late / gen mismatch keep land + resubmit + armed watchdog; idle RESUME resubmits current target; recovery_started == recovery_completed after frame.
+Dense seek decoded a play frame into `WAITING_FRAME` (queued Qt slot). Resume watchdog then treated the lack of *presented* frame as failure, called `_invalidate_async_requests()` (gen++), and submitted a replacement. The queued UI callback arrived with a stale generation and was dropped. Repeat → permanent freeze (`recovery_started=1`, `recovery_completed=0`).
 
-## Prior kept work on this PR
+## Fix (A)
 
-| Item | Notes |
-|------|--------|
-| Zoom screen-space annotations | kept |
-| Cue List O(1) follow | do not re-optimize |
-| Scrub native blit / Note layout | kept |
-| Post-seek land stage bounds (~0.3 s normal) | keep; this patch targets multi-second incomplete recovery |
+- WAITING_FRAME / in-flight / pending-latest count as **active progress** → watchdog **defers** (no gen bump).
+- At most **one** decoder recreate per resume transaction.
+- Bootstrap: accept first resume play frame even if Audio clock advanced during UI delay; then catch up.
+- Telemetry: `resume_watchdog_deferred_for_waiting_frame`, `resume_waiting_frame_presented`, queued gen/req/age, terminal status.
+- Regression: delay UI present past watchdog deadline; prove no gen loop + frame presents + recovery balances.
+
+## Fix (B)
+
+- `_can_use_static_backdrop()` stays True for mark drag / box select / clip drag|trim.
+- Only geometry edits (resize / gain drag) leave the retained blit path.
+- Pixel tests: idle / LMB-down / drag / release; Video lane strip must not change on press.
 
 ## Windows validation
 
 ```powershell
 $env:CUEPLAYER_PERF = "1"
-cd C:\Users\willy\Projects\CuePlayer_v2
+cd C:\Users\willy\Projects\CuePlayer_v2   # or your clone path
 git fetch origin
 git checkout cursor/sprint8-zoom-cue-video-state-028d
 git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
 
-### A. Static render parity
-- Same viewport/zoom; alternate PLAYING ↔ PAUSED/STOPPED
-- Mark text/lines + waveform visually identical
-- No dot artifacts appear/disappear
+### A. Dense resume
+sparse→dense→sparse→dense ×5, ≥10 s in each dense section. Pass if Video always continues; no WAITING_FRAME gen-bump loop; `resume_started==resume_completed` (plus recovered); `recovery_started==recovery_completed`.
 
-### B. Dense seek recovery
-- During play: sparse → dense → sparse → dense; stay ≥10 s each
-- Video continues in Dense region
-- Every RESUME_BEGIN → FIRST_PLAYBACK_FRAME_PRESENTED
-- `resume_recovery_started` == `resume_recovery_completed`
-- No `first_valid_frame_after_seek` delay above ~1 s (multi-second freeze eliminated)
+### B. Mouse visual
+Fixed viewport: mouse-up / LMB held / drag / release. Pass if no black strip pop, Video name does not appear only on mouse-down, static layers identical.
 
-### C. PERF overhead
-- Same interaction with PERF off then on — UX close
-- New 5 s cProfile with PERF on: `_perf_note_position_tick` / `perf.snapshot` must not be a major hotspot
-- Tools → Write Performance Report for the new session
-
-### D. Preserve
-- Audio / sample clock, zoom anchor, Zoom/Video responsiveness, Mark/Cue timestamps, Preview state matrix, Export
-
-READY FOR WINDOWS STATIC RENDER / LOW-OVERHEAD PERF / RESUME RECOVERY VALIDATION
+READY FOR WINDOWS RESUME LIVENESS / MOUSE STATIC PARITY VALIDATION
