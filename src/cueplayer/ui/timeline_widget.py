@@ -1563,15 +1563,22 @@ class TimelineWidget(QWidget):
         if self._playing and not was and self._auto_scroll and not self._scrubbing:
             self._view_pinned = False
             self._center_on_playhead()
-            self._invalidate_scrub_backdrop()
         if was != self._playing:
-            # Play uses the same static-backdrop path as scrub; rebuild once.
+            # Transport state must NOT select a different static render path.
+            # Keep the retained native cache; only dynamic overlay (playhead)
+            # differs between PLAYING / PAUSED / STOPPED.
             self._reset_playhead_dirty_tracking()
-            self._invalidate_scrub_backdrop()
+            # Ensure a cache exists; do not invalidate solely because play started.
+            if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+                self._rebuild_scrub_backdrop(reason="play_seed")
+            elif not self._scrub_backdrop_geometry_ok():
+                self._rebuild_scrub_backdrop(reason="play_geometry")
             self._update_video_lane()
             if not self._playing and self._video_waveform_pending_refresh:
                 self._video_waveform_pending_refresh = False
                 self._invalidate_scrub_backdrop()
+                if self.width() > 0 and self.height() > 0:
+                    self._rebuild_scrub_backdrop(reason="wave_pending")
             self.update()
 
     def _begin_box_select(
@@ -2321,45 +2328,33 @@ class TimelineWidget(QWidget):
     def _blit_scrub_backdrop(self, painter: QPainter) -> bool:
         """Draw the static cache, shifting within an overscanned bake.
 
-        Left-button scrub does not change viewport geometry — use a native 1:1
-        blit of the retained cache (no dest-size resample). Rapid zoom (PPS
-        mismatch) uses a scaled spatial preview instead.
+        PLAYING / PAUSED / STOPPED / scrub all use the same native 1:1 blit when
+        viewport scale is unchanged. Scaled zoom-preview is only for PPS mismatch
+        during an active view-transform gesture.
         """
-        # Scrub / play with matching geometry: never enter the zoom-preview
-        # resample path (that softens text and adds pixel dots).
-        if self._scrubbing and not self._view_transform_busy:
+        # Non-transform interactions: never resample the retained static cache.
+        if not self._view_transform_busy:
             return self._blit_native_backdrop(painter)
 
         if (
-            self._view_transform_busy
-            and self._spatial_backdrop is not None
+            self._spatial_backdrop is not None
             and not self._scrub_backdrop_geometry_ok()
         ):
             if self._blit_zoom_preview(painter):
                 return True
 
         if not self._scrub_backdrop_geometry_ok():
-            if self._view_transform_busy:
-                if self._blit_zoom_preview(painter):
-                    return True
-                return False
-            self._rebuild_scrub_backdrop(reason="geometry_mismatch")
-        if not self._scrub_backdrop_geometry_ok():
+            if self._blit_zoom_preview(painter):
+                return True
             return False
 
         overscan = int(self._scrub_backdrop_overscan)
         delta = int(round(self._scroll_x - self._scrub_backdrop_scroll))
         margin = 8
         if delta < -overscan + margin or delta > overscan - margin:
-            if self._view_transform_busy:
-                if self._blit_zoom_preview(painter):
-                    return True
-                return False
-            self._rebuild_scrub_backdrop(reason="scroll_overscan")
-            if not self._scrub_backdrop_geometry_ok():
-                return False
-            overscan = int(self._scrub_backdrop_overscan)
-            delta = 0
+            if self._blit_zoom_preview(painter):
+                return True
+            return False
 
         return self._blit_native_pixmap(
             painter, self._scrub_backdrop, overscan=overscan, delta=delta
@@ -2517,6 +2512,7 @@ class TimelineWidget(QWidget):
             if x < hw - 4.0 or x > right + 4.0:
                 continue
             color = QColor(sprite["color"])
+            x = self._device_snap(x)
             painter.setPen(self._mark_overlay_pen(color))
             painter.drawLine(
                 QPointF(x, self._ruler_height), QPointF(x, tracks_top)
@@ -2550,10 +2546,9 @@ class TimelineWidget(QWidget):
             return
         t0 = monotonic_ns()
         view_w = self._view_width()
-        if self._playing:
-            overscan = max(128, int(view_w * 1.5))
-        else:
-            overscan = max(64, int(view_w * 0.75))
+        # Same overscan for PLAYING / PAUSED / STOPPED so transport state never
+        # selects a different retained raster layout.
+        overscan = max(128, int(view_w * 1.25))
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
@@ -2712,10 +2707,10 @@ class TimelineWidget(QWidget):
         return out
 
     def _can_use_static_backdrop(self) -> bool:
-        """Blit cached static layers while scrubbing, playing, zooming, or idle-valid.
+        """Blit retained native static layers for PLAYING / PAUSED / STOPPED / scrub.
 
-        Idle with a geometry-matched retained cache uses the same native blit as
-        scrub — static pixels stay identical between mouse-up and mouse-down.
+        Transport state must not select a different Mark/waveform rendering path.
+        Only zoom/pan gestures (view-transform) or interactive edits leave this path.
         """
         if self._box_selecting or self._dragging_marks or self._dragging_clip is not None:
             return False
@@ -2730,12 +2725,14 @@ class TimelineWidget(QWidget):
             or self._resizing_header
         ):
             return False
-        if self._view_transform_busy or self._panning:
-            return True
-        if self._scrubbing or self._playing:
-            return True
-        # Idle: prefer retained native cache when it still matches the viewport.
-        return self._scrub_backdrop_geometry_ok()
+        # Always prefer retained native cache for ordinary transport; rebuild
+        # on demand inside the blit path when missing/mismatched.
+        return True
+
+    def _device_snap(self, logical: float) -> float:
+        """Snap a logical coordinate to the nearest device pixel (shared DPR rule)."""
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        return float(round(float(logical) * dpr) / dpr)
 
     def _paint_static_layers(
         self,
@@ -3936,11 +3933,10 @@ class TimelineWidget(QWidget):
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                     # Selection / hover only — not all visible Marks.
                     self._paint_marks_dynamic_overlay(painter)
-                    need_video_sel = (
-                        bool(self._selected_clip_ids) or self._hover_clip_id is not None
-                    )
-                    if need_video_sel or not self._playing:
-                        self._paint_video_selection_live(painter)
+                    # Video header caption + selection chrome must paint in
+                    # PLAYING and PAUSED alike (transport must not change
+                    # static-looking pixels such as "No clip selected").
+                    self._paint_video_selection_live(painter)
                     self._paint_loop_region(painter)
                     self._paint_selection_box(painter)
                     self._paint_audio_loading_overlay(painter)
@@ -4187,16 +4183,9 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        # Play-time backdrop bake: use the coarse mins/maxs overview instead of
-        # per-pixel source-pyramid sampling. That path was the main hitch when
-        # Video Track was open even with Preview/Clean closed.
-        if self._playing:
-            self._paint_video_clip_waveform_coarse(
-                painter, peaks, duration=duration, x_left=x_left, x_right=x_right,
-                mid=mid, amp=amp, clip_start=float(clip.start_seconds),
-            )
-            return
-
+        # Transport must not change static bake quality. Prefer the same
+        # sampling path in PLAYING and PAUSED; only gate worker submit above.
+        # Wide / zoomed-out clips still step columns to keep bake cheap.
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
         # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
@@ -4873,7 +4862,7 @@ class TimelineWidget(QWidget):
             color = QColor(lane.color if lane else "#ffffff")
             shape = lane.marker_shape if lane is not None else "circle"
             selected = mark.id in self._selected_mark_ids
-            x = self._x_for_time(mark.time_seconds)
+            x = self._device_snap(self._x_for_time(mark.time_seconds))
             if x < self._header_width - 2 or x > right + 2:
                 continue
             dragging = self._dragging_marks and mark.id in self._drag_ids
@@ -5066,7 +5055,7 @@ class TimelineWidget(QWidget):
                 painter.drawText(int(x + flag_w + 4), 14, f"{t:.3f}s")
 
     def _paint_playhead(self, painter: QPainter) -> None:
-        x = self._x_for_time(self._position)
+        x = self._device_snap(self._x_for_time(self._position))
         if x < self._header_width or x > self.width():
             return
         color = QColor(self._playhead_color or "#3dd68c")
