@@ -308,6 +308,10 @@ class CueMonitorPanel(QWidget):
         self._position = 0.0
         self._current_mark_ids: set[str] = set()
         self._playhead_list_mark_id: str | None = None
+        # O(1) Cue List row lookup — rebuilt in refresh_list (not scanned each tick).
+        self._mark_id_to_row: dict[str, int] = {}
+        self._now_highlight_rows: set[int] = set()
+        self._follow_target_row: int = -1
         # User scrolled Cue List away — don't yank back until they scroll the
         # playhead cue back into view, seek, or choose Follow playhead.
         self._cue_list_follow_suspended = False
@@ -729,6 +733,9 @@ class CueMonitorPanel(QWidget):
     def set_song(self, song: Song | None) -> None:
         self._song = song
         self._playhead_list_mark_id = None
+        self._mark_id_to_row = {}
+        self._now_highlight_rows = set()
+        self._follow_target_row = -1
         self._cue_list_follow_suspended = False
         self._cue_list_follow_left_viewport = False
         # Column order / NOW visibility come from global monitor UI prefs — do
@@ -877,11 +884,26 @@ class CueMonitorPanel(QWidget):
         self._sync_current(force_now=True)
 
     def _mark_id_at_row(self, row: int) -> str | None:
+        perf_diag.count("cue_list.mark_id_at_row.calls")
         time_item = self.cue_table.item(row, self._time_col())
         if time_item is None:
             return None
         mark_id = time_item.data(Qt.ItemDataRole.UserRole)
         return str(mark_id) if mark_id else None
+
+    def _row_for_mark_id(self, mark_id: str) -> int:
+        """O(1) Cue List row lookup (rebuilt in ``refresh_list``)."""
+        if not mark_id:
+            return -1
+        row = self._mark_id_to_row.get(mark_id, -1)
+        if row < 0:
+            return -1
+        # Stale map guard (rare): verify without scanning the whole table.
+        if row >= self.cue_table.rowCount():
+            return -1
+        if self._mark_id_at_row(row) != mark_id:
+            return -1
+        return int(row)
 
     def apply_now_display_settings(self) -> None:
         """Reload NOW lane slots after Display dialog changes."""
@@ -1494,19 +1516,23 @@ class CueMonitorPanel(QWidget):
         px = self._clock_font_px
         font = self._mono_clock_font(px, bold=True)
         self.clock_label.setFont(font)
-        self.clock_label.setStyleSheet(
+        qss = (
             f"color: #e4e4e7; background: transparent; font-size: {px}px; font-weight: 700;"
             "font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        if getattr(self, "_clock_label_qss", None) != qss:
+            self._clock_label_qss = qss
+            self.clock_label.setStyleSheet(qss)
         self.clock_label.setMinimumHeight(QFontMetrics(font).height() + 4)
 
     def _apply_duration_label_style(self) -> None:
         px = self._duration_font_px
         font = self._mono_clock_font(px, bold=False)
         self.duration_label.setFont(font)
-        self.duration_label.setStyleSheet(
-            f"color: #a1a1aa; background: transparent; font-size: {px}px;"
-        )
+        qss = f"color: #a1a1aa; background: transparent; font-size: {px}px;"
+        if getattr(self, "_duration_label_qss", None) != qss:
+            self._duration_label_qss = qss
+            self.duration_label.setStyleSheet(qss)
         self.duration_label.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     @staticmethod
@@ -1542,10 +1568,13 @@ class CueMonitorPanel(QWidget):
         font = self._mono_clock_font(px, bold=True)
         self.tc_output_status.setFont(font)
         # No letter-spacing — tracking made narrow panels clip the last glyph.
-        self.tc_output_status.setStyleSheet(
+        qss = (
             f"color: {color}; background: transparent; font-size: {px}px;"
             "font-weight: 600; letter-spacing: 0;"
         )
+        if getattr(self, "_tc_status_qss", None) != qss:
+            self._tc_status_qss = qss
+            self.tc_output_status.setStyleSheet(qss)
         self.tc_output_status.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     def _apply_tc_value_style(self) -> None:
@@ -1553,14 +1582,21 @@ class CueMonitorPanel(QWidget):
         color = self._tc_value_color
         font = self._mono_clock_font(px, bold=True)
         self.tc_output_value.setFont(font)
-        self.tc_output_value.setStyleSheet(
+        qss = (
             f"color: {color}; background: transparent; font-size: {px}px;"
             "font-weight: 700; font-family: Consolas, 'Cascadia Mono', monospace;"
         )
+        if getattr(self, "_tc_value_qss", None) != qss:
+            self._tc_value_qss = qss
+            self.tc_output_value.setStyleSheet(qss)
         self.tc_output_value.setMinimumHeight(QFontMetrics(font).height() + 2)
 
     def _fit_clock_fonts(self) -> None:
-        """Shrink clock digits to fit when the right panel is narrow."""
+        """Shrink clock digits to fit when the right panel is narrow.
+
+        No-ops when geometry and computed fonts are unchanged so position-tick
+        TC refresh does not thrash ``setStyleSheet``.
+        """
         frame_w = self._clock_frame.width()
         if frame_w <= 1:
             return
@@ -1568,6 +1604,12 @@ class CueMonitorPanel(QWidget):
         # With TC + toggles visible, use tighter padding so the block stays compact
         # inside the scrollable column.
         dense = self._tc_output_block.isVisible() or self.output_quick_toggles.isVisible()
+        if dense:
+            margins = (6, 8, 6, 8)
+        elif frame_w < 280:
+            margins = (8, 12, 8, 12)
+        else:
+            margins = (12, 16, 12, 16)
         if layout is not None:
             if frame_w < 220 or dense:
                 layout.setContentsMargins(6, 8, 6, 8)
@@ -1624,7 +1666,29 @@ class CueMonitorPanel(QWidget):
                 min_px=_TC_STATUS_FONT_MIN_PX,
             )
             full_status = compact_status
-        self.tc_output_status.setText(full_status)
+        fit_key = (
+            frame_w,
+            budget,
+            margins,
+            clock_px,
+            duration_px,
+            tc_px,
+            status_px,
+            status_compact,
+            self._tc_value_color,
+            bool(self._tc_status_sending),
+            tuple(self._tc_status_outputs),
+            bool(self._tc_output_block.isVisible()),
+            bool(self.output_quick_toggles.isVisible()),
+        )
+        if getattr(self, "_clock_fit_key", None) == fit_key:
+            # Still refresh status text when compact mode chose a different label.
+            if self.tc_output_status.text() != full_status:
+                self.tc_output_status.setText(full_status)
+            return
+        self._clock_fit_key = fit_key
+        if self.tc_output_status.text() != full_status:
+            self.tc_output_status.setText(full_status)
         if self._tc_status_outputs:
             self.tc_output_status.setToolTip(" · ".join(self._tc_status_outputs))
         else:
@@ -2024,6 +2088,9 @@ class CueMonitorPanel(QWidget):
         self.cue_table.blockSignals(True)
         try:
             self.cue_table.setRowCount(0)
+            self._mark_id_to_row = {}
+            self._now_highlight_rows = set()
+            self._follow_target_row = -1
             cue_ids = main_cue_id_map(self._song) if self._song is not None else {}
             time_col = self._time_col()
             type_col = self._col_for_field("type")
@@ -2040,6 +2107,7 @@ class CueMonitorPanel(QWidget):
                         continue
                     row = self.cue_table.rowCount()
                     self.cue_table.insertRow(row)
+                    self._mark_id_to_row[mark.id] = row
 
                     time_item = QTableWidgetItem(format_time(mark.time_seconds))
                     time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -2101,6 +2169,7 @@ class CueMonitorPanel(QWidget):
         # follow re-scrolls (otherwise a mark added during the deferred refresh
         # window caches the new id before its row exists, then skips scroll).
         self._playhead_list_mark_id = None
+        self._follow_target_row = -1
         self._sync_current()
 
     def selected_mark_ids(self) -> list[str]:
@@ -2176,19 +2245,39 @@ class CueMonitorPanel(QWidget):
         if not self._show_output_tc_clock:
             return
         outs = tuple(outputs)
+        sending_b = bool(sending)
+        tc_text = str(timecode)
+        value_color = (
+            (self._tc_clock_color if sending_b else "#a1a1aa") if outs else "#52525b"
+        )
+        present_key = (tc_text, outs, sending_b, self._tc_clock_color, value_color)
+        if getattr(self, "_output_tc_present_key", None) == present_key:
+            return
+        prev = getattr(self, "_output_tc_present_key", None)
+        self._output_tc_present_key = present_key
         self._tc_status_outputs = outs
-        self._tc_status_sending = bool(sending)
+        self._tc_status_sending = sending_b
+        self._tc_value_color = value_color
         if outs:
-            self.tc_output_status.setText(self._format_tc_status_text(compact=False))
-            self.tc_output_value.setText(timecode)
-            self._tc_value_color = self._tc_clock_color if sending else "#a1a1aa"
+            status_text = self._format_tc_status_text(compact=False)
+            if self.tc_output_status.text() != status_text:
+                self.tc_output_status.setText(status_text)
+            if self.tc_output_value.text() != tc_text:
+                self.tc_output_value.setText(tc_text)
         else:
-            self.tc_output_status.setText("TC off")
-            self.tc_output_value.setText("—")
-            self._tc_value_color = "#52525b"
+            if self.tc_output_status.text() != "TC off":
+                self.tc_output_status.setText("TC off")
+            if self.tc_output_value.text() != "—":
+                self.tc_output_value.setText("—")
         self._apply_tc_status_style()
         self._apply_tc_value_style()
-        self._fit_clock_fonts()
+        # Refit only when layout-affecting fields change (not every SMPTE tick).
+        layout_key = (outs, sending_b, self._tc_clock_color)
+        prev_layout = None
+        if isinstance(prev, tuple) and len(prev) >= 4:
+            prev_layout = (prev[1], prev[2], prev[3])
+        if prev_layout != layout_key:
+            self._fit_clock_fonts()
 
     def _apply_output_timecode_style(self) -> None:
         self._tc_output_block.setVisible(self._show_output_tc_clock)
@@ -2334,23 +2423,38 @@ class CueMonitorPanel(QWidget):
         self.cue_id_changed.emit(str(mark.id), old_id, new_id)
 
     def _apply_now_highlight(self) -> None:
-        """Tint rows that are currently active in NOW slots."""
+        """Tint rows that are currently active in NOW slots (O(changed rows))."""
         clear = QColor(0, 0, 0, 0)
-        for row in range(self.cue_table.rowCount()):
-            mark_id = self._mark_id_at_row(row)
-            is_now = mark_id in self._current_mark_ids
-            bg = QColor("#243044") if is_now else clear
-            if is_now and self._song is not None and mark_id:
-                mark = self._song.mark_by_id(mark_id)
-                lane = self._song.lane_by_index(mark.lane_index) if mark else None
-                if lane is not None:
-                    c = QColor(lane.color)
-                    bg = QColor(c.red(), c.green(), c.blue(), 40)
+        wanted_rows: set[int] = set()
+        for mark_id in self._current_mark_ids:
+            row = self._row_for_mark_id(mark_id)
+            if row >= 0:
+                wanted_rows.add(row)
+
+        def _paint_row(row: int, *, is_now: bool, mark_id: str | None) -> None:
+            bg = clear
+            if is_now:
+                bg = QColor("#243044")
+                if self._song is not None and mark_id:
+                    mark = self._song.mark_by_id(mark_id)
+                    lane = self._song.lane_by_index(mark.lane_index) if mark else None
+                    if lane is not None:
+                        c = QColor(lane.color)
+                        bg = QColor(c.red(), c.green(), c.blue(), 40)
             for col in range(_COL_COUNT):
                 item = self.cue_table.item(row, col)
                 if item is None:
                     continue
                 item.setBackground(bg)
+
+        # Clear rows that left NOW.
+        for row in self._now_highlight_rows - wanted_rows:
+            _paint_row(row, is_now=False, mark_id=None)
+        # Paint new / still-active NOW rows.
+        for row in wanted_rows:
+            mark_id = self._mark_id_at_row(row)
+            _paint_row(row, is_now=True, mark_id=mark_id)
+        self._now_highlight_rows = wanted_rows
 
     def _fill_now_slot(
         self,
@@ -2555,11 +2659,7 @@ class CueMonitorPanel(QWidget):
         mark_id = self._playhead_list_mark_id
         if not mark_id or not self.cue_table.isVisible():
             return False
-        row = -1
-        for candidate in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(candidate) == mark_id:
-                row = candidate
-                break
+        row = self._row_for_mark_id(mark_id)
         if row < 0:
             return False
         index = self.cue_table.model().index(row, 0)
@@ -2589,6 +2689,7 @@ class CueMonitorPanel(QWidget):
         self._cue_list_follow_suspended = False
         self._cue_list_follow_left_viewport = False
         self._playhead_list_mark_id = None
+        self._follow_target_row = -1
         self._follow_cue_list_to_playhead()
 
     def _follow_cue_list_to_playhead(self) -> None:
@@ -2600,20 +2701,29 @@ class CueMonitorPanel(QWidget):
         mark = self._song.last_cue_list_mark_at_or_before(self._position)
         if mark is None:
             return
+        row = self._row_for_mark_id(mark.id)
+        if row < 0:
+            return
         if self._cue_list_follow_suspended:
             # User scrolled away to inspect — keep their scroll position, but still
             # advance the selected/highlighted row with the playhead.
             if mark.id != self._playhead_list_mark_id:
                 if self._select_mark_row(mark.id, scroll=False, emit_selection=True):
                     self._playhead_list_mark_id = mark.id
+                    self._follow_target_row = row
+            return
+        # Same Mark + same row: skip highlight/scroll/layout work entirely.
+        if mark.id == self._playhead_list_mark_id and row == self._follow_target_row:
             return
         if mark.id == self._playhead_list_mark_id:
-            # Same cue as last follow — still re-scroll if the row drifted out
-            # of the Cue List viewport (tiny height or deferred rebuild).
+            # Same cue, different tracked row (table rebuild) — scroll only if
+            # the row is outside the visible range.
             self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
+            self._follow_target_row = row
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=True):
             self._playhead_list_mark_id = mark.id
+            self._follow_target_row = row
 
     def _ensure_playhead_cue_visible(self) -> None:
         """Re-scroll the playhead cue after layout changes (NOW collapse, resize)."""
@@ -2631,6 +2741,7 @@ class CueMonitorPanel(QWidget):
             return
         if self._select_mark_row(mark.id, scroll=True, emit_selection=False):
             self._playhead_list_mark_id = mark.id
+            self._follow_target_row = self._row_for_mark_id(mark.id)
 
     def _scroll_cue_row_into_view(
         self,
@@ -2648,11 +2759,7 @@ class CueMonitorPanel(QWidget):
             return
         if not self.cue_table.isVisible():
             return
-        row = -1
-        for candidate in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(candidate) == mark_id:
-                row = candidate
-                break
+        row = self._row_for_mark_id(mark_id)
         if row < 0:
             return
         item = self.cue_table.item(row, 0)
@@ -2697,11 +2804,9 @@ class CueMonitorPanel(QWidget):
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
-        found = False
-        for row in range(self.cue_table.rowCount()):
-            if self._mark_id_at_row(row) != mark_id:
-                continue
-            found = True
+        row = self._row_for_mark_id(mark_id)
+        found = row >= 0
+        if found:
             model.select(
                 self.cue_table.model().index(row, 0),
                 model.SelectionFlag.Select | model.SelectionFlag.Rows,
@@ -2711,7 +2816,6 @@ class CueMonitorPanel(QWidget):
                 QTimer.singleShot(
                     0, lambda mid=mark_id: self._scroll_cue_row_into_view(mid)
                 )
-            break
         self._syncing_selection = False
         if pinned_scroll is not None and bar is not None:
             bar.setValue(pinned_scroll)

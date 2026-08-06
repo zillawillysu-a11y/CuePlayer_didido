@@ -107,6 +107,11 @@ class VideoPreviewWidget(QWidget):
                 self._image = slate
             self.update()
         else:
+            # Drop loading slate so gap / no-video show the neutral placeholder.
+            if self._image is not None and (
+                self._image.width() <= 32 and self._image.height() <= 32
+            ):
+                self._image = None
             self.update()
 
     def has_image(self) -> bool:

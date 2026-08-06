@@ -44,6 +44,9 @@ _enabled: bool = _env_enabled()
 _lock = threading.Lock()
 _log_path: Path | None = _env_log_path()
 _announced_path = False
+# Bound raw span samples so high-rate ticks stay O(1) and memory-stable.
+# Expensive aggregation (mean/sum) happens only in snapshot()/report_text().
+_MAX_SPAN_SAMPLES = 4096
 
 
 @dataclass
@@ -101,6 +104,11 @@ def clear() -> None:
         _state.counters.clear()
         _state.attrs.clear()
         _state.last_activate_ms.clear()
+        # Always bump session id (even when PERF disabled) so UI tick-interval
+        # baselines reset and cannot record multi-million-ms fake maxima.
+        _state.attrs["perf.session_id"] = (
+            f"cleared-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        )
     try:
         from cueplayer.diagnostics import video_sm_trace as sm_trace
 
@@ -123,11 +131,26 @@ def note(key: str, value: Any) -> None:
         _state.attrs[str(key)] = value
 
 
+def get_attr(key: str, default: Any = None) -> Any:
+    """O(1) attr read — safe on the position-tick path (no aggregation)."""
+    with _lock:
+        return _state.attrs.get(str(key), default)
+
+
+def _append_span_sample(name: str, elapsed_ms: float) -> None:
+    """Append one sample; drop oldest when the ring exceeds ``_MAX_SPAN_SAMPLES``."""
+    samples = _state.spans[name]
+    samples.append(float(elapsed_ms))
+    overflow = len(samples) - _MAX_SPAN_SAMPLES
+    if overflow > 0:
+        del samples[0:overflow]
+
+
 def record_ms(name: str, elapsed_ms: float) -> None:
     if not _enabled:
         return
     with _lock:
-        _state.spans[name].append(float(elapsed_ms))
+        _append_span_sample(name, elapsed_ms)
 
 
 @contextmanager
@@ -142,7 +165,7 @@ def span(name: str, **attrs: Any) -> Iterator[None]:
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         with _lock:
-            _state.spans[name].append(elapsed_ms)
+            _append_span_sample(name, elapsed_ms)
             if attrs:
                 for k, v in attrs.items():
                     _state.attrs[f"{name}.{k}"] = v
@@ -151,7 +174,11 @@ def span(name: str, **attrs: Any) -> Iterator[None]:
 
 
 def snapshot() -> dict[str, Any]:
-    """JSON-serializable summary of recorded spans / counters."""
+    """JSON-serializable summary of recorded spans / counters.
+
+    Expensive: walks all samples. Call only from Tools → Write Performance
+    Report / flush_report — never from the position-tick hot path.
+    """
     with _lock:
         span_summary: dict[str, Any] = {}
         for name, samples in sorted(_state.spans.items()):
@@ -255,12 +282,28 @@ def report_text() -> str:
         "video.playback.frame_accept",
         "video.playback.decode_completed",
         "video.playback.decode_presented",
+        "video.playback.decode_submissions",
+        "video.playback.frames_presented",
+        "video.playback.engine_position_ticks",
+        "video.playback.budget_deferred",
+        "video.playback.budget_deadline_fire",
+        "video.playback.pending_latest_replacements",
         "video.playback.decode_starved",
         "video.playback.inflight_supersede_count",
         "video.playback.frame_drop.reason.too_late",
         "video.playback.frame_drop.reason.session_changed",
         "video.playback.frame_drop.reason.newer_already_presented",
         "video.playback.frame_drop.reason.generation_mismatch",
+        "video.scrub.queued_result_emitted",
+        "video.scrub.queued_result_acknowledged",
+        "video.scrub.queued_valid_frame",
+        "video.scrub.queued_invalid_result",
+        "video.scrub.queued_result_unacknowledged",
+        "video.scrub.resume_not_required_timeline_gap",
+        "video.scrub.resume_terminal.intentional_gap",
+        "video.scrub.resume_terminal.completed",
+        "video.scrub.resume_terminal.canceled",
+        "video.scrub.resume_invalid_decode_resubmit",
         # Round 8b — deterministic seek / handoff / no-black
         "video.seek.deadline_timeout",
         "video.seek.eof_hit",
@@ -392,10 +435,33 @@ def report_text() -> str:
         lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     for name in (
         "video.activation_poster.source",
+        "video.preview_state",
+        "video.land.stage.dominant",
+        "video.land.stage.request_id",
+        "video.land.stage.song_time",
+        "video.land.stage.media_time",
         "timeline.mark_backdrop.last_static_shape_count",
         "timeline.mark_backdrop.last_overlay_shape_count",
+        "timeline.zoom.annotation_sprite_count",
     ):
         lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
+    for name in (
+        "video.land.stage.queue_wait_ms",
+        "video.land.stage.lock_wait_ms",
+        "video.land.stage.keyframe_seek_ms",
+        "video.land.stage.decode_forward_ms",
+        "video.land.stage.convert_ms",
+        "video.land.stage.decode_total_ms",
+        "cue_list.mark_id_at_row.calls",
+        "cue_list.position_sync_ms",
+    ):
+        if name.endswith("_ms") and name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+            )
+        else:
+            lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
     lines.append("")
     lines.append(
         f"video.pipeline_state: {attrs.get('video.pipeline_state', '(unset)')}"
@@ -416,6 +482,105 @@ def report_text() -> str:
         f"video.scrub.final_land_first_relevant_source: "
         f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
     )
+    lines.append("")
+    lines.append("Video Audio mixer:")
+    for name in (
+        "video_audio.window_decode_requests",
+        "video_audio.unique_window_keys",
+        "video_audio.duplicate_key_suppressed",
+        "video_audio.coverage_hit",
+        "video_audio.coverage_hit_suppressed",
+        "video_audio.lru_eviction",
+        "video_audio.decode_windows",
+        "video_audio.mute_cleared_pending",
+        "video_audio.schedule_suspended",
+        "video_audio.schedule_resumed",
+        "video_audio.discontinuous_seek",
+        "video_audio.publish_late",
+        "video_audio.steady_gap_fill_samples",
+        "video_audio.cold_seek_gap_fill_samples",
+    ):
+        lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    for name in (
+        "video_audio.reject_nonfinite",
+        "video_audio.reject_short",
+        "video_audio.owner_switch",
+        "video_audio.gap_fill",
+        "video_audio.lock_wait_ns",
+        "video_audio.last_window_key",
+        "video_audio.steady_gap_fill_delta",
+        "video_audio.cold_seek_gap_fill_delta",
+        "video_audio.current_source_frame",
+        "video_audio.contiguous_frontier_frame",
+        "video_audio.contiguous_ahead_samples",
+        "video_audio.contiguous_ahead_seconds",
+        "video_audio.next_required_window_key",
+        "video_audio.publish_lead_seconds",
+        "video_audio.last_window_request_mono",
+        "video_audio.last_window_publish_mono",
+    ):
+        lines.append(f"  {name}: {attrs.get(name, '(unset)')}")
+    if "video_audio.publish_lead_ms" in (snap.get("spans") or {}):
+        st = snap["spans"]["video_audio.publish_lead_ms"]
+        lines.append(
+            f"  span video_audio.publish_lead_ms: n={st['count']} "
+            f"mean={st['mean_ms']:.2f} max={st['max_ms']:.2f}"
+        )
+    va_events = attrs.get("video_audio.event_ring")
+    if va_events:
+        lines.append("  event_ring (newest last, capped):")
+        try:
+            for ev in list(va_events)[-40:]:
+                lines.append(f"    {ev}")
+        except Exception:
+            lines.append(f"    {va_events!r}")
+    lines.append("")
+    lines.append("Seek jump liveness:")
+    for name in (
+        "video.seek_jump.id",
+        "video.seek_jump.input_source",
+        "video.seek_jump.from_seconds",
+        "video.seek_jump.target_seconds",
+        "video.seek_jump.direction",
+        "video.seek_jump.playing",
+        "video.seek_jump.used_scrub_path",
+        "video.seek_jump.frames_at_250ms",
+        "video.seek_jump.frames_at_500ms",
+        "video.seek_jump.frames_at_1000ms",
+        "video.seek_jump.last_present_age_at_1000ms",
+        "video.seek_jump.engine_advance_at_1000ms",
+        "video.seek_jump.pipeline_state",
+        "video.seek_jump.worker_inflight",
+    ):
+        lines.append(f"  {name}: {attrs.get(name, '(unset)')}")
+    for name in (
+        "video.seek_jump.started",
+        "video.seek_jump.first_frame_presented",
+        "video.seek_jump.liveness_ok",
+        "video.seek_jump.liveness_fail_single_frame",
+        "video.seek_jump.deferred_during_scrub_land",
+        "video.playback.frame_drop.reason.seek_jump_stale",
+        "video.playback.frame_drop.reason.newer_already_presented",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    lines.append("")
+    # Audio callback continuity (no AudioEngine retiming — measurement only).
+    lines.append("Audio callback continuity:")
+    for key in (
+        "audio.callback.callback_count",
+        "audio.callback.output_underflow_count",
+        "audio.callback.status_flags_or",
+        "audio.callback.expected_period_s",
+        "audio.callback.interval_mean_s",
+        "audio.callback.interval_max_s",
+        "audio.callback.exec_mean_s",
+        "audio.callback.exec_max_s",
+        "audio.callback.deadline_miss_count",
+        "audio.callback.miss_play_decode_submits_last",
+        "audio.callback.miss_va_decode_windows_last",
+        "audio.callback.underflow_rate",
+    ):
+        lines.append(f"  {key}: {attrs.get(key, '(unset)')}")
     lines.append("")
     # Round 7 — Video state-machine trace (land → resume freeze diagnosis).
     try:

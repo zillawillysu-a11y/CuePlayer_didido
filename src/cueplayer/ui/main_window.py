@@ -1070,9 +1070,11 @@ class MainWindow(QMainWindow):
         self.video_sync = VideoSyncController(self)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_timeline_video_heavy(bool(self.project.show_video_track))
-        # While mixer decodes the next audio window, hold the last video frame
-        # instead of fighting for av_path_lock (rising stutter → hard cut).
-        self.video_sync.set_defer_live_decode(self.engine.video_audio_decoding)
+        # Video frame decode must never be deferred merely because Video Audio
+        # is decoding — that reverse priority caused Video stutter. Cache-miss
+        # Video Audio may be temporary silence; it must not stall presentation.
+        self.video_sync.set_defer_live_decode(None)
+        self.video_sync.set_pipeline_state_listener(self._on_video_pipeline_state)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         self.video_preview = VideoPreviewWidget(context_menu=True, smooth_scale=False)
@@ -1341,8 +1343,10 @@ class MainWindow(QMainWindow):
         self.transport.volume_changed.connect(self.playback.set_volume)
         self.transport.music_mute_toggled.connect(self._set_music_muted_from_ui)
         self.engine.music_muted_changed.connect(self.transport.set_music_muted)
-        self.timeline.seek_requested.connect(self.playback.seek)
-        self.transport.seek_requested.connect(self.playback.seek)
+        self.timeline.seek_requested.connect(self._on_timeline_seek_requested)
+        self.transport.seek_requested.connect(
+            lambda t: self._canonical_seek(float(t), input_source="overview")
+        )
         self.timeline.view_changed.connect(self._sync_timeline_overview)
         self.timeline.content_geometry_changed.connect(self._sync_timeline_overview)
         self.timeline.scrub_started.connect(self._on_timeline_scrub_started)
@@ -2255,10 +2259,14 @@ class MainWindow(QMainWindow):
                 perf_diag.record_ms("video.present_delayed_by_timeline_ms", delay_ms)
 
     def _on_video_activation_loading(self, text: str) -> None:
-        """Intentional non-empty Preview while activation poster is cold."""
+        """Show Loading only while a valid Video target is pending; clear otherwise."""
         preview = getattr(self, "video_preview", None)
-        if preview is not None and hasattr(preview, "set_loading"):
-            preview.set_loading(True, text or "Loading video…")
+        if preview is None or not hasattr(preview, "set_loading"):
+            return
+        if text:
+            preview.set_loading(True, text)
+        else:
+            preview.set_loading(False)
 
     def _sync_video_output_active(self) -> None:
         """Skip video decode when no Preview / Clean / NDI / Web Remote sink needs frames."""
@@ -5041,8 +5049,38 @@ class MainWindow(QMainWindow):
 
     def _on_timeline_scrub_ended(self) -> None:
         """Finalize Video (FINAL_LANDING) before audio resume so engine cannot overwrite land."""
+        try:
+            from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+            sm_trace.trace(
+                "END_SCRUB_CALLED",
+                state=self.video_sync.pipeline_state(),
+                song_time=float(self.timeline.playhead_seconds()),
+                scheduler="mainwindow_scrub_ended",
+                extra={
+                    "scrub_transaction_id": int(
+                        getattr(self.video_sync, "_scrub_transaction_id", 0)
+                    ),
+                },
+            )
+        except Exception:
+            pass
         self.video_sync.set_scrubbing(False)
         self.playback.end_scrub()
+
+    def _on_video_pipeline_state(self, state: str) -> None:
+        """Suspend Video Audio window scheduling during scrub/land/resume."""
+        from cueplayer.playback.video_sync import VideoPipelineState
+
+        suspend = state in (
+            VideoPipelineState.SCRUB_PREVIEW,
+            VideoPipelineState.FINAL_LANDING,
+            VideoPipelineState.RESUME_PLAYBACK,
+        )
+        try:
+            self.engine.set_video_audio_schedule_suspended(suspend)
+        except Exception:
+            pass
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
@@ -5135,18 +5173,30 @@ class MainWindow(QMainWindow):
             perf_diag.count("ui.position_fanout.calls")
 
     def _perf_note_position_tick(self, seconds: float, *, source: str) -> None:
-        """Prove the UI position path is alive (dump-time live check)."""
+        """Prove the UI position path is alive (dump-time live check).
+
+        Must stay O(1): notes + one bounded ``record_ms``. Never call
+        ``perf.snapshot()`` here — aggregating all samples on every tick was a
+        multi-second cProfile hotspot with CUEPLAYER_PERF enabled.
+        """
         if not perf_diag.is_enabled():
             return
         now = time.monotonic()
         perf_diag.note("perf.position_tick_source", source)
         perf_diag.note("perf.position_tick_song_time", float(seconds))
         perf_diag.note("perf.position_tick_mono", now)
+        # Reset baseline across PERF session / song-activate clears so a quiet
+        # gap cannot produce multi-million-ms fake max intervals.
+        session = perf_diag.get_attr("perf.session_id")
+        if getattr(self, "_perf_session_id", None) != session:
+            self._perf_session_id = session
+            self._perf_tick_mono = None
         prev = getattr(self, "_perf_tick_mono", None)
         if prev is not None:
-            perf_diag.record_ms(
-                "perf.position_tick_interval_ms", (now - float(prev)) * 1000.0
-            )
+            delta_ms = (now - float(prev)) * 1000.0
+            # Reject cross-reset / idle gaps (not a real tick interval).
+            if 0.0 < delta_ms < 5000.0:
+                perf_diag.record_ms("perf.position_tick_interval_ms", delta_ms)
         self._perf_tick_mono = now
 
     def _perf_record_mark_density(self, seconds: float, song) -> None:  # noqa: ANN001
@@ -5256,6 +5306,10 @@ class MainWindow(QMainWindow):
         if not perf_diag.is_enabled():
             self.status.showMessage("Set CUEPLAYER_PERF=1 before launch to enable", 4000)
             return
+        try:
+            self.engine.publish_audio_continuity_to_perf()
+        except Exception:
+            pass
         snap = perf_diag.snapshot()
         counters = snap.get("counters") or {}
         fanout_calls = int(counters.get("ui.position_fanout.calls", 0))
@@ -5412,8 +5466,37 @@ class MainWindow(QMainWindow):
         self._rebuild_digit_shortcuts()
         self.timeline.update()
 
+    def _on_timeline_seek_requested(self, seconds: float) -> None:
+        source = "timeline"
+        try:
+            source = self.timeline.consume_seek_input_source()
+        except Exception:
+            source = "timeline"
+        self._canonical_seek(float(seconds), input_source=source)
+
+    def _canonical_seek(self, seconds: float, *, input_source: str) -> None:
+        """Single seek endpoint for Mark / cue / overview / empty-timeline jumps.
+
+        Timeline scrub still owns FINAL_LAND via scrub_ended; this path covers
+        position-changing clicks that previously called ``playback.seek`` only.
+        """
+        try:
+            from_t = float(self.playback.engine_to_song_time(self.engine.position))
+        except Exception:
+            from_t = float(seconds)
+        try:
+            self.video_sync.note_discontinuous_seek(
+                float(seconds),
+                from_seconds=from_t,
+                input_source=str(input_source),
+                playing=bool(self.playback.playing),
+            )
+        except Exception:
+            pass
+        self.playback.seek(float(seconds))
+
     def _seek_from_cue_list(self, seconds: float) -> None:
-        self.playback.seek(seconds)
+        self._canonical_seek(float(seconds), input_source="cue_list")
         self.timeline.set_position(seconds)
         self.status.showMessage(f"Jumped to Cue @ {seconds:.3f}s", 1500)
 

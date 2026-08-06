@@ -98,9 +98,19 @@ _FRAME_TOLERANCE_S = 0.05
 _LAND_RETRY_MS = 40
 _LAND_MAX_RETRIES = 5
 _LAND_DEADLINE_S = 0.50
+# Bounded decode-forward for final-land (proven multi-second stage owner).
+_LAND_DECODE_DEADLINE_S = 0.45
+# Scrub-preview must not occupy the single worker for a full 1.5s GOP walk —
+# otherwise land sits in queue_wait behind stale preview work after release.
+_SCRUB_PREVIEW_DECODE_DEADLINE_S = 0.30
 _EMPTY_DECODE_RESET_AFTER = 3
 _RESUME_WATCHDOG_MS = 400
 _RESUME_RECOVERY_MS = 400
+# At most one decoder recreation per resume transaction (no gen-bump loop).
+_MAX_RESUME_RECOVERY_REBUILDS = 1
+# How long a WAITING_FRAME may sit in the Qt queue before we treat the
+# callback as lost and recover (without first invalidating a newer frame).
+_RESUME_WAITING_FRAME_MAX_AGE_S = 2.0
 # Round 6: present preview frames within this of the current pointer target.
 _PREVIEW_PRESENT_TOLERANCE_S = 0.75
 # Only cancel an in-flight scrub preview when the pointer jumped this far.
@@ -110,6 +120,8 @@ _PREVIEW_CANCEL_DELTA_S = 2.0
 _PLAYBACK_LATENESS_TOLERANCE_S = 0.35
 # Seek + decode-forward budget before recreating the playback decoder.
 _PLAYBACK_SEEK_DEADLINE_S = 1.5
+# Post-seek resume: one bounded attempt (do not stack a second 1.5s seek).
+_RESUME_PLAY_DECODE_DEADLINE_S = 0.50
 
 PIPELINE_MODE = "async_latest_wins"
 SCRUB_PREVIEW_TARGET_FPS = _SCRUB_PREVIEW_HZ
@@ -143,6 +155,16 @@ class DisplaySource:
     POSTER = "poster"
     INTENTIONAL_GAP = "intentional_gap"
     EMPTY_WIDGET = "empty_widget"
+    LOADING = "loading"
+
+
+class PreviewVideoState:
+    """User-visible Preview state (distinct from DisplaySource telemetry)."""
+
+    NO_VIDEO_FOR_SONG = "NO_VIDEO_FOR_SONG"
+    VIDEO_TIMELINE_GAP = "VIDEO_TIMELINE_GAP"
+    VALID_VIDEO_TARGET_PENDING = "VALID_VIDEO_TARGET_PENDING"
+    VALID_VIDEO_FRAME = "VALID_VIDEO_FRAME"
 
 
 class ReleaseTargetKind:
@@ -172,14 +194,35 @@ class ReleaseTarget:
         )
 
 
+@dataclass
+class QueuedResult:
+    """One worker→UI delivery owned until the matching Qt callback acks it.
+
+    Invalid/empty results are tracked for emit/ack parity but never count as
+    ``valid_frame_waiting_for_present`` (no phantom WAITING_FRAME).
+    """
+
+    request_id: int
+    resume_transaction_id: int
+    media_session: int
+    scrub_session: int
+    generation: int
+    song_time: float
+    valid_frame: bool
+    empty_reason: str
+    queued_mono: float
+    acknowledged: bool = False
+
+
 class VideoSyncController(QObject):
     frame_changed = Signal(object)  # np.ndarray (H, W, 3) RGB24, or None for intentional gap
     active_clip_changed = Signal(object)  # VideoClip | None
     overlap_warning = Signal(str)
     # UI should show intentional loading chrome (never empty black).
     activation_loading = Signal(str)
-    # Worker → UI (Queued): (request_gen, song_time_seconds, frame|None, kind, empty_reason, scrub_session)
-    _async_frame_ready = Signal(int, float, object, str, str, int)
+    # Worker → UI (Queued):
+    # (gen, song_time, frame|None, kind, empty_reason, scrub_session, request_id)
+    _async_frame_ready = Signal(int, float, object, str, str, int, int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -249,6 +292,7 @@ class VideoSyncController(QObject):
         self._async_req_kind = "play"  # play | scrub_preview | land
         self._async_req_session = 0  # scrub session captured at schedule
         self._async_req_started_mono = 0.0
+        self._async_emit_mono = 0.0
         self._async_req_id = 0
         self._async_req_media_session = 0
         self._async_pool = ThreadPoolExecutor(
@@ -269,8 +313,10 @@ class VideoSyncController(QObject):
         self._worker_idle_since_mono: float | None = None
         self._playback_handoff = PlaybackDecoderHandoff.IDLE
         self._display_source = DisplaySource.EMPTY_WIDGET
+        self._preview_video_state = PreviewVideoState.NO_VIDEO_FOR_SONG
         self._song_activate_mono: float | None = None
         self._empty_widget_since_mono: float | None = None
+        self._first_valid_frame_recorded_for_session = False
         self._seek_after_mono: float | None = None
         self._play_seek_recovery_attempted = False
         self._scrub_land_pending = False
@@ -280,6 +326,7 @@ class VideoSyncController(QObject):
         self._min_present_seconds: float | None = None
         # Round 4 — explicit pipeline state + resume transaction.
         self._pipeline_state = VideoPipelineState.PLAYBACK
+        self._pipeline_state_listener: Callable[[str], None] | None = None
         self._pre_scrub_was_playing = False
         self._release_target_song_time: float | None = None
         self._release_target_media_time: float | None = None
@@ -290,6 +337,13 @@ class VideoSyncController(QObject):
         self._resume_pending = False
         self._resume_required = False
         self._resume_recovery_attempted = False
+        self._resume_recovery_rebuilds = 0
+        # Request-level queued→UI ownership for RESUME (keyed by request_id).
+        self._resume_queued_results: dict[int, QueuedResult] = {}
+        self._resume_queued_emitted = 0
+        self._resume_queued_acknowledged = 0
+        self._resume_need_catchup = False
+        self._resume_terminal_status: str | None = None
         self._land_retry_count = 0
         self._land_request_mono = 0.0
         self._land_worker_start_mono = 0.0
@@ -299,6 +353,8 @@ class VideoSyncController(QObject):
         self._last_valid_frame: np.ndarray | None = None
         self._last_valid_frame_mono = 0.0
         self._last_valid_frame_song_seconds: float | None = None
+        self._last_valid_frame_clip_id: str | None = None
+        self._last_valid_frame_session: int = -1
         self._resume_started_mono = 0.0
         self._resume_first_engine_noted = False
         self._release_target: ReleaseTarget | None = None
@@ -308,6 +364,11 @@ class VideoSyncController(QObject):
         self._empty_decode_streak = 0
         self._worker_reset_count = 0
         self._play_decoder_reset_pending = False
+        # Stable PLAYBACK decode budget: next monotonic deadline (0 = none).
+        self._play_next_decode_deadline_mono = 0.0
+        self._play_budget_timer = QTimer(self)
+        self._play_budget_timer.setSingleShot(True)
+        self._play_budget_timer.timeout.connect(self._on_play_budget_deadline)
         self._scrub_preview_timer = QTimer(self)
         self._scrub_preview_timer.setInterval(_SCRUB_PREVIEW_INTERVAL_MS)
         self._scrub_preview_timer.timeout.connect(self._on_scrub_preview_tick)
@@ -321,6 +382,27 @@ class VideoSyncController(QObject):
         self._land_retry_timer.timeout.connect(self._retry_final_land_if_pending)
         self._resume_watchdog = QTimer(self)
         self._resume_watchdog.setSingleShot(True)
+        # Discontinuous seek (Mark / cue / overview) — presentation floor reset.
+        self._seek_jump_guard_until_mono = 0.0
+        self._seek_jump_target: float | None = None
+        self._seek_jump_from: float | None = None
+        self._seek_jump_input_source: str = "unknown"
+        self._seek_jump_id = 0
+        # Dedicated clock for jump liveness — must NOT share _seek_after_mono
+        # (first-valid-frame metrics clear that stamp and would starve counts).
+        self._seek_jump_mono: float | None = None
+        self._seek_liveness_frames = 0
+        self._seek_liveness_first_mono = 0.0
+        self._seek_liveness_timer = QTimer(self)
+        self._seek_liveness_timer.setSingleShot(True)
+        self._seek_liveness_timer.timeout.connect(self._on_seek_liveness_tick)
+        self._seek_liveness_marks_ms = (250, 500, 1000)
+        self._seek_liveness_reported: set[int] = set()
+        self._seek_liveness_engine_t0: float | None = None
+        self._seek_liveness_engine_t1: float | None = None
+        self._seek_liveness_last_present_mono = 0.0
+        self._seek_liveness_submissions = 0
+        self._seek_liveness_presented = 0
         self._resume_watchdog.setInterval(_RESUME_WATCHDOG_MS)
         self._resume_watchdog.timeout.connect(self._on_resume_watchdog)
         # Prove which pipeline the Windows desk build is running.
@@ -405,6 +487,12 @@ class VideoSyncController(QObject):
         perf_diag.note("video.pipeline_state.prev", prev)
         perf_diag.note("video.pipeline_state.changed_at", now)
         perf_diag.count(f"video.pipeline_state.to.{state}")
+        listener = self._pipeline_state_listener
+        if listener is not None:
+            try:
+                listener(str(state))
+            except Exception:
+                pass
 
     def _cancel_scrub_resume_transaction(self, *, reason: str = "cancel") -> None:
         """Invalidate land/resume state (new scrub, song switch, track change)."""
@@ -415,9 +503,16 @@ class VideoSyncController(QObject):
         if self._resume_pending:
             perf_diag.note("video.scrub.resume_cancel_reason", reason)
             perf_diag.count("video.scrub.resume_cancel")
+            self._resume_terminal_status = f"canceled:{reason}"
+            perf_diag.note(
+                "video.scrub.resume_terminal_status", self._resume_terminal_status
+            )
+            perf_diag.count("video.scrub.resume_terminal.canceled")
+            self._finalize_resume_queued_ownership(terminal=True)
         self._scrub_land_pending = False
         self._final_land_pending = False
         self._resume_pending = False
+        self._resume_required = False
         self._decoder_position_established = False
         self._release_target_song_time = None
         self._release_target_media_time = None
@@ -432,6 +527,205 @@ class VideoSyncController(QObject):
     def set_defer_live_decode(self, check: Callable[[], bool] | None) -> None:
         """Optional gate: skip play-time frame decode while ``check()`` is True."""
         self._defer_live_decode = check
+
+    def set_pipeline_state_listener(
+        self, listener: Callable[[str], None] | None
+    ) -> None:
+        """Notify host when Video pipeline state changes (e.g. VA schedule suspend)."""
+        self._pipeline_state_listener = listener
+
+    def note_discontinuous_seek(
+        self,
+        target_seconds: float,
+        *,
+        from_seconds: float | None,
+        input_source: str = "unknown",
+        playing: bool | None = None,
+    ) -> None:
+        """Canonical seek jump (Mark / cue / overview) — not Timeline scrub.
+
+        Mark clicks historically skipped FINAL_LAND/RESUME and could freeze Video
+        after a backward jump: in-flight play frames from the old Song Time
+        re-armed ``_last_presented_song_seconds``, then new frames failed
+        ``newer_already_presented``. Reset the presentation floor, invalidate
+        stale work, and force the latest Audio-clock target.
+        """
+        target = float(target_seconds)
+        prev = (
+            float(from_seconds)
+            if from_seconds is not None
+            else (
+                float(self._last_position_seconds)
+                if self._last_position_seconds is not None
+                else target
+            )
+        )
+        is_playing = bool(self._playing if playing is None else playing)
+        direction = "backward" if target < prev - 1e-3 else (
+            "forward" if target > prev + 1e-3 else "in_place"
+        )
+        self._seek_jump_id += 1
+        jump_id = int(self._seek_jump_id)
+        self._seek_jump_input_source = str(input_source or "unknown")
+        self._seek_jump_from = prev
+        self._seek_jump_target = target
+        self._seek_jump_guard_until_mono = monotonic() + 1.25
+        self._last_position_seconds = target
+        perf_diag.count("video.seek_jump.started")
+        perf_diag.count(f"video.seek_jump.source.{self._seek_jump_input_source}")
+        perf_diag.count(f"video.seek_jump.direction.{direction}")
+        perf_diag.note("video.seek_jump.id", jump_id)
+        perf_diag.note("video.seek_jump.input_source", self._seek_jump_input_source)
+        perf_diag.note("video.seek_jump.from_seconds", prev)
+        perf_diag.note("video.seek_jump.target_seconds", target)
+        perf_diag.note("video.seek_jump.direction", direction)
+        perf_diag.note("video.seek_jump.playing", is_playing)
+        perf_diag.note(
+            "video.seek_jump.used_scrub_path",
+            False,
+        )
+        self._sm_trace(
+            "SEEK_JUMP",
+            song_time=target,
+            media_time=self._media_time_for_song(target),
+            scheduler="note_discontinuous_seek",
+            reason=direction,
+            extra={
+                "input_source": self._seek_jump_input_source,
+                "from_seconds": prev,
+                "seek_jump_id": jump_id,
+                "playing": is_playing,
+                "pipeline_state": self._pipeline_state,
+            },
+        )
+        # Do not steal an in-progress Timeline scrub / final-land transaction.
+        if self._pipeline_state in (
+            VideoPipelineState.SCRUB_PREVIEW,
+            VideoPipelineState.FINAL_LANDING,
+        ):
+            perf_diag.count("video.seek_jump.deferred_during_scrub_land")
+            return
+        self._invalidate_async_requests()
+        self._play_pending_seconds = None
+        self._play_budget_timer.stop()
+        # Critical: clear the "already presented newer" floor so backward
+        # targets are not dropped against a pre-seek last_presented.
+        self._last_presented_song_seconds = None
+        self._min_present_seconds = float(target)
+        perf_diag.note("video.scrub.min_present_seconds_value", self._min_present_seconds)
+        self._seek_after_mono = monotonic()
+        self._seek_jump_mono = float(self._seek_after_mono)
+        self._start_seek_liveness_watch(jump_id, target, prev)
+        if is_playing and self._video_output_active:
+            self._playing = True
+            self._schedule_playback_target(
+                target,
+                scheduler=f"seek_jump_{self._seek_jump_input_source}",
+                force=True,
+            )
+
+    def _start_seek_liveness_watch(
+        self, jump_id: int, target: float, from_seconds: float
+    ) -> None:
+        del jump_id, from_seconds
+        self._seek_liveness_frames = 0
+        self._seek_liveness_first_mono = 0.0
+        self._seek_liveness_reported = set()
+        self._seek_liveness_engine_t0 = float(
+            self._last_position_seconds
+            if self._last_position_seconds is not None
+            else target
+        )
+        self._seek_liveness_engine_t1 = self._seek_liveness_engine_t0
+        self._seek_liveness_last_present_mono = 0.0
+        self._seek_liveness_submissions = 0
+        self._seek_liveness_presented = 0
+        self._seek_liveness_timer.stop()
+        self._seek_liveness_timer.start(250)
+
+    def _on_seek_liveness_tick(self) -> None:
+        """Report post-seek frame progression at 250/500/1000 ms."""
+        if self._seek_jump_target is None:
+            return
+        t0 = float(self._seek_jump_mono or 0.0)
+        if t0 <= 0.0:
+            return
+        age_ms = int(round((monotonic() - t0) * 1000.0))
+        for mark in self._seek_liveness_marks_ms:
+            if age_ms + 20 >= mark and mark not in self._seek_liveness_reported:
+                self._seek_liveness_reported.add(mark)
+                engine_now = (
+                    float(self._last_position_seconds)
+                    if self._last_position_seconds is not None
+                    else None
+                )
+                self._seek_liveness_engine_t1 = engine_now
+                last_age = (
+                    None
+                    if self._seek_liveness_last_present_mono <= 0.0
+                    else round(
+                        (monotonic() - self._seek_liveness_last_present_mono) * 1000.0,
+                        3,
+                    )
+                )
+                perf_diag.note(
+                    f"video.seek_jump.frames_at_{mark}ms",
+                    int(self._seek_liveness_presented),
+                )
+                perf_diag.note(
+                    f"video.seek_jump.last_present_age_at_{mark}ms",
+                    last_age,
+                )
+                if (
+                    self._seek_liveness_engine_t0 is not None
+                    and engine_now is not None
+                ):
+                    perf_diag.note(
+                        f"video.seek_jump.engine_advance_at_{mark}ms",
+                        round(engine_now - float(self._seek_liveness_engine_t0), 6),
+                    )
+                perf_diag.note(
+                    "video.seek_jump.pipeline_state", self._pipeline_state
+                )
+                perf_diag.note(
+                    "video.seek_jump.worker_inflight", bool(self._async_inflight)
+                )
+                if mark >= 1000 and self._seek_liveness_presented < 2:
+                    perf_diag.count("video.seek_jump.liveness_fail_single_frame")
+                    self._sm_trace(
+                        "SEEK_JUMP_LIVENESS_FAIL",
+                        song_time=self._seek_jump_target,
+                        reason="insufficient_post_seek_frames",
+                        extra={
+                            "frames_presented": int(self._seek_liveness_presented),
+                            "input_source": self._seek_jump_input_source,
+                            "last_present_age_ms": last_age,
+                        },
+                    )
+                elif mark >= 1000:
+                    perf_diag.count("video.seek_jump.liveness_ok")
+                    self._seek_jump_mono = None
+        if age_ms < 1000:
+            self._seek_liveness_timer.start(250)
+
+    def _note_seek_liveness_present(self, seconds: float) -> None:
+        del seconds
+        if self._seek_jump_target is None:
+            return
+        t0 = self._seek_jump_mono
+        if t0 is None:
+            return
+        if monotonic() > self._seek_jump_guard_until_mono + 0.05:
+            return
+        self._seek_liveness_presented += 1
+        self._seek_liveness_last_present_mono = monotonic()
+        if self._seek_liveness_first_mono <= 0.0:
+            self._seek_liveness_first_mono = monotonic()
+            perf_diag.count("video.seek_jump.first_frame_presented")
+            perf_diag.record_ms(
+                "video.seek_jump.first_frame_ms",
+                (self._seek_liveness_first_mono - float(t0)) * 1000.0,
+            )
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -718,7 +1012,11 @@ class VideoSyncController(QObject):
             else:
                 perf_diag.count(f"video.scrub.final_land_completed_{target.kind.lower()}")
             if self._pre_scrub_was_playing:
-                perf_diag.count("video.scrub.resume_required")
+                if target.kind == ReleaseTargetKind.TIMELINE_GAP:
+                    # Gap cannot require a frame-presented resume.
+                    perf_diag.count("video.scrub.resume_not_required")
+                else:
+                    perf_diag.count("video.scrub.resume_required")
             else:
                 perf_diag.count("video.scrub.resume_not_required")
             return
@@ -764,11 +1062,13 @@ class VideoSyncController(QObject):
             )
             return src
 
-        # Gap / out-of-range / missing: keep last valid frame (no black flash).
+        # Gap / out-of-range / missing: intentional blank (not Loading / not stale other-clip).
         if not target.is_valid:
-            if self._last_valid_frame is not None:
+            if target.kind == ReleaseTargetKind.TIMELINE_GAP:
+                self._present_timeline_gap(reason="release_timeline_gap")
+                return _note_relevant("intentional_gap")
+            if self._same_session_last_valid(target.clip_id):
                 return _note_relevant("gap_keep_last")
-            # No prior frame — intentional empty only when nothing was ever shown.
             self._emit_frame(None, allow_clear=True, reason=f"intentional:{target.kind}")
             return _note_relevant("intentional_gap")
 
@@ -812,6 +1112,10 @@ class VideoSyncController(QObject):
             request_id=req_id,
             kind="land",
             scheduler="schedule_final_land",
+            extra={
+                "scrub_transaction_id": int(self._scrub_transaction_id),
+                "final_land_transaction_id": int(self._final_land_transaction_id),
+            },
         )
         self._request_async_live_frame(
             seconds,
@@ -880,11 +1184,39 @@ class VideoSyncController(QObject):
             self._resume_required = False
 
     def _enter_resume_playback(self) -> None:
+        """Enter RESUME only when a valid Video clip owns the Audio-clock target.
+
+        Timeline gaps cannot produce a playback frame — terminate as intentional
+        gap and return to PLAYBACK without WAITING_FRAME / recovery.
+        """
+        land_t = self._release_target_song_time
+        if land_t is None:
+            land_t = self._last_position_seconds
+        song = self._song
+        if land_t is not None and song is not None:
+            clip = song.active_video_clip_at(float(land_t))
+            if clip is None:
+                self._terminate_resume_intentional_gap(
+                    song_time=float(land_t),
+                    reason="timeline_gap_at_enter",
+                )
+                return
+        elif land_t is not None and song is None:
+            self._terminate_resume_intentional_gap(
+                song_time=float(land_t),
+                reason="missing_media",
+            )
+            return
+
         self._playback_resume_generation += 1
         self._resume_transaction_id = int(self._final_land_transaction_id)
         self._resume_pending = True
         self._resume_required = True
         self._resume_recovery_attempted = False
+        self._resume_recovery_rebuilds = 0
+        self._clear_resume_queued_results(reset_counts=True)
+        self._resume_need_catchup = False
+        self._resume_terminal_status = "active"
         self._resume_started_mono = monotonic()
         self._resume_first_engine_noted = False
         # Ensure play scheduling treats us as playing even if playing_changed
@@ -900,6 +1232,7 @@ class VideoSyncController(QObject):
         perf_diag.note(
             "video.scrub.resume_generation", self._playback_resume_generation
         )
+        perf_diag.note("video.scrub.resume_terminal_status", self._resume_terminal_status)
         if self._release_target_song_time is not None:
             self._min_present_seconds = float(self._release_target_song_time)
             perf_diag.note(
@@ -1005,38 +1338,352 @@ class VideoSyncController(QObject):
                 )
         self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
 
+    def _terminate_resume_intentional_gap(
+        self, *, song_time: float, reason: str
+    ) -> None:
+        """No valid clip at Audio-clock target — gap Preview, PLAYBACK, no recovery."""
+        self._resume_watchdog.stop()
+        was_pending = bool(self._resume_pending)
+        self._resume_pending = False
+        self._resume_required = False
+        self._resume_recovery_attempted = False
+        self._resume_recovery_rebuilds = 0
+        self._finalize_resume_queued_ownership(terminal=True)
+        self._resume_terminal_status = "intentional_gap"
+        perf_diag.note(
+            "video.scrub.resume_terminal_status", self._resume_terminal_status
+        )
+        perf_diag.count("video.scrub.resume_not_required_timeline_gap")
+        perf_diag.count("video.scrub.resume_terminal.intentional_gap")
+        if was_pending:
+            # Already counted as resume_started earlier — close the txn.
+            perf_diag.count("video.scrub.resume_completed")
+            perf_diag.note("video.scrub.resume_complete_reason", "intentional_gap")
+        self._present_timeline_gap(reason=reason)
+        self._set_playback_handoff(PlaybackDecoderHandoff.IDLE)
+        self._set_pipeline_state(VideoPipelineState.PLAYBACK)
+        self._min_present_seconds = None
+        perf_diag.count("video.scrub.min_present_seconds_cleared")
+        perf_diag.note("video.scrub.min_present_seconds_value", None)
+        self._playing = bool(self._pre_scrub_was_playing)
+        self._scrubbing = False
+        # Normal PLAYBACK scheduling from the current Audio-clock target.
+        if self._playing and self._video_output_active:
+            self._schedule_playback_target(
+                float(song_time),
+                scheduler="intentional_gap_playback",
+                force=False,
+            )
+        self._sm_trace(
+            "RESUME_TERMINAL_GAP",
+            song_time=float(song_time),
+            scheduler="terminate_resume_intentional_gap",
+            reason=reason,
+        )
+
+    def _clear_resume_queued_results(self, *, reset_counts: bool = False) -> None:
+        self._resume_queued_results.clear()
+        if reset_counts:
+            self._resume_queued_emitted = 0
+            self._resume_queued_acknowledged = 0
+        perf_diag.note("video.scrub.resume_queued_playback_gen", None)
+        perf_diag.note("video.scrub.resume_queued_playback_req", None)
+        perf_diag.note("video.scrub.resume_queued_frame_age_ms", None)
+        perf_diag.note("video.scrub.queued_result_unacknowledged", 0)
+
+    def _finalize_resume_queued_ownership(self, *, terminal: bool) -> None:
+        """At txn end: emitted must equal acknowledged; no owned queued requests."""
+        unacked = [
+            q
+            for q in self._resume_queued_results.values()
+            if not q.acknowledged
+        ]
+        n_unacked = len(unacked)
+        if n_unacked:
+            perf_diag.count("video.scrub.queued_result_unacknowledged", n_unacked)
+            perf_diag.note("video.scrub.queued_result_unacknowledged", n_unacked)
+            # Force-ack leftovers so ownership cannot leak across txns.
+            for q in unacked:
+                q.acknowledged = True
+                self._resume_queued_acknowledged += 1
+                perf_diag.count("video.scrub.queued_result_acknowledged")
+        perf_diag.note(
+            "video.scrub.queued_result_emitted_total", self._resume_queued_emitted
+        )
+        perf_diag.note(
+            "video.scrub.queued_result_acknowledged_total",
+            self._resume_queued_acknowledged,
+        )
+        if terminal and self._resume_queued_emitted != self._resume_queued_acknowledged:
+            perf_diag.count("video.scrub.queued_result_emit_ack_mismatch")
+        self._clear_resume_queued_results(reset_counts=True)
+
+    def _note_resume_queued_frame(
+        self,
+        *,
+        gen: int,
+        request_id: int,
+        song_time: float,
+        media_session: int,
+        scrub_session: int,
+        valid_frame: bool = True,
+        empty_reason: str = "",
+    ) -> None:
+        """Worker finished decode — record request-owned queued delivery."""
+        self._note_resume_queued_result(
+            gen=gen,
+            request_id=request_id,
+            song_time=song_time,
+            media_session=media_session,
+            scrub_session=scrub_session,
+            valid_frame=valid_frame,
+            empty_reason=empty_reason,
+        )
+
+    def _note_resume_queued_result(
+        self,
+        *,
+        gen: int,
+        request_id: int,
+        song_time: float,
+        media_session: int,
+        scrub_session: int,
+        valid_frame: bool,
+        empty_reason: str = "",
+    ) -> None:
+        """Emit ownership: one entry per request_id (never overwrite another)."""
+        rid = int(request_id)
+        if rid in self._resume_queued_results and not self._resume_queued_results[
+            rid
+        ].acknowledged:
+            # Same request re-noted — keep original ownership.
+            perf_diag.count("video.scrub.queued_result_duplicate_emit")
+            return
+        entry = QueuedResult(
+            request_id=rid,
+            resume_transaction_id=int(self._resume_transaction_id),
+            media_session=int(media_session),
+            scrub_session=int(scrub_session),
+            generation=int(gen),
+            song_time=float(song_time),
+            valid_frame=bool(valid_frame),
+            empty_reason=str(empty_reason or ""),
+            queued_mono=monotonic(),
+            acknowledged=False,
+        )
+        self._resume_queued_results[rid] = entry
+        self._resume_queued_emitted += 1
+        perf_diag.count("video.scrub.queued_result_emitted")
+        if valid_frame:
+            perf_diag.count("video.scrub.queued_valid_frame")
+        else:
+            perf_diag.count("video.scrub.queued_invalid_result")
+            if empty_reason:
+                perf_diag.count(
+                    f"video.scrub.queued_result_reject_reason.{empty_reason}"
+                )
+                perf_diag.note(
+                    "video.scrub.queued_result_reject_reason", empty_reason
+                )
+        perf_diag.note("video.scrub.resume_transaction_id", self._resume_transaction_id)
+        perf_diag.note("video.scrub.resume_queued_playback_gen", int(gen))
+        perf_diag.note("video.scrub.resume_queued_playback_req", rid)
+        perf_diag.note("video.scrub.resume_queued_frame_age_ms", 0.0)
+        perf_diag.note(
+            "video.scrub.resume_queued_valid_frame", bool(valid_frame)
+        )
+
+    def _ack_resume_queued_result(
+        self,
+        request_id: int,
+        *,
+        reject_reason: str | None = None,
+    ) -> QueuedResult | None:
+        """Acknowledge matching queued delivery (call before any early return)."""
+        rid = int(request_id)
+        entry = self._resume_queued_results.get(rid)
+        if entry is None:
+            return None
+        if entry.acknowledged:
+            return entry
+        entry.acknowledged = True
+        self._resume_queued_acknowledged += 1
+        perf_diag.count("video.scrub.queued_result_acknowledged")
+        if reject_reason:
+            perf_diag.count(
+                f"video.scrub.queued_result_reject_reason.{reject_reason}"
+            )
+            perf_diag.note(
+                "video.scrub.queued_result_reject_reason", reject_reason
+            )
+        age = max(0.0, monotonic() - float(entry.queued_mono))
+        perf_diag.note(
+            "video.scrub.resume_queued_frame_age_ms", round(age * 1000.0, 3)
+        )
+        return entry
+
+    def _resume_valid_waiting_entries(self) -> list[QueuedResult]:
+        """Unacked valid frames still owned by the current resume transaction."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return []
+        if not self._resume_pending:
+            return []
+        out: list[QueuedResult] = []
+        txn = int(self._resume_transaction_id)
+        for q in self._resume_queued_results.values():
+            if q.acknowledged or not q.valid_frame:
+                continue
+            if int(q.resume_transaction_id) != txn:
+                continue
+            out.append(q)
+        return out
+
+    def _resume_queued_frame_age_s(self) -> float | None:
+        waiting = self._resume_valid_waiting_entries()
+        if not waiting:
+            return None
+        oldest = min(waiting, key=lambda q: q.queued_mono)
+        return max(0.0, monotonic() - float(oldest.queued_mono))
+
+    def _resume_has_waiting_frame(self) -> bool:
+        """True only for a valid ndarray still waiting for UI presentation."""
+        waiting = self._resume_valid_waiting_entries()
+        if not waiting:
+            return False
+        age = self._resume_queued_frame_age_s()
+        if age is None:
+            return False
+        perf_diag.note(
+            "video.scrub.resume_queued_frame_age_ms", round(age * 1000.0, 3)
+        )
+        # Stale valid frames past max age are treated as callback_lost, not progress.
+        return age < _RESUME_WAITING_FRAME_MAX_AGE_S
+
+    def _oldest_valid_waiting(self) -> QueuedResult | None:
+        waiting = self._resume_valid_waiting_entries()
+        if not waiting:
+            return None
+        return min(waiting, key=lambda q: q.queued_mono)
+
+    def _resume_has_active_progress(self) -> bool:
+        """Liveness: queued UI frame OR in-flight decode OR pending latest."""
+        if self._resume_has_waiting_frame():
+            return True
+        if bool(self._async_inflight):
+            return True
+        if self._play_pending_seconds is not None:
+            return True
+        return False
+
     def _on_resume_watchdog(self) -> None:
-        """Recover if resume has not presented a post-land playback frame."""
+        """Recover only when resume has no queued/in-flight/pending progress."""
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
             return
+        # WAITING_FRAME / in-flight / pending = active progress — do not
+        # invalidate or bump generation (that was the dense-region freeze).
+        if self._resume_has_active_progress():
+            if self._resume_has_waiting_frame():
+                waiting = self._oldest_valid_waiting()
+                perf_diag.count(
+                    "video.scrub.resume_watchdog_deferred_for_waiting_frame"
+                )
+                self._sm_trace(
+                    "RESUME_WATCHDOG_DEFER",
+                    song_time=None if waiting is None else waiting.song_time,
+                    generation=None if waiting is None else waiting.generation,
+                    request_id=None if waiting is None else waiting.request_id,
+                    scheduler="resume_watchdog",
+                    reason="waiting_frame_queued",
+                    extra={
+                        "resume_transaction_id": self._resume_transaction_id,
+                        "queued_age_ms": (
+                            None
+                            if self._resume_queued_frame_age_s() is None
+                            else round(
+                                float(self._resume_queued_frame_age_s()) * 1000.0, 3
+                            )
+                        ),
+                        "async_gen": int(self._async_req_gen),
+                    },
+                )
+            else:
+                perf_diag.count("video.scrub.resume_watchdog_deferred_for_progress")
+            self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
+            return
+        # Valid WAITING_FRAME callback genuinely lost (age exceeded) — drop
+        # stale ownership then recover (never defer 2s on already-delivered
+        # invalid results: those never enter valid waiting).
+        stale = [
+            q
+            for q in self._resume_valid_waiting_entries()
+            if (monotonic() - float(q.queued_mono)) >= _RESUME_WAITING_FRAME_MAX_AGE_S
+        ]
+        if stale:
+            perf_diag.count("video.scrub.resume_waiting_frame_callback_lost")
+            for q in stale:
+                self._ack_resume_queued_result(
+                    q.request_id, reject_reason="callback_lost"
+                )
         perf_diag.count("video.scrub.resume_timeout")
         self._recover_resume_playback()
 
     def _recover_resume_playback(self) -> None:
-        """Reset play decoder and seek to current clock — do not stay frozen."""
-        perf_diag.count("video.scrub.resume_recovery_started")
-        perf_diag.note("video.scrub.resume_recovery_reason", "decoder_reset_seek")
-        perf_diag.note("video.seek.recovery_reason", "resume_watchdog")
+        """Reset/resubmit toward a current playback frame — never false-ready.
+
+        Invariant: RESUME_PLAYBACK may leave to PLAYBACK / PLAYBACK_DECODER_READY
+        only after FIRST_PLAYBACK_FRAME_PRESENTED for this resume generation.
+        Watchdog recovery must not call ``_complete_resume`` merely because a
+        decoder was rebuilt or a replacement request was submitted.
+        Must not bump generation while a WAITING_FRAME is queued for UI.
+        """
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return
+        if not self._resume_pending:
+            return
+        # Never self-cancel a frame already waiting for UI.
+        if self._resume_has_waiting_frame():
+            perf_diag.count(
+                "video.scrub.resume_watchdog_deferred_for_waiting_frame"
+            )
+            self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
+            return
+        first = not self._resume_recovery_attempted
+        if first:
+            self._resume_recovery_attempted = True
+            self._resume_recovery_rebuilds = 0
+            perf_diag.count("video.scrub.resume_recovery_started")
+            perf_diag.note("video.scrub.resume_recovery_reason", "decoder_reset_seek")
+            perf_diag.note("video.seek.recovery_reason", "resume_watchdog")
+        else:
+            perf_diag.count("video.scrub.resume_recovery_retry")
         self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_PREPARING)
         # Keep last valid land/scrub frame — never clear to black during recovery.
         if self._is_valid_frame_array(self._last_valid_frame):
             self._note_display_source(DisplaySource.LAST_VALID)
-        # Invalidate first so in-flight play work drops, then reset only when idle.
-        self._invalidate_async_requests()
-        if not self._async_inflight:
-            self._close_play_worker_decoders()
-            perf_diag.count("video.seek.decoder_recreated")
-        else:
-            # Worker still finishing — reopen on next schedule after result drops.
-            self._play_decoder_reset_pending = True
+        # At most one invalidate+rebuild per resume transaction.
+        can_rebuild = (
+            first
+            and int(self._resume_recovery_rebuilds) < _MAX_RESUME_RECOVERY_REBUILDS
+        )
+        if can_rebuild:
+            self._invalidate_async_requests()
+            if not self._async_inflight:
+                self._close_play_worker_decoders()
+                self._resume_recovery_rebuilds = (
+                    int(self._resume_recovery_rebuilds) + 1
+                )
+                perf_diag.count("video.seek.decoder_recreated")
+            else:
+                self._play_decoder_reset_pending = True
         song = self._song
         t = self._last_position_seconds
         if t is None:
             t = self._release_target_song_time
         if song is not None and t is not None and self._video_output_active:
             recover_t0 = monotonic()
+            # Subsequent timeouts: resubmit latest without another gen bump.
             self._request_async_live_frame(
                 float(t),
                 kind="play",
@@ -1048,26 +1695,108 @@ class VideoSyncController(QObject):
                 "video.scrub.playback_decoder_ready_ms",
                 (monotonic() - recover_t0) * 1000.0,
             )
-        if not self._resume_recovery_attempted:
-            self._resume_recovery_attempted = True
-            self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+        # Keep watchdog armed until a current-generation playback frame presents.
+        self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+
+    def _on_resume_frame_rejected(self, *, reason: str) -> None:
+        """too_late / gen mismatch during RESUME: keep land, resubmit, stay armed."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
-        # Bound freeze: leave RESUME even if decode still empty.
-        self._complete_resume(reason="recovery")
+        if not self._resume_pending:
+            return
+        # A newer valid queued frame must not be invalidated by this reject path.
+        if self._resume_has_waiting_frame():
+            perf_diag.count(
+                "video.scrub.resume_reject_ignored_waiting_frame"
+            )
+            if not self._resume_watchdog.isActive():
+                self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+            return
+        perf_diag.count(f"video.scrub.resume_reject.{reason}")
+        perf_diag.note("video.scrub.resume_last_reject_reason", reason)
+        if self._is_valid_frame_array(self._last_valid_frame):
+            if self._display_source != DisplaySource.PLAYBACK_FRAME:
+                self._note_display_source(DisplaySource.LAST_VALID)
+        t = self._last_position_seconds
+        if t is None:
+            t = self._release_target_song_time
+        if t is not None and self._video_output_active:
+            # At most one in-flight play + one pending latest.
+            self._schedule_playback_target(
+                float(t),
+                scheduler=f"resume_reject_{reason}",
+                force=not bool(self._async_inflight),
+            )
+        if not self._resume_watchdog.isActive():
+            self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+
+    def _ensure_resume_target_while_idle(self) -> None:
+        """RESUME + idle worker + no first frame → immediately schedule current target."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return
+        if not self._resume_pending:
+            return
+        # Do not replace a frame already queued for UI presentation.
+        if self._resume_has_waiting_frame():
+            return
+        if self._async_inflight:
+            return
+        if not self._video_output_active:
+            return
+        t = self._last_position_seconds
+        if t is None:
+            t = self._release_target_song_time
+        if t is None:
+            return
+        perf_diag.count("video.scrub.resume_idle_resubmit")
+        self._schedule_playback_target(
+            float(t),
+            scheduler="resume_idle_resubmit",
+            force=True,
+        )
+        if not self._resume_watchdog.isActive():
+            self._resume_watchdog.start(_RESUME_RECOVERY_MS)
 
     def _complete_resume(self, *, reason: str = "frame") -> None:
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
+        # Production: only a real presented playback frame may leave RESUME.
+        # Tests may still drain with reason="drain" / "test".
+        # Never accept reason="recovery" (false-ready after decoder rebuild).
+        # intentional_gap uses _terminate_resume_intentional_gap instead.
+        if reason not in ("frame", "drain", "test"):
+            perf_diag.count("video.scrub.resume_complete_rejected")
+            perf_diag.note("video.scrub.resume_complete_rejected_reason", reason)
+            return
         self._resume_watchdog.stop()
         self._resume_pending = False
         self._resume_required = False
+        recovered = bool(self._resume_recovery_attempted)
+        self._resume_recovery_attempted = False
+        self._resume_recovery_rebuilds = 0
+        self._finalize_resume_queued_ownership(terminal=True)
         if reason == "frame":
             self._set_playback_handoff(
                 PlaybackDecoderHandoff.FIRST_PLAYBACK_FRAME_PRESENTED
             )
             self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
+            self._resume_terminal_status = (
+                "completed_after_recovery" if recovered else "completed"
+            )
+            perf_diag.count(
+                "video.scrub.resume_terminal.completed_after_recovery"
+                if recovered
+                else "video.scrub.resume_terminal.completed"
+            )
         else:
             self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
+            self._resume_terminal_status = f"drained:{reason}"
+            perf_diag.count("video.scrub.resume_terminal.drained")
+        # After first resume frame, stable PLAYBACK budget applies.
+        self._play_next_decode_deadline_mono = 0.0
+        perf_diag.note(
+            "video.scrub.resume_terminal_status", self._resume_terminal_status
+        )
         if self._resume_started_mono > 0.0:
             elapsed = (monotonic() - self._resume_started_mono) * 1000.0
             perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
@@ -1082,16 +1811,31 @@ class VideoSyncController(QObject):
                 float(self._release_target_media_time),
             )
         self._set_pipeline_state(VideoPipelineState.PLAYBACK)
-        # Mutual exclusion: completed XOR recovered (Windows invariant).
-        if reason == "recovery":
-            perf_diag.count("video.scrub.resume_recovered")
-            perf_diag.count("video.scrub.resume_recovery_completed")
+        if reason == "frame":
+            if recovered:
+                perf_diag.count("video.scrub.resume_recovered")
+                perf_diag.count("video.scrub.resume_recovery_completed")
+            else:
+                perf_diag.count("video.scrub.resume_completed")
         else:
             perf_diag.count("video.scrub.resume_completed")
         perf_diag.note("video.scrub.resume_complete_reason", reason)
         self._min_present_seconds = None
         perf_diag.count("video.scrub.min_present_seconds_cleared")
         perf_diag.note("video.scrub.min_present_seconds_value", None)
+        # Bootstrap late frame: catch up to current AudioEngine target.
+        if reason == "frame" and self._resume_need_catchup:
+            self._resume_need_catchup = False
+            engine_t = self._last_position_seconds
+            if engine_t is not None and self._video_output_active:
+                perf_diag.count("video.scrub.resume_bootstrap_catchup")
+                self._schedule_playback_target(
+                    float(engine_t),
+                    scheduler="resume_bootstrap_catchup",
+                    force=True,
+                )
+        else:
+            self._resume_need_catchup = False
 
     def _set_playback_handoff(self, state: str) -> None:
         self._playback_handoff = str(state)
@@ -1112,6 +1856,8 @@ class VideoSyncController(QObject):
         prev = self._display_source
         self._display_source = str(source)
         perf_diag.note("video.display_source", self._display_source)
+        # Only true empty-widget exposure counts toward empty_widget_visible_ms.
+        # NO_VIDEO / TIMELINE_GAP use INTENTIONAL_GAP and must not pollute this.
         if source == DisplaySource.EMPTY_WIDGET:
             if self._empty_widget_since_mono is None:
                 self._empty_widget_since_mono = monotonic()
@@ -1120,17 +1866,64 @@ class VideoSyncController(QObject):
                 age = (monotonic() - self._empty_widget_since_mono) * 1000.0
                 perf_diag.record_ms("video.empty_widget_visible_ms", age)
                 self._empty_widget_since_mono = None
-            if prev == DisplaySource.EMPTY_WIDGET and self._song_activate_mono:
-                perf_diag.record_ms(
-                    "video.first_valid_frame_after_song_activate_ms",
-                    (monotonic() - self._song_activate_mono) * 1000.0,
-                )
-            if self._seek_after_mono is not None:
-                perf_diag.record_ms(
-                    "video.first_valid_frame_after_seek_ms",
-                    (monotonic() - self._seek_after_mono) * 1000.0,
-                )
-                self._seek_after_mono = None
+
+    def _record_first_valid_frame_metrics(self) -> None:
+        """first_valid_frame_* only for a real decoded frame of this session."""
+        if (
+            not self._first_valid_frame_recorded_for_session
+            and self._song_activate_mono is not None
+        ):
+            perf_diag.record_ms(
+                "video.first_valid_frame_after_song_activate_ms",
+                (monotonic() - self._song_activate_mono) * 1000.0,
+            )
+            self._first_valid_frame_recorded_for_session = True
+        if self._seek_after_mono is not None:
+            perf_diag.record_ms(
+                "video.first_valid_frame_after_seek_ms",
+                (monotonic() - self._seek_after_mono) * 1000.0,
+            )
+            self._seek_after_mono = None
+
+    def _set_preview_video_state(self, state: str) -> None:
+        self._preview_video_state = str(state)
+        perf_diag.note("video.preview_state", self._preview_video_state)
+
+    def _song_has_visible_video(self, song: Song | None) -> bool:
+        if song is None:
+            return False
+        return any(not c.hidden for c in song.video_clips)
+
+    def _same_session_last_valid(self, clip_id: str | None) -> bool:
+        """last_valid may only reuse a frame from the same clip + media session."""
+        if not self._is_valid_frame_array(self._last_valid_frame):
+            return False
+        if int(self._last_valid_frame_session) != int(self._media_session_gen):
+            return False
+        if not clip_id or not self._last_valid_frame_clip_id:
+            return False
+        return str(self._last_valid_frame_clip_id) == str(clip_id)
+
+    def _clear_last_valid_frame(self) -> None:
+        self._last_valid_frame = None
+        self._last_valid_frame_mono = 0.0
+        self._last_valid_frame_song_seconds = None
+        self._last_valid_frame_clip_id = None
+        self._last_valid_frame_session = -1
+
+    def _present_no_video_state(self) -> None:
+        """NO_VIDEO_FOR_SONG — neutral Preview, never Loading Video."""
+        self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+        self.activation_loading.emit("")
+        self._emit_frame(None, allow_clear=True, reason="no_video_for_song")
+        self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+
+    def _present_timeline_gap(self, *, reason: str = "timeline_gap") -> None:
+        """VIDEO_TIMELINE_GAP — intentional blank; no Loading / no early poster."""
+        self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+        self.activation_loading.emit("")
+        self._emit_frame(None, allow_clear=True, reason=f"intentional:{reason}")
+        self._note_display_source(DisplaySource.INTENTIONAL_GAP)
 
     def _complete_final_land(self, seconds: float, frame: np.ndarray) -> None:
         """Exact land presented → establish decoder position → resume or pause."""
@@ -1228,6 +2021,9 @@ class VideoSyncController(QObject):
         pos = self._last_position_seconds
         if song is None or pos is None:
             return
+        if not self._song_has_visible_video(song):
+            self._present_no_video_state()
+            return
         self._invalidate_async_requests()
         self._flush_timer.stop()
         self._pending_clip = None
@@ -1237,9 +2033,11 @@ class VideoSyncController(QObject):
         self._maybe_warn_overlap(song, float(pos))
         primary = song.active_video_clip_at(float(pos))
         self._set_active(primary.id if primary else None)
-        # Immediate non-empty Preview, then async land — never block UI ~6s
-        # on a full GOP decode-forward for activation.
+        # Immediate Preview state, then async land when a valid target exists.
         self._present_activation_preview(song, float(pos))
+        if primary is None:
+            # Timeline gap — do not schedule a decode for a non-target.
+            return
         self._request_async_live_frame(
             float(pos),
             kind="land",
@@ -1249,8 +2047,26 @@ class VideoSyncController(QObject):
         )
 
     def _present_activation_preview(self, song: Song, seconds: float) -> None:
-        """Poster / keep-last / loading slate before normal decoder first frame."""
+        """Poster / keep-last / loading only for a valid active Video target."""
         t0 = monotonic()
+        if not self._song_has_visible_video(song):
+            self._present_no_video_state()
+            perf_diag.note("video.activation_poster.source", "no_video_for_song")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+        primary = song.active_video_clip_at(float(seconds))
+        if primary is None:
+            # Song has Video, but Song Time maps to a timeline gap.
+            self._present_timeline_gap(reason="activation_gap")
+            perf_diag.note("video.activation_poster.source", "timeline_gap")
+            perf_diag.record_ms(
+                "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
+            )
+            return
+
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_TARGET_PENDING)
         poster = self._scrub_composite(song, float(seconds))
         if self._is_valid_frame_array(poster):
             assert isinstance(poster, np.ndarray)
@@ -1279,8 +2095,7 @@ class VideoSyncController(QObject):
                 "video.activation_poster_present_ms", (monotonic() - t0) * 1000.0
             )
             return
-        if self._is_valid_frame_array(self._last_valid_frame):
-            # Same process last frame — only keep if we already noted LAST_VALID.
+        if self._same_session_last_valid(primary.id):
             self._note_display_source(DisplaySource.LAST_VALID)
             perf_diag.note("video.activation_poster.source", "last_valid")
             perf_diag.record_ms(
@@ -1288,7 +2103,7 @@ class VideoSyncController(QObject):
             )
             self.activation_loading.emit("Loading video…")
             return
-        # Intentional non-empty loading placeholder — never empty/null widget.
+        # Intentional loading placeholder — only for a valid pending target.
         self._emit_loading_placeholder()
         perf_diag.note("video.activation_poster.source", "loading_placeholder")
         perf_diag.record_ms(
@@ -1297,10 +2112,11 @@ class VideoSyncController(QObject):
 
     def _emit_loading_placeholder(self) -> None:
         """Emit a tiny dark slate so Preview is never an empty/null widget."""
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_TARGET_PENDING)
         slate = np.zeros((9, 16, 3), dtype=np.uint8)
         slate[:, :] = (24, 24, 27)
         self._emit_frame(slate, reason="activate_poster")
-        self._note_display_source(DisplaySource.POSTER)
+        self._note_display_source(DisplaySource.LOADING)
         self.activation_loading.emit("Loading video…")
 
     def set_playing(self, active: bool) -> None:
@@ -1359,40 +2175,34 @@ class VideoSyncController(QObject):
         self._warned_overlap_keys.clear()
         self._set_active(None)
         self._play_seek_recovery_attempted = False
-        has_video = bool(
-            song is not None
-            and any(not c.hidden for c in song.video_clips)
-        )
+        self._first_valid_frame_recorded_for_session = False
+        # Always drop cross-song / cross-session last frame.
+        self._clear_last_valid_frame()
+        self._last_emitted_frame = _UNSET
+        has_video = self._song_has_visible_video(song)
         if song is None or not has_video:
-            # Intentional clear only when there is truly no video media.
-            self._last_valid_frame = None
-            self._last_valid_frame_mono = 0.0
-            self._last_valid_frame_song_seconds = None
-            self._last_emitted_frame = _UNSET
             self._song_activate_mono = None
-            self._emit_frame(
-                None,
-                allow_clear=True,
-                reason="song_switch" if song is None else "no_video_clips",
-            )
-            self._note_display_source(
-                DisplaySource.EMPTY_WIDGET
-                if song is None
-                else DisplaySource.INTENTIONAL_GAP
-            )
+            if song is None:
+                self.activation_loading.emit("")
+                self._emit_frame(None, allow_clear=True, reason="song_switch")
+                self._note_display_source(DisplaySource.EMPTY_WIDGET)
+                self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+            else:
+                self._present_no_video_state()
         else:
             # Never expose empty black while waiting for the playback decoder.
             self._song_activate_mono = monotonic()
             self._last_position_seconds = 0.0
-            # Clear cross-song last frame so we do not flash the previous Song.
-            self._last_valid_frame = None
-            self._last_valid_frame_mono = 0.0
-            self._last_valid_frame_song_seconds = None
-            self._last_emitted_frame = _UNSET
             if self._video_output_active:
+                # Gate on active clip at t=0 — gap songs must not show Loading.
                 self._present_activation_preview(song, 0.0)
             else:
                 self._note_display_source(DisplaySource.EMPTY_WIDGET)
+                self._set_preview_video_state(
+                    PreviewVideoState.VIDEO_TIMELINE_GAP
+                    if song.active_video_clip_at(0.0) is None
+                    else PreviewVideoState.VALID_VIDEO_TARGET_PENDING
+                )
             # First accurate frame follows via land_frame_at / ensure_video_preview.
         # Do not preload scrub ladders here — song switch + Clean Output used
         # to start a PyAV storm that blocked live decode via av_path_lock.
@@ -1491,8 +2301,11 @@ class VideoSyncController(QObject):
             ):
                 perf_diag.count("video.empty_decode.reason.timeline_gap")
                 return
-            # Playback into a gap: intentional no-media (allow clear).
-            self._emit_frame(None, allow_clear=True, reason="timeline_gap_playback")
+            # Playback into a gap: intentional blank (not Loading Video).
+            if not self._song_has_visible_video(song):
+                self._present_no_video_state()
+            else:
+                self._present_timeline_gap(reason="timeline_gap_playback")
             return
 
         primary = song.active_video_clip_at(seconds)
@@ -1587,10 +2400,13 @@ class VideoSyncController(QObject):
     ) -> None:
         """Schedule sequential playback decode (Round 8 pending-latest policy).
 
-        Invariant: if PLAYBACK/RESUME, playing, worker IDLE, no pending work,
-        a valid engine update must submit immediately.
+        Stable PLAYBACK: AudioEngine position ticks only update the latest
+        target; submits respect the 24/30 Hz budget. RESUME first frame,
+        scrub preview, and final land are not throttled here.
         """
         seconds = float(seconds)
+        if scheduler.startswith("update_position"):
+            perf_diag.count("video.playback.engine_position_ticks")
         if not self._video_output_active:
             self._note_play_schedule_skip(
                 seconds, reason="output_inactive", scheduler=scheduler
@@ -1602,6 +2418,17 @@ class VideoSyncController(QObject):
             self._pending_clip = primary
             self._pending_seconds = seconds
             self._set_active(primary.id if primary else None)
+            # During RESUME, a clock tick into a timeline gap must terminate
+            # without WAITING_FRAME / recovery.
+            if (
+                self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                and self._resume_pending
+                and primary is None
+            ):
+                self._terminate_resume_intentional_gap(
+                    song_time=seconds, reason="timeline_gap_during_resume"
+                )
+                return
         if self._defer_live_decode is not None and self._playing and not force:
             try:
                 if bool(self._defer_live_decode()):
@@ -1620,6 +2447,8 @@ class VideoSyncController(QObject):
             and self._async_req_kind == "play"
             and not force
         ):
+            if self._play_pending_seconds is not None:
+                perf_diag.count("video.playback.pending_latest_replacements")
             self._play_pending_seconds = seconds
             self._playback_request_seq += 1
             perf_diag.note("video.playback.pending_latest_target", seconds)
@@ -1648,20 +2477,81 @@ class VideoSyncController(QObject):
             )
             return
 
-        # Idle: submit immediately (ignore play-rate throttle when idle —
-        # throttle caused engine_fanout_post_land logs without request_id advance).
+        in_resume = self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+        # Stable PLAYBACK budget: do not submit on every idle 60 Hz tick.
+        # RESUME first frame / force / scrub / land bypass this throttle.
+        if (
+            not force
+            and not in_resume
+            and self._pipeline_state == VideoPipelineState.PLAYBACK
+            and self._playing
+        ):
+            min_interval = self._current_min_decode_interval()
+            now = monotonic()
+            if (
+                min_interval > 0.0
+                and self._last_decode_time > 0.0
+                and (now - self._last_decode_time) < min_interval
+            ):
+                if self._play_pending_seconds is not None:
+                    perf_diag.count("video.playback.pending_latest_replacements")
+                self._play_pending_seconds = seconds
+                perf_diag.note("video.playback.pending_latest_target", seconds)
+                remaining = min_interval - (now - self._last_decode_time)
+                deadline = now + remaining
+                if (
+                    self._play_next_decode_deadline_mono <= 0.0
+                    or deadline < self._play_next_decode_deadline_mono
+                ):
+                    self._play_next_decode_deadline_mono = deadline
+                if not self._play_budget_timer.isActive():
+                    ms = max(1, int(remaining * 1000.0))
+                    self._play_budget_timer.start(ms)
+                perf_diag.count("video.playback.budget_deferred")
+                self._note_play_schedule_skip(
+                    seconds, reason="play_budget_throttle", scheduler=scheduler
+                )
+                return
+
+        # Idle (or force / RESUME): submit immediately.
         if self._worker_idle_since_mono is not None:
             idle_ms = (monotonic() - self._worker_idle_since_mono) * 1000.0
             perf_diag.record_ms("video.playback.worker_idle_without_request_ms", idle_ms)
             self._worker_idle_since_mono = None
         self._play_pending_seconds = None
         self._last_decode_time = monotonic()
+        self._play_next_decode_deadline_mono = (
+            self._last_decode_time + self._current_min_decode_interval()
+        )
+        self._play_budget_timer.stop()
         self._request_async_live_frame(
             seconds,
             kind="play",
             lock_timeout=_ASYNC_LOCK_TIMEOUT_S,
             force=force,
             scheduler=scheduler,
+        )
+
+    def _on_play_budget_deadline(self) -> None:
+        """Submit the latest Audio-clock target at the PLAYBACK decode deadline."""
+        if self._pipeline_state != VideoPipelineState.PLAYBACK:
+            return
+        if not self._playing or not self._video_output_active:
+            return
+        if self._async_inflight:
+            # Keep pending; worker drain / next tick will submit.
+            return
+        target = self._play_pending_seconds
+        if target is None:
+            target = self._last_position_seconds
+        if target is None:
+            return
+        self._play_pending_seconds = None
+        perf_diag.count("video.playback.budget_deadline_fire")
+        self._schedule_playback_target(
+            float(target),
+            scheduler="play_budget_deadline",
+            force=True,
         )
 
     def _note_play_schedule_skip(
@@ -2044,6 +2934,14 @@ class VideoSyncController(QObject):
                 decode_t0 = monotonic()
                 use_scrub_decoder = kind in ("scrub_preview", "land")
                 req_id = int(self._async_req_id)
+                if kind == "play":
+                    perf_diag.count("video.playback.decode_submissions")
+                    try:
+                        from cueplayer.playback import media_load_probe as _mlp
+
+                        _mlp.note_play_decode_submit()
+                    except Exception:
+                        pass
                 if kind == "land":
                     self._land_worker_start_mono = decode_t0
                     if self._land_request_mono > 0.0:
@@ -2125,6 +3023,21 @@ class VideoSyncController(QObject):
                                 kind=kind,
                             )
                             with perf_diag.span("video.decode.async"):
+                                decode_deadline = None
+                                if kind == "land":
+                                    decode_deadline = _LAND_DECODE_DEADLINE_S
+                                elif kind == "scrub_preview":
+                                    decode_deadline = (
+                                        _SCRUB_PREVIEW_DECODE_DEADLINE_S
+                                    )
+                                elif (
+                                    kind == "play"
+                                    and self._pipeline_state
+                                    == VideoPipelineState.RESUME_PLAYBACK
+                                ):
+                                    decode_deadline = (
+                                        _RESUME_PLAY_DECODE_DEADLINE_S
+                                    )
                                 frame = self._decode_frame_array(
                                     song,
                                     seconds,
@@ -2132,14 +3045,26 @@ class VideoSyncController(QObject):
                                     lock_timeout=lock_timeout,
                                     stale_on_timeout=(kind != "land"),
                                     scrub_decoder=use_scrub_decoder,
+                                    deadline_s=decode_deadline,
                                 )
                         except Exception as exc:  # noqa: BLE001
                             frame = None
                             empty_reason = f"decode_exception:{type(exc).__name__}"
                         if kind == "land":
+                            land_decode_ms = (monotonic() - decode_t0) * 1000.0
                             perf_diag.record_ms(
                                 "video.scrub.final_land_decode_ms",
-                                (monotonic() - decode_t0) * 1000.0,
+                                land_decode_ms,
+                            )
+                            self._record_land_stage_telemetry(
+                                req_id=req_id,
+                                song_seconds=seconds,
+                                decode_t0=decode_t0,
+                                queue_wait_ms=(
+                                    (decode_t0 - self._land_request_mono) * 1000.0
+                                    if self._land_request_mono > 0.0
+                                    else 0.0
+                                ),
                             )
                             self._sm_trace(
                                 "FINAL_LAND_DECODE_DONE",
@@ -2152,7 +3077,7 @@ class VideoSyncController(QObject):
                                     "ok" if frame is not None else "empty"
                                 ),
                                 extra={
-                                    "decode_ms": (monotonic() - decode_t0) * 1000.0,
+                                    "decode_ms": land_decode_ms,
                                     "has_frame": frame is not None,
                                 },
                             )
@@ -2223,8 +3148,36 @@ class VideoSyncController(QObject):
                         song_time=seconds,
                         kind=kind,
                     )
+                    self._async_emit_mono = monotonic()
+                    # Resume liveness: record request-owned queued delivery.
+                    # Invalid/empty results are tracked for emit/ack but do NOT
+                    # count as valid_frame_waiting_for_present.
+                    if (
+                        kind == "play"
+                        and self._pipeline_state
+                        == VideoPipelineState.RESUME_PLAYBACK
+                        and self._resume_pending
+                    ):
+                        valid = self._is_valid_frame_array(frame)
+                        self._note_resume_queued_result(
+                            gen=int(gen),
+                            request_id=int(req_id),
+                            song_time=float(seconds),
+                            media_session=int(media_session),
+                            scrub_session=int(session),
+                            valid_frame=bool(valid),
+                            empty_reason=str(empty_reason or "")
+                            if not valid
+                            else "",
+                        )
                     self._async_frame_ready.emit(
-                        gen, seconds, frame, kind, empty_reason or "", session
+                        gen,
+                        seconds,
+                        frame,
+                        kind,
+                        empty_reason or "",
+                        session,
+                        int(req_id),
                     )
 
                 # Scrub preview: redo newest target without invalidating session.
@@ -2307,6 +3260,14 @@ class VideoSyncController(QObject):
                         sm_trace.WorkerRuntime.IDLE,
                         reason="worker_loop_exit",
                     )
+                # RESUME with no first frame and no request: UI must get current target.
+                if (
+                    self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                    and self._resume_pending
+                    and self._play_pending_seconds is None
+                    and self._video_output_active
+                ):
+                    QTimer.singleShot(0, self._ensure_resume_target_while_idle)
 
     def _classify_empty_decode(
         self, song: Song, seconds: float, *, kind: str
@@ -2332,11 +3293,17 @@ class VideoSyncController(QObject):
         kind: str = "play",
         empty_reason: str = "",
         scrub_session: int = -1,
+        request_id: int = -1,
     ) -> None:
         kind = str(kind or self._async_req_kind)
         session_ok = (
             scrub_session < 0 or int(scrub_session) == int(self._scrub_session_gen)
         )
+        # Request-level ownership: acknowledge matching queued delivery BEFORE
+        # any early return so invalid/empty cannot leave phantom WAITING_FRAME.
+        queued_entry: QueuedResult | None = None
+        if int(request_id) >= 0 and kind == "play":
+            queued_entry = self._ack_resume_queued_result(int(request_id))
 
         # Round 6 preview: accept in-session frames within tolerance even if
         # gen advanced (coalesce / far-cancel after decode started).
@@ -2371,40 +3338,102 @@ class VideoSyncController(QObject):
                     reason="session_changed",
                     extra={"scrub_transaction_generation": self._scrub_session_gen},
                 )
+                if queued_entry is not None:
+                    perf_diag.count(
+                        "video.scrub.queued_result_reject_reason.session_mismatch"
+                    )
+                self._on_resume_frame_rejected(reason="session_changed")
                 return
             if gen != self._async_req_gen:
-                perf_diag.count("video.async_stale_drop")
-                perf_diag.count(
-                    "video.playback.frame_drop.reason.generation_mismatch"
+                # Preserve a *valid* WAITING_FRAME that was queued for this
+                # resume transaction even if a later mistaken invalidate
+                # advanced gen. Ownership is by request_id (already acked).
+                is_resume_waiting = (
+                    self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                    and bool(self._resume_pending)
+                    and queued_entry is not None
+                    and bool(queued_entry.valid_frame)
+                    and int(queued_entry.resume_transaction_id)
+                    == int(self._resume_transaction_id)
                 )
-                perf_diag.count("video.playback.decode_starved")
-                self._sm_trace(
-                    "STALE_DROP",
-                    song_time=float(seconds),
-                    generation=int(gen),
-                    kind="play",
-                    reason="invalidate_generation_mismatch",
-                    extra={"current_gen": int(self._async_req_gen)},
-                )
-                return
+                media_ok = True
+                if is_resume_waiting and int(queued_entry.media_session) >= 0:
+                    media_ok = int(queued_entry.media_session) == int(
+                        self._media_session_gen
+                    )
+                if is_resume_waiting and media_ok and session_ok:
+                    perf_diag.count(
+                        "video.scrub.resume_waiting_frame_gen_preserved"
+                    )
+                    # Fall through — present the deferred bootstrap frame.
+                else:
+                    perf_diag.count("video.async_stale_drop")
+                    perf_diag.count(
+                        "video.playback.frame_drop.reason.generation_mismatch"
+                    )
+                    perf_diag.count("video.playback.decode_starved")
+                    if queued_entry is not None:
+                        perf_diag.count(
+                            "video.scrub.queued_result_reject_reason.generation_mismatch"
+                        )
+                    self._sm_trace(
+                        "STALE_DROP",
+                        song_time=float(seconds),
+                        generation=int(gen),
+                        kind="play",
+                        reason="invalidate_generation_mismatch",
+                        extra={"current_gen": int(self._async_req_gen)},
+                    )
+                    self._on_resume_frame_rejected(reason="generation_mismatch")
+                    return
             engine_t = self._last_position_seconds
             if engine_t is not None:
                 lateness = float(engine_t) - float(seconds)
                 if lateness > _PLAYBACK_LATENESS_TOLERANCE_S:
-                    perf_diag.count("video.playback.frame_drop.reason.too_late")
-                    perf_diag.count("video.playback.decode_starved")
-                    self._sm_trace(
-                        "STALE_DROP",
-                        song_time=float(seconds),
-                        kind="play",
-                        reason="too_late",
-                        extra={
-                            "engine_song_time": float(engine_t),
-                            "lateness_s": lateness,
-                            "tolerance_s": _PLAYBACK_LATENESS_TOLERANCE_S,
-                        },
-                    )
-                    return
+                    # Bootstrap: first resume frame may be presented even if the
+                    # Audio clock advanced while the UI callback was delayed.
+                    if (
+                        self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                        and self._resume_pending
+                        and session_ok
+                        and (
+                            queued_entry is None
+                            or bool(queued_entry.valid_frame)
+                            or self._is_valid_frame_array(frame)
+                        )
+                    ):
+                        perf_diag.count(
+                            "video.scrub.resume_bootstrap_late_accept"
+                        )
+                        self._resume_need_catchup = True
+                        self._sm_trace(
+                            "RESUME_BOOTSTRAP_LATE_ACCEPT",
+                            song_time=float(seconds),
+                            kind="play",
+                            reason="ui_callback_delay",
+                            extra={
+                                "engine_song_time": float(engine_t),
+                                "lateness_s": lateness,
+                                "resume_transaction_id": self._resume_transaction_id,
+                            },
+                        )
+                        # Fall through to present.
+                    else:
+                        perf_diag.count("video.playback.frame_drop.reason.too_late")
+                        perf_diag.count("video.playback.decode_starved")
+                        self._sm_trace(
+                            "STALE_DROP",
+                            song_time=float(seconds),
+                            kind="play",
+                            reason="too_late",
+                            extra={
+                                "engine_song_time": float(engine_t),
+                                "lateness_s": lateness,
+                                "tolerance_s": _PLAYBACK_LATENESS_TOLERANCE_S,
+                            },
+                        )
+                        self._on_resume_frame_rejected(reason="too_late")
+                        return
             if (
                 self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK
                 and self._last_presented_song_seconds is not None
@@ -2424,6 +3453,28 @@ class VideoSyncController(QObject):
                     },
                 )
                 return
+            # After a discontinuous seek, reject stale pre-seek frames that are
+            # far from the Audio-clock target (would re-arm last_presented).
+            if (
+                self._seek_jump_guard_until_mono > 0.0
+                and monotonic() < self._seek_jump_guard_until_mono
+                and engine_t is not None
+                and abs(float(seconds) - float(engine_t))
+                > max(_PLAYBACK_LATENESS_TOLERANCE_S, 0.5)
+            ):
+                perf_diag.count("video.playback.frame_drop.reason.seek_jump_stale")
+                self._sm_trace(
+                    "STALE_DROP",
+                    song_time=float(seconds),
+                    kind="play",
+                    reason="seek_jump_stale",
+                    extra={
+                        "engine_song_time": float(engine_t),
+                        "seek_jump_target": self._seek_jump_target,
+                        "input_source": self._seek_jump_input_source,
+                    },
+                )
+                return
         elif gen != self._async_req_gen:
             perf_diag.count("video.async_stale_drop")
             self._sm_trace(
@@ -2440,6 +3491,10 @@ class VideoSyncController(QObject):
                 perf_diag.count("video.scrub.preview_stale_drop")
             return
         if not self._video_output_active:
+            if queued_entry is not None:
+                perf_diag.count(
+                    "video.scrub.queued_result_reject_reason.output_inactive"
+                )
             return
 
         # Late exact-land must not overwrite a newer resumed playback frame.
@@ -2477,6 +3532,8 @@ class VideoSyncController(QObject):
                             "min_present_seconds": float(self._min_present_seconds),
                         },
                     )
+                    if kind == "play":
+                        self._on_resume_frame_rejected(reason="before_min_present")
                 else:
                     perf_diag.count("video.scrub.old_generation_drop_after_release")
                     self._sm_trace(
@@ -2505,6 +3562,10 @@ class VideoSyncController(QObject):
             perf_diag.count(f"video.empty_decode.reason.{reason}")
             if frame is not None and not self._is_valid_frame_array(frame):
                 perf_diag.count("video.zero_size_frame_rejected")
+            if queued_entry is not None:
+                perf_diag.count(
+                    f"video.scrub.queued_result_reject_reason.{reason}"
+                )
             self._empty_decode_streak += 1
             if self._last_valid_frame_mono > 0.0:
                 age_ms = (monotonic() - self._last_valid_frame_mono) * 1000.0
@@ -2540,6 +3601,26 @@ class VideoSyncController(QObject):
                 if not self._land_retry_timer.isActive():
                     self._land_retry_timer.start(_LAND_RETRY_MS)
                 return
+
+            # RESUME: invalid/empty is not presentation progress.
+            if (
+                kind == "play"
+                and self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                and self._resume_pending
+            ):
+                if reason in (
+                    "timeline_gap",
+                    "missing_media",
+                    "no_song",
+                ) or reason.startswith("invalid_target:TIMELINE_GAP"):
+                    self._terminate_resume_intentional_gap(
+                        song_time=float(seconds),
+                        reason=reason,
+                    )
+                    return
+                # Valid clip but empty decode: stay in RESUME, resubmit latest.
+                self._on_resume_invalid_decode(reason=reason)
+                return
             return
 
         assert isinstance(frame, np.ndarray)
@@ -2559,7 +3640,9 @@ class VideoSyncController(QObject):
                 return
             self._sm_worker_runtime(
                 sm_trace.WorkerRuntime.PRESENTING,
-                request_id=int(self._async_req_id) if self._async_req_id else None,
+                request_id=int(request_id) if int(request_id) >= 0 else (
+                    int(self._async_req_id) if self._async_req_id else None
+                ),
                 reason="final_land_present",
                 song_time=float(seconds),
                 kind="land",
@@ -2581,6 +3664,7 @@ class VideoSyncController(QObject):
             reason=f"present_{kind}",
             song_time=float(seconds),
             kind=kind,
+            request_id=int(request_id) if int(request_id) >= 0 else None,
         )
         self._emit_frame(frame)
         self._last_presented_song_seconds = float(seconds)
@@ -2594,15 +3678,23 @@ class VideoSyncController(QObject):
         elif kind == "play":
             perf_diag.count("video.playback.frame_accept")
             perf_diag.count("video.playback.decode_presented")
+            perf_diag.count("video.playback.frames_presented")
             if self._async_req_started_mono > 0.0:
                 ready_ms = (monotonic() - self._async_req_started_mono) * 1000.0
                 perf_diag.record_ms("video.frame_ready_to_present_ms", ready_ms)
-                # Queue delay proxy: time from decode-done emit to UI present.
-                # Worker sets WAITING_FRAME just before emit; we only have
-                # request-start here — still useful for dense-mark A/B.
-                perf_diag.record_ms("video.present.queue_delay_ms", ready_ms)
+            # True UI queue delay: worker emit → queued slot present.
+            if self._async_emit_mono > 0.0:
+                perf_diag.record_ms(
+                    "video.present.queue_delay_ms",
+                    (monotonic() - self._async_emit_mono) * 1000.0,
+                )
+                self._async_emit_mono = 0.0
             self._note_display_source(DisplaySource.PLAYBACK_FRAME)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
             self._play_seek_recovery_attempted = False
+            self._note_seek_liveness_present(float(seconds))
             is_first = sm_trace.consume_first_play_pending()
             event = "FIRST_PLAY_FRAME" if is_first else "PLAY_PRESENT"
             self._sm_trace(
@@ -2610,6 +3702,7 @@ class VideoSyncController(QObject):
                 song_time=float(seconds),
                 media_time=self._media_time_for_song(seconds),
                 kind="play",
+                request_id=int(request_id) if int(request_id) >= 0 else None,
                 extra={
                     "ms_since_land_present": sm_trace.gap_ms_since_land_present(),
                     "ms_since_resume_begin": sm_trace.gap_ms_since_resume_begin(),
@@ -2624,6 +3717,12 @@ class VideoSyncController(QObject):
 
         # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame.
         if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK and kind == "play":
+            if queued_entry is not None and queued_entry.valid_frame:
+                age = max(0.0, monotonic() - float(queued_entry.queued_mono))
+                perf_diag.count("video.scrub.resume_waiting_frame_presented")
+                perf_diag.record_ms(
+                    "video.scrub.resume_waiting_frame_queue_ms", age * 1000.0
+                )
             self._complete_resume(reason="frame")
         # Worker may already be decoding pending-latest — do not force IDLE.
         if not bool(self._async_inflight):
@@ -2634,10 +3733,50 @@ class VideoSyncController(QObject):
                 kind=kind,
             )
 
+    def _on_resume_invalid_decode(self, *, reason: str) -> None:
+        """Valid clip target returned empty — ack done; resubmit; no 2s defer."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return
+        if not self._resume_pending:
+            return
+        # A newer valid frame already queued for UI must not be replaced.
+        if self._resume_has_waiting_frame():
+            perf_diag.count(
+                "video.scrub.resume_invalid_ignored_waiting_frame"
+            )
+            if not self._resume_watchdog.isActive():
+                self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+            return
+        perf_diag.count("video.scrub.resume_invalid_decode_resubmit")
+        perf_diag.note("video.scrub.resume_last_invalid_reason", reason)
+        if self._is_valid_frame_array(self._last_valid_frame):
+            if self._display_source != DisplaySource.PLAYBACK_FRAME:
+                self._note_display_source(DisplaySource.LAST_VALID)
+        t = self._last_position_seconds
+        if t is None:
+            t = self._release_target_song_time
+        if t is not None and self._video_output_active:
+            song = self._song
+            if song is not None and song.active_video_clip_at(float(t)) is None:
+                self._terminate_resume_intentional_gap(
+                    song_time=float(t), reason="timeline_gap_after_empty"
+                )
+                return
+            self._schedule_playback_target(
+                float(t),
+                scheduler=f"resume_invalid_{reason}",
+                force=not bool(self._async_inflight),
+            )
+        if not self._resume_watchdog.isActive():
+            self._resume_watchdog.start(_RESUME_RECOVERY_MS)
+
     def _note_preview_presented(self, seconds: float) -> None:
         self._last_scrub_preview_seconds = float(seconds)
         self._last_presented_song_seconds = float(seconds)
         self._note_display_source(DisplaySource.SCRUB_FRAME)
+        self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+        self._record_first_valid_frame_metrics()
+        self.activation_loading.emit("")
         perf_diag.count("video.scrub.preview_presented")
         self._scrub_preview_presented += 1
         self._sm_trace(
@@ -2691,6 +3830,58 @@ class VideoSyncController(QObject):
         perf_diag.note("video.decoder_reset.clip_id", clip_id)
         perf_diag.note("video.decoder_reset.count", self._worker_reset_count)
 
+    def _record_land_stage_telemetry(
+        self,
+        *,
+        req_id: int,
+        song_seconds: float,
+        decode_t0: float,
+        queue_wait_ms: float,
+    ) -> None:
+        """Split one final-land worker transaction into bounded stages."""
+        media_t = self._media_time_for_song(song_seconds)
+        perf_diag.note("video.land.stage.request_id", int(req_id))
+        perf_diag.note("video.land.stage.song_time", float(song_seconds))
+        perf_diag.note(
+            "video.land.stage.media_time",
+            float(media_t) if media_t is not None else None,
+        )
+        perf_diag.record_ms("video.land.stage.queue_wait_ms", float(queue_wait_ms))
+        # Pull last decoder seek telemetry (keyframe / decode-forward / total).
+        seek_ms = 0.0
+        forward_ms = 0.0
+        convert_ms = 0.0
+        lock_wait_ms = 0.0
+        total_ms = (monotonic() - decode_t0) * 1000.0
+        clip_id = self._active_clip_id
+        dec = None
+        if clip_id:
+            with self._worker_lock:
+                dec = self._scrub_worker_decoders.get(clip_id)
+        if dec is not None and getattr(dec, "last_seek", None) is not None:
+            tel = dec.last_seek
+            seek_ms = float(getattr(tel, "seek_ms", 0.0) or 0.0)
+            forward_ms = float(getattr(tel, "decode_to_target_ms", 0.0) or 0.0)
+            convert_ms = float(getattr(tel, "convert_ms", 0.0) or 0.0)
+            lock_wait_ms = float(getattr(tel, "lock_wait_ms", 0.0) or 0.0)
+            total_ms = float(getattr(tel, "total_ms", 0.0) or total_ms)
+        perf_diag.record_ms("video.land.stage.lock_wait_ms", lock_wait_ms)
+        perf_diag.record_ms("video.land.stage.keyframe_seek_ms", seek_ms)
+        perf_diag.record_ms("video.land.stage.decode_forward_ms", forward_ms)
+        perf_diag.record_ms("video.land.stage.convert_ms", convert_ms)
+        perf_diag.record_ms("video.land.stage.decode_total_ms", total_ms)
+        # Identify the dominant stage for this request (Windows A/B).
+        stages = {
+            "queue_wait": float(queue_wait_ms),
+            "lock_wait": lock_wait_ms,
+            "keyframe_seek": seek_ms,
+            "decode_forward": forward_ms,
+            "convert": convert_ms,
+        }
+        owner = max(stages, key=stages.get)
+        perf_diag.note("video.land.stage.dominant", owner)
+        perf_diag.note("video.land.stage.dominant_ms", stages[owner])
+
     def _decode_frame_array(
         self,
         song: Song,
@@ -2716,7 +3907,10 @@ class VideoSyncController(QObject):
 
         seek_deadline = deadline_s
         if seek_deadline is None and worker and not scrub_decoder:
-            seek_deadline = _PLAYBACK_SEEK_DEADLINE_S
+            if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
+                seek_deadline = _RESUME_PLAY_DECODE_DEADLINE_S
+            else:
+                seek_deadline = _PLAYBACK_SEEK_DEADLINE_S
 
         def _frame_for(clip: VideoClip) -> np.ndarray | None:
             if not worker:
@@ -2737,12 +3931,21 @@ class VideoSyncController(QObject):
             except Exception:
                 return None
             # Long-GOP stall: recreate play decoder once and retry at engine time.
+            # During RESUME after seek, do NOT stack a second full seek — that was
+            # the proven path to decode.async ≈ 3s (1.5 + 1.5).
             if (
                 worker
                 and not scrub_decoder
                 and getattr(decoder, "seek_timed_out", False)
                 and not self._play_seek_recovery_attempted
             ):
+                if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
+                    self._play_seek_recovery_attempted = True
+                    perf_diag.count("video.seek.resume_skip_double_recovery")
+                    perf_diag.note(
+                        "video.seek.recovery_reason", "resume_single_bounded_attempt"
+                    )
+                    return frame
                 self._play_seek_recovery_attempted = True
                 perf_diag.count("video.seek.decoder_recreated")
                 perf_diag.note("video.seek.recovery_reason", "seek_deadline")
@@ -2811,11 +4014,20 @@ class VideoSyncController(QObject):
             perf_diag.count("video.emit.calls")
             if allow_clear:
                 perf_diag.note("video.preview_cleared.reason", reason or "intentional")
-                self._note_display_source(
-                    DisplaySource.INTENTIONAL_GAP
-                    if reason and "gap" in reason
-                    else DisplaySource.EMPTY_WIDGET
-                )
+                if reason in ("no_video_for_song", "no_video_clips") or (
+                    reason and "no_video" in reason
+                ):
+                    self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+                    self._set_preview_video_state(PreviewVideoState.NO_VIDEO_FOR_SONG)
+                elif reason and (
+                    "gap" in reason
+                    or "TIMELINE_GAP" in reason
+                    or "intentional" in reason
+                ):
+                    self._note_display_source(DisplaySource.INTENTIONAL_GAP)
+                    self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+                else:
+                    self._note_display_source(DisplaySource.EMPTY_WIDGET)
             self.frame_changed.emit(None)
             return
         if not self._is_valid_frame_array(frame):
@@ -2825,22 +4037,41 @@ class VideoSyncController(QObject):
         if frame is self._last_emitted_frame:
             return
         self._last_emitted_frame = frame
-        self._last_valid_frame = frame
-        self._last_valid_frame_mono = monotonic()
-        if self._last_position_seconds is not None:
-            self._last_valid_frame_song_seconds = float(self._last_position_seconds)
+        is_tiny_slate = frame.shape[0] <= 16 and frame.shape[1] <= 32
+        if not is_tiny_slate and self._active_clip_id:
+            self._last_valid_frame = frame
+            self._last_valid_frame_mono = monotonic()
+            if self._last_position_seconds is not None:
+                self._last_valid_frame_song_seconds = float(self._last_position_seconds)
+            self._last_valid_frame_clip_id = str(self._active_clip_id)
+            self._last_valid_frame_session = int(self._media_session_gen)
         perf_diag.count("video.emit.calls")
         if reason in ("seek_poster", "activate_poster"):
-            self._note_display_source(DisplaySource.POSTER)
+            if not is_tiny_slate:
+                self._note_display_source(DisplaySource.POSTER)
+                self._set_preview_video_state(
+                    PreviewVideoState.VALID_VIDEO_TARGET_PENDING
+                )
+            # Tiny loading slate: caller sets DisplaySource.LOADING.
         elif reason == "final_land":
             self._note_display_source(DisplaySource.FINAL_LAND)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
         elif reason.startswith("intentional"):
             self._note_display_source(DisplaySource.INTENTIONAL_GAP)
-        elif self._display_source in (
+            self._set_preview_video_state(PreviewVideoState.VIDEO_TIMELINE_GAP)
+        elif not is_tiny_slate and self._display_source in (
             DisplaySource.EMPTY_WIDGET,
             DisplaySource.INTENTIONAL_GAP,
+            DisplaySource.LOADING,
+            DisplaySource.POSTER,
+            DisplaySource.LAST_VALID,
         ):
-            self._note_display_source(DisplaySource.LAST_VALID)
+            self._note_display_source(DisplaySource.PLAYBACK_FRAME)
+            self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
+            self._record_first_valid_frame_metrics()
+            self.activation_loading.emit("")
         self.frame_changed.emit(frame)
 
     def _flush_pending(self) -> None:

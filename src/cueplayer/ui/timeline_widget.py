@@ -7,7 +7,7 @@ from pathlib import Path
 from time import monotonic_ns
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -21,7 +21,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QSlider, QWidget
+from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMenu, QSlider, QWidget
 
 from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.diagnostics import perf as perf_diag
@@ -207,6 +207,8 @@ class TimelineWidget(QWidget):
         self._drag_start_times: dict[str, float] = {}
         self._drag_origin_x = 0.0
         self._drag_click_seek: float | None = None
+        # Consumed by MainWindow on seek_requested (mark_object / waveform / …).
+        self._next_seek_input_source: str = "timeline"
         # Plain click on one mark inside a multi-selection → collapse to that mark on release.
         self._pending_single_select: str | None = None
         self._mark_hit_radius = 10.0
@@ -221,6 +223,11 @@ class TimelineWidget(QWidget):
         self._setup_mode = False
         self._playing = False
         self._video_waveform_pending_refresh = False
+        # Content epoch for Video Track peaks baked into the static backdrop.
+        # Bumped on every async waveform-ready; bake stores the matching value so
+        # an empty pre-ready pixmap cannot be reused after peaks land.
+        self._video_waveform_revision = 0
+        self._video_waveform_baked_revision = -1
         self._last_play_repaint_ns = 0
         # ~30 Hz playhead blit is enough; 60 Hz with Video Track + follow was
         # starving the UI thread whenever auto-scroll moved every tick.
@@ -239,19 +246,26 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_pps = 0.0
         self._scrub_backdrop_size = QSize()
         self._scrub_backdrop_overscan = 0
+        self._scrub_backdrop_dpr = 0.0
+        # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
+        # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
+        self._spatial_backdrop: QPixmap | None = None
+        self._mark_annotation_sprites: list[dict] = []
         # When rebuilding a wide play-cache, paint as if the widget were wider.
         self._paint_width_override: int | None = None
         # Marks are baked into the static backdrop; live paint only overlays
         # selection / hover / drag (PART A — stop 7–24 ms mark.paint per tick).
         self._mark_backdrop_revision = 0
         self._mark_backdrop_baked_revision = -1
-        # Rapid zoom/pan: scale cached backdrop; coalesce expensive rebuilds.
+        # Rapid zoom/pan: scale spatial backdrop; coalesce expensive rebuilds.
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = 0
         self._view_transform_last_view_changed_ns = 0
         self._view_transform_view_changed_interval_ns = 66_000_000
-        self._view_transform_debounce_ms = 64
+        # 140 ms: fewer final rebuilds during continuous wheel gestures (~64 ms
+        # produced ~103 rebuilds / 10 s on Windows).
+        self._view_transform_debounce_ms = 140
         self._zoom_quality_timer = QTimer(self)
         self._zoom_quality_timer.setSingleShot(True)
         self._zoom_quality_timer.setInterval(self._view_transform_debounce_ms)
@@ -709,14 +723,21 @@ class TimelineWidget(QWidget):
         self._video_waveforms_ready.emit()
 
     def _apply_video_waveform_ready(self) -> None:
-        """GUI-thread slot: refresh static backdrop once peaks land."""
-        if self._playing:
-            # Avoid rebuilding the wide play-cache mid-playback (heavy + races
-            # with background PyAV work on the same clip file).
-            self._video_waveform_pending_refresh = True
-            return
+        """GUI-thread slot: refresh static backdrop once peaks land.
+
+        Always bump the waveform revision and drop the retained static cache.
+        Peaks are already in ``VideoClipWaveformCache`` — the rebuild only paints
+        from cache (no mid-play PyAV submit). Leaving a geometry-matched empty
+        bake after ready permanently hid the Video Track waveform while playing.
+        """
+        self._video_waveform_revision = int(self._video_waveform_revision) + 1
         self._video_waveform_pending_refresh = False
-        self._invalidate_scrub_backdrop()
+        self._invalidate_scrub_backdrop(reason="video_waveform_ready")
+        if perf_diag.is_enabled():
+            perf_diag.note(
+                "timeline.video_waveform.revision", int(self._video_waveform_revision)
+            )
+            perf_diag.count("timeline.video_waveform.ready_invalidate")
         self.update()
 
     def set_song(self, song: Song | None) -> None:
@@ -745,14 +766,15 @@ class TimelineWidget(QWidget):
             # Mark line style/width come from project (apply_mark_line_settings).
         self._video_waveform_cache.clear()
         self._video_waveform_pending_refresh = False
-        self._invalidate_scrub_backdrop()
+        self._video_waveform_revision = int(self._video_waveform_revision) + 1
+        self._invalidate_scrub_backdrop(reason="set_song")
         if song is not None and song.video_clips:
             clips = list(song.video_clips)
 
             def _preload_video_waveforms() -> None:
                 if self._song is song:
                     self._video_waveform_cache.preload(clips)
-                    self._invalidate_scrub_backdrop()
+                    self._invalidate_scrub_backdrop(reason="video_waveform_preload")
                     self.update()
 
             QTimer.singleShot(0, _preload_video_waveforms)
@@ -1557,15 +1579,22 @@ class TimelineWidget(QWidget):
         if self._playing and not was and self._auto_scroll and not self._scrubbing:
             self._view_pinned = False
             self._center_on_playhead()
-            self._invalidate_scrub_backdrop()
         if was != self._playing:
-            # Play uses the same static-backdrop path as scrub; rebuild once.
+            # Transport state must NOT select a different static render path.
+            # Keep the retained native cache; only dynamic overlay (playhead)
+            # differs between PLAYING / PAUSED / STOPPED.
             self._reset_playhead_dirty_tracking()
-            self._invalidate_scrub_backdrop()
+            # Ensure a cache exists; do not invalidate solely because play started.
+            if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+                self._rebuild_scrub_backdrop(reason="play_seed")
+            elif not self._scrub_backdrop_geometry_ok():
+                self._rebuild_scrub_backdrop(reason="play_geometry")
             self._update_video_lane()
             if not self._playing and self._video_waveform_pending_refresh:
                 self._video_waveform_pending_refresh = False
                 self._invalidate_scrub_backdrop()
+                if self.width() > 0 and self.height() > 0:
+                    self._rebuild_scrub_backdrop(reason="wave_pending")
             self.update()
 
     def _begin_box_select(
@@ -1673,6 +1702,16 @@ class TimelineWidget(QWidget):
             self._loop_b = t
         self.loop_changed.emit(self._loop_a, self._loop_b)
         self.update()
+
+    def consume_seek_input_source(self) -> str:
+        """Return and reset the input source for the latest seek_requested."""
+        src = str(self._next_seek_input_source or "timeline")
+        self._next_seek_input_source = "timeline"
+        return src
+
+    def _emit_seek(self, seconds: float, *, input_source: str) -> None:
+        self._next_seek_input_source = str(input_source)
+        self.seek_requested.emit(float(seconds))
 
     def playhead_seconds(self) -> float:
         """Visual playhead time — authoritative while scrubbing mid-drag.
@@ -1859,6 +1898,16 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop(reason=reason)
 
     def _begin_view_transform_gesture(self) -> None:
+        # Seed retained caches before marking busy — otherwise the first wheel
+        # after scrub paints BG_APP (empty flash) until the idle rebuild.
+        if (
+            self._spatial_backdrop is None
+            or self._scrub_backdrop is None
+            or self._spatial_backdrop.isNull()
+            or self._scrub_backdrop.isNull()
+        ):
+            if self.width() > 0 and self.height() > 0:
+                self._rebuild_scrub_backdrop(reason="zoom_seed")
         self._view_transform_busy = True
         self._view_transform_quality_pending = True
         self._view_transform_last_busy_ns = monotonic_ns()
@@ -1882,12 +1931,16 @@ class TimelineWidget(QWidget):
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = monotonic_ns()
         with perf_diag.span("timeline.zoom.repaint_dispatch_ms"):
-            self._invalidate_scrub_backdrop(reason="zoom_idle")
+            # Atomic rebuild: never clear the live cache before the replacement
+            # is ready (blank flash between scaled preview and final bake).
             if self.width() > 0 and self.height() > 0:
                 self._rebuild_scrub_backdrop(reason="zoom_idle")
+            else:
+                self._invalidate_scrub_backdrop(reason="zoom_idle_empty")
+            # Timeline-only repaint — do not force a main-window/global update.
             self.update()
-            self.view_changed.emit()
-            perf_diag.count("timeline.view_changed.calls")
+            # Overview can wait for the next throttled emit; avoid flash cascades.
+            self._emit_view_changed_throttled()
             perf_diag.count("timeline.zoom.final_rebuilds")
 
     def _emit_view_changed_throttled(self) -> None:
@@ -2208,7 +2261,11 @@ class TimelineWidget(QWidget):
 
     def _seek_from_x(self, x: float) -> None:
         x = min(max(x, float(self._header_width)), float(self.width()))
-        self.seek_requested.emit(min(self._time_for_x(x), self._duration()))
+        y = float(self.mapFromGlobal(QCursor.pos()).y())
+        source = "ruler" if y < float(self._ruler_height) else "waveform"
+        if self._scrubbing:
+            source = source  # scrub force land uses waveform/ruler
+        self._emit_seek(min(self._time_for_x(x), self._duration()), input_source=source)
 
     def _scrub_at(self, x: float, *, force: bool = False) -> None:
         """Move playhead under cursor; pan view near left/right edges.
@@ -2265,8 +2322,11 @@ class TimelineWidget(QWidget):
 
     def _invalidate_scrub_backdrop(self, reason: str = "generic") -> None:
         self._scrub_backdrop = None
+        self._spatial_backdrop = None
+        self._mark_annotation_sprites = []
         self._scrub_backdrop_overscan = 0
         self._mark_backdrop_baked_revision = -1
+        self._video_waveform_baked_revision = -1
         # Backdrop drop usually means scroll/zoom/content changed — don't keep a
         # stale playhead X for dirty-rect erasing (ghost green line).
         self._reset_playhead_dirty_tracking()
@@ -2279,11 +2339,18 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop(reason=reason)
 
     def _scrub_backdrop_geometry_ok(self) -> bool:
-        """True when the cached backdrop matches zoom + widget size (scroll may drift)."""
+        """True when the cached backdrop matches zoom, size, DPR, and wave epoch."""
         pm = self._scrub_backdrop
         if pm is None or pm.isNull():
             return False
         if self._scrub_backdrop_overscan < 0:
+            return False
+        if int(self._video_waveform_baked_revision) != int(
+            self._video_waveform_revision
+        ):
+            return False
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        if abs(dpr - float(self._scrub_backdrop_dpr)) > 1e-3:
             return False
         return (
             abs(self._pixels_per_second - self._scrub_backdrop_pps) < 1e-6
@@ -2299,86 +2366,122 @@ class TimelineWidget(QWidget):
     def _blit_scrub_backdrop(self, painter: QPainter) -> bool:
         """Draw the static cache, shifting within an overscanned bake.
 
-        During rapid zoom, PPS no longer matches — use a scaled preview instead
-        of rebuilding Mark/waveform geometry on every wheel notch.
+        PLAYING / PAUSED / STOPPED / scrub all use the same native 1:1 blit when
+        viewport scale is unchanged. Scaled zoom-preview is only for PPS mismatch
+        during an active view-transform gesture.
         """
+        # Non-transform interactions: never resample the retained static cache.
+        if not self._view_transform_busy:
+            return self._blit_native_backdrop(painter)
+
         if (
-            self._view_transform_busy
-            and self._scrub_backdrop is not None
+            self._spatial_backdrop is not None
             and not self._scrub_backdrop_geometry_ok()
         ):
             if self._blit_zoom_preview(painter):
                 return True
 
         if not self._scrub_backdrop_geometry_ok():
-            if self._view_transform_busy:
-                if self._blit_zoom_preview(painter):
-                    return True
-                return False
-            self._rebuild_scrub_backdrop(reason="geometry_mismatch")
-        if not self._scrub_backdrop_geometry_ok():
+            if self._blit_zoom_preview(painter):
+                return True
             return False
 
         overscan = int(self._scrub_backdrop_overscan)
         delta = int(round(self._scroll_x - self._scrub_backdrop_scroll))
         margin = 8
         if delta < -overscan + margin or delta > overscan - margin:
-            if self._view_transform_busy:
-                if self._blit_zoom_preview(painter):
-                    return True
-                return False
-            self._rebuild_scrub_backdrop(reason="scroll_overscan")
+            if self._blit_zoom_preview(painter):
+                return True
+            return False
+
+        return self._blit_native_pixmap(
+            painter, self._scrub_backdrop, overscan=overscan, delta=delta
+        )
+
+    def _blit_native_backdrop(self, painter: QPainter) -> bool:
+        """Scrub path: retained native-resolution cache + no transform."""
+        if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+            self._rebuild_scrub_backdrop(reason="scrub_seed")
+        if not self._scrub_backdrop_geometry_ok():
+            # Scrub must not resample — rebuild at current geometry instead.
+            self._rebuild_scrub_backdrop(reason="scrub_geometry")
+        if not self._scrub_backdrop_geometry_ok():
+            return False
+        overscan = int(self._scrub_backdrop_overscan)
+        delta = int(round(self._scroll_x - self._scrub_backdrop_scroll))
+        margin = 8
+        if delta < -overscan + margin or delta > overscan - margin:
+            self._rebuild_scrub_backdrop(reason="scrub_scroll_overscan")
             if not self._scrub_backdrop_geometry_ok():
                 return False
             overscan = int(self._scrub_backdrop_overscan)
             delta = 0
+        return self._blit_native_pixmap(
+            painter, self._scrub_backdrop, overscan=overscan, delta=delta
+        )
 
+    def _blit_native_pixmap(
+        self,
+        painter: QPainter,
+        pm: QPixmap | None,
+        *,
+        overscan: int,
+        delta: int,
+    ) -> bool:
+        """1:1 device-pixel blit — no dest W×H stretch (avoids soft text/dots)."""
+        if pm is None or pm.isNull():
+            return False
         perf_diag.count("timeline.mark_backdrop.cache_hit")
-        pm = self._scrub_backdrop
-        assert pm is not None
         w = self.width()
         h = self.height()
         hw = int(self._header_width)
         content_w = max(0, w - hw)
-        painter.fillRect(0, 0, w, h, QColor(BG_APP))
+        if w <= 0 or h <= 0:
+            return False
         dpr = max(1.0, float(pm.devicePixelRatio()))
 
         def _dev(logical: float) -> int:
             return int(round(float(logical) * dpr))
 
-        header_blit_w = min(hw, w, pm.width())
+        # Do not fill BG first — that flashes through partial dirty regions.
+        # The pixmap covers the paint area; uncovered edges stay as prior pixels.
+        header_blit_w = min(hw, w, int(pm.width() / dpr) if dpr else pm.width())
         if header_blit_w > 0 and h > 0:
             painter.save()
             painter.setClipRect(0, 0, header_blit_w, h)
+            # QPoint + source rect: Qt maps via pixmap DPR (no resample).
             painter.drawPixmap(
-                0, 0, header_blit_w, h, pm, 0, 0, _dev(header_blit_w), _dev(h)
+                QPointF(0, 0).toPoint(),
+                pm,
+                QRect(0, 0, _dev(header_blit_w), _dev(h)),
             )
             painter.restore()
 
-        if content_w <= 0 or h <= 0:
+        if content_w <= 0:
             return True
 
         src_x = hw + overscan + delta
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
-            hw,
-            0,
-            content_w,
-            h,
+            QPoint(hw, 0),
             pm,
-            _dev(src_x),
-            0,
-            _dev(content_w),
-            _dev(h),
+            QRect(_dev(src_x), 0, _dev(content_w), _dev(h)),
         )
         painter.restore()
         return True
 
     def _blit_zoom_preview(self, painter: QPainter) -> bool:
-        """Temporary scaled backdrop while zoom/pan is coalescing."""
-        pm = self._scrub_backdrop
-        if pm is None or pm.isNull():
+        """Temporary zoom preview: scale spatial layers; keep annotations fixed-size.
+
+        Waveform / grid / clips scale with the time transform. Cue Notes, seconds
+        text, and marker glyphs keep constant pixel/font size and only move in X.
+        """
+        spatial = self._spatial_backdrop
+        if spatial is None or spatial.isNull():
+            # Fallback: old full backdrop (may scale text — last resort only).
+            spatial = self._scrub_backdrop
+        if spatial is None or spatial.isNull():
             return False
         old_pps = float(self._scrub_backdrop_pps)
         if old_pps <= 1e-9:
@@ -2390,17 +2493,17 @@ class TimelineWidget(QWidget):
         if w <= 0 or h <= 0:
             return False
         painter.fillRect(0, 0, w, h, QColor(BG_APP))
-        dpr = max(1.0, float(pm.devicePixelRatio()))
+        dpr = max(1.0, float(spatial.devicePixelRatio()))
 
         def _dev(logical: float) -> int:
             return int(round(float(logical) * dpr))
 
-        header_blit_w = min(hw, w, int(pm.width() / dpr) if dpr else pm.width())
+        header_blit_w = min(hw, w, int(spatial.width() / dpr) if dpr else spatial.width())
         if header_blit_w > 0:
             painter.save()
             painter.setClipRect(0, 0, header_blit_w, h)
             painter.drawPixmap(
-                0, 0, header_blit_w, h, pm, 0, 0, _dev(header_blit_w), _dev(h)
+                0, 0, header_blit_w, h, spatial, 0, 0, _dev(header_blit_w), _dev(h)
             )
             painter.restore()
         if content_w <= 0:
@@ -2415,59 +2518,242 @@ class TimelineWidget(QWidget):
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
-            hw, 0, content_w, h, pm, _dev(src_left), 0, _dev(src_w), _dev(h)
+            hw, 0, content_w, h, spatial, _dev(src_left), 0, _dev(src_w), _dev(h)
         )
         painter.restore()
+        # Screen-space annotations (constant pixel size) on top of scaled spatial.
+        self._paint_zoom_screen_annotations(painter)
         return True
 
+    def _paint_zoom_screen_annotations(self, painter: QPainter) -> None:
+        """Fixed-size ruler labels + Mark glyphs/Notes (canonical layout).
+
+        Note/Cue text sits under the ruler beside the stem (same as
+        ``_paint_marks_impl``). Lane glyphs sit on the Mark lane. Positions
+        move with PPS; pixel/font size stays constant.
+        """
+        self._paint_ruler_labels(painter)
+        sprites = self._mark_annotation_sprites
+        if not sprites:
+            return
+        right = float(self.width())
+        hw = float(self._header_width)
+        tracks_top = self._tracks_top_y()
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPointSize(int(self._wave_label_font_px))
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        for sprite in sprites:
+            t = float(sprite["time_seconds"])
+            x = self._x_for_time(t)
+            if x < hw - 4.0 or x > right + 4.0:
+                continue
+            color = QColor(sprite["color"])
+            x = self._device_snap(x)
+            painter.setPen(self._mark_overlay_pen(color))
+            painter.drawLine(
+                QPointF(x, self._ruler_height), QPointF(x, tracks_top)
+            )
+            # Waveform Note/Cue — identical placement to static bake.
+            lines = sprite.get("wave_lines") or []
+            if lines:
+                painter.setPen(color)
+                text_y = float(self._ruler_height) + float(fm.ascent()) + 2.0
+                for line in lines:
+                    painter.drawText(QPointF(x + 5.0, text_y), line)
+                    text_y += float(fm.height())
+            pm: QPixmap | None = sprite.get("lane_pixmap")
+            if pm is None or pm.isNull():
+                continue
+            hotspot_x = float(sprite["hotspot_x"])
+            y = float(sprite["lane_y"])
+            painter.drawPixmap(int(round(x - hotspot_x)), int(round(y)), pm)
+
     def _rebuild_scrub_backdrop(self, reason: str = "rebuild") -> None:
-        """Rasterize static timeline layers once (waveform + Marks + lanes)."""
+        """Rasterize static timeline layers once (waveform + Marks + lanes).
+
+        Builds spatial + full caches off-screen, then swaps atomically so zoom
+        preview never exposes a blank/invalid cache mid-gesture.
+        """
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
+            self._spatial_backdrop = None
+            self._mark_annotation_sprites = []
             self._scrub_backdrop_overscan = 0
             return
         t0 = monotonic_ns()
         view_w = self._view_width()
-        if self._playing:
-            overscan = max(128, int(view_w * 1.5))
-        else:
-            overscan = max(64, int(view_w * 0.75))
+        # Same overscan for PLAYING / PAUSED / STOPPED so transport state never
+        # selects a different retained raster layout.
+        overscan = max(128, int(view_w * 1.25))
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
         self._paint_width_override = paint_w
+        spatial_pm: QPixmap | None = None
+        full_pm: QPixmap | None = None
+        sprites: list[dict] = []
         try:
             dpr = max(1.0, float(self.devicePixelRatioF()))
-            pm = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
-            pm.setDevicePixelRatio(dpr)
-            pm.fill(QColor(BG_APP))
-            painter = QPainter(pm)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-            painter.setFont(self.font())
+            # 1) Spatial layers only (scalable during zoom).
+            spatial_pm = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
+            spatial_pm.setDevicePixelRatio(dpr)
+            spatial_pm.fill(QColor(BG_APP))
+            sp = QPainter(spatial_pm)
+            sp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            sp.setFont(self.font())
             with perf_diag.span("timeline.mark_backdrop.rebuild_ms"):
-                self._paint_static_layers(painter)
-            painter.end()
+                self._paint_static_layers(
+                    sp, include_marks=False, include_ruler_labels=False
+                )
+            sp.end()
+
+            # 2) Full bake = spatial copy + marks/labels (play/scrub when PPS matches).
+            full_pm = QPixmap(spatial_pm)
+            fp = QPainter(full_pm)
+            fp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            fp.setFont(self.font())
+            tracks_top = self._tracks_top_y()
+            self._paint_ruler_labels(fp)
+            self._paint_marks(
+                fp,
+                start_y=tracks_top,
+                waveform_lines=True,
+                lane_shapes=True,
+                mode="static",
+            )
+            # Headers were already in spatial; marks draw on top of content.
+            sprites = self._bake_mark_annotation_sprites()
+            fp.end()
         finally:
             self._scroll_x = saved_scroll
             self._paint_width_override = None
-        self._scrub_backdrop = pm
+        # Atomic swap — keep prior caches until replacements are complete.
+        self._scrub_backdrop = full_pm
+        self._spatial_backdrop = spatial_pm
+        self._mark_annotation_sprites = sprites
         self._scrub_backdrop_scroll = saved_scroll
         self._scrub_backdrop_pps = self._pixels_per_second
         self._scrub_backdrop_size = QSize(self.size())
         self._scrub_backdrop_overscan = overscan
+        self._scrub_backdrop_dpr = float(dpr)
         self._mark_backdrop_baked_revision = int(self._mark_backdrop_revision)
+        self._video_waveform_baked_revision = int(self._video_waveform_revision)
         elapsed = (monotonic_ns() - t0) / 1_000_000.0
         if elapsed >= 16.7:
             perf_diag.record_ms("ui.event_loop_long_task_ms", elapsed)
         if perf_diag.is_enabled():
             perf_diag.count(f"timeline.mark_backdrop.rebuild_reason.{reason}")
+            perf_diag.note(
+                "timeline.zoom.annotation_sprite_count", len(sprites)
+            )
+
+    def _bake_mark_annotation_sprites(self) -> list[dict]:
+        """Canonical Mark annotation cache for zoom preview.
+
+        Layout matches ``_paint_marks_impl``:
+        - Cue/Note text under the ruler beside the stem (wave_lines)
+        - Marker shape on the Mark lane (lane_pixmap)
+        Text/glyph pixel size is fixed; only X follows the latest PPS.
+        """
+        if self._song is None:
+            return []
+        lane_y = {lane_index: y0 for lane_index, y0, _y1 in self._lane_rects()}
+        right = self._paint_right()
+        t_lo = self._time_for_x(float(self._header_width)) - 0.25
+        t_hi = self._time_for_x(float(right)) + 0.25
+        visible = self._song.mark_slice_in_time_range(t_lo, t_hi)
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPointSize(int(self._wave_label_font_px))
+        fm_probe = QPixmap(1, 1)
+        fm_probe.fill(Qt.GlobalColor.transparent)
+        probe = QPainter(fm_probe)
+        probe.setFont(font)
+        metrics = probe.fontMetrics()
+        probe.end()
+        out: list[dict] = []
+        for mark in visible:
+            lane = self._song.lane_by_index(mark.lane_index)
+            if lane is not None and not lane.visible:
+                continue
+            y0 = lane_y.get(mark.lane_index)
+            if y0 is None:
+                continue
+            color = QColor(lane.color if lane else "#ffffff")
+            shape = lane.marker_shape if lane is not None else "circle"
+            size = max(5.0, self._lane_height * 0.28)
+            wave_lines: list[str] = []
+            if lane is not None:
+                show_cue = bool(getattr(lane, "show_cue_id_on_wave", False))
+                show_note = bool(getattr(lane, "show_note_on_wave", False))
+                if show_cue and bool(getattr(lane, "cue_id_enabled", False)):
+                    cue_text = (mark.main_cue_id or "").strip()
+                    if cue_text:
+                        wave_lines.append(
+                            metrics.elidedText(
+                                f"Cue {cue_text}",
+                                Qt.TextElideMode.ElideRight,
+                                100,
+                            )
+                        )
+                if show_note:
+                    note_text = (mark.display_name or "").strip()
+                    if note_text:
+                        wave_lines.append(
+                            metrics.elidedText(
+                                note_text, Qt.TextElideMode.ElideRight, 140
+                            )
+                        )
+            # Lane glyph only (no Note text — that lives under the ruler).
+            glyph_r = int(math.ceil(size)) + 4
+            pad = glyph_r + 2
+            pm_w = pad * 2
+            pm_h = max(self._lane_height + 4, pad * 2)
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            pm = QPixmap(int(pm_w * dpr), int(pm_h * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            cx = float(pad)
+            cy = float(self._lane_height / 2 + 2)
+            if self._show_mark_stem:
+                p.setPen(QPen(color, 2))
+                p.drawLine(QPointF(cx, 3), QPointF(cx, self._lane_height - 1))
+            draw_marker_shape(
+                p,
+                cx,
+                cy,
+                color,
+                shape,
+                size=size,
+                outline=QColor(255, 255, 255, 210),
+                outline_width=1.8,
+            )
+            p.end()
+            out.append(
+                {
+                    "mark_id": mark.id,
+                    "time_seconds": float(mark.time_seconds),
+                    "color": color.name(),
+                    "wave_lines": wave_lines,
+                    "lane_pixmap": pm,
+                    "hotspot_x": cx,
+                    "lane_y": float(y0),
+                }
+            )
+        return out
 
     def _can_use_static_backdrop(self) -> bool:
-        """Blit cached static layers while scrubbing, playing, or zoom-coalescing."""
-        if self._box_selecting or self._dragging_marks or self._dragging_clip is not None:
-            return False
-        if self._trimming_clip is not None:
-            return False
+        """Blit retained native static layers for all ordinary interactions.
+
+        Mouse-up / mouse-down / dragging / PLAYING / PAUSED / STOPPED must share
+        one canonical static backdrop. Only geometry edits leave this path.
+        Selection, hover, and drag chrome are painted as dynamic overlays.
+        """
+        # Geometry changes require a fresh bake — not ordinary mouse press/drag.
         if self._dragging_audio_gain:
             return False
         if (
@@ -2477,26 +2763,38 @@ class TimelineWidget(QWidget):
             or self._resizing_header
         ):
             return False
-        if self._view_transform_busy or self._panning:
-            return True
-        return self._scrubbing or self._playing
+        # Mark drag / box select / clip drag|trim: keep the same static cache;
+        # overlays paint selection / hover / drag indication only.
+        return True
 
-    def _paint_static_layers(self, painter: QPainter) -> None:
-        self._paint_ruler(painter)
+    def _device_snap(self, logical: float) -> float:
+        """Snap a logical coordinate to the nearest device pixel (shared DPR rule)."""
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        return float(round(float(logical) * dpr) / dpr)
+
+    def _paint_static_layers(
+        self,
+        painter: QPainter,
+        *,
+        include_marks: bool = True,
+        include_ruler_labels: bool = True,
+    ) -> None:
+        self._paint_ruler(painter, include_labels=include_ruler_labels)
         wave_bottom = self._paint_waveform(painter)
         self._paint_video_lane(painter)
         self._paint_ltc_lane(painter)
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
-        # Bake Marks into the static cache — play ticks must not redraw hundreds
-        # of marker shapes (Windows: mark.paint_ms mean ~7 / max ~24).
-        self._paint_marks(
-            painter,
-            start_y=tracks_top,
-            waveform_lines=True,
-            lane_shapes=True,
-            mode="static",
-        )
+        if include_marks:
+            # Bake Marks into the static cache — play ticks must not redraw hundreds
+            # of marker shapes (Windows: mark.paint_ms mean ~7 / max ~24).
+            self._paint_marks(
+                painter,
+                start_y=tracks_top,
+                waveform_lines=True,
+                lane_shapes=True,
+                mode="static",
+            )
         self._paint_wave_splitter(painter, wave_bottom)
         self._paint_video_lane_splitter(painter)
         self._paint_mark_lane_splitter(painter)
@@ -2508,6 +2806,11 @@ class TimelineWidget(QWidget):
         if not self._scrubbing:
             self._scrub_timer.stop()
             return
+        # Do not rely exclusively on mouseReleaseEvent — if LeftButton is
+        # already up (lost release / ungrab), finalize exactly once.
+        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            self._end_scrub_once(reason="fallback_left_button_up")
+            return
         pos = self.mapFromGlobal(QCursor.pos())
         # Only keep the timer for edge auto-pan while held still (visual
         # scroll + playhead). Engine seek waits for mouse-up.
@@ -2515,6 +2818,69 @@ class TimelineWidget(QWidget):
         local = pos.x() - self._header_width
         if local < self._scrub_edge or local > view_w - self._scrub_edge:
             self._scrub_at(pos.x(), force=False)
+
+    def _timeline_scrub_trace(
+        self, event: str, *, song_time: float | None = None, reason: str | None = None
+    ) -> None:
+        try:
+            from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+            txn = perf_diag.get_attr("video.scrub.transaction_id")
+            sm_trace.trace(
+                event,
+                song_time=song_time if song_time is not None else float(self._position),
+                reason=reason,
+                scheduler="timeline_widget",
+                extra={
+                    "timeline_scrubbing": bool(self._scrubbing),
+                    "scrub_transaction_id": txn,
+                },
+            )
+        except Exception:
+            pass
+
+    def _end_scrub_once(self, *, reason: str, x: float | None = None) -> None:
+        """Idempotent scrub terminal: one scrub_ended → Final Land / gap / cancel.
+
+        Final Land is owned by release (via MainWindow → video_sync) and must
+        not wait for a scrub-preview UI frame to present.
+        """
+        if not self._scrubbing:
+            return
+        self._scrubbing = False
+        self._scrub_timer.stop()
+        try:
+            self.releaseMouse()
+        except Exception:
+            pass
+        if x is None:
+            pos = self.mapFromGlobal(QCursor.pos())
+            x = float(pos.x())
+        x = float(x)
+        target = min(self._time_for_x(x), self._duration())
+        event = (
+            "TIMELINE_SCRUB_FALLBACK_RELEASE"
+            if str(reason).startswith("fallback") or reason in (
+                "window_deactivate",
+                "ungrab",
+            )
+            else "TIMELINE_SCRUB_RELEASE"
+        )
+        self._timeline_scrub_trace(event, song_time=target, reason=reason)
+        # Force-publish latest target + engine seek at release.
+        self._scrub_at(x, force=True)
+        self.scrub_ended.emit()
+        self._restore_hover_cursor(x, float(self.mapFromGlobal(QCursor.pos()).y()))
+        self.update()
+
+    def changeEvent(self, event) -> None:  # noqa: N802, ANN001
+        if (
+            event is not None
+            and event.type() == QEvent.Type.WindowDeactivate
+            and self._scrubbing
+        ):
+            self._end_scrub_once(reason="window_deactivate")
+        super().changeEvent(event)
 
     def _hit_mark_at(self, x: float, y: float) -> str | None:
         """Return mark id under cursor on tracks or waveform overlay lines."""
@@ -2946,11 +3312,20 @@ class TimelineWidget(QWidget):
                 )
             elif self._in_scrub_zone(x, y):
                 # Left-drag scrubs the playhead so time follows the cursor.
+                # Do NOT invalidate/rebuild the static cache — scrub does not
+                # change viewport geometry; keep native retained pixels.
                 self.clear_selection()
                 self._scrubbing = True
                 self._view_pinned = True
-                self._invalidate_scrub_backdrop()
+                if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+                    self._rebuild_scrub_backdrop(reason="scrub_seed")
                 self.scrub_started.emit()
+                # Trace after scrub_started so video.scrub.transaction_id is set.
+                self._timeline_scrub_trace(
+                    "TIMELINE_SCRUB_PRESS",
+                    song_time=min(self._time_for_x(x), self._duration()),
+                    reason="left_press",
+                )
                 self.grabMouse()
                 self._scrub_at(x, force=True)
                 self._scrub_timer.start()
@@ -3031,8 +3406,12 @@ class TimelineWidget(QWidget):
             if rect.width() >= 4 or rect.height() >= 4:
                 self._box_click_seek = None
             self._emit_box_preview()
-        elif self._scrubbing and event.buttons() & Qt.MouseButton.LeftButton:
-            self._scrub_at(x)
+        elif self._scrubbing:
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                self._scrub_at(x)
+            else:
+                # LeftButton no longer down but release event may be missing.
+                self._end_scrub_once(reason="fallback_move_no_button", x=x)
         else:
             hover_header = self._near_header_split(x)
             hover_wave = False if hover_header else self._near_wave_split(y)
@@ -3155,7 +3534,7 @@ class TimelineWidget(QWidget):
             self._pan_click_seek = None
             self.releaseMouse()
             if click_seek is not None:
-                self.seek_requested.emit(click_seek)
+                self._emit_seek(click_seek, input_source="waveform")
                 self._position = click_seek
             self._invalidate_scrub_backdrop()
             self._restore_hover_cursor(event.position().x(), event.position().y())
@@ -3174,7 +3553,7 @@ class TimelineWidget(QWidget):
                 t = self._loop_a if which == "a" else self._loop_b
                 if t is not None:
                     self._view_pinned = True
-                    self.seek_requested.emit(float(t))
+                    self._emit_seek(float(t), input_source="loop_handle")
                     self._position = float(t)
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
@@ -3212,7 +3591,11 @@ class TimelineWidget(QWidget):
             drag_moved = self._drag_moved
             click_seek = self._drag_click_seek
             box_click_seek = self._box_click_seek
-            self._scrubbing = False
+            if was_scrub:
+                # Explicit release path — idempotent vs timer/move fallback.
+                self._end_scrub_once(
+                    reason="mouse_release", x=float(event.position().x())
+                )
             self._resizing_wave = False
             self._resizing_video_lane = False
             self._resizing_mark_lanes = False
@@ -3221,29 +3604,30 @@ class TimelineWidget(QWidget):
             self._dragging_marks = False
             self._drag_click_seek = None
             self._box_click_seek = None
-            self._scrub_timer.stop()
-            self._invalidate_scrub_backdrop()
-            self.releaseMouse()
+            # End scrub interaction only — keep retained static/spatial cache so
+            # the first wheel zoom does not flash an empty center region.
+            if not was_scrub:
+                self.releaseMouse()
             if was_resize and self._geometry_sync_pending:
                 self._geometry_sync_pending = False
                 self.content_geometry_changed.emit()
-            if was_scrub:
-                self._scrub_at(event.position().x(), force=True)
-                self.scrub_ended.emit()
+            if (not was_scrub) and (was_box or was_drag or was_resize):
+                # Non-scrub left interactions may have moved geometry/marks.
+                self._invalidate_scrub_backdrop()
             if was_box:
                 rect = self._selection_box_rect()
                 moved = rect.width() >= 4 or rect.height() >= 4
                 if not moved and box_click_seek is not None:
                     self.clear_selection()
                     self._view_pinned = True
-                    self.seek_requested.emit(box_click_seek)
+                    self._emit_seek(box_click_seek, input_source="waveform")
                     self._position = box_click_seek
                 else:
                     self._box_current = event.position()
                     self._emit_box_preview()
                     self.selection_changed.emit(list(self._selected_mark_ids))
             if was_drag and not drag_moved and click_seek is not None:
-                self.seek_requested.emit(click_seek)
+                self._emit_seek(click_seek, input_source="mark_object")
                 self._position = click_seek
                 if self._pending_single_select is not None:
                     self.set_selected_mark_ids([self._pending_single_select])
@@ -3264,8 +3648,9 @@ class TimelineWidget(QWidget):
             self._drag_start_times.clear()
             self._drag_moved = False
             self._pending_single_select = None
-            self._restore_hover_cursor(event.position().x(), event.position().y())
-            self.update()
+            if not was_scrub:
+                self._restore_hover_cursor(event.position().x(), event.position().y())
+                self.update()
         super().mouseReleaseEvent(event)
 
     def _in_ltc_waveform(self, x: float, y: float) -> bool:
@@ -3666,11 +4051,10 @@ class TimelineWidget(QWidget):
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                     # Selection / hover only — not all visible Marks.
                     self._paint_marks_dynamic_overlay(painter)
-                    need_video_sel = (
-                        bool(self._selected_clip_ids) or self._hover_clip_id is not None
-                    )
-                    if need_video_sel or not self._playing:
-                        self._paint_video_selection_live(painter)
+                    # Video header caption + selection chrome must paint in
+                    # PLAYING and PAUSED alike (transport must not change
+                    # static-looking pixels such as "No clip selected").
+                    self._paint_video_selection_live(painter)
                     self._paint_loop_region(painter)
                     self._paint_selection_box(painter)
                     self._paint_audio_loading_overlay(painter)
@@ -3680,6 +4064,26 @@ class TimelineWidget(QWidget):
                     self._paint_header_splitter(painter)
                 return
             if self._view_transform_busy:
+                # Never flash blank center — fall back to retained cache if zoom
+                # preview is not yet seedable.
+                if (
+                    self._scrub_backdrop is not None
+                    and not self._scrub_backdrop.isNull()
+                    and self._blit_native_pixmap(
+                        painter,
+                        self._scrub_backdrop,
+                        overscan=int(self._scrub_backdrop_overscan),
+                        delta=int(
+                            round(self._scroll_x - self._scrub_backdrop_scroll)
+                        ),
+                    )
+                ):
+                    with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
+                        self._paint_marks_dynamic_overlay(painter)
+                        self._paint_loop_region(painter)
+                        self._paint_playhead(painter)
+                        self._paint_header_splitter(painter)
+                    return
                 painter.fillRect(dirty, QColor(BG_APP))
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                     self._paint_marks_dynamic_overlay(painter)
@@ -3897,16 +4301,9 @@ class TimelineWidget(QWidget):
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        # Play-time backdrop bake: use the coarse mins/maxs overview instead of
-        # per-pixel source-pyramid sampling. That path was the main hitch when
-        # Video Track was open even with Preview/Clean closed.
-        if self._playing:
-            self._paint_video_clip_waveform_coarse(
-                painter, peaks, duration=duration, x_left=x_left, x_right=x_right,
-                mid=mid, amp=amp, clip_start=float(clip.start_seconds),
-            )
-            return
-
+        # Transport must not change static bake quality. Prefer the same
+        # sampling path in PLAYING and PAUSED; only gate worker submit above.
+        # Wide / zoomed-out clips still step columns to keep bake cheap.
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
         # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
@@ -4111,7 +4508,7 @@ class TimelineWidget(QWidget):
         )
         painter.restore()
 
-    def _paint_ruler(self, painter: QPainter) -> None:
+    def _paint_ruler(self, painter: QPainter, *, include_labels: bool = True) -> None:
         right = self._paint_right()
         painter.fillRect(self._header_width, 0, right, self._ruler_height, QColor("#09090b"))
         duration = self._duration()
@@ -4134,15 +4531,33 @@ class TimelineWidget(QWidget):
 
         painter.setPen(QColor("#a1a1aa"))
         t = (t0 // major) * major
-        last_label_x = -1e9
-        min_label_gap = 70.0
         while t <= t1 + 1e-12:
             x = self._x_for_time(t)
             if x >= self._header_width:
                 painter.drawLine(QPointF(x, 0), QPointF(x, self._ruler_height))
-                if x - last_label_x >= min_label_gap:
-                    painter.drawText(int(x + 4), 18, self._format_ruler_time(t, major))
-                    last_label_x = x
+            t += major
+        if include_labels:
+            self._paint_ruler_labels(painter)
+
+    def _paint_ruler_labels(self, painter: QPainter) -> None:
+        """Screen-space seconds text — constant font size during zoom preview."""
+        right = self._paint_right()
+        duration = self._duration()
+        major, _minor = self._ruler_steps()
+        t0 = max(0.0, self._time_for_x(self._header_width) - major)
+        t1 = min(duration, self._time_for_x(right) + major)
+        painter.setPen(QColor("#a1a1aa"))
+        font = painter.font()
+        # Keep label size stable (do not inherit a scaled transform).
+        painter.setFont(font)
+        t = (t0 // major) * major
+        last_label_x = -1e9
+        min_label_gap = 70.0
+        while t <= t1 + 1e-12:
+            x = self._x_for_time(t)
+            if x >= self._header_width and x - last_label_x >= min_label_gap:
+                painter.drawText(int(x + 4), 18, self._format_ruler_time(t, major))
+                last_label_x = x
             t += major
 
     def _ruler_steps(self) -> tuple[float, float]:
@@ -4565,7 +4980,7 @@ class TimelineWidget(QWidget):
             color = QColor(lane.color if lane else "#ffffff")
             shape = lane.marker_shape if lane is not None else "circle"
             selected = mark.id in self._selected_mark_ids
-            x = self._x_for_time(mark.time_seconds)
+            x = self._device_snap(self._x_for_time(mark.time_seconds))
             if x < self._header_width - 2 or x > right + 2:
                 continue
             dragging = self._dragging_marks and mark.id in self._drag_ids
@@ -4758,7 +5173,7 @@ class TimelineWidget(QWidget):
                 painter.drawText(int(x + flag_w + 4), 14, f"{t:.3f}s")
 
     def _paint_playhead(self, painter: QPainter) -> None:
-        x = self._x_for_time(self._position)
+        x = self._device_snap(self._x_for_time(self._position))
         if x < self._header_width or x > self.width():
             return
         color = QColor(self._playhead_color or "#3dd68c")

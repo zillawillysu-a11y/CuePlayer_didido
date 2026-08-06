@@ -73,6 +73,38 @@ def test_monitor_tc_off_state(app: QApplication) -> None:
     assert panel.tc_output_value.text() == "—"
 
 
+def test_set_output_timecode_skips_identical_presentation(app: QApplication) -> None:
+    panel = CueMonitorPanel()
+    panel.resize(320, 600)
+    panel.show()
+    app.processEvents()
+    panel.configure_output_timecode_clock(visible=True, color="#3dd68c")
+    panel.set_output_timecode(
+        timecode="01:00:05:12",
+        outputs=("LTC",),
+        sending=True,
+    )
+    qss0 = panel.tc_output_value.styleSheet()
+    fit0 = panel._clock_fit_key  # noqa: SLF001
+    # Identical frame — no stylesheet rewrite, no refit.
+    panel.set_output_timecode(
+        timecode="01:00:05:12",
+        outputs=("LTC",),
+        sending=True,
+    )
+    assert panel.tc_output_value.styleSheet() == qss0
+    assert panel._clock_fit_key == fit0  # noqa: SLF001
+    # SMPTE tick: text updates, layout fit key stays (no refit).
+    panel.set_output_timecode(
+        timecode="01:00:05:13",
+        outputs=("LTC",),
+        sending=True,
+    )
+    assert panel.tc_output_value.text() == "01:00:05:13"
+    assert panel._clock_fit_key == fit0  # noqa: SLF001
+    assert panel.tc_output_value.styleSheet() == qss0
+
+
 def test_output_quick_toggles_reflect_settings(app: QApplication) -> None:
     toggles = OutputQuickToggles()
     settings = AudioOutputSettings(

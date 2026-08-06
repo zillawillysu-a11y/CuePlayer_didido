@@ -69,3 +69,24 @@ def test_report_always_lists_video_pipeline_counters() -> None:
     assert "video.decode.async:" in text or "video.decode.async: (none" in text
     assert "video.convert:" in text or "video.convert: (none" in text
     assert "video.present:" in text or "video.present: (none" in text
+
+
+def test_get_attr_is_o1_without_snapshot() -> None:
+    perf.set_enabled(True)
+    perf.clear()
+    perf.note("perf.session_id", "sess-1")
+    for i in range(200):
+        perf.record_ms("hot.path_ms", float(i))
+    assert perf.get_attr("perf.session_id") == "sess-1"
+    assert perf.get_attr("missing", "d") == "d"
+
+
+def test_span_samples_are_bounded() -> None:
+    perf.set_enabled(True)
+    perf.clear()
+    limit = int(perf._MAX_SPAN_SAMPLES)  # noqa: SLF001
+    for i in range(limit + 50):
+        perf.record_ms("bounded_ms", float(i))
+    snap = perf.snapshot()
+    assert snap["spans"]["bounded_ms"]["count"] == limit
+    assert snap["spans"]["bounded_ms"]["last_ms"] == float(limit + 49)

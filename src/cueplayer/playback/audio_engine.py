@@ -54,6 +54,7 @@ from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.midi_cue_notes import MidiCueNotes
 from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
@@ -103,6 +104,22 @@ class AudioEngine(QObject):
         self._resume_after_scrub = False
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
+        # Audio callback continuity (lock-free reads for report; written only
+        # from the PortAudio callback thread — no file I/O, no extra locks).
+        self._cb_count = 0
+        self._cb_underflow = 0
+        self._cb_status_flags_or = 0
+        self._cb_interval_sum = 0.0
+        self._cb_interval_max = 0.0
+        self._cb_exec_sum = 0.0
+        self._cb_exec_max = 0.0
+        self._cb_deadline_miss = 0
+        self._cb_last_mono = 0.0
+        self._cb_expected_period = 0.0
+        self._cb_miss_play_decode_sum = 0
+        self._cb_miss_va_window_sum = 0
+        self._cb_miss_play_decode_last = 0
+        self._cb_miss_va_window_last = 0
         # Total monitoring offset (seconds). Prefer calibration over guessing.
         self.sync_offset_seconds = 0.0
         self.loop_a: float | None = None
@@ -612,6 +629,10 @@ class AudioEngine(QObject):
         """Silence every video clip's own embedded audio (picture keeps showing)."""
         self._video_mixer.set_muted(bool(muted))
 
+    def set_video_audio_schedule_suspended(self, suspended: bool) -> None:
+        """Suspend Video Audio window schedule during scrub/land/resume."""
+        self._video_mixer.set_schedule_suspended(bool(suspended))
+
     def refresh_video_clips(self) -> None:
         """Call after video clips are added / removed / trimmed / re-pathed."""
         clips = list(self._song.video_clips) if self._song is not None else []
@@ -620,6 +641,12 @@ class AudioEngine(QObject):
     def video_audio_decoding(self) -> bool:
         """True while embedded video-audio is decoding (holds ``av_path_lock``)."""
         return bool(self._video_mixer.is_decoding())
+
+    def schedule_video_audio_windows(self, song_seconds: float | None = None) -> None:
+        """Off-RT: schedule Video Audio windows for the Audio sample-clock position."""
+        if song_seconds is None:
+            song_seconds = float(self.position)
+        self._video_mixer.schedule_for_song_time(float(song_seconds))
 
     def set_song_timebase(self, start_timecode: str, fps: float) -> None:
         self._song_start_tc = start_timecode or "01:00:00:00"
@@ -1150,6 +1177,13 @@ class AudioEngine(QObject):
         self._mtc.on_seek(seconds, playing=self._playing)
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
+        # Off-RT: rebuild contiguous Video Audio coverage from the new playhead
+        # so disjoint far-future cache entries cannot suppress local prefetch.
+        if not self._scrubbing:
+            try:
+                self._video_mixer.note_discontinuous_seek(float(self.position))
+            except Exception:
+                pass
 
     def nudge(self, delta_seconds: float) -> None:
         self.seek(self.position + delta_seconds)
@@ -1172,6 +1206,11 @@ class AudioEngine(QObject):
             return
         pos = self.position
         self.position_changed.emit(pos)
+        # Off-realtime Video Audio window schedule — never from PortAudio.
+        try:
+            self._video_mixer.schedule_for_song_time(float(pos))
+        except Exception:
+            pass
         with self._lock:
             # `_position_frame` is bookkept in playback-rate frames (see
             # `_sample_rate()` docstring), so EOF must compare against the
@@ -1856,80 +1895,200 @@ class AudioEngine(QObject):
 
     def _make_stream_callback(self, sample_rate: int):
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
-            del status, time_info
-            with self._lock:
-                if not self._playing:
-                    outdata.fill(0)
-                    return
-                loop_on = (
-                    self.loop_enabled
-                    and self.loop_a is not None
-                    and self.loop_b is not None
-                    and abs(self.loop_b - self.loop_a) >= 0.01
-                )
-                a_frame = b_frame = 0
-                if loop_on:
-                    a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
-                    b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
-                    if self._loop_engage:
-                        if self._position_frame >= b_frame:
-                            self._position_frame = a_frame
-                    elif a_frame <= self._position_frame < b_frame:
-                        self._loop_engage = True
-                start = self._position_frame
-                total_frames = self._playback_end_frame()
-                end = min(start + frames, total_frames)
-                if loop_on and self._loop_engage and start < b_frame:
-                    end = min(end, b_frame)
+            # Continuity probes — no file I/O, no extra locks beyond the
+            # existing mix lock. Do not redesign AudioEngine timing here.
+            cb_t0 = time.monotonic()
+            expected = float(self._cb_expected_period)
+            if expected <= 0.0 and sample_rate > 0:
+                expected = float(frames) / float(sample_rate)
+                self._cb_expected_period = expected
+            flags = 0
+            try:
+                flags = int(status)
+            except Exception:
+                flags = 0
+            underflow = False
+            try:
+                underflow = bool(getattr(status, "output_underflow", False))
+            except Exception:
+                underflow = False
+            if not underflow and flags:
+                # PortAudio paOutputUnderflowed is bit 1 (value 2).
+                underflow = bool(flags & 2)
+            if self._cb_last_mono > 0.0:
+                interval = cb_t0 - self._cb_last_mono
+                self._cb_interval_sum += interval
+                if interval > self._cb_interval_max:
+                    self._cb_interval_max = interval
+                # Deadline miss: gap significantly larger than one period.
+                if expected > 0.0 and interval > expected * 1.75:
+                    self._cb_deadline_miss += 1
+                    try:
+                        from cueplayer.playback import media_load_probe as _mlp
 
-                # Advance / wrap position bookkeeping (music may pad).
-                if end - start < frames:
-                    if loop_on and self._loop_engage and end >= b_frame:
-                        need = frames - (end - start)
-                        self._position_frame = a_frame + need
-                        # Rebuild as contiguous logical block starting at `start`.
-                        music = self._assemble_looped_music(start, frames, a_frame, b_frame, sample_rate)
-                        ltc = self._assemble_looped_ltc(start, frames, a_frame, b_frame)
-                        video = self._assemble_looped_video(start, frames, a_frame, b_frame)
+                        pd, va = _mlp.snapshot()
+                        self._cb_miss_play_decode_last = int(pd)
+                        self._cb_miss_va_window_last = int(va)
+                        self._cb_miss_play_decode_sum += int(pd)
+                        self._cb_miss_va_window_sum += int(va)
+                    except Exception:
+                        pass
+            self._cb_last_mono = cb_t0
+            self._cb_count += 1
+            if underflow:
+                self._cb_underflow += 1
+            self._cb_status_flags_or |= int(flags)
+
+            del time_info
+            try:
+                with self._lock:
+                    if not self._playing:
+                        outdata.fill(0)
+                        exec_s = time.monotonic() - cb_t0
+                        self._cb_exec_sum += exec_s
+                        if exec_s > self._cb_exec_max:
+                            self._cb_exec_max = exec_s
+                        return
+                    loop_on = (
+                        self.loop_enabled
+                        and self.loop_a is not None
+                        and self.loop_b is not None
+                        and abs(self.loop_b - self.loop_a) >= 0.01
+                    )
+                    a_frame = b_frame = 0
+                    if loop_on:
+                        a_frame = int(min(self.loop_a, self.loop_b) * sample_rate)
+                        b_frame = int(max(self.loop_a, self.loop_b) * sample_rate)
+                        if self._loop_engage:
+                            if self._position_frame >= b_frame:
+                                self._position_frame = a_frame
+                        elif a_frame <= self._position_frame < b_frame:
+                            self._loop_engage = True
+                    start = self._position_frame
+                    total_frames = self._playback_end_frame()
+                    end = min(start + frames, total_frames)
+                    if loop_on and self._loop_engage and start < b_frame:
+                        end = min(end, b_frame)
+
+                    # Advance / wrap position bookkeeping (music may pad).
+                    if end - start < frames:
+                        if loop_on and self._loop_engage and end >= b_frame:
+                            need = frames - (end - start)
+                            self._position_frame = a_frame + need
+                            # Rebuild as contiguous logical block starting at `start`.
+                            music = self._assemble_looped_music(
+                                start, frames, a_frame, b_frame, sample_rate
+                            )
+                            ltc = self._assemble_looped_ltc(
+                                start, frames, a_frame, b_frame
+                            )
+                            video = self._assemble_looped_video(
+                                start, frames, a_frame, b_frame
+                            )
+                        else:
+                            music = self._music_chunk(start, frames, sample_rate)
+                            ltc = self._ltc_chunk(start, frames)
+                            video = self._video_chunk(start, frames)
+                            self._position_frame = total_frames
+                            self._playing = False
                     else:
                         music = self._music_chunk(start, frames, sample_rate)
                         ltc = self._ltc_chunk(start, frames)
                         video = self._video_chunk(start, frames)
-                        self._position_frame = total_frames
-                        self._playing = False
-                else:
-                    music = self._music_chunk(start, frames, sample_rate)
-                    ltc = self._ltc_chunk(start, frames)
-                    video = self._video_chunk(start, frames)
-                    self._position_frame = end
+                        self._position_frame = end
 
-                # Video clips' own audio shares the music bus/output channels
-                # (so it's audible wherever Music is routed) — mixed in at the
-                # exact write-head frame, i.e. the same sample clock as music.
-                music[:, :2] += video[:, :2]
-                np.clip(music, -1.0, 1.0, out=music)
+                    # Reject corrupt Video Audio contribution (NaN/Inf already
+                    # zeroed inside mixer; enforce shape + finite here too).
+                    if (
+                        video is None
+                        or int(getattr(video, "shape", (0, 0))[0]) != int(frames)
+                        or not np.isfinite(video).all()
+                    ):
+                        video = np.zeros((frames, 2), dtype=np.float32)
 
-                self._mix_clicks(music, start)
-                sources = np.zeros((frames, 5), dtype=np.float32)
-                sources[:, SRC_MUSIC_L] = music[:, 0]
-                sources[:, SRC_MUSIC_R] = music[:, 1]
-                sources[:, SRC_LTC_BUS] = ltc
-                ltc_idx = self._cached_file_ltc_idx
-                if ltc_idx is not None:
-                    sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
-                        ltc_idx, start, frames
+                    # Video clips' own audio shares the music bus/output channels
+                    # (so it's audible wherever Music is routed) — mixed in at the
+                    # exact write-head frame, i.e. the same sample clock as music.
+                    music[:, :2] += video[:, :2]
+                    np.clip(music, -1.0, 1.0, out=music)
+
+                    self._mix_clicks(music, start)
+                    sources = np.zeros((frames, 5), dtype=np.float32)
+                    sources[:, SRC_MUSIC_L] = music[:, 0]
+                    sources[:, SRC_MUSIC_R] = music[:, 1]
+                    sources[:, SRC_LTC_BUS] = ltc
+                    ltc_idx = self._cached_file_ltc_idx
+                    if ltc_idx is not None:
+                        sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
+                            ltc_idx, start, frames
+                        )
+                    # Music Source destinations must hear the *processed* bed
+                    # (LTC-stripped + music_volume + video clip audio), not a raw
+                    # file channel — otherwise Video Track audio vanishes and the
+                    # Music fader appears dead whenever L/R routes are Music Source
+                    # or File-LTC remaps speakers onto that bus.
+                    sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
+                    routed = apply_routing(
+                        sources, self._route, self._output_channel_count
                     )
-                # Music Source destinations must hear the *processed* bed
-                # (LTC-stripped + music_volume + video clip audio), not a raw
-                # file channel — otherwise Video Track audio vanishes and the
-                # Music fader appears dead whenever L/R routes are Music Source
-                # or File-LTC remaps speakers onto that bus.
-                sources[:, SRC_FILE_MUSIC] = 0.5 * (music[:, 0] + music[:, 1])
-                routed = apply_routing(sources, self._route, self._output_channel_count)
-                self._stamp_write_head_unlocked()
-            outdata[:] = routed
+                    self._stamp_write_head_unlocked()
+                # Always fully overwrite outdata (never leave uninitialized).
+                outdata[:] = routed
+            except Exception:
+                outdata.fill(0)
+            exec_s = time.monotonic() - cb_t0
+            self._cb_exec_sum += exec_s
+            if exec_s > self._cb_exec_max:
+                self._cb_exec_max = exec_s
 
         return callback
+
+    def audio_callback_continuity(self) -> dict[str, float | int]:
+        """Low-overhead PortAudio continuity snapshot (no AudioEngine retiming)."""
+        n = int(self._cb_count)
+        return {
+            "callback_count": n,
+            "output_underflow_count": int(self._cb_underflow),
+            "status_flags_or": int(self._cb_status_flags_or),
+            "expected_period_s": float(self._cb_expected_period),
+            "interval_mean_s": (
+                float(self._cb_interval_sum) / max(1, n - 1) if n > 1 else 0.0
+            ),
+            "interval_max_s": float(self._cb_interval_max),
+            "exec_mean_s": float(self._cb_exec_sum) / max(1, n) if n else 0.0,
+            "exec_max_s": float(self._cb_exec_max),
+            "deadline_miss_count": int(self._cb_deadline_miss),
+            "miss_play_decode_submits_last": int(self._cb_miss_play_decode_last),
+            "miss_va_decode_windows_last": int(self._cb_miss_va_window_last),
+            "miss_play_decode_submits_sum": int(self._cb_miss_play_decode_sum),
+            "miss_va_decode_windows_sum": int(self._cb_miss_va_window_sum),
+        }
+
+    def publish_audio_continuity_to_perf(self) -> None:
+        """Copy continuity counters into PERF attrs (call from report path only)."""
+        snap = self.audio_callback_continuity()
+        for key, value in snap.items():
+            perf_diag.note(f"audio.callback.{key}", value)
+        if int(snap["callback_count"]) > 0:
+            perf_diag.note(
+                "audio.callback.underflow_rate",
+                round(
+                    float(snap["output_underflow_count"])
+                    / float(snap["callback_count"]),
+                    6,
+                ),
+            )
+        try:
+            va_stats = self._video_mixer.exceptional_callback_stats()
+            for key, value in va_stats.items():
+                perf_diag.note(f"video_audio.{key}", value)
+            self._video_mixer.publish_coverage_to_perf()
+            events = self._video_mixer.drain_events()
+            if events:
+                # Keep a bounded tail for correlation with wall/song/media times.
+                perf_diag.note("video_audio.event_ring", events[-80:])
+        except Exception:
+            pass
 
     def _open_output_stream(
         self,
