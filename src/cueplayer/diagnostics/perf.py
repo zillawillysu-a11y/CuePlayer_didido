@@ -101,6 +101,11 @@ def clear() -> None:
         _state.counters.clear()
         _state.attrs.clear()
         _state.last_activate_ms.clear()
+        # Always bump session id (even when PERF disabled) so UI tick-interval
+        # baselines reset and cannot record multi-million-ms fake maxima.
+        _state.attrs["perf.session_id"] = (
+            f"cleared-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        )
     try:
         from cueplayer.diagnostics import video_sm_trace as sm_trace
 
@@ -393,12 +398,22 @@ def report_text() -> str:
     for name in (
         "video.activation_poster.source",
         "video.preview_state",
+        "video.land.stage.dominant",
+        "video.land.stage.request_id",
+        "video.land.stage.song_time",
+        "video.land.stage.media_time",
         "timeline.mark_backdrop.last_static_shape_count",
         "timeline.mark_backdrop.last_overlay_shape_count",
         "timeline.zoom.annotation_sprite_count",
     ):
         lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
     for name in (
+        "video.land.stage.queue_wait_ms",
+        "video.land.stage.lock_wait_ms",
+        "video.land.stage.keyframe_seek_ms",
+        "video.land.stage.decode_forward_ms",
+        "video.land.stage.convert_ms",
+        "video.land.stage.decode_total_ms",
         "cue_list.mark_id_at_row.calls",
         "cue_list.position_sync_ms",
     ):

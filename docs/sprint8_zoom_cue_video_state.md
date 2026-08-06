@@ -2,48 +2,45 @@
 
 **Branch:** `cursor/sprint8-zoom-cue-video-state-028d`  
 **Base:** `cursor/sprint8-cached-timeline-poster-028d` (PR #239)  
-**Status:** Ready for Windows UX + PERF validation (do **not** merge #239 until this passes)
+**PR:** #240  
+**Status:** Ready for Windows UX + PERF validation (do **not** merge #239/#240 until this passes)
 
 Does not change: AudioEngine / sample clock, Mark Cue timestamps, Export, Video seek SM direction, decoder architecture, GPU decode.
 
-## Why #239 is not mergeable yet
+## Commits on #240
 
-Windows confirmed Mark paint + zoom Video responsiveness wins, but three user-visible failures remain.
+1. **Zoom / Cue / Video state** (`349e28d`) — screen-space annotations, Cue List O(1) follow, Preview states  
+2. **Interaction render parity** (`dc1677e+`) — scrub native blit, first-wheel no flash, canonical Note layout  
+3. **Post-seek Video stall** — land/scrub-preview bounded decode deadlines, stage telemetry, tick-interval baseline fix  
 
-| # | Failure | Evidence |
-|---|---------|----------|
-| 1 | Zoom scales Cue Notes / seconds / glyphs; snap-back; whole-UI flash | `raw_events` 557 vs `final_rebuilds` 103; rebuild mean ~54 ms |
-| 2 | Dense Mark still freezes | `_mark_id_at_row` 103,339 calls / 5 s; Cue Monitor position-sync heavy |
-| 3 | “Loading Video” on gaps / no-video songs | clip @ 0.456 s shows Loading for 0–0.456; no-video songs too |
+## Windows-confirmed KEPT
 
-## Fixes in this branch
+| Item | Evidence |
+|------|----------|
+| Zoom no longer freezes Video | prior #239/#240 validation |
+| Cached Mark paint | mark.paint_ms ~0.61 |
+| Cue List cheap | position_sync_ms mean 0.04 / max 0.84; not in cProfile top 40 |
 
-### 1. Zoom visual stability
-- Spatial cache (`_spatial_backdrop`): waveform / grid / clips / ticks — **scaled** during temporary zoom.
-- Annotation sprites (`_mark_annotation_sprites`) + ruler labels: **fixed screen-space size**; X follows latest PPS.
-- Atomic cache swap: rebuild off-screen, then assign — never clear between preview and final.
-- Debounce **140 ms** (was 64) to cut final rebuild storms.
-- Finish gesture: Timeline `update()` only; overview via throttled `view_changed`.
+Do **not** further optimize Cue List / Mark lookup in this patch.
 
-### 2. Dense Cue List follow
-- `mark_id → row` map rebuilt in `refresh_list`.
-- Position ticks use O(1) `_row_for_mark_id` (no full-table scan).
-- Early-out when Mark ID + target row unchanged (no highlight / scroll / layout).
-- NOW highlight only paints changed rows.
-- Report: `cue_list.mark_id_at_row.calls` and `cue_list.position_sync_ms` in perf dump.
+## COMMIT 1 — Interaction render parity
 
-### 3. Video Preview states
-| State | UI |
-|-------|----|
-| `NO_VIDEO_FOR_SONG` | Neutral / no Loading |
-| `VIDEO_TIMELINE_GAP` | Intentional blank; no Loading; no early poster |
-| `VALID_VIDEO_TARGET_PENDING` | Loading / poster allowed |
-| `VALID_VIDEO_FRAME` | Normal present |
+- Scrub keeps retained native cache (no invalidate on press/release).
+- Native 1:1 device-pixel blit (no dest W×H resample → no thinner text/dots).
+- First wheel after scrub seeds from retained spatial cache (no blank center flash).
+- Zoom Notes use same under-ruler layout as static bake (no beside↔below jump).
 
-- Gate activation on active clip/path.
-- `last_valid` only same clip + media session.
-- Gaps / no-video do **not** open `empty_widget_visible_ms`.
-- `first_valid_frame_after_song_activate_ms` only for a real valid frame of the current session.
+## COMMIT 2 — Post-seek Video worker stall
+
+Proven stage owner from prior evidence: **decode-forward inside `video.decode.async`**, with **queue_wait** behind stale scrub-preview.
+
+Bounded correction:
+- scrub_preview decode deadline **0.30 s**
+- final-land decode deadline **0.45 s**
+- RESUME skips stacked second 1.5 s seek recovery
+- Stage telemetry: `video.land.stage.*` + `dominant` + request_id / song / media time
+- True `video.present.queue_delay_ms` = emit→UI
+- `perf.position_tick_interval_ms` rejects >5 s / session-reset gaps
 
 ## Windows validation
 
@@ -56,10 +53,10 @@ git pull
 .\.venv\Scripts\python.exe -m cueplayer.app
 ```
 
-1. **Zoom 10 s continuous** — Video responsive; Cue Note / seconds font size stable; no snap-back; no whole-window flash; zoom anchor unchanged.
-2. **Dense Mark ≥ 30 s** — Audio / playhead / Video continue; Cue List follows; no complete freeze. Dump `_mark_id_at_row.calls` + Cue Monitor position-sync before/after.
-3. **Video matrix** — no-video song: no Loading; clip @ 0.456 s: no Loading in 0–0.456; valid pending: Loading OK; switch songs: no stale frame.
+1. LMB press/release — static Timeline pixels identical (only playhead may change)  
+2. Seek then one wheel notch — no center flash; no Note jump  
+3. Play + zoom 10 s — Video responsive; fixed text size; Notes stable  
+4. Play + seek into dense Marks — Video resumes ≤ ~300–400 ms; report land stage dominant + ready-to-present  
+5. Video states — no Loading on no-video / pre-clip gap; no stale cross-song frame  
 
-Do **not** claim Dense Mark P0 solved until this Windows pass succeeds.
-
-READY FOR WINDOWS ZOOM VISUAL / DENSE CUE FOLLOW / VIDEO STATE VALIDATION
+READY FOR WINDOWS INTERACTION RENDER PARITY / POST-SEEK VIDEO STALL VALIDATION

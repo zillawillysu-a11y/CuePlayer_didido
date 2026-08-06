@@ -5146,11 +5146,22 @@ class MainWindow(QMainWindow):
         perf_diag.note("perf.position_tick_source", source)
         perf_diag.note("perf.position_tick_song_time", float(seconds))
         perf_diag.note("perf.position_tick_mono", now)
+        # Reset baseline across PERF session / song-activate clears so a quiet
+        # gap cannot produce multi-million-ms fake max intervals.
+        session = None
+        try:
+            session = perf_diag.snapshot().get("attrs", {}).get("perf.session_id")
+        except Exception:
+            session = None
+        if getattr(self, "_perf_session_id", None) != session:
+            self._perf_session_id = session
+            self._perf_tick_mono = None
         prev = getattr(self, "_perf_tick_mono", None)
         if prev is not None:
-            perf_diag.record_ms(
-                "perf.position_tick_interval_ms", (now - float(prev)) * 1000.0
-            )
+            delta_ms = (now - float(prev)) * 1000.0
+            # Reject cross-reset / idle gaps (not a real tick interval).
+            if 0.0 < delta_ms < 5000.0:
+                perf_diag.record_ms("perf.position_tick_interval_ms", delta_ms)
         self._perf_tick_mono = now
 
     def _perf_record_mark_density(self, seconds: float, song) -> None:  # noqa: ANN001

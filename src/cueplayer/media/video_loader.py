@@ -38,6 +38,8 @@ class SeekTelemetry:
     seek_ms: float = 0.0
     decode_to_target_ms: float = 0.0
     total_ms: float = 0.0
+    convert_ms: float = 0.0
+    lock_wait_ms: float = 0.0
     decoder_recreated: bool = False
     timed_out: bool = False
     eof_hit: bool = False
@@ -190,15 +192,22 @@ class VideoDecoder:
 
         lock = av_path_lock(self._path)
         stale = self._cached_ndarray
+        lock_wait_ms = 0.0
         if lock_timeout is not None:
+            lock_t0 = monotonic()
             got = lock.acquire(timeout=float(lock_timeout))
+            lock_wait_ms = (monotonic() - lock_t0) * 1000.0
             if not got:
                 return stale if stale_on_timeout else None
         elif stale is None:
+            lock_t0 = monotonic()
             lock.acquire()
+            lock_wait_ms = (monotonic() - lock_t0) * 1000.0
             got = True
         else:
+            lock_t0 = monotonic()
             got = lock.acquire(timeout=0.08)
+            lock_wait_ms = (monotonic() - lock_t0) * 1000.0
             if not got:
                 return stale if stale_on_timeout else None
         try:
@@ -242,7 +251,9 @@ class VideoDecoder:
                     self._pending_frame = None
                     self._pending_pts_seconds = None
                 else:
+                    conv_t0 = monotonic()
                     out = self._convert_cached(result)
+                    convert_ms = (monotonic() - conv_t0) * 1000.0
                     if needs_seek:
                         self._record_seek_telemetry(
                             requested=seconds,
@@ -251,6 +262,8 @@ class VideoDecoder:
                             seek_ms=seek_ms,
                             decode_ms=(monotonic() - decode_t0) * 1000.0,
                             total_ms=(monotonic() - total_t0) * 1000.0,
+                            convert_ms=convert_ms,
+                            lock_wait_ms=lock_wait_ms,
                             timed_out=False,
                             eof_hit=False,
                         )
@@ -282,6 +295,10 @@ class VideoDecoder:
                 if needs_seek and result is None:
                     self._seek_timed_out = True
 
+            conv_t0 = monotonic()
+            out = self._convert_cached(result)
+            convert_ms = (monotonic() - conv_t0) * 1000.0
+
             if needs_seek or self._seek_timed_out:
                 self._record_seek_telemetry(
                     requested=seconds,
@@ -290,11 +307,27 @@ class VideoDecoder:
                     seek_ms=seek_ms,
                     decode_ms=(monotonic() - decode_t0) * 1000.0,
                     total_ms=(monotonic() - total_t0) * 1000.0,
+                    convert_ms=convert_ms,
+                    lock_wait_ms=lock_wait_ms,
                     timed_out=bool(self._seek_timed_out),
                     eof_hit=eof_hit,
                 )
+            elif perf_diag.is_enabled():
+                self.last_seek = SeekTelemetry(
+                    requested_time=float(seconds),
+                    actual_time=float(self._last_pts_seconds)
+                    if self._last_pts_seconds is not None
+                    else None,
+                    frames_to_target=0,
+                    seek_ms=0.0,
+                    decode_to_target_ms=(monotonic() - decode_t0) * 1000.0,
+                    total_ms=(monotonic() - total_t0) * 1000.0,
+                    convert_ms=convert_ms,
+                    lock_wait_ms=lock_wait_ms,
+                    time_base=float(self._time_base),
+                )
 
-            return self._convert_cached(result)
+            return out
         finally:
             lock.release()
 
@@ -309,6 +342,8 @@ class VideoDecoder:
         total_ms: float,
         timed_out: bool,
         eof_hit: bool,
+        convert_ms: float = 0.0,
+        lock_wait_ms: float = 0.0,
     ) -> None:
         self.last_seek = SeekTelemetry(
             requested_time=float(requested),
@@ -317,6 +352,8 @@ class VideoDecoder:
             seek_ms=float(seek_ms),
             decode_to_target_ms=float(decode_ms),
             total_ms=float(total_ms),
+            convert_ms=float(convert_ms),
+            lock_wait_ms=float(lock_wait_ms),
             decoder_recreated=False,
             timed_out=bool(timed_out),
             eof_hit=bool(eof_hit),
@@ -340,6 +377,8 @@ class VideoDecoder:
         perf_diag.record_ms("video.seek.total_ms", total_ms)
         perf_diag.record_ms("video.seek.decode_to_target_ms", decode_ms)
         perf_diag.record_ms("video.seek.keyframe_seek_ms", seek_ms)
+        perf_diag.record_ms("video.seek.convert_ms", convert_ms)
+        perf_diag.record_ms("video.seek.lock_wait_ms", lock_wait_ms)
         if timed_out:
             perf_diag.count("video.seek.deadline_timeout")
         if eof_hit:

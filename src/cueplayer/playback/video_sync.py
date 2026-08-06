@@ -98,6 +98,11 @@ _FRAME_TOLERANCE_S = 0.05
 _LAND_RETRY_MS = 40
 _LAND_MAX_RETRIES = 5
 _LAND_DEADLINE_S = 0.50
+# Bounded decode-forward for final-land (proven multi-second stage owner).
+_LAND_DECODE_DEADLINE_S = 0.45
+# Scrub-preview must not occupy the single worker for a full 1.5s GOP walk —
+# otherwise land sits in queue_wait behind stale preview work after release.
+_SCRUB_PREVIEW_DECODE_DEADLINE_S = 0.30
 _EMPTY_DECODE_RESET_AFTER = 3
 _RESUME_WATCHDOG_MS = 400
 _RESUME_RECOVERY_MS = 400
@@ -110,6 +115,8 @@ _PREVIEW_CANCEL_DELTA_S = 2.0
 _PLAYBACK_LATENESS_TOLERANCE_S = 0.35
 # Seek + decode-forward budget before recreating the playback decoder.
 _PLAYBACK_SEEK_DEADLINE_S = 1.5
+# Post-seek resume: one bounded attempt (do not stack a second 1.5s seek).
+_RESUME_PLAY_DECODE_DEADLINE_S = 0.50
 
 PIPELINE_MODE = "async_latest_wins"
 SCRUB_PREVIEW_TARGET_FPS = _SCRUB_PREVIEW_HZ
@@ -259,6 +266,7 @@ class VideoSyncController(QObject):
         self._async_req_kind = "play"  # play | scrub_preview | land
         self._async_req_session = 0  # scrub session captured at schedule
         self._async_req_started_mono = 0.0
+        self._async_emit_mono = 0.0
         self._async_req_id = 0
         self._async_req_media_session = 0
         self._async_pool = ThreadPoolExecutor(
@@ -2210,6 +2218,21 @@ class VideoSyncController(QObject):
                                 kind=kind,
                             )
                             with perf_diag.span("video.decode.async"):
+                                decode_deadline = None
+                                if kind == "land":
+                                    decode_deadline = _LAND_DECODE_DEADLINE_S
+                                elif kind == "scrub_preview":
+                                    decode_deadline = (
+                                        _SCRUB_PREVIEW_DECODE_DEADLINE_S
+                                    )
+                                elif (
+                                    kind == "play"
+                                    and self._pipeline_state
+                                    == VideoPipelineState.RESUME_PLAYBACK
+                                ):
+                                    decode_deadline = (
+                                        _RESUME_PLAY_DECODE_DEADLINE_S
+                                    )
                                 frame = self._decode_frame_array(
                                     song,
                                     seconds,
@@ -2217,14 +2240,26 @@ class VideoSyncController(QObject):
                                     lock_timeout=lock_timeout,
                                     stale_on_timeout=(kind != "land"),
                                     scrub_decoder=use_scrub_decoder,
+                                    deadline_s=decode_deadline,
                                 )
                         except Exception as exc:  # noqa: BLE001
                             frame = None
                             empty_reason = f"decode_exception:{type(exc).__name__}"
                         if kind == "land":
+                            land_decode_ms = (monotonic() - decode_t0) * 1000.0
                             perf_diag.record_ms(
                                 "video.scrub.final_land_decode_ms",
-                                (monotonic() - decode_t0) * 1000.0,
+                                land_decode_ms,
+                            )
+                            self._record_land_stage_telemetry(
+                                req_id=req_id,
+                                song_seconds=seconds,
+                                decode_t0=decode_t0,
+                                queue_wait_ms=(
+                                    (decode_t0 - self._land_request_mono) * 1000.0
+                                    if self._land_request_mono > 0.0
+                                    else 0.0
+                                ),
                             )
                             self._sm_trace(
                                 "FINAL_LAND_DECODE_DONE",
@@ -2237,7 +2272,7 @@ class VideoSyncController(QObject):
                                     "ok" if frame is not None else "empty"
                                 ),
                                 extra={
-                                    "decode_ms": (monotonic() - decode_t0) * 1000.0,
+                                    "decode_ms": land_decode_ms,
                                     "has_frame": frame is not None,
                                 },
                             )
@@ -2308,6 +2343,7 @@ class VideoSyncController(QObject):
                         song_time=seconds,
                         kind=kind,
                     )
+                    self._async_emit_mono = monotonic()
                     self._async_frame_ready.emit(
                         gen, seconds, frame, kind, empty_reason or "", session
                     )
@@ -2682,10 +2718,13 @@ class VideoSyncController(QObject):
             if self._async_req_started_mono > 0.0:
                 ready_ms = (monotonic() - self._async_req_started_mono) * 1000.0
                 perf_diag.record_ms("video.frame_ready_to_present_ms", ready_ms)
-                # Queue delay proxy: time from decode-done emit to UI present.
-                # Worker sets WAITING_FRAME just before emit; we only have
-                # request-start here — still useful for dense-mark A/B.
-                perf_diag.record_ms("video.present.queue_delay_ms", ready_ms)
+            # True UI queue delay: worker emit → queued slot present.
+            if self._async_emit_mono > 0.0:
+                perf_diag.record_ms(
+                    "video.present.queue_delay_ms",
+                    (monotonic() - self._async_emit_mono) * 1000.0,
+                )
+                self._async_emit_mono = 0.0
             self._note_display_source(DisplaySource.PLAYBACK_FRAME)
             self._set_preview_video_state(PreviewVideoState.VALID_VIDEO_FRAME)
             self._record_first_valid_frame_metrics()
@@ -2782,6 +2821,58 @@ class VideoSyncController(QObject):
         perf_diag.note("video.decoder_reset.clip_id", clip_id)
         perf_diag.note("video.decoder_reset.count", self._worker_reset_count)
 
+    def _record_land_stage_telemetry(
+        self,
+        *,
+        req_id: int,
+        song_seconds: float,
+        decode_t0: float,
+        queue_wait_ms: float,
+    ) -> None:
+        """Split one final-land worker transaction into bounded stages."""
+        media_t = self._media_time_for_song(song_seconds)
+        perf_diag.note("video.land.stage.request_id", int(req_id))
+        perf_diag.note("video.land.stage.song_time", float(song_seconds))
+        perf_diag.note(
+            "video.land.stage.media_time",
+            float(media_t) if media_t is not None else None,
+        )
+        perf_diag.record_ms("video.land.stage.queue_wait_ms", float(queue_wait_ms))
+        # Pull last decoder seek telemetry (keyframe / decode-forward / total).
+        seek_ms = 0.0
+        forward_ms = 0.0
+        convert_ms = 0.0
+        lock_wait_ms = 0.0
+        total_ms = (monotonic() - decode_t0) * 1000.0
+        clip_id = self._active_clip_id
+        dec = None
+        if clip_id:
+            with self._worker_lock:
+                dec = self._scrub_worker_decoders.get(clip_id)
+        if dec is not None and getattr(dec, "last_seek", None) is not None:
+            tel = dec.last_seek
+            seek_ms = float(getattr(tel, "seek_ms", 0.0) or 0.0)
+            forward_ms = float(getattr(tel, "decode_to_target_ms", 0.0) or 0.0)
+            convert_ms = float(getattr(tel, "convert_ms", 0.0) or 0.0)
+            lock_wait_ms = float(getattr(tel, "lock_wait_ms", 0.0) or 0.0)
+            total_ms = float(getattr(tel, "total_ms", 0.0) or total_ms)
+        perf_diag.record_ms("video.land.stage.lock_wait_ms", lock_wait_ms)
+        perf_diag.record_ms("video.land.stage.keyframe_seek_ms", seek_ms)
+        perf_diag.record_ms("video.land.stage.decode_forward_ms", forward_ms)
+        perf_diag.record_ms("video.land.stage.convert_ms", convert_ms)
+        perf_diag.record_ms("video.land.stage.decode_total_ms", total_ms)
+        # Identify the dominant stage for this request (Windows A/B).
+        stages = {
+            "queue_wait": float(queue_wait_ms),
+            "lock_wait": lock_wait_ms,
+            "keyframe_seek": seek_ms,
+            "decode_forward": forward_ms,
+            "convert": convert_ms,
+        }
+        owner = max(stages, key=stages.get)
+        perf_diag.note("video.land.stage.dominant", owner)
+        perf_diag.note("video.land.stage.dominant_ms", stages[owner])
+
     def _decode_frame_array(
         self,
         song: Song,
@@ -2807,7 +2898,10 @@ class VideoSyncController(QObject):
 
         seek_deadline = deadline_s
         if seek_deadline is None and worker and not scrub_decoder:
-            seek_deadline = _PLAYBACK_SEEK_DEADLINE_S
+            if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
+                seek_deadline = _RESUME_PLAY_DECODE_DEADLINE_S
+            else:
+                seek_deadline = _PLAYBACK_SEEK_DEADLINE_S
 
         def _frame_for(clip: VideoClip) -> np.ndarray | None:
             if not worker:
@@ -2828,12 +2922,21 @@ class VideoSyncController(QObject):
             except Exception:
                 return None
             # Long-GOP stall: recreate play decoder once and retry at engine time.
+            # During RESUME after seek, do NOT stack a second full seek — that was
+            # the proven path to decode.async ≈ 3s (1.5 + 1.5).
             if (
                 worker
                 and not scrub_decoder
                 and getattr(decoder, "seek_timed_out", False)
                 and not self._play_seek_recovery_attempted
             ):
+                if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK:
+                    self._play_seek_recovery_attempted = True
+                    perf_diag.count("video.seek.resume_skip_double_recovery")
+                    perf_diag.note(
+                        "video.seek.recovery_reason", "resume_single_bounded_attempt"
+                    )
+                    return frame
                 self._play_seek_recovery_attempted = True
                 perf_diag.count("video.seek.decoder_recreated")
                 perf_diag.note("video.seek.recovery_reason", "seek_deadline")
