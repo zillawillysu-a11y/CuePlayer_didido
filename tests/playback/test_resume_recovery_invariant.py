@@ -120,9 +120,10 @@ def test_recovery_first_request_succeeds(
     perf_diag.set_enabled(False)
 
 
-def test_recovery_too_late_resubmits_then_completes(
+def test_recovery_too_late_bootstrap_accepts_then_catchup(
     app: QApplication, red_clip_path: Path
 ) -> None:
+    """UI-delayed resume frame is accepted as bootstrap; catch up to engine."""
     song = Song.create("Song")
     song.add_video_clip(
         VideoClip.create(
@@ -142,11 +143,18 @@ def test_recovery_too_late_resubmits_then_completes(
         _enter_resume(controller, 1.0)
         controller._on_resume_watchdog()
         assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
-        # Stale decode arrives while engine has moved ahead → too_late.
         controller._async_req_gen += 1
         gen = controller._async_req_gen
+        # Mark as WAITING_FRAME queued for this resume txn.
+        controller._note_resume_queued_frame(
+            gen=gen,
+            request_id=99,
+            song_time=1.0,
+            media_session=int(controller._media_session_gen),
+            scrub_session=int(controller._scrub_session_gen),
+        )
+        # Engine advanced while UI callback was delayed.
         controller._last_position_seconds = 2.0
-        before = len(scheduled)
         controller._on_async_frame_ready(
             gen,
             1.0,
@@ -155,19 +163,15 @@ def test_recovery_too_late_resubmits_then_completes(
             "",
             -1,
         )
-        assert controller.pipeline_state() == VideoPipelineState.RESUME_PLAYBACK
-        assert perf_diag.snapshot()["counters"].get(
-            "video.scrub.resume_recovery_completed", 0
-        ) == 0
-        assert len(scheduled) > before  # latest target resubmitted
-        assert scheduled[-1] == pytest.approx(2.0)
-        # Current-generation frame at engine time completes.
-        _present_play_frame(controller, 2.0)
         assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
         snap = perf_diag.snapshot()["counters"]
-        assert snap.get("video.scrub.resume_recovery_started", 0) == 1
-        assert snap.get("video.scrub.resume_recovery_completed", 0) == 1
-        assert snap.get("video.playback.frame_drop.reason.too_late", 0) >= 1
+        assert snap.get("video.scrub.resume_bootstrap_late_accept", 0) >= 1
+        assert snap.get("video.scrub.resume_waiting_frame_presented", 0) >= 1
+        assert snap.get("video.scrub.resume_recovery_started", 0) == snap.get(
+            "video.scrub.resume_recovery_completed", 0
+        )
+        assert snap.get("video.scrub.resume_bootstrap_catchup", 0) >= 1
+        assert any(abs(t - 2.0) < 1e-6 for t in scheduled)
     _shutdown_ctrl(controller)
     perf_diag.set_enabled(False)
 
@@ -264,5 +268,85 @@ def test_dense_region_repeated_seek_every_resume_presents(
         )
         # No false-ready recovery completions without frames.
         assert int(snap.get("video.scrub.resume_complete_rejected", 0)) == 0
+    _shutdown_ctrl(controller)
+    perf_diag.set_enabled(False)
+
+
+def test_watchdog_defers_while_waiting_frame_beyond_deadline(
+    app: QApplication, red_clip_path: Path
+) -> None:
+    """Qt UI callback delayed past watchdog: do not gen-bump; still present."""
+    from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+    song = Song.create("Song")
+    song.add_video_clip(
+        VideoClip.create(
+            name="red", path=str(red_clip_path), start_seconds=0.0, duration_seconds=4.0
+        )
+    )
+    controller = VideoSyncController()
+    controller.set_song(song)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    with patch.object(controller, "_request_async_live_frame", return_value=None):
+        _enter_resume(controller, 0.6)
+        # First timeout with no progress starts recovery once.
+        controller._on_resume_watchdog()
+        assert (
+            perf_diag.snapshot()["counters"].get(
+                "video.scrub.resume_recovery_started", 0
+            )
+            == 1
+        )
+        gen_before = int(controller._async_req_gen)
+        # Worker finished decode → WAITING_FRAME queued (UI slot not run yet).
+        controller._note_resume_queued_frame(
+            gen=gen_before,
+            request_id=1472,
+            song_time=0.6,
+            media_session=int(controller._media_session_gen),
+            scrub_session=int(controller._scrub_session_gen),
+        )
+        sm_trace.set_worker_runtime(
+            sm_trace.WorkerRuntime.WAITING_FRAME,
+            request_id=1472,
+            reason="test_delay_ui",
+        )
+        # Multiple watchdog fires past the deadline must NOT bump generation.
+        for _ in range(5):
+            controller._on_resume_watchdog()
+        assert int(controller._async_req_gen) == gen_before
+        snap_mid = perf_diag.snapshot()["counters"]
+        assert (
+            snap_mid.get("video.scrub.resume_watchdog_deferred_for_waiting_frame", 0)
+            >= 5
+        )
+        # No additional recovery invalidate loop.
+        assert snap_mid.get("video.scrub.resume_recovery_started", 0) == 1
+        # Deliver the delayed UI callback (engine advanced meanwhile).
+        controller._last_position_seconds = 1.2
+        controller._on_async_frame_ready(
+            gen_before,
+            0.6,
+            np.full((8, 8, 3), 88, dtype=np.uint8),
+            "play",
+            "",
+            -1,
+        )
+        assert controller.pipeline_state() == VideoPipelineState.PLAYBACK
+        assert (
+            controller._playback_handoff
+            == PlaybackDecoderHandoff.PLAYBACK_DECODER_READY
+        )
+        snap = perf_diag.snapshot()["counters"]
+        assert snap.get("video.scrub.resume_waiting_frame_presented", 0) >= 1
+        assert snap.get("video.scrub.resume_bootstrap_late_accept", 0) >= 1
+        assert snap.get("video.scrub.resume_recovery_started", 0) == snap.get(
+            "video.scrub.resume_recovery_completed", 0
+        )
+        assert snap.get("video.scrub.resume_started", 0) == (
+            snap.get("video.scrub.resume_completed", 0)
+            + snap.get("video.scrub.resume_recovered", 0)
+        )
     _shutdown_ctrl(controller)
     perf_diag.set_enabled(False)

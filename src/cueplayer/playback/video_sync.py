@@ -106,8 +106,11 @@ _SCRUB_PREVIEW_DECODE_DEADLINE_S = 0.30
 _EMPTY_DECODE_RESET_AFTER = 3
 _RESUME_WATCHDOG_MS = 400
 _RESUME_RECOVERY_MS = 400
-# Bound decoder rebuilds per resume transaction (no unbounded rebuild loop).
-_MAX_RESUME_RECOVERY_REBUILDS = 3
+# At most one decoder recreation per resume transaction (no gen-bump loop).
+_MAX_RESUME_RECOVERY_REBUILDS = 1
+# How long a WAITING_FRAME may sit in the Qt queue before we treat the
+# callback as lost and recover (without first invalidating a newer frame).
+_RESUME_WAITING_FRAME_MAX_AGE_S = 2.0
 # Round 6: present preview frames within this of the current pointer target.
 _PREVIEW_PRESENT_TOLERANCE_S = 0.75
 # Only cancel an in-flight scrub preview when the pointer jumped this far.
@@ -313,6 +316,15 @@ class VideoSyncController(QObject):
         self._resume_required = False
         self._resume_recovery_attempted = False
         self._resume_recovery_rebuilds = 0
+        # Frame decoded and queued to UI (WAITING_FRAME) for this resume txn.
+        self._resume_queued_gen: int | None = None
+        self._resume_queued_req_id: int | None = None
+        self._resume_queued_song_t: float | None = None
+        self._resume_queued_mono: float = 0.0
+        self._resume_queued_media_session: int = -1
+        self._resume_queued_scrub_session: int = -1
+        self._resume_need_catchup = False
+        self._resume_terminal_status: str | None = None
         self._land_retry_count = 0
         self._land_request_mono = 0.0
         self._land_worker_start_mono = 0.0
@@ -913,6 +925,9 @@ class VideoSyncController(QObject):
         self._resume_required = True
         self._resume_recovery_attempted = False
         self._resume_recovery_rebuilds = 0
+        self._clear_resume_queued_frame()
+        self._resume_need_catchup = False
+        self._resume_terminal_status = "active"
         self._resume_started_mono = monotonic()
         self._resume_first_engine_noted = False
         # Ensure play scheduling treats us as playing even if playing_changed
@@ -928,6 +943,7 @@ class VideoSyncController(QObject):
         perf_diag.note(
             "video.scrub.resume_generation", self._playback_resume_generation
         )
+        perf_diag.note("video.scrub.resume_terminal_status", self._resume_terminal_status)
         if self._release_target_song_time is not None:
             self._min_present_seconds = float(self._release_target_song_time)
             perf_diag.note(
@@ -1033,12 +1049,115 @@ class VideoSyncController(QObject):
                 )
         self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
 
+    def _clear_resume_queued_frame(self) -> None:
+        self._resume_queued_gen = None
+        self._resume_queued_req_id = None
+        self._resume_queued_song_t = None
+        self._resume_queued_mono = 0.0
+        self._resume_queued_media_session = -1
+        self._resume_queued_scrub_session = -1
+        perf_diag.note("video.scrub.resume_queued_playback_gen", None)
+        perf_diag.note("video.scrub.resume_queued_playback_req", None)
+        perf_diag.note("video.scrub.resume_queued_frame_age_ms", None)
+
+    def _note_resume_queued_frame(
+        self,
+        *,
+        gen: int,
+        request_id: int,
+        song_time: float,
+        media_session: int,
+        scrub_session: int,
+    ) -> None:
+        """Worker finished decode — frame is queued for UI (WAITING_FRAME)."""
+        self._resume_queued_gen = int(gen)
+        self._resume_queued_req_id = int(request_id)
+        self._resume_queued_song_t = float(song_time)
+        self._resume_queued_mono = monotonic()
+        self._resume_queued_media_session = int(media_session)
+        self._resume_queued_scrub_session = int(scrub_session)
+        perf_diag.note("video.scrub.resume_transaction_id", self._resume_transaction_id)
+        perf_diag.note("video.scrub.resume_queued_playback_gen", int(gen))
+        perf_diag.note("video.scrub.resume_queued_playback_req", int(request_id))
+        perf_diag.note("video.scrub.resume_queued_frame_age_ms", 0.0)
+
+    def _resume_queued_frame_age_s(self) -> float | None:
+        if self._resume_queued_mono <= 0.0:
+            return None
+        return max(0.0, monotonic() - float(self._resume_queued_mono))
+
+    def _resume_has_waiting_frame(self) -> bool:
+        """True when a current-resume play frame is queued for UI presentation."""
+        if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
+            return False
+        if not self._resume_pending:
+            return False
+        if self._resume_queued_mono <= 0.0 or self._resume_queued_gen is None:
+            return False
+        # Still counts as progress while Qt has not delivered the slot.
+        age = self._resume_queued_frame_age_s()
+        if age is None:
+            return False
+        perf_diag.note(
+            "video.scrub.resume_queued_frame_age_ms", round(age * 1000.0, 3)
+        )
+        return age < _RESUME_WAITING_FRAME_MAX_AGE_S
+
+    def _resume_has_active_progress(self) -> bool:
+        """Liveness: queued UI frame OR in-flight decode OR pending latest."""
+        if self._resume_has_waiting_frame():
+            return True
+        if bool(self._async_inflight):
+            return True
+        if self._play_pending_seconds is not None:
+            return True
+        return False
+
     def _on_resume_watchdog(self) -> None:
-        """Recover if resume has not presented a post-land playback frame."""
+        """Recover only when resume has no queued/in-flight/pending progress."""
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
             return
+        # WAITING_FRAME / in-flight / pending = active progress — do not
+        # invalidate or bump generation (that was the dense-region freeze).
+        if self._resume_has_active_progress():
+            if self._resume_has_waiting_frame():
+                perf_diag.count(
+                    "video.scrub.resume_watchdog_deferred_for_waiting_frame"
+                )
+                self._sm_trace(
+                    "RESUME_WATCHDOG_DEFER",
+                    song_time=self._resume_queued_song_t,
+                    generation=self._resume_queued_gen,
+                    request_id=self._resume_queued_req_id,
+                    scheduler="resume_watchdog",
+                    reason="waiting_frame_queued",
+                    extra={
+                        "resume_transaction_id": self._resume_transaction_id,
+                        "queued_age_ms": (
+                            None
+                            if self._resume_queued_frame_age_s() is None
+                            else round(
+                                float(self._resume_queued_frame_age_s()) * 1000.0, 3
+                            )
+                        ),
+                        "async_gen": int(self._async_req_gen),
+                    },
+                )
+            else:
+                perf_diag.count("video.scrub.resume_watchdog_deferred_for_progress")
+            self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
+            return
+        # Queued callback genuinely lost (age exceeded) — clear stale marker
+        # then recover without first invalidating a newer valid queued frame.
+        if (
+            self._resume_queued_mono > 0.0
+            and (self._resume_queued_frame_age_s() or 0.0)
+            >= _RESUME_WAITING_FRAME_MAX_AGE_S
+        ):
+            perf_diag.count("video.scrub.resume_waiting_frame_callback_lost")
+            self._clear_resume_queued_frame()
         perf_diag.count("video.scrub.resume_timeout")
         self._recover_resume_playback()
 
@@ -1049,10 +1168,18 @@ class VideoSyncController(QObject):
         only after FIRST_PLAYBACK_FRAME_PRESENTED for this resume generation.
         Watchdog recovery must not call ``_complete_resume`` merely because a
         decoder was rebuilt or a replacement request was submitted.
+        Must not bump generation while a WAITING_FRAME is queued for UI.
         """
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
+            return
+        # Never self-cancel a frame already waiting for UI.
+        if self._resume_has_waiting_frame():
+            perf_diag.count(
+                "video.scrub.resume_watchdog_deferred_for_waiting_frame"
+            )
+            self._resume_watchdog.start(_RESUME_WATCHDOG_MS)
             return
         first = not self._resume_recovery_attempted
         if first:
@@ -1067,23 +1194,28 @@ class VideoSyncController(QObject):
         # Keep last valid land/scrub frame — never clear to black during recovery.
         if self._is_valid_frame_array(self._last_valid_frame):
             self._note_display_source(DisplaySource.LAST_VALID)
-        # Drop stale in-flight work once; retries prefer pending-latest.
-        if first or not self._async_inflight:
+        # At most one invalidate+rebuild per resume transaction.
+        can_rebuild = (
+            first
+            and int(self._resume_recovery_rebuilds) < _MAX_RESUME_RECOVERY_REBUILDS
+        )
+        if can_rebuild:
             self._invalidate_async_requests()
-        can_rebuild = int(self._resume_recovery_rebuilds) < _MAX_RESUME_RECOVERY_REBUILDS
-        if can_rebuild and not self._async_inflight:
-            self._close_play_worker_decoders()
-            self._resume_recovery_rebuilds = int(self._resume_recovery_rebuilds) + 1
-            perf_diag.count("video.seek.decoder_recreated")
-        elif can_rebuild and self._async_inflight:
-            # Worker still finishing — reopen on next schedule after result drops.
-            self._play_decoder_reset_pending = True
+            if not self._async_inflight:
+                self._close_play_worker_decoders()
+                self._resume_recovery_rebuilds = (
+                    int(self._resume_recovery_rebuilds) + 1
+                )
+                perf_diag.count("video.seek.decoder_recreated")
+            else:
+                self._play_decoder_reset_pending = True
         song = self._song
         t = self._last_position_seconds
         if t is None:
             t = self._release_target_song_time
         if song is not None and t is not None and self._video_output_active:
             recover_t0 = monotonic()
+            # Subsequent timeouts: resubmit latest without another gen bump.
             self._request_async_live_frame(
                 float(t),
                 kind="play",
@@ -1096,8 +1228,6 @@ class VideoSyncController(QObject):
                 (monotonic() - recover_t0) * 1000.0,
             )
         # Keep watchdog armed until a current-generation playback frame presents.
-        # Do NOT `_complete_resume(reason="recovery")` — that was the false-ready
-        # path (recovery_started=2, recovery_completed=1) behind multi-second freezes.
         self._resume_watchdog.start(_RESUME_RECOVERY_MS)
 
     def _on_resume_frame_rejected(self, *, reason: str) -> None:
@@ -1105,6 +1235,14 @@ class VideoSyncController(QObject):
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
+            return
+        # A newer valid queued frame must not be invalidated by this reject path.
+        if self._resume_has_waiting_frame():
+            perf_diag.count(
+                "video.scrub.resume_reject_ignored_waiting_frame"
+            )
+            if not self._resume_watchdog.isActive():
+                self._resume_watchdog.start(_RESUME_RECOVERY_MS)
             return
         perf_diag.count(f"video.scrub.resume_reject.{reason}")
         perf_diag.note("video.scrub.resume_last_reject_reason", reason)
@@ -1129,6 +1267,9 @@ class VideoSyncController(QObject):
         if self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK:
             return
         if not self._resume_pending:
+            return
+        # Do not replace a frame already queued for UI presentation.
+        if self._resume_has_waiting_frame():
             return
         if self._async_inflight:
             return
@@ -1164,13 +1305,21 @@ class VideoSyncController(QObject):
         recovered = bool(self._resume_recovery_attempted)
         self._resume_recovery_attempted = False
         self._resume_recovery_rebuilds = 0
+        self._clear_resume_queued_frame()
         if reason == "frame":
             self._set_playback_handoff(
                 PlaybackDecoderHandoff.FIRST_PLAYBACK_FRAME_PRESENTED
             )
             self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
+            self._resume_terminal_status = (
+                "completed_after_recovery" if recovered else "completed"
+            )
         else:
             self._set_playback_handoff(PlaybackDecoderHandoff.PLAYBACK_DECODER_READY)
+            self._resume_terminal_status = f"drained:{reason}"
+        perf_diag.note(
+            "video.scrub.resume_terminal_status", self._resume_terminal_status
+        )
         if self._resume_started_mono > 0.0:
             elapsed = (monotonic() - self._resume_started_mono) * 1000.0
             perf_diag.record_ms("video.scrub.resume_first_present_ms", elapsed)
@@ -1197,6 +1346,19 @@ class VideoSyncController(QObject):
         self._min_present_seconds = None
         perf_diag.count("video.scrub.min_present_seconds_cleared")
         perf_diag.note("video.scrub.min_present_seconds_value", None)
+        # Bootstrap late frame: catch up to current AudioEngine target.
+        if reason == "frame" and self._resume_need_catchup:
+            self._resume_need_catchup = False
+            engine_t = self._last_position_seconds
+            if engine_t is not None and self._video_output_active:
+                perf_diag.count("video.scrub.resume_bootstrap_catchup")
+                self._schedule_playback_target(
+                    float(engine_t),
+                    scheduler="resume_bootstrap_catchup",
+                    force=True,
+                )
+        else:
+            self._resume_need_catchup = False
 
     def _set_playback_handoff(self, state: str) -> None:
         self._playback_handoff = str(state)
@@ -2425,6 +2587,21 @@ class VideoSyncController(QObject):
                         kind=kind,
                     )
                     self._async_emit_mono = monotonic()
+                    # Resume liveness: a WAITING_FRAME play result is active
+                    # progress — watchdog must not invalidate it.
+                    if (
+                        kind == "play"
+                        and self._pipeline_state
+                        == VideoPipelineState.RESUME_PLAYBACK
+                        and self._resume_pending
+                    ):
+                        self._note_resume_queued_frame(
+                            gen=int(gen),
+                            request_id=int(req_id),
+                            song_time=float(seconds),
+                            media_session=int(media_session),
+                            scrub_session=int(session),
+                        )
                     self._async_frame_ready.emit(
                         gen, seconds, frame, kind, empty_reason or "", session
                     )
@@ -2583,40 +2760,86 @@ class VideoSyncController(QObject):
                 )
                 return
             if gen != self._async_req_gen:
-                perf_diag.count("video.async_stale_drop")
-                perf_diag.count(
-                    "video.playback.frame_drop.reason.generation_mismatch"
+                # Preserve a WAITING_FRAME that was queued for this resume
+                # transaction even if a later mistaken invalidate advanced gen.
+                is_resume_waiting = (
+                    self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                    and bool(self._resume_pending)
+                    and self._resume_queued_gen is not None
+                    and int(gen) == int(self._resume_queued_gen)
                 )
-                perf_diag.count("video.playback.decode_starved")
-                self._sm_trace(
-                    "STALE_DROP",
-                    song_time=float(seconds),
-                    generation=int(gen),
-                    kind="play",
-                    reason="invalidate_generation_mismatch",
-                    extra={"current_gen": int(self._async_req_gen)},
-                )
-                self._on_resume_frame_rejected(reason="generation_mismatch")
-                return
-            engine_t = self._last_position_seconds
-            if engine_t is not None:
-                lateness = float(engine_t) - float(seconds)
-                if lateness > _PLAYBACK_LATENESS_TOLERANCE_S:
-                    perf_diag.count("video.playback.frame_drop.reason.too_late")
+                media_ok = True
+                if (
+                    is_resume_waiting
+                    and int(self._resume_queued_media_session) >= 0
+                ):
+                    media_ok = int(self._resume_queued_media_session) == int(
+                        self._media_session_gen
+                    )
+                if is_resume_waiting and media_ok and session_ok:
+                    perf_diag.count(
+                        "video.scrub.resume_waiting_frame_gen_preserved"
+                    )
+                    # Fall through — present the deferred bootstrap frame.
+                else:
+                    perf_diag.count("video.async_stale_drop")
+                    perf_diag.count(
+                        "video.playback.frame_drop.reason.generation_mismatch"
+                    )
                     perf_diag.count("video.playback.decode_starved")
                     self._sm_trace(
                         "STALE_DROP",
                         song_time=float(seconds),
+                        generation=int(gen),
                         kind="play",
-                        reason="too_late",
-                        extra={
-                            "engine_song_time": float(engine_t),
-                            "lateness_s": lateness,
-                            "tolerance_s": _PLAYBACK_LATENESS_TOLERANCE_S,
-                        },
+                        reason="invalidate_generation_mismatch",
+                        extra={"current_gen": int(self._async_req_gen)},
                     )
-                    self._on_resume_frame_rejected(reason="too_late")
+                    self._on_resume_frame_rejected(reason="generation_mismatch")
                     return
+            engine_t = self._last_position_seconds
+            if engine_t is not None:
+                lateness = float(engine_t) - float(seconds)
+                if lateness > _PLAYBACK_LATENESS_TOLERANCE_S:
+                    # Bootstrap: first resume frame may be presented even if the
+                    # Audio clock advanced while the UI callback was delayed.
+                    if (
+                        self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK
+                        and self._resume_pending
+                        and session_ok
+                    ):
+                        perf_diag.count(
+                            "video.scrub.resume_bootstrap_late_accept"
+                        )
+                        self._resume_need_catchup = True
+                        self._sm_trace(
+                            "RESUME_BOOTSTRAP_LATE_ACCEPT",
+                            song_time=float(seconds),
+                            kind="play",
+                            reason="ui_callback_delay",
+                            extra={
+                                "engine_song_time": float(engine_t),
+                                "lateness_s": lateness,
+                                "resume_transaction_id": self._resume_transaction_id,
+                            },
+                        )
+                        # Fall through to present.
+                    else:
+                        perf_diag.count("video.playback.frame_drop.reason.too_late")
+                        perf_diag.count("video.playback.decode_starved")
+                        self._sm_trace(
+                            "STALE_DROP",
+                            song_time=float(seconds),
+                            kind="play",
+                            reason="too_late",
+                            extra={
+                                "engine_song_time": float(engine_t),
+                                "lateness_s": lateness,
+                                "tolerance_s": _PLAYBACK_LATENESS_TOLERANCE_S,
+                            },
+                        )
+                        self._on_resume_frame_rejected(reason="too_late")
+                        return
             if (
                 self._pipeline_state != VideoPipelineState.RESUME_PLAYBACK
                 and self._last_presented_song_seconds is not None
@@ -2842,6 +3065,13 @@ class VideoSyncController(QObject):
 
         # RESUME_PLAYBACK → PLAYBACK after first valid post-release frame.
         if self._pipeline_state == VideoPipelineState.RESUME_PLAYBACK and kind == "play":
+            if self._resume_queued_mono > 0.0:
+                age = self._resume_queued_frame_age_s()
+                perf_diag.count("video.scrub.resume_waiting_frame_presented")
+                if age is not None:
+                    perf_diag.record_ms(
+                        "video.scrub.resume_waiting_frame_queue_ms", age * 1000.0
+                    )
             self._complete_resume(reason="frame")
         # Worker may already be decoding pending-latest — do not force IDLE.
         if not bool(self._async_inflight):
