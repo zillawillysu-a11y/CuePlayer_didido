@@ -629,6 +629,10 @@ class AudioEngine(QObject):
         """Silence every video clip's own embedded audio (picture keeps showing)."""
         self._video_mixer.set_muted(bool(muted))
 
+    def set_video_audio_schedule_suspended(self, suspended: bool) -> None:
+        """Suspend Video Audio window schedule during scrub/land/resume."""
+        self._video_mixer.set_schedule_suspended(bool(suspended))
+
     def refresh_video_clips(self) -> None:
         """Call after video clips are added / removed / trimmed / re-pathed."""
         clips = list(self._song.video_clips) if self._song is not None else []
@@ -637,6 +641,12 @@ class AudioEngine(QObject):
     def video_audio_decoding(self) -> bool:
         """True while embedded video-audio is decoding (holds ``av_path_lock``)."""
         return bool(self._video_mixer.is_decoding())
+
+    def schedule_video_audio_windows(self, song_seconds: float | None = None) -> None:
+        """Off-RT: schedule Video Audio windows for the Audio sample-clock position."""
+        if song_seconds is None:
+            song_seconds = float(self.position)
+        self._video_mixer.schedule_for_song_time(float(song_seconds))
 
     def set_song_timebase(self, start_timecode: str, fps: float) -> None:
         self._song_start_tc = start_timecode or "01:00:00:00"
@@ -1189,6 +1199,11 @@ class AudioEngine(QObject):
             return
         pos = self.position
         self.position_changed.emit(pos)
+        # Off-realtime Video Audio window schedule — never from PortAudio.
+        try:
+            self._video_mixer.schedule_for_song_time(float(pos))
+        except Exception:
+            pass
         with self._lock:
             # `_position_frame` is bookkept in playback-rate frames (see
             # `_sample_rate()` docstring), so EOF must compare against the

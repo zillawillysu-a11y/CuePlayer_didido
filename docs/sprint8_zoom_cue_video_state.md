@@ -1,86 +1,57 @@
-# Sprint 8 follow-up — Gap resume / PLAYBACK budget / Audio continuity
+# Sprint 8 follow-up — Backward Final Land / Video Audio continuity
 
 **Branch:** `cursor/sprint8-zoom-cue-video-state-028d`  
 **Base:** `cursor/sprint8-cached-timeline-poster-028d` (PR #239)  
 **PR:** #240  
-**Status:** Ready for Windows GAP RESUME / PLAYBACK BUDGET / AUDIO CONTINUITY validation  
-**(do not merge #239/#240 until Windows validation passes)**  
-**Do not claim Video P0 solved.**
+**Tip context:** after `eb935e2` Windows gate  
+**Status:** Ready for Windows BACKWARD FINAL-LAND / VIDEO-AUDIO CONTINUITY validation  
+**(do not merge #239/#240; do not claim Video P0 solved)**
 
-Preserved: current accepted Timeline mouse/static visuals, AudioEngine / sample clock,
-Mark/Cue timestamps, Export, Preview state rules, zoom anchor, edge-Mark overlap,
-no GPU decode, no broad decoder redesign.
+Preserved: Timeline mouse/static visuals, AudioEngine sample clock, Mark/Cue
+timestamps, Export, Preview states, zoom anchor, no GPU / broad decoder redesign.
 
-## Why phantom WAITING_FRAME happened
+## Confirmed still good (do not regress)
 
-Worker called `_note_resume_queued_frame()` for **every** play emit during RESUME,
-including `None` / empty / timeline_gap results. UI `_on_async_frame_ready` returned
-early on invalid frames **without clearing** the queued marker → watchdog deferred
-for WAITING_FRAME → after 2s `callback_lost` → recovery churn. Evidence on
-`c65e32b`: `empty_decode.reason.timeline_gap` ≫ resumes; `resume_waiting_frame_callback_lost`.
+- Resume emit/ack parity; first-present ~122ms mean
+- Stable PLAYBACK decode ~22–24 Hz (not ~51 Hz)
 
-## Fix A — Request-level queued emit/ack
+## A — Backward click never reached Final Land
 
-- Signal carries `request_id`.
-- `QueuedResult` dict keyed by request_id (txn + media/scrub session + gen + req).
-- On entry to `_on_async_frame_ready`, **ack matching delivery before any early return**.
-- Only `valid_frame=True` (ndarray) counts as `valid_frame_waiting_for_present`.
-- Counters: `queued_result_emitted/acknowledged/valid_frame/invalid_result/reject_reason/unacknowledged`.
-- At txn end: emitted == acknowledged (force-ack leftovers).
+Trace: SCRUB_PREVIEW_REQUEST → WAITING_FRAME → **no** SCRUB_PREVIEW_PRESENT /
+FINAL_LAND_REQUEST / RESUME_BEGIN. Root cause: scrub finalize depended on a
+single `mouseReleaseEvent`.
 
-## Fix B — Timeline gap terminates without recovery
+**Fix:** idempotent `_end_scrub_once`; scrub-timer + move + window-deactivate
+fallback when LeftButton is up; Final Land owned by release (does not wait for
+preview present). Traces: `TIMELINE_SCRUB_PRESS/RELEASE/FALLBACK_RELEASE`,
+`END_SCRUB_CALLED`, `FINAL_LAND_REQUEST` (+ scrub transaction id).
 
-- Before RESUME: classify Audio-clock target; no active clip → `VIDEO_TIMELINE_GAP`,
-  `resume_not_required_timeline_gap` / `resume_terminal.intentional_gap`, return to PLAYBACK.
-- Empty decode on a valid clip: ack, stay RESUME, resubmit latest (no 2s defer).
+## B/C — Video Audio was the stutter owner; reverse priority removed
 
-## Fix C — Stable PLAYBACK 24/30 Hz budget
+cProfile: `_decode_window` ~2.86s / 5s; callback interval max ~724ms with VA
+windows on the miss. `set_defer_live_decode(engine.video_audio_decoding)` held
+Video frames during VA decode — **removed** (`set_defer_live_decode(None)`).
 
-- In PLAYBACK only: position ticks update latest target; submit at budget deadline.
-- Do not throttle scrub preview, final land, or first RESUME frame.
-- Counters: `engine_position_ticks`, `decode_submissions`, `frames_presented`,
-  `budget_deferred`, `pending_latest_replacements`.
+## D — Realtime callback is read-only
 
-## Fix D — Audio continuity measurement (no clock change)
+`chunk_at` only snapshots/mixes cache (silence on miss). No executor / av.open /
+resample from the PortAudio path. `schedule_for_song_time` runs from
+`AudioEngine._emit_position` (poll).
 
-- PortAudio callback records underflow / interval / exec / deadline-miss without
-  file I/O or extra locks.
-- Miss windows sample `media_load_probe` play-decode + video-audio window counts.
-- Published into PERF report via `publish_audio_continuity_to_perf()`.
+## E — Quantized windows + true LRU
+
+Heavy windows on a 9s grid (12s length); coverage-hit suppresses duplicate
+decodes; LRU of 8 (no 36s-behind prune); mute + SCRUB/LAND/RESUME suspend
+scheduling/chaining.
 
 ## Windows validation
 
-### 1. PERF OFF
+1. Video Audio **unmuted**: forward through dense → ~1018s → left-click back to
+   ~947.8 → wait 10s.
+2. Repeat **muted**.
 
-```powershell
-Remove-Item Env:CUEPLAYER_PERF -ErrorAction SilentlyContinue
-cd <clone>
-git fetch origin
-git checkout cursor/sprint8-zoom-cue-video-state-028d
-git pull
-.\.venv\Scripts\python.exe -m cueplayer.app
-```
+Pass if: always `FINAL_LAND_REQUEST`; never stuck in `SCRUB_PREVIEW` after
+LeftButton up; Video resumes; unmuted ≈ muted smoothness; no ~724ms callback
+gaps; VA does not defer Video; ~24 Hz play decode; AudioEngine unchanged.
 
-Sparse 30s · dense 30s · sparse→dense→sparse ×3. Note whether Audio stutters.
-
-### 2. PERF ON
-
-```powershell
-$env:CUEPLAYER_PERF = "1"
-.\.venv\Scripts\python.exe -m cueplayer.app
-```
-
-Same operations → Tools → Write Performance Report.
-
-### Pass only if
-
-- Dense-region Video continues every time
-- No invalid/empty result remains as WAITING_FRAME
-- Timeline gaps do not enter frame-required recovery
-- No first-playback-frame latency > 1s; no multi-second Video freeze
-- Stable playback decode submissions near 24/30 Hz (not ~51 Hz)
-- Audio continuous with PERF off and on
-- Audio deadline/underflow counters show no recurring misses
-- No AudioEngine timing / sample-clock change
-
-READY FOR WINDOWS GAP RESUME / PLAYBACK BUDGET / AUDIO CONTINUITY VALIDATION
+READY FOR WINDOWS BACKWARD FINAL-LAND / VIDEO-AUDIO CONTINUITY VALIDATION

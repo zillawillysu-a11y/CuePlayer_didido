@@ -31,9 +31,10 @@ def _inject(mixer: VideoAudioMixer, clip: VideoClip, samples: np.ndarray) -> Non
         round(origin, 2),
         round(dur, 2),
     )
-    mixer._cache[clip.id] = [
-        _CachedPcm(samples=samples, origin_seconds=origin, key=key)
-    ]
+    mixer._install_window(
+        clip.id,
+        _CachedPcm(samples=samples, origin_seconds=origin, key=key),
+    )
 
 
 def _constant(seconds: float, value: float) -> np.ndarray:
@@ -257,12 +258,15 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     while len(decode_calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert len(decode_calls) == 2
-    # Follow-up window starts near the latest need (heavy lookback = 3s).
+    # Follow-up uses quantized heavy-window grid (9s step).
+    # Latest need 300 → window floor(300/9)*9 = 297.
     assert decode_calls[1] == pytest.approx(297.0, abs=0.05)
 
 
-def test_chunk_at_prefetches_when_ahead_is_low(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Heavy clip: when coverage ahead is thin, extend from the tip."""
+def test_schedule_for_song_time_prefetches_when_ahead_is_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Heavy clip: off-RT schedule extends coverage when ahead is thin."""
     song = Song.create("Song")
     clip = VideoClip.create(
         name="c",
@@ -276,7 +280,7 @@ def test_chunk_at_prefetches_when_ahead_is_low(monkeypatch: pytest.MonkeyPatch) 
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
 
-    # 12s window from 0 — at t=0 ahead is only 12s (< 36s min ahead).
+    # 12s window from 0 — at t=1 ahead is only ~11s (< 36s min ahead).
     _inject(mixer, clip, _constant(12.0, 0.4))
     requested: list[float] = []
 
@@ -285,11 +289,30 @@ def test_chunk_at_prefetches_when_ahead_is_low(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(mixer, "_request_window", _capture)
 
-    at = int(1.0 * SR)
-    out = mixer.chunk_at(at, 256)
-    assert float(np.max(np.abs(out))) > 0.0
+    mixer.schedule_for_song_time(1.0)
     assert requested, "expected refill when ahead is below min"
     assert max(requested) >= 10.0
+
+
+def test_chunk_at_does_not_schedule_on_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Realtime path must never submit window decode work."""
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    requested: list[float] = []
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    out = mixer.chunk_at(0, 256)
+    assert np.all(out == 0.0)
+    assert requested == []
 
 
 def test_heavy_idle_when_ahead_is_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,9 +341,101 @@ def test_heavy_idle_when_ahead_is_healthy(monkeypatch: pytest.MonkeyPatch) -> No
         )
     requested: list[float] = []
     monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    # Off-RT schedule with healthy ahead must not thrash.
+    mixer.schedule_for_song_time(5.0)
     out = mixer.chunk_at(int(5.0 * SR), 256)
     assert float(np.max(np.abs(out))) > 0.0
     assert requested == []
+
+
+def test_mute_stops_window_scheduling(monkeypatch: pytest.MonkeyPatch) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    mixer.set_muted(True)
+    requested: list[float] = []
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    mixer.schedule_for_song_time(10.0)
+    mixer.preload([clip])
+    assert requested == []
+
+
+def test_suspend_stops_scheduling_and_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    mixer.set_schedule_suspended(True)
+    requested: list[float] = []
+    monkeypatch.setattr(mixer, "_request_window", lambda c, t: requested.append(t))
+    mixer.schedule_for_song_time(10.0)
+    assert requested == []
+
+
+def test_quantized_window_reuses_key_for_nearby_times() -> None:
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        start_seconds=0.0,
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    a = mixer._window_for(clip, 100.0)
+    b = mixer._window_for(clip, 105.0)
+    assert a == b
+    # ~71s backward (1018→947 media-equivalent) lands on a stable grid cell.
+    c = mixer._window_for(clip, 947.0)
+    d = mixer._window_for(clip, 950.0)
+    assert c == d
+
+
+def test_lru_keeps_older_window_beyond_36s(monkeypatch: pytest.MonkeyPatch) -> None:
+    """True LRU must not discard windows merely for being >36s behind newest."""
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    clip_id = "c"
+    for origin in (0.0, 9.0, 18.0, 27.0, 36.0, 45.0, 54.0, 63.0):
+        mixer._install_window(
+            clip_id,
+            _CachedPcm(
+                samples=_constant(12.0, 0.4),
+                origin_seconds=origin,
+                key=("c.mp4", SR, origin, 12.0),
+            ),
+        )
+    # Touch oldest via gather (true LRU use), then add a 9th.
+    t = np.full(8, 1.0, dtype=np.float64)
+    mixer._gather_samples(clip_id, t)
+    mixer._install_window(
+        clip_id,
+        _CachedPcm(
+            samples=_constant(12.0, 0.4),
+            origin_seconds=72.0,
+            key=("c.mp4", SR, 72.0, 12.0),
+        ),
+    )
+    assert len(mixer._cache[clip_id]) == 8
+    # Oldest-touched (0) should still be present; an untouched mid window may go.
+    assert mixer._find_covering(clip_id, 1.0) is not None
 
 
 def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> None:

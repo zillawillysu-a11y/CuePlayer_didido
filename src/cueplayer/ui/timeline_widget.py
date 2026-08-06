@@ -21,7 +21,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QInputDialog, QLabel, QMenu, QSlider, QWidget
+from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMenu, QSlider, QWidget
 
 from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
 from cueplayer.diagnostics import perf as perf_diag
@@ -2766,6 +2766,11 @@ class TimelineWidget(QWidget):
         if not self._scrubbing:
             self._scrub_timer.stop()
             return
+        # Do not rely exclusively on mouseReleaseEvent — if LeftButton is
+        # already up (lost release / ungrab), finalize exactly once.
+        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            self._end_scrub_once(reason="fallback_left_button_up")
+            return
         pos = self.mapFromGlobal(QCursor.pos())
         # Only keep the timer for edge auto-pan while held still (visual
         # scroll + playhead). Engine seek waits for mouse-up.
@@ -2773,6 +2778,69 @@ class TimelineWidget(QWidget):
         local = pos.x() - self._header_width
         if local < self._scrub_edge or local > view_w - self._scrub_edge:
             self._scrub_at(pos.x(), force=False)
+
+    def _timeline_scrub_trace(
+        self, event: str, *, song_time: float | None = None, reason: str | None = None
+    ) -> None:
+        try:
+            from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+            txn = perf_diag.get_attr("video.scrub.transaction_id")
+            sm_trace.trace(
+                event,
+                song_time=song_time if song_time is not None else float(self._position),
+                reason=reason,
+                scheduler="timeline_widget",
+                extra={
+                    "timeline_scrubbing": bool(self._scrubbing),
+                    "scrub_transaction_id": txn,
+                },
+            )
+        except Exception:
+            pass
+
+    def _end_scrub_once(self, *, reason: str, x: float | None = None) -> None:
+        """Idempotent scrub terminal: one scrub_ended → Final Land / gap / cancel.
+
+        Final Land is owned by release (via MainWindow → video_sync) and must
+        not wait for a scrub-preview UI frame to present.
+        """
+        if not self._scrubbing:
+            return
+        self._scrubbing = False
+        self._scrub_timer.stop()
+        try:
+            self.releaseMouse()
+        except Exception:
+            pass
+        if x is None:
+            pos = self.mapFromGlobal(QCursor.pos())
+            x = float(pos.x())
+        x = float(x)
+        target = min(self._time_for_x(x), self._duration())
+        event = (
+            "TIMELINE_SCRUB_FALLBACK_RELEASE"
+            if str(reason).startswith("fallback") or reason in (
+                "window_deactivate",
+                "ungrab",
+            )
+            else "TIMELINE_SCRUB_RELEASE"
+        )
+        self._timeline_scrub_trace(event, song_time=target, reason=reason)
+        # Force-publish latest target + engine seek at release.
+        self._scrub_at(x, force=True)
+        self.scrub_ended.emit()
+        self._restore_hover_cursor(x, float(self.mapFromGlobal(QCursor.pos()).y()))
+        self.update()
+
+    def changeEvent(self, event) -> None:  # noqa: N802, ANN001
+        if (
+            event is not None
+            and event.type() == QEvent.Type.WindowDeactivate
+            and self._scrubbing
+        ):
+            self._end_scrub_once(reason="window_deactivate")
+        super().changeEvent(event)
 
     def _hit_mark_at(self, x: float, y: float) -> str | None:
         """Return mark id under cursor on tracks or waveform overlay lines."""
@@ -3212,6 +3280,12 @@ class TimelineWidget(QWidget):
                 if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
                     self._rebuild_scrub_backdrop(reason="scrub_seed")
                 self.scrub_started.emit()
+                # Trace after scrub_started so video.scrub.transaction_id is set.
+                self._timeline_scrub_trace(
+                    "TIMELINE_SCRUB_PRESS",
+                    song_time=min(self._time_for_x(x), self._duration()),
+                    reason="left_press",
+                )
                 self.grabMouse()
                 self._scrub_at(x, force=True)
                 self._scrub_timer.start()
@@ -3292,8 +3366,12 @@ class TimelineWidget(QWidget):
             if rect.width() >= 4 or rect.height() >= 4:
                 self._box_click_seek = None
             self._emit_box_preview()
-        elif self._scrubbing and event.buttons() & Qt.MouseButton.LeftButton:
-            self._scrub_at(x)
+        elif self._scrubbing:
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                self._scrub_at(x)
+            else:
+                # LeftButton no longer down but release event may be missing.
+                self._end_scrub_once(reason="fallback_move_no_button", x=x)
         else:
             hover_header = self._near_header_split(x)
             hover_wave = False if hover_header else self._near_wave_split(y)
@@ -3473,7 +3551,11 @@ class TimelineWidget(QWidget):
             drag_moved = self._drag_moved
             click_seek = self._drag_click_seek
             box_click_seek = self._box_click_seek
-            self._scrubbing = False
+            if was_scrub:
+                # Explicit release path — idempotent vs timer/move fallback.
+                self._end_scrub_once(
+                    reason="mouse_release", x=float(event.position().x())
+                )
             self._resizing_wave = False
             self._resizing_video_lane = False
             self._resizing_mark_lanes = False
@@ -3482,17 +3564,14 @@ class TimelineWidget(QWidget):
             self._dragging_marks = False
             self._drag_click_seek = None
             self._box_click_seek = None
-            self._scrub_timer.stop()
             # End scrub interaction only — keep retained static/spatial cache so
             # the first wheel zoom does not flash an empty center region.
-            self.releaseMouse()
+            if not was_scrub:
+                self.releaseMouse()
             if was_resize and self._geometry_sync_pending:
                 self._geometry_sync_pending = False
                 self.content_geometry_changed.emit()
-            if was_scrub:
-                self._scrub_at(event.position().x(), force=True)
-                self.scrub_ended.emit()
-            elif was_box or was_drag or was_resize:
+            if (not was_scrub) and (was_box or was_drag or was_resize):
                 # Non-scrub left interactions may have moved geometry/marks.
                 self._invalidate_scrub_backdrop()
             if was_box:
@@ -3529,8 +3608,9 @@ class TimelineWidget(QWidget):
             self._drag_start_times.clear()
             self._drag_moved = False
             self._pending_single_select = None
-            self._restore_hover_cursor(event.position().x(), event.position().y())
-            self.update()
+            if not was_scrub:
+                self._restore_hover_cursor(event.position().x(), event.position().y())
+                self.update()
         super().mouseReleaseEvent(event)
 
     def _in_ltc_waveform(self, x: float, y: float) -> bool:

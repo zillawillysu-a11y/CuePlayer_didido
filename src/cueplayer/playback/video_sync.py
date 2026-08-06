@@ -326,6 +326,7 @@ class VideoSyncController(QObject):
         self._min_present_seconds: float | None = None
         # Round 4 — explicit pipeline state + resume transaction.
         self._pipeline_state = VideoPipelineState.PLAYBACK
+        self._pipeline_state_listener: Callable[[str], None] | None = None
         self._pre_scrub_was_playing = False
         self._release_target_song_time: float | None = None
         self._release_target_media_time: float | None = None
@@ -465,6 +466,12 @@ class VideoSyncController(QObject):
         perf_diag.note("video.pipeline_state.prev", prev)
         perf_diag.note("video.pipeline_state.changed_at", now)
         perf_diag.count(f"video.pipeline_state.to.{state}")
+        listener = self._pipeline_state_listener
+        if listener is not None:
+            try:
+                listener(str(state))
+            except Exception:
+                pass
 
     def _cancel_scrub_resume_transaction(self, *, reason: str = "cancel") -> None:
         """Invalidate land/resume state (new scrub, song switch, track change)."""
@@ -499,6 +506,12 @@ class VideoSyncController(QObject):
     def set_defer_live_decode(self, check: Callable[[], bool] | None) -> None:
         """Optional gate: skip play-time frame decode while ``check()`` is True."""
         self._defer_live_decode = check
+
+    def set_pipeline_state_listener(
+        self, listener: Callable[[str], None] | None
+    ) -> None:
+        """Notify host when Video pipeline state changes (e.g. VA schedule suspend)."""
+        self._pipeline_state_listener = listener
 
     def decode_quality(self) -> VideoDecodeQuality:
         return self._decode_quality
@@ -885,6 +898,10 @@ class VideoSyncController(QObject):
             request_id=req_id,
             kind="land",
             scheduler="schedule_final_land",
+            extra={
+                "scrub_transaction_id": int(self._scrub_transaction_id),
+                "final_land_transaction_id": int(self._final_land_transaction_id),
+            },
         )
         self._request_async_live_frame(
             seconds,

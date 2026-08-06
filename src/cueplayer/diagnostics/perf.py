@@ -483,6 +483,21 @@ def report_text() -> str:
         f"{attrs.get('video.scrub.final_land_first_relevant_source', '(unset)')}"
     )
     lines.append("")
+    lines.append("Video Audio mixer:")
+    for name in (
+        "video_audio.window_decode_requests",
+        "video_audio.unique_window_keys",
+        "video_audio.duplicate_key_suppressed",
+        "video_audio.coverage_hit",
+        "video_audio.coverage_hit_suppressed",
+        "video_audio.lru_eviction",
+        "video_audio.decode_windows",
+        "video_audio.mute_cleared_pending",
+        "video_audio.schedule_suspended",
+        "video_audio.schedule_resumed",
+    ):
+        lines.append(f"  {name}: {int(counters.get(name, 0))}")
+    lines.append("")
     # Audio callback continuity (no AudioEngine retiming — measurement only).
     lines.append("Audio callback continuity:")
     for key in (

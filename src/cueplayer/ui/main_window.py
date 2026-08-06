@@ -1070,9 +1070,11 @@ class MainWindow(QMainWindow):
         self.video_sync = VideoSyncController(self)
         self.video_sync.set_decode_quality(self.project.video_decode_quality)
         self.video_sync.set_timeline_video_heavy(bool(self.project.show_video_track))
-        # While mixer decodes the next audio window, hold the last video frame
-        # instead of fighting for av_path_lock (rising stutter → hard cut).
-        self.video_sync.set_defer_live_decode(self.engine.video_audio_decoding)
+        # Video frame decode must never be deferred merely because Video Audio
+        # is decoding — that reverse priority caused Video stutter. Cache-miss
+        # Video Audio may be temporary silence; it must not stall presentation.
+        self.video_sync.set_defer_live_decode(None)
+        self.video_sync.set_pipeline_state_listener(self._on_video_pipeline_state)
         self.video_sync.set_song(self.current_song)
         self.engine.set_song(self.current_song)
         self.video_preview = VideoPreviewWidget(context_menu=True, smooth_scale=False)
@@ -5045,8 +5047,38 @@ class MainWindow(QMainWindow):
 
     def _on_timeline_scrub_ended(self) -> None:
         """Finalize Video (FINAL_LANDING) before audio resume so engine cannot overwrite land."""
+        try:
+            from cueplayer.diagnostics import video_sm_trace as sm_trace
+
+            sm_trace.trace(
+                "END_SCRUB_CALLED",
+                state=self.video_sync.pipeline_state(),
+                song_time=float(self.timeline.playhead_seconds()),
+                scheduler="mainwindow_scrub_ended",
+                extra={
+                    "scrub_transaction_id": int(
+                        getattr(self.video_sync, "_scrub_transaction_id", 0)
+                    ),
+                },
+            )
+        except Exception:
+            pass
         self.video_sync.set_scrubbing(False)
         self.playback.end_scrub()
+
+    def _on_video_pipeline_state(self, state: str) -> None:
+        """Suspend Video Audio window scheduling during scrub/land/resume."""
+        from cueplayer.playback.video_sync import VideoPipelineState
+
+        suspend = state in (
+            VideoPipelineState.SCRUB_PREVIEW,
+            VideoPipelineState.FINAL_LANDING,
+            VideoPipelineState.RESUME_PLAYBACK,
+        )
+        try:
+            self.engine.set_video_audio_schedule_suspended(suspend)
+        except Exception:
+            pass
 
     def _on_position_changed(self, engine_seconds: float) -> None:
         # Engine position is Variant Time; Timeline / cues stay on Song Time.
