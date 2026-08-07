@@ -77,6 +77,13 @@ def main() -> int:
 
         return int(run_bpm_detect_cli(sys.argv[1:]))
 
+    # Frozen CuePlayer.exe doubles as the isolated waveform worker. Handle
+    # this before importing Qt so background decode stays headless/lightweight.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--video-waveform-worker":
+        from cueplayer.media.video_waveform_worker import main as waveform_worker_main
+
+        return int(waveform_worker_main(sys.argv[2:]))
+
     _configure_stdio()
     _boot_log(f"CuePlayer boot start  python={sys.executable}  cwd={Path.cwd()}")
     _boot_log(f"argv={sys.argv!r}")

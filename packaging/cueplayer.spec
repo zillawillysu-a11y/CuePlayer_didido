@@ -25,6 +25,7 @@ hiddenimports: list[str] = [
     "cueplayer",
     "cueplayer.app",
     "cueplayer.__main__",
+    "cueplayer.media.video_waveform_worker",
     "pypinyin",
     "mido",
     "mido.backends.rtmidi",

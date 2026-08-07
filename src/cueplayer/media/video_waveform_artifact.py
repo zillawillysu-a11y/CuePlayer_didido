@@ -962,15 +962,21 @@ def _build_artifact_isolated(
         progress_path.unlink(missing_ok=True)
     except OSError:
         pass
-    command = [
-        sys.executable,
-        "-m",
-        "cueplayer.media.video_waveform_worker",
+    worker_args = [
         str(path),
         repr(float(duration_seconds)),
         str(int(stream_index)),
         str(progress_path),
     ]
+    if bool(getattr(sys, "frozen", False)):
+        command = [sys.executable, "--video-waveform-worker", *worker_args]
+    else:
+        command = [
+            sys.executable,
+            "-m",
+            "cueplayer.media.video_waveform_worker",
+            *worker_args,
+        ]
     kwargs: dict[str, object] = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
