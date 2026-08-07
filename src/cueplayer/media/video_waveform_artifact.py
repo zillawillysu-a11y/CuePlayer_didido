@@ -44,9 +44,6 @@ CHUNK_YIELD_SECONDS = 0.02
 CHUNK_YIELD_WHILE_PLAYING_SECONDS = 0.25
 PROGRESS_GUI_COALESCE_SECONDS = 1.5
 DEFAULT_AUDIO_STREAM_INDEX = 0
-# Soft-yield: release lock briefly so Preview/scrub can breathe — only after
-# this much source time under one held session (not every 8 s reopen).
-SOFT_YIELD_SOURCE_SECONDS = 30.0
 
 # Decode outcome kinds — never treat transient empty as confirmed silence.
 DECODE_PCM = "pcm"

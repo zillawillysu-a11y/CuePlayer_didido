@@ -7046,7 +7046,6 @@ class MainWindow(QMainWindow):
         from cueplayer.media.video_music_standin import (
             try_music_standin_artifact_from_disk,
         )
-        from cueplayer.media.video_waveform_artifact import VideoWaveformArtifact
 
         disk_art = try_music_standin_artifact_from_disk(
             clip, timeline_duration=duration
