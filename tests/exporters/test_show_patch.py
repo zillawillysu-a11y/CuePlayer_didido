@@ -344,6 +344,11 @@ def test_ma2_export_matches_selected_3960_library(tmp_path) -> None:
     from cueplayer.exporters.ma2 import Ma2Exporter
     from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
 
+    scanner_paths = Ma2Exporter().write_live_scan_plugin(tmp_path / "scanner")
+    assert scanner_paths["plugin_xml"].is_file()
+    assert "CuePlayer Live Scan" in scanner_paths["plugin_xml"].read_text(encoding="utf-8")
+    assert "CUEPLAYER_SCAN_BEGIN" in scanner_paths["plugin_lua"].read_text(encoding="utf-8")
+
     project = Project.create("Show")
     project.songs = [
         _song_with_buttons("First", ma="First", button_names=["Hit"])

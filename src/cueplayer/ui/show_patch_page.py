@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from cueplayer.domain.models import MaExportSettings, Project
 from cueplayer.exporters.common import parse_page_executor, sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
+from cueplayer.exporters.ma2_telnet import Ma2TelnetError, Ma2TelnetScanner
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
@@ -478,21 +479,30 @@ class ShowPatchPage(QWidget):
         live_scan_layout.addLayout(live_scan_fields)
         live_scan_actions = QHBoxLayout()
         self.registry_scan_status = QLabel(
-            "Not connected · Telnet integration is not enabled yet"
+            "Ready · write and import the read-only scanner Plugin before scanning"
         )
         self.registry_scan_status.setStyleSheet(
             "background: #101318; color: #99a3b1; border-radius: 6px; padding: 9px;"
         )
-        test_connection = QPushButton("Test Connection")
-        scan_show = QPushButton("Scan Current Show")
-        for button in (test_connection, scan_show):
-            button.setEnabled(False)
-            button.setToolTip(
-                "Telnet transport is planned after the interface workflow is approved"
-            )
+        self.registry_write_scan_plugin = QPushButton("Write Scan Plugin")
+        self.registry_test_connection = QPushButton("Test Connection")
+        self.registry_scan_show = QPushButton("Scan Current Show")
+        self.registry_write_scan_plugin.setToolTip(
+            "Write the read-only CuePlayer Live Scan Plugin to the MA2 plugins folder"
+        )
+        self.registry_test_connection.setToolTip(
+            "Connect to the MA2 Command Telnet port without changing the show"
+        )
+        self.registry_scan_show.setToolTip(
+            "Run the installed read-only scanner Plugin and read its System Monitor frame"
+        )
+        self.registry_write_scan_plugin.clicked.connect(self._write_live_scan_plugin)
+        self.registry_test_connection.clicked.connect(self._test_ma2_telnet_connection)
+        self.registry_scan_show.clicked.connect(self._scan_ma2_show)
         live_scan_actions.addWidget(self.registry_scan_status, stretch=1)
-        live_scan_actions.addWidget(test_connection)
-        live_scan_actions.addWidget(scan_show)
+        live_scan_actions.addWidget(self.registry_write_scan_plugin)
+        live_scan_actions.addWidget(self.registry_test_connection)
+        live_scan_actions.addWidget(self.registry_scan_show)
         live_scan_layout.addLayout(live_scan_actions)
         self.registry_page_layout.addWidget(live_scan_box)
 
@@ -1181,6 +1191,62 @@ class ShowPatchPage(QWidget):
         self.settings_changed.emit()
         return True
 
+    def _ma2_telnet_scanner(self) -> Ma2TelnetScanner:
+        return Ma2TelnetScanner(
+            self.registry_host.text(),
+            command_port=int(self.registry_command_port.value()),
+            monitor_port=int(self.registry_monitor_port.value()),
+        )
+
+    def _write_live_scan_plugin(self, _checked: bool = False) -> None:
+        raw_directory = self.out_dir.text().strip()
+        if not raw_directory:
+            self.registry_scan_status.setText("Choose an MA2 Output Folder before writing the scanner Plugin")
+            return
+        directory = Path(raw_directory)
+        try:
+            paths = Ma2Exporter().write_live_scan_plugin(directory)
+        except OSError as exc:
+            self.registry_scan_status.setText(f"Could not write scanner Plugin: {exc}")
+            return
+        self.registry_scan_status.setText(
+            f"Scanner Plugin written: {paths['plugin_xml'].name}. Import it into MA2 once as \"CuePlayer Live Scan\", then use Scan Current Show."
+        )
+
+    def _test_ma2_telnet_connection(self, _checked: bool = False) -> None:
+        try:
+            self._ma2_telnet_scanner().test_connection(
+                user=self.registry_user.text(), password=self.registry_password.text()
+            )
+        except Ma2TelnetError as exc:
+            self.registry_scan_status.setText(str(exc))
+            return
+        self.registry_scan_status.setText(
+            f"Connected to {self.registry_host.text().strip()}:{self.registry_command_port.value()} · Command Telnet ready"
+        )
+
+    def _scan_ma2_show(self, _checked: bool = False) -> None:
+        try:
+            snapshot = self._ma2_telnet_scanner().scan(
+                user=self.registry_user.text(), password=self.registry_password.text()
+            )
+        except Ma2TelnetError as exc:
+            self.registry_scan_status.setText(str(exc))
+            return
+        applied = self.apply_registry_scan_result(
+            remote_version=snapshot.version,
+            sequence_start=snapshot.next_free("sequence"),
+            effect_start=snapshot.next_free("effect"),
+            timecode_start=snapshot.next_free("timecode"),
+            song_macro_start=snapshot.next_free("macro"),
+            view_start=snapshot.next_free("view"),
+            host=self.registry_host.text().strip(),
+        )
+        if not applied:
+            self.registry_scan_status.setText(
+                f"Scan received MA2 {snapshot.version}, which is outside the supported range; settings were not changed."
+            )
+
     def _load_settings_into_ui(self) -> None:
         if self._project is None:
             return
@@ -1222,6 +1288,10 @@ class ShowPatchPage(QWidget):
         self.ma2_effect_pool_start.setValue(int(s.ma2_effect_pool_start or 201))
         self.ma2_effect_slots.setValue(int(s.ma2_effect_slots_per_song or 100))
         self.ma2_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
+        self.registry_host.setText(s.ma2_telnet_host or "127.0.0.1")
+        self.registry_command_port.setValue(int(s.ma2_telnet_command_port or 30000))
+        self.registry_monitor_port.setValue(int(s.ma2_telnet_monitor_port or 30001))
+        self.registry_user.setText(s.ma2_telnet_user or "CuePlayerScan")
         self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
         self._load_view_inspector(self.view_stage.selected_index)
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
@@ -1250,6 +1320,10 @@ class ShowPatchPage(QWidget):
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
+            self.registry_host,
+            self.registry_command_port,
+            self.registry_monitor_port,
+            self.registry_user,
         ):
             widget.setEnabled(s.console != "ma3")
         self._update_out_hint()
@@ -1287,6 +1361,10 @@ class ShowPatchPage(QWidget):
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
         s.ma2_include_song_list = self.ma2_song_list.isChecked()
+        s.ma2_telnet_host = self.registry_host.text().strip() or "127.0.0.1"
+        s.ma2_telnet_command_port = int(self.registry_command_port.value())
+        s.ma2_telnet_monitor_port = int(self.registry_monitor_port.value())
+        s.ma2_telnet_user = self.registry_user.text().strip() or "CuePlayerScan"
         s.ma2_target_version = self.ma2_version.currentText().strip()
         # Keep export_song_ids in sync with checklist.
         ids = []

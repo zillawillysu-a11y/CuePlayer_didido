@@ -36,6 +36,10 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_sequence_slots_per_song=40,
         ma2_target_version="3.9.63.6",
         ma2_output_dir_follows_version=False,
+        ma2_telnet_host="192.168.1.10",
+        ma2_telnet_command_port=31000,
+        ma2_telnet_monitor_port=31001,
+        ma2_telnet_user="ScanUser",
         export_content_by_song={"song-id": {"main": False, "buttons": [2, 4]}},
         ma2_view_layout=[{"type": "effects", "mode": "perSong", "x": 2, "y": 1, "w": 12, "h": 4, "start": 601, "stride": 137}],
     )
@@ -57,6 +61,10 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_sequence_slots_per_song == 40
     assert loaded.ma2_target_version == "3.9.63.6"
     assert loaded.ma2_output_dir_follows_version is False
+    assert loaded.ma2_telnet_host == "192.168.1.10"
+    assert loaded.ma2_telnet_command_port == 31000
+    assert loaded.ma2_telnet_monitor_port == 31001
+    assert loaded.ma2_telnet_user == "ScanUser"
     assert loaded.ma2_view_layout[0]["w"] == 12
     assert loaded.ma2_view_layout[0]["stride"] == 137
     assert loaded.export_content_by_song == {

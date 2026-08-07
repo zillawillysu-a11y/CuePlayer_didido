@@ -253,6 +253,41 @@ def test_registry_sync_updates_allocations_but_preserves_fixed_controls(
     assert project.ma_export.button_executor_start == "201.101"
 
 
+def test_live_scan_syncs_registry_only_after_a_valid_snapshot(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from cueplayer.exporters.ma2_telnet import Ma2PoolSnapshot
+
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    class Scanner:
+        def scan(self, **_kwargs):
+            return Ma2PoolSnapshot(
+                version="3.9.63.6",
+                sequence=frozenset({1, 40}),
+                effect=frozenset({201, 500}),
+                timecode=frozenset({201, 203}),
+                macro=frozenset({101, 203}),
+                view=frozenset({201, 205}),
+            )
+
+    monkeypatch.setattr("cueplayer.ui.show_patch_page.Ma2TelnetScanner", lambda *_args, **_kwargs: Scanner())
+    page._scan_ma2_show()
+
+    assert page.seq_start.value() == 41
+    assert page.ma2_effect_pool_start.value() == 501
+    assert page.tc_start.value() == 204
+    assert page.ma2_song_macro_start.value() == 204
+    assert page.ma2_view_pool_start.value() == 206
+    assert page.ma2_fixed_macro_start.value() == 101
+
+
 def test_executor_page_and_numbers_build_shared_song_page(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

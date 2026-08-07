@@ -25,6 +25,9 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
   Pool start; each is now independently persisted and editable.
 - Corrected Export Options checkbox backgrounds so they use the same panel
   surface rather than the global black control background.
+- Implemented a read-only MA2 Telnet live scanner: Command port triggers an
+  installed scanner Plugin, System Monitor returns framed Pool use data, and
+  validated results update safe Registry starts.
 - Made show allocation reserve and assign only selected sequences; a
   Button-only song starts its first Button at that song's Sequence start.
 - Updated MA2 and MA3 exports so excluded Main content produces no Main
@@ -42,6 +45,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 - `src/cueplayer/exporters/ma3/exporter.py`
 - `src/cueplayer/ui/show_patch_page.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
+- `src/cueplayer/exporters/ma2_telnet.py`
+- `tests/exporters/test_ma2_telnet.py`
 
 ## Architecture decisions
 
@@ -53,16 +58,16 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-option-background`
-- Result: **12 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-ma2-telnet-final-2`
+- Result: **36 passed** (simulated MA2 sockets; no physical MA2 console run yet).
 
 ## Remaining issues
 
-- A real MA2 import should verify a Button-only song's generated View and
-  Timecode track placement alongside the existing full-song workflow.
+- A real MA2 console must verify its Command Telnet login, System Monitor
+  echo visibility, and scanner Plugin API compatibility.
 - `startup_error.txt` was not modified.
 
 ## Suggested next task
 
-Run a real MA2 import test for mixed selections (full song, Main-only,
-Button-only), then improve any import-specific behavior found.
+Run the MA2 Telnet live scanner against a real console/onPC instance, then
+verify the calculated safe starts before an export.

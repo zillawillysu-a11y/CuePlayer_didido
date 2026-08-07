@@ -23,6 +23,7 @@ from cueplayer.exporters.common import (
     split_ma_cue_number,
     timecode_span_seconds,
 )
+from cueplayer.exporters.ma2_telnet import PLUGIN_NAME, live_scan_plugin_lua
 from cueplayer.exporters.ma_default_dirs import resolve_ma2_pool_dirs
 from cueplayer.exporters.xml_write import (
     MA2_NS,
@@ -124,6 +125,25 @@ class Ma2Exporter:
             "main_executor": plan.profile.main_executor,
             "ltc_latency_compensation_seconds": plan.profile.ltc_latency_compensation_seconds,
         }
+
+    def write_live_scan_plugin(self, directory: Path) -> dict[str, Path]:
+        """Write the read-only Telnet scanner Plugin beside normal MA2 plugins."""
+        _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        plugins_dir.mkdir(parents=True, exist_ok=True)
+        basename = "CuePlayer_Live_Scan"
+        lua_path = plugins_dir / f"{basename}.lua"
+        xml_path = plugins_dir / f"{basename}.xml"
+        lua_path.write_text(live_scan_plugin_lua(), encoding="utf-8")
+        root = self._root()
+        self._info(root, PLUGIN_NAME)
+        ET.SubElement(
+            root,
+            f"{{{MA2_NS}}}Plugin",
+            {"index": "0", "execute_on_load": "0", "name": PLUGIN_NAME, "luafile": lua_path.name},
+        )
+        write_xml(root, xml_path, default_namespace=MA2_NS)
+        self._fix_ma2_xsi(xml_path)
+        return {"plugin_xml": xml_path, "plugin_lua": lua_path}
 
     def export_to_directory(
         self,
