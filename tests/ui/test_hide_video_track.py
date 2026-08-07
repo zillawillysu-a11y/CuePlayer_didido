@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 
 from cueplayer.domain.models import Project, Song, VideoClip
 from cueplayer.persistence.project_store import load_project, save_project
@@ -172,3 +173,23 @@ def test_project_set_show_video_track_syncs_all_songs() -> None:
     third = project.new_song("第三首")
     project.songs.append(third)
     assert third.show_video_track is False
+
+
+def test_playing_rapid_visibility_toggles_apply_only_last(
+    app: QApplication,
+) -> None:
+    widget = TimelineWidget()
+    song = _song_with_clip()
+    widget.set_song(song)
+    widget.set_playing(True)
+    events: list[bool] = []
+    widget.video_track_visibility_changed.connect(events.append)
+    widget.set_show_video_track(False)
+    widget.set_show_video_track(True)
+    widget.set_show_video_track(False)
+    # Expensive layout remains stable during the click burst.
+    assert widget._show_video_track is True  # noqa: SLF001
+    QTest.qWait(widget._video_visibility_debounce_ms + 30)  # noqa: SLF001
+    app.processEvents()
+    assert widget._show_video_track is False  # noqa: SLF001
+    assert events == [False]

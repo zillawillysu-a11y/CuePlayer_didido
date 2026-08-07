@@ -109,10 +109,22 @@ def test_zoom_outside_retained_cache_still_follows_transform(app: QApplication) 
         painter.end()
     assert int(
         perf_diag.snapshot()["counters"].get(
-            "timeline.zoom.preview_outside_cache", 0
+            "timeline.zoom.exact_viewport_fallback", 0
         )
     ) == 1
     perf_diag.set_enabled(False)
+
+
+def test_fit_all_has_no_eighty_minute_floor(app: QApplication) -> None:
+    tl = TimelineWidget()
+    tl.resize(1400, 400)
+    song = _dense_song(1)
+    song.duration_seconds = 8216.675
+    tl.set_song(song)
+    tl.fit_to_view()
+    expected = (tl.width() - tl.header_width()) / song.duration_seconds
+    assert tl.pixels_per_second() == pytest.approx(expected)
+    assert tl.pixels_per_second() < 0.25
 
 
 def test_playing_backdrop_uses_small_overscan(app: QApplication) -> None:

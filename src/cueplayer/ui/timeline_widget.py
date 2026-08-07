@@ -141,6 +141,9 @@ class TimelineWidget(QWidget):
         self._video_volume_row_height = 42.0
         self._video_track_muted = False
         self._show_video_track = True
+        self._requested_show_video_track = True
+        self._video_visibility_token = 0
+        self._video_visibility_debounce_ms = 120
         # Music header expand: Music bed % + waveform gain (dB) — no Video eye required.
         self._music_expand_extra = 96.0
         self._music_header_expanded = False
@@ -540,7 +543,7 @@ class TimelineWidget(QWidget):
         self.set_show_video_track(True)
 
     def _toggle_video_track_from_eye(self) -> None:
-        self.set_show_video_track(not self._show_video_track)
+        self.set_show_video_track(not self._requested_show_video_track)
 
     def _sync_video_eye_button(self) -> None:
         """Eye stays on the Music header; icon flips between show / hide."""
@@ -927,6 +930,29 @@ class TimelineWidget(QWidget):
     def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
         """Show / hide Video + LTC lanes together (Preview / Clean Output keep playing)."""
         visible = bool(visible)
+        self._requested_show_video_track = visible
+        if self._playing and emit:
+            # Collapse rapid toggles while playback is presenting frames. Each
+            # layout change can rasterize a tall timeline for 50--119 ms; doing
+            # that per click starves queued Video presents. Apply only the last
+            # requested state after the click burst settles.
+            self._video_visibility_token += 1
+            token = int(self._video_visibility_token)
+
+            def _apply_latest() -> None:
+                if token != int(self._video_visibility_token):
+                    return
+                self._apply_show_video_track_now(
+                    bool(self._requested_show_video_track), emit=True
+                )
+
+            QTimer.singleShot(self._video_visibility_debounce_ms, _apply_latest)
+            perf_diag.count("timeline.video_visibility.coalesced")
+            return
+        self._video_visibility_token += 1
+        self._apply_show_video_track_now(visible, emit=emit)
+
+    def _apply_show_video_track_now(self, visible: bool, *, emit: bool) -> None:
         changed = visible != self._show_video_track or (
             self._song is not None and self._song.show_video_track != visible
         )
@@ -2090,7 +2116,8 @@ class TimelineWidget(QWidget):
         view = max(1.0, self.width() - self._header_width)
         duration = max(0.1, self._duration())
         # Zoom-out stops when the whole song fits in the visible waveform width.
-        return max(0.25, view / duration)
+        # Do not clamp to 0.25: that caps a ~1200 px viewport at ~80 minutes.
+        return max(1e-4, view / duration)
 
     def set_wave_height(self, height: int) -> None:
         """Grow / shrink waveform; mark lanes get narrower as wave grows."""
@@ -2634,12 +2661,20 @@ class TimelineWidget(QWidget):
         # pixels into the full view; uncached edges remain blank until idle bake.
         source_left = max(float(hw), src_left)
         source_right = min(spatial_logical_w, src_right)
+        outside_cache = source_left != src_left or source_right != src_right
+        if outside_cache:
+            # The user requires correct waveform geometry throughout zoom, not
+            # blank edges or a frozen old frame. Paint only the current viewport
+            # at current PPS (no 3.5x retained-cache overscan), then idle bake
+            # installs the normal HQ cache. Decode remains outside paint.
+            perf_diag.count("timeline.zoom.exact_viewport_fallback")
+            with perf_diag.span("timeline.zoom.exact_viewport_paint_ms"):
+                self._paint_static_layers(painter)
+            return True
         if source_left >= source_right:
             perf_diag.count("timeline.zoom.preview_outside_cache_empty")
             self._paint_zoom_screen_annotations(painter)
             return True
-        if source_left != src_left or source_right != src_right:
-            perf_diag.count("timeline.zoom.preview_outside_cache")
         dest_left = float(hw) + (
             (source_left - src_left) / src_w
         ) * float(content_w)
