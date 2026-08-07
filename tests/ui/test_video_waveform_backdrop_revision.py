@@ -99,7 +99,7 @@ def _backdrop_has_non_bg_pixels(tl: TimelineWidget) -> bool:
     return len(seen) > 2
 
 
-def test_progressive_overlay_restrokes_mark_stems(
+def test_top_waveform_mark_pass_restrokes_mark_stems(
     app: QApplication, tmp_path: Path
 ) -> None:
     """Video-lane progressive overlay must not bury Mark stems permanently."""
@@ -141,10 +141,12 @@ def test_progressive_overlay_restrokes_mark_stems(
     painter = QPainter(pm)
     try:
         tl._paint_progressive_waveform_overlay(painter)  # noqa: SLF001
+        tl._paint_video_selection_live(painter)  # noqa: SLF001
+        tl._paint_waveform_mark_stems(painter)  # noqa: SLF001
     finally:
         painter.end()
     assert any(wl and not ls for wl, ls in calls), (
-        "progressive overlay must re-stroke Mark stems (waveform_lines, no lane shapes)"
+        "top waveform pass must re-stroke Mark stems (waveform_lines, no lane shapes)"
     )
 
 

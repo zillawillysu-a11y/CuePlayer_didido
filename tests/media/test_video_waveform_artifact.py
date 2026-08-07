@@ -195,6 +195,36 @@ def test_short_and_long_use_same_artifact_pipeline(
         assert peaks.mins.size == art.n_bins
 
 
+def test_progressive_video_consumer_does_not_build_pending_pyramid() -> None:
+    """Music and Video lanes use identical base bins until coverage completes."""
+    from cueplayer.media.video_waveform_artifact import VideoWaveformArtifact
+
+    art = VideoWaveformArtifact(
+        path="progressive.mp4",
+        mtime_ns=1,
+        size=1,
+        stream_index=0,
+        format_version=1,
+        peaks_per_second=100.0,
+        origin_seconds=0.0,
+        duration_seconds=2.0,
+        sample_rate=48000,
+        channels=2,
+        mins=np.full(200, -0.5, dtype=np.float32),
+        maxs=np.full(200, 0.5, dtype=np.float32),
+        coverage=np.r_[np.ones(100, dtype=np.uint8), np.zeros(100, dtype=np.uint8)],
+        complete=False,
+    )
+    clip = VideoClip.create(
+        name="progressive", path=Path("progressive.mp4"), duration_seconds=2.0
+    )
+    peaks = peaks_from_artifact(clip, art)
+    assert peaks is not None
+    assert peaks.peak_levels == []
+    assert art.levels == []
+    assert np.all(np.isnan(peaks.mins[100:]))
+
+
 def test_two_consumers_one_decode_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

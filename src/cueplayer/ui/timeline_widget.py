@@ -2693,7 +2693,17 @@ class TimelineWidget(QWidget):
         view_w = self._view_width()
         # Same overscan for PLAYING / PAUSED / STOPPED so transport state never
         # selects a different retained raster layout.
-        overscan = max(128, int(view_w * 1.25))
+        # The idle zoom bake is latency-critical: the retained preview remains
+        # visible until this synchronous GUI-thread swap completes.  Painting
+        # 1.25 view widths on *each* side made the sharp swap rasterize about
+        # 3.5 screens and produced the measured 64--186 ms hitch.  A small
+        # native-resolution margin is sufficient here; ordinary pan can grow
+        # the cache later after it leaves that margin.
+        overscan = (
+            128
+            if reason == "zoom_idle"
+            else max(128, int(view_w * 1.25))
+        )
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
@@ -4171,14 +4181,21 @@ class TimelineWidget(QWidget):
             if self._blit_scrub_backdrop(painter):
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                     # Progressive artifact / Video peaks over retained Mark bake.
-                    if self._needs_waveform_overlay():
+                    waveform_overlay = self._needs_waveform_overlay()
+                    if waveform_overlay:
                         self._paint_progressive_waveform_overlay(painter)
-                    # Selection / hover only — not all visible Marks.
-                    self._paint_marks_dynamic_overlay(painter)
                     # Video header caption + selection chrome must paint in
                     # PLAYING and PAUSED alike (transport must not change
                     # static-looking pixels such as "No clip selected").
                     self._paint_video_selection_live(painter)
+                    # Video fills and live selection chrome are both above the
+                    # retained backdrop.  Restore every visible waveform stem
+                    # only after those passes; the old ordering immediately
+                    # covered the attempted progressive stem restroke again.
+                    if waveform_overlay or self._selected_clip_ids or self._hover_clip_id:
+                        self._paint_waveform_mark_stems(painter)
+                    # Selection / hover Mark chrome is the final Mark pass.
+                    self._paint_marks_dynamic_overlay(painter)
                     self._paint_loop_region(painter)
                     self._paint_selection_box(painter)
                     self._paint_audio_loading_overlay(painter)
@@ -4750,25 +4767,36 @@ class TimelineWidget(QWidget):
         return False
 
     def _paint_progressive_waveform_overlay(self, painter: QPainter) -> None:
-        """Repaint Music + Video wave regions only — then restore Mark stems.
+        """Repaint Music + Video wave regions over the retained backdrop.
 
         Video clip fill is opaque. Painting it over the retained bake would bury
-        Mark stems that cross the wave/Video band (Video-only songs looked like
-        the waveform had covered every Mark). Re-stroke stems/labels here; lane
-        shapes below the Video band stay in the blit.
+        Mark stems are restored by ``_paint_waveform_mark_stems`` after the
+        later live Video-selection pass, so no Video paint can cover them.
         """
         with perf_diag.span("timeline.waveform_layer.overlay_paint_ms"):
             self._paint_waveform(painter)
             if self._video_lane_visible():
                 self._paint_video_lane(painter)
-            if self._song is not None and self._song.marks:
-                self._paint_marks(
-                    painter,
-                    start_y=self._tracks_top_y(),
-                    waveform_lines=True,
-                    lane_shapes=False,
-                    mode="static",
-                )
+
+    def _paint_waveform_mark_stems(self, painter: QPainter) -> None:
+        """Paint all visible Mark stems/labels as the top waveform layer."""
+        if self._song is None or not self._song.marks:
+            return
+        painter.save()
+        painter.setClipRect(
+            int(self._header_width),
+            int(self._ruler_height),
+            max(0, int(self.width()) - int(self._header_width)),
+            max(0, int(self._tracks_top_y()) - int(self._ruler_height)),
+        )
+        self._paint_marks(
+            painter,
+            start_y=self._tracks_top_y(),
+            waveform_lines=True,
+            lane_shapes=False,
+            mode="static",
+        )
+        painter.restore()
 
     def _song_expects_waveform(self) -> bool:
         """True when the song has media that should fill the Music lane."""

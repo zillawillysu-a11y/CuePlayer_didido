@@ -78,9 +78,13 @@ def peaks_from_artifact(
     pending = cov == 0
     mins[pending] = np.nan
     maxs[pending] = np.nan
-    levels = list(art.levels) if art.levels else []
-    if not levels:
-        # Derive on the fly if disk lacked levels.
+    # A progressive artifact's pyramid is not coverage-aware: pending bins can
+    # be folded in as zero and make the Video lane differ from the Music lane,
+    # even though both are displaying the same artifact revision.  Until the
+    # artifact is complete both consumers must sample the source-aligned base
+    # envelope.  A complete disk artifact may safely derive missing levels.
+    levels = list(art.levels) if art.complete and art.levels else []
+    if art.complete and not levels:
         art.rebuild_pyramid()
         levels = list(art.levels)
     return ClipWaveformPeaks(

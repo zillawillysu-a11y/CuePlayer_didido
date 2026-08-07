@@ -81,6 +81,9 @@ def test_zoom_final_rebuild_is_atomic(app: QApplication) -> None:
     assert tl._scrub_backdrop is not None  # noqa: SLF001
     assert tl._spatial_backdrop is not None  # noqa: SLF001
     assert tl._scrub_backdrop is not old_full or tl._spatial_backdrop is not old_spatial  # noqa: SLF001
+    # Final sharp swap must not synchronously rasterize the historical 3.5-view
+    # cache on the GUI thread.
+    assert tl._scrub_backdrop_overscan == 128  # noqa: SLF001
 
 
 def test_cue_list_follow_uses_mark_id_map_not_full_scan(app: QApplication) -> None:
