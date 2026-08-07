@@ -66,6 +66,9 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.view_stage.widgets[2]["type"] == "effects"
     assert page.view_stage.widgets[2]["stride"] == 100
     assert page.registry_table.rowCount() == 1
+    status_light = page.registry_table.cellWidget(0, 1)
+    assert status_light is not None
+    assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 1
     assert page.playlist_table.columnCount() == 9

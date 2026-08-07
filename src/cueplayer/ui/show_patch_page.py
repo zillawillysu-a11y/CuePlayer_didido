@@ -1244,7 +1244,17 @@ class ShowPatchPage(QWidget):
                 str(view),
             )
             for column, value in enumerate(registry_values):
-                self.registry_table.setItem(row, column, QTableWidgetItem(value))
+                if column == 1:
+                    status = QLabel("●  Planned")
+                    status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    status.setToolTip("Planned allocation — not yet verified by an MA2 show scan")
+                    status.setStyleSheet(
+                        "color: #86efac; font-weight: 650; background: transparent; "
+                        "padding: 2px 8px;"
+                    )
+                    self.registry_table.setCellWidget(row, column, status)
+                else:
+                    self.registry_table.setItem(row, column, QTableWidgetItem(value))
             review_values = (
                 str(row + 1),
                 slot.display_name,
