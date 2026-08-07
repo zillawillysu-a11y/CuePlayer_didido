@@ -1,14 +1,13 @@
-# MA2 Telnet Import Completion Handoff
+# MA2 Telnet Graceful Exit Handoff
 
 ## Task objective
 
-Ensure MA2 completes the Import command before CuePlayer closes Command Telnet.
+Close MA2 Command Telnet using its documented `Exit` keyword.
 
 ## What was implemented
 
-- Import feedback is drained for up to 1.5 seconds before socket close.
-- Test Connection sends Login only; Login still yields 250 ms before later
-  Import/Plugin commands.
+- Test, Import, and Scan send `Exit` before their Command socket closes.
+- Import feedback remains open for up to 1.5 seconds before Exit.
 
 ## Files changed
 
@@ -29,5 +28,5 @@ Real MA2 verification is still required. `startup_error.txt` was not touched.
 
 ## Suggested next task
 
-Run Import Plugin & Scan with Plugin Pool 6 and report whether the Plugin body
-is present and whether MA2 logs another `Send` exception.
+Run Import Plugin & Scan with Plugin Pool 6 and verify MA2 logs `Exit`, the
+Plugin body is present, and no new `Send`/`Recv` exception appears.

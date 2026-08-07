@@ -169,6 +169,15 @@ class Ma2TelnetScanner:
         # TCP client's ``Send`` exception and close the session.
         time.sleep(0.25)
 
+    def _exit_command_telnet(self, conn: socket.socket) -> None:
+        """Close an MA2 Command Telnet session with its documented Exit command."""
+        try:
+            self._send_line(conn, "Exit")
+            self._read_feedback(conn, wait_seconds=0.25)
+        except OSError:
+            # The station may close immediately after accepting Exit.
+            pass
+
     def test_connection(self, *, user: str = "", password: str = "") -> str:
         with self._connect(self.command_port) as command:
             self._negotiate_telnet(command, wait_for_login_prompt=True)
@@ -176,7 +185,9 @@ class Ma2TelnetScanner:
             # Login is the connectivity test.  MA2's Command Line does not
             # provide a portable no-op Echo command; sending one only creates
             # a misleading ``Error: Echo`` in Command Line Feedback.
-            return self._read_feedback(command)
+            feedback = self._read_feedback(command)
+            self._exit_command_telnet(command)
+            return feedback
 
     def import_plugin(
         self,
@@ -207,7 +218,9 @@ class Ma2TelnetScanner:
             self._send_line(command, import_command)
             # Import can take longer than the command socket's first response;
             # keep it open so MA2 does not report a Send exception mid-import.
-            return self._read_feedback(command, wait_seconds=1.5)
+            feedback = self._read_feedback(command, wait_seconds=1.5)
+            self._exit_command_telnet(command)
+            return feedback
 
     def scan(
         self,
@@ -239,7 +252,10 @@ class Ma2TelnetScanner:
                 chunks.append(self._telnet_text(monitor, block))
                 joined = "".join(chunks)
                 if FRAME_BEGIN in joined and FRAME_END in joined:
-                    return parse_scan_frame(joined)
+                    snapshot = parse_scan_frame(joined)
+                    self._exit_command_telnet(command)
+                    return snapshot
+            self._exit_command_telnet(command)
         received = "".join(chunks)
         if received.strip():
             raise Ma2TelnetError(

@@ -79,6 +79,7 @@ def test_scan_logs_in_triggers_plugin_pool_and_reads_fragmented_monitor_frame(
     assert command.sent == [
         b'Login "CuePlayer" "secret"\r\n',
         b"Plugin 5\r\n",
+        b"Exit\r\n",
     ]
 
 
@@ -94,7 +95,7 @@ def test_test_connection_sends_login_and_read_only_echo(monkeypatch: pytest.Monk
         lambda *_args: command,
     )
     Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer", password="secret")
-    assert command.sent == [b'Login "CuePlayer" "secret"\r\n']
+    assert command.sent == [b'Login "CuePlayer" "secret"\r\n', b"Exit\r\n"]
 
 
 def test_login_requires_a_ma2_show_user(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +125,7 @@ def test_import_plugin_uses_explicit_pool_and_ma2_visible_path(
         password="secret",
     )
 
-    assert command.sent[-1] == (
+    assert command.sent[-2] == (
         b'Import "CuePlayer_Live_Scan" At Plugin 9999 '
         b'/path="/data/ma/actual/gma2/plugins"\r\n'
     )
@@ -151,7 +152,7 @@ def test_local_import_matches_the_ma2_command_line_form(
         plugin_pool=5, user="administrator", password="admin"
     )
 
-    assert command.sent[-1] == b'Import "CuePlayer_Live_Scan" At Plugin 5\r\n'
+    assert command.sent[-2] == b'Import "CuePlayer_Live_Scan" At Plugin 5\r\n'
 
 
 def test_scan_can_run_the_explicitly_installed_plugin_pool(
@@ -176,7 +177,7 @@ def test_scan_can_run_the_explicitly_installed_plugin_pool(
 
     Ma2TelnetScanner("127.0.0.1").scan(user="CuePlayer", plugin_pool=9999)
 
-    assert command.sent[-1] == b"Plugin 9999\r\n"
+    assert command.sent[-2] == b"Plugin 9999\r\n"
 
 
 def test_telnet_negotiation_declines_optional_server_features(
@@ -192,6 +193,7 @@ def test_telnet_negotiation_declines_optional_server_features(
 
     assert command.sent[0] == bytes([255, 252, 1])
     assert command.sent[1] == b'Login "CuePlayer" ""\r\n'
+    assert command.sent[-1] == b"Exit\r\n"
 
 
 def test_connection_hides_telnet_control_bytes_from_status_text(
@@ -206,7 +208,8 @@ def test_connection_hides_telnet_control_bytes_from_status_text(
     feedback = Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer")
 
     assert feedback == "MA2 ready\r\n"
-    assert command.sent[-1] == bytes([255, 252, 1])
+    assert bytes([255, 252, 1]) in command.sent
+    assert command.sent[-1] == b"Exit\r\n"
 
 
 def test_command_waits_for_ma2_login_prompt_before_writing_input(
@@ -220,4 +223,4 @@ def test_command_waits_for_ma2_login_prompt_before_writing_input(
 
     Ma2TelnetScanner("127.0.0.1").test_connection(user="administrator", password="admin")
 
-    assert command.sent == [b'Login "administrator" "admin"\r\n']
+    assert command.sent == [b'Login "administrator" "admin"\r\n', b"Exit\r\n"]

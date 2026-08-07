@@ -5,14 +5,15 @@
 
 ## Task objective
 
-Keep the Import Telnet socket open long enough for MA2 to finish importing the
-scanner Plugin instead of closing during its response.
+Close MA2 Command Telnet sessions with the documented `Exit` keyword instead
+of abruptly closing sockets that MA2 reports as `Send`/`Recv` exceptions.
 
 ## What was implemented
 
-- Import feedback now drains for up to 1.5 seconds before closing.
-- Test Connection remains Login-only; 250 ms Login pacing and 15-second scan
-  timeout remain.
+- Test Connection, Plugin Import, and Scan now send `Exit` before closing their
+  Command Telnet socket.
+- Import still drains feedback for up to 1.5 seconds before `Exit`.
+- Login pacing and the 15-second scanner timeout remain.
 
 ## Files changed
 
@@ -31,11 +32,10 @@ scanner Plugin instead of closing during its response.
 
 ## Remaining issues
 
-- Real MA2 must confirm Import completes without `Send` and the Plugin is not
-  empty.
+- Real MA2 must confirm clean `Exit` closure and a populated scanner Plugin.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Retest Import Plugin & Scan at Plugin Pool 6. Confirm the imported Plugin has
-the scanner body and no new `Send` appears during Import.
+Retest Import Plugin & Scan at Plugin Pool 6. Confirm MA2 logs `Exit` rather
+than a new `Send`/`Recv` exception and the Plugin is populated.

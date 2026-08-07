@@ -1,12 +1,12 @@
 # Next task
 
-**Status:** Queued - awaiting real local Telnet Import verification after response drain
+**Status:** Queued - awaiting real local Telnet verification after graceful Exit
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify Import completion, then Plugin execution and the 15-second scanner wait.
+Verify graceful Exit, Import completion, Plugin execution, and scanner output.
 
 ## Requirements
 
