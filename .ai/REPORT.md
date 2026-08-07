@@ -12,6 +12,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 
 - Added Timecode Pool Start with default 201 and live per-song allocation.
 - Changed mockup defaults: Fixed Macro Start 101, Song Macro Start 201, Template Page 200.
+- Changed mockup executor defaults: Main Executor 201.130 and Button Start 201.101.
 - Added an expandable Export Content panel to every song row.
 - Main and individual Button contents can be selected independently per song.
 - Song rows summarize selected/available contents.
