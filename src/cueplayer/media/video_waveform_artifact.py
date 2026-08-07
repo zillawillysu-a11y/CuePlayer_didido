@@ -40,7 +40,10 @@ PYRAMID_FACTORS = (4, 16, 64, 256)
 # uses BATCH_SECONDS between cancel/pause checks (not one open per window).
 CHUNK_SECONDS = 8.0
 BATCH_SECONDS = 0.5
-CHUNK_YIELD_SECONDS = 0.02
+# PyAV decoding and peak reduction both run off the GUI thread, but long
+# containers can still monopolize Python/CPU if successful batches are scanned
+# back-to-back. A short cooperative gap keeps Qt's event loop responsive.
+CHUNK_YIELD_SECONDS = 0.035
 CHUNK_YIELD_WHILE_PLAYING_SECONDS = 0.25
 PROGRESS_GUI_COALESCE_SECONDS = 1.5
 DEFAULT_AUDIO_STREAM_INDEX = 0
@@ -859,6 +862,12 @@ def build_artifact_continuous(
 
             if on_progress is not None:
                 on_progress(art)
+
+            # Successful PCM/silence batches must yield too. Previously only
+            # error/empty paths slept, so a healthy long video was ironically
+            # the path most likely to make Windows report "Not responding"
+            # until the entire waveform finished.
+            time.sleep(CHUNK_YIELD_SECONDS)
 
             # Hold the session across batches. Release lock only on pause
             # (handled at loop top) or completion — never reopen every 8 s.

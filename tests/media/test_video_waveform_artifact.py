@@ -275,6 +275,23 @@ def test_sequential_decoder_one_open_not_per_window(
     assert stats["batch_count"] >= 2
 
 
+def test_successful_waveform_batches_cooperatively_yield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "responsive.mp4"
+    path.write_bytes(b"x")
+    _install_fake_decoder(monkeypatch, path, source_duration=40.0)
+    import cueplayer.media.video_waveform_artifact as art_mod
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(art_mod, "CHUNK_YIELD_SECONDS", 0.035)
+    monkeypatch.setattr(art_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+    art = build_artifact_continuous(path, duration_seconds=40.0)
+    assert art is not None and art.complete
+    assert sleeps
+    assert all(seconds >= 0.035 for seconds in sleeps)
+
+
 def test_local_bin_fill_allocates_only_affected_range(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
