@@ -145,8 +145,7 @@
     .view-widget { position: absolute; display: grid; border: 2px solid #5d6875; background: #1b2026; overflow: hidden; cursor: move; box-shadow: 0 5px 16px rgba(0,0,0,.28); }
     .view-widget.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.22); }
     .pool-title-cell, .pool-cell { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 3px; border-right: 1px solid #3a424c; border-bottom: 1px solid #3a424c; overflow: hidden; }
-    .pool-title-cell { flex-direction: column; gap: 2px; text-align: center; background: #303741; font-size: 11px; font-weight: 700; }
-    .pool-title-cell small { font-size: 9px; font-weight: 500; opacity: .8; }
+    .pool-title-cell { text-align: center; background: #303741; padding: 2px; font-size: clamp(7px, .55vw, 10px); line-height: 1.05; letter-spacing: -.15px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
     .view-widget.fixed .pool-title-cell { background: #6b214d; }
     .view-widget.perSong .pool-title-cell { background: #1e3a8a; }
     .pool-cell { align-items: flex-start; justify-content: flex-start; color: #b9c2ce; font-size: 10px; }
@@ -395,7 +394,7 @@
         const slots = widget.w * widget.h - 1;
         const cells = Array.from({ length: slots }, (_, i) => `<span class="pool-cell">${start + i}</span>`).join("");
         return `<div class="view-widget ${widget.mode} ${widget.id === selectedWidgetId ? "selected" : ""}" data-widget="${widget.id}" style="left:${widget.x / 16 * 100}%;top:${widget.y / 8 * 100}%;width:${widget.w / 16 * 100}%;height:${widget.h / 8 * 100}%;grid-template-columns:repeat(${widget.w},1fr);grid-template-rows:repeat(${widget.h},1fr)">
-          <div class="pool-title-cell"><span>${widgetLabel(widget.type)}</span><small>${widget.mode === "fixed" ? "Fixed" : "Per Song"} · ${slots}</small></div>${cells}<span class="resize-handle" data-resize="${widget.id}"></span></div>`;
+          <div class="pool-title-cell"><span>${widgetLabel(widget.type)}</span></div>${cells}<span class="resize-handle" data-resize="${widget.id}"></span></div>`;
       }).join("");
       $$(".view-widget").forEach(element => element.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(element.dataset.widget), false)));
       $$(".resize-handle").forEach(handle => handle.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(handle.dataset.resize), true)));
