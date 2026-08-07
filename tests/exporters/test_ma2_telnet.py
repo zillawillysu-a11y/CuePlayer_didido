@@ -52,7 +52,7 @@ def test_parse_scan_frame_ignores_monitor_noise() -> None:
     assert snapshot.next_free("effect") == 203
 
 
-def test_scan_logs_in_triggers_plugin_and_reads_fragmented_monitor_frame(
+def test_scan_logs_in_triggers_plugin_pool_and_reads_fragmented_monitor_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     command = _Socket()
@@ -70,13 +70,15 @@ def test_scan_logs_in_triggers_plugin_and_reads_fragmented_monitor_frame(
         return monitor if address[1] == 30001 else command
 
     monkeypatch.setattr("cueplayer.exporters.ma2_telnet.socket.create_connection", connect)
-    snapshot = Ma2TelnetScanner("127.0.0.1").scan(user="CuePlayer", password="secret")
+    snapshot = Ma2TelnetScanner("127.0.0.1").scan(
+        user="CuePlayer", password="secret", plugin_pool=5
+    )
 
     assert snapshot.next_free("sequence") == 42
     assert snapshot.next_free("view") == 208
     assert command.sent == [
         b'Login "CuePlayer" "secret"\r\n',
-        b'Plugin "CuePlayer Live Scan"\r\n',
+        b"Plugin 5\r\n",
     ]
 
 

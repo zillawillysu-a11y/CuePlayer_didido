@@ -13,8 +13,8 @@ Plugin installation and the full scanner round trip.
 
 - Enter an existing, case-sensitive MA2 Show User/password and confirm the
   Test Connection shows cleaned readable MA2 feedback after Telnet negotiation.
-- Verify Write Scan Plugin -> Import Plugin & Scan using an empty Plugin Pool
-  and an MA2-visible Plugin import path.
+- Verify the scanner Plugin exists in the configured numeric Plugin Pool, then
+  run Scan Current Show and inspect the System Monitor scanner frame.
 - Confirm all three Telnet status lights become green after a completed scan.
 - Verify all five computed starts (Sequence, Effect, Timecode, Song Macro,
   View) match actual occupied Pools.

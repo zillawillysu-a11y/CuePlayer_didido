@@ -265,9 +265,13 @@ def test_live_scan_syncs_registry_only_after_a_valid_snapshot(
     project = Project.create("Show")
     page = ShowPatchPage()
     page.set_project(project)
+    page.registry_plugin_pool.setValue(5)
+
+    captured: dict[str, object] = {}
 
     class Scanner:
-        def scan(self, **_kwargs):
+        def scan(self, **kwargs):
+            captured.update(kwargs)
             return Ma2PoolSnapshot(
                 version="3.9.63.6",
                 sequence=frozenset({1, 40}),
@@ -286,6 +290,7 @@ def test_live_scan_syncs_registry_only_after_a_valid_snapshot(
     assert page.ma2_song_macro_start.value() == 204
     assert page.ma2_view_pool_start.value() == 206
     assert page.ma2_fixed_macro_start.value() == 101
+    assert captured["plugin_pool"] == 5
 
 
 def test_executor_page_and_numbers_build_shared_song_page(

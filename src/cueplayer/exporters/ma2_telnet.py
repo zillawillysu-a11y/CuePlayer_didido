@@ -194,19 +194,17 @@ class Ma2TelnetScanner:
         *,
         user: str = "",
         password: str = "",
-        plugin_pool: int | None = None,
+        plugin_pool: int,
     ) -> Ma2PoolSnapshot:
-        """Run the installed read-only scanner Plugin and wait for its frame."""
+        """Run the installed scanner Plugin Pool and wait for its frame."""
+        plugin_pool = int(plugin_pool)
+        if plugin_pool < 2:
+            raise Ma2TelnetError("Choose a scanner Plugin Pool number of 2 or higher")
         with self._connect(self.monitor_port) as monitor, self._connect(self.command_port) as command:
             self._negotiate_telnet(monitor)
             self._negotiate_telnet(command)
             self._login(command, user, password)
-            command_text = (
-                f"Plugin {int(plugin_pool)}"
-                if plugin_pool is not None
-                else f'Plugin "{PLUGIN_NAME}"'
-            )
-            self._send_line(command, command_text)
+            self._send_line(command, f"Plugin {plugin_pool}")
             deadline = time.monotonic() + self.timeout_seconds
             chunks: list[str] = []
             while time.monotonic() < deadline:

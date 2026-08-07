@@ -29,7 +29,9 @@ area shows only actual MA2 feedback.
    CuePlayer sends `Import "CuePlayer_Live_Scan" At Plugin <number>` through
    Command Telnet before running that exact Plugin Pool.
 6. Click **Test Connection** in CuePlayer to check only Command Telnet. Then
-   click **Scan Current Show** to run an already-installed scanner Plugin.
+   click **Scan Current Show** to run the already-installed scanner at the
+   configured **Plugin Pool** number. MA2 executes Plugins by Pool number, not
+   by their display name.
    A completed scan uses
    its System Monitor result to calculate safe starts for Sequence, Effect,
    Timecode, Song Macro, and View pools.

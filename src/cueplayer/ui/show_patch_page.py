@@ -1280,7 +1280,9 @@ class ShowPatchPage(QWidget):
         try:
             self._set_telnet_status("scanning")
             snapshot = self._ma2_telnet_scanner().scan(
-                user=self.registry_user.text(), password=self.registry_password.text()
+                user=self.registry_user.text(),
+                password=self.registry_password.text(),
+                plugin_pool=int(self.registry_plugin_pool.value()),
             )
         except Ma2TelnetError as exc:
             self.registry_scan_status.setText(str(exc))
