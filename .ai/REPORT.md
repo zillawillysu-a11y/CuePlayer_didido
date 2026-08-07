@@ -44,6 +44,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Common Settings and Per Song Effects View strides update each other so playlist ranges and View previews remain consistent.
 - Simplified the View Inspector by removing Column, Row, and Visible Pool Slots; position remains drag-controlled and visible capacity remains internally calculated.
 - Fixed Pool title overflow by showing only the Pool name in the title cell and adding responsive wrapping for long MA2 names; allocation mode remains color-coded.
+- Removed Columns and Rows from the View Inspector; Pool size is now controlled only by whole-cell canvas resizing.
 
 ## Tests performed
 

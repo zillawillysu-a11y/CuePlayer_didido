@@ -25,7 +25,7 @@ Review the updated browser mockup with per-song Main/Button content selection an
 - All songs share one View geometry; every Pool independently selects Fixed or Per Song allocation.
 - The Pool Type menu contains the supplied grandMA2 Pool names, and same-type number ranges are checked for overlap.
 - Per Song Effects reserve 100 Pool numbers by default, allow any valid value from 1, and stay synchronized between Common Settings and View Inspector.
-- View Inspector intentionally omits Column, Row, and Visible Pool Slots; only Columns/Rows sizing and allocation controls are shown.
+- View Inspector intentionally omits Column, Row, Columns, Rows, and Visible Pool Slots; position and size are controlled directly on the canvas.
 - Pool title cells show only the Pool name, wrap long labels, and use color to communicate Fixed versus Per Song allocation.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
 - Confirm the default Fixed/Per Song modes, Pool starts, and reserved-slot values.
