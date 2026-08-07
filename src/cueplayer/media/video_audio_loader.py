@@ -120,14 +120,23 @@ def _load_video_audio_once(
                     if frame_t >= end_time:
                         break
                     if collected_start is None:
-                        collected_start = max(start, frame_t)
+                        # Keep the true PTS of sample zero. A backward seek can
+                        # return a frame up to ~50 ms before ``start``; claiming
+                        # those samples begin exactly at ``start`` shifts every
+                        # independently decoded window and creates a click at
+                        # each 9 s ownership seam.
+                        collected_start = frame_t
                 for resampled in resampler.resample(frame):
                     arr = resampled.to_ndarray()  # planar fltp: (channels, samples)
                     if arr.size:
                         chunks.append(arr.T.astype(np.float32, copy=False))
                 if chunks:
                     got = sum(c.shape[0] for c in chunks) / float(sample_rate)
-                    if got >= max_dur:
+                    pre_roll = max(
+                        0.0,
+                        start - float(collected_start or start),
+                    )
+                    if got >= max_dur + pre_roll:
                         break
             for resampled in resampler.resample(None):
                 arr = resampled.to_ndarray()
@@ -136,10 +145,19 @@ def _load_video_audio_once(
             if not chunks:
                 return None
             samples = np.concatenate(chunks, axis=0)
+            decoded_origin = float(collected_start if collected_start is not None else start)
+            trim_frames = max(
+                0,
+                int(round((start - decoded_origin) * float(sample_rate))),
+            )
+            if trim_frames > 0:
+                samples = samples[min(trim_frames, samples.shape[0]) :]
             max_frames = int(round(max_dur * sample_rate))
             if samples.shape[0] > max_frames:
                 samples = samples[:max_frames]
-            origin = collected_start if collected_start is not None else start
+            if samples.shape[0] == 0:
+                return None
+            origin = max(start, decoded_origin)
             return VideoAudioBuffer(
                 path=path,
                 sample_rate=sample_rate,

@@ -143,6 +143,30 @@ def test_load_video_audio_long_window_is_contiguous(tmp_path: Path) -> None:
         assert float(np.max(np.abs(mid))) > 0.05, f"silence near t={t}"
 
 
+def test_overlapping_seek_windows_keep_sample_alignment(tmp_path: Path) -> None:
+    """Backward-seek preroll must be trimmed before windows are published."""
+    path = tmp_path / "overlap_alignment.mp4"
+    _make_clip_with_tone(path, seconds=6.0, audio_rate=48000)
+    first = load_video_audio(path, start_seconds=1.0, max_duration_seconds=3.0)
+    second = load_video_audio(path, start_seconds=2.0, max_duration_seconds=3.0)
+    assert first is not None and second is not None
+    assert first.origin_seconds == pytest.approx(1.0, abs=1 / first.sample_rate)
+    assert second.origin_seconds == pytest.approx(2.0, abs=1 / second.sample_rate)
+
+    # Compare the shared 2.25..3.75 s source interval. Independently decoded
+    # windows should represent the same samples instead of carrying up to
+    # 50 ms of seek preroll under a false origin timestamp.
+    shared_start = 2.25
+    shared_frames = int(1.5 * first.sample_rate)
+    i0 = int(round((shared_start - first.origin_seconds) * first.sample_rate))
+    i1 = int(round((shared_start - second.origin_seconds) * second.sample_rate))
+    np.testing.assert_allclose(
+        first.samples[i0 : i0 + shared_frames],
+        second.samples[i1 : i1 + shared_frames],
+        atol=2e-3,
+    )
+
+
 def test_audio_window_for_clip_caps_long_source() -> None:
     from cueplayer.domain.models import VideoClip
     from cueplayer.media.video_audio_cache import audio_window_for_clip
