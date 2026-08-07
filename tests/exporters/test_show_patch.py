@@ -162,6 +162,10 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert 'Store Sequence 1 Cue 1 "ZhuGe"' in lua or "Store Sequence 1 Cue 1" in lua
     assert 'Store Sequence 1 Cue 0.5 "Preset" /noconfirm' in lua
     assert 'Store Sequence 21 Cue 0.5 "Preset" /noconfirm' in lua
+    preset_timecode = Ma2Exporter().build_show_timecode_xml(
+        [plans[0]], name="SongA", main_preset_cue_id=0.5
+    )
+    assert 'Cue name="Cue 1"><No>1</No><No>1</No><No>2</No>' in preset_timecode
     assert 'name="SongA"' in lua
     assert 'name="SongA_TC"' not in lua
     assert 'Label Sequence 1 "SongA"' in lua

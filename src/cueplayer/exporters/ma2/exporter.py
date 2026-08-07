@@ -916,6 +916,7 @@ class Ma2Exporter:
         plans: list[SongExportPlan],
         *,
         name: str = "CuePlayer_TC",
+        main_preset_cue_id: float | None = None,
     ) -> str:
         """
         CuePoints-style Timecode XML string for one or more plans.
@@ -944,8 +945,16 @@ class Ma2Exporter:
                 frames = _rel_event_frames(plan, cue.time_seconds)
                 max_frames = max(max_frames, frames)
                 link_name = _xml_esc(format_ma2_cue_link_name(cue.cue_number))
+                # MA2 sorts a fractional Preset Cue (for example 0.5) before
+                # Cue 1. Timecode addresses cue indices, so the original cue
+                # target is offset only when that Preset precedes it.
+                cue_index = idx + int(
+                    main_preset_cue_id is not None
+                    and float(main_preset_cue_id) < float(cue.cue_number)
+                )
                 nos = "".join(
-                    f"<No>{value}</No>" for value in ma2_timecode_cue_nos(main_seq, idx)
+                    f"<No>{value}</No>"
+                    for value in ma2_timecode_cue_nos(main_seq, cue_index)
                 )
                 events.append(
                     f'<Event index="{idx - 1}" time="{frames}" command="Go" '
@@ -1104,7 +1113,15 @@ class Ma2Exporter:
             phantom = ma2_phantom_cue_delete_range(plan) or (0, 0)
             tc_jobs.append(
                 (
-                    self.build_show_timecode_xml([plan], name=tc_label),
+                    self.build_show_timecode_xml(
+                        [plan],
+                        name=tc_label,
+                        main_preset_cue_id=(
+                            float(main_preset_cue_id)
+                            if add_main_preset_cue
+                            else None
+                        ),
+                    ),
                     int(plan.profile.timecode_pool),
                     f"{name}_TC_{song_stem}",
                     tc_label,
