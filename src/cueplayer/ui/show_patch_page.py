@@ -181,6 +181,8 @@ class ShowPatchPage(QWidget):
         self.latency_ms.setSuffix(" ms")
         self.data_pool = QLineEdit("Default")
         self.show_macro_name = QLineEdit(_DEFAULT_SHOW_MACRO)
+        self.song_viewbutton = QLineEdit("1.20")
+        self.song_viewbutton.setPlaceholderText("1.20")
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
@@ -189,6 +191,7 @@ class ShowPatchPage(QWidget):
         opt_form.addRow("Latency", self.latency_ms)
         opt_form.addRow("MA3 Data Pool", self.data_pool)
         opt_form.addRow("Install Name", self.show_macro_name)
+        opt_form.addRow("MA2 Song ViewButton", self.song_viewbutton)
         opt_row.addWidget(opt_box)
 
         out_box = QGroupBox("Output Folder")
@@ -290,6 +293,7 @@ class ShowPatchPage(QWidget):
             self.latency_ms,
             self.data_pool,
             self.show_macro_name,
+            self.song_viewbutton,
         ):
             if isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_settings_edited)
@@ -412,11 +416,13 @@ class ShowPatchPage(QWidget):
         self.show_macro_name.setText(
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
+        self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
         remembered = s.output_dir_ma3 if s.console == "ma3" else s.output_dir_ma2
         path = resolve_export_dir(s.console if s.console in ("ma2", "ma3") else "ma2", remembered or None)
         self.out_dir.setText(path)
         self.data_pool.setEnabled(s.console == "ma3")
         self.show_macro_name.setEnabled(True)
+        self.song_viewbutton.setEnabled(s.console != "ma3")
         self._update_out_hint()
         self._suppress = False
 
@@ -436,6 +442,7 @@ class ShowPatchPage(QWidget):
         s.show_install_macro_name = normalize_show_macro_basename(
             self.show_macro_name.text()
         )
+        s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
         # Keep export_song_ids in sync with checklist.
         ids = []
         for row in range(self.song_pick.count()):
@@ -483,6 +490,7 @@ class ShowPatchPage(QWidget):
         self.out_dir.setText(path)
         self.data_pool.setEnabled(new_console == "ma3")
         self.show_macro_name.setEnabled(True)
+        self.song_viewbutton.setEnabled(new_console != "ma3")
         self._suppress = False
         if new_console == "ma3":
             s.output_dir_ma3 = path
@@ -715,6 +723,7 @@ class ShowPatchPage(QWidget):
                     plans,
                     directory,
                     show_install_name=show_macro_basename,
+                    song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
                 )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Export Failed", str(exc))

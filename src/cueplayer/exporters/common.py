@@ -448,3 +448,4 @@ class SongExportPlan:
     button_lanes: list[ExportButtonLane] = field(default_factory=list)
     # Song media length — Timecode Length uses max(media, last_event + tail).
     duration_seconds: float = 0.0
+    song_bpm: float = 120.0

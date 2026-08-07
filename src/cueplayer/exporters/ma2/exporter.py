@@ -149,6 +149,7 @@ class Ma2Exporter:
         directory: Path,
         *,
         show_install_name: str = "CuePlayer_Show_Install",
+        song_viewbutton: str = "1.20",
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -176,7 +177,162 @@ class Ma2Exporter:
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
             if "macro_xml" in plugin_paths:
                 all_paths["show:macro_xml"] = plugin_paths["macro_xml"]
+            all_paths["show:song_list"] = self.write_song_list_sequence(
+                plans,
+                directory,
+                name="CuePlayer Song List",
+                basename=f"{show_install_name}_Song_List",
+            )
+            all_paths["show:song_change_macros"] = self.write_song_change_macros(
+                plans,
+                directory,
+                basename=f"{show_install_name}_Song_Change",
+                song_viewbutton=song_viewbutton,
+            )
         return all_paths
+
+    def write_song_list_sequence(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        name: str = "CuePlayer Song List",
+        basename: str = "CuePlayer_Song_List",
+    ) -> Path:
+        """Write the MA2 sequence used by Next/Previous/Jump To Song macros."""
+        import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        import_dir.mkdir(parents=True, exist_ok=True)
+        filename = sanitize_ma_name(basename, fallback="CuePlayer_Song_List")
+        path = import_dir / f"{filename}.xml"
+        root = self._root()
+        self._info(root, name)
+        sequ = ET.SubElement(
+            root,
+            f"{{{MA2_NS}}}Sequ",
+            {
+                "index": "0",
+                # Keep spaces: the control macros deliberately resolve it with
+                # the MA wildcard `"* Song List"`.
+                "name": sanitize_ma_name(
+                    name, fallback="CuePlayer_Song_List"
+                ).replace("_", " "),
+                "timecode_slot": "0",
+            },
+        )
+        ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"NIL_PLACEHOLDER": "true"})
+        preset = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": "0"})
+        ET.SubElement(
+            preset,
+            f"{{{MA2_NS}}}Number",
+            {"number": "0", "sub_number": "5"},
+        )
+        ET.SubElement(
+            preset,
+            f"{{{MA2_NS}}}CuePart",
+            {"index": "0", "name": "SHOW BEGIN"},
+        )
+        for index, plan in enumerate(plans, start=1):
+            song_name = sanitize_ma_name(plan.song_name, fallback=f"Song{index}")
+            cue = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(index)})
+            ET.SubElement(
+                cue,
+                f"{{{MA2_NS}}}Number",
+                {"number": str(index), "sub_number": "0"},
+            )
+            part = ET.SubElement(
+                cue,
+                f"{{{MA2_NS}}}CuePart",
+                {"index": "0", "name": song_name},
+            )
+            macro_text = ET.SubElement(part, f"{{{MA2_NS}}}macro_text")
+            macro_text.text = f'Macro "{song_name}"'
+        write_xml(root, path, default_namespace=MA2_NS)
+        self._fix_ma2_xsi(path)
+        return path
+
+    def write_song_change_macros(
+        self,
+        plans: list[SongExportPlan],
+        directory: Path,
+        *,
+        basename: str = "CuePlayer_Song_Change",
+        song_viewbutton: str = "1.20",
+    ) -> Path:
+        """Write the user's MA2 Song Change workflow plus one macro per song."""
+        _import_dir, _plugins_dir, macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        macros_dir.mkdir(parents=True, exist_ok=True)
+        safe_base = sanitize_ma_name(basename, fallback="CuePlayer_Song_Change")
+        path = macros_dir / f"{safe_base}.xml"
+        viewbutton = str(song_viewbutton or "1.20").strip()
+        viewbutton_parts = viewbutton.split(".")
+        if len(viewbutton_parts) != 2 or not all(
+            part.isdigit() for part in viewbutton_parts
+        ):
+            raise ValueError("MA2 Song ViewButton must look like 1.20")
+        definitions: list[tuple[str, list[str]]] = [
+            (
+                "Show Begin",
+                [
+                    "ClearAll",
+                    'Top Executor "* Template Page"."* Song List"',
+                    'View "Show"',
+                ],
+            ),
+            ("Go To Template Page", ['Page "* Template Page"']),
+            ("Go To Song Page", ['Page $"Song"']),
+            ("Jump To Song", ['Load Executor "* Template Page"."* Song List"']),
+            ("Previous Song", ['GoBack Executor "* TEMPLATE PAGE"."* Song List"']),
+            ("Next Song", ['Go Executor "* TEMPLATE PAGE"."* Song List"']),
+            (
+                "Page Change",
+                [
+                    'Page $"Song"',
+                    'Off Page 1 Thru - Page "* TEMPLATE PAGE"',
+                    'Off Timecode 1 Thru',
+                    '<<< Timecode 1 Thru',
+                    'Select Executor $"song"',
+                    'Goto Cue "Preset"',
+                    'Assign View $"song" At ViewButton $songviewbutton',
+                    'SpecialMaster 3.1 At $songbpm',
+                    'Select Timecode $"song"',
+                    'Go Timecode $"song"',
+                    'On SpecialMaster 3.1',
+                ],
+            ),
+            ("Set Songviewbutton", [f'SetVar $songviewbutton = {viewbutton}']),
+        ]
+        for index, plan in enumerate(plans, start=1):
+            song_name = sanitize_ma_name(plan.song_name, fallback=f"Song{index}")
+            bpm = f"{float(plan.song_bpm):g}"
+            definitions.append(
+                (
+                    song_name,
+                    [
+                        f'SetVar $song = "{song_name}"',
+                        f"SetVar $songbpm = {bpm}",
+                        'Macro "PAGE CHANGE"',
+                    ],
+                )
+            )
+
+        root = self._root()
+        self._info(root, safe_base)
+        for macro_index, (macro_name, commands) in enumerate(definitions):
+            macro = ET.SubElement(
+                root,
+                f"{{{MA2_NS}}}Macro",
+                {"index": str(macro_index), "name": macro_name},
+            )
+            for line_index, command in enumerate(commands):
+                line = ET.SubElement(
+                    macro,
+                    f"{{{MA2_NS}}}Macroline",
+                    {"index": str(line_index)},
+                )
+                ET.SubElement(line, f"{{{MA2_NS}}}text").text = command
+        write_xml(root, path, default_namespace=MA2_NS)
+        self._fix_ma2_xsi(path)
+        return path
 
     def _fix_ma2_xsi(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8")

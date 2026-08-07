@@ -178,6 +178,7 @@ def build_export_plan(
         main_cues=main_cues,
         button_lanes=button_lanes,
         duration_seconds=max(0.0, float(song.duration_seconds or 0.0)),
+        song_bpm=float(song.bpm or 120.0),
     )
 
 

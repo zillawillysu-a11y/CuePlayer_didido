@@ -81,6 +81,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "latency_ms": float(settings.latency_ms),
         "page_per_song": bool(settings.page_per_song),
         "show_install_macro_name": settings.show_install_macro_name,
+        "ma2_song_viewbutton": settings.ma2_song_viewbutton,
         "export_song_ids": list(settings.export_song_ids),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
@@ -110,6 +111,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         show_install_macro_name=str(
             raw.get("show_install_macro_name") or "CuePlayer_Show_Install"
         ),
+        ma2_song_viewbutton=str(raw.get("ma2_song_viewbutton") or "1.20"),
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

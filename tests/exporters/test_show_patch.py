@@ -124,6 +124,21 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert paths["show:plugin_xml"].name == "Show_Install_export.xml"
     assert paths["show:plugin_lua"].name == "Show_Install_export.lua"
     assert paths["show:macro_xml"].name == "Show_Install_install_macro.xml"
+    assert paths["show:song_list"].name == "Show_Install_Song_List.xml"
+    assert paths["show:song_change_macros"].name == "Show_Install_Song_Change.xml"
+
+    song_list = paths["show:song_list"].read_text(encoding="utf-8")
+    song_macros = paths["show:song_change_macros"].read_text(encoding="utf-8")
+    assert 'name="SHOW BEGIN"' in song_list
+    assert 'name="CuePlayer Song List"' in song_list
+    assert 'name="SongA"' in song_list and 'name="SongB"' in song_list
+    assert 'Macro "SongA"' in song_list
+    assert 'name="Page Change"' in song_macros
+    assert 'name="Set Songviewbutton"' in song_macros
+    assert "SetVar $songviewbutton = 1.20" in song_macros
+    assert 'SetVar $song = "SongA"' in song_macros
+    assert "SetVar $songbpm = 120" in song_macros
+    assert 'Assign View $"song" At ViewButton $songviewbutton' in song_macros
 
     lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
     macro = paths["show:macro_xml"].read_text(encoding="utf-8")
