@@ -9,8 +9,10 @@ It never stores, deletes, imports, or changes an object in the current show.
 1. In MA2, enable Command Telnet on port `30000` and System Monitor on port
    `30001`. Use the console's IP address in CuePlayer; `127.0.0.1` works only
    when CuePlayer and MA2 onPC are on the same computer.
-2. In CuePlayer, open **Export Registry** and fill in MA2 Host, ports, User,
-   and Password. The password is never saved in the CuePlayer project.
+2. In CuePlayer, open **Export Registry** and fill in MA2 Host, ports, the
+   exact **MA2 Show User**, and Password. MA2 user names and passwords are
+   case-sensitive. CuePlayer sends MA2's `Login "user" "password"` command;
+   the password is never saved in the CuePlayer project.
 3. Select the target MA2 Output Folder, then click **Write Scan Plugin**.
    CuePlayer writes `CuePlayer_Live_Scan.xml` and `.lua` to the MA2 `plugins`
    folder.

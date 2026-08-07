@@ -1,17 +1,18 @@
 # Next task
 
-**Status:** Queued - awaiting real MA2/onPC Telnet install-and-scan verification
+**Status:** Queued - awaiting real MA2/onPC Telnet login and install verification
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Test CuePlayer Live Scan Plugin installation and the full scanner round trip
-through real MA2 Command Telnet and System Monitor.
+Retest CuePlayer Live Scan with a real MA2 Show User/password, then verify
+Plugin installation and the full scanner round trip.
 
 ## Requirements
 
-- Confirm Command login and System Monitor port access on a real MA2/onPC.
+- Enter an existing, case-sensitive MA2 Show User/password and confirm the
+  Test Connection command does not immediately close the MA2 command line.
 - Verify Write Scan Plugin -> Import Plugin & Scan using an empty Plugin Pool
   and an MA2-visible Plugin import path.
 - Confirm all three Telnet status lights become green after a completed scan.

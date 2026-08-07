@@ -82,12 +82,19 @@ class Ma2TelnetScanner:
         conn.sendall((command.rstrip("\r\n") + "\r\n").encode("utf-8"))
 
     def _login(self, conn: socket.socket, user: str, password: str) -> None:
-        # MA2 accepts these as ordinary Telnet keystrokes after its greeting.
+        """Issue MA2's required command-line Login command.
+
+        MA2 opens a command line on port 30000 but it does not interpret raw
+        username/password lines as a Telnet prompt exchange.  The console
+        requires ``Login \"user\" \"password\"`` before other commands.
+        """
+        username = user.strip()
+        if not username:
+            raise Ma2TelnetError("MA2 show user is required for Command Telnet")
+        safe_user = username.replace('"', "")
+        safe_password = password.replace('"', "")
         # Do not log either value or persist the password.
-        if user.strip():
-            self._send_line(conn, user.strip())
-        if password:
-            self._send_line(conn, password)
+        self._send_line(conn, f'Login "{safe_user}" "{safe_password}"')
 
     def test_connection(self, *, user: str = "", password: str = "") -> None:
         with self._connect(self.command_port) as command:

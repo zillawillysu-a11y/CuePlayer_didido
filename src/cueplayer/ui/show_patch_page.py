@@ -468,7 +468,7 @@ class ShowPatchPage(QWidget):
             ("Target Version", self.registry_version),
             ("Command", self.registry_command_port),
             ("Monitor", self.registry_monitor_port),
-            ("User", self.registry_user),
+            ("MA2 Show User", self.registry_user),
             ("Password", self.registry_password),
             ("Plugin Pool", self.registry_plugin_pool),
         ):
@@ -1268,7 +1268,7 @@ class ShowPatchPage(QWidget):
             self._set_telnet_status("error")
             return
         self.registry_scan_status.setText(
-            f"Connected to {self.registry_host.text().strip()}:{self.registry_command_port.value()} · Command Telnet ready"
+            f"Connected to {self.registry_host.text().strip()}:{self.registry_command_port.value()} · Login command sent"
         )
         self._set_telnet_status("command")
 

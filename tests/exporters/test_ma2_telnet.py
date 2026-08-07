@@ -73,7 +73,10 @@ def test_scan_logs_in_triggers_plugin_and_reads_fragmented_monitor_frame(
 
     assert snapshot.next_free("sequence") == 42
     assert snapshot.next_free("view") == 208
-    assert command.sent == [b"CuePlayer\r\n", b"secret\r\n", b'Plugin "CuePlayer Live Scan"\r\n']
+    assert command.sent == [
+        b'Login "CuePlayer" "secret"\r\n',
+        b'Plugin "CuePlayer Live Scan"\r\n',
+    ]
 
 
 def test_scan_rejects_missing_frame() -> None:
@@ -88,7 +91,21 @@ def test_test_connection_sends_login_and_read_only_echo(monkeypatch: pytest.Monk
         lambda *_args: command,
     )
     Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer", password="secret")
-    assert command.sent[-1] == b'Echo "CuePlayer connection test"\r\n'
+    assert command.sent == [
+        b'Login "CuePlayer" "secret"\r\n',
+        b'Echo "CuePlayer connection test"\r\n',
+    ]
+
+
+def test_login_requires_a_ma2_show_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    command = _Socket()
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    with pytest.raises(Ma2TelnetError, match="show user"):
+        Ma2TelnetScanner("127.0.0.1").test_connection()
 
 
 def test_import_plugin_uses_explicit_pool_and_ma2_visible_path(
@@ -140,6 +157,6 @@ def test_scan_can_run_the_explicitly_installed_plugin_pool(
         lambda address, _timeout: monitor if address[1] == 30001 else command,
     )
 
-    Ma2TelnetScanner("127.0.0.1").scan(plugin_pool=9999)
+    Ma2TelnetScanner("127.0.0.1").scan(user="CuePlayer", plugin_pool=9999)
 
     assert command.sent[-1] == b"Plugin 9999\r\n"
