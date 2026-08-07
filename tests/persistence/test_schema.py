@@ -36,6 +36,7 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_sequence_slots_per_song=40,
         ma2_target_version="3.9.63.6",
         ma2_output_dir_follows_version=False,
+        ma2_view_layout=[{"type": "effects", "mode": "perSong", "x": 2, "y": 1, "w": 12, "h": 4, "start": 601, "stride": 137}],
     )
 
     loaded = dict_to_ma_export(ma_export_to_dict(settings))
@@ -55,6 +56,8 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_sequence_slots_per_song == 40
     assert loaded.ma2_target_version == "3.9.63.6"
     assert loaded.ma2_output_dir_follows_version is False
+    assert loaded.ma2_view_layout[0]["w"] == 12
+    assert loaded.ma2_view_layout[0]["stride"] == 137
 
 
 def test_legacy_ma2_macro_start_loads_as_fixed_macro_start() -> None:

@@ -417,3 +417,25 @@ def test_ma2_song_views_put_each_sequence_block_in_first_cell(tmp_path) -> None:
         assert widgets[2].get("scroll_offset") == str(expected_scroll)
         assert widgets[2].get("scroll_index") == str(expected_scroll)
         assert widgets[1].get("scroll_offset") == str(120 + (index - 1) * 100)
+
+
+def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Song", ma="Song", button_names=[])]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    layout = [{"type": "effects", "mode": "perSong", "x": 2, "y": 3, "w": 12, "h": 4, "start": 401, "stride": 120}]
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
+
+    root = ET.parse(paths["show:view_1"]).getroot()
+    widget = root.find("{http://schemas.malighting.de/grandma2/xml/MA}View/{http://schemas.malighting.de/grandma2/xml/MA}Widget")
+    assert widget is not None
+    assert widget.get("x") == "2"
+    assert widget.get("y") == "3"
+    assert widget.get("anz_cols") == "12"
+    assert widget.get("anz_rows") == "4"

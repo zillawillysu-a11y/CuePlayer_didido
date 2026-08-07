@@ -184,6 +184,7 @@ class Ma2Exporter:
         effect_pool_start: int = 201,
         effect_slots_per_song: int = 100,
         sequence_slots_per_song: int = 20,
+        view_layout: list[dict[str, object]] | None = None,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -261,6 +262,8 @@ class Ma2Exporter:
                             + index * max(1, int(effect_slots_per_song))
                         ),
                         basename=f"{show_install_name}_View_{index + 1}",
+                        layout=view_layout,
+                        song_index=index,
                     )
         return all_paths
 
@@ -413,6 +416,8 @@ class Ma2Exporter:
         view_pool: int,
         effect_pool_start: int,
         basename: str,
+        layout: list[dict[str, object]] | None = None,
+        song_index: int = 0,
     ) -> Path:
         """Write the supplied Screen 3 song-pool layout as an importable View."""
         import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
@@ -449,6 +454,41 @@ class Ma2Exporter:
             )
             for value in values:
                 ET.SubElement(data, f"{{{MA2_NS}}}Data").text = value
+
+        if layout:
+            type_codes = {
+                "effects": "454e4749",
+                "sequence": "53455155",
+                "macros": "4d414352",
+            }
+            for index, spec in enumerate(layout):
+                widget_type = type_codes.get(str(spec.get("type", "")))
+                if widget_type is None:
+                    continue
+                rows = max(1, int(spec.get("h", 1)))
+                columns = max(1, int(spec.get("w", 1)))
+                start = max(1, int(spec.get("start", 1)))
+                if spec.get("mode") == "perSong":
+                    start += song_index * max(1, int(spec.get("stride", 1)))
+                scroll = (
+                    max(0, start - (rows * columns + 1))
+                    if spec.get("type") == "effects"
+                    else max(0, start - 1)
+                )
+                attrs = {
+                    "x": str(max(0, int(spec.get("x", 0)))),
+                    "y": str(max(0, int(spec.get("y", 0)))),
+                    "anz_rows": str(rows),
+                    "anz_cols": str(columns),
+                    "scroll_offset": str(scroll),
+                    "scroll_index": str(scroll),
+                }
+                if widget_type == "4d414352" and index == 0:
+                    attrs.update(has_focus="true", has_scrollfocus="true")
+                add_widget(index, widget_type, **attrs)
+            write_xml(root, path, default_namespace=MA2_NS)
+            self._fix_ma2_xsi(path)
+            return path
 
         # Template Effect page (1...) and Macro row are fixed for every song.
         add_widget(0, "454e4749", y="6", anz_rows="2", anz_cols="16")

@@ -1054,6 +1054,7 @@ class MaExportSettings:
     ma2_effect_pool_start: int = 201
     ma2_effect_slots_per_song: int = 100
     ma2_sequence_slots_per_song: int = 20
+    ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
     output_dir_ma2: str = ""

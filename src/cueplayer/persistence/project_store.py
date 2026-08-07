@@ -95,6 +95,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_effect_pool_start": int(settings.ma2_effect_pool_start),
         "ma2_effect_slots_per_song": int(settings.ma2_effect_slots_per_song),
         "ma2_sequence_slots_per_song": int(settings.ma2_sequence_slots_per_song),
+        "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
         "export_song_ids": list(settings.export_song_ids),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
@@ -168,6 +169,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_sequence_slots_per_song=max(
             1, int(raw.get("ma2_sequence_slots_per_song", 20) or 20)
         ),
+        ma2_view_layout=[
+            dict(widget)
+            for widget in raw.get("ma2_view_layout", [])
+            if isinstance(widget, dict)
+        ],
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

@@ -61,13 +61,10 @@ def test_five_page_playlist_workflow_and_screen3_grid(
         "4  View Layout",
         "5  Review & Export",
     ]
-    assert page.view_grid.rowCount() == 8
-    assert page.view_grid.columnCount() == 16
-    assert page.view_grid.item(0, 0).text() == "Sequence"
-    assert page.view_grid.item(0, 10).text() == "Macros"
-    assert page.view_grid.item(1, 0).text() == "Effects"
-    assert page.view_effect_slots.value() == 100
-    assert page.view_sequence_slots.value() == 20
+    assert page.view_stage.widgets[0]["type"] == "sequence"
+    assert page.view_stage.widgets[0]["w"] == 10
+    assert page.view_stage.widgets[2]["type"] == "effects"
+    assert page.view_stage.widgets[2]["stride"] == 100
     assert page.registry_table.rowCount() == 1
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 1
@@ -90,11 +87,17 @@ def test_view_allocation_controls_drive_shared_export_settings(
     page = ShowPatchPage()
     page.set_project(project)
 
-    page.view_sequence_start.setValue(301)
-    page.view_sequence_slots.setValue(30)
-    page.view_effect_start.setValue(501)
-    page.view_effect_slots.setValue(125)
-    page.view_pool_start.setValue(401)
+    page.view_stage.selected_index = 0
+    page._load_view_inspector(0)
+    page.view_pool_number_start.setValue(301)
+    page.view_pool_stride.setValue(30)
+    page.view_stage.selected_index = 2
+    page._load_view_inspector(2)
+    page.view_pool_number_start.setValue(501)
+    page.view_pool_stride.setValue(125)
+    page.view_pool_x.setValue(2)
+    page.view_pool_width.setValue(12)
+    page.ma2_view_pool_start.setValue(401)
 
     assert project.ma_export.sequence_pool_start == 301
     assert project.ma_export.ma2_sequence_slots_per_song == 30
@@ -103,7 +106,16 @@ def test_view_allocation_controls_drive_shared_export_settings(
     assert project.ma_export.ma2_view_pool_start == 401
     assert page.seq_start.value() == 301
     assert page.ma2_effect_slots.value() == 125
-    assert "Effects 501–625" in page.view_allocation_status.text()
+    assert project.ma_export.ma2_view_layout[2]["start"] == 501
+    assert project.ma_export.ma2_view_layout[2]["stride"] == 125
+    assert project.ma_export.ma2_view_layout[2]["x"] == 2
+    assert project.ma_export.ma2_view_layout[2]["w"] == 12
+
+    before = len(page.view_stage.widgets)
+    page._duplicate_view_pool()
+    assert len(page.view_stage.widgets) == before + 1
+    page._delete_view_pool()
+    assert len(page.view_stage.widgets) == before
 
 
 def test_custom_unicode_folder_survives_detection(
