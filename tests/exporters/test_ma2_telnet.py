@@ -58,6 +58,7 @@ def test_scan_logs_in_triggers_plugin_and_reads_fragmented_monitor_frame(
     command = _Socket()
     monitor = _Socket(
         [
+            b"",
             b"unrelated\r\nCUEPLAYER_SCAN_BEGIN\r\nCUEPLAYER_SCAN_VERSION=3.9.60\r\n",
             b"CUEPLAYER_SCAN_SEQUENCE=41\r\nCUEPLAYER_SCAN_EFFECT=401\r\n"
             b"CUEPLAYER_SCAN_TIMECODE=203\r\nCUEPLAYER_SCAN_MACRO=205\r\n"
@@ -144,6 +145,7 @@ def test_scan_can_run_the_explicitly_installed_plugin_pool(
     command = _Socket()
     monitor = _Socket(
         [
+            b"",
             (
                 b"CUEPLAYER_SCAN_BEGIN\r\nCUEPLAYER_SCAN_VERSION=3.9.60\r\n"
                 b"CUEPLAYER_SCAN_SEQUENCE=1\r\nCUEPLAYER_SCAN_EFFECT=201\r\n"
@@ -160,3 +162,18 @@ def test_scan_can_run_the_explicitly_installed_plugin_pool(
     Ma2TelnetScanner("127.0.0.1").scan(user="CuePlayer", plugin_pool=9999)
 
     assert command.sent[-1] == b"Plugin 9999\r\n"
+
+
+def test_telnet_negotiation_declines_optional_server_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket([bytes([255, 253, 1]), b""])
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer")
+
+    assert command.sent[0] == bytes([255, 252, 1])
+    assert command.sent[1] == b'Login "CuePlayer" ""\r\n'

@@ -18,6 +18,11 @@ FRAME_BEGIN = "CUEPLAYER_SCAN_BEGIN"
 FRAME_END = "CUEPLAYER_SCAN_END"
 PLUGIN_NAME = "CuePlayer Live Scan"
 POOL_KINDS = ("sequence", "effect", "timecode", "macro", "view")
+_IAC = 255
+_DO = 253
+_DONT = 254
+_WILL = 251
+_WONT = 252
 
 
 class Ma2TelnetError(RuntimeError):
@@ -81,6 +86,41 @@ class Ma2TelnetScanner:
     def _send_line(conn: socket.socket, command: str) -> None:
         conn.sendall((command.rstrip("\r\n") + "\r\n").encode("utf-8"))
 
+    def _negotiate_telnet(self, conn: socket.socket) -> None:
+        """Acknowledge MA2's Telnet option negotiation before commands."""
+        try:
+            conn.settimeout(min(0.35, self.timeout_seconds))
+            greeting = conn.recv(4096)
+        except TimeoutError:
+            return
+        if not greeting:
+            return
+        response = bytearray()
+        index = 0
+        while index + 2 < len(greeting):
+            if greeting[index] != _IAC:
+                index += 1
+                continue
+            command = greeting[index + 1]
+            if command in (_DO, _DONT, _WILL, _WONT):
+                option = greeting[index + 2]
+                reply = _WONT if command in (_DO, _DONT) else _DONT
+                response.extend((_IAC, reply, option))
+                index += 3
+            else:
+                index += 2
+        if response:
+            conn.sendall(bytes(response))
+
+    def _read_feedback(self, conn: socket.socket) -> str:
+        """Read one short post-command response without blocking the UI long."""
+        try:
+            conn.settimeout(min(0.5, self.timeout_seconds))
+            data = conn.recv(4096)
+        except TimeoutError:
+            return ""
+        return data.decode("utf-8", errors="replace") if data else ""
+
     def _login(self, conn: socket.socket, user: str, password: str) -> None:
         """Issue MA2's required command-line Login command.
 
@@ -96,10 +136,12 @@ class Ma2TelnetScanner:
         # Do not log either value or persist the password.
         self._send_line(conn, f'Login "{safe_user}" "{safe_password}"')
 
-    def test_connection(self, *, user: str = "", password: str = "") -> None:
+    def test_connection(self, *, user: str = "", password: str = "") -> str:
         with self._connect(self.command_port) as command:
+            self._negotiate_telnet(command)
             self._login(command, user, password)
             self._send_line(command, 'Echo "CuePlayer connection test"')
+            return self._read_feedback(command)
 
     def import_plugin(
         self,
@@ -124,6 +166,7 @@ class Ma2TelnetScanner:
             raise Ma2TelnetError("MA2 Plugin import path is required")
         safe_path = path.replace('"', "")
         with self._connect(self.command_port) as command:
+            self._negotiate_telnet(command)
             self._login(command, user, password)
             self._send_line(
                 command,
@@ -140,6 +183,8 @@ class Ma2TelnetScanner:
     ) -> Ma2PoolSnapshot:
         """Run the installed read-only scanner Plugin and wait for its frame."""
         with self._connect(self.monitor_port) as monitor, self._connect(self.command_port) as command:
+            self._negotiate_telnet(monitor)
+            self._negotiate_telnet(command)
             self._login(command, user, password)
             command_text = (
                 f"Plugin {int(plugin_pool)}"

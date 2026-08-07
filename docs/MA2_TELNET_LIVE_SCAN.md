@@ -4,6 +4,9 @@ CuePlayer's live scan is read-only. It uses MA2 Command Telnet to trigger a
 scanner Plugin and System Monitor to receive the scanner's framed result.
 It never stores, deletes, imports, or changes an object in the current show.
 
+CuePlayer performs the required Telnet option negotiation before it sends MA2
+commands, then uses MA2's command-line `Login "user" "password"` syntax.
+
 ## First-time MA2 setup
 
 1. In MA2, enable Command Telnet on port `30000` and System Monitor on port
@@ -41,6 +44,8 @@ It never stores, deletes, imports, or changes an object in the current show.
 - The three status lights show Command Telnet, System Monitor, and Plugin/Scan.
   Green all three means the end-to-end scan completed. Red means that the
   latest connection or scan attempt failed.
+- **Test Connection** shows a short MA2 response when the console returns one;
+  the full end-to-end proof remains a scan with all three status lights green.
 - MA2 Import can overwrite an occupied Plugin Pool. CuePlayer requires a
   confirmation but cannot query a Plugin Pool atomically, so select an empty
   ID before using **Import Plugin & Scan**.

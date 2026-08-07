@@ -12,7 +12,7 @@ Plugin installation and the full scanner round trip.
 ## Requirements
 
 - Enter an existing, case-sensitive MA2 Show User/password and confirm the
-  Test Connection command does not immediately close the MA2 command line.
+  Test Connection shows an MA2 response after Telnet negotiation.
 - Verify Write Scan Plugin -> Import Plugin & Scan using an empty Plugin Pool
   and an MA2-visible Plugin import path.
 - Confirm all three Telnet status lights become green after a completed scan.

@@ -1260,16 +1260,20 @@ class ShowPatchPage(QWidget):
 
     def _test_ma2_telnet_connection(self, _checked: bool = False) -> None:
         try:
-            self._ma2_telnet_scanner().test_connection(
+            feedback = self._ma2_telnet_scanner().test_connection(
                 user=self.registry_user.text(), password=self.registry_password.text()
             )
         except Ma2TelnetError as exc:
             self.registry_scan_status.setText(str(exc))
             self._set_telnet_status("error")
             return
-        self.registry_scan_status.setText(
+        text = (
             f"Connected to {self.registry_host.text().strip()}:{self.registry_command_port.value()} · Login command sent"
         )
+        if feedback.strip():
+            compact_feedback = " ".join(feedback.split())[:120]
+            text += f" · MA2: {compact_feedback}"
+        self.registry_scan_status.setText(text)
         self._set_telnet_status("command")
 
     def _scan_ma2_show(self, _checked: bool = False) -> None:
