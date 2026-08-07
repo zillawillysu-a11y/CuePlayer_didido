@@ -7149,6 +7149,30 @@ class MainWindow(QMainWindow):
             self.timeline.set_audio_loading(True, f"{clip.name} (video)")
         clip_snapshot = clip
 
+        # Attach progress immediately. The stand-in wait runs on the
+        # single-thread audio executor and may sit behind another load; if we
+        # only register there, a fast waveform build can finish before the UI
+        # ever sees a percentage.
+        if isolated:
+            from cueplayer.media.video_waveform_artifact import artifact_store
+
+            source_duration = max(
+                float(clip.source_duration_seconds or 0.0),
+                float(clip.source_span_seconds or clip.duration_seconds or 0.0),
+                0.05,
+            )
+            artifact_store().ensure_building(
+                Path(clip.path),
+                duration_seconds=source_duration,
+                cancel_check=lambda: (
+                    token != self._video_standin_token
+                    or song_id != self.current_song.id
+                ),
+                on_percent=lambda pct: self._video_standin_finished.emit(
+                    token, ("percent", int(pct))
+                ),
+            )
+
         def _job() -> None:
             from cueplayer.util.thread_priority import lower_background_thread_priority
 
@@ -7176,8 +7200,12 @@ class MainWindow(QMainWindow):
                     on_progress=lambda a: self._video_standin_finished.emit(
                         token, ("progress_art", a)
                     ),
-                    on_percent=lambda pct: self._video_standin_finished.emit(
-                        token, ("percent", int(pct))
+                    on_percent=(
+                        None
+                        if isolated
+                        else lambda pct: self._video_standin_finished.emit(
+                            token, ("percent", int(pct))
+                        )
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
