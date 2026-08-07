@@ -2814,11 +2814,12 @@ class TimelineWidget(QWidget):
         # 3.5 screens and produced the measured 64--186 ms hitch.  A small
         # native-resolution margin is sufficient here; ordinary pan can grow
         # the cache later after it leaves that margin.
-        overscan = (
-            128
-            if reason == "zoom_idle" or self._playing
-            else max(128, int(view_w * 1.25))
-        )
+        if reason == "zoom_idle":
+            overscan = 128
+        elif self._playing:
+            overscan = self._playback_backdrop_overscan(view_w)
+        else:
+            overscan = max(128, int(view_w * 1.25))
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
@@ -2880,6 +2881,23 @@ class TimelineWidget(QWidget):
             perf_diag.note(
                 "timeline.zoom.annotation_sprite_count", len(sprites)
             )
+
+    def _playback_backdrop_overscan(self, view_w: float) -> int:
+        """Keep enough native pixels for high-zoom continuous auto-follow.
+
+        A fixed 128 px margin can be consumed in a single 30 Hz tick at high
+        PPS, forcing a full waveform rebuild on nearly every video frame. Aim
+        for roughly 1.5 seconds of travel, capped to 1.25 view widths so the
+        two retained pixmaps remain bounded on high-DPI displays.
+        """
+        pps = max(0.0, self._pixels_per_second)
+        # Normal zoom already takes over a second to consume 128 px; retain the
+        # low-latency small bake there. The larger cache is only for the
+        # high-zoom regime that can exhaust it in a handful of frames.
+        if pps <= 256.0:
+            return 128
+        travel = int(math.ceil(pps * 1.5))
+        return max(128, min(int(max(128.0, view_w * 1.25)), travel))
 
     def _bake_mark_annotation_sprites(self) -> list[dict]:
         """Canonical Mark annotation cache for zoom preview.

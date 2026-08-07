@@ -53,6 +53,20 @@ def test_rapid_zoom_repaint_is_trailing_edge_throttled(app: QApplication) -> Non
     widget._zoom_preview_repaint_timer.stop()  # noqa: SLF001
 
 
+def test_high_zoom_playback_cache_covers_multiple_follow_ticks(
+    app: QApplication,
+) -> None:
+    widget = TimelineWidget()
+    widget.resize(1200, 500)
+    widget._pixels_per_second = 2500.0  # noqa: SLF001
+
+    overscan = widget._playback_backdrop_overscan(widget._view_width())  # noqa: SLF001
+
+    assert overscan > 128
+    assert overscan >= int(widget._view_width())
+    assert overscan <= int(widget._view_width() * 1.25)
+
+
 def test_view_changed_throttled_while_playing(app: QApplication) -> None:
     song = Song.create("Jank")
     widget = TimelineWidget()
