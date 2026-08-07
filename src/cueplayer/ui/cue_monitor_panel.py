@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QPalette,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
     QFrame,
@@ -124,6 +125,8 @@ class _PaddedItemDelegate(QStyledItemDelegate):
     last CJK characters are never replaced by an ellipsis.
     """
 
+    editor_navigation_requested = Signal(int, int, int)  # row, column, delta
+
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -178,7 +181,30 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             editor.setStyleSheet(
                 "padding: 4px 6px; margin: 0; min-height: 1.4em;"
             )
+            editor.setProperty("cue_list_row", int(index.row()))
+            editor.setProperty("cue_list_column", int(index.column()))
+            editor.installEventFilter(self)
         return editor
+
+    def eventFilter(self, editor, event) -> bool:  # noqa: ANN001, N802
+        if event.type() == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+        ):
+            column = int(editor.property("cue_list_column") or -1)
+            if column == LOGICAL_INDEX_BY_FIELD["note"]:
+                row = int(editor.property("cue_list_row") or 0)
+                delta = -1 if event.key() == Qt.Key.Key_Up else 1
+                # Commit before closing so itemChanged persists the Note. The
+                # panel opens the adjacent editor on the next event-loop turn.
+                self.commitData.emit(editor)
+                self.closeEditor.emit(
+                    editor, QAbstractItemDelegate.EndEditHint.NoHint
+                )
+                self.editor_navigation_requested.emit(row, column, delta)
+                event.accept()
+                return True
+        return super().eventFilter(editor, event)
 
 
 def mark_now_text(song: Song, mark: Mark) -> str:
@@ -593,7 +619,11 @@ class CueMonitorPanel(QWidget):
         self.cue_table.setHorizontalHeaderLabels(
             [CUE_LIST_FIELD_LABELS[field] for field in CUE_LIST_FIELDS]
         )
-        self.cue_table.setItemDelegate(_PaddedItemDelegate(self.cue_table))
+        self._cue_item_delegate = _PaddedItemDelegate(self.cue_table)
+        self._cue_item_delegate.editor_navigation_requested.connect(
+            self._navigate_note_editor
+        )
+        self.cue_table.setItemDelegate(self._cue_item_delegate)
         self.cue_table.verticalHeader().setVisible(False)
         self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.cue_table.setShowGrid(False)
@@ -2350,6 +2380,22 @@ class CueMonitorPanel(QWidget):
             return
         if not multi:
             self.seek_requested.emit(mark.time_seconds)
+
+    def _navigate_note_editor(self, row: int, column: int, delta: int) -> None:
+        """Commit current Note, then continue editing the adjacent Cue row."""
+        target = max(0, min(self.cue_table.rowCount() - 1, int(row) + int(delta)))
+        item = self.cue_table.item(target, int(column))
+        if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
+            return
+
+        def _open_adjacent() -> None:
+            self.cue_table.setCurrentCell(target, int(column))
+            self.cue_table.scrollToItem(
+                item, QAbstractItemView.ScrollHint.EnsureVisible
+            )
+            self.cue_table.editItem(item)
+
+        QTimer.singleShot(0, _open_adjacent)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating_table or self._song is None:
