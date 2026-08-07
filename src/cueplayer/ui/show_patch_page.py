@@ -917,6 +917,13 @@ class ShowPatchPage(QWidget):
         hint.setObjectName("maExportHint")
         title_row.addWidget(hint)
         title_row.addStretch(1)
+        select_all_button = QPushButton("Select All")
+        select_all_button.setObjectName("maExportSelectAllContentButton")
+        select_all_button.setToolTip("Check Main and every Button for this song")
+        select_all_button.clicked.connect(
+            lambda _checked=False, song_id=song.id: self._select_all_content(song_id)
+        )
+        title_row.addWidget(select_all_button)
         clear_button = QPushButton("Clear Selection")
         clear_button.setObjectName("maExportClearContentButton")
         clear_button.setToolTip("Uncheck Main and every Button for this song")
@@ -944,6 +951,20 @@ class ShowPatchPage(QWidget):
         checks.addStretch(1)
         layout.addLayout(checks)
         return panel
+
+    def _select_all_content(self, song_id: str) -> None:
+        """Select all exportable Main/Button content for one song."""
+        if self._project is None:
+            return
+        song = next((item for item in self._project.songs if item.id == song_id), None)
+        if song is None:
+            return
+        self._project.ma_export.export_content_by_song[song_id] = {
+            "main": True,
+            "buttons": [lane.index for lane in self._available_button_lanes(song)],
+        }
+        self.refresh()
+        self.settings_changed.emit()
 
     def _clear_content_selection(self, song_id: str) -> None:
         """Unselect all exportable content for one song without unchecking the song."""

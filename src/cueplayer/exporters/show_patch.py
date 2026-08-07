@@ -16,7 +16,7 @@ class ButtonPatch:
     sequence: int
     executor: str
     mark_count: int
-    sequence_name: str  # e.g. Song_Hit
+    sequence_name: str  # e.g. Mark_2
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ def build_show_patch(
                     sequence=seq + int(include_main) + offset,
                     executor=format_executor(page, btn_exec + offset),
                     mark_count=mark_count,
-                    sequence_name=f"{base}_{mark_slug}",
+                    sequence_name=mark_slug,
                 )
             )
         slots.append(

@@ -38,12 +38,12 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert slots[0].main_sequence == 1
     assert slots[1].main_sequence == 21
     assert slots[0].main_sequence_name == "SongA"
-    assert [b.sequence_name for b in slots[0].buttons] == ["SongA_Hit", "SongA_Crash"]
+    assert [b.sequence_name for b in slots[0].buttons] == ["Hit", "Crash"]
     assert slots[1].main_sequence_name == "SongB"
     assert [b.executor for b in slots[1].buttons] == ["2.201", "2.202"]
     labels = sequence_chain_labels(slots)
     assert "SongA" in labels[0]
-    assert "SongA_Hit" in labels[1]
+    assert "Hit" in labels[1]
 
     from cueplayer.exporters.show_patch import plans_from_show_patch
 
@@ -77,9 +77,7 @@ def test_show_patch_can_export_only_selected_button_content(tmp_path) -> None:
     assert slot.sequence_span == 1
     assert [button.lane_index for button in slot.buttons] == [3]
     assert slot.buttons[0].sequence == 201
-    assert sequence_chain_labels(slots) == [
-        "Seq 201 SongA_Crash (201.101)"
-    ]
+    assert sequence_chain_labels(slots) == ["Seq 201 Crash (201.101)"]
 
     plan = plans_from_show_patch(slots, settings)[0]
     assert plan.main_cues == []
@@ -94,7 +92,7 @@ def test_show_patch_can_export_only_selected_button_content(tmp_path) -> None:
     tracks = [element for element in root.iter() if xml_tag_local(element.tag) == "Track"]
     assert len(tracks) == 1
     assert tracks[0].get("index") == "0"
-    assert tracks[0].find("{http://schemas.malighting.de/grandma2/xml/MA}Object").get("name") == "SongA_Crash"
+    assert tracks[0].find("{http://schemas.malighting.de/grandma2/xml/MA}Object").get("name") == "Crash"
 
     from cueplayer.exporters.ma3 import Ma3Exporter
 
@@ -111,7 +109,7 @@ def test_show_patch_can_export_only_selected_button_content(tmp_path) -> None:
     assert "button_sequence_3" in ma3_paths
     ma3_tc = load_xml_root(ma3_paths["timecode"])
     track_names = [element.get("Name") for element in ma3_tc.iter() if xml_tag_local(element.tag) == "Track"]
-    assert track_names == ["SongA_Crash"]
+    assert track_names == ["Crash"]
 
 
 def test_ma3_show_export_one_macro(tmp_path) -> None:

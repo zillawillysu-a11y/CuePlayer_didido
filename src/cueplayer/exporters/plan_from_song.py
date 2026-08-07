@@ -132,7 +132,10 @@ def build_export_plan(
             executor = f"{page}.{exec_start + button_i}"
             seq_pool = int(sequence_pool_start) + int(include_main) + button_i
         lane_slug = sanitize_ma_name(lane.name, fallback=f"Button{lane.index}")
-        seq_name = f"{base}_{lane_slug}"
+        # Sequence labels stay short and match the user-facing Mark/Button
+        # name. The XML filename keeps the song prefix below, preventing file
+        # collisions when different songs both have a "Mark 2".
+        seq_name = lane_slug
         file_stem = f"{file_base}_{lane_slug.replace(' ', '_')}"
         button_lanes.append(
             ExportButtonLane(

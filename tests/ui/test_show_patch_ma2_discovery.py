@@ -274,6 +274,12 @@ def test_playlist_content_selection_persists_and_updates_summary(
     }
     assert page.playlist_table.item(0, 0).checkState().value == 2
     assert page.playlist_table.cellWidget(0, 8).text() == "0/3 selected"
+    page._select_all_content(song.id)
+    assert project.ma_export.export_content_by_song[song.id] == {
+        "main": True,
+        "buttons": [2, 3],
+    }
+    assert page.playlist_table.cellWidget(0, 8).text() == "3/3 selected"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
