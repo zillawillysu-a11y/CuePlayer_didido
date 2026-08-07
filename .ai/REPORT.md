@@ -21,6 +21,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
   current song.
 - Changed Button Sequence labels from `Song_Mark 2` to `Mark 2`; export XML
   filenames still include the song name to avoid file collisions.
+- Unlinked Console Setup's Fixed Macro import start from the View Layout Macro
+  Pool start; each is now independently persisted and editable.
 - Made show allocation reserve and assign only selected sequences; a
   Button-only song starts its first Button at that song's Sequence start.
 - Updated MA2 and MA3 exports so excluded Main content produces no Main
@@ -49,8 +51,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\exporters\\test_plan_from_song.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-select-all`
-- Result: **27 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\ui\\test_show_patch_ma2_discovery.py tests\\exporters\\test_show_patch.py --basetemp .test-tmp-unlink-macros`
+- Result: **25 passed**.
 
 ## Remaining issues
 

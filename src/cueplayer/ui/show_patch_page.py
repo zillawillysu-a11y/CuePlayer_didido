@@ -1506,7 +1506,6 @@ class ShowPatchPage(QWidget):
             return layout
         settings = self._project.ma_export
         layout[0].update(start=int(settings.sequence_pool_start), stride=int(settings.ma2_sequence_slots_per_song))
-        layout[1].update(start=int(settings.ma2_fixed_macro_start))
         layout[2].update(start=int(settings.ma2_effect_pool_start), stride=int(settings.ma2_effect_slots_per_song))
         return layout
 
@@ -1576,8 +1575,6 @@ class ShowPatchPage(QWidget):
         elif widget["type"] == "effects" and widget["mode"] == "perSong":
             self.ma2_effect_pool_start.setValue(int(widget["start"]))
             self.ma2_effect_slots.setValue(int(widget["stride"]))
-        elif widget["type"] == "macros" and widget["mode"] == "fixed":
-            self.ma2_fixed_macro_start.setValue(int(widget["start"]))
         self.view_stage.update()
         self._on_view_layout_changed()
 

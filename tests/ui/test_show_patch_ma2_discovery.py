@@ -121,6 +121,30 @@ def test_view_allocation_controls_drive_shared_export_settings(
     assert len(page.view_stage.widgets) == before
 
 
+def test_fixed_macro_export_start_is_independent_of_view_macro_pool(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    # Fixed control Macros import at 191, while the Screen 3 Macro Pool can
+    # independently display Macro 501.
+    page.ma2_fixed_macro_start.setValue(191)
+    page.view_stage.selected_index = 1
+    page._load_view_inspector(1)
+    page.view_pool_number_start.setValue(501)
+
+    assert project.ma_export.ma2_fixed_macro_start == 191
+    assert page.view_stage.widgets[1]["type"] == "macros"
+    assert page.view_stage.widgets[1]["mode"] == "fixed"
+    assert page.view_stage.widgets[1]["start"] == 501
+
+
 def test_timecode_pool_uses_three_cells_including_its_title(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
