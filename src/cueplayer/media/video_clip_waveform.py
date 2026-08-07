@@ -121,16 +121,34 @@ def build_clip_waveform_data(
 def peaks_from_embedded_artifact(
     clip: VideoClip, art: EmbeddedWaveformArtifact
 ) -> ClipWaveformPeaks | None:
-    """Map the shared source artifact into clip paint peaks (trim/loop aware)."""
+    """Map the shared source artifact into clip paint peaks (source-time indexed).
+
+    Keeps full-resolution bipolar ``mins``/``maxs`` (not the 64–512 clip-local
+    overview buckets) so Video Track paint can draw Music-lane-style strokes.
+    """
     if perf_diag.is_enabled():
         perf_diag.count("video_waveform.artifact.consumer_video_lane")
+    if art.n_bins <= 0:
+        return None
+    sr = max(1, int(round(float(art.peaks_per_second))))
     mono = signed_overview_from_artifact(art)
-    return build_clip_waveform_data(
-        clip,
-        mono=mono,
-        sample_rate=max(1, int(round(art.peaks_per_second))),
+    cov = np.asarray(art.coverage, dtype=np.uint8)
+    mins = np.asarray(art.mins, dtype=np.float32).copy()
+    maxs = np.asarray(art.maxs, dtype=np.float32).copy()
+    # Pending bins must not paint as fabricated zero silence.
+    pending = cov == 0
+    mins[pending] = np.nan
+    maxs[pending] = np.nan
+    finite = np.nan_to_num(mono, nan=0.0).astype(np.float32, copy=False)
+    _display, levels = build_peak_pyramid(finite.reshape(-1, 1), sr)
+    return ClipWaveformPeaks(
+        sample_rate=sr,
         mono_origin_seconds=float(art.origin_seconds),
-        coverage=art.coverage,
+        mono=np.asarray(mono, dtype=np.float32),
+        peak_levels=levels,
+        mins=mins,
+        maxs=maxs,
+        coverage=cov,
     )
 
 
@@ -200,6 +218,20 @@ def sample_source_peaks_for_clip_times(
         c1 = max(c0, min(peaks.coverage.size, s1))
         if c0 >= c1 or not np.any(peaks.coverage[c0:c1]):
             return float("nan"), float("nan")
+    # Shared artifact: mins/maxs are source-aligned bipolar envelopes at the
+    # same rate as mono — prefer them over the signed-collapse pyramid.
+    if (
+        peaks.mins.size == peaks.mono.size
+        and peaks.maxs.size == peaks.mono.size
+        and peaks.mins.size > 0
+    ):
+        lo_seg = peaks.mins[s0:s1]
+        hi_seg = peaks.maxs[s0:s1]
+        if lo_seg.size == 0 or (
+            np.all(np.isnan(lo_seg)) and np.all(np.isnan(hi_seg))
+        ):
+            return float("nan"), float("nan")
+        return float(np.nanmin(lo_seg)), float(np.nanmax(hi_seg))
     level = choose_peak_level(peaks.peak_levels, samples_per_pixel)
     if level is None:
         segment = peaks.mono[s0:s1]
@@ -230,6 +262,18 @@ def sample_source_raw_for_clip_times(
         c1 = max(c0, min(peaks.coverage.size, s1))
         if c0 >= c1 or not np.any(peaks.coverage[c0:c1]):
             return float("nan"), float("nan")
+    if (
+        peaks.mins.size == peaks.mono.size
+        and peaks.maxs.size == peaks.mono.size
+        and peaks.mins.size > 0
+    ):
+        lo_seg = peaks.mins[s0:s1]
+        hi_seg = peaks.maxs[s0:s1]
+        if lo_seg.size == 0 or (
+            np.all(np.isnan(lo_seg)) and np.all(np.isnan(hi_seg))
+        ):
+            return float("nan"), float("nan")
+        return float(np.nanmin(lo_seg)), float(np.nanmax(hi_seg))
     segment = peaks.mono[s0:s1]
     if segment.size == 0 or np.all(np.isnan(segment)):
         return float("nan"), float("nan")

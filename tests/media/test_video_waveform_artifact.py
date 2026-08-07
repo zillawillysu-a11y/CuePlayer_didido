@@ -127,8 +127,10 @@ def test_memory_bound_not_full_rate_pcm() -> None:
     # Far below duration × 48000 × 4 bytes × channels.
     full_rate_bytes = dur * 48000 * 2 * 4
     artifact_bytes = n * (4 + 4 + 1)
-    assert artifact_bytes < full_rate_bytes / 1000.0
-    assert artifact_bytes < 2_000_000
+    # Music-lane density (~400 Hz) is still ≪ full-rate PCM.
+    assert artifact_bytes < full_rate_bytes / 50.0
+    assert artifact_bytes < 5_000_000
+    assert n == int(np.ceil(dur * PEAKS_PER_SECOND)) or n == MAX_PEAK_BINS
 
 
 def test_main_and_video_lane_share_same_artifact(
@@ -166,6 +168,10 @@ def test_main_and_video_lane_share_same_artifact(
     # Same source extrema presence.
     assert float(np.nanmax(np.abs(signed_overview_from_artifact(stored)))) > 0.01
     assert float(np.nanmax(np.abs(lane.mono))) > 0.01
+    # Full-resolution bipolar envelope (not 64–512 clip overview buckets).
+    assert lane.mins.size == stored.n_bins
+    assert lane.maxs.size == lane.mins.size
+    assert float(np.nanmax(lane.maxs - lane.mins)) > 0.01
 
 
 def test_trim_and_loop_mapping(

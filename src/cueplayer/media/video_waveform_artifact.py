@@ -29,11 +29,12 @@ from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.video_audio_loader import load_video_audio
 
 # Artifact schema — bump when on-disk layout changes.
-ARTIFACT_FORMAT_VERSION = 1
-# Overview envelope rate (bins / source-second). 15 min → 22.5k bins ≈ 200 KB.
-PEAKS_PER_SECOND = 25.0
-# Hard cap so multi-hour files stay bounded (~2.2 h at 25 Hz).
-MAX_PEAK_BINS = 200_000
+ARTIFACT_FORMAT_VERSION = 2
+# Match Music-lane overview density so Video Track can align visually.
+# 15 min → 360k bins ≈ 3.2 MB (mins+maxs+coverage).
+PEAKS_PER_SECOND = 400.0
+# Hard cap (~1.4 h at 400 Hz; longer files thin the effective rate).
+MAX_PEAK_BINS = 2_000_000
 # Contiguous decode window; lock held only for this slice then released.
 CHUNK_SECONDS = 8.0
 # Yield so Preview / VideoAudioMixer can use av_path_lock. Longer than a

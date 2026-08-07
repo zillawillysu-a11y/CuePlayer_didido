@@ -31,6 +31,9 @@ from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     ClipWaveformPeaks,
     VideoClipWaveformCache,
+    sample_source_peaks_for_clip_times,
+    sample_source_raw_for_clip_times,
+    timeline_to_clip_local,
 )
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
@@ -4272,8 +4275,9 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Always paint when peaks are cached. Decode stays async via
-        # VideoClipWaveformCache; this path only reads the retained peaks.
+        # Same visual language as Music lane: one bipolar peak stroke per pixel.
+        # Decode stays async via VideoClipWaveformCache; this path only reads
+        # retained peaks. Rect is already clipped to the visible content strip.
         x_left = int(math.floor(rect.left()))
         x_right = int(math.ceil(rect.right()))
         width_px = x_right - x_left
@@ -4294,23 +4298,44 @@ class TimelineWidget(QWidget):
         amp = max(2.0, float(rect.height()) / 2.0 - 3.0)
         color = QColor("#dbe4ff")
         color.setAlpha(90 if self._video_track_muted else 210)
+        painter.setPen(QPen(color, 1))
+
+        samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
+        use_raw = samples_per_pixel <= 1.5
 
         t_render = monotonic_ns()
         try:
-            # O(buckets) continuous filled silhouette — Music-lane-like body
-            # without per-pixel peak sampling. Per-pixel paths dropped 1-wide
-            # segments and Zoom/scroll rebuilds stalled the UI thread.
-            self._paint_video_clip_waveform_silhouette(
-                painter,
-                peaks,
-                clip=clip,
-                duration=duration,
-                x_left=x_left,
-                x_right=x_right,
-                mid=mid,
-                amp=amp,
-                color=color,
-            )
+            for x in range(x_left, x_right):
+                t0 = self._time_for_x(x)
+                t1 = self._time_for_x(x + 1)
+                clip_t0 = timeline_to_clip_local(t0, clip)
+                clip_t1 = timeline_to_clip_local(t1, clip)
+                if clip_t0 is None and clip_t1 is None:
+                    continue
+                if clip_t0 is None:
+                    clip_t0 = 0.0
+                if clip_t1 is None:
+                    clip_t1 = duration
+                clip_t0 = max(0.0, min(duration, clip_t0))
+                clip_t1 = max(clip_t0, min(duration, clip_t1))
+                if use_raw:
+                    lo, hi = sample_source_raw_for_clip_times(
+                        peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
+                    )
+                else:
+                    lo, hi = sample_source_peaks_for_clip_times(
+                        peaks,
+                        clip,
+                        clip_t0=clip_t0,
+                        clip_t1=clip_t1,
+                        samples_per_pixel=samples_per_pixel,
+                    )
+                # Pending / uncovered bins are NaN — never fabricate zero silence.
+                if not (lo == lo and hi == hi):
+                    continue
+                painter.drawLine(
+                    QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp)
+                )
         except Exception:
             return
         finally:
@@ -4319,117 +4344,6 @@ class TimelineWidget(QWidget):
                 perf_diag.record_ms(
                     "video_waveform.render.rebuild_ms", elapsed_ms
                 )
-
-    def _paint_video_clip_waveform_silhouette(
-        self,
-        painter: QPainter,
-        peaks: ClipWaveformPeaks,
-        *,
-        clip: VideoClip,
-        duration: float,
-        x_left: int,
-        x_right: int,
-        mid: float,
-        amp: float,
-        color: QColor,
-    ) -> None:
-        """Continuous bipolar envelope from clip-local overview buckets.
-
-        Adjacent buckets abut in X so there are no artificial column holes.
-        NaN / uncovered buckets break the run (pending ≠ fabricated silence).
-        """
-        n = int(peaks.mins.size)
-        if n <= 0 or duration <= 1e-9:
-            return
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(color))
-        clip_start = float(clip.start_seconds)
-
-        tops: list[QPointF] = []
-        bots: list[QPointF] = []
-
-        def _flush() -> None:
-            nonlocal tops, bots
-            if len(tops) < 2:
-                tops = []
-                bots = []
-                return
-            path = QPainterPath(tops[0])
-            for p in tops[1:]:
-                path.lineTo(p)
-            for p in reversed(bots):
-                path.lineTo(p)
-            path.closeSubpath()
-            painter.drawPath(path)
-            tops = []
-            bots = []
-
-        for i in range(n):
-            lo = float(peaks.mins[i])
-            hi = float(peaks.maxs[i])
-            if not (lo == lo and hi == hi):
-                _flush()
-                continue
-            t0 = duration * (i / n)
-            t1 = duration * ((i + 1) / n)
-            x0 = self._x_for_time(clip_start + t0)
-            x1 = self._x_for_time(clip_start + t1)
-            if x1 < x_left or x0 > x_right:
-                _flush()
-                continue
-            x0c = max(float(x_left), float(x0))
-            x1c = min(float(x_right), float(x1))
-            if x1c <= x0c:
-                continue
-            y_hi = mid + hi * amp
-            y_lo = mid + lo * amp
-            if not tops:
-                tops.append(QPointF(x0c, y_hi))
-                bots.append(QPointF(x0c, y_lo))
-            tops.append(QPointF(x1c, y_hi))
-            bots.append(QPointF(x1c, y_lo))
-        _flush()
-
-    def _paint_video_clip_waveform_coarse(
-        self,
-        painter: QPainter,
-        peaks: ClipWaveformPeaks,
-        *,
-        duration: float,
-        x_left: int,
-        x_right: int,
-        mid: float,
-        amp: float,
-        clip_start: float,
-    ) -> None:
-        """O(buckets) overview paint — continuous abutting filled columns."""
-        n = int(peaks.mins.size)
-        if n <= 0 or duration <= 1e-9:
-            return
-        color = QColor("#dbe4ff")
-        color.setAlpha(210)
-        painter.setPen(Qt.PenStyle.NoPen)
-        try:
-            for i in range(n):
-                lo = float(peaks.mins[i])
-                hi = float(peaks.maxs[i])
-                if not (lo == lo and hi == hi):
-                    continue
-                t0 = duration * (i / n)
-                t1 = duration * ((i + 1) / n)
-                x0 = int(self._x_for_time(clip_start + t0))
-                x1 = int(self._x_for_time(clip_start + t1))
-                if x1 < x_left or x0 > x_right:
-                    continue
-                x0 = max(x_left, x0)
-                x1 = min(x_right, max(x0 + 1, x1))
-                y0 = mid + hi * amp
-                y1 = mid + lo * amp
-                top = min(y0, y1)
-                h = max(1.0, abs(y1 - y0))
-                painter.fillRect(QRectF(float(x0), top, float(x1 - x0), h), color)
-        except Exception:
-            return
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
         painter.save()

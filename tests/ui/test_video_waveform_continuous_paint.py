@@ -1,4 +1,4 @@
-"""Video Track waveform continuous silhouette (no comb-column holes)."""
+"""Video Track waveform — Music-lane style per-pixel bipolar strokes."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication
 from cueplayer.domain.models import Song, VideoClip
 from cueplayer.media.video_clip_waveform import ClipWaveformPeaks, VideoClipWaveformCache
 from cueplayer.media.video_waveform_artifact import (
-    EmbeddedWaveformArtifact,
     set_waveform_build_paused,
 )
 from cueplayer.ui.timeline_widget import TimelineWidget
@@ -27,10 +26,10 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_video_lane_silhouette_is_continuous_dense(
+def test_video_lane_peak_strokes_are_continuous_dense(
     app: QApplication, tmp_path: Path
 ) -> None:
-    """Bucket silhouette must fill the lane like a normal waveform body."""
+    """Per-pixel drawLine must paint a dense Music-lane-like body (no comb holes)."""
     del app
     media = tmp_path / "clip.mov"
     media.write_bytes(b"fake")
@@ -48,12 +47,11 @@ def test_video_lane_silhouette_is_continuous_dense(
     tl.resize(900, 420)
     tl.set_show_video_track(True, emit=False)
     tl.set_song(song)
-    # Match clip start to visible timeline mapping used by silhouette.
     tl._scroll_x = 0.0  # noqa: SLF001
     tl._pixels_per_second = 40.0  # noqa: SLF001
 
-    n = 128
-    # Loud bipolar envelope — must paint a thick continuous body.
+    # Source-aligned bipolar envelope (artifact style) at 50 Hz.
+    n = 400  # 8s * 50
     mins = np.full(n, -0.7, dtype=np.float32)
     maxs = np.full(n, 0.7, dtype=np.float32)
     peaks = ClipWaveformPeaks(
@@ -68,7 +66,6 @@ def test_video_lane_silhouette_is_continuous_dense(
     key = tl._video_waveform_cache.key_for(clip)  # noqa: SLF001
     tl._video_waveform_cache._peaks[key] = peaks  # noqa: SLF001
 
-    # Clip spans header.. — paint into a pixmap using widget coords.
     x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
     x1 = int(tl._x_for_time(8.0))  # noqa: SLF001
     pm = QPixmap(max(400, x1 + 20), 120)
@@ -82,9 +79,8 @@ def test_video_lane_silhouette_is_continuous_dense(
     y = 60
     painted = [img.pixel(x, y) != 0xFFFFFFFF for x in range(x0 + 2, max(x0 + 3, x1 - 2))]
     assert sum(painted) > len(painted) * 0.7, (
-        f"expected dense silhouette, painted={sum(painted)}/{len(painted)}"
+        f"expected dense peak strokes, painted={sum(painted)}/{len(painted)}"
     )
-    # No regular 1–2px comb holes in the interior.
     gaps = 0
     i = 0
     while i < len(painted):
@@ -100,10 +96,10 @@ def test_video_lane_silhouette_is_continuous_dense(
     assert gaps < 8, f"comb-like holes={gaps}"
 
 
-def test_silhouette_paint_is_o_buckets_not_o_pixels(
+def test_video_wave_paint_samples_per_pixel_like_music(
     app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Zoom rebuilds must not walk every pixel with peak sampling."""
+    """Zoom rebuilds sample peaks once per visible pixel (Music-lane style)."""
     del app
     media = tmp_path / "clip.mov"
     media.write_bytes(b"fake")
@@ -155,12 +151,16 @@ def test_silhouette_paint_is_o_buckets_not_o_pixels(
     painter = QPainter(pm)
     x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
     x1 = int(tl._x_for_time(60.0))  # noqa: SLF001
+    # Clip rect is viewport-clipped in real paint; here clamp to pixmap width.
+    rx1 = min(x1, 780)
     tl._paint_video_clip_waveform(  # noqa: SLF001
-        painter, clip, QRectF(float(x0), 10.0, float(max(50, x1 - x0)), 60.0)
+        painter, clip, QRectF(float(x0), 10.0, float(max(50, rx1 - x0)), 60.0)
     )
     painter.end()
+    visible_px = max(1, rx1 - x0)
+    # samples_per_pixel = 25/20 = 1.25 → use_raw path
+    assert calls["raw"] == visible_px
     assert calls["peaks"] == 0
-    assert calls["raw"] == 0
 
 
 def test_gui_notify_coalesces_while_building(app: QApplication) -> None:
