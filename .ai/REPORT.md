@@ -42,6 +42,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Visible capacity is separate from Per Song allocation stride, allowing 79 visible Effects while reserving 100 numbers per song by default.
 - Per Song Effects allocation defaults to 100 with no special minimum beyond 1.
 - Common Settings and Per Song Effects View strides update each other so playlist ranges and View previews remain consistent.
+- Simplified the View Inspector by removing Column, Row, and Visible Pool Slots; position remains drag-controlled and visible capacity remains internally calculated.
 
 ## Tests performed
 

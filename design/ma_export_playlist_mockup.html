@@ -265,12 +265,9 @@
               <div class="field"><label>Pool Type</label><select id="poolType"><option value="camera">Camera Pool</option><option value="effects">Effects</option><option value="filters">Filters</option><option value="forms">Forms</option><option value="groups">Groups</option><option value="images">Images</option><option value="layout">Layout Pool</option><option value="macros">Macros</option><option value="masks">Masks</option><option value="matricks">MAtricks</option><option value="pagesChannel">Pages Channel</option><option value="pagesExec">Pages Exec</option><option value="sequence">Sequence</option><option value="timecode">Timecode Pool</option><option value="timecodeSlots">Timecode Slots Pool</option><option value="timer">Timer</option><option value="views">Views</option><option value="universes">Universes</option><option value="worlds">Worlds</option></select></div>
               <div class="field" style="margin-top:10px"><label>Pool Allocation</label><select id="poolMode"><option value="fixed">Fixed · same numbers for every song</option><option value="perSong">Per Song · unique numbers</option></select></div>
               <div class="fields">
-                <div class="field"><label>Column</label><input id="poolX" type="number" min="1" max="16"></div>
-                <div class="field"><label>Row</label><input id="poolY" type="number" min="1" max="8"></div>
                 <div class="field"><label>Columns</label><input id="poolW" type="number" min="1" max="16"></div>
                 <div class="field"><label>Rows</label><input id="poolH" type="number" min="1" max="8"></div>
                 <div class="field"><label>Pool Start</label><input id="poolStart" type="number" min="1"></div>
-                <div class="field"><label>Visible Pool Slots</label><input id="poolSlots" type="number" readonly></div>
                 <div class="field wide"><label>Reserved Slots Per Song</label><input id="poolStride" type="number" min="1"></div>
               </div>
               <div class="inspector-status" id="layoutStatus">Screen 3: 16 columns × 8 rows · Pool Title uses one slot</div>
@@ -435,12 +432,9 @@
       $("#selectedPoolName").textContent = widgetLabel(widget.type);
       $("#poolType").value = widget.type;
       $("#poolMode").value = widget.mode;
-      $("#poolX").value = widget.x + 1;
-      $("#poolY").value = widget.y + 1;
       $("#poolW").value = widget.w;
       $("#poolH").value = widget.h;
       $("#poolStart").value = widget.start;
-      $("#poolSlots").value = widget.w * widget.h - 1;
       $("#poolStride").value = widget.stride;
       $("#poolStride").disabled = widget.mode === "fixed";
       $("#poolStride").min = 1;
@@ -472,8 +466,6 @@
       if (!widget) return;
       widget.type = $("#poolType").value;
       widget.mode = $("#poolMode").value;
-      widget.x = Math.max(0, Math.min(15, (Number($("#poolX").value) || 1) - 1));
-      widget.y = Math.max(0, Math.min(7, (Number($("#poolY").value) || 1) - 1));
       widget.w = Math.max(1, Math.min(16 - widget.x, Number($("#poolW").value) || 1));
       widget.h = Math.max(1, Math.min(8 - widget.y, Number($("#poolH").value) || 1));
       widget.start = Math.max(1, Number($("#poolStart").value) || 1);
@@ -509,7 +501,7 @@
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
     $("#viewSong").addEventListener("change", renderViewLayout);
     $("#lockLayout").addEventListener("change", renderViewLayout);
-    ["#poolType", "#poolMode", "#poolX", "#poolY", "#poolW", "#poolH", "#poolStart", "#poolStride"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
+    ["#poolType", "#poolMode", "#poolW", "#poolH", "#poolStart", "#poolStride"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
     $("#addPool").addEventListener("click", () => { const widget = { id: nextWidgetId++, type: "effects", mode: "fixed", x: 0, y: 0, w: 4, h: 2, start: 1, stride: 7 }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
     $("#duplicatePool").addEventListener("click", () => { const source = viewWidgets.find(item => item.id === selectedWidgetId); if (!source) return; const widget = { ...source, id: nextWidgetId++, x: Math.min(16 - source.w, source.x + 1), y: Math.min(8 - source.h, source.y + 1) }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
     $("#deletePool").addEventListener("click", () => { if (viewWidgets.length === 1) return; viewWidgets = viewWidgets.filter(item => item.id !== selectedWidgetId); selectedWidgetId = viewWidgets[0].id; renderViewLayout(); });
