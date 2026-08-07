@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -146,7 +146,7 @@
     <header>
       <div>
         <h1>Export · MA Playlist</h1>
-        <p class="muted">先整理歌單與 Pool，再設定 Console，最後檢查並匯出。</p>
+        <p class="muted">Choose songs and pool ranges, configure the console, then review and export.</p>
       </div>
       <div class="actions">
         <button class="btn" id="validateTop">Validate</button>
@@ -162,10 +162,10 @@
 
     <main>
       <section class="page active" id="songs">
-        <div class="notice"><strong>Pool 一眼就能確認。</strong> 每首 MA2 歌曲預留 20 個 Sequence、80 個 Effect；修改起始值後，範圍會立即更新。</div>
+        <div class="notice"><strong>Pool allocation at a glance.</strong> Each MA2 song reserves 20 Sequences and 80 Effects. Ranges update immediately when a start value changes.</div>
         <div class="card">
           <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
-          <div class="song-grid song-header"><span></span><span>歌曲</span><span>MA 英文名稱</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>內容</span><span></span></div>
+          <div class="song-grid song-header"><span></span><span>Song</span><span>MA Export Name</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>Content</span><span></span></div>
           <div id="songRows"></div>
         </div>
         <div class="playlist-actions">
@@ -179,7 +179,7 @@
         <div class="setup-layout">
           <div class="card">
             <div class="section">
-              <h2>常用設定</h2>
+              <h2>Common Settings</h2>
               <div class="fields">
                 <div class="field"><label>Console</label><select id="console"><option>grandMA2 3.9.60</option><option>grandMA2 3.9.61</option><option>grandMA3</option></select></div>
                 <div class="field"><label>Mode</label><select><option>Full · Plugin Install</option><option>Timecode Only</option></select></div>
@@ -194,7 +194,7 @@
               </div>
             </div>
             <div class="section">
-              <h2>輸出內容</h2>
+              <h2>Export Components</h2>
               <div class="checks">
                 <label class="check"><input type="checkbox" checked> Fixed control Macros</label>
                 <label class="check"><input type="checkbox" checked> Song Macros</label>
@@ -205,7 +205,7 @@
             </div>
           </div>
           <details>
-            <summary>進階 MA2 設定</summary>
+            <summary>Advanced MA2 Settings</summary>
             <div class="fields">
               <div class="field"><label>Template Page</label><input type="number" value="200"></div>
               <div class="field"><label>Fixed Macro Start</label><input type="number" value="101"></div>
@@ -220,11 +220,11 @@
       </section>
 
       <section class="page" id="review">
-        <div class="notice" id="validation"><strong>Ready.</strong> 所有名稱與 Pool 範圍都可以在匯出前檢查。</div>
+        <div class="notice" id="validation"><strong>Ready.</strong> Review every name and pool range before export.</div>
         <div class="review-grid">
-          <div class="review-card"><span class="muted">Pool Safety</span><strong class="ok">No overlaps</strong><span class="muted">Sequence、Effect、View、Macro 已檢查</span></div>
-          <div class="review-card"><span class="muted">Selected Songs</span><strong><span class="selected-count">3</span> Songs</strong><span class="muted">每首包含 Sequence、View、Timecode</span></div>
-          <div class="review-card"><span class="muted">Target</span><strong id="targetLabel">MA2 3.9.60</strong><span class="muted">Schema 依輸出路徑選擇</span></div>
+          <div class="review-card"><span class="muted">Pool Safety</span><strong class="ok">No overlaps</strong><span class="muted">Sequence, Effect, View, and Macro ranges checked</span></div>
+          <div class="review-card"><span class="muted">Selected Songs</span><strong><span class="selected-count">3</span> Songs</strong><span class="muted">Sequence, View, and Timecode per song</span></div>
+          <div class="review-card"><span class="muted">Target</span><strong id="targetLabel">MA2 3.9.60</strong><span class="muted">Schema selected from the output path</span></div>
         </div>
         <h2>Export Plan</h2>
         <div class="review-list" id="reviewList"></div>
@@ -266,7 +266,7 @@
           <button class="btn content-toggle" data-content-index="${index}">${chosen.length}/${song.contents.length} selected</button>
           <span class="drag" title="Drag to reorder">⋮⋮</span>
         </div><div class="song-content ${song.open ? "open" : ""}" data-content-panel="${index}">
-          <strong>Export Content</strong><span class="muted"> · 只輸出這首歌需要的 Main／Button Sequence 與對應 Timecode Track</span>
+          <strong>Export Content</strong><span class="muted"> - Export only the required Main/Button Sequences and matching Timecode tracks for this song.</span>
           <div class="content-options">${song.contents.map((content, contentIndex) => `<label class="check"><input class="content-check" data-song="${index}" data-content="${contentIndex}" type="checkbox" ${content.on ? "checked" : ""}> ${content.name}</label>`).join("")}</div>
         </div></div>`;
       }).join("");
@@ -322,7 +322,7 @@
     $("#selectNone").addEventListener("click", () => { songs.forEach(song => song.selected = false); renderSongs(); });
     $("#recalc").addEventListener("click", renderSongs);
     $("#validateTop").addEventListener("click", () => showPage("review"));
-    $("#fakeExport").addEventListener("click", () => alert("這是設計原型，不會執行真正匯出。"));
+    $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
     renderSongs();
   </script>
 </body>

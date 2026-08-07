@@ -17,6 +17,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Main and individual Button contents can be selected independently per song.
 - Song rows summarize selected/available contents.
 - Review page lists the chosen Main/Button contents and calculated Timecode pool for each song.
+- Converted all interface labels, instructions, validation text, and prototype alerts to English; Unicode song data remains unchanged.
 
 ## Files changed
 

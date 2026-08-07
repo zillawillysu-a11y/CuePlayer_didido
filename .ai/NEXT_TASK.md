@@ -16,6 +16,7 @@ Review the updated browser mockup with per-song Main/Button content selection.
 - Main Executor 201.130 and Button Start 201.101 defaults are correct.
 - Expanding each song and selecting Main/Button content feels intuitive.
 - Review clearly communicates what each song will export.
+- All interface chrome is English while Unicode song names remain readable.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
