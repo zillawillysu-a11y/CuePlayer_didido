@@ -470,6 +470,13 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
     assert macro.get("has_scrollfocus") == "true"
     assert macro.get("scroll_offset") is None
     assert macro.get("scroll_index") is None
+    # MA2's importer requires the native-export attribute order.  In
+    # particular, x must precede the widget size for Macro placement to apply.
+    text = paths["show:view_1"].read_text(encoding="utf-8")
+    assert (
+        'type="4d414352" display_nr="2" has_focus="true" '
+        'has_scrollfocus="true" x="10" anz_rows="1" anz_cols="6"'
+    ) in text
 
 
 def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:

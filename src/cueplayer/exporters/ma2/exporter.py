@@ -503,19 +503,30 @@ class Ma2Exporter:
                     start += song_index * max(1, int(spec.get("stride", 1)))
                 x = max(0, int(spec.get("x", 0)))
                 y = max(0, int(spec.get("y", 0)))
-                attrs = {
-                    "anz_rows": str(rows),
-                    "anz_cols": str(columns),
-                }
-                # MA2 treats explicit zero co-ordinates differently from omitted
-                # defaults (see the successful S1View fixture).  Omit zeroes.
-                if x:
-                    attrs["x"] = str(x)
-                if y:
-                    attrs["y"] = str(y)
+                pool_type = str(spec.get("type", ""))
+                # Keep the attribute order emitted by MA2's own View export.
+                # Its View importer is not reliably order-independent: in
+                # particular a Macro widget's x position is ignored when x is
+                # written after anz_rows/anz_cols, even though that XML is
+                # formally valid.  Coordinates must therefore precede size.
+                attrs: dict[str, str] = {}
                 if widget_type == "4d414352":
                     attrs.update(has_focus="true", has_scrollfocus="true")
+                    # MA2 treats explicit zero co-ordinates differently from
+                    # omitted defaults (see the successful S1View fixture).
+                    if x:
+                        attrs["x"] = str(x)
+                    if y:
+                        attrs["y"] = str(y)
+                    attrs.update(anz_rows=str(rows), anz_cols=str(columns))
                 else:
+                    if pool_type == "effects" and spec.get("mode") == "perSong":
+                        attrs["has_focus"] = "true"
+                    if x:
+                        attrs["x"] = str(x)
+                    if y:
+                        attrs["y"] = str(y)
+                    attrs.update(anz_rows=str(rows), anz_cols=str(columns))
                     scroll = (
                         # MA2 displays Effect Pool item scroll_offset + 1.
                         # This is independent of the View widget's dimensions.
@@ -524,7 +535,6 @@ class Ma2Exporter:
                         else max(0, start - 1)
                     )
                     attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
-                pool_type = str(spec.get("type", ""))
                 ma2_index = (
                     0
                     if pool_type == "effects" and spec.get("mode") == "fixed"

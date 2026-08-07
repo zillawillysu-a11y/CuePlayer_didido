@@ -1,12 +1,13 @@
 # Next task
 
-**Status:** Queued — awaiting human start
+**Status:** Queued — awaiting MA2 native View verification
 **Type:** MA Export per-song content selection
 **Updated:** 2026-08-08
 
 ## Current task
 
-Add expandable per-song Main/Button content selection.
+After verifying the MA2 native Widget attribute-order fix, add expandable
+per-song Main/Button content selection.
 
 ## Requirements
 
