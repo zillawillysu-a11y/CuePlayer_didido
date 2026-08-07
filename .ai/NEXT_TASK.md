@@ -6,10 +6,12 @@
 
 ## Current task
 
-Verify the local MA2 Telnet Import command and subsequent scanner execution.
+Verify MA2 Command Telnet after the initial login-screen wait and then scanner
+Plugin import/execution.
 
 ## Requirements
 
+- Retest Test Connection and verify MA2 logs Login only after its greeting.
 - Leave optional Import Path blank.
 - Use Import Plugin & Scan at an empty Plugin Pool, such as 5.
 - Verify MA2 logs `Import "CuePlayer_Live_Scan" At Plugin 5`, then `Plugin 5`.

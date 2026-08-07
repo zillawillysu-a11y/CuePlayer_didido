@@ -86,16 +86,24 @@ class Ma2TelnetScanner:
     def _send_line(conn: socket.socket, command: str) -> None:
         conn.sendall((command.rstrip("\r\n") + "\r\n").encode("utf-8"))
 
-    def _negotiate_telnet(self, conn: socket.socket) -> None:
-        """Acknowledge MA2's Telnet option negotiation before commands."""
-        try:
-            conn.settimeout(min(0.35, self.timeout_seconds))
-            greeting = conn.recv(4096)
-        except TimeoutError:
-            return
-        if not greeting:
-            return
-        self._telnet_text(conn, greeting)
+    def _negotiate_telnet(self, conn: socket.socket, *, wait_for_login_prompt: bool) -> None:
+        """Drain MA2's initial ANSI screen before writing Command Telnet input."""
+        deadline = time.monotonic() + min(
+            0.9 if wait_for_login_prompt else 0.12,
+            self.timeout_seconds,
+        )
+        received_text: list[str] = []
+        while time.monotonic() < deadline:
+            conn.settimeout(max(0.03, deadline - time.monotonic()))
+            try:
+                greeting = conn.recv(4096)
+            except TimeoutError:
+                return
+            if not greeting:
+                return
+            received_text.append(self._telnet_text(conn, greeting))
+            if wait_for_login_prompt and "Please login" in "".join(received_text):
+                return
 
     @staticmethod
     def _telnet_text(conn: socket.socket, data: bytes) -> str:
@@ -153,7 +161,7 @@ class Ma2TelnetScanner:
 
     def test_connection(self, *, user: str = "", password: str = "") -> str:
         with self._connect(self.command_port) as command:
-            self._negotiate_telnet(command)
+            self._negotiate_telnet(command, wait_for_login_prompt=True)
             self._login(command, user, password)
             self._send_line(command, 'Echo "CuePlayer connection test"')
             return self._read_feedback(command)
@@ -179,7 +187,7 @@ class Ma2TelnetScanner:
         path = import_path.strip()
         safe_path = path.replace('"', "")
         with self._connect(self.command_port) as command:
-            self._negotiate_telnet(command)
+            self._negotiate_telnet(command, wait_for_login_prompt=True)
             self._login(command, user, password)
             import_command = f'Import "CuePlayer_Live_Scan" At Plugin {plugin_pool}'
             if safe_path:
@@ -199,8 +207,8 @@ class Ma2TelnetScanner:
         if plugin_pool < 2:
             raise Ma2TelnetError("Choose a scanner Plugin Pool number of 2 or higher")
         with self._connect(self.monitor_port) as monitor, self._connect(self.command_port) as command:
-            self._negotiate_telnet(monitor)
-            self._negotiate_telnet(command)
+            self._negotiate_telnet(monitor, wait_for_login_prompt=False)
+            self._negotiate_telnet(command, wait_for_login_prompt=True)
             self._login(command, user, password)
             self._send_line(command, f"Plugin {plugin_pool}")
             deadline = time.monotonic() + self.timeout_seconds

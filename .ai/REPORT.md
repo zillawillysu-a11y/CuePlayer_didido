@@ -5,40 +5,39 @@
 
 ## Task objective
 
-Match CuePlayer's local MA2 Telnet Import command with the command verified by
-the operator in MA2's own command line.
+Wait for MA2's actual Command Telnet login prompt before writing Login or
+Import commands.
 
 ## What was implemented
 
-- Local imports now send exactly `Import "CuePlayer_Live_Scan" At Plugin N`.
-- Removed automatic `/path` and `/nc` options for local MA2 onPC imports.
-- Kept the Import Path field as an optional remote-console override.
-- Added a regression test for the exact local command at Plugin Pool 5.
+- Added Command Telnet initial-screen draining until MA2 emits `Please login !`.
+- System Monitor has a short non-blocking initial drain and does not wait for a
+  Command login prompt.
+- Added a regression test with the delayed ANSI banner and login prompt.
 
 ## Files changed
 
 - `src/cueplayer/exporters/ma2_telnet.py`
-- `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_ma2_telnet.py`
 - `docs/MA2_TELNET_LIVE_SCAN.md`
 
 ## Architecture decisions
 
-- The real MA2 command-line result is the source of truth for the local onPC
-  adapter. Optional paths remain only for remote consoles.
+- The Command adapter must treat MA2's ANSI login screen as protocol readiness,
+  not as generic text that can be ignored after the first socket read.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-local-import`
-- Result: **43 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-login-prompt`
+- Result: **44 passed**.
 
 ## Remaining issues
 
-- Real MA2 must confirm the Telnet Import log, then Plugin 5 execution and the
-  System Monitor scanner frame.
+- Real MA2 must confirm Test Connection now logs Login after the greeting,
+  then Telnet Import, Plugin 5 execution, and scanner frame.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Leave Import Path blank, click Import Plugin & Scan at Plugin Pool 5, and
-verify MA2 logs the minimal Import command followed by Plugin 5.
+Retest Test Connection, then leave Import Path blank and click Import Plugin &
+Scan at Plugin Pool 5. Verify MA2 logs Login, Import, then Plugin 5.

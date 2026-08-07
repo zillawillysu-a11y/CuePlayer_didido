@@ -210,3 +210,20 @@ def test_connection_hides_telnet_control_bytes_from_status_text(
 
     assert feedback == "MA2 ready\r\n"
     assert command.sent[-1] == bytes([255, 252, 1])
+
+
+def test_command_waits_for_ma2_login_prompt_before_writing_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket([b"\x1b[37mMA2 banner", b"\r\nPlease login !\r\n", b""])
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    Ma2TelnetScanner("127.0.0.1").test_connection(user="administrator", password="admin")
+
+    assert command.sent == [
+        b'Login "administrator" "admin"\r\n',
+        b'Echo "CuePlayer connection test"\r\n',
+    ]

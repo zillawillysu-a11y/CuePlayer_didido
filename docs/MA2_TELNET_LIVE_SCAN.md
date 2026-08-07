@@ -8,6 +8,8 @@ CuePlayer performs the required Telnet option negotiation before it sends MA2
 commands, then uses MA2's command-line `Login "user" "password"` syntax.
 Telnet control bytes are filtered from CuePlayer's status text, so the status
 area shows only actual MA2 feedback.
+MA2 also sends an ANSI login screen immediately after connecting; CuePlayer
+waits for its `Please login !` prompt before it writes the Login command.
 
 ## First-time MA2 setup
 
