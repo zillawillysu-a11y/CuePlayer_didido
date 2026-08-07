@@ -184,6 +184,7 @@ class ShowPatchPage(QWidget):
             "QHeaderView::section { background: #1b1f25; color: #99a3b1; border: none; "
             "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
             "QLabel { color: #eef2f7; background: transparent; border: none; }"
+            "#maExportOptions QCheckBox { background: #15181d; }"
         )
 
         self.chain_label = QLabel("")
@@ -253,6 +254,7 @@ class ShowPatchPage(QWidget):
 
         opt_row = QHBoxLayout()
         opt_box = QGroupBox("Export Options")
+        opt_box.setObjectName("maExportOptions")
         opt_form = QGridLayout(opt_box)
         opt_form.setHorizontalSpacing(14)
         opt_form.setVerticalSpacing(8)

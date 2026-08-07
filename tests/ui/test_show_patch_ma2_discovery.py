@@ -145,6 +145,20 @@ def test_fixed_macro_export_start_is_independent_of_view_macro_pool(
     assert page.view_stage.widgets[1]["start"] == 501
 
 
+def test_export_option_checkboxes_use_the_panel_background(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+
+    assert "#maExportOptions QCheckBox { background: #15181d; }" in page.styleSheet()
+    assert page.ma2_fixed_macros.parent().objectName() == "maExportOptions"
+
+
 def test_timecode_pool_uses_three_cells_including_its_title(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
