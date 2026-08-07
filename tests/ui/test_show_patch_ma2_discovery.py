@@ -169,6 +169,8 @@ def test_registry_sync_updates_allocations_but_preserves_fixed_controls(
     page.ma2_fixed_macro_start.setValue(101)
     page.ma2_template_page.setValue(200)
     page.executor_page.setValue(201)
+    page.main_executor_number.setValue(130)
+    page.button_executor_number.setValue(101)
 
     applied = page.apply_registry_scan_result(
         remote_version="3.9.63.6",
@@ -189,8 +191,29 @@ def test_registry_sync_updates_allocations_but_preserves_fixed_controls(
     assert page.ma2_fixed_macro_start.value() == 101
     assert page.ma2_template_page.value() == 200
     assert page.executor_page.value() == 201
+    assert page.main_executor_number.value() == 130
+    assert page.button_executor_number.value() == 101
     assert project.ma_export.main_executor == "201.130"
     assert project.ma_export.button_executor_start == "201.101"
+
+
+def test_executor_page_and_numbers_build_shared_song_page(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    page.executor_page.setValue(401)
+    page.main_executor_number.setValue(150)
+    page.button_executor_number.setValue(110)
+
+    assert project.ma_export.main_executor == "401.150"
+    assert project.ma_export.button_executor_start == "401.110"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(

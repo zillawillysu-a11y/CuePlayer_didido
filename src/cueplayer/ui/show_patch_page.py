@@ -228,16 +228,20 @@ class ShowPatchPage(QWidget):
         self.executor_page = NoWheelSpinBox()
         self.executor_page.setRange(1, 9999)
         self.executor_page.setValue(201)
-        self.main_fader = QLabel("Main → Page.130")
-        self.button_fader = QLabel("Buttons → Page.101+")
+        self.main_executor_number = NoWheelSpinBox()
+        self.main_executor_number.setRange(1, 999)
+        self.main_executor_number.setValue(130)
+        self.button_executor_number = NoWheelSpinBox()
+        self.button_executor_number.setRange(1, 999)
+        self.button_executor_number.setValue(101)
         self.page_per_song = QCheckBox("Next Page per song (201 → 202 → …)")
         self.page_per_song.setChecked(True)
         self.page_per_song.setToolTip(
             "Each song advances to the next Page. Main stays at .130 and Buttons start at .101."
         )
         fader_form.addRow("Page", self.executor_page)
-        fader_form.addRow(self.main_fader)
-        fader_form.addRow(self.button_fader)
+        fader_form.addRow("Main", self.main_executor_number)
+        fader_form.addRow("Button Start", self.button_executor_number)
         fader_form.addRow(self.page_per_song)
         settings_row.addWidget(fader_box, stretch=1)
         self.setup_page_layout.addLayout(settings_row)
@@ -677,6 +681,8 @@ class ShowPatchPage(QWidget):
             self.seq_start,
             self.tc_start,
             self.executor_page,
+            self.main_executor_number,
+            self.button_executor_number,
             self.page_per_song,
             self.mode_combo,
             self.latency_ms,
@@ -1018,10 +1024,18 @@ class ShowPatchPage(QWidget):
         self.seq_start.setValue(int(s.sequence_pool_start))
         self.tc_start.setValue(int(s.timecode_pool_start))
         try:
-            page, _executor = parse_page_executor(s.main_executor or "201.130")
+            page, main_executor = parse_page_executor(s.main_executor or "201.130")
         except ValueError:
-            page = 201
+            page, main_executor = 201, 130
+        try:
+            _button_page, button_executor = parse_page_executor(
+                s.button_executor_start or "201.101"
+            )
+        except ValueError:
+            button_executor = 101
         self.executor_page.setValue(page)
+        self.main_executor_number.setValue(main_executor)
+        self.button_executor_number.setValue(button_executor)
         self.page_per_song.setChecked(bool(s.page_per_song))
         idx = self.mode_combo.findData(s.export_mode)
         self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -1083,8 +1097,8 @@ class ShowPatchPage(QWidget):
         s.sequence_pool_start = int(self.seq_start.value())
         s.timecode_pool_start = int(self.tc_start.value())
         page = int(self.executor_page.value())
-        s.main_executor = f"{page}.130"
-        s.button_executor_start = f"{page}.101"
+        s.main_executor = f"{page}.{int(self.main_executor_number.value())}"
+        s.button_executor_start = f"{page}.{int(self.button_executor_number.value())}"
         s.page_per_song = self.page_per_song.isChecked()
         s.latency_ms = float(self.latency_ms.value())
         s.data_pool = self.data_pool.text().strip() or "Default"

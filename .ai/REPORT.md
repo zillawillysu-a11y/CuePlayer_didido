@@ -5,26 +5,27 @@
 
 ## Task objective
 
-Match generated MA2 View XML to the known-working S1View coordinate and Effect scrolling semantics.
+Make Page, Main executor number, and Button start executor number independently editable.
 
 ## What was implemented
 
-- Omit zero-valued `x`/`y` attributes, matching MA2's successful S1View output.
-- Macro on the top row now carries only its nonzero `x` coordinate, so it stays right of Sequence.
-- Changed Effect scroll to `Effect Start − 1`; MA2 renders pool item `scroll_offset + 1`, so Start 201 now displays 201.
+- Added numeric Main and Button Start fields beside Page.
+- Settings now generate `Page.Main` and `Page.ButtonStart` from the three user-entered values.
+- Retained Next Page per song; it increments only Page.
+- Existing executor strings split back into the three fields when loaded.
 
 ## Files changed
 
-- `src/cueplayer/exporters/ma2/exporter.py`
-- `tests/exporters/test_show_patch.py`
+- `src/cueplayer/ui/show_patch_page.py`
+- `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
 
-- `S1View.xml` is the fixture of record for MA2 View widget placement and scroll semantics.
+- The domain/exporter continues to use executor strings; the UI owns the numeric decomposition.
 
 ## Tests performed
 
-- Focused MA2 exporter and Show Patch UI suite: 18 passed.
+- Focused Show Patch UI and MA2 exporter suite: 19 passed.
 - Python compile and `git diff --check`: passed.
 
 ## Remaining issues
