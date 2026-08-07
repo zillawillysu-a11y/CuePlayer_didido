@@ -31,12 +31,17 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Added an interactive Export Registry showing locked Existing and proposed Pending Sequence, Effects, Timecode, Macro, and View allocations.
 - Added Auto Allocate, Manual Allocate, conflict details, registration, and incremental components without Song List Sequence.
 - Changed allocation ownership to stable Song IDs and connected View previews to Registry/draft numbers.
+- Added an MA2 Live Pool Scan connection prototype with Host, target version, command port 30000, monitor port 30001, dedicated credentials, Test, and Scan status.
+- Set grandMA2 3.3.4.3 as the product-wide minimum supported version, 3.9.63.6 as the current upper target, and documented the required version-profile/golden-fixture policy.
 
 ## Files changed
 
 - `design/ma_export_playlist_mockup.html`
 - `docs/MA2_EXPORT_REGISTRY_SPEC.md`
+- `docs/MA2_VERSION_SUPPORT.md`
+- `docs/PRODUCT_SPEC.md`
 - `.ai/handoffs/2026-08-07_MA2ExportRegistryPrototype.md`
+- `.ai/handoffs/2026-08-08_MA2MinimumVersionAndScanUi.md`
 
 ## Architecture decisions
 
@@ -54,6 +59,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Placed Pool Start and Reserved Slots Per Song side by side as equal-width short numeric fields.
 
 - Incremental allocations are owned by stable Song identity rather than current Song Order; production requires Registry persistence.
+- Full 3.3.4.3 support cannot be claimed until XML, Plugin, View, Registry scanner, and Telnet fixtures pass on the minimum version.
 
 ## Tests performed
 
@@ -65,6 +71,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Verified all 19 supplied grandMA2 Pool types are available and Fixed/Per Song controls are wired.
 - Verified Effect allocation advances by the configurable value, defaulting to 100.
 - Verified Registry controls, stable allocation functions, conflict checks, event wiring, and unique HTML IDs.
+- Verified MA2 connection UI controls, ports, version option, status events, and updated product-spec references.
 - `git diff --check`: passed.
 
 ## Remaining issues
@@ -73,8 +80,9 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Exact production behavior for songs with no selected content should be decided (block export or skip song).
 - Persistence and MA2 XML generation for the shared layout are not yet implemented.
 - Registry is currently browser-memory prototype data; project persistence and migration are not implemented.
+- Live Pool Scan buttons are UI-only prototypes; no real Telnet socket is opened yet.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Review the Export Registry and incremental allocation workflow, then define zero-content song behavior before PySide6 implementation.
+Review the MA2 connection/scan workflow, then implement and verify the 3.3.4.3 compatibility fixtures before production Telnet integration.

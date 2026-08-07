@@ -1,13 +1,13 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA Export Registry and incremental workflow review
+**Type:** MA2 connection and minimum-version compatibility review
 **Updated:** 2026-08-07
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Review the Export Registry, incremental song allocation, and shared Screen 3 View Layout editor.
+Review the MA2 Telnet scan connection UI and the product-wide grandMA2 3.3.4.3 minimum-version requirement.
 
 ## Verify
 
@@ -32,10 +32,13 @@ Review the Export Registry, incremental song allocation, and shared Screen 3 Vie
 - New songs support Auto Allocate and Manual Allocate with immediate conflict details.
 - Incremental components exclude Song List Sequence while including Song Sequences, Timecode, Song Macros, and Song View.
 - View previews use registered or pending allocations instead of recalculating Existing songs from Song Order.
+- MA2 Live Pool Scan exposes Host, version, command port 30000, monitor port 30001, credentials, Test, and Scan controls.
+- grandMA2 3.3.4.3 is the minimum supported version across XML, Plugins, Views, Registry scanning, and Telnet integration.
+- The UI connection buttons remain prototypes until real sockets and 3.3.4.3 fixtures are implemented.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
 - Confirm the default Fixed/Per Song modes, Pool starts, and reserved-slot values.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
 
-The user approves Registry/incremental behavior, confirms allocation defaults, and defines zero-content behavior.
+The user approves the scan workflow and the 3.3.4.3 compatibility verification plan.

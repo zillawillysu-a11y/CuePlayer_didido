@@ -168,6 +168,9 @@
     .allocation-fields { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 10px; margin-top: 13px; }
     .allocation-result { margin-top: 13px; padding: 11px 12px; border-radius: 7px; background: #102a1c; color: #bbf7d0; }
     .allocation-result.conflict { background: #4a1723; color: #ffd7de; }
+    .connection-grid { display: grid; grid-template-columns: 1.2fr 1fr 90px 90px 1fr 1fr; gap: 10px; align-items: end; }
+    .connection-status { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #101318; color: var(--muted); }
+    .connection-status.connected { color: #bbf7d0; background: #102a1c; }
     @media (max-width: 1220px) {
       .song-grid { grid-template-columns: 48px 62px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
     }
@@ -211,6 +214,18 @@
 
       <section class="page" id="registry">
         <div class="notice"><strong>Incremental export safety.</strong> Existing allocations stay locked when Song Order changes. New songs can be auto-allocated or assigned manually without updating the Song List Sequence.</div>
+        <div class="card section" style="margin-bottom:15px">
+          <h2>MA2 Live Pool Scan</h2>
+          <div class="connection-grid" style="margin-top:13px">
+            <div class="field"><label>MA2 Host</label><input id="maHost" type="text" value="127.0.0.1"></div>
+            <div class="field"><label>Target Version</label><select id="maVersion"><option>3.3.4.3 · minimum</option><option>3.9.60</option><option>3.9.61</option><option>3.9.63.6 · latest</option></select></div>
+            <div class="field"><label>Command</label><input id="maCommandPort" type="number" value="30000"></div>
+            <div class="field"><label>Monitor</label><input id="maMonitorPort" type="number" value="30001"></div>
+            <div class="field"><label>User</label><input id="maUser" type="text" value="CuePlayerScan"></div>
+            <div class="field"><label>Password</label><input id="maPassword" type="password" value=""></div>
+          </div>
+          <div class="connection-status" id="maConnectionStatus"><span>Not connected · Telnet scan prototype</span><span class="inline"><button class="btn" id="testMaConnection">Test Connection</button><button class="btn primary" id="scanMaPools">Scan Current Show</button></span></div>
+        </div>
         <div class="registry-summary">
           <div class="review-card"><span class="muted">Registered Songs</span><strong id="registeredCount">2</strong><span class="muted">Existing in MA</span></div>
           <div class="review-card"><span class="muted">Next Sequence</span><strong id="nextSequence">41</strong><span class="muted">20 reserved per song</span></div>
@@ -258,7 +273,7 @@
             <div class="section">
               <h2>Common Settings</h2>
               <div class="fields">
-                <div class="field"><label>Console</label><select id="console"><option>grandMA2 3.9.60</option><option>grandMA2 3.9.61</option><option>grandMA3</option></select></div>
+                <div class="field"><label>Console</label><select id="console"><option>grandMA2 3.3.4.3</option><option>grandMA2 3.9.60</option><option>grandMA2 3.9.61</option><option>grandMA2 3.9.63.6</option><option>grandMA3</option></select></div>
                 <div class="field"><label>Mode</label><select><option>Full · Plugin Install</option><option>Timecode Only</option></select></div>
                 <div class="field"><label>Sequence Pool Start</label><input id="seqStart" type="number" min="1" value="1"></div>
                 <div class="field"><label>Sequence Slots Per Song</label><input id="seqSlots" type="number" min="1" value="20"></div>
@@ -642,6 +657,8 @@
     $("#recalc").addEventListener("click", renderSongs);
     $("#validateTop").addEventListener("click", () => showPage("review"));
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
+    $("#testMaConnection").addEventListener("click", () => { $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype connected · ${$("#maHost").value}:${$("#maCommandPort").value} · MA2 ${$("#maVersion").value}`; });
+    $("#scanMaPools").addEventListener("click", () => { $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); });
     $("#allocationMode").addEventListener("change", () => { const manual = $("#allocationMode").value === "manual"; ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual); if (!manual) writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
     $("#allocationSong").addEventListener("change", () => { draftSongId = $("#allocationSong").value; draftAllocation = null; renderRegistry(); });
     ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).addEventListener("input", validateDraft));

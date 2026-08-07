@@ -34,3 +34,11 @@ Each exported song records Sequence range, Effects range, Timecode Pool number, 
 - Deleting a playlist song does not automatically release its MA allocation.
 - Allocation release is an explicit future action after MA objects are removed.
 - Production persistence stores the Registry with the CuePlayer project and backups.
+
+## Live scan transport
+
+- CuePlayer sends login and scanner commands through Telnet TCP port 30000.
+- CuePlayer may receive framed scanner output through the read-only System Monitor TCP port 30001.
+- Scanner records include MA2 version and use an unambiguous CuePlayer prefix/begin/end frame.
+- A snapshot-file import remains the offline fallback.
+- The scanner must support grandMA2 3.3.4.3 through the latest verified 3.9 profile.

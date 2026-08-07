@@ -77,7 +77,7 @@
   - 移動時可選擇 Main、Button、Video 或全部。
 - grandMA2／grandMA3 匯出：
   - 目標版本先固定：
-    - grandMA2 3.9.61.5
+    - grandMA2 3.3.4.3 through 3.9.63.6 (3.3.4.3 is the minimum supported version)
     - grandMA3 2.3.2
   - MA2 與 MA3 使用獨立 Exporter，不共用 XML schema。
   - 產生 Sequence XML 與 Timecode XML。
@@ -267,7 +267,7 @@
   - 29.97 DF／NDF 的顯示、換算與 XML 精度需以測試向量驗證。
   - generated LTC 的 sample rate、level、pre-roll 預設值待確認。
 - MA Export：
-  - 必須從 MA2 3.9.61.5、MA3 2.3.2 匯出最小可用 Sequence／Timecode XML，作為 reverse-engineering 樣本。
+  - 必須從 MA2 3.3.4.3 與 3.9.63.6、MA3 2.3.2 匯出最小可用 Sequence／Timecode XML，作為 reverse-engineering 樣本。
   - Top Button 的 Page／Executor assignment、Release 欄位與命令需逐版本實機驗證。
   - MA3 未來版本 XML syntax 可能改變，因此 exporter 需版本標記與 golden tests。
 - 名稱：
@@ -295,7 +295,7 @@
    - 此 Spike 成功後才正式建立 Playback Engine。
 
 3. **收集 MA golden XML，先建立 Exporter 測試**
-   - 在 MA2 3.9.61.5 與 MA3 2.3.2 各手動建立：
+   - 在 MA2 3.3.4.3、MA2 3.9.63.6 與 MA3 2.3.2 各手動建立：
      - 一條有 2–3 個空 Cue 的 Main Sequence。
      - 一條兩 Cue、Follow 0.1、自 Release、Executor Key=Top 的 Button Sequence。
      - 一個含 Main Go+(指定 Cue) 與重複 Top Events 的 Timecode Show。
