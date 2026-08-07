@@ -22,6 +22,8 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Added an explicit Song Order column to the playlist and Export Review; drag reordering updates the order used to describe Song List Sequence import positions.
 - Added an interactive View Layout page that models a Screen 3 template with draggable and resizable Sequence, Group, Effect, and Template Effect Pool windows.
 - Added grid snapping, layout locking, exact geometry/Pool settings, song-range preview, Pool duplication/deletion, reset, and an Apply Template action.
+- Corrected the View Layout model from percentage geometry to the verified Screen 3 `16 × 8` Pool grid shown in user references.
+- Pool titles now consume the first full grid cell; visible capacity is always `columns × rows - 1`, and overlapping Pool windows are flagged.
 
 ## Files changed
 
@@ -32,13 +34,15 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - This remains an offline design prototype; production PySide6 and exporter behavior are unchanged.
 - Content selection is modeled per song rather than as a global filter.
 - Timecode remains one pool object per selected song, while its included tracks reflect selected Main/Button content in the proposed design.
-- View geometry is stored as percentages in the prototype so it scales with the 16:9 Screen 3 preview; a production implementation must map these values to MA2 View XML geometry.
+- View geometry is stored as integer Screen 3 columns/rows on a fixed `16 × 8` grid; rendering converts those cells to percentages only for browser display.
 
 ## Tests performed
 
 - Python HTML parser: passed.
 - JavaScript parsed with Node `new Function`: passed.
 - View Layout control IDs, event functions, and duplicate-ID checks: passed.
+- Verified default capacities of 9, 5, 79, and 31 visible Pool slots after each title consumes one cell.
+- Verified all default windows remain inside the 16 × 8 grid and overlap detection is present.
 - `git diff --check`: passed.
 
 ## Remaining issues

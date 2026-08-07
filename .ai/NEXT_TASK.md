@@ -19,7 +19,8 @@ Review the updated browser mockup with per-song Main/Button content selection an
 - All interface chrome is English while Unicode song names remain readable.
 - Timecode values appear as plain pool numbers (`201`, `202`) without a redundant `TC` prefix.
 - Song Order is explicit in both the playlist and review, and drag reordering updates the Song List Sequence order.
-- View Layout Pool windows can be selected, dragged, resized, snapped, locked, duplicated, deleted, and edited numerically.
+- View Layout Pool windows use the verified Screen 3 `16 × 8` grid and can be selected, dragged, resized by whole cells, locked, duplicated, deleted, and edited numerically.
+- Every Pool title consumes one full grid cell; visible capacity is `columns × rows - 1`, and overlap is reported.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
 - Decide whether the first production version needs per-song layout overrides or only one shared template.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
