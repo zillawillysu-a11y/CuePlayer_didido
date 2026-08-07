@@ -6,47 +6,48 @@
 
 ## Task objective
 
-Add an approved MA2 installed/running-version detection workflow to the MA Export interface prototype while retaining manual Target Version selection.
+Synchronize MA2 Export Registry scan results into Console Setup and add an Output Folder browser with version-following defaults.
 
 ## What was implemented
 
-- Added `Detect Installed Versions` and a separate detection status row to MA2 Live Pool Scan.
-- The prototype demonstrates two installed versions, prefers the running `3.9.63.6` build, and updates Target Version automatically.
-- Target Version remains manually selectable.
-- Added reusable version comparison and minimum-version validation for grandMA2 3.3.4.3.
-- Connection and scan status now include the remote MA2 version and support a visible target/remote mismatch state.
-- Documented production detection priority: installed `gma2_V_*` directories, running executable full file version, output-path profile validation, then authoritative remote scan version.
+- Added a Console Setup synchronization notice showing the source and applied values.
+- Version detection synchronizes the grandMA2 Console target without changing Pool starts.
+- A successful show scan synchronizes the next conflict-free Sequence, Effects, Timecode, Song Macro, and View starts.
+- Fixed Macro Start, Template Page, and executor values remain unchanged by scan synchronization.
+- Added Output Folder `Browse…` and `Use Version Default` actions.
+- Output Folder follows Target Version by default; a typed or browsed custom folder remains protected from later version changes.
+- The browser prototype uses `showDirectoryPicker` when available and explains that only the desktop app can reliably retain the full Windows path.
 
 ## Files changed
 
 - `design/ma_export_playlist_mockup.html`
+- `docs/MA2_EXPORT_REGISTRY_SPEC.md`
 - `docs/MA2_VERSION_SUPPORT.md`
 - `.ai/REPORT.md`
 - `.ai/NEXT_TASK.md`
-- `.ai/handoffs/2026-08-08_MA2VersionAutoDetectionPrototype.md`
+- `.ai/handoffs/2026-08-08_RegistryConsoleSetupSync.md`
 
 ## Architecture decisions
 
-- Browser HTML cannot read Windows processes or protected install directories, so detection data in the mockup is explicitly labelled `Prototype detection`.
-- Production version discovery belongs in a Windows adapter/service, not in exporter XML generation or domain models.
-- Remote version is authoritative for a live connection, while output path remains the final XML compatibility-profile check.
-- Manual selection remains available and mismatches must never silently choose a schema.
+- Registry-to-Setup synchronization is one-way and explicit after a successful scan.
+- Scanning updates per-song allocation starts, not fixed control configuration.
+- Output-folder mode is stateful: version-following or user-owned custom path.
+- Production directory browsing belongs to PySide6/Windows; browser directory handles are design-only.
 
 ## Tests performed
 
 - JavaScript parsed with Node `new Function`: passed.
-- Unique HTML ID check: passed (59 IDs).
-- Required detection controls, validation functions, and 3.9.63.6 references: passed.
+- Unique HTML IDs: passed (68 IDs).
+- Required synchronization, folder-mode, and Browse event wiring: passed.
 - `git diff --check`: passed before report refresh.
-- In-app browser automation was attempted but its local connection module was blocked by host filesystem permissions; no browser-click test is claimed.
 
 ## Remaining issues
 
-- The PySide6 application does not yet enumerate installed versions or inspect a running onPC executable.
-- Real remote version reporting depends on the future Telnet scanner/plugin integration.
-- XML compatibility fixtures are still required for 3.3.4.3, 3.9.60, 3.9.61, and 3.9.63.6.
+- Live scan and Windows version discovery remain prototypes.
+- The browser cannot reliably expose a selected folder's absolute Windows path.
+- Production synchronization needs persisted state, validation, and PySide6 tests.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Implement a read-only Windows MA2 version discovery service with tests, then connect it to the production MA Export UI without starting Telnet integration yet.
+Implement the read-only Windows MA2 version/output-folder discovery service and production Registry-to-Console-Setup synchronization, without implementing Telnet transport in the same slice.

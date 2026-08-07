@@ -22,6 +22,8 @@
 - The export output path remains the final XML-profile check; a path/version mismatch must be shown before export.
 - After a live scan connects, the remote console version is authoritative for that connection. A local/remote mismatch must be visible and must not silently select a schema.
 - Automatic detection never removes the manual Target Version selector.
+- Output Folder follows the selected Target Version by default, using that installation's `importexport` directory.
+- Browsing or typing a custom Output Folder switches it to manual mode so later version changes do not silently replace it; the user can explicitly restore the version default.
 
 ## Verification required
 

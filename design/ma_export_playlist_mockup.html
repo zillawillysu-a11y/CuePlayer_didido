@@ -269,6 +269,7 @@
       </section>
 
       <section class="page" id="setup">
+        <div class="notice" id="consoleSyncStatus"><strong>Registry sync ready.</strong> Version detection updates Console. A completed show scan also applies the next safe Pool starts.</div>
         <div class="setup-layout">
           <div class="card">
             <div class="section">
@@ -281,10 +282,10 @@
                 <div class="field"><label>Timecode Pool Start</label><input id="tcStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>Effect Pool Start</label><input id="effectStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>Effect Slots Per Song</label><input id="effectSlots" type="number" min="1" value="100"></div>
-                <div class="field"><label>View Pool Start</label><input type="number" min="1" value="201"></div>
+                <div class="field"><label>View Pool Start</label><input id="viewStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>Main Executor</label><input type="text" value="201.130"></div>
                 <div class="field"><label>Button Start</label><input type="text" value="201.101"></div>
-                <div class="field wide"><label>Output Folder</label><input type="text" value="C:\ProgramData\MA Lighting Technologies\grandma\gma2_V_3.9.60\importexport"></div>
+                <div class="field wide"><label>Output Folder</label><div class="inline"><input id="outputFolder" type="text" value="C:\ProgramData\MA Lighting Technologies\grandma\gma2_V_3.3.4\importexport" style="flex:1"><button class="btn" id="browseOutputFolder" type="button">Browse…</button><button class="btn ghost" id="useVersionFolder" type="button">Use Version Default</button></div><span class="muted" id="outputFolderMode">Following Target Version</span></div>
               </div>
             </div>
             <div class="section">
@@ -301,9 +302,9 @@
           <details>
             <summary>Advanced MA2 Settings</summary>
             <div class="fields">
-              <div class="field"><label>Template Page</label><input type="number" value="200"></div>
-              <div class="field"><label>Fixed Macro Start</label><input type="number" value="101"></div>
-              <div class="field"><label>Song Macro Start</label><input type="number" value="201"></div>
+              <div class="field"><label>Template Page</label><input id="templatePage" type="number" value="200"></div>
+              <div class="field"><label>Fixed Macro Start</label><input id="fixedMacroStart" type="number" value="101"></div>
+              <div class="field"><label>Song Macro Start</label><input id="songMacroStart" type="number" value="201"></div>
               <div class="field"><label>Song ViewButton</label><input type="text" value="1.20"></div>
               <div class="field"><label>Preset Cue ID</label><input type="number" value="0.500" step="0.001"></div>
               <div class="field"><label>Latency</label><input type="text" value="0.0 ms"></div>
@@ -660,6 +661,7 @@
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
     const minimumMa2Version = "3.3.4.3";
     const prototypeInstalledVersions = ["3.9.60", "3.9.63.6"];
+    let customOutputFolder = false;
     const compareVersions = (left, right) => {
       const a = left.split(".").map(Number), b = right.split(".").map(Number);
       for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
@@ -681,16 +683,56 @@
       }
       return true;
     }
+    function defaultOutputFolder(version) {
+      const folderVersion = version.split(".").slice(0, 3).join(".");
+      return `C:\\ProgramData\\MA Lighting Technologies\\grandma\\gma2_V_${folderVersion}\\importexport`;
+    }
+    function updateOutputFolderForVersion(version) {
+      if (customOutputFolder) return;
+      $("#outputFolder").value = defaultOutputFolder(version);
+      $("#outputFolderMode").textContent = `Following Target Version · MA2 ${version}`;
+    }
+    function syncVersionToConsoleSetup(version, source) {
+      const consoleValue = `grandMA2 ${version}`;
+      if ([...$("#console").options].some(option => option.value === consoleValue)) $("#console").value = consoleValue;
+      updateOutputFolderForVersion(version);
+      $("#consoleSyncStatus").innerHTML = `<strong>Version synchronized.</strong> Console Setup now uses ${consoleValue} from ${source}. Pool starts remain unchanged until a show scan completes.`;
+      renderReview();
+    }
+    function syncScanToConsoleSetup(remoteVersion) {
+      const suggested = nextAvailableAllocation();
+      syncVersionToConsoleSetup(remoteVersion, "MA2 Live Pool Scan");
+      $("#seqStart").value = suggested.seqStart;
+      $("#effectStart").value = suggested.effectStart;
+      $("#tcStart").value = suggested.timecode;
+      $("#songMacroStart").value = suggested.macro;
+      $("#viewStart").value = suggested.view;
+      $("#consoleSyncStatus").innerHTML = `<strong>Registry scan synchronized.</strong> ${$("#maHost").value} · MA2 ${remoteVersion} · Next safe starts: Sequence ${suggested.seqStart}, Effects ${suggested.effectStart}, Timecode ${suggested.timecode}, Song Macro ${suggested.macro}, View ${suggested.view}. Fixed Macro and Template Page were preserved.`;
+      renderSongs();
+      renderReview();
+    }
     $("#detectMaVersions").addEventListener("click", () => {
       const runningVersion = prototypeInstalledVersions.at(-1);
       $("#maVersion").value = runningVersion;
       $("#maDetectionStatus").classList.add("connected");
       $("#maDetectionStatus span:first-child").textContent = `Prototype detection · Running ${runningVersion} · Installed ${prototypeInstalledVersions.join(", ")}`;
       validateTargetVersion();
+      syncVersionToConsoleSetup(runningVersion, "installed-version detection");
     });
-    $("#maVersion").addEventListener("change", () => validateTargetVersion());
+    $("#maVersion").addEventListener("change", () => { validateTargetVersion(); syncVersionToConsoleSetup($("#maVersion").value, "Target Version"); });
+    $("#outputFolder").addEventListener("input", () => { customOutputFolder = true; $("#outputFolderMode").textContent = "Custom folder · version changes will not replace it"; });
+    $("#useVersionFolder").addEventListener("click", () => { customOutputFolder = false; updateOutputFolderForVersion($("#maVersion").value); });
+    $("#browseOutputFolder").addEventListener("click", async () => {
+      if (!window.showDirectoryPicker) { $("#outputFolderMode").textContent = "Folder picker unavailable in this browser · type a path manually"; return; }
+      try {
+        const handle = await window.showDirectoryPicker();
+        customOutputFolder = true;
+        $("#outputFolder").value = `[Selected folder] ${handle.name}`;
+        $("#outputFolderMode").textContent = "Custom folder selected · full Windows path is available in the desktop app";
+      } catch (error) { if (error.name !== "AbortError") $("#outputFolderMode").textContent = "Folder selection failed"; }
+    });
     $("#testMaConnection").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype connected · ${$("#maHost").value}:${$("#maCommandPort").value} · Remote MA2 ${remoteVersion}`; });
-    $("#scanMaPools").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · MA2 ${remoteVersion} · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); });
+    $("#scanMaPools").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · MA2 ${remoteVersion} · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); syncScanToConsoleSetup(remoteVersion); });
     $("#allocationMode").addEventListener("change", () => { const manual = $("#allocationMode").value === "manual"; ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual); if (!manual) writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
     $("#allocationSong").addEventListener("change", () => { draftSongId = $("#allocationSong").value; draftAllocation = null; renderRegistry(); });
     ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).addEventListener("input", validateDraft));

@@ -1,25 +1,26 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA2 Windows version discovery
+**Type:** Production MA2 discovery and setup synchronization
 **Updated:** 2026-08-08
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Implement a read-only Windows service that discovers installed grandMA2 onPC versions and the full version of the currently running onPC executable, then expose the result to the production MA Export UI.
+Implement read-only Windows MA2 version/output-folder discovery and connect production Registry results to Console Setup using the approved mockup behavior.
 
 ## Requirements
 
-- Enumerate `gma2_V_*` installations without modifying MA files.
-- Read the running executable's Windows file version when onPC is active.
-- Prefer the running full build, otherwise choose the newest supported installed version.
-- Preserve manual Target Version selection.
-- Reject versions below 3.3.4.3.
-- Warn when Target Version, output folder, or later remote scan version disagree.
-- Keep the implementation separate from exporter/domain logic and support Unicode Windows paths.
-- Do not implement production Telnet scanning in the same task.
+- Discover installed `gma2_V_*` folders and the running onPC full executable version.
+- Default Output Folder to the selected version's `importexport` folder.
+- Provide a native Windows/PySide6 Browse action and a way to restore the version default.
+- Preserve a user-selected custom folder across later version changes.
+- Synchronize successful Registry results into Sequence, Effects, Timecode, Song Macro, and View starts.
+- Do not alter Fixed Macro Start, Template Page, or executors during synchronization.
+- Reject versions below 3.3.4.3 and block mismatched/failed results from changing setup.
+- Keep Windows discovery in an adapter/service and preserve Unicode path support.
+- Do not implement Telnet transport in this task.
 
 ## Done when
 
-The service has focused tests for no installation, one/multiple installations, running-version preference, unsupported versions, and path/version mismatch, and the production UI consumes its result.
+Focused tests cover version-following/custom folder modes, scan success/failure synchronization, protected fixed settings, unsupported versions, multiple installations, and Unicode paths.

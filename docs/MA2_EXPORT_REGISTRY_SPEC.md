@@ -42,3 +42,11 @@ Each exported song records Sequence range, Effects range, Timecode Pool number, 
 - Scanner records include MA2 version and use an unambiguous CuePlayer prefix/begin/end frame.
 - A snapshot-file import remains the offline fallback.
 - The scanner must support grandMA2 3.3.4.3 through the latest verified 3.9 profile.
+
+## Console Setup synchronization
+
+- Installed/running-version detection updates only the Console target and its version-following output folder.
+- A successful live show scan applies the Registry's next conflict-free Sequence, Effects, Timecode, Song Macro, and View starts to Console Setup.
+- Fixed Macro Start, Template Page, executors, and other fixed control settings are preserved unless the user changes them.
+- Console Setup identifies Registry scanning as the source and shows the host, remote version, and applied starts.
+- A failed, unsupported, or version-mismatched scan must not change Console Setup.
