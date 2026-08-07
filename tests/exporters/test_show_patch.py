@@ -274,6 +274,8 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert view_2 is not None
     view_2_widgets = view_2.findall("ma:Widget", ns)
     assert view_2_widgets[1].get("scroll_offset") == "200"  # Next 80 slots.
+    assert view_2_widgets[2].get("scroll_offset") == "20"  # Sequence 21 first.
+    assert view_2_widgets[2].get("scroll_index") == "20"
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
     assert 'luafile="Show_Install_export.lua"' in plugin_xml
     assert 'name="Show_Install"' in plugin_xml
@@ -381,7 +383,31 @@ def test_ma2_song_view_matches_s1_pool_scrolls(tmp_path) -> None:
     ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
     widgets = root.findall("ma:View/ma:Widget", ns)
     assert widgets[1].get("scroll_offset") == "224"
-    assert widgets[2].get("scroll_offset") == "240"
+    assert widgets[2].get("scroll_offset") == "243"
     lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
     assert 'Import "CuePlayer_Show_Install_View_1" At View 200' in lua
     assert 'Label View 200 "Intro"' in lua
+
+
+def test_ma2_song_views_put_each_sequence_block_in_first_cell(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons(f"Song {index}", ma=f"Song{index}", button_names=[])
+        for index in range(1, 4)
+    ]
+    settings = MaExportSettings(console="ma2", sequence_pool_start=1)
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path)
+    ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
+
+    assert [plan.profile.sequence_pool_start for plan in plans] == [1, 21, 41]
+    for index, expected_scroll in enumerate((0, 20, 40), start=1):
+        root = ET.parse(paths[f"show:view_{index}"]).getroot()
+        widgets = root.findall("ma:View/ma:Widget", ns)
+        assert widgets[2].get("scroll_offset") == str(expected_scroll)
+        assert widgets[2].get("scroll_index") == str(expected_scroll)

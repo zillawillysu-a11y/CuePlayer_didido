@@ -6,48 +6,36 @@
 
 ## Task objective
 
-Finalize MA2 Full Export by initializing Song ViewButton after installation and reserving a non-overlapping Sequence block for every song.
+Fix MA2 generated Song Views so each song's Main Sequence appears in the first cell of the Sequence row.
 
 ## What was implemented
 
-- Added persisted `MA2 Sequence Slots Per Song`, default 20.
-- MA2 show patch advances each song by at least 20 Sequence pool slots, including Main and Button Sequences.
-- If a song uses more slots than configured, its allocation expands automatically.
-- MA3 keeps compact Sequence allocation.
-- Song List Sequence is placed after all reserved song blocks, not merely after the last currently used Sequence.
-- Full Export Plugin executes `Macro "Set Songviewbutton"` only after all Timecode jobs finish.
-- The final macro is triggered only when Fixed control Macros are included.
+- Changed Sequence View scroll calculation from `Main Sequence - 4` to `Main Sequence - 1` based on live MA2 rendering evidence.
+- Song 1/2/3 Views now emit scroll values 0/20/40 for Main Sequences 1/21/41.
+- This removes the three unrelated pool cells previously shown before Song 2 and Song 3 Main Sequences.
 
 ## Files changed
 
-- `src/cueplayer/domain/models.py`
 - `src/cueplayer/exporters/ma2/exporter.py`
-- `src/cueplayer/exporters/show_patch.py`
-- `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_show_patch.py`
-- `tests/persistence/test_schema.py`
 
 ## Architecture decisions
 
-- Sequence block allocation is a show-patch concern; Plugin uses the same configured block size when locating Song List after reserved ranges.
-- Final Plugin commands are distinct from setup/import commands so they run after runtime Timecode XML jobs.
-- No playback, media, or clock behavior changed.
+- Live grandMA2 rendering evidence supersedes the earlier inference from exported reference XML metadata.
+- No pool allocation, Plugin installation, playback, media, or clock behavior changed.
 
 ## Tests performed
 
-- Relevant exporter/directory/persistence pytest slice: **21 passed**.
-- Verified two songs allocate Main Sequences 1 and 21, with Button Sequences 2 and 22.
-- Verified Song List moves to Sequence 41 after two 20-slot blocks.
-- Verified `Set Songviewbutton` occurs after the last Timecode Import and is omitted when Fixed Macros are disabled.
+- Relevant exporter/directory/persistence pytest slice: **22 passed**.
+- Explicit three-song regression verifies Main Sequences 1, 21, 41 map to View scroll values 0, 20, 40.
 - Python `compileall`: passed.
 - `git diff --check`: passed.
 
 ## Remaining issues
 
-- Validate pool allocation and final ViewButton initialization in grandMA2 onPC.
+- Re-export and confirm Song 2 starts with 21 and Song 3 starts with 41 in the first visible cell on grandMA2.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Smoke-test the revised MA2 Plugin, confirming 20-slot Sequence blocks, Song List placement after reserved ranges, and final automatic `Set Songviewbutton` execution.
+Smoke-test the corrected Song Views in grandMA2 and confirm Sequence 1/21/41 appear in the first cell for the first three songs.

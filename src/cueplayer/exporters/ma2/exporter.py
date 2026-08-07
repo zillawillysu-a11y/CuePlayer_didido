@@ -460,7 +460,8 @@ class Ma2Exporter:
             scroll_index=str(effect_scroll),
         )
         # Sequence row starts on the song's allocated Main Sequence.
-        sequence_scroll = max(0, int(plan.profile.sequence_pool_start) - 4)
+        # MA2 displays scroll value N as pool item N+1 in the first cell.
+        sequence_scroll = max(0, int(plan.profile.sequence_pool_start) - 1)
         add_widget(
             2,
             "53455155",
