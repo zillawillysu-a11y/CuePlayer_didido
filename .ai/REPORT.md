@@ -28,9 +28,15 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Standardized on one shared View geometry for every song; each Pool window independently chooses Fixed or Per Song number allocation.
 - Added configurable reserved slots per song and collision validation for ranges of the same Pool type.
 
+- Added an interactive Export Registry showing locked Existing and proposed Pending Sequence, Effects, Timecode, Macro, and View allocations.
+- Added Auto Allocate, Manual Allocate, conflict details, registration, and incremental components without Song List Sequence.
+- Changed allocation ownership to stable Song IDs and connected View previews to Registry/draft numbers.
+
 ## Files changed
 
 - `design/ma_export_playlist_mockup.html`
+- `docs/MA2_EXPORT_REGISTRY_SPEC.md`
+- `.ai/handoffs/2026-08-07_MA2ExportRegistryPrototype.md`
 
 ## Architecture decisions
 
@@ -47,6 +53,8 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Removed Columns and Rows from the View Inspector; Pool size is now controlled only by whole-cell canvas resizing.
 - Placed Pool Start and Reserved Slots Per Song side by side as equal-width short numeric fields.
 
+- Incremental allocations are owned by stable Song identity rather than current Song Order; production requires Registry persistence.
+
 ## Tests performed
 
 - Python HTML parser: passed.
@@ -56,6 +64,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Verified all default windows remain inside the 16 × 8 grid and overlap detection is present.
 - Verified all 19 supplied grandMA2 Pool types are available and Fixed/Per Song controls are wired.
 - Verified Effect allocation advances by the configurable value, defaulting to 100.
+- Verified Registry controls, stable allocation functions, conflict checks, event wiring, and unique HTML IDs.
 - `git diff --check`: passed.
 
 ## Remaining issues
@@ -63,8 +72,9 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - User review is needed before production implementation.
 - Exact production behavior for songs with no selected content should be decided (block export or skip song).
 - Persistence and MA2 XML generation for the shared layout are not yet implemented.
+- Registry is currently browser-memory prototype data; project persistence and migration are not implemented.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Review Fixed versus Per Song allocation controls and default ranges, then define zero-content song behavior before PySide6 implementation.
+Review the Export Registry and incremental allocation workflow, then define zero-content song behavior before PySide6 implementation.

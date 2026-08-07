@@ -1,13 +1,13 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA Export UI and View Layout design review
+**Type:** MA Export Registry and incremental workflow review
 **Updated:** 2026-08-07
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Review the updated browser mockup with per-song Main/Button content selection and the interactive Screen 3 View Layout editor.
+Review the Export Registry, incremental song allocation, and shared Screen 3 View Layout editor.
 
 ## Verify
 
@@ -28,10 +28,14 @@ Review the updated browser mockup with per-song Main/Button content selection an
 - View Inspector intentionally omits Column, Row, Columns, Rows, and Visible Pool Slots; position and size are controlled directly on the canvas.
 - Pool title cells show only the Pool name, wrap long labels, and use color to communicate Fixed versus Per Song allocation.
 - Pool Start and Reserved Slots Per Song are displayed side by side in the Inspector.
+- Export Registry keeps Existing allocations stable by Song ID and displays Sequence, Effects, Timecode, Macro, and View usage.
+- New songs support Auto Allocate and Manual Allocate with immediate conflict details.
+- Incremental components exclude Song List Sequence while including Song Sequences, Timecode, Song Macros, and Song View.
+- View previews use registered or pending allocations instead of recalculating Existing songs from Song Order.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
 - Confirm the default Fixed/Per Song modes, Pool starts, and reserved-slot values.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
 
-The user approves the playlist and shared View Layout workflows, confirms allocation defaults, and defines zero-content behavior.
+The user approves Registry/incremental behavior, confirms allocation defaults, and defines zero-content behavior.

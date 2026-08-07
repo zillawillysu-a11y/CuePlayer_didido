@@ -157,6 +157,17 @@
     .inspector-status.warning { color: #ffd7de; background: #4a1723; }
     .legend { display: flex; gap: 13px; padding: 0 16px 14px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
     .legend i { width: 9px; height: 9px; display: inline-block; border-radius: 2px; margin-right: 5px; }
+    .registry-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 15px; }
+    .registry-table { overflow-x: auto; }
+    .registry-row { display: grid; grid-template-columns: minmax(220px, 1fr) 92px 110px 120px 84px 84px 84px; gap: 10px; align-items: center; min-height: 48px; padding: 8px 13px; border-top: 1px solid var(--line); }
+    .registry-row:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
+    .status { display: inline-block; width: fit-content; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .status.existing { color: #bbf7d0; background: #14532d; }
+    .status.pending { color: #dbeafe; background: #1e3a8a; }
+    .allocation-layout { display: grid; grid-template-columns: minmax(540px, 1fr) minmax(300px, .55fr); gap: 16px; margin-top: 16px; }
+    .allocation-fields { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 10px; margin-top: 13px; }
+    .allocation-result { margin-top: 13px; padding: 11px 12px; border-radius: 7px; background: #102a1c; color: #bbf7d0; }
+    .allocation-result.conflict { background: #4a1723; color: #ffd7de; }
     @media (max-width: 1220px) {
       .song-grid { grid-template-columns: 48px 62px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
     }
@@ -177,9 +188,10 @@
 
     <nav class="tabs">
       <button class="tab active" data-page="songs">1 · Songs & Pools</button>
-      <button class="tab" data-page="setup">2 · Console Setup</button>
-      <button class="tab" data-page="viewLayout">3 · View Layout</button>
-      <button class="tab" data-page="review">4 · Review & Export</button>
+      <button class="tab" data-page="registry">2 · Export Registry</button>
+      <button class="tab" data-page="setup">3 · Console Setup</button>
+      <button class="tab" data-page="viewLayout">4 · View Layout</button>
+      <button class="tab" data-page="review">5 · Review & Export</button>
     </nav>
 
     <main>
@@ -195,6 +207,49 @@
           <button class="btn ghost" id="selectNone">Select None</button>
           <button class="btn ghost" id="recalc">Recalculate Pools</button>
         </div>
+      </section>
+
+      <section class="page" id="registry">
+        <div class="notice"><strong>Incremental export safety.</strong> Existing allocations stay locked when Song Order changes. New songs can be auto-allocated or assigned manually without updating the Song List Sequence.</div>
+        <div class="registry-summary">
+          <div class="review-card"><span class="muted">Registered Songs</span><strong id="registeredCount">2</strong><span class="muted">Existing in MA</span></div>
+          <div class="review-card"><span class="muted">Next Sequence</span><strong id="nextSequence">41</strong><span class="muted">20 reserved per song</span></div>
+          <div class="review-card"><span class="muted">Next Effects</span><strong id="nextEffects">401</strong><span class="muted">100 reserved per song</span></div>
+          <div class="review-card"><span class="muted">Next IDs</span><strong id="nextIds">203</strong><span class="muted">Timecode · Macro · View</span></div>
+        </div>
+        <div class="card registry-table">
+          <div class="card-head"><h2>Exported Songs Registry</h2><span class="badge">Project allocation record</span></div>
+          <div id="registryRows"></div>
+        </div>
+        <div class="allocation-layout">
+          <div class="card section">
+            <h2>New Song Allocation</h2>
+            <div class="fields">
+              <div class="field"><label>Song</label><select id="allocationSong"></select></div>
+              <div class="field"><label>Allocation Mode</label><select id="allocationMode"><option value="auto">Auto Allocate</option><option value="manual">Manual Allocate</option></select></div>
+            </div>
+            <div class="allocation-fields">
+              <div class="field"><label>Sequence Start</label><input id="draftSequence" type="number" min="1"></div>
+              <div class="field"><label>Effects Start</label><input id="draftEffects" type="number" min="1"></div>
+              <div class="field"><label>Timecode</label><input id="draftTimecode" type="number" min="1"></div>
+              <div class="field"><label>Song Macro</label><input id="draftMacro" type="number" min="1"></div>
+              <div class="field"><label>View</label><input id="draftView" type="number" min="1"></div>
+            </div>
+            <div class="allocation-result" id="allocationResult">Available · No conflicts with registered songs</div>
+            <div class="playlist-actions"><button class="btn" id="autoAllocate">Find Next Available</button><button class="btn primary" id="registerDraft">Register Export</button></div>
+          </div>
+          <div class="card section">
+            <h2>Incremental Components</h2>
+            <div class="checks" style="grid-template-columns:1fr;margin-top:13px">
+              <label class="check"><input type="checkbox" checked> Song Sequences</label>
+              <label class="check"><input type="checkbox" checked> Timecode</label>
+              <label class="check"><input type="checkbox" checked> Song Macros</label>
+              <label class="check"><input type="checkbox" checked> Song View</label>
+              <label class="check muted"><input type="checkbox" disabled> Song List Sequence · not included</label>
+            </div>
+          </div>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="songs">Back</button><button class="btn primary" data-goto="setup">Console Setup</button></div>
       </section>
 
       <section class="page" id="setup">
@@ -239,7 +294,7 @@
             </div>
           </details>
         </div>
-        <div class="footer-actions"><button class="btn" data-goto="songs">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
+        <div class="footer-actions"><button class="btn" data-goto="registry">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
       </section>
 
       <section class="page" id="viewLayout">
@@ -284,17 +339,24 @@
         </div>
         <h2>Export Plan</h2>
         <div class="review-list" id="reviewList"></div>
-        <div class="footer-actions"><button class="btn" data-goto="setup">Back</button><button class="btn primary" id="fakeExport">Export Checked Songs…</button></div>
+        <div class="footer-actions"><button class="btn" data-goto="viewLayout">Back</button><button class="btn primary" id="fakeExport">Export Checked Songs…</button></div>
       </section>
     </main>
   </div>
 
   <script>
     const songs = [
-      { name: "TEST · 真爭得想起來", en: "TEST", marks: 4, selected: true, open: false, contents: [{ name: "Main", on: true }, { name: "Hit", on: true }, { name: "Stomp", on: true }] },
-      { name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", marks: 6, selected: true, open: true, contents: [{ name: "Main", on: true }, { name: "Mark 2", on: true }, { name: "Mark 3", on: true }, { name: "Mark 4", on: false }, { name: "Mark 5", on: false }, { name: "Mark 6", on: false }] },
-      { name: "SKY LIGHT", en: "SKY_LIGHT", marks: 1, selected: true, open: false, contents: [{ name: "Main", on: true }] }
+      { id: "song-1", name: "TEST · 真爭得想起來", en: "TEST", marks: 4, selected: true, open: false, contents: [{ name: "Main", on: true }, { name: "Hit", on: true }, { name: "Stomp", on: true }] },
+      { id: "song-2", name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", marks: 6, selected: true, open: true, contents: [{ name: "Main", on: true }, { name: "Mark 2", on: true }, { name: "Mark 3", on: true }, { name: "Mark 4", on: false }, { name: "Mark 5", on: false }, { name: "Mark 6", on: false }] },
+      { id: "song-3", name: "SKY LIGHT", en: "SKY_LIGHT", marks: 1, selected: true, open: false, contents: [{ name: "Main", on: true }] }
     ];
+
+    const exportRegistry = new Map([
+      ["song-1", { seqStart: 1, seqEnd: 20, effectStart: 201, effectEnd: 300, timecode: 201, macro: 201, view: 201, exported: "2026-08-01" }],
+      ["song-2", { seqStart: 21, seqEnd: 40, effectStart: 301, effectEnd: 400, timecode: 202, macro: 202, view: 202, exported: "2026-08-05" }]
+    ]);
+    let draftSongId = "song-3";
+    let draftAllocation = null;
 
     const $ = selector => document.querySelector(selector);
     const $$ = selector => [...document.querySelectorAll(selector)];
@@ -310,12 +372,89 @@
     let nextWidgetId = 5;
 
     function allocation(index) {
+      const song = songs[index];
+      const locked = exportRegistry.get(song.id);
+      if (locked) return locked;
+      if (draftAllocation && song.id === draftSongId) return draftAllocation;
       const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
       const seqEnd = seqStart + numberValue("#seqSlots") - 1;
       const effectSlots = numberValue("#effectSlots");
       const effectStart = numberValue("#effectStart") + index * effectSlots;
       const timecode = numberValue("#tcStart") + index;
       return { seqStart, seqEnd, effectStart, effectEnd: effectStart + effectSlots - 1, timecode };
+    }
+
+    function nextAvailableAllocation() {
+      const entries = [...exportRegistry.values()];
+      const seqSlots = numberValue("#seqSlots");
+      const effectSlots = numberValue("#effectSlots");
+      const seqStart = entries.length ? Math.max(...entries.map(item => item.seqEnd)) + 1 : numberValue("#seqStart");
+      const effectStart = entries.length ? Math.max(...entries.map(item => item.effectEnd)) + 1 : numberValue("#effectStart");
+      const timecode = entries.length ? Math.max(...entries.map(item => item.timecode)) + 1 : numberValue("#tcStart");
+      const macro = entries.length ? Math.max(...entries.map(item => item.macro)) + 1 : 201;
+      const view = entries.length ? Math.max(...entries.map(item => item.view)) + 1 : 201;
+      return { seqStart, seqEnd: seqStart + seqSlots - 1, effectStart, effectEnd: effectStart + effectSlots - 1, timecode, macro, view };
+    }
+
+    function readDraftAllocation() {
+      const seqStart = numberValue("#draftSequence");
+      const effectStart = numberValue("#draftEffects");
+      return { seqStart, seqEnd: seqStart + numberValue("#seqSlots") - 1, effectStart, effectEnd: effectStart + numberValue("#effectSlots") - 1, timecode: numberValue("#draftTimecode"), macro: numberValue("#draftMacro"), view: numberValue("#draftView") };
+    }
+
+    function allocationConflicts(candidate) {
+      const conflicts = [];
+      exportRegistry.forEach((item, songId) => {
+        const song = songs.find(entry => entry.id === songId);
+        if (candidate.seqStart <= item.seqEnd && item.seqStart <= candidate.seqEnd) conflicts.push(`${song.en} Sequence ${item.seqStart}–${item.seqEnd}`);
+        if (candidate.effectStart <= item.effectEnd && item.effectStart <= candidate.effectEnd) conflicts.push(`${song.en} Effects ${item.effectStart}–${item.effectEnd}`);
+        if (candidate.timecode === item.timecode) conflicts.push(`${song.en} Timecode ${item.timecode}`);
+        if (candidate.macro === item.macro) conflicts.push(`${song.en} Macro ${item.macro}`);
+        if (candidate.view === item.view) conflicts.push(`${song.en} View ${item.view}`);
+      });
+      return conflicts;
+    }
+
+    function writeDraftFields(allocationValue) {
+      $("#draftSequence").value = allocationValue.seqStart;
+      $("#draftEffects").value = allocationValue.effectStart;
+      $("#draftTimecode").value = allocationValue.timecode;
+      $("#draftMacro").value = allocationValue.macro;
+      $("#draftView").value = allocationValue.view;
+      draftAllocation = { ...allocationValue };
+    }
+
+    function validateDraft() {
+      draftAllocation = readDraftAllocation();
+      const conflicts = allocationConflicts(draftAllocation);
+      $("#allocationResult").classList.toggle("conflict", conflicts.length > 0);
+      $("#allocationResult").textContent = conflicts.length ? `Conflict · ${conflicts.join("; ")}` : "Available · No conflicts with registered songs";
+      renderSongs();
+      if ($("#viewLayout").classList.contains("active")) renderViewLayout();
+      return conflicts.length === 0;
+    }
+
+    function renderRegistry() {
+      const pending = songs.filter(song => !exportRegistry.has(song.id));
+      if (!pending.some(song => song.id === draftSongId)) draftSongId = pending[0]?.id || "";
+      $("#allocationSong").innerHTML = pending.length ? pending.map(song => `<option value="${song.id}">${song.name}</option>`).join("") : `<option value="">All songs registered</option>`;
+      $("#allocationSong").value = draftSongId;
+      const manual = $("#allocationMode").value === "manual";
+      ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual);
+      $("#registerDraft").disabled = pending.length === 0;
+      const suggested = nextAvailableAllocation();
+      if (!draftAllocation || $("#allocationMode").value === "auto") writeDraftFields(suggested);
+      $("#registryRows").innerHTML = `<div class="registry-row"><span>Song / MA name</span><span>Status</span><span>Sequence</span><span>Effects</span><span>Timecode</span><span>Macro</span><span>View</span></div>` + songs.map(song => {
+        const item = exportRegistry.get(song.id) || (song.id === draftSongId ? draftAllocation : null);
+        if (!item) return "";
+        const existing = exportRegistry.has(song.id);
+        return `<div class="registry-row"><span><strong>${song.name}</strong><br><span class="muted">${song.en}</span></span><span class="status ${existing ? "existing" : "pending"}">${existing ? "Existing" : "Pending"}</span><span>${item.seqStart}–${item.seqEnd}</span><span>${item.effectStart}–${item.effectEnd}</span><span>${item.timecode}</span><span>${item.macro}</span><span>${item.view}</span></div>`;
+      }).join("");
+      $("#registeredCount").textContent = exportRegistry.size;
+      $("#nextSequence").textContent = suggested.seqStart;
+      $("#nextEffects").textContent = suggested.effectStart;
+      $("#nextIds").textContent = suggested.timecode;
+      validateDraft();
     }
 
     function renderSongs() {
@@ -379,9 +518,19 @@
       return ({ camera: "Camera Pool", effects: "Effects", filters: "Filters", forms: "Forms", groups: "Groups", images: "Images", layout: "Layout Pool", macros: "Macros", masks: "Masks", matricks: "MAtricks", pagesChannel: "Pages Channel", pagesExec: "Pages Exec", sequence: "Sequence", timecode: "Timecode Pool", timecodeSlots: "Timecode Slots Pool", timer: "Timer", views: "Views", universes: "Universes", worlds: "Worlds" })[type];
     }
 
+    function widgetStartForSong(widget, songIndex) {
+      if (widget.mode === "fixed") return widget.start;
+      const assigned = allocation(songIndex);
+      if (widget.type === "sequence") return assigned.seqStart;
+      if (widget.type === "effects") return assigned.effectStart;
+      if (widget.type === "macros" && assigned.macro) return assigned.macro;
+      if (widget.type === "views" && assigned.view) return assigned.view;
+      if ((widget.type === "timecode" || widget.type === "timecodeSlots") && assigned.timecode) return assigned.timecode;
+      return widget.start + songIndex * widget.stride;
+    }
+
     function previewStart(widget) {
-      const songIndex = Number($("#viewSong").value || 0);
-      return widget.mode === "perSong" ? widget.start + songIndex * widget.stride : widget.start;
+      return widgetStartForSong(widget, Number($("#viewSong").value || 0));
     }
 
     function renderViewLayout() {
@@ -444,7 +593,7 @@
       const ranges = viewWidgets.flatMap(widget => {
         const count = widget.mode === "perSong" ? songs.length : 1;
         const visible = widget.w * widget.h - 1;
-        return Array.from({ length: count }, (_, songIndex) => ({ widget, songIndex, start: widget.start + (widget.mode === "perSong" ? songIndex * widget.stride : 0), end: widget.start + (widget.mode === "perSong" ? songIndex * widget.stride : 0) + visible - 1 }));
+        return Array.from({ length: count }, (_, songIndex) => { const start = widgetStartForSong(widget, songIndex); return { widget, songIndex, start, end: start + visible - 1 }; });
       });
       const poolCollision = ranges.some((range, index) => ranges.slice(index + 1).some(other => range.widget.type === other.widget.type && range.widget.id !== other.widget.id && range.start <= other.end && other.start <= range.end)) || viewWidgets.some(widget => widget.mode === "perSong" && widget.stride < widget.w * widget.h - 1);
       const warning = layoutCollision || poolCollision;
@@ -478,6 +627,7 @@
     function showPage(id) {
       $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
       $$(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.page === id));
+      if (id === "registry") renderRegistry();
       if (id === "viewLayout") initializeViewLayout();
       if (id === "review") renderReview();
     }
@@ -492,6 +642,11 @@
     $("#recalc").addEventListener("click", renderSongs);
     $("#validateTop").addEventListener("click", () => showPage("review"));
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
+    $("#allocationMode").addEventListener("change", () => { const manual = $("#allocationMode").value === "manual"; ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual); if (!manual) writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
+    $("#allocationSong").addEventListener("change", () => { draftSongId = $("#allocationSong").value; draftAllocation = null; renderRegistry(); });
+    ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).addEventListener("input", validateDraft));
+    $("#autoAllocate").addEventListener("click", () => { $("#allocationMode").value = "auto"; writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
+    $("#registerDraft").addEventListener("click", () => { if (!draftSongId || !validateDraft()) return; exportRegistry.set(draftSongId, { ...draftAllocation, exported: "Prototype" }); draftAllocation = null; renderRegistry(); renderSongs(); initializeViewLayout(); });
     $("#viewSong").addEventListener("change", renderViewLayout);
     $("#lockLayout").addEventListener("change", renderViewLayout);
     ["#poolType", "#poolMode", "#poolStart", "#poolStride"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
