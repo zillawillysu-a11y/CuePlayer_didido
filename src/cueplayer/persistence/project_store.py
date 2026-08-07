@@ -90,6 +90,9 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_song_macro_start": int(settings.ma2_song_macro_start),
         "ma2_add_main_preset_cue": bool(settings.ma2_add_main_preset_cue),
         "ma2_main_preset_cue_id": float(settings.ma2_main_preset_cue_id),
+        "ma2_include_song_views": bool(settings.ma2_include_song_views),
+        "ma2_view_pool_start": int(settings.ma2_view_pool_start),
+        "ma2_effect_pool_start": int(settings.ma2_effect_pool_start),
         "export_song_ids": list(settings.export_song_ids),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
@@ -131,6 +134,9 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_song_macro_start=int(raw.get("ma2_song_macro_start", 1009) or 1009),
         ma2_add_main_preset_cue=bool(raw.get("ma2_add_main_preset_cue", False)),
         ma2_main_preset_cue_id=float(raw.get("ma2_main_preset_cue_id", 0.5) or 0.5),
+        ma2_include_song_views=bool(raw.get("ma2_include_song_views", True)),
+        ma2_view_pool_start=int(raw.get("ma2_view_pool_start", 201) or 201),
+        ma2_effect_pool_start=int(raw.get("ma2_effect_pool_start", 201) or 201),
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

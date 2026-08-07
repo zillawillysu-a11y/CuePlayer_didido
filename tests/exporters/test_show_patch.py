@@ -135,6 +135,8 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert paths["show:song_list"].name == "Show_Install_Song_List.xml"
     assert paths["show:fixed_macros"].name == "Show_Install_Fixed_Macros.xml"
     assert paths["show:song_macros"].name == "Show_Install_Song_Macros.xml"
+    assert paths["show:view_1"].name == "Show_Install_View_1.xml"
+    assert paths["show:view_2"].name == "Show_Install_View_2.xml"
 
     song_list = paths["show:song_list"].read_text(encoding="utf-8")
     fixed_macros = paths["show:fixed_macros"].read_text(encoding="utf-8")
@@ -208,6 +210,10 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert 'Label Page 100 "CuePlayer Template Page"' in lua
     assert 'Assign Sequence 5 At Page 1.100.130' in lua
     assert 'Label Executor 100.130 "CuePlayer Song List"' in lua
+    assert 'Import "Show_Install_View_1" At View 201' in lua
+    assert 'Label View 201 "SongA"' in lua
+    assert 'Import "Show_Install_View_2" At View 202' in lua
+    assert 'Label View 202 "SongB"' in lua
     # Honor user Button 起始 (102).
     assert plans[0].button_lanes[0].executor.endswith(".102")
     assert plans[1].button_lanes[0].executor == "2.102"
@@ -237,6 +243,30 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
 
     assert sequ_index(paths["SongA:main_sequence"]) == "0"
     assert sequ_index(paths["SongB:main_sequence"]) == "0"
+
+    view_root = ET.parse(paths["show:view_1"]).getroot()
+    ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
+    view = view_root.find("ma:View", ns)
+    assert view is not None
+    assert view.get("name") == "SongA"
+    assert view.get("display_mask") == "4"
+    widgets = view.findall("ma:Widget", ns)
+    assert [widget.get("type") for widget in widgets] == [
+        "454e4749",
+        "454e4749",
+        "53455155",
+        "4d414352",
+    ]
+    assert widgets[1].get("scroll_offset") == "120"  # Effect starts at 201.
+    assert widgets[1].get("anz_rows") == "5"
+    assert widgets[1].get("anz_cols") == "16"
+    assert widgets[2].get("scroll_index") == "0"
+
+    view_2_root = ET.parse(paths["show:view_2"]).getroot()
+    view_2 = view_2_root.find("ma:View", ns)
+    assert view_2 is not None
+    view_2_widgets = view_2.findall("ma:Widget", ns)
+    assert view_2_widgets[1].get("scroll_offset") == "200"  # Next 80 slots.
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
     assert 'luafile="Show_Install_export.lua"' in plugin_xml
     assert 'name="Show_Install"' in plugin_xml
@@ -279,6 +309,7 @@ def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
         include_fixed_macros=False,
         include_song_macros=True,
         include_song_list=False,
+        include_song_views=False,
         template_page=77,
         fixed_macro_start=100,
         song_macro_start=200,
@@ -294,6 +325,7 @@ def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
     )
     assert "Song_List" not in lua
     assert "Template Page" not in lua
+    assert "At View" not in lua
 
 
 def test_ma2_main_preset_cue_rejects_existing_cue_id(tmp_path) -> None:
@@ -314,3 +346,34 @@ def test_ma2_main_preset_cue_rejects_existing_cue_id(tmp_path) -> None:
             add_main_preset_cue=True,
             main_preset_cue_id=1,
         )
+
+
+def test_ma2_song_view_matches_s1_pool_scrolls(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Intro", ma="Intro", button_names=[])]
+    settings = MaExportSettings(
+        console="ma2",
+        export_mode="full",
+        sequence_pool_start=244,
+    )
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        view_pool_start=200,
+        effect_pool_start=305,
+    )
+
+    root = ET.parse(paths["show:view_1"]).getroot()
+    ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
+    widgets = root.findall("ma:View/ma:Widget", ns)
+    assert widgets[1].get("scroll_offset") == "224"
+    assert widgets[2].get("scroll_offset") == "240"
+    lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    assert 'Import "CuePlayer_Show_Install_View_1" At View 200' in lua
+    assert 'Label View 200 "Intro"' in lua

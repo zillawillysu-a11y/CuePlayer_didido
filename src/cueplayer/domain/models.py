@@ -1049,6 +1049,9 @@ class MaExportSettings:
     ma2_song_macro_start: int = 1009
     ma2_add_main_preset_cue: bool = False
     ma2_main_preset_cue_id: float = 0.5
+    ma2_include_song_views: bool = True
+    ma2_view_pool_start: int = 201
+    ma2_effect_pool_start: int = 201
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
     output_dir_ma2: str = ""

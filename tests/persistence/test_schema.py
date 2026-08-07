@@ -29,6 +29,9 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_song_macro_start=3201,
         ma2_add_main_preset_cue=True,
         ma2_main_preset_cue_id=0.25,
+        ma2_include_song_views=False,
+        ma2_view_pool_start=501,
+        ma2_effect_pool_start=601,
     )
 
     loaded = dict_to_ma_export(ma_export_to_dict(settings))
@@ -41,6 +44,9 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_song_macro_start == 3201
     assert loaded.ma2_add_main_preset_cue is True
     assert loaded.ma2_main_preset_cue_id == 0.25
+    assert loaded.ma2_include_song_views is False
+    assert loaded.ma2_view_pool_start == 501
+    assert loaded.ma2_effect_pool_start == 601
 
 
 def test_legacy_ma2_macro_start_loads_as_fixed_macro_start() -> None:

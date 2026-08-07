@@ -179,6 +179,9 @@ class Ma2Exporter:
         song_macro_start: int = 1009,
         add_main_preset_cue: bool = False,
         main_preset_cue_id: float = 0.5,
+        include_song_views: bool = True,
+        view_pool_start: int = 201,
+        effect_pool_start: int = 201,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -212,6 +215,8 @@ class Ma2Exporter:
                 song_macro_start=song_macro_start,
                 add_main_preset_cue=add_main_preset_cue,
                 main_preset_cue_id=main_preset_cue_id,
+                include_song_views=include_song_views,
+                view_pool_start=view_pool_start,
             )
             all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
@@ -242,6 +247,15 @@ class Ma2Exporter:
                     include_fixed=False,
                     include_songs=True,
                 )
+            if include_song_views:
+                for index, plan in enumerate(plans):
+                    all_paths[f"show:view_{index + 1}"] = self.write_song_view(
+                        plan,
+                        directory,
+                        view_pool=int(view_pool_start) + index,
+                        effect_pool_start=int(effect_pool_start) + index * 80,
+                        basename=f"{show_install_name}_View_{index + 1}",
+                    )
         return all_paths
 
     def write_song_list_sequence(
@@ -381,6 +395,87 @@ class Ma2Exporter:
                     {"index": str(line_index)},
                 )
                 ET.SubElement(line, f"{{{MA2_NS}}}text").text = command
+        write_xml(root, path, default_namespace=MA2_NS)
+        self._fix_ma2_xsi(path)
+        return path
+
+    def write_song_view(
+        self,
+        plan: SongExportPlan,
+        directory: Path,
+        *,
+        view_pool: int,
+        effect_pool_start: int,
+        basename: str,
+    ) -> Path:
+        """Write the supplied Screen 3 song-pool layout as an importable View."""
+        import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
+        import_dir.mkdir(parents=True, exist_ok=True)
+        safe_base = sanitize_ma_name(basename, fallback=f"CuePlayer_View_{view_pool}")
+        path = import_dir / f"{safe_base}.xml"
+        root = self._root()
+        view_name = sanitize_ma_name(plan.song_name, fallback=f"Song{view_pool}")
+        self._info(root, view_name)
+        view = ET.SubElement(
+            root,
+            f"{{{MA2_NS}}}View",
+            {
+                "index": "0",
+                "name": view_name,
+                "display_mask": "4",
+            },
+        )
+
+        def add_widget(index: int, widget_type: str, **attrs: str) -> None:
+            widget_attrs = {
+                "index": str(index),
+                "type": widget_type,
+                "display_nr": "2",
+                **attrs,
+            }
+            widget = ET.SubElement(view, f"{{{MA2_NS}}}Widget", widget_attrs)
+            data = ET.SubElement(widget, f"{{{MA2_NS}}}Data")
+            values = ("0", "0", "0", "3") if widget_type == "4d414352" else (
+                "0",
+                "1",
+                "0",
+                "3",
+            )
+            for value in values:
+                ET.SubElement(data, f"{{{MA2_NS}}}Data").text = value
+
+        # Template Effect page (1...) and Macro row are fixed for every song.
+        add_widget(0, "454e4749", y="6", anz_rows="2", anz_cols="16")
+        # Song Effect page: the reference layout shows 5 x 16 = 80 pool slots.
+        effect_scroll = max(0, int(effect_pool_start) - 81)
+        add_widget(
+            1,
+            "454e4749",
+            y="1",
+            anz_rows="5",
+            anz_cols="16",
+            scroll_offset=str(effect_scroll),
+            scroll_index=str(effect_scroll),
+        )
+        # Sequence row starts on the song's allocated Main Sequence.
+        sequence_scroll = max(0, int(plan.profile.sequence_pool_start) - 4)
+        add_widget(
+            2,
+            "53455155",
+            anz_rows="1",
+            anz_cols="10",
+            scroll_offset=str(sequence_scroll),
+            scroll_index=str(sequence_scroll),
+        )
+        add_widget(
+            3,
+            "4d414352",
+            has_focus="true",
+            has_scrollfocus="true",
+            x="10",
+            anz_rows="1",
+            anz_cols="6",
+        )
         write_xml(root, path, default_namespace=MA2_NS)
         self._fix_ma2_xsi(path)
         return path
@@ -869,6 +964,8 @@ class Ma2Exporter:
         song_macro_start: int = 1009,
         add_main_preset_cue: bool = False,
         main_preset_cue_id: float = 0.5,
+        include_song_views: bool = True,
+        view_pool_start: int = 201,
     ) -> dict[str, Path]:
         """
         CuePoints-style show Plugin: Store/Assign everything, then write+Import
@@ -943,6 +1040,18 @@ class Ma2Exporter:
                     f'Label Executor {page}.130 "CuePlayer Song List"',
                 ]
             )
+        if include_song_views:
+            for index, plan in enumerate(plans):
+                view_pool = int(view_pool_start) + index
+                view_name = sanitize_ma_name(
+                    plan.song_name, fallback=f"Song{index + 1}"
+                )
+                extra_imports.extend(
+                    [
+                        f'Import "{safe_name}_View_{index + 1}" At View {view_pool}',
+                        f'Label View {view_pool} "{view_name}"',
+                    ]
+                )
         cmd_lines.extend(extra_imports)
         paths = self._write_plugin_pair(
             directory,
