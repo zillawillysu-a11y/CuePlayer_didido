@@ -31,9 +31,6 @@ from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
     ClipWaveformPeaks,
     VideoClipWaveformCache,
-    sample_source_peaks_for_clip_times,
-    sample_source_raw_for_clip_times,
-    timeline_to_clip_local,
 )
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
@@ -4275,12 +4272,10 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Always paint when peaks are cached. The play/scrub path rebuilds a
-        # static backdrop that is reused for many frames — skipping here left
-        # empty blue clip rects for the whole play session (waves only returned
-        # on pause). Decode stays async via VideoClipWaveformCache.
-        x_left = int(rect.left())
-        x_right = int(rect.right())
+        # Always paint when peaks are cached. Decode stays async via
+        # VideoClipWaveformCache; this path only reads the retained peaks.
+        x_left = int(math.floor(rect.left()))
+        x_right = int(math.ceil(rect.right()))
         width_px = x_right - x_left
         if width_px < 4:
             return
@@ -4289,83 +4284,34 @@ class TimelineWidget(QWidget):
         if duration <= 1e-9:
             return
 
-        # Do not start new PyAV waveform workers mid-play (av_path_lock /
-        # GIL contention with the mixer). Cached peaks still paint.
         peaks = self._video_waveform_cache.peaks_for_paint(
             clip, allow_submit=not self._playing
         )
         if peaks is None or peaks.mono.size == 0:
             return
 
-        mid = rect.center().y()
-        amp = max(2.0, rect.height() / 2 - 3)
+        mid = float(rect.center().y())
+        amp = max(2.0, float(rect.height()) / 2.0 - 3.0)
         color = QColor("#dbe4ff")
-        color.setAlpha(70 if self._video_track_muted else 175)
+        color.setAlpha(90 if self._video_track_muted else 210)
 
-        # Continuous filled envelope into the retained static backdrop.
-        # Do NOT skip columns (old step=2/3 left comb-like visual holes even
-        # when artifact coverage was complete). Cost runs only on rebuild;
-        # playback ticks blit the pixmap.
-        samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
-        use_raw = samples_per_pixel <= 1.5
         t_render = monotonic_ns()
         try:
-            tops: list[QPointF] = []
-            bots: list[QPointF] = []
-
-            def _flush_segment() -> None:
-                nonlocal tops, bots
-                if len(tops) < 2:
-                    tops = []
-                    bots = []
-                    return
-                path = QPainterPath(tops[0])
-                for p in tops[1:]:
-                    path.lineTo(p)
-                for p in reversed(bots):
-                    path.lineTo(p)
-                path.closeSubpath()
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(color))
-                painter.drawPath(path)
-                tops = []
-                bots = []
-
-            for x in range(x_left, x_right + 1):
-                t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + 1)
-                clip_t0 = timeline_to_clip_local(t0, clip)
-                clip_t1 = timeline_to_clip_local(t1, clip)
-                if clip_t0 is None and clip_t1 is None:
-                    _flush_segment()
-                    continue
-                if clip_t0 is None:
-                    clip_t0 = 0.0
-                if clip_t1 is None:
-                    clip_t1 = duration
-                clip_t0 = max(0.0, min(duration, clip_t0))
-                clip_t1 = max(clip_t0, min(duration, clip_t1))
-                if use_raw:
-                    lo, hi = sample_source_raw_for_clip_times(
-                        peaks, clip, clip_t0=clip_t0, clip_t1=clip_t1
-                    )
-                else:
-                    lo, hi = sample_source_peaks_for_clip_times(
-                        peaks,
-                        clip,
-                        clip_t0=clip_t0,
-                        clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel,
-                    )
-                # Pending / uncovered bins are NaN — break the path (no fabricate).
-                if not (lo == lo and hi == hi):
-                    _flush_segment()
-                    continue
-                tops.append(QPointF(float(x), mid + hi * amp))
-                bots.append(QPointF(float(x), mid + lo * amp))
-            _flush_segment()
+            # O(buckets) continuous filled silhouette — Music-lane-like body
+            # without per-pixel peak sampling. Per-pixel paths dropped 1-wide
+            # segments and Zoom/scroll rebuilds stalled the UI thread.
+            self._paint_video_clip_waveform_silhouette(
+                painter,
+                peaks,
+                clip=clip,
+                duration=duration,
+                x_left=x_left,
+                x_right=x_right,
+                mid=mid,
+                amp=amp,
+                color=color,
+            )
         except Exception:
-            # Corrupt / partially-built peaks must never take down the UI.
             return
         finally:
             if perf_diag.is_enabled():
@@ -4373,6 +4319,76 @@ class TimelineWidget(QWidget):
                 perf_diag.record_ms(
                     "video_waveform.render.rebuild_ms", elapsed_ms
                 )
+
+    def _paint_video_clip_waveform_silhouette(
+        self,
+        painter: QPainter,
+        peaks: ClipWaveformPeaks,
+        *,
+        clip: VideoClip,
+        duration: float,
+        x_left: int,
+        x_right: int,
+        mid: float,
+        amp: float,
+        color: QColor,
+    ) -> None:
+        """Continuous bipolar envelope from clip-local overview buckets.
+
+        Adjacent buckets abut in X so there are no artificial column holes.
+        NaN / uncovered buckets break the run (pending ≠ fabricated silence).
+        """
+        n = int(peaks.mins.size)
+        if n <= 0 or duration <= 1e-9:
+            return
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        clip_start = float(clip.start_seconds)
+
+        tops: list[QPointF] = []
+        bots: list[QPointF] = []
+
+        def _flush() -> None:
+            nonlocal tops, bots
+            if len(tops) < 2:
+                tops = []
+                bots = []
+                return
+            path = QPainterPath(tops[0])
+            for p in tops[1:]:
+                path.lineTo(p)
+            for p in reversed(bots):
+                path.lineTo(p)
+            path.closeSubpath()
+            painter.drawPath(path)
+            tops = []
+            bots = []
+
+        for i in range(n):
+            lo = float(peaks.mins[i])
+            hi = float(peaks.maxs[i])
+            if not (lo == lo and hi == hi):
+                _flush()
+                continue
+            t0 = duration * (i / n)
+            t1 = duration * ((i + 1) / n)
+            x0 = self._x_for_time(clip_start + t0)
+            x1 = self._x_for_time(clip_start + t1)
+            if x1 < x_left or x0 > x_right:
+                _flush()
+                continue
+            x0c = max(float(x_left), float(x0))
+            x1c = min(float(x_right), float(x1))
+            if x1c <= x0c:
+                continue
+            y_hi = mid + hi * amp
+            y_lo = mid + lo * amp
+            if not tops:
+                tops.append(QPointF(x0c, y_hi))
+                bots.append(QPointF(x0c, y_lo))
+            tops.append(QPointF(x1c, y_hi))
+            bots.append(QPointF(x1c, y_lo))
+        _flush()
 
     def _paint_video_clip_waveform_coarse(
         self,
@@ -4386,12 +4402,19 @@ class TimelineWidget(QWidget):
         amp: float,
         clip_start: float,
     ) -> None:
-        """O(buckets) overview paint for play-time backdrop bake."""
+        """O(buckets) overview paint — continuous abutting filled columns."""
         n = int(peaks.mins.size)
         if n <= 0 or duration <= 1e-9:
             return
+        color = QColor("#dbe4ff")
+        color.setAlpha(210)
+        painter.setPen(Qt.PenStyle.NoPen)
         try:
             for i in range(n):
+                lo = float(peaks.mins[i])
+                hi = float(peaks.maxs[i])
+                if not (lo == lo and hi == hi):
+                    continue
                 t0 = duration * (i / n)
                 t1 = duration * ((i + 1) / n)
                 x0 = int(self._x_for_time(clip_start + t0))
@@ -4400,10 +4423,11 @@ class TimelineWidget(QWidget):
                     continue
                 x0 = max(x_left, x0)
                 x1 = min(x_right, max(x0 + 1, x1))
-                lo = float(peaks.mins[i])
-                hi = float(peaks.maxs[i])
-                xm = (x0 + x1) * 0.5
-                painter.drawLine(QPointF(xm, mid + lo * amp), QPointF(xm, mid + hi * amp))
+                y0 = mid + hi * amp
+                y1 = mid + lo * amp
+                top = min(y0, y1)
+                h = max(1.0, abs(y1 - y0))
+                painter.fillRect(QRectF(float(x0), top, float(x1 - x0), h), color)
         except Exception:
             return
 

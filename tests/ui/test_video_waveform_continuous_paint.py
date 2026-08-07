@@ -1,4 +1,4 @@
-"""Video Track waveform continuous envelope (no comb-column holes)."""
+"""Video Track waveform continuous silhouette (no comb-column holes)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,11 @@ from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.domain.models import Song, VideoClip
-from cueplayer.media.video_clip_waveform import ClipWaveformPeaks
+from cueplayer.media.video_clip_waveform import ClipWaveformPeaks, VideoClipWaveformCache
+from cueplayer.media.video_waveform_artifact import (
+    EmbeddedWaveformArtifact,
+    set_waveform_build_paused,
+)
 from cueplayer.ui.timeline_widget import TimelineWidget
 
 
@@ -23,10 +27,10 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_video_lane_waveform_has_no_regular_column_holes(
-    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_video_lane_silhouette_is_continuous_dense(
+    app: QApplication, tmp_path: Path
 ) -> None:
-    """Filled envelope must paint contiguous columns (step=2/3 was the comb)."""
+    """Bucket silhouette must fill the lane like a normal waveform body."""
     del app
     media = tmp_path / "clip.mov"
     media.write_bytes(b"fake")
@@ -44,53 +48,43 @@ def test_video_lane_waveform_has_no_regular_column_holes(
     tl.resize(900, 420)
     tl.set_show_video_track(True, emit=False)
     tl.set_song(song)
+    # Match clip start to visible timeline mapping used by silhouette.
+    tl._scroll_x = 0.0  # noqa: SLF001
+    tl._pixels_per_second = 40.0  # noqa: SLF001
 
-    n = 400
+    n = 128
+    # Loud bipolar envelope — must paint a thick continuous body.
+    mins = np.full(n, -0.7, dtype=np.float32)
+    maxs = np.full(n, 0.7, dtype=np.float32)
     peaks = ClipWaveformPeaks(
         sample_rate=50,
         mono_origin_seconds=0.0,
-        mono=np.linspace(-0.6, 0.6, n, dtype=np.float32),
+        mono=np.linspace(-0.7, 0.7, n, dtype=np.float32),
         peak_levels=[],
-        mins=np.full(n, -0.5, dtype=np.float32),
-        maxs=np.full(n, 0.5, dtype=np.float32),
+        mins=mins,
+        maxs=maxs,
         coverage=np.ones(n, dtype=np.uint8),
     )
     key = tl._video_waveform_cache.key_for(clip)  # noqa: SLF001
     tl._video_waveform_cache._peaks[key] = peaks  # noqa: SLF001
 
-    # Bypass timeline mapping so every column samples covered peaks.
-    import cueplayer.ui.timeline_widget as tw
-
-    monkeypatch.setattr(tw, "timeline_to_clip_local", lambda _t, _c: 0.5)
-    monkeypatch.setattr(
-        tw, "sample_source_peaks_for_clip_times", lambda *a, **k: (-0.5, 0.5)
-    )
-    monkeypatch.setattr(
-        tw, "sample_source_raw_for_clip_times", lambda *a, **k: (-0.5, 0.5)
-    )
-
-    path_calls: list[int] = []
-    orig_draw = QPainter.drawPath
-
-    def _spy_draw(self, path) -> None:  # noqa: ANN001
-        path_calls.append(int(path.elementCount()))
-        return orig_draw(self, path)
-
-    monkeypatch.setattr(QPainter, "drawPath", _spy_draw)
-
-    pm = QPixmap(400, 80)
+    # Clip spans header.. — paint into a pixmap using widget coords.
+    x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
+    x1 = int(tl._x_for_time(8.0))  # noqa: SLF001
+    pm = QPixmap(max(400, x1 + 20), 120)
     pm.fill()
     painter = QPainter(pm)
-    tl._paint_video_clip_waveform(painter, clip, QRectF(10, 10, 380, 60))  # noqa: SLF001
+    rect = QRectF(float(x0), 20.0, float(max(40, x1 - x0)), 80.0)
+    tl._paint_video_clip_waveform(painter, clip, rect)  # noqa: SLF001
     painter.end()
 
-    assert path_calls, "expected continuous QPainterPath envelope"
-    # One contiguous segment across the rect (not sparse per-column lines).
-    assert path_calls[0] >= 100
-
     img = pm.toImage().convertToFormat(QImage.Format.Format_ARGB32)
-    y = 40
-    painted = [img.pixel(x, y) != 0xFFFFFFFF for x in range(20, 380)]
+    y = 60
+    painted = [img.pixel(x, y) != 0xFFFFFFFF for x in range(x0 + 2, max(x0 + 3, x1 - 2))]
+    assert sum(painted) > len(painted) * 0.7, (
+        f"expected dense silhouette, painted={sum(painted)}/{len(painted)}"
+    )
+    # No regular 1–2px comb holes in the interior.
     gaps = 0
     i = 0
     while i < len(painted):
@@ -103,47 +97,89 @@ def test_video_lane_waveform_has_no_regular_column_holes(
                 gaps += 1
         else:
             i += 1
-    assert gaps < 8, f"too many comb-like holes: {gaps}"
-    assert sum(painted) > 100
+    assert gaps < 8, f"comb-like holes={gaps}"
 
 
-def test_gui_notify_coalesces_while_building(app: QApplication, tmp_path: Path) -> None:
+def test_silhouette_paint_is_o_buckets_not_o_pixels(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zoom rebuilds must not walk every pixel with peak sampling."""
     del app
-    from cueplayer.media.video_clip_waveform import VideoClipWaveformCache
-    from cueplayer.media.video_waveform_artifact import (
-        EmbeddedWaveformArtifact,
-        set_waveform_build_paused,
+    media = tmp_path / "clip.mov"
+    media.write_bytes(b"fake")
+    song = Song.create("Vid")
+    clip = VideoClip.create(
+        path=media,
+        name="Clip",
+        start_seconds=0.0,
+        duration_seconds=60.0,
+        media_kind="video",
     )
+    song.video_clips.append(clip)
+    tl = TimelineWidget()
+    tl.resize(1200, 400)
+    tl.set_show_video_track(True, emit=False)
+    tl.set_song(song)
+    tl._pixels_per_second = 20.0  # noqa: SLF001
 
+    n = 64
+    peaks = ClipWaveformPeaks(
+        sample_rate=25,
+        mono_origin_seconds=0.0,
+        mono=np.ones(n, dtype=np.float32) * 0.4,
+        peak_levels=[],
+        mins=np.full(n, -0.5, dtype=np.float32),
+        maxs=np.full(n, 0.5, dtype=np.float32),
+        coverage=np.ones(n, dtype=np.uint8),
+    )
+    key = tl._video_waveform_cache.key_for(clip)  # noqa: SLF001
+    tl._video_waveform_cache._peaks[key] = peaks  # noqa: SLF001
+
+    import cueplayer.ui.timeline_widget as tw
+
+    calls = {"peaks": 0, "raw": 0}
+
+    def _boom_peaks(*_a, **_k):  # noqa: ANN001
+        calls["peaks"] += 1
+        return -0.5, 0.5
+
+    def _boom_raw(*_a, **_k):  # noqa: ANN001
+        calls["raw"] += 1
+        return -0.5, 0.5
+
+    monkeypatch.setattr(tw, "sample_source_peaks_for_clip_times", _boom_peaks)
+    monkeypatch.setattr(tw, "sample_source_raw_for_clip_times", _boom_raw)
+
+    pm = QPixmap(800, 80)
+    pm.fill()
+    painter = QPainter(pm)
+    x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
+    x1 = int(tl._x_for_time(60.0))  # noqa: SLF001
+    tl._paint_video_clip_waveform(  # noqa: SLF001
+        painter, clip, QRectF(float(x0), 10.0, float(max(50, x1 - x0)), 60.0)
+    )
+    painter.end()
+    assert calls["peaks"] == 0
+    assert calls["raw"] == 0
+
+
+def test_gui_notify_coalesces_while_building(app: QApplication) -> None:
+    del app
     cache = VideoClipWaveformCache()
     cache._gui_coalesce_s = 10.0  # noqa: SLF001
-    notifies = []
+    notifies: list[int] = []
     cache.set_on_ready(lambda: notifies.append(1))
 
-    art = EmbeddedWaveformArtifact(
-        path="x",
-        mtime_ns=0,
-        size=0,
-        stream_index=0,
-        format_version=1,
-        peaks_per_second=1.0,
-        origin_seconds=0.0,
-        duration_seconds=10.0,
-        mins=np.zeros(10, dtype=np.float32),
-        maxs=np.ones(10, dtype=np.float32),
-        coverage=np.ones(10, dtype=np.uint8),
-        complete=False,
-    )
     set_waveform_build_paused(False)
-    cache._notify_ready()  # first  # noqa: SLF001
-    cache._notify_ready()  # coalesced  # noqa: SLF001
-    cache._notify_ready()  # coalesced  # noqa: SLF001
+    cache._notify_ready()  # noqa: SLF001
+    cache._notify_ready()  # noqa: SLF001
+    cache._notify_ready()  # noqa: SLF001
     assert len(notifies) == 1
     cache._notify_ready(complete=True)  # noqa: SLF001
     assert len(notifies) == 2
 
     set_waveform_build_paused(True)
     before = len(notifies)
-    cache._notify_ready()  # suppressed while playing  # noqa: SLF001
+    cache._notify_ready()  # noqa: SLF001
     assert len(notifies) == before
     set_waveform_build_paused(False)
