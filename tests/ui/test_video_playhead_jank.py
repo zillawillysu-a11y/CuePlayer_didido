@@ -93,6 +93,26 @@ def test_extreme_zoom_hidden_video_lane_keeps_continuous_edge_follow(
     assert x == pytest.approx(expected, abs=1.0)
 
 
+def test_auto_scroll_does_not_fight_active_wheel_zoom(app: QApplication) -> None:
+    song = Song.create("Zoom owner")
+    widget = TimelineWidget()
+    widget.resize(1200, 500)
+    widget.set_song(song)
+    widget.set_show_video_track(True, emit=False)
+    widget.set_playing(True)
+    widget._pixels_per_second = 2500.0  # noqa: SLF001
+    widget._scroll_x = 5000.0  # noqa: SLF001
+    widget._begin_view_transform_gesture()  # noqa: SLF001
+    before = widget._scroll_x  # noqa: SLF001
+
+    widget.set_position(20.0)
+
+    assert widget._scroll_x == before  # noqa: SLF001
+    widget._cancel_view_transform_gesture(  # noqa: SLF001
+        rebuild=False, reason="test_cleanup"
+    )
+
+
 def test_view_changed_throttled_while_playing(app: QApplication) -> None:
     song = Song.create("Jank")
     widget = TimelineWidget()

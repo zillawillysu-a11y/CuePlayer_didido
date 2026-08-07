@@ -1894,7 +1894,13 @@ class TimelineWidget(QWidget):
             scroll_moved = False
             if self._auto_scroll:
                 prev_scroll = self._scroll_x
-                if self._view_pinned:
+                if self._view_transform_busy or self._view_transform_quality_pending:
+                    # Wheel zoom owns the viewport until its trailing-edge bake.
+                    # Letting 60 Hz Auto Scroll also mutate ``_scroll_x`` makes
+                    # the zoom preview miss its retained cache every tick,
+                    # especially with the second (Video) waveform visible.
+                    perf_diag.count("timeline.auto_scroll.suppressed_during_zoom")
+                elif self._view_pinned:
                     # Keep a click-seek / scrub pin until the playhead leaves the
                     # visible waveform; then auto-follow again (no wheel needed).
                     if self._playing and self._playhead_outside_view(margin=48.0):
