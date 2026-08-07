@@ -218,6 +218,9 @@ class TimelineWidget(QWidget):
         self._last_scrub_preview_ms = 0
         self._last_scrub_view_changed_ns = 0
         self._scrub_view_changed_interval_ns = 66_000_000  # ~15 Hz overview while scrubbing
+        # A waveform press is only a click-seek until pointer travel proves it
+        # is a drag. This avoids pause/final-land/resume for ordinary clicks.
+        self._pending_scrub_press_x: float | None = None
         self._selected_mark_ids: set[str] = set()
         self._box_selecting = False
         self._box_additive = False
@@ -3569,24 +3572,10 @@ class TimelineWidget(QWidget):
                     click_seek=self._time_for_x(x) if self._in_scrub_zone(x, y) else None,
                 )
             elif self._in_scrub_zone(x, y):
-                # Left-drag scrubs the playhead so time follows the cursor.
-                # Do NOT invalidate/rebuild the static cache — scrub does not
-                # change viewport geometry; keep native retained pixels.
                 self.clear_selection()
-                self._scrubbing = True
                 self._view_pinned = True
-                if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
-                    self._rebuild_scrub_backdrop(reason="scrub_seed")
-                self.scrub_started.emit()
-                # Trace after scrub_started so video.scrub.transaction_id is set.
-                self._timeline_scrub_trace(
-                    "TIMELINE_SCRUB_PRESS",
-                    song_time=min(self._time_for_x(x), self._duration()),
-                    reason="left_press",
-                )
+                self._pending_scrub_press_x = float(x)
                 self.grabMouse()
-                self._scrub_at(x, force=True)
-                self._scrub_timer.start()
                 self.setCursor(Qt.CursorShape.ArrowCursor)
             elif self._in_mark_tracks(x, y):
                 self.clear_selection()
@@ -3670,6 +3659,26 @@ class TimelineWidget(QWidget):
             if rect.width() >= 4 or rect.height() >= 4:
                 self._box_click_seek = None
             self._emit_box_preview()
+        elif self._pending_scrub_press_x is not None:
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                press_x = float(self._pending_scrub_press_x)
+                if abs(x - press_x) >= self._drag_slop:
+                    self._pending_scrub_press_x = None
+                    self._scrubbing = True
+                    if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+                        self._rebuild_scrub_backdrop(reason="scrub_seed")
+                    self.scrub_started.emit()
+                    self._timeline_scrub_trace(
+                        "TIMELINE_SCRUB_PRESS",
+                        song_time=min(self._time_for_x(press_x), self._duration()),
+                        reason="drag_threshold",
+                    )
+                    self._scrub_at(press_x, force=True)
+                    self._scrub_at(x)
+                    self._scrub_timer.start()
+            else:
+                self._pending_scrub_press_x = None
+                self.releaseMouse()
         elif self._scrubbing:
             if event.buttons() & Qt.MouseButton.LeftButton:
                 self._scrub_at(x)
@@ -3788,6 +3797,21 @@ class TimelineWidget(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._pending_scrub_press_x is not None
+        ):
+            self._pending_scrub_press_x = None
+            self.releaseMouse()
+            target = min(
+                self._time_for_x(float(event.position().x())), self._duration()
+            )
+            self._emit_seek(target, input_source="waveform")
+            self._position = target
+            self._restore_hover_cursor(event.position().x(), event.position().y())
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if self._panning and event.button() in (
             Qt.MouseButton.MiddleButton,
             Qt.MouseButton.LeftButton,

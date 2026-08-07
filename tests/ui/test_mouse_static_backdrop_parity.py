@@ -140,12 +140,13 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
     assert tl._in_scrub_zone(scrub_x, wave_y)  # noqa: SLF001
 
     idle = _render(tl)
-    # Mouse-down on waveform (scrub) without movement.
+    # Mouse-down alone remains a pending click; scrub starts only after drag slop.
     tl.mousePressEvent(
         _mouse(QEvent.Type.MouseButtonPress, scrub_x, wave_y, buttons=Qt.MouseButton.LeftButton)
     )
     app.processEvents()
-    assert tl._scrubbing is True  # noqa: SLF001
+    assert tl._scrubbing is False  # noqa: SLF001
+    assert tl._pending_scrub_press_x == scrub_x  # noqa: SLF001
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
     down = _render(tl)
 
@@ -159,6 +160,7 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
         )
     )
     app.processEvents()
+    assert tl._scrubbing is True  # noqa: SLF001
     assert tl._can_use_static_backdrop() is True  # noqa: SLF001
     drag = _render(tl)
 
@@ -190,6 +192,35 @@ def test_mouse_up_down_drag_share_static_backdrop(app: QApplication) -> None:
     assert _pixel_diff(idle_m, down_m) == 0, "mouse-down changed static pixels"
     assert _pixel_diff(idle_m, drag_m) == 0, "drag changed static pixels"
     assert _pixel_diff(idle_m, up_m) == 0, "release changed static pixels"
+
+
+def test_plain_waveform_click_seeks_without_scrub_transaction(
+    app: QApplication,
+) -> None:
+    tl = TimelineWidget()
+    tl.resize(960, 480)
+    tl.show()
+    app.processEvents()
+    tl.set_song(_song_video_and_edge_marks())
+    wave_y = float(tl._ruler_height + tl._wave_height // 2)  # noqa: SLF001
+    x = float(tl._header_width + 320)  # noqa: SLF001
+    started: list[bool] = []
+    ended: list[bool] = []
+    seeks: list[float] = []
+    tl.scrub_started.connect(lambda: started.append(True))
+    tl.scrub_ended.connect(lambda: ended.append(True))
+    tl.seek_requested.connect(seeks.append)
+
+    tl.mousePressEvent(
+        _mouse(QEvent.Type.MouseButtonPress, x, wave_y, buttons=Qt.MouseButton.LeftButton)
+    )
+    tl.mouseReleaseEvent(
+        _mouse(QEvent.Type.MouseButtonRelease, x, wave_y, buttons=Qt.MouseButton.NoButton)
+    )
+
+    assert started == []
+    assert ended == []
+    assert len(seeks) == 1
 
 
 def test_mark_press_keeps_same_static_cache(app: QApplication) -> None:
