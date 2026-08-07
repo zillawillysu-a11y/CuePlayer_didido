@@ -531,12 +531,11 @@ class Ma2Exporter:
                     if y:
                         attrs["y"] = str(y)
                     attrs.update(anz_rows=str(rows), anz_cols=str(columns))
-                    # Only Effect and Sequence widgets use pool scrolling in
-                    # MA2's native View XML.  Adding scroll fields to other
-                    # widget types changes their imported layout behavior.
-                    if pool_type == "sequence" or (
-                        pool_type == "effects" and spec.get("mode") == "perSong"
-                    ):
+                    # Fixed auxiliary Pools match the native View with no
+                    # scroll fields.  A Per Song Pool must carry its own
+                    # scroll position, otherwise MA2 always shows Pool 1 and
+                    # loses the per-song allocation.
+                    if spec.get("mode") == "perSong":
                         scroll = max(0, start - 1)
                         attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
                 ma2_index = (

@@ -5,52 +5,43 @@
 
 ## Task objective
 
-Make generated MA2 Song Views conform to the user's native
-`VIEWVIEWVIEW.xml` reference, preserving the CuePlayer View layout after
-import.
+Restore MA2 View per-song Pool ranges while retaining the corrected native
+fixed-Pool layout.
 
 ## What was implemented
 
-- Compared every generated Widget against the user-exported native MA2 View.
-- Changed Widget indices to one continuous sequence in native order; optional
-  Pool widgets no longer start at index 8.
-- Emit `has_focus` and `has_scrollfocus` together for every right-positioned
-  Pool, so MA2 honors its x coordinate.
-- Emit scroll attributes only for per-song Effects and Sequence, matching the
-  native View XML; ordinary Pools no longer receive spurious scroll fields.
-- Matched Mask Pool Data values to native MA2 output.
-- Timecode Pool is now at least three cells wide (title + two built-ins), but
-  can be extended to the right by dragging or editing its width.
-- Added regression checks for continuous indices, focus flags, and absent
-  generic scroll attributes.
+- Found that the prior native XML alignment limited scroll attributes to
+  Effects and Sequence widgets.
+- Restored `scroll_offset` and `scroll_index` for every Pool configured as
+  `Per Song`, including Camera, Groups, Images, Timecode, and optional Pools.
+- Kept Fixed Pools without scroll metadata, preserving the MA2 native layout
+  behavior that now imports correctly.
+- Added a regression test proving a second song's Camera Pool scrolls to its
+  own range while a fixed Groups Pool does not.
 
 ## Files changed
 
 - `src/cueplayer/exporters/ma2/exporter.py`
-- `src/cueplayer/ui/ma2_view_layout.py`
-- `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_show_patch.py`
-- `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
 
-- The user-supplied `VIEWVIEWVIEW.xml` is the compatibility reference for
-  MA2 View serialization.
-- Timecode has a minimum three-cell footprint, not a fixed three-cell maximum.
+- Per-song allocation is represented by View scrolling for every supported
+  MA2 Pool type; fixed pools remain unscrolled.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-native-view-reference-2`
-- Result: **21 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-persong-aux-pools`
+- Result: **22 passed**.
 
 ## Remaining issues
 
-- Needs one real MA2 re-export/import verification using the newly generated
-  View XML.
+- Requires real MA2 re-export/import verification for an auxiliary Per Song
+  Pool such as Camera or Images.
 - Per-song Main/Button export content selection remains pending.
 - `startup_error.txt` was not modified.
 
 ## Suggested next task
 
-After MA2 verification, add expandable per-song Main/Button export content
+After verification, add expandable per-song Main/Button export content
 selection.

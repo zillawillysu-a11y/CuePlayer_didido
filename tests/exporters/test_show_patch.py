@@ -534,3 +534,32 @@ def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:
     assert all(widget.get("scroll_offset") is None for widget in widgets)
     assert all(widget.get("has_focus") == "true" for widget in widgets[1:])
     assert all(widget.get("has_scrollfocus") == "true" for widget in widgets[1:])
+
+
+def test_ma2_per_song_auxiliary_pool_keeps_its_song_scroll_range(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    layout = [
+        {"type": "camera", "mode": "perSong", "x": 3, "y": 0, "w": 2, "h": 1, "start": 1, "stride": 10},
+        {"type": "groups", "mode": "fixed", "x": 6, "y": 0, "w": 2, "h": 1, "start": 1, "stride": 1},
+    ]
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
+    root = ET.parse(paths["show:view_2"]).getroot()
+    namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
+    widgets = root.findall(f"{namespace}View/{namespace}Widget")
+    camera = next(widget for widget in widgets if widget.get("type") == "43414d50")
+    groups = next(widget for widget in widgets if widget.get("type") == "47524f55")
+    assert camera.get("scroll_offset") == "10"
+    assert camera.get("scroll_index") == "10"
+    assert groups.get("scroll_offset") is None
+    assert groups.get("scroll_index") is None
