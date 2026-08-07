@@ -19,7 +19,9 @@
 - `Fixed`: every song displays the same Pool numbers.
 - `Per Song`: Pool numbers advance by Song Order using a configurable reserved-slot stride.
 - All generated ranges of the same Pool type must be checked for overlap.
-- Visible capacity and reserved slots are separate values. For example, a 16 × 5 window displays 79 objects because its title consumes one cell, while allocation may reserve 80 numbers per song.
+- Visible capacity and reserved slots are separate values. For example, a 16 × 5 window displays 79 objects because its title consumes one cell, while Effects allocation reserves 100 numbers per song by default.
+- Per Song Effects reservation has no special minimum beyond the general valid value of 1.
+- The Common Settings value and Per Song Effects View stride remain synchronized.
 
 ## Supported grandMA2 Pool window names
 
@@ -47,5 +49,5 @@
 
 - Sequence: 10 × 1, Per Song, base 1, reserve 20 per song.
 - Macros: 6 × 1, Fixed, base 1.
-- Effects: 16 × 5, Per Song, base 201, reserve 80 per song.
+- Effects: 16 × 5, Per Song, base 201, reserve 100 per song by default.
 - Effects: 16 × 2, Fixed, base 1.

@@ -39,7 +39,9 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Timecode remains one pool object per selected song, while its included tracks reflect selected Main/Button content in the proposed design.
 - View geometry is stored as integer Screen 3 columns/rows on a fixed `16 × 8` grid; rendering converts those cells to percentages only for browser display.
 - The Screen 3 `16 × 8` grid is a permanent invariant and is not configurable.
-- Visible capacity is separate from Per Song allocation stride, allowing 79 visible Effects while reserving 80 numbers per song.
+- Visible capacity is separate from Per Song allocation stride, allowing 79 visible Effects while reserving 100 numbers per song by default.
+- Per Song Effects allocation defaults to 100 with no special minimum beyond 1.
+- Common Settings and Per Song Effects View strides update each other so playlist ranges and View previews remain consistent.
 
 ## Tests performed
 
@@ -49,6 +51,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Verified default capacities of 9, 5, 79, and 31 visible Pool slots after each title consumes one cell.
 - Verified all default windows remain inside the 16 × 8 grid and overlap detection is present.
 - Verified all 19 supplied grandMA2 Pool types are available and Fixed/Per Song controls are wired.
+- Verified Effect allocation advances by the configurable value, defaulting to 100.
 - `git diff --check`: passed.
 
 ## Remaining issues

@@ -185,7 +185,7 @@
 
     <main>
       <section class="page active" id="songs">
-        <div class="notice"><strong>Pool allocation at a glance.</strong> Each MA2 song reserves 20 Sequences and 80 Effects. Ranges update immediately when a start value changes.</div>
+        <div class="notice"><strong>Pool allocation at a glance.</strong> Each MA2 song reserves 20 Sequences and 100 Effects by default. Ranges update immediately when a start value changes.</div>
         <div class="card">
           <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
           <div class="song-grid song-header"><span>Export</span><span>Song Order</span><span>Song</span><span>MA Export Name</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>Content</span><span></span></div>
@@ -210,6 +210,7 @@
                 <div class="field"><label>Sequence Slots Per Song</label><input id="seqSlots" type="number" min="1" value="20"></div>
                 <div class="field"><label>Timecode Pool Start</label><input id="tcStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>Effect Pool Start</label><input id="effectStart" type="number" min="1" value="201"></div>
+                <div class="field"><label>Effect Slots Per Song</label><input id="effectSlots" type="number" min="1" value="100"></div>
                 <div class="field"><label>View Pool Start</label><input type="number" min="1" value="201"></div>
                 <div class="field"><label>Main Executor</label><input type="text" value="201.130"></div>
                 <div class="field"><label>Button Start</label><input type="text" value="201.101"></div>
@@ -307,7 +308,7 @@
     const defaultViewWidgets = () => [
       { id: 1, type: "sequence", mode: "perSong", x: 0, y: 0, w: 10, h: 1, start: 1, stride: 20 },
       { id: 2, type: "macros", mode: "fixed", x: 10, y: 0, w: 6, h: 1, start: 1, stride: 5 },
-      { id: 3, type: "effects", mode: "perSong", x: 0, y: 1, w: 16, h: 5, start: 201, stride: 80 },
+      { id: 3, type: "effects", mode: "perSong", x: 0, y: 1, w: 16, h: 5, start: 201, stride: 100 },
       { id: 4, type: "effects", mode: "fixed", x: 0, y: 6, w: 16, h: 2, start: 1, stride: 31 }
     ];
     let viewWidgets = defaultViewWidgets();
@@ -317,9 +318,10 @@
     function allocation(index) {
       const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
       const seqEnd = seqStart + numberValue("#seqSlots") - 1;
-      const effectStart = numberValue("#effectStart") + index * 80;
+      const effectSlots = numberValue("#effectSlots");
+      const effectStart = numberValue("#effectStart") + index * effectSlots;
       const timecode = numberValue("#tcStart") + index;
-      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + 79, timecode };
+      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + effectSlots - 1, timecode };
     }
 
     function renderSongs() {
@@ -441,6 +443,7 @@
       $("#poolSlots").value = widget.w * widget.h - 1;
       $("#poolStride").value = widget.stride;
       $("#poolStride").disabled = widget.mode === "fixed";
+      $("#poolStride").min = 1;
     }
 
     function widgetsOverlap(a, b) {
@@ -475,7 +478,9 @@
       widget.h = Math.max(1, Math.min(8 - widget.y, Number($("#poolH").value) || 1));
       widget.start = Math.max(1, Number($("#poolStart").value) || 1);
       widget.stride = Math.max(1, Number($("#poolStride").value) || 1);
+      if (widget.type === "effects" && widget.mode === "perSong") $("#effectSlots").value = widget.stride;
       renderViewLayout();
+      renderSongs();
     }
 
     function initializeViewLayout() {
@@ -495,6 +500,7 @@
     $$(".tab").forEach(tab => tab.addEventListener("click", () => showPage(tab.dataset.page)));
     $$('[data-goto]').forEach(button => button.addEventListener("click", () => showPage(button.dataset.goto)));
     ["#seqStart", "#seqSlots", "#tcStart", "#effectStart"].forEach(id => $(id).addEventListener("input", renderSongs));
+    $("#effectSlots").addEventListener("input", () => { const slots = numberValue("#effectSlots"); $("#effectSlots").value = slots; viewWidgets.filter(widget => widget.type === "effects" && widget.mode === "perSong").forEach(widget => widget.stride = slots); renderSongs(); renderViewLayout(); });
     $("#console").addEventListener("change", renderReview);
     $("#selectAll").addEventListener("click", () => { songs.forEach(song => song.selected = true); renderSongs(); });
     $("#selectNone").addEventListener("click", () => { songs.forEach(song => song.selected = false); renderSongs(); });
