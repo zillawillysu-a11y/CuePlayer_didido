@@ -35,6 +35,8 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert slots[0].display_name == "SongA"
     assert slots[0].page == 1
     assert slots[1].page == 2
+    assert slots[0].main_sequence == 1
+    assert slots[1].main_sequence == 21
     assert slots[0].main_sequence_name == "SongA"
     assert [b.sequence_name for b in slots[0].buttons] == ["SongA_Hit", "SongA_Crash"]
     assert slots[1].main_sequence_name == "SongB"
@@ -159,7 +161,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     # CuePoints-style: Store main + buttons (no Import Sequence XML).
     assert 'Store Sequence 1 Cue 1 "ZhuGe"' in lua or "Store Sequence 1 Cue 1" in lua
     assert 'Store Sequence 1 Cue 0.5 "Preset" /noconfirm' in lua
-    assert 'Store Sequence 3 Cue 0.5 "Preset" /noconfirm' in lua
+    assert 'Store Sequence 21 Cue 0.5 "Preset" /noconfirm' in lua
     assert 'name="SongA"' in lua
     assert 'name="SongA_TC"' not in lua
     assert 'Label Sequence 1 "SongA"' in lua
@@ -206,14 +208,19 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
         'Import "Show_Install_Song_Macros" At Macro 1009 /path="macros"'
         in lua
     )
-    assert 'Import "Show_Install_Song_List" At Sequence 5' in lua
+    assert 'Import "Show_Install_Song_List" At Sequence 41' in lua
     assert 'Label Page 100 "CuePlayer Template Page"' in lua
-    assert 'Assign Sequence 5 At Page 1.100.130' in lua
+    assert 'Assign Sequence 41 At Page 1.100.130' in lua
     assert 'Label Executor 100.130 "CuePlayer Song List"' in lua
     assert 'Import "Show_Install_View_1" At View 201' in lua
     assert 'Label View 201 "SongA"' in lua
     assert 'Import "Show_Install_View_2" At View 202' in lua
     assert 'Label View 202 "SongB"' in lua
+    assert plans[0].profile.sequence_pool_start == 1
+    assert plans[0].button_lanes[0].sequence_pool == 2
+    assert plans[1].profile.sequence_pool_start == 21
+    assert plans[1].button_lanes[0].sequence_pool == 22
+    assert lua.rindex('Macro "Set Songviewbutton"') > lua.rindex("At Timecode")
     # Honor user Button 起始 (102).
     assert plans[0].button_lanes[0].executor.endswith(".102")
     assert plans[1].button_lanes[0].executor == "2.102"
@@ -326,6 +333,7 @@ def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
     assert "Song_List" not in lua
     assert "Template Page" not in lua
     assert "At View" not in lua
+    assert 'Macro "Set Songviewbutton"' not in lua
 
 
 def test_ma2_main_preset_cue_rejects_existing_cue_id(tmp_path) -> None:

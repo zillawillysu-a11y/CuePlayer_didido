@@ -1,24 +1,23 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA2 Song View console validation
+**Type:** MA2 Sequence block console validation
 **Updated:** 2026-08-07
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Smoke-test generated Song Views in grandMA2 onPC 3.9.60 and 3.9.61.
+Smoke-test MA2 Sequence block allocation and final ViewButton initialization.
 
 ## Verify
 
-- Every selected song imports into a consecutive View Pool slot.
-- View labels use English song names.
-- Views open on Screen 3 with the supplied geometry.
-- Sequence row begins at the song's allocated Sequence range.
-- Song Effect area advances in non-overlapping 80-slot pages from the configured start.
-- Template Effect starts at 1 and Macro area remains fixed.
-- Page Change assigns the correct View to the configured ViewButton.
+- With start 1 and 20 slots per song, song Main Sequences use 1, 21, 41, etc.
+- Button and manually added Sequences fit inside each song's reserved block.
+- Song List is allocated after the final reserved block.
+- Generated Song Views show the correct per-song Sequence block.
+- Plugin runs `Set Songviewbutton` after all Timecode imports.
+- `$songviewbutton` contains the configured ViewButton address.
 
 ## Done when
 
-Both supported MA2 versions have recorded View import/render results and any console-specific incompatibility has a regression test and focused fix.
+MA2 onPC shows correct reserved pools and ViewButton initialization, with any console-specific incompatibility covered by a regression test and focused fix.

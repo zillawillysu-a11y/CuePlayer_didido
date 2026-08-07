@@ -131,7 +131,11 @@ def build_show_patch(
                 main_cue_count=_main_cue_count(song),
             )
         )
-        seq += 1 + len(buttons)
+        used_slots = 1 + len(buttons)
+        if settings.console == "ma2":
+            seq += max(used_slots, int(settings.ma2_sequence_slots_per_song or 20))
+        else:
+            seq += used_slots
         tc += 1
     return slots
 

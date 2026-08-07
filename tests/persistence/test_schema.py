@@ -32,6 +32,7 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_include_song_views=False,
         ma2_view_pool_start=501,
         ma2_effect_pool_start=601,
+        ma2_sequence_slots_per_song=40,
     )
 
     loaded = dict_to_ma_export(ma_export_to_dict(settings))
@@ -47,6 +48,7 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_include_song_views is False
     assert loaded.ma2_view_pool_start == 501
     assert loaded.ma2_effect_pool_start == 601
+    assert loaded.ma2_sequence_slots_per_song == 40
 
 
 def test_legacy_ma2_macro_start_loads_as_fixed_macro_start() -> None:

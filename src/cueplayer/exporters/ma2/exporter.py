@@ -182,6 +182,7 @@ class Ma2Exporter:
         include_song_views: bool = True,
         view_pool_start: int = 201,
         effect_pool_start: int = 201,
+        sequence_slots_per_song: int = 20,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -217,6 +218,7 @@ class Ma2Exporter:
                 main_preset_cue_id=main_preset_cue_id,
                 include_song_views=include_song_views,
                 view_pool_start=view_pool_start,
+                sequence_slots_per_song=sequence_slots_per_song,
             )
             all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
@@ -966,6 +968,7 @@ class Ma2Exporter:
         main_preset_cue_id: float = 0.5,
         include_song_views: bool = True,
         view_pool_start: int = 201,
+        sequence_slots_per_song: int = 20,
     ) -> dict[str, Path]:
         """
         CuePoints-style show Plugin: Store/Assign everything, then write+Import
@@ -1027,6 +1030,13 @@ class Ma2Exporter:
                 for lane in plan.button_lanes
                 if lane.sequence_pool
             )
+            reserved_ends = [
+                int(plan.profile.sequence_pool_start)
+                + max(int(sequence_slots_per_song), 1 + len(plan.button_lanes))
+                - 1
+                for plan in plans
+            ]
+            sequence_pools.extend(reserved_ends)
             song_list_pool = max(sequence_pools, default=0) + 1
             page = max(1, int(template_page))
             extra_imports.extend(
@@ -1061,6 +1071,9 @@ class Ma2Exporter:
             info_name=name,
             echo_note=f"CuePlayer show install: {len(tc_jobs)} Timecode(s)",
             timecode_jobs=tc_jobs,
+            final_cmd_lines=(
+                ['Macro "Set Songviewbutton"'] if include_fixed_macros else []
+            ),
         )
         # Keep a setup-only macro as backup (no TC Import / Offset).
         paths["macro_xml"] = self._write_macro_xml(
@@ -1113,6 +1126,7 @@ class Ma2Exporter:
             tuple[str, int, str, str, float, float, int, int, int, int, float]
         ]
         | None = None,
+        final_cmd_lines: list[str] | None = None,
     ) -> dict[str, Path]:
         """Write Plugin XML + Lua.
 
@@ -1199,12 +1213,16 @@ class Ma2Exporter:
             tc_block = "\n".join(parts)
         else:
             tc_block = ""
+        final_lua_cmds = "\n".join(
+            _lua_cmd_line(line) for line in (final_cmd_lines or [])
+        )
 
         lua = f"""-- CuePlayer MA2 install plugin (CuePoints-style)
 -- Store/Assign sequences, then write+Import one Timecode per song + Offset.
 local function Start()
 {lua_cmds}
 {tc_block}
+{final_lua_cmds}
   gma.echo("{_lua_str(echo_note)}")
 end
 
