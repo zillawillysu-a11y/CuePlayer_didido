@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -245,6 +246,21 @@ def test_two_consumers_one_decode_job(
     assert stats["open_count"] == 1
     assert peaks_from_artifact(clip, art) is not None
     assert audio_from_artifact(path, clip, art, timeline_duration=40.0) is not None
+
+
+def test_gui_standin_lookup_does_not_read_disk(tmp_path: Path) -> None:
+    path = tmp_path / "cold.mp4"
+    path.write_bytes(b"x")
+    clip = VideoClip.create(
+        name="cold", path=path, duration_seconds=10.0, source_duration_seconds=10.0
+    )
+    store = artifact_store()
+    with patch.object(store, "get_or_load_disk") as disk_load:
+        result = try_music_standin_artifact_from_disk(
+            clip, timeline_duration=10.0, allow_disk=False
+        )
+    assert result is None
+    disk_load.assert_not_called()
 
 
 def test_sequential_decoder_one_open_not_per_window(

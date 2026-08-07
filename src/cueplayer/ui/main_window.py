@@ -159,7 +159,7 @@ from cueplayer.media.audio_loader import (
     probe_audio_duration,
     waveform_display_buffer,
 )
-from cueplayer.media.video_loader import probe_media
+from cueplayer.media.video_loader import VideoInfo, probe_media
 from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS
 from cueplayer.media.video_limits import (
     HEAVY_VIDEO_AUDIO_DECODE_SECONDS,
@@ -961,6 +961,7 @@ class MainWindow(QMainWindow):
     _bpm_progress_changed = Signal(str, int)  # song_id, percent (-1=queued, 0..100)
     _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
     _video_standin_finished = Signal(int, object)  # token, AudioBuffer | None | Exception
+    _video_probe_finished = Signal(object)  # background probe result bundle
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -993,6 +994,9 @@ class MainWindow(QMainWindow):
         self._nudge_hold_start: dict[int, float] = {}
         self._nudge_last_time: dict[int, float] = {}
         self._audio_load_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-load")
+        self._video_probe_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="ui-video-probe"
+        )
         self._audio_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui-audio-prefetch")
         self._audio_load_token = 0
         self._video_standin_token = 0
@@ -1032,6 +1036,7 @@ class MainWindow(QMainWindow):
         self._audio_prefetch_finished.connect(self._on_audio_prefetch_finished)
         self._audio_pcm_ready.connect(self._on_audio_pcm_ready)
         self._video_standin_finished.connect(self._on_video_standin_finished)
+        self._video_probe_finished.connect(self._on_video_probe_finished)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
@@ -7000,7 +7005,9 @@ class MainWindow(QMainWindow):
                 return
         from cueplayer.media.video_music_standin import try_music_standin_artifact_from_disk
 
-        art = try_music_standin_artifact_from_disk(clip, timeline_duration=duration)
+        art = try_music_standin_artifact_from_disk(
+            clip, timeline_duration=duration, allow_disk=False
+        )
         if art is not None:
             return
         self.timeline.set_audio_loading(True, f"{clip.name} (video)")
@@ -7048,7 +7055,7 @@ class MainWindow(QMainWindow):
         )
 
         disk_art = try_music_standin_artifact_from_disk(
-            clip, timeline_duration=duration
+            clip, timeline_duration=duration, allow_disk=False
         )
         if disk_art is not None and disk_art.complete:
             self._video_standin_token += 1
@@ -7617,12 +7624,13 @@ class MainWindow(QMainWindow):
             return
         self._add_video_clip_from_path(Path(path_str), start_seconds=float(seconds))
 
-    def _add_video_clip_from_path(self, path: Path, *, start_seconds: float) -> VideoClip | None:
-        try:
-            info = probe_media(path)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Unable to Load Media", str(exc))
-            return None
+    def _add_video_clip_from_path(self, path: Path, *, start_seconds: float) -> None:
+        """Queue media probing; completion mutates Qt/domain state on the GUI thread."""
+        self._add_video_clips_from_paths([path], start_seconds)
+
+    def _finish_add_video_clip(
+        self, path: Path, info: VideoInfo, *, start_seconds: float
+    ) -> VideoClip:
         is_still = info.media_kind == "still"
         video_only = not self._song_has_main_audio_file()
         if is_still:
@@ -7714,11 +7722,54 @@ class MainWindow(QMainWindow):
         )
 
     def _add_video_clips_from_paths(self, paths: list, drop_seconds: object) -> None:
-        t = float(drop_seconds)  # type: ignore[arg-type]
-        for raw in paths:
-            clip = self._add_video_clip_from_path(Path(raw), start_seconds=t)
-            if clip is not None:
-                t = clip.end_seconds  # stack subsequent drops after the previous clip
+        """Probe dropped videos off-thread so even slow containers cannot freeze Qt."""
+        requested = [Path(raw) for raw in paths]
+        if not requested:
+            return
+        song_id = self.current_song.id
+        start = float(drop_seconds)  # type: ignore[arg-type]
+        self.status.showMessage(
+            "Reading video info in background…" if len(requested) == 1
+            else f"Reading {len(requested)} videos in background…",
+            0,
+        )
+
+        def _job() -> None:
+            results: list[tuple[Path, VideoInfo | Exception]] = []
+            for path in requested:
+                try:
+                    results.append((path, probe_media(path)))
+                except Exception as exc:  # noqa: BLE001
+                    results.append((path, exc))
+            self._video_probe_finished.emit((song_id, start, results))
+
+        self._video_probe_executor.submit(_job)
+
+    def _on_video_probe_finished(self, result: object) -> None:
+        song_id, start, probed = result  # type: ignore[misc]
+        if str(song_id) != self.current_song.id:
+            self.status.showMessage("Video import cancelled because the song changed", 3000)
+            return
+        t = float(start)
+        failures: list[tuple[Path, Exception]] = []
+        added = 0
+        for path, info in probed:
+            if isinstance(info, Exception):
+                failures.append((Path(path), info))
+                continue
+            clip = self._finish_add_video_clip(Path(path), info, start_seconds=t)
+            t = clip.end_seconds
+            added += 1
+        if failures:
+            names = ", ".join(path.name for path, _exc in failures[:3])
+            detail = str(failures[0][1])
+            QMessageBox.warning(
+                self,
+                "Unable to Load Media",
+                f"Could not load {names}.\n\n{detail}",
+            )
+        elif added > 1:
+            self.status.showMessage(f"Added {added} video clips", 5000)
 
     def _delete_video_clips(self, clip_ids: list) -> None:
         if not clip_ids:

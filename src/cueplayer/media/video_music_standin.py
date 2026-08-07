@@ -16,13 +16,14 @@ from cueplayer.media.audio_loader import AudioBuffer
 from cueplayer.media.video_limits import clip_source_duration_seconds
 from cueplayer.media.video_waveform_artifact import (
     VideoWaveformArtifact,
+    artifact_cache_key,
     artifact_store,
     waveform_build_is_paused,
 )
 
 
 def try_music_standin_artifact_from_disk(
-    clip: VideoClip, *, timeline_duration: float
+    clip: VideoClip, *, timeline_duration: float, allow_disk: bool = True
 ) -> VideoWaveformArtifact | None:
     """Warm hydrate shared artifact from disk — no source decode."""
     del timeline_duration
@@ -36,7 +37,14 @@ def try_music_standin_artifact_from_disk(
         float(clip.source_span_seconds or clip.duration_seconds or 0.0),
         0.05,
     )
-    art = artifact_store().get_or_load_disk(path, duration_seconds=duration)
+    store = artifact_store()
+    if allow_disk:
+        art = store.get_or_load_disk(path, duration_seconds=duration)
+    else:
+        # GUI callers may inspect RAM but must leave npz decompression to the
+        # existing waveform worker.
+        key = artifact_cache_key(path, duration_seconds=duration)
+        art = store.peek(key)
     if art is None or art.coverage_ratio <= 0:
         return None
     if perf_diag.is_enabled():

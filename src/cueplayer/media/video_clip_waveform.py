@@ -17,6 +17,7 @@ from cueplayer.media.audio_loader import PeakLevel, choose_peak_level
 from cueplayer.media.video_limits import clip_source_duration_seconds
 from cueplayer.media.video_waveform_artifact import (
     VideoWaveformArtifact,
+    artifact_cache_key,
     artifact_store,
     signed_overview_from_artifact,
     waveform_build_is_paused,
@@ -256,9 +257,23 @@ class VideoClipWaveformCache:
             return None
         with self._lock:
             self._peaks[key] = mapped
-            self._pending.discard(key)
         if perf_diag.is_enabled():
-            perf_diag.count("waveform_artifact.sync_hydrate")
+            perf_diag.count("waveform_artifact.worker_disk_hydrate")
+        return mapped
+
+    def _try_memory_hydrate(
+        self, key: ClipWaveformKey, clip: VideoClip
+    ) -> ClipWaveformPeaks | None:
+        duration = self._artifact_duration_for(clip)
+        store = artifact_store()
+        art_key = artifact_cache_key(Path(clip.path), duration_seconds=duration)
+        art = store.peek(art_key)
+        if art is None or art.coverage_ratio <= 0:
+            return None
+        mapped = peaks_from_artifact(clip, art)
+        if mapped is not None:
+            with self._lock:
+                self._peaks[key] = mapped
         return mapped
 
     def get_peaks(self, clip: VideoClip, *, allow_submit: bool = True) -> ClipWaveformPeaks | None:
@@ -270,7 +285,7 @@ class VideoClipWaveformCache:
                 return self._peaks[key]
             if key in self._pending:
                 return None
-        hydrated = self._try_hydrate(key, clip)
+        hydrated = self._try_memory_hydrate(key, clip)
         if hydrated is not None and (
             hydrated.coverage is None
             or np.all(hydrated.coverage != 0)
@@ -362,6 +377,20 @@ class VideoClipWaveformCache:
                 cb()
 
     def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
+        # Loading a long cached npz can itself take noticeable time. Keep it
+        # on this worker instead of doing it through paint/preload on the GUI.
+        hydrated = self._try_hydrate(key, clip)
+        with self._lock:
+            if generation != self._generation:
+                return
+        if hydrated is not None and (
+            hydrated.coverage is None or np.all(hydrated.coverage != 0)
+        ):
+            with self._lock:
+                self._pending.discard(key)
+            self._notify_ready(force=True, complete=True)
+            return
+
         duration = self._artifact_duration_for(clip)
         path = Path(clip.path)
 

@@ -82,6 +82,35 @@ def test_waveform_cache_clear_drops_stale_result(app: QApplication, tmp_path: Pa
     cache.clear()  # cancel any leftover job
 
 
+def test_waveform_disk_hydration_never_runs_on_gui_thread(
+    app: QApplication, tmp_path: Path
+) -> None:
+    del app
+    cache = VideoClipWaveformCache()
+    media = tmp_path / "cached.mov"
+    media.write_bytes(b"fake")
+    clip = VideoClip.create(
+        path=media,
+        name="Cached",
+        duration_seconds=1.0,
+        media_kind="video",
+    )
+    gui_ident = threading.get_ident()
+    called = threading.Event()
+    seen: list[int] = []
+
+    def _hydrate(_key: object, _clip: VideoClip) -> None:
+        seen.append(threading.get_ident())
+        called.set()
+        return None
+
+    cache._try_hydrate = _hydrate  # type: ignore[method-assign]
+    cache.preload([clip])
+    assert called.wait(2.0)
+    assert seen and seen[0] != gui_ident
+    cache.clear()
+
+
 def test_toggle_video_eye_does_not_recurse(app: QApplication) -> None:
     song = Song.create("Vid")
     widget = TimelineWidget()
