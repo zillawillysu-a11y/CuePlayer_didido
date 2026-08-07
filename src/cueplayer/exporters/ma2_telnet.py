@@ -68,7 +68,7 @@ def parse_scan_frame(text: str) -> Ma2PoolSnapshot:
 class Ma2TelnetScanner:
     """Small synchronous client used by the Export Registry UI."""
 
-    def __init__(self, host: str, *, command_port: int = 30000, monitor_port: int = 30001, timeout_seconds: float = 3.0) -> None:
+    def __init__(self, host: str, *, command_port: int = 30000, monitor_port: int = 30001, timeout_seconds: float = 15.0) -> None:
         self.host = host.strip()
         self.command_port = int(command_port)
         self.monitor_port = int(monitor_port)
@@ -226,9 +226,16 @@ class Ma2TelnetScanner:
                 joined = "".join(chunks)
                 if FRAME_BEGIN in joined and FRAME_END in joined:
                     return parse_scan_frame(joined)
+        received = "".join(chunks)
+        if received.strip():
+            raise Ma2TelnetError(
+                "MA2 connected, but the scanner frame was not received within "
+                f"{self.timeout_seconds:g}s. The Plugin may still be scanning; "
+                "try Scan again after confirming it is installed and ran successfully."
+            )
         raise Ma2TelnetError(
-            "No scanner response. Import and run the CuePlayer Live Scan Plugin, "
-            "then make sure System Monitor port 30001 is enabled."
+            "MA2 connected, but System Monitor 30001 returned no scanner output. "
+            "Import and run the CuePlayer Live Scan Plugin, then make sure System Monitor port 30001 is enabled."
         )
 
 

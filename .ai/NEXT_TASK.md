@@ -1,13 +1,12 @@
 # Next task
 
-**Status:** Queued - awaiting real local Telnet Import verification
+**Status:** Queued - awaiting real local Telnet scanner verification after timeout fix
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify MA2 Command Telnet after the initial login-screen wait and then scanner
-Plugin import/execution.
+Verify the 15-second MA2 scanner wait after Plugin import/execution.
 
 ## Requirements
 
@@ -16,4 +15,5 @@ Plugin import/execution.
 - Use Import Plugin & Scan at an empty Plugin Pool, such as 5.
 - Verify MA2 logs `Import "CuePlayer_Live_Scan" At Plugin 5`, then `Plugin 5`.
 - Confirm all three Telnet status lights become green after scanner output.
+- If no frame arrives, copy the new diagnostic status and System Monitor lines.
 - Do not touch `startup_error.txt`.
