@@ -120,10 +120,10 @@ def test_waveform_ready_before_first_paint_bakes_peaks(
     assert _backdrop_has_non_bg_pixels(tl)
 
 
-def test_async_ready_after_empty_bake_invalidates_once(
+def test_async_ready_after_empty_bake_uses_overlay_not_mark_rebuild(
     app: QApplication, tmp_path: Path
 ) -> None:
-    """Empty geometry-matched bake must not stick after peaks land (C+D)."""
+    """Progressive ready must not drop the Mark backdrop (overlay path)."""
     perf_diag.set_enabled(True)
     perf_diag.clear()
     song, clip = _song_with_clip(tmp_path)
@@ -141,39 +141,45 @@ def test_async_ready_after_empty_bake_invalidates_once(
     empty_rev = tl._video_waveform_revision  # noqa: SLF001
     assert tl._video_waveform_baked_revision == empty_rev  # noqa: SLF001
     assert tl._scrub_backdrop_geometry_ok()  # noqa: SLF001
+    pm_before = tl._scrub_backdrop  # noqa: SLF001
 
     rebuilds = _count_rebuilds(tl)
     tl.set_playing(True)
     _inject_peaks(tl, clip, _peaks())
-    ready0 = int(
+    overlay0 = int(
         perf_diag.snapshot()["counters"].get(
-            "timeline.video_waveform.ready_invalidate", 0
+            "timeline.video_waveform.ready_overlay", 0
         )
     )
-    tl._apply_video_waveform_ready()  # noqa: SLF001
-    ready1 = int(
+    mark0 = int(
         perf_diag.snapshot()["counters"].get(
-            "timeline.video_waveform.ready_invalidate", 0
+            "timeline.mark_backdrop.rebuild_reason.video_waveform_ready", 0
         )
     )
-    assert ready1 == ready0 + 1
-    assert tl._video_waveform_revision == empty_rev + 1  # noqa: SLF001
-    assert tl._scrub_backdrop is None  # noqa: SLF001
-    assert not tl._scrub_backdrop_geometry_ok()  # noqa: SLF001
-    assert tl._video_waveform_pending_refresh is False  # noqa: SLF001
-    # Ready itself only invalidates — rebuild happens once on demand.
+    tl._apply_video_waveform_ready(False)  # noqa: SLF001
+    overlay1 = int(
+        perf_diag.snapshot()["counters"].get(
+            "timeline.video_waveform.ready_overlay", 0
+        )
+    )
+    mark1 = int(
+        perf_diag.snapshot()["counters"].get(
+            "timeline.mark_backdrop.rebuild_reason.video_waveform_ready", 0
+        )
+    )
+    assert overlay1 == overlay0 + 1
+    assert mark1 == mark0  # progressive must not rebuild Marks
+    assert tl._video_waveform_revision == empty_rev  # noqa: SLF001
+    assert tl._scrub_backdrop is pm_before  # noqa: SLF001
+    assert tl._scrub_backdrop_geometry_ok()  # noqa: SLF001
     assert rebuilds == []
 
-    tl._rebuild_scrub_backdrop(reason="after_ready")  # noqa: SLF001
-    assert rebuilds == ["after_ready"]
-    assert tl._video_waveform_baked_revision == tl._video_waveform_revision  # noqa: SLF001
+    # Completion does one atomic invalidate.
+    tl._apply_video_waveform_ready(True)  # noqa: SLF001
+    assert tl._scrub_backdrop is None  # noqa: SLF001
+    tl._rebuild_scrub_backdrop(reason="after_complete")  # noqa: SLF001
+    assert rebuilds == ["after_complete"]
     assert _backdrop_has_non_bg_pixels(tl)
-    # Further play ticks must not keep rebuilding for the same epoch.
-    n1 = len(rebuilds)
-    for i in range(20):
-        tl.set_position(0.1 + i * 0.04)
-        app.processEvents()
-    assert len(rebuilds) == n1
     perf_diag.set_enabled(False)
 
 
@@ -302,22 +308,49 @@ def test_mute_does_not_clear_or_hide_waveform_bake(
     assert tl._scrub_backdrop is pm_before  # noqa: SLF001
 
 
-def test_ready_while_playing_does_not_defer(
+def test_ready_while_playing_progressive_keeps_backdrop(
     app: QApplication, tmp_path: Path
 ) -> None:
-    """Regression: defer-while-playing left an empty always-static bake forever."""
+    """Progressive ready while playing must not wipe the retained Mark bake."""
     del app
     song, clip = _song_with_clip(tmp_path)
     tl = TimelineWidget()
     tl.set_song(song)
     tl.set_playing(True)
-    # Pretend an empty bake is retained.
+    # Pretend a bake is retained.
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPixmap
+
+    tl._scrub_backdrop = QPixmap(10, 10)  # noqa: SLF001
+    tl._scrub_backdrop.fill(Qt.GlobalColor.black)
+    tl._video_waveform_baked_revision = tl._video_waveform_revision  # noqa: SLF001
+    pm = tl._scrub_backdrop  # noqa: SLF001
+    _inject_peaks(tl, clip, _peaks())
+
+    tl._apply_video_waveform_ready(False)  # noqa: SLF001
+
+    assert tl._video_waveform_pending_refresh is False  # noqa: SLF001
+    assert tl._scrub_backdrop is pm  # noqa: SLF001
+    assert tl._waveform_overlay_revision > 0  # noqa: SLF001
+
+
+def test_complete_ready_while_playing_invalidates_once(
+    app: QApplication, tmp_path: Path
+) -> None:
+    del app
+    song, clip = _song_with_clip(tmp_path)
+    tl = TimelineWidget()
+    tl.set_song(song)
+    tl.set_playing(True)
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPixmap
+
     tl._scrub_backdrop = QPixmap(10, 10)  # noqa: SLF001
     tl._scrub_backdrop.fill(Qt.GlobalColor.black)
     tl._video_waveform_baked_revision = tl._video_waveform_revision  # noqa: SLF001
     _inject_peaks(tl, clip, _peaks())
 
-    tl._apply_video_waveform_ready()  # noqa: SLF001
+    tl._apply_video_waveform_ready(True)  # noqa: SLF001
 
     assert tl._video_waveform_pending_refresh is False  # noqa: SLF001
     assert tl._scrub_backdrop is None  # noqa: SLF001

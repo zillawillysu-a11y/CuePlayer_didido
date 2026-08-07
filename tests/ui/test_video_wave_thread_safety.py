@@ -28,7 +28,7 @@ def test_waveform_ready_marshals_to_gui_thread(app: QApplication) -> None:
     gui_thread = QThread.currentThread()
     seen: list[QThread | None] = []
 
-    def _capture() -> None:
+    def _capture(*_args: object) -> None:
         seen.append(QThread.currentThread())
 
     widget._video_waveforms_ready.disconnect()
@@ -72,8 +72,14 @@ def test_waveform_cache_clear_drops_stale_result(app: QApplication, tmp_path: Pa
     key = cache.key_for(clip)
     cache.clear()
     gen_before = cache._generation
+    # Stale generation must no-op without blocking on a real demux of fake bytes.
     cache._build_async(gen_before - 1, key, clip)
+    # Give the worker a brief moment; must not hang the suite.
+    import time as _time
+
+    _time.sleep(0.05)
     assert key not in cache._peaks
+    cache.clear()  # cancel any leftover job
 
 
 def test_toggle_video_eye_does_not_recurse(app: QApplication) -> None:

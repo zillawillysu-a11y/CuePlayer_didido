@@ -6998,9 +6998,10 @@ class MainWindow(QMainWindow):
         if cache_key is not None:
             if cache_key in self._video_standin_cache:
                 return
-        from cueplayer.media.video_music_standin import try_music_standin_from_disk
+        from cueplayer.media.video_music_standin import try_music_standin_artifact_from_disk
 
-        if try_music_standin_from_disk(clip, timeline_duration=duration) is not None:
+        art = try_music_standin_artifact_from_disk(clip, timeline_duration=duration)
+        if art is not None:
             return
         self.timeline.set_audio_loading(True, f"{clip.name} (video)")
 
@@ -7021,10 +7022,11 @@ class MainWindow(QMainWindow):
         flush = getattr(self.timeline, "_video_waveform_cache", None)
         if flush is not None and hasattr(flush, "flush_pending_gui_notify"):
             flush.flush_pending_gui_notify()
-        if (
-            getattr(self.timeline, "_audio", None) is None
-            and self._primary_video_clip_for_standin() is not None
-        ):
+        has_main_wave = (
+            getattr(self.timeline, "_audio", None) is not None
+            or getattr(self.timeline, "_artifact_wave", None) is not None
+        )
+        if not has_main_wave and self._primary_video_clip_for_standin() is not None:
             self._schedule_video_music_standin()
 
     def _schedule_video_music_standin(self) -> None:
@@ -7036,28 +7038,23 @@ class MainWindow(QMainWindow):
         clip = self._primary_video_clip_for_standin()
         if clip is None:
             self._video_standin_token += 1
+            self.timeline.clear_artifact_waveform()
             self.timeline.set_audio(None)
             self.timeline.set_audio_loading(False)
             return
         duration = float(self.current_song.duration_seconds)
-        cache_key = self._video_standin_cache_key(clip, timeline_duration=duration)
-        if cache_key is not None:
-            cached = self._video_standin_cache.get(cache_key)
-            if cached is not None:
-                self._video_standin_token += 1
-                self.timeline.set_audio_loading(False)
-                self.timeline.set_audio(cached, reset_view=False)
-                self._sync_timeline_overview()
-                return
-        from cueplayer.media.video_music_standin import try_music_standin_from_disk
+        from cueplayer.media.video_music_standin import (
+            try_music_standin_artifact_from_disk,
+        )
+        from cueplayer.media.video_waveform_artifact import VideoWaveformArtifact
 
-        disk = try_music_standin_from_disk(clip, timeline_duration=duration)
-        if disk is not None:
-            if cache_key is not None:
-                self._video_standin_cache[cache_key] = disk
+        disk_art = try_music_standin_artifact_from_disk(
+            clip, timeline_duration=duration
+        )
+        if disk_art is not None and disk_art.complete:
             self._video_standin_token += 1
             self.timeline.set_audio_loading(False)
-            self.timeline.set_audio(disk, reset_view=False)
+            self.timeline.set_artifact_waveform(disk_art, clip, complete=True)
             self.timeline.refresh_video_clip_waveforms()
             self._sync_timeline_overview()
             if not self._media_warm_active:
@@ -7065,10 +7062,14 @@ class MainWindow(QMainWindow):
                     f"Music waveform from cache ({clip.name})", 2500
                 )
             return
+        if disk_art is not None and disk_art.coverage_ratio > 0:
+            # Partial RAM hit — show immediately while build continues.
+            self.timeline.set_artifact_waveform(disk_art, clip, complete=False)
         self._video_standin_token += 1
         token = self._video_standin_token
         song_id = self.current_song.id
-        self.timeline.set_audio_loading(True, f"{clip.name} (video)")
+        if getattr(self.timeline, "_artifact_wave", None) is None:
+            self.timeline.set_audio_loading(True, f"{clip.name} (video)")
         clip_snapshot = clip
 
         def _job() -> None:
@@ -7084,13 +7085,13 @@ class MainWindow(QMainWindow):
                 )
 
             try:
-                buffer = build_music_standin_from_video(
+                art = build_music_standin_from_video(
                     clip_snapshot,
                     timeline_duration=duration,
                     cancel_check=_cancel,
                     pause_check=lambda: bool(getattr(self.engine, "playing", False)),
-                    on_progress=lambda buf: self._video_standin_finished.emit(
-                        token, ("progress", buf)
+                    on_progress=lambda a: self._video_standin_finished.emit(
+                        token, ("progress_art", a)
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -7099,7 +7100,7 @@ class MainWindow(QMainWindow):
             if _cancel():
                 self._video_standin_finished.emit(token, False)
                 return
-            self._video_standin_finished.emit(token, buffer)
+            self._video_standin_finished.emit(token, art)
 
         self._audio_load_executor.submit(_job)
 
@@ -7111,28 +7112,45 @@ class MainWindow(QMainWindow):
             return
         if isinstance(result, Exception):
             self.timeline.set_audio_loading(False)
+            self.timeline.clear_artifact_waveform()
             self.timeline.set_audio(None)
             self.status.showMessage(f"Video waveform failed: {result}", 4000)
             return
         if result is False:
             clip = self._primary_video_clip_for_standin()
-            if clip is not None and getattr(self.timeline, "_audio", None) is None:
+            if (
+                clip is not None
+                and getattr(self.timeline, "_audio", None) is None
+                and getattr(self.timeline, "_artifact_wave", None) is None
+            ):
                 self.timeline.set_audio_loading(True, f"{clip.name} (video)")
             return
+        from cueplayer.media.video_waveform_artifact import VideoWaveformArtifact
+
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == "progress_art"
+            and isinstance(result[1], VideoWaveformArtifact)
+        ):
+            partial = result[1]
+            clip = self._primary_video_clip_for_standin()
+            self.timeline.set_artifact_waveform(partial, clip, complete=False)
+            # Do not refresh_video_clip_waveforms() here — that invalidates Marks.
+            # Video lane already listens on the same artifact store.
+            self.timeline.set_audio_loading(True, "Building waveform…")
+            self._sync_timeline_overview()
+            return
+        # Legacy progress AudioBuffer path — ignore (must not rebuild full buffer).
         if (
             isinstance(result, tuple)
             and len(result) == 2
             and result[0] == "progress"
-            and isinstance(result[1], AudioBuffer)
         ):
-            partial = result[1]
-            self.timeline.set_audio(partial, reset_view=False)
-            self.timeline.refresh_video_clip_waveforms()
-            self.timeline.set_audio_loading(True, "Building waveform…")
-            self._sync_timeline_overview()
             return
         if result is None:
             self.timeline.set_audio_loading(False)
+            self.timeline.clear_artifact_waveform()
             self.timeline.set_audio(None)
             if self._primary_video_clip_for_standin() is not None:
                 self.status.showMessage(
@@ -7140,10 +7158,25 @@ class MainWindow(QMainWindow):
                     4000,
                 )
             return
+        if isinstance(result, VideoWaveformArtifact):
+            self.timeline.set_audio_loading(False)
+            clip = self._primary_video_clip_for_standin()
+            self.timeline.set_artifact_waveform(
+                result, clip, complete=bool(result.complete)
+            )
+            self.timeline.refresh_video_clip_waveforms()
+            self._sync_timeline_overview()
+            mins = float(result.duration_seconds) / 60.0
+            self.status.showMessage(
+                f"Music waveform from video audio ({mins:.0f} min)",
+                3500,
+            )
+            return
         if not isinstance(result, AudioBuffer):
             self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
             return
+        # Legacy AudioBuffer completion (should be rare after artifact bind).
         self.timeline.set_audio_loading(False)
         clip = self._primary_video_clip_for_standin()
         if clip is not None:

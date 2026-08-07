@@ -27,7 +27,7 @@ import numpy as np
 
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.audio_loader import PeakLevel
-from cueplayer.media.video_audio_loader import load_video_audio
+from cueplayer.media.av_lock import av_path_lock
 
 # Bump when on-disk layout changes (Converter must understand this schema).
 ARTIFACT_FORMAT_VERSION = 5
@@ -36,11 +36,25 @@ BASE_PEAKS_PER_SECOND = 400.0
 MAX_PEAK_BINS = 2_000_000
 # Pyramid aggregate factors over base bins (Music-lane style zoom levels).
 PYRAMID_FACTORS = (4, 16, 64, 256)
+# Legacy name kept for tests that patch window sizing; sequential decoder
+# uses BATCH_SECONDS between cancel/pause checks (not one open per window).
 CHUNK_SECONDS = 8.0
+BATCH_SECONDS = 0.5
 CHUNK_YIELD_SECONDS = 0.02
 CHUNK_YIELD_WHILE_PLAYING_SECONDS = 0.25
 PROGRESS_GUI_COALESCE_SECONDS = 1.5
 DEFAULT_AUDIO_STREAM_INDEX = 0
+# Soft-yield: release lock briefly so Preview/scrub can breathe — only after
+# this much source time under one held session (not every 8 s reopen).
+SOFT_YIELD_SOURCE_SECONDS = 30.0
+
+# Decode outcome kinds — never treat transient empty as confirmed silence.
+DECODE_PCM = "pcm"
+DECODE_SILENCE = "silence"
+DECODE_EOF = "eof"
+DECODE_NO_STREAM = "no_stream"
+DECODE_TRANSIENT_EMPTY = "transient_empty"
+DECODE_ERROR = "error"
 
 _CACHE_DIR = Path(
     os.environ.get(
@@ -51,6 +65,8 @@ _CACHE_DIR = Path(
 
 _playback_paused_builds = False
 _playback_pause_lock = threading.Lock()
+_zoom_suppress_gui = False
+_zoom_suppress_lock = threading.Lock()
 
 
 def set_waveform_build_paused(paused: bool) -> None:
@@ -72,6 +88,24 @@ def set_waveform_build_paused(paused: bool) -> None:
 def waveform_build_is_paused() -> bool:
     with _playback_pause_lock:
         return bool(_playback_paused_builds)
+
+
+def set_waveform_gui_suppressed_for_zoom(suppressed: bool) -> None:
+    """Suppress progressive GUI publishes during an active Zoom gesture."""
+    global _zoom_suppress_gui
+    with _zoom_suppress_lock:
+        _zoom_suppress_gui = bool(suppressed)
+    if perf_diag.is_enabled():
+        perf_diag.count(
+            "waveform_artifact.gui_suppress_zoom"
+            if suppressed
+            else "waveform_artifact.gui_resume_zoom"
+        )
+
+
+def waveform_gui_suppressed_for_zoom() -> bool:
+    with _zoom_suppress_lock:
+        return bool(_zoom_suppress_gui)
 
 
 @dataclass
@@ -382,6 +416,7 @@ def signed_overview_from_artifact(art: VideoWaveformArtifact) -> np.ndarray:
 def _mark_silence_covered(
     art: VideoWaveformArtifact, t0: float, window: float
 ) -> None:
+    """Cover a source range with confirmed silence (decoded zeros)."""
     pps = float(art.peaks_per_second)
     origin = float(art.origin_seconds)
     b0 = max(0, int(np.floor((t0 - origin) * pps)))
@@ -401,9 +436,13 @@ def _fill_chunk_peaks(
     pcm: np.ndarray,
     pcm_rate: int,
     pcm_origin: float,
-) -> int:
+) -> tuple[int, int, int]:
+    """Accumulate peaks into *local* bin range only.
+
+    Returns ``(newly_covered_bins, local_bins_touched, temp_alloc_bytes)``.
+    """
     if pcm.size == 0 or pcm_rate <= 0 or art.n_bins <= 0:
-        return 0
+        return 0, 0, 0
     if pcm.ndim == 2:
         mono = pcm.mean(axis=1).astype(np.float32, copy=False)
         art.channels = max(art.channels, int(pcm.shape[1]))
@@ -411,7 +450,7 @@ def _fill_chunk_peaks(
         mono = np.asarray(pcm, dtype=np.float32)
         art.channels = max(art.channels, 1)
     if mono.size == 0:
-        return 0
+        return 0, 0, 0
     art.sample_rate = int(pcm_rate) if art.sample_rate <= 0 else art.sample_rate
 
     pps = float(art.peaks_per_second)
@@ -423,29 +462,268 @@ def _fill_chunk_peaks(
     ).astype(np.int64)
     valid = (idx >= 0) & (idx < art.n_bins)
     if not np.any(valid):
-        return 0
+        return 0, 0, 0
     idx = idx[valid]
     vals = mono[valid]
-    n = art.n_bins
-    lo_acc = np.full(n, np.inf, dtype=np.float32)
-    hi_acc = np.full(n, -np.inf, dtype=np.float32)
-    np.minimum.at(lo_acc, idx, vals)
-    np.maximum.at(hi_acc, idx, vals)
-    touched = np.isfinite(lo_acc) & np.isfinite(hi_acc)
-    if not np.any(touched):
-        return 0
+    b_lo = int(idx.min())
+    b_hi = int(idx.max()) + 1
+    local_n = b_hi - b_lo
+    if local_n <= 0:
+        return 0, 0, 0
+    local_idx = idx - b_lo
+    lo_acc = np.full(local_n, np.inf, dtype=np.float32)
+    hi_acc = np.full(local_n, -np.inf, dtype=np.float32)
+    temp_bytes = int(lo_acc.nbytes + hi_acc.nbytes)
+    np.minimum.at(lo_acc, local_idx, vals)
+    np.maximum.at(hi_acc, local_idx, vals)
+    touched_local = np.isfinite(lo_acc) & np.isfinite(hi_acc)
+    if not np.any(touched_local):
+        return 0, 0, temp_bytes
+    art_lo = art.mins[b_lo:b_hi]
+    art_hi = art.maxs[b_lo:b_hi]
+    art_cov = art.coverage[b_lo:b_hi]
     newly = 0
-    fresh = touched & (art.coverage == 0)
+    fresh = touched_local & (art_cov == 0)
     if np.any(fresh):
-        art.mins[fresh] = lo_acc[fresh]
-        art.maxs[fresh] = hi_acc[fresh]
-        art.coverage[fresh] = 1
+        art_lo[fresh] = lo_acc[fresh]
+        art_hi[fresh] = hi_acc[fresh]
+        art_cov[fresh] = 1
         newly = int(np.count_nonzero(fresh))
-    update = touched & (art.coverage != 0) & (~fresh)
+    update = touched_local & (art_cov != 0) & (~fresh)
     if np.any(update):
-        art.mins[update] = np.minimum(art.mins[update], lo_acc[update])
-        art.maxs[update] = np.maximum(art.maxs[update], hi_acc[update])
-    return newly
+        art_lo[update] = np.minimum(art_lo[update], lo_acc[update])
+        art_hi[update] = np.maximum(art_hi[update], hi_acc[update])
+    touched = int(np.count_nonzero(touched_local))
+    if perf_diag.is_enabled():
+        perf_diag.note("waveform_artifact.local_bins_touched", touched)
+        perf_diag.record_ms(
+            "waveform_artifact.local_bins_touched_n", float(touched)
+        )
+        perf_diag.note("waveform_artifact.temp_alloc_bytes", temp_bytes)
+        perf_diag.record_ms(
+            "waveform_artifact.temp_alloc_bytes_n", float(temp_bytes)
+        )
+    return newly, touched, temp_bytes
+
+
+@dataclass
+class _DecodeBatch:
+    kind: str
+    samples: np.ndarray | None = None
+    sample_rate: int = 0
+    origin_seconds: float = 0.0
+    duration_seconds: float = 0.0
+
+
+class SequentialWaveformDecoder:
+    """One audio-only container session; lock held only while demux is open.
+
+    On pause / soft-yield the container is closed and ``av_path_lock`` released.
+    Resume reopens and seeks to the continue cursor — not every 8 s window.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        stream_index: int = DEFAULT_AUDIO_STREAM_INDEX,
+    ) -> None:
+        self.path = Path(path)
+        self.stream_index = int(stream_index)
+        self._lock = av_path_lock(self.path)
+        self._held = False
+        self._container = None
+        self._stream = None
+        self._resampler = None
+        self._iterator = None
+        self._sample_rate = 0
+        self._no_stream = False
+        self._eof = False
+        self.open_count = 0
+        self.batch_count = 0
+        self._cursor_seconds = 0.0
+        self._pending_seek: float | None = None
+
+    @property
+    def no_stream(self) -> bool:
+        return bool(self._no_stream)
+
+    @property
+    def eof(self) -> bool:
+        return bool(self._eof)
+
+    def close(self) -> None:
+        """Close demux and release ``av_path_lock`` (safe while paused)."""
+        if self._container is not None:
+            try:
+                self._container.close()
+            except Exception:
+                pass
+        self._container = None
+        self._stream = None
+        self._resampler = None
+        self._iterator = None
+        if self._held:
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+            self._held = False
+
+    def ensure_open(self, *, seek_seconds: float | None = None) -> str | None:
+        """Open if needed. Returns DECODE_NO_STREAM / DECODE_ERROR or None."""
+        if self._no_stream:
+            return DECODE_NO_STREAM
+        if self._container is not None and self._held:
+            if seek_seconds is not None:
+                self._seek(float(seek_seconds))
+            return None
+        import av
+
+        self._lock.acquire()
+        self._held = True
+        try:
+            self._container = av.open(str(self.path))
+            self.open_count += 1
+            if perf_diag.is_enabled():
+                perf_diag.count("waveform_artifact.decoder_open")
+                perf_diag.note(
+                    "waveform_artifact.decoder_open_count", self.open_count
+                )
+            audio_streams = [s for s in self._container.streams if s.type == "audio"]
+            if not audio_streams:
+                self._no_stream = True
+                self.close()
+                return DECODE_NO_STREAM
+            idx = max(0, min(self.stream_index, len(audio_streams) - 1))
+            self._stream = audio_streams[idx]
+            self._sample_rate = int(
+                self._stream.codec_context.sample_rate or 48000
+            )
+            self._resampler = av.AudioResampler(
+                format="fltp", layout="stereo", rate=self._sample_rate
+            )
+            target = (
+                float(seek_seconds)
+                if seek_seconds is not None
+                else float(self._cursor_seconds)
+            )
+            self._seek(target)
+            return None
+        except Exception:
+            self.close()
+            return DECODE_ERROR
+
+    def _seek(self, seconds: float) -> None:
+        if self._container is None or self._stream is None:
+            return
+        start = max(0.0, float(seconds))
+        self._cursor_seconds = start
+        self._eof = False
+        time_base = (
+            float(self._stream.time_base)
+            if self._stream.time_base
+            else (1.0 / max(1, self._sample_rate))
+        )
+        try:
+            offset = int(start / time_base) if time_base > 0 else 0
+            self._container.seek(
+                offset, stream=self._stream, any_frame=False, backward=True
+            )
+        except Exception:
+            try:
+                import av
+
+                self._container.seek(int(start * av.time_base))
+            except Exception:
+                pass
+        self._iterator = self._container.decode(self._stream)
+        if self._resampler is not None:
+            # Flush resampler after seek.
+            try:
+                list(self._resampler.resample(None))
+            except Exception:
+                pass
+
+    def read_batch(self, *, max_seconds: float = BATCH_SECONDS) -> _DecodeBatch:
+        """Decode up to ``max_seconds`` of PCM. Caller must have ensure_open()."""
+        self.batch_count += 1
+        if perf_diag.is_enabled():
+            perf_diag.count("waveform_artifact.decoded_batches")
+        if self._no_stream:
+            return _DecodeBatch(kind=DECODE_NO_STREAM)
+        if self._eof or self._container is None or self._iterator is None:
+            return _DecodeBatch(kind=DECODE_EOF)
+        max_dur = max(0.05, float(max_seconds))
+        end_time = self._cursor_seconds + max_dur
+        chunks: list[np.ndarray] = []
+        collected_start: float | None = None
+        sample_rate = int(self._sample_rate) or 48000
+        try:
+            for frame in self._iterator:
+                frame_t = (
+                    float(frame.pts * self._stream.time_base)
+                    if frame.pts is not None and self._stream.time_base
+                    else None
+                )
+                if frame_t is not None:
+                    if frame_t + 0.05 < self._cursor_seconds:
+                        continue
+                    if frame_t >= end_time:
+                        # Put cursor at frame_t so next batch continues here.
+                        self._cursor_seconds = float(frame_t)
+                        break
+                    if collected_start is None:
+                        collected_start = max(self._cursor_seconds, frame_t)
+                for resampled in self._resampler.resample(frame):
+                    arr = resampled.to_ndarray()
+                    if arr.size:
+                        chunks.append(arr.T.astype(np.float32, copy=False))
+                if chunks:
+                    got = sum(c.shape[0] for c in chunks) / float(sample_rate)
+                    if got >= max_dur:
+                        break
+            else:
+                # Iterator exhausted.
+                for resampled in self._resampler.resample(None):
+                    arr = resampled.to_ndarray()
+                    if arr.size:
+                        chunks.append(arr.T.astype(np.float32, copy=False))
+                self._eof = True
+        except Exception:
+            return _DecodeBatch(kind=DECODE_ERROR)
+
+        if not chunks:
+            if self._eof:
+                return _DecodeBatch(kind=DECODE_EOF)
+            # Mid-stream empty — do not permanently cover.
+            return _DecodeBatch(kind=DECODE_TRANSIENT_EMPTY)
+
+        samples = np.concatenate(chunks, axis=0)
+        max_frames = int(round(max_dur * sample_rate))
+        if samples.shape[0] > max_frames:
+            samples = samples[:max_frames]
+        origin = collected_start if collected_start is not None else self._cursor_seconds
+        dur = float(samples.shape[0]) / float(sample_rate)
+        self._cursor_seconds = float(origin) + dur
+        if samples.size == 0:
+            return _DecodeBatch(kind=DECODE_TRANSIENT_EMPTY)
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        if peak < 1e-7:
+            return _DecodeBatch(
+                kind=DECODE_SILENCE,
+                samples=samples,
+                sample_rate=sample_rate,
+                origin_seconds=float(origin),
+                duration_seconds=dur,
+            )
+        return _DecodeBatch(
+            kind=DECODE_PCM,
+            samples=samples,
+            sample_rate=sample_rate,
+            origin_seconds=float(origin),
+            duration_seconds=dur,
+        )
 
 
 def build_artifact_continuous(
@@ -458,7 +736,11 @@ def build_artifact_continuous(
     existing: VideoWaveformArtifact | None = None,
     pause_check: Callable[[], bool] | None = None,
 ) -> VideoWaveformArtifact | None:
-    """Sequentially scan embedded audio into a bounded peak artifact."""
+    """Sequentially scan embedded audio into a bounded peak artifact.
+
+    Uses one decoder session (reopen only on pause / soft-yield), local-range
+    peak accumulators, and distinguishes transient empty from silence.
+    """
     path = Path(path)
     art = existing or empty_artifact(
         path, duration_seconds=duration_seconds, stream_index=stream_index
@@ -490,78 +772,142 @@ def build_artifact_continuous(
 
     end = float(art.origin_seconds) + float(art.duration_seconds)
     t = art.first_uncovered_source_time()
-    while t < end - 1e-6:
-        if _cancelled():
-            if perf_diag.is_enabled():
-                perf_diag.count("waveform_artifact.cancelled")
-            return art
-        while _paused():
+    decoder = SequentialWaveformDecoder(path, stream_index=stream_index)
+    transient_streak = 0
+    try:
+        while t < end - 1e-6:
             if _cancelled():
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.cancelled")
                 return art
+            while _paused():
+                decoder.close()
+                if _cancelled():
+                    return art
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.builder_yield")
+                time.sleep(0.05)
+
+            # Reopen + seek only when the session is closed (pause / soft-yield /
+            # first open). Never reopen every 8 s while the demux stays live.
+            if not decoder._held:  # noqa: SLF001
+                open_err = decoder.ensure_open(seek_seconds=t)
+                if open_err == DECODE_NO_STREAM:
+                    if perf_diag.is_enabled():
+                        perf_diag.count("waveform_artifact.no_audio_stream")
+                    return None
+                if open_err == DECODE_ERROR:
+                    if perf_diag.is_enabled():
+                        perf_diag.count("waveform_artifact.decode_error")
+                    time.sleep(CHUNK_YIELD_SECONDS)
+                    continue
+
+            chunk_t0 = time.perf_counter()
+            batch = decoder.read_batch(max_seconds=BATCH_SECONDS)
             if perf_diag.is_enabled():
-                perf_diag.count("waveform_artifact.builder_yield")
-            time.sleep(0.05)
+                perf_diag.record_ms(
+                    "waveform_artifact.av_window_ms",
+                    (time.perf_counter() - chunk_t0) * 1000.0,
+                )
+                perf_diag.count("waveform_artifact.chunks")
 
-        window = min(CHUNK_SECONDS, end - t)
-        chunk_t0 = time.perf_counter()
-        chunk = load_video_audio(
-            path, start_seconds=t, max_duration_seconds=window
-        )
-        if perf_diag.is_enabled():
-            perf_diag.record_ms(
-                "waveform_artifact.av_window_ms",
-                (time.perf_counter() - chunk_t0) * 1000.0,
-            )
-            perf_diag.count("waveform_artifact.chunks")
+            if batch.kind == DECODE_NO_STREAM:
+                return None
+            if batch.kind == DECODE_EOF:
+                break
+            if batch.kind == DECODE_TRANSIENT_EMPTY:
+                transient_streak += 1
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.transient_empty")
+                # Do not mark covered. Nudge cursor slightly after repeated misses
+                # so we do not spin forever on a stuck demux position.
+                if transient_streak >= 8:
+                    t = min(end, t + BATCH_SECONDS)
+                    transient_streak = 0
+                    decoder.close()
+                time.sleep(CHUNK_YIELD_SECONDS)
+                continue
+            if batch.kind == DECODE_ERROR:
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.decode_error")
+                decoder.close()
+                time.sleep(CHUNK_YIELD_SECONDS)
+                continue
 
-        if chunk is None or chunk.frames <= 0:
-            _mark_silence_covered(art, t, window)
-            t += window
-            time.sleep(
-                CHUNK_YIELD_WHILE_PLAYING_SECONDS
-                if waveform_build_is_paused()
-                else CHUNK_YIELD_SECONDS
-            )
-            if on_progress is not None:
-                on_progress(art)
-            continue
-
-        _fill_chunk_peaks(
-            art,
-            pcm=chunk.samples,
-            pcm_rate=chunk.sample_rate,
-            pcm_origin=float(chunk.origin_seconds),
-        )
-        decoded_span = chunk.frames / float(chunk.sample_rate)
-        t = float(chunk.origin_seconds) + decoded_span
-        if t <= float(chunk.origin_seconds) + 1e-3:
-            t = float(chunk.origin_seconds) + window
-
-        if first_ready_ms is None and art.coverage_ratio > 0:
-            first_ready_ms = (time.perf_counter() - t0_wall) * 1000.0
-            if perf_diag.is_enabled():
-                perf_diag.note(
-                    "waveform_artifact.first_peaks_ready_ms", first_ready_ms
+            transient_streak = 0
+            if batch.kind == DECODE_SILENCE:
+                _mark_silence_covered(
+                    art, float(batch.origin_seconds), float(batch.duration_seconds)
+                )
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.confirmed_silence")
+            elif batch.kind == DECODE_PCM and batch.samples is not None:
+                _fill_chunk_peaks(
+                    art,
+                    pcm=batch.samples,
+                    pcm_rate=batch.sample_rate,
+                    pcm_origin=float(batch.origin_seconds),
                 )
 
-        if on_progress is not None:
-            on_progress(art)
+            t = float(batch.origin_seconds) + float(batch.duration_seconds)
+            if t <= float(batch.origin_seconds) + 1e-4:
+                t = float(batch.origin_seconds) + BATCH_SECONDS
 
-        time.sleep(
-            CHUNK_YIELD_WHILE_PLAYING_SECONDS
-            if waveform_build_is_paused()
-            else CHUNK_YIELD_SECONDS
-        )
+            if first_ready_ms is None and art.coverage_ratio > 0:
+                first_ready_ms = (time.perf_counter() - t0_wall) * 1000.0
+                if perf_diag.is_enabled():
+                    perf_diag.note(
+                        "waveform_artifact.first_peaks_ready_ms", first_ready_ms
+                    )
+
+            if on_progress is not None:
+                on_progress(art)
+
+            # Hold the session across batches. Release lock only on pause
+            # (handled at loop top) or completion — never reopen every 8 s.
+            if _cancelled():
+                return art
+            if _paused():
+                decoder.close()
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.builder_yield")
+                continue
+    finally:
+        decoder.close()
         if perf_diag.is_enabled():
-            perf_diag.count("waveform_artifact.builder_yield")
+            perf_diag.note(
+                "waveform_artifact.decoder_open_count", int(decoder.open_count)
+            )
+            perf_diag.note(
+                "waveform_artifact.decoded_batch_count", int(decoder.batch_count)
+            )
+
+    # Mark any trailing uncovered tip as silence only when we reached EOF with
+    # a valid stream (confirmed end — not a hole mid-file).
+    if decoder.eof and not decoder.no_stream:
+        rem = art.coverage == 0
+        if np.any(rem):
+            # Only cover a short trailing tip (< 1 s worth of bins).
+            uncovered = np.flatnonzero(rem)
+            if uncovered.size and uncovered[0] > art.n_bins - max(
+                1, int(art.peaks_per_second)
+            ):
+                art.mins[rem] = 0.0
+                art.maxs[rem] = 0.0
+                art.coverage[rem] = 1
 
     art.complete = True
     art.rebuild_pyramid()
     if perf_diag.is_enabled():
         perf_diag.count("waveform_artifact.job_completed")
+        wall_s = max(1e-6, time.perf_counter() - t0_wall)
         perf_diag.note(
             "waveform_artifact.complete_ms",
-            (time.perf_counter() - t0_wall) * 1000.0,
+            wall_s * 1000.0,
+        )
+        perf_diag.note(
+            "waveform_artifact.build_throughput_src_per_wall",
+            float(art.decoded_duration_s) / wall_s,
         )
         perf_diag.note("waveform_artifact.memory_bytes", art.memory_bytes)
     return art
@@ -715,6 +1061,12 @@ class VideoWaveformArtifactStore:
                             if perf_diag.is_enabled():
                                 perf_diag.count(
                                     "waveform_artifact.progressive_coalesced"
+                                )
+                            return
+                        if not a.complete and waveform_gui_suppressed_for_zoom():
+                            if perf_diag.is_enabled():
+                                perf_diag.count(
+                                    "waveform_artifact.gui_notify_suppressed_zoom"
                                 )
                             return
                         self._last_progress_emit[key] = now

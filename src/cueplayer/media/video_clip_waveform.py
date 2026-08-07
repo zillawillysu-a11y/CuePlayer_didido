@@ -191,12 +191,13 @@ class VideoClipWaveformCache:
         self._pending: set[ClipWaveformKey] = set()
         self._generation = 0
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vid-wave")
-        self._on_ready: Callable[[], None] | None = None
+        self._on_ready: Callable[..., None] | None = None
         self._last_gui_notify_mono = 0.0
         self._gui_first_notified = False
         self._gui_coalesce_s = 1.5
+        self._pending_notify_complete = False
 
-    def set_on_ready(self, callback: Callable[[], None] | None) -> None:
+    def set_on_ready(self, callback: Callable[..., None] | None) -> None:
         self._on_ready = callback
 
     def clear(self) -> None:
@@ -311,12 +312,24 @@ class VideoClipWaveformCache:
     def _notify_ready(self, *, force: bool = False, complete: bool = False) -> None:
         import time as _time
 
+        from cueplayer.media.video_waveform_artifact import (
+            waveform_gui_suppressed_for_zoom,
+        )
+
         now = _time.monotonic()
+        if complete:
+            self._pending_notify_complete = True
         if not force and not complete:
             if waveform_build_is_paused():
                 if perf_diag.is_enabled():
                     perf_diag.count(
                         "waveform_artifact.gui_notify_suppressed_playing"
+                    )
+                return
+            if waveform_gui_suppressed_for_zoom():
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "waveform_artifact.gui_notify_suppressed_zoom"
                     )
                 return
             if self._gui_first_notified and (
@@ -327,13 +340,19 @@ class VideoClipWaveformCache:
                 return
         self._last_gui_notify_mono = now
         self._gui_first_notified = True
+        done = bool(complete or self._pending_notify_complete)
+        if done:
+            self._pending_notify_complete = False
         if perf_diag.is_enabled():
             perf_diag.count("waveform_artifact.gui_notify")
-            if complete:
+            if done:
                 perf_diag.count("waveform_artifact.backdrop_rebuild_after_ready")
         cb = self._on_ready
         if cb is not None:
-            cb()
+            try:
+                cb(done)
+            except TypeError:
+                cb()
 
     def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
         duration = self._artifact_duration_for(clip)

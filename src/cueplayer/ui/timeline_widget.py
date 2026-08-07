@@ -7,7 +7,7 @@ from pathlib import Path
 from time import monotonic_ns
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -32,6 +32,10 @@ from cueplayer.media.video_clip_waveform import (
     sample_source_peaks_for_clip_times,
     sample_source_raw_for_clip_times,
     timeline_to_clip_local,
+)
+from cueplayer.media.video_waveform_artifact import (
+    VideoWaveformArtifact,
+    set_waveform_gui_suppressed_for_zoom,
 )
 from cueplayer.ui.drag_drop import (
     accept_file_drag,
@@ -99,8 +103,9 @@ class TimelineWidget(QWidget):
     mark_track_colors_changed = Signal(bool)
     add_mark_requested = Signal(int)  # lane_index at current playhead
     header_width_changed = Signal(int)  # Mark Type / lane label column width
-    # Internal: video waveform decode finished (may be emitted from a worker).
-    _video_waveforms_ready = Signal()
+    # Internal: video waveform decode progress/complete (may emit from worker).
+    # bool = artifact.complete (final atomic bake when True).
+    _video_waveforms_ready = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -263,13 +268,19 @@ class TimelineWidget(QWidget):
         self._view_transform_last_busy_ns = 0
         self._view_transform_last_view_changed_ns = 0
         self._view_transform_view_changed_interval_ns = 66_000_000
-        # 140 ms: fewer final rebuilds during continuous wheel gestures (~64 ms
-        # produced ~103 rebuilds / 10 s on Windows).
-        self._view_transform_debounce_ms = 140
+        # ≥250–300 ms: continuous physical wheel must not trigger repeated
+        # final HQ rebuilds (140 ms still allowed ~15 finals / 65 s on Windows).
+        self._view_transform_debounce_ms = 280
         self._zoom_quality_timer = QTimer(self)
         self._zoom_quality_timer.setSingleShot(True)
         self._zoom_quality_timer.setInterval(self._view_transform_debounce_ms)
         self._zoom_quality_timer.timeout.connect(self._finish_view_transform_gesture)
+        # Progressive VideoWaveformArtifact — paint live over retained Mark bake.
+        self._artifact_wave = None  # VideoWaveformArtifact | None
+        self._artifact_wave_clip = None  # VideoClip | None
+        self._artifact_wave_complete = False
+        self._waveform_overlay_revision = 0
+        self._waveform_layer_rebuild_count = 0
         self._box_click_seek: float | None = None
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setInterval(33)
@@ -285,7 +296,7 @@ class TimelineWidget(QWidget):
         self._build_zoom_overlay()
         self._build_video_track_overlay()
         self._video_waveform_cache = VideoClipWaveformCache()
-        self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready)
+        self._video_waveform_cache.set_on_ready(self._on_video_waveform_ready_flags)
         # Queued when the worker thread emits — never touch Qt from that thread.
         self._video_waveforms_ready.connect(
             self._apply_video_waveform_ready,
@@ -718,27 +729,50 @@ class TimelineWidget(QWidget):
         self.music_volume_label.setText(f"{int(value)}%")
         self.music_volume_changed.emit(volume)
 
-    def _on_video_waveform_ready(self) -> None:
-        """Called from the waveform worker thread — must not touch Qt widgets."""
-        self._video_waveforms_ready.emit()
+    def _apply_video_waveform_ready(self, complete: bool = False) -> None:
+        """GUI-thread slot: progressive wave refresh without Mark backdrop rebuild.
 
-    def _apply_video_waveform_ready(self) -> None:
-        """GUI-thread slot: refresh static backdrop once peaks land.
-
-        Always bump the waveform revision and drop the retained static cache.
-        Peaks are already in ``VideoClipWaveformCache`` — the rebuild only paints
-        from cache (no mid-play PyAV submit). Leaving a geometry-matched empty
-        bake after ready permanently hid the Video Track waveform while playing.
+        Progressive publishes update only the waveform overlay / revision.
+        Completion (or first paint with no retained bake) does one atomic swap.
         """
-        self._video_waveform_revision = int(self._video_waveform_revision) + 1
         self._video_waveform_pending_refresh = False
-        self._invalidate_scrub_backdrop(reason="video_waveform_ready")
+        if complete or self._scrub_backdrop is None or self._scrub_backdrop.isNull():
+            self._video_waveform_revision = int(self._video_waveform_revision) + 1
+            self._invalidate_scrub_backdrop(
+                reason=(
+                    "video_waveform_complete" if complete else "video_waveform_ready"
+                )
+            )
+            if perf_diag.is_enabled():
+                perf_diag.count("timeline.video_waveform.ready_invalidate")
+        else:
+            # Keep Marks / ruler / lanes; paint live wave overlay on next frame.
+            # Do NOT bump ``_video_waveform_revision`` — that would fail
+            # geometry_ok and force a full Mark+wave bake.
+            self._waveform_overlay_revision += 1
+            self._waveform_layer_rebuild_count += 1
+            if perf_diag.is_enabled():
+                perf_diag.count("timeline.waveform_layer.progressive_refresh")
+                perf_diag.count("timeline.video_waveform.ready_overlay")
         if perf_diag.is_enabled():
             perf_diag.note(
                 "timeline.video_waveform.revision", int(self._video_waveform_revision)
             )
-            perf_diag.count("timeline.video_waveform.ready_invalidate")
+            perf_diag.note(
+                "timeline.waveform_overlay.revision",
+                int(self._waveform_overlay_revision),
+            )
         self.update()
+
+    def _on_video_waveform_ready(self) -> None:
+        """Called from the waveform worker thread — must not touch Qt widgets."""
+        # Legacy no-arg ready → treat as progressive (overlay). Complete path
+        # goes through ``_on_video_waveform_ready_complete``.
+        self._video_waveforms_ready.emit(False)
+
+    def _on_video_waveform_ready_flags(self, complete: bool = False) -> None:
+        """Worker-thread entry that forwards completion to the GUI slot."""
+        self._video_waveforms_ready.emit(bool(complete))
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
@@ -767,6 +801,7 @@ class TimelineWidget(QWidget):
         self._video_waveform_cache.clear()
         self._video_waveform_pending_refresh = False
         self._video_waveform_revision = int(self._video_waveform_revision) + 1
+        self.clear_artifact_waveform()
         self._invalidate_scrub_backdrop(reason="set_song")
         if song is not None and song.video_clips:
             clips = list(song.video_clips)
@@ -1524,6 +1559,9 @@ class TimelineWidget(QWidget):
     def set_audio(self, audio: AudioBuffer | None, *, reset_view: bool = True) -> None:
         self._audio = audio
         if audio is not None:
+            self._artifact_wave = None
+            self._artifact_wave_clip = None
+            self._artifact_wave_complete = False
             self._audio_loading = False
             self._audio_loading_label = ""
             if reset_view:
@@ -1540,6 +1578,55 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop()
         self.update()
 
+    def set_artifact_waveform(
+        self,
+        art: VideoWaveformArtifact | None,
+        clip: VideoClip | None = None,
+        *,
+        complete: bool = False,
+    ) -> None:
+        """Bind Music-lane display to the shared VideoWaveformArtifact.
+
+        Progressive partials paint directly from artifact peaks — no full-duration
+        AudioBuffer / pyramid rebuild. Same revision as the Video Track lane.
+        """
+        self._artifact_wave = art
+        self._artifact_wave_clip = clip
+        self._artifact_wave_complete = bool(complete and art is not None and art.complete)
+        if art is not None and art.coverage_ratio > 0:
+            self._audio_loading = False
+            # Keep a lightweight loading label while incomplete so the corner
+            # plate can say "Building…" without wiping covered bins.
+            if not art.complete:
+                self._audio_loading_label = "Building waveform…"
+            else:
+                self._audio_loading_label = ""
+            if perf_diag.is_enabled():
+                perf_diag.count("waveform_artifact.consumer_main_lane")
+        self._waveform_overlay_revision += 1
+        self._waveform_layer_rebuild_count += 1
+        if perf_diag.is_enabled():
+            perf_diag.count("timeline.waveform_layer.rebuild")
+            perf_diag.note(
+                "timeline.waveform_layer.rebuild_count",
+                int(self._waveform_layer_rebuild_count),
+            )
+        if complete and art is not None and art.complete:
+            # One atomic final swap — Marks + waves together.
+            self._video_waveform_revision = int(self._video_waveform_revision) + 1
+            self._invalidate_scrub_backdrop(reason="artifact_wave_complete")
+        else:
+            # Progressive: do not drop the Mark backdrop.
+            if perf_diag.is_enabled():
+                perf_diag.count("timeline.waveform_layer.progressive_refresh")
+        self.update()
+
+    def clear_artifact_waveform(self) -> None:
+        self._artifact_wave = None
+        self._artifact_wave_clip = None
+        self._artifact_wave_complete = False
+        self._waveform_overlay_revision += 1
+
     def pixels_per_second(self) -> float:
         return float(self._pixels_per_second)
 
@@ -1548,10 +1635,16 @@ class TimelineWidget(QWidget):
         self._audio_loading = bool(loading)
         self._audio_loading_label = (label or "").strip()
         if loading:
-            self._audio = None
-            self._ltc_audio = None
-            self._ltc_channel = None
+            # Do not clear a live progressive artifact — pending bins stay pending.
+            if self._artifact_wave is None:
+                self._audio = None
+                self._ltc_audio = None
+                self._ltc_channel = None
             self._layout_video_track_overlay()
+            # Progressive artifact already paints; skip full Mark rebuild.
+            if self._artifact_wave is not None and self._artifact_wave.coverage_ratio > 0:
+                self.update()
+                return
         # Play/scrub uses a cached backdrop — must rebuild or the loading
         # text vanishes the moment transport starts.
         self._invalidate_scrub_backdrop()
@@ -1911,6 +2004,7 @@ class TimelineWidget(QWidget):
         self._view_transform_busy = True
         self._view_transform_quality_pending = True
         self._view_transform_last_busy_ns = monotonic_ns()
+        set_waveform_gui_suppressed_for_zoom(True)
         if self._zoom_quality_timer.isActive():
             self._zoom_quality_timer.start(self._view_transform_debounce_ms)
         else:
@@ -1921,6 +2015,7 @@ class TimelineWidget(QWidget):
             self._zoom_quality_timer.stop()
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
+        set_waveform_gui_suppressed_for_zoom(False)
         if rebuild:
             self._invalidate_scrub_backdrop(reason=reason)
 
@@ -1930,6 +2025,11 @@ class TimelineWidget(QWidget):
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = monotonic_ns()
+        set_waveform_gui_suppressed_for_zoom(False)
+        # Flush any progressive publishes coalesced during the gesture.
+        flush = getattr(self._video_waveform_cache, "flush_pending_gui_notify", None)
+        if callable(flush):
+            flush()
         with perf_diag.span("timeline.zoom.repaint_dispatch_ms"):
             # Atomic rebuild: never clear the live cache before the replacement
             # is ready (blank flash between scaled preview and final bake).
@@ -1955,12 +2055,19 @@ class TimelineWidget(QWidget):
                 perf_diag.count("timeline.view_changed.calls")
 
     def _apply_wheel_pan(self, dx: float) -> None:
+        """Horizontal pan only — keep native overscan blit (no zoom HQ rebuild).
+
+        PPS is unchanged; entering the zoom quality gesture caused a full
+        Mark+wave bake on idle and a visible flash on release/debounce.
+        """
         self._view_pinned = True
         self._scroll_x -= dx * 0.9
         self._clamp_scroll()
         self._reset_playhead_dirty_tracking()
         perf_diag.count("timeline.zoom.raw_events")
-        self._begin_view_transform_gesture()
+        # Cancel any stale zoom-quality timer without dropping the cache.
+        if self._view_transform_busy or self._view_transform_quality_pending:
+            self._cancel_view_transform_gesture(rebuild=False, reason="wheel_pan")
         self.update()
         self._emit_view_changed_throttled()
         perf_diag.count("timeline.zoom.coalesced_events")
@@ -3352,9 +3459,15 @@ class TimelineWidget(QWidget):
                 self._scroll_x = self._pan_origin_scroll - dx
                 self._clamp_scroll()
                 self._reset_playhead_dirty_tracking()
-                self._begin_view_transform_gesture()
+                # Pure scroll pan: native overscan blit — do not enter zoom
+                # quality gesture (that scaled spatial + rebuilt Marks on idle).
+                if self._view_transform_busy or self._view_transform_quality_pending:
+                    self._cancel_view_transform_gesture(
+                        rebuild=False, reason="middle_pan"
+                    )
                 self.update()
                 self._emit_view_changed_throttled()
+                perf_diag.count("timeline.pan.scroll_events")
         elif self._dragging_loop is not None and event.buttons() & Qt.MouseButton.LeftButton:
             dx = x - self._loop_drag_origin_x
             if abs(dx) >= self._drag_slop:
@@ -3529,6 +3642,7 @@ class TimelineWidget(QWidget):
             Qt.MouseButton.LeftButton,
         ):
             click_seek = self._pan_click_seek if not self._pan_moved else None
+            pan_moved = self._pan_moved
             self._panning = False
             self._pan_moved = False
             self._pan_click_seek = None
@@ -3536,7 +3650,14 @@ class TimelineWidget(QWidget):
             if click_seek is not None:
                 self._emit_seek(click_seek, input_source="waveform")
                 self._position = click_seek
-            self._invalidate_scrub_backdrop()
+            # Pan only changes scroll — keep the retained Mark+wave bake.
+            # Invalidating here flashed the whole Timeline on middle-button release.
+            if self._view_transform_busy or self._view_transform_quality_pending:
+                self._cancel_view_transform_gesture(
+                    rebuild=False, reason="pan_release"
+                )
+            if pan_moved:
+                perf_diag.count("timeline.pan.release_no_invalidate")
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
             super().mouseReleaseEvent(event)
@@ -4049,6 +4170,9 @@ class TimelineWidget(QWidget):
             painter.setClipRect(dirty)
             if self._blit_scrub_backdrop(painter):
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
+                    # Progressive artifact / Video peaks over retained Mark bake.
+                    if self._needs_waveform_overlay():
+                        self._paint_progressive_waveform_overlay(painter)
                     # Selection / hover only — not all visible Marks.
                     self._paint_marks_dynamic_overlay(painter)
                     # Video header caption + selection chrome must paint in
@@ -4607,6 +4731,31 @@ class TimelineWidget(QWidget):
             return f"{minutes:02d}:{seconds:04.1f}"
         return f"{minutes:02d}:{int(seconds):02d}"
 
+    def _needs_waveform_overlay(self) -> bool:
+        """True when live progressive waves should paint over the retained bake."""
+        if self._view_transform_busy:
+            return False
+        art = self._artifact_wave
+        if art is not None and art.coverage_ratio > 0 and not self._artifact_wave_complete:
+            return True
+        if self._waveform_overlay_revision > 0 and not (
+            self._scrub_backdrop is not None
+            and int(self._video_waveform_baked_revision)
+            == int(self._video_waveform_revision)
+            and self._artifact_wave_complete
+        ):
+            # Video-lane progressive peaks landed while Mark bake is retained.
+            if self._song is not None and self._song.video_clips:
+                return True
+        return False
+
+    def _paint_progressive_waveform_overlay(self, painter: QPainter) -> None:
+        """Repaint Music + Video wave regions only — Marks stay in the blit."""
+        with perf_diag.span("timeline.waveform_layer.overlay_paint_ms"):
+            self._paint_waveform(painter)
+            if self._video_lane_visible():
+                self._paint_video_lane(painter)
+
     def _song_expects_waveform(self) -> bool:
         """True when the song has media that should fill the Music lane."""
         song = self._song
@@ -4618,16 +4767,24 @@ class TimelineWidget(QWidget):
 
     def _paint_audio_loading_overlay(self, painter: QPainter) -> None:
         """Corner loading copy — no full-band dim (that washed out the playhead)."""
+        has_artifact = (
+            self._artifact_wave is not None and self._artifact_wave.coverage_ratio > 0
+        )
         if not self._audio_loading and not (
-            self._audio is None and self._song_expects_waveform()
+            self._audio is None and not has_artifact and self._song_expects_waveform()
         ):
             return
-        if self._audio is not None and not self._audio_loading:
-            return
+        if (self._audio is not None or has_artifact) and not self._audio_loading:
+            if has_artifact and self._artifact_wave is not None and not self._artifact_wave.complete:
+                pass  # still show Building… plate
+            else:
+                return
         y0 = self._ruler_height
         label = self._audio_loading_label
-        if self._audio_loading:
-            line1 = "Loading audio…"
+        if self._audio_loading or (
+            has_artifact and self._artifact_wave is not None and not self._artifact_wave.complete
+        ):
+            line1 = "Loading audio…" if not has_artifact else "Building waveform…"
             line2 = label if label else "Reading file"
         else:
             # Song already has media; avoid the empty-project "Open audio…" flash
@@ -4665,6 +4822,13 @@ class TimelineWidget(QWidget):
         y1 = y0 + self._wave_height
         right = self._paint_right()
         painter.fillRect(self._header_width, y0, right, self._wave_height, QColor("#09090b"))
+
+        art = self._artifact_wave
+        if art is not None and art.coverage_ratio > 0:
+            self._paint_artifact_waveform(painter, art, y0, y1, right)
+            painter.setPen(QColor("#27272a"))
+            painter.drawLine(0, y1 - 1, right, y1 - 1)
+            return y1
 
         if self._audio_loading or (self._audio is None and self._song_expects_waveform()):
             # Loading copy is painted live (after static layers) so the playhead
@@ -4714,6 +4878,122 @@ class TimelineWidget(QWidget):
         painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
         painter.drawLine(0, y1 - 1, right, y1 - 1)
         return y1
+
+    def _paint_artifact_waveform(
+        self,
+        painter: QPainter,
+        art: VideoWaveformArtifact,
+        y0: int,
+        y1: int,
+        right: int,
+    ) -> None:
+        """Paint Music lane from shared artifact peaks (pending bins skipped)."""
+        mid = y0 + self._wave_height / 2
+        amp = (self._wave_height / 2) - 8
+        color = QColor(self._waveform_color or "#616161")
+        if not color.isValid():
+            color = QColor("#616161")
+        painter.setPen(QPen(color, 1))
+        view_left = self._header_width
+        view_right = right
+        pps = float(art.peaks_per_second)
+        samples_per_pixel = pps / max(1e-6, self._pixels_per_second)
+        clip = self._artifact_wave_clip
+        # Prefer pyramid level when available.
+        levels = list(art.levels) if art.levels else []
+        level = choose_peak_level(levels, samples_per_pixel) if levels else None
+        cov = art.coverage
+        origin = float(art.origin_seconds)
+        n = art.n_bins
+        if n <= 0:
+            return
+
+        xs = np.arange(view_left, view_right, dtype=np.int32)
+        if xs.size == 0:
+            return
+        t0 = (xs.astype(np.float64) - float(self._header_width) + float(self._scroll_x)) / float(
+            self._pixels_per_second
+        )
+        t1 = t0 + (1.0 / float(self._pixels_per_second))
+        dur = self._duration()
+
+        if clip is not None:
+            src_in = max(0.0, float(clip.source_in_seconds))
+            span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
+            c0 = float(clip.start_seconds)
+            c1 = float(clip.end_seconds)
+            # Map timeline → source time (loop-aware).
+            local = t0 - c0
+            in_clip = (t0 < c1) & (t1 > c0) & (t1 > 0) & (t0 < dur)
+            if clip.media_kind == "still":
+                src_t0 = np.full_like(t0, src_in)
+                src_t1 = src_t0
+            else:
+                src_t0 = src_in + np.mod(np.maximum(0.0, local), span)
+                src_t1 = src_in + np.mod(
+                    np.maximum(0.0, (t1 - c0)), span
+                )
+            src_t0 = np.where(in_clip, src_t0, np.nan)
+            src_t1 = np.where(in_clip, src_t1, np.nan)
+        else:
+            src_t0 = np.where((t1 > 0) & (t0 < dur), t0, np.nan)
+            src_t1 = np.where((t1 > 0) & (t0 < dur), t1, np.nan)
+
+        valid = np.isfinite(src_t0) & np.isfinite(src_t1)
+        if not np.any(valid):
+            painter.setPen(QColor("#27272a"))
+            painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
+            return
+
+        if level is not None:
+            spb = max(1, int(level.samples_per_bucket))
+            s0 = np.floor((src_t0 - origin) * pps).astype(np.int64)
+            s1 = np.ceil((src_t1 - origin) * pps).astype(np.int64)
+            b0 = np.maximum(0, s0 // spb)
+            b1 = np.minimum(level.maxs.size, np.maximum(b0 + 1, s1 // spb))
+            lo = np.full(xs.size, np.nan, dtype=np.float32)
+            hi = np.full(xs.size, np.nan, dtype=np.float32)
+            # Vectorized per-column reduce via clip to base coverage then level.
+            for i in np.flatnonzero(valid):
+                i = int(i)
+                bb0 = int(b0[i])
+                bb1 = int(b1[i])
+                if bb0 >= bb1 or bb0 >= level.maxs.size:
+                    continue
+                # Coverage gate on base bins.
+                base0 = max(0, int(s0[i]))
+                base1 = max(base0 + 1, min(n, int(s1[i])))
+                if base0 >= n or not np.any(cov[base0:base1]):
+                    continue
+                lo[i] = float(level.mins[bb0:bb1].min())
+                hi[i] = float(level.maxs[bb0:bb1].max())
+        else:
+            s0 = np.floor((src_t0 - origin) * pps).astype(np.int64)
+            s1 = np.ceil((src_t1 - origin) * pps).astype(np.int64)
+            lo = np.full(xs.size, np.nan, dtype=np.float32)
+            hi = np.full(xs.size, np.nan, dtype=np.float32)
+            for i in np.flatnonzero(valid):
+                i = int(i)
+                a0 = max(0, int(s0[i]))
+                a1 = max(a0 + 1, min(n, int(s1[i])))
+                if a0 >= n or not np.any(cov[a0:a1]):
+                    continue
+                lo[i] = float(art.mins[a0:a1].min())
+                hi[i] = float(art.maxs[a0:a1].max())
+
+        # Batch QPainter lines where covered.
+        lines: list[QLineF] = []
+        for i in range(xs.size):
+            if not (lo[i] == lo[i] and hi[i] == hi[i]):
+                continue
+            x = float(xs[i])
+            lines.append(
+                QLineF(x, mid + float(lo[i]) * amp, x, mid + float(hi[i]) * amp)
+            )
+        if lines:
+            painter.drawLines(lines)
+        painter.setPen(QColor("#27272a"))
+        painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
 
     def _paint_ltc_lane(self, painter: QPainter) -> None:
         if not self._ltc_lane_visible() or self._ltc_audio is None:
@@ -4829,20 +5109,44 @@ class TimelineWidget(QWidget):
         level = choose_peak_level(audio.peak_levels, samples_per_pixel)
         if level is None:
             return
-        for x in range(view_left, view_right):
-            t0 = self._time_for_x(x)
-            t1 = self._time_for_x(x + 1)
-            if t1 <= 0 or t0 >= self._duration():
+        width = max(0, int(view_right) - int(view_left))
+        if width <= 0:
+            return
+        xs = np.arange(view_left, view_right, dtype=np.int32)
+        t0 = (
+            xs.astype(np.float64)
+            - float(self._header_width)
+            + float(self._scroll_x)
+        ) / float(self._pixels_per_second)
+        t1 = t0 + (1.0 / float(self._pixels_per_second))
+        dur = self._duration()
+        valid = (t1 > 0.0) & (t0 < dur)
+        s0 = (t0 * audio.sample_rate).astype(np.int64)
+        s1 = (t1 * audio.sample_rate).astype(np.int64)
+        spb = max(1, int(level.samples_per_bucket))
+        b0 = np.maximum(0, s0 // spb)
+        b1 = np.minimum(level.maxs.size, np.maximum(b0 + 1, s1 // spb))
+        # Prefetch level arrays once; column reduce stays O(width) but without
+        # per-pixel Python slicing overhead on the hot path where possible.
+        mins = level.mins
+        maxs = level.maxs
+        lines: list[QLineF] = []
+        for i in np.flatnonzero(valid):
+            i = int(i)
+            bb0 = int(b0[i])
+            bb1 = int(b1[i])
+            if bb0 >= bb1 or bb0 >= maxs.size:
                 continue
-            s0 = int(t0 * audio.sample_rate)
-            s1 = int(t1 * audio.sample_rate)
-            b0 = max(0, s0 // level.samples_per_bucket)
-            b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
-            if b0 >= b1 or b0 >= level.maxs.size:
-                continue
-            lo = float(level.mins[b0:b1].min())
-            hi = float(level.maxs[b0:b1].max())
-            painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
+            if bb1 - bb0 == 1:
+                lo = float(mins[bb0])
+                hi = float(maxs[bb0])
+            else:
+                lo = float(mins[bb0:bb1].min())
+                hi = float(maxs[bb0:bb1].max())
+            x = float(xs[i])
+            lines.append(QLineF(x, mid + lo * amp, x, mid + hi * amp))
+        if lines:
+            painter.drawLines(lines)
 
     def _paint_waveform_raw(
         self,
