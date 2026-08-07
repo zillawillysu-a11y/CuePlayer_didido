@@ -205,7 +205,7 @@ def test_progressive_video_consumer_does_not_build_pending_pyramid() -> None:
         size=1,
         stream_index=0,
         format_version=1,
-        peaks_per_second=100.0,
+        peaks_per_second=99.8,
         origin_seconds=0.0,
         duration_seconds=2.0,
         sample_rate=48000,
@@ -220,6 +220,7 @@ def test_progressive_video_consumer_does_not_build_pending_pyramid() -> None:
     )
     peaks = peaks_from_artifact(clip, art)
     assert peaks is not None
+    assert peaks.sample_rate == pytest.approx(99.8)
     assert peaks.peak_levels == []
     assert art.levels == []
     assert np.all(np.isnan(peaks.mins[100:]))

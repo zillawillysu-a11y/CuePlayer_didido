@@ -37,7 +37,10 @@ class ClipWaveformKey:
 class ClipWaveformPeaks:
     """Zoom-aware waveform data sourced from VideoWaveformArtifact."""
 
-    sample_rate: int
+    # Base-envelope bins per source second.  This is intentionally float: the
+    # artifact grid can be fractional, and rounding it accumulates visible
+    # horizontal drift on long clips (about 0.7 s in the Windows report).
+    sample_rate: float
     mono_origin_seconds: float
     mono: np.ndarray  # signed overview; NaN = pending
     peak_levels: list[PeakLevel]
@@ -70,7 +73,7 @@ def peaks_from_artifact(
         perf_diag.count("waveform_artifact.consumer_video_lane")
     if art.n_bins <= 0:
         return None
-    sr = max(1, int(round(float(art.peaks_per_second))))
+    sr = max(1e-6, float(art.peaks_per_second))
     mono = signed_overview_from_artifact(art)
     cov = np.asarray(art.coverage, dtype=np.uint8)
     mins = np.asarray(art.mins, dtype=np.float32).copy()

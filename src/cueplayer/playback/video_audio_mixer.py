@@ -47,6 +47,12 @@ _EVENT_RING_MAX = 256
 # Treat windows as contiguous when they overlap or touch within one sample.
 _CONTIGUOUS_ADJACENCY_FRAMES = 1
 _COLD_SEEK_GAP_WINDOW_S = 2.0
+# A several-minute clip took ~9.3 s to decode as one PCM block on the measured
+# Windows machine, so pressing Play immediately after a song switch began with
+# silence. Use the already-proven sliding-window path well below the separate
+# 10-minute "heavy UI media" threshold; this changes background scheduling,
+# not the callback/sample-clock contract.
+_WINDOWED_AUDIO_SECONDS = 90.0
 
 
 @dataclass(frozen=True)
@@ -146,7 +152,7 @@ class VideoAudioMixer:
             if clip.media_kind == "still":
                 continue
             self._request_window(clip, float(clip.source_in_seconds))
-            if clip_is_heavy(clip):
+            if self._uses_windowed_decode(clip):
                 self._request_window(
                     clip,
                     float(clip.source_in_seconds) + _HEAVY_WINDOW_STEP,
@@ -168,7 +174,7 @@ class VideoAudioMixer:
             src = self._song_time_to_source(clip, t)
             self._pin_source_time = float(src)
             self._ensure_coverage(clip, src)
-            if clip_is_heavy(clip):
+            if self._uses_windowed_decode(clip):
                 self._ensure_contiguous_prefetch(clip, src)
         self._harvest_gap_fill_deltas()
 
@@ -273,7 +279,7 @@ class VideoAudioMixer:
         src_in = max(0.0, float(clip.source_in_seconds))
         span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
         src_out = src_in + span
-        if not clip_is_heavy(clip):
+        if not self._uses_windowed_decode(clip):
             start = src_in
             dur = min(MAX_VIDEO_AUDIO_DECODE_SECONDS, max(0.05, src_out - start))
             return start, dur
@@ -289,6 +295,16 @@ class VideoAudioMixer:
             start = src_in + idx2 * step
         dur = min(cap, max(0.05, src_out - start))
         return start, dur
+
+    @staticmethod
+    def _uses_windowed_decode(clip: VideoClip) -> bool:
+        return bool(
+            clip_is_heavy(clip)
+            or float(clip.source_span_seconds or clip.duration_seconds or 0.0)
+            >= _WINDOWED_AUDIO_SECONDS
+            or float(clip.source_duration_seconds or 0.0)
+            >= _WINDOWED_AUDIO_SECONDS
+        )
 
     def _ensure_coverage(self, clip: VideoClip, source_time: float) -> None:
         # Published coverage only — in-flight must not suppress the request that
@@ -448,7 +464,7 @@ class VideoAudioMixer:
         """
         if self.muted or self._schedule_suspended:
             return
-        if not clip_is_heavy(clip):
+        if not self._uses_windowed_decode(clip):
             return
         sr = float(self._playback_rate)
         src_frame = self._source_frame(source_time)
@@ -580,7 +596,7 @@ class VideoAudioMixer:
         perf_diag.count("video_audio.decode_windows")
         samples: np.ndarray | None
         origin = float(start)
-        heavy = clip_is_heavy(clip)
+        heavy = self._uses_windowed_decode(clip)
         try:
             buf = get_video_audio(
                 clip.path, start_seconds=start, max_duration_seconds=dur

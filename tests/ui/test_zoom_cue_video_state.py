@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from cueplayer.diagnostics import perf as perf_diag
@@ -83,6 +85,45 @@ def test_zoom_final_rebuild_is_atomic(app: QApplication) -> None:
     assert tl._scrub_backdrop is not old_full or tl._spatial_backdrop is not old_spatial  # noqa: SLF001
     # Final sharp swap must not synchronously rasterize the historical 3.5-view
     # cache on the GUI thread.
+    assert tl._scrub_backdrop_overscan == 128  # noqa: SLF001
+
+
+def test_zoom_outside_retained_cache_keeps_native_frame(app: QApplication) -> None:
+    """Zoom-out must not squeeze the clipped source intersection to the centre."""
+    tl = TimelineWidget()
+    tl.resize(800, 400)
+    tl.show()
+    app.processEvents()
+    tl.set_song(_dense_song(80))
+    tl._rebuild_scrub_backdrop(reason="seed")  # noqa: SLF001
+    tl._begin_view_transform_gesture()  # noqa: SLF001
+    tl._pixels_per_second *= 0.1  # noqa: SLF001
+    native_calls: list[int] = []
+    original = tl._blit_native_pixmap  # noqa: SLF001
+
+    def _native(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        native_calls.append(1)
+        return original(*args, **kwargs)
+
+    tl._blit_native_pixmap = _native  # type: ignore[method-assign]  # noqa: SLF001
+    pm = QPixmap(800, 400)
+    pm.fill(Qt.GlobalColor.black)
+    painter = QPainter(pm)
+    try:
+        assert tl._blit_zoom_preview(painter)  # noqa: SLF001
+    finally:
+        painter.end()
+    assert native_calls
+
+
+def test_playing_backdrop_uses_small_overscan(app: QApplication) -> None:
+    tl = TimelineWidget()
+    tl.resize(800, 400)
+    tl.show()
+    app.processEvents()
+    tl.set_song(_dense_song(80))
+    tl.set_playing(True)
+    tl._rebuild_scrub_backdrop(reason="visibility_toggle")  # noqa: SLF001
     assert tl._scrub_backdrop_overscan == 128  # noqa: SLF001
 
 

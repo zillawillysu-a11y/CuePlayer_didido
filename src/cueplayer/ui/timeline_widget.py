@@ -2622,6 +2622,21 @@ class TimelineWidget(QWidget):
         src_left = hw + overscan + t_left * old_pps - old_scroll
         src_right = hw + overscan + t_right * old_pps - old_scroll
         src_w = max(1.0, src_right - src_left)
+        spatial_logical_w = float(spatial.width()) / dpr
+        if src_left < float(hw) or src_right > spatial_logical_w:
+            # Zooming out can request time outside the retained overscan. Qt
+            # clips that source rect, then scales only the intersection into
+            # the destination — the waveform and hundreds of Marks appear
+            # squeezed into the centre until the idle bake. Keep the prior
+            # native frame stable instead; the sharp idle swap applies the new
+            # geometry a moment later without displaying false positions.
+            perf_diag.count("timeline.zoom.preview_outside_cache")
+            return self._blit_native_pixmap(
+                painter,
+                self._scrub_backdrop,
+                overscan=overscan,
+                delta=0,
+            )
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
@@ -2701,7 +2716,7 @@ class TimelineWidget(QWidget):
         # the cache later after it leaves that margin.
         overscan = (
             128
-            if reason == "zoom_idle"
+            if reason == "zoom_idle" or self._playing
             else max(128, int(view_w * 1.25))
         )
         paint_w = int(self.width()) + 2 * overscan

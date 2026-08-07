@@ -423,6 +423,22 @@ def test_quantized_window_reuses_key_for_nearby_times() -> None:
     assert c == d
 
 
+def test_several_minute_clip_uses_fast_start_window() -> None:
+    """Measured 204.8 s sources must not block on one full-file PCM decode."""
+    clip = VideoClip.create(
+        name="three-minutes",
+        path=Path("three-minutes.mp4"),
+        start_seconds=0.0,
+        duration_seconds=204.8,
+        source_duration_seconds=204.8,
+    )
+    mixer = VideoAudioMixer()
+    start, duration = mixer._window_for(clip, 0.0)
+    assert start == 0.0
+    assert duration == pytest.approx(12.0)
+    assert mixer._uses_windowed_decode(clip)
+
+
 def test_lru_keeps_older_window_beyond_36s(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pinned playhead window must survive eviction even when oldest."""
     del monkeypatch
@@ -460,17 +476,17 @@ def test_non_heavy_does_not_prefetch_spam(monkeypatch: pytest.MonkeyPatch) -> No
         name="c",
         path=Path("c.mp4"),
         start_seconds=0.0,
-        duration_seconds=180.0,
-        source_duration_seconds=180.0,
+        duration_seconds=60.0,
+        source_duration_seconds=60.0,
     )
     song.add_video_clip(clip)
     mixer = VideoAudioMixer()
     mixer.set_playback_rate(SR)
     mixer.set_song(song)
-    _inject(mixer, clip, _constant(180.0, 0.4))
+    _inject(mixer, clip, _constant(60.0, 0.4))
     requested: list[float] = []
     monkeypatch.setattr(mixer, "_request_window", lambda c, t, **kw: requested.append(t))
-    out = mixer.chunk_at(int(60.0 * SR), 256)
+    out = mixer.chunk_at(int(30.0 * SR), 256)
     assert float(np.max(np.abs(out))) > 0.0
     assert requested == []
 
