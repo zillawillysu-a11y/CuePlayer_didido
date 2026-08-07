@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QAction, QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QMenu,
     QPushButton,
     QRadioButton,
     QTableWidget,
@@ -832,7 +833,18 @@ class ShowPatchPage(QWidget):
                 str(len(song.marks)),
                 f"Main + {button_marks} Button" if button_marks else f"Main · {main_marks} cues",
             )
+            values = (*values[:7], self._content_summary(song))
             for column, value in enumerate(values, start=1):
+                if column == 8:
+                    button = QPushButton(value)
+                    button.setObjectName("maExportContentButton")
+                    button.setToolTip("Choose the Main and Button content to export")
+                    button.clicked.connect(
+                        lambda _checked=False, song_id=song.id, anchor=button:
+                        self._show_content_menu(song_id, anchor)
+                    )
+                    self.playlist_table.setCellWidget(row, column, button)
+                    continue
                 item = QTableWidgetItem(value)
                 if column in (1, 4, 5, 6, 7):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -841,6 +853,91 @@ class ShowPatchPage(QWidget):
                 self.playlist_table.setItem(row, column, item)
             self.playlist_table.setRowHeight(row, 54)
         self._playlist_refreshing = False
+
+    def _content_selection(self, song_id: str) -> tuple[bool, set[int] | None]:
+        """Return one song's selection; missing Button data means every Button."""
+        if self._project is None:
+            return True, None
+        raw = self._project.ma_export.export_content_by_song.get(song_id, {})
+        include_main = bool(raw.get("main", True))
+        buttons = raw.get("buttons")
+        return (
+            include_main,
+            {int(value) for value in buttons} if isinstance(buttons, list) else None,
+        )
+
+    def _available_button_lanes(self, song):
+        return [
+            lane for lane in sorted(song.mark_lanes, key=lambda item: item.index)
+            if not lane.cue_id_enabled and lane.export_enabled
+            and any(mark.lane_index == lane.index for mark in song.marks)
+        ]
+
+    def _content_summary(self, song) -> str:
+        include_main, selected_buttons = self._content_selection(song.id)
+        available = self._available_button_lanes(song)
+        selected_count = len(available) if selected_buttons is None else sum(
+            lane.index in selected_buttons for lane in available
+        )
+        parts = ["Main" if include_main else "No Main"]
+        if available:
+            parts.append(f"{selected_count}/{len(available)} Buttons")
+        return " · ".join(parts)
+
+    def _show_content_menu(self, song_id: str, anchor: QWidget) -> None:
+        if self._project is None:
+            return
+        song = next((item for item in self._project.songs if item.id == song_id), None)
+        if song is None:
+            return
+        include_main, selected_buttons = self._content_selection(song_id)
+        available = self._available_button_lanes(song)
+        menu = QMenu(self)
+        main_action = QAction("Main sequence and Go+ cues", menu)
+        main_action.setCheckable(True)
+        main_action.setChecked(include_main)
+        main_action.toggled.connect(
+            lambda checked, sid=song_id: self._set_content_main(sid, checked)
+        )
+        menu.addAction(main_action)
+        buttons_menu = menu.addMenu("Button sequences")
+        for lane in available:
+            action = QAction(f"{lane.index}: {lane.name}", buttons_menu)
+            action.setCheckable(True)
+            action.setChecked(selected_buttons is None or lane.index in selected_buttons)
+            action.toggled.connect(
+                lambda checked, sid=song_id, lane_index=lane.index:
+                self._set_content_button(sid, lane_index, checked)
+            )
+            buttons_menu.addAction(action)
+        buttons_menu.setEnabled(bool(available))
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _set_content_main(self, song_id: str, checked: bool) -> None:
+        if self._project is None:
+            return
+        setting = self._project.ma_export.export_content_by_song.setdefault(song_id, {})
+        setting["main"] = bool(checked)
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _set_content_button(self, song_id: str, lane_index: int, checked: bool) -> None:
+        if self._project is None:
+            return
+        include_main, selected = self._content_selection(song_id)
+        song = next((item for item in self._project.songs if item.id == song_id), None)
+        if selected is None and song is not None:
+            selected = {lane.index for lane in self._available_button_lanes(song)}
+        selected = selected or set()
+        if checked:
+            selected.add(lane_index)
+        else:
+            selected.discard(lane_index)
+        setting = self._project.ma_export.export_content_by_song.setdefault(song_id, {})
+        setting["main"] = include_main
+        setting["buttons"] = sorted(selected)
+        self.refresh()
+        self.settings_changed.emit()
 
     def _on_playlist_item_changed(self, item: QTableWidgetItem) -> None:
         if self._playlist_refreshing or self._suppress or item.column() != 0:

@@ -139,8 +139,9 @@ class Ma2Exporter:
         paths: dict[str, Path] = {}
 
         if plan.profile.export_mode == "full":
-            paths["main_sequence"] = import_dir / plan.profile.main_sequence_file
-            self.write_main_sequence(plan, paths["main_sequence"])
+            if plan.profile.include_main:
+                paths["main_sequence"] = import_dir / plan.profile.main_sequence_file
+                self.write_main_sequence(plan, paths["main_sequence"])
             if plan.button_lanes:
                 for lane in plan.button_lanes:
                     key = f"button_sequence_{lane.lane_index}"
@@ -787,7 +788,10 @@ class Ma2Exporter:
                 no = ET.SubElement(cue_el, f"{{{MA2_NS}}}No")
                 no.text = str(value)
 
-        for lane_i, lane in enumerate(plan.button_lanes, start=1):
+        if not plan.profile.include_main:
+            tc.remove(main_track)
+
+        for lane_i, lane in enumerate(plan.button_lanes, start=int(plan.profile.include_main)):
             track = ET.SubElement(
                 tc,
                 f"{{{MA2_NS}}}Track",
@@ -853,7 +857,7 @@ class Ma2Exporter:
             cmd_lines.append(f'Label Page {main_page} "{page_name}"')
 
         # Main cues — Store like CuePoints (not Import XML).
-        for cue in plan.main_cues:
+        for cue in (plan.main_cues if plan.profile.include_main else []):
             cue_label_no = format_ma_cue_number(cue.cue_number)
             label = _ma2_store_cue_label(cue)
             link_name = format_ma2_cue_link_name(cue.cue_number)
@@ -871,7 +875,7 @@ class Ma2Exporter:
                 cmd_lines.append(
                     f'Label Sequence {main_seq} Cue {cue_label_no} "{link_name}"'
                 )
-        if add_main_preset_cue:
+        if plan.profile.include_main and add_main_preset_cue:
             preset_id = format_ma_cue_number(float(main_preset_cue_id))
             existing_ids = {
                 format_ma_cue_number(cue.cue_number) for cue in plan.main_cues
@@ -890,6 +894,8 @@ class Ma2Exporter:
                 f"Assign Sequence {main_seq} At Page {page_pool}.{main_page}.{main_exec}",
             ]
         )
+        if not plan.profile.include_main:
+            del cmd_lines[-2:]
 
         for lane in plan.button_lanes:
             seq_pool = lane.sequence_pool or (main_seq + 1)
@@ -967,7 +973,9 @@ class Ma2Exporter:
                 f"<No>{main_page}</No><No>{main_exec}</No></Object>"
                 f'<SubTrack index="0">{"".join(events)}</SubTrack></Track>'
             )
-            track_i += 1
+            if not plan.profile.include_main:
+                tracks.pop()
+            track_i += int(plan.profile.include_main)
             max_frames = max(max_frames, _timecode_length_frames(plan))
 
             for lane in plan.button_lanes:

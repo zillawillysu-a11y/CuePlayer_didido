@@ -1057,6 +1057,8 @@ class MaExportSettings:
     ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
+    # Optional per-song Main/Button selection. Missing entries mean all.
+    export_content_by_song: dict[str, dict[str, object]] = field(default_factory=dict)
     output_dir_ma2: str = ""
     output_dir_ma3: str = ""
     ma2_target_version: str = ""

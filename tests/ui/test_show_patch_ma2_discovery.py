@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from cueplayer.domain.models import Project
+from cueplayer.domain.models import Project, Song
 from cueplayer.exporters.ma_default_dirs import Ma2Discovery, Ma2Installation
 from cueplayer.ui.show_patch_page import ShowPatchPage
 
@@ -232,6 +232,34 @@ def test_executor_page_and_numbers_build_shared_song_page(
 
     assert project.ma_export.main_executor == "401.150"
     assert project.ma_export.button_executor_start == "401.110"
+
+
+def test_playlist_content_selection_persists_and_updates_summary(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    song = Song.create("Song")
+    song.add_mark(1, 1.0, "Main")
+    song.add_mark(2, 2.0, "Hit")
+    song.add_mark(3, 3.0, "Crash")
+    project.songs = [song]
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    page._set_content_main(song.id, False)
+    page._set_content_button(song.id, 2, False)
+
+    assert project.ma_export.export_content_by_song[song.id] == {
+        "main": False,
+        "buttons": [3],
+    }
+    content = page.playlist_table.cellWidget(0, 8)
+    assert content is not None
+    assert content.text() == "No Main · 1/2 Buttons"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(

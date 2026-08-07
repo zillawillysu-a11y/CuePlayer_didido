@@ -116,8 +116,9 @@ class Ma3Exporter:
         paths: dict[str, Path] = {}
 
         if plan.profile.export_mode == "full":
-            paths["main_sequence"] = seq_dir / plan.profile.main_sequence_file
-            self.write_main_sequence(plan, paths["main_sequence"])
+            if plan.profile.include_main:
+                paths["main_sequence"] = seq_dir / plan.profile.main_sequence_file
+                self.write_main_sequence(plan, paths["main_sequence"])
             if plan.button_lanes:
                 for lane in plan.button_lanes:
                     key = f"button_sequence_{lane.lane_index}"
@@ -385,6 +386,9 @@ class Ma3Exporter:
                 },
             )
 
+        if not plan.profile.include_main:
+            group.remove(main_track)
+
         for lane_i, lane in enumerate(plan.button_lanes):
             button_name = lane.sequence_name or lane.resolved_ma_name()
             target = f"ShowData.DataPools.{pool}.Sequences.{button_name}"
@@ -469,14 +473,15 @@ class Ma3Exporter:
                     f'Label Page {main_page} "{page_name}"',
                 ]
             )
-        commands.extend(
-            [
-                f'Import Sequence {main_seq} "{plan.profile.main_sequence_file}"',
-                f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
-                f"Assign Sequence {main_seq} At Page {main_page}.{main_exec}",
-                f"Assign Go+ At Page {main_page}.{main_exec}",
-            ]
-        )
+        if plan.profile.include_main:
+            commands.extend(
+                [
+                    f'Import Sequence {main_seq} "{plan.profile.main_sequence_file}"',
+                    f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
+                    f"Assign Sequence {main_seq} At Page {main_page}.{main_exec}",
+                    f"Assign Go+ At Page {main_page}.{main_exec}",
+                ]
+            )
         for lane in plan.button_lanes:
             seq_pool = lane.sequence_pool or (main_seq + 1)
             seq_file = lane.sequence_file or plan.profile.button_sequence_file

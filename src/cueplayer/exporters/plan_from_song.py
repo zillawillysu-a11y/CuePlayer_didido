@@ -54,6 +54,8 @@ def build_export_plan(
     start_offset_seconds: float | None = None,
     fps: float | None = None,
     button_allocations: list[dict] | None = None,
+    include_main: bool = True,
+    included_button_lane_indices: set[int] | None = None,
 ) -> SongExportPlan:
     """
     Map the current song's Main / Button marks into an MA export plan.
@@ -75,7 +77,7 @@ def build_export_plan(
     from cueplayer.domain.main_cue_id import mark_time_sort_key
 
     main_marks = sorted(
-        (m for m in song.marks if m.lane_index in id_lanes),
+        (m for m in song.marks if include_main and m.lane_index in id_lanes),
         key=mark_time_sort_key,
     )
     main_cues: list[ExportCue] = []
@@ -115,6 +117,8 @@ def build_export_plan(
     for lane in sorted(song.mark_lanes, key=lambda item: item.index):
         if lane.cue_id_enabled or not lane.export_enabled:
             continue
+        if included_button_lane_indices is not None and lane.index not in included_button_lane_indices:
+            continue
         times = sorted(
             m.time_seconds for m in song.marks if m.lane_index == lane.index
         )
@@ -123,10 +127,10 @@ def build_export_plan(
         alloc = alloc_by_lane.get(lane.index)
         if alloc is not None:
             executor = str(alloc.get("executor") or f"{page}.{exec_start + button_i}")
-            seq_pool = int(alloc.get("sequence_pool") or (sequence_pool_start + 1 + button_i))
+            seq_pool = int(alloc.get("sequence_pool") or (sequence_pool_start + int(include_main) + button_i))
         else:
             executor = f"{page}.{exec_start + button_i}"
-            seq_pool = int(sequence_pool_start) + 1 + button_i
+            seq_pool = int(sequence_pool_start) + int(include_main) + button_i
         lane_slug = sanitize_ma_name(lane.name, fallback=f"Button{lane.index}")
         seq_name = f"{base}_{lane_slug}"
         file_stem = f"{file_base}_{lane_slug.replace(' ', '_')}"
@@ -171,6 +175,7 @@ def build_export_plan(
         main_sequence_file=f"{file_base}_main.xml",
         button_sequence_file=first_button_file,
         timecode_file=f"{file_base}_timecode.xml",
+        include_main=include_main,
     )
     return SongExportPlan(
         song_name=base,

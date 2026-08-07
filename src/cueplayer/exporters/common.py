@@ -438,6 +438,7 @@ class MaExportProfile:
     main_sequence_file: str = "cueplayer_test_main.xml"
     button_sequence_file: str = "cueplayer_test_button.xml"
     timecode_file: str = "cueplayer_test_timecode.xml"
+    include_main: bool = True
 
 
 @dataclass

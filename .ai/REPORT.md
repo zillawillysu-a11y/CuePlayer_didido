@@ -5,41 +5,55 @@
 
 ## Task objective
 
-Prevent the optional MA2 Main Cue `0.5 Preset` from shifting every generated
-Timecode Main Cue target.
+Allow each exported song to include only its selected Main and/or Button
+content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 ## What was implemented
 
-- Identified that MA2 sorts the stored `0.5 Preset` before Cue 1, while the
-  Timecode XML addresses the cue's sequence index rather than its Cue ID.
-- Passed the optional Preset Cue ID into show-install Timecode generation.
-- Offset only Main Timecode targets that occur after the Preset Cue ID; Cue 1
-  therefore targets sequence index 2 when Preset 0.5 is enabled.
-- Kept single-song exports and exports without the Preset unchanged.
-- Added a regression assertion for the Timecode target of Cue 1.
+- Added persisted per-song `main` and Button-lane selection. Missing selection
+  data remains backward-compatible and means all eligible content is exported.
+- Added the **Content** button in the Songs & Pools playlist. It opens a menu
+  for the Main sequence/Go+ cues and every Button lane that has marks.
+- Made show allocation reserve and assign only selected sequences; a
+  Button-only song starts its first Button at that song's Sequence start.
+- Updated MA2 and MA3 exports so excluded Main content produces no Main
+  Sequence file, executor assignment, or Timecode Main Track.
+- Kept selected Buttons in their own Sequence, executor, and Timecode tracks.
 
 ## Files changed
 
+- `src/cueplayer/domain/models.py`
+- `src/cueplayer/persistence/project_store.py`
+- `src/cueplayer/exporters/common.py`
+- `src/cueplayer/exporters/plan_from_song.py`
+- `src/cueplayer/exporters/show_patch.py`
 - `src/cueplayer/exporters/ma2/exporter.py`
+- `src/cueplayer/exporters/ma3/exporter.py`
+- `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_show_patch.py`
+- `tests/persistence/test_schema.py`
+- `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
 
-- MA2 Timecode target indices must account for cue IDs inserted by the
-  installer when MA2's numeric sort order places them before regular cues.
+- Selection belongs to `MaExportSettings` because it is show-export setup, not
+  intrinsic song data.
+- Planning remains the single source of truth: UI selection flows through
+  `build_show_patch` and `plans_from_show_patch` before either exporter writes
+  XML.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\exporters\\test_latency_compensation.py --basetemp .test-tmp-preset-cue-timecode-3`
-- Result: **21 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\exporters\\test_plan_from_song.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-per-song-content-final`
+- Result: **32 passed**.
 
 ## Remaining issues
 
-- Requires real MA2 verification with `Add Main Cue named Preset` enabled.
-- Per-song Main/Button export content selection remains the next feature.
+- A real MA2 import should verify a Button-only song's generated View and
+  Timecode track placement alongside the existing full-song workflow.
 - `startup_error.txt` was not modified.
 
 ## Suggested next task
 
-Add persisted per-song Main/Button export content selection, then filter the
-Registry, Review, Sequence, and Timecode output accordingly.
+Run a real MA2 import test for mixed selections (full song, Main-only,
+Button-only), then improve any import-specific behavior found.

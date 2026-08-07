@@ -97,6 +97,11 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_sequence_slots_per_song": int(settings.ma2_sequence_slots_per_song),
         "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
         "export_song_ids": list(settings.export_song_ids),
+        "export_content_by_song": {
+            str(song_id): dict(content)
+            for song_id, content in settings.export_content_by_song.items()
+            if isinstance(content, dict)
+        },
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
         "ma2_target_version": settings.ma2_target_version,
@@ -177,6 +182,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],
+        export_content_by_song={
+            str(song_id): dict(content)
+            for song_id, content in (raw.get("export_content_by_song") or {}).items()
+            if isinstance(content, dict)
+        },
         output_dir_ma2=str(raw.get("output_dir_ma2") or ""),
         output_dir_ma3=str(raw.get("output_dir_ma3") or ""),
         ma2_target_version=str(raw.get("ma2_target_version") or ""),

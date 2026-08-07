@@ -33,6 +33,7 @@ class SongPatchSlot:
     timecode_pool: int
     main_executor: str
     main_cue_count: int
+    include_main: bool = True
 
     @property
     def button_lane_count(self) -> int:
@@ -51,7 +52,7 @@ class SongPatchSlot:
     @property
     def sequence_span(self) -> int:
         """How many Sequence pool slots this song consumes."""
-        return 1 + len(self.buttons)
+        return int(self.include_main) + len(self.buttons)
 
     @property
     def display_name(self) -> str:
@@ -59,11 +60,13 @@ class SongPatchSlot:
         return self.ma_base
 
 
-def _button_lanes_with_marks(song: Song) -> list[tuple[int, str, int]]:
+def _button_lanes_with_marks(song: Song, included: set[int] | None = None) -> list[tuple[int, str, int]]:
     """Return (lane_index, name, mark_count) for exportable button lanes that have marks."""
     out: list[tuple[int, str, int]] = []
     for lane in sorted(song.mark_lanes, key=lambda item: item.index):
         if lane.cue_id_enabled or not lane.export_enabled:
+            continue
+        if included is not None and lane.index not in included:
             continue
         count = sum(1 for m in song.marks if m.lane_index == lane.index)
         if count <= 0:
@@ -72,7 +75,9 @@ def _button_lanes_with_marks(song: Song) -> list[tuple[int, str, int]]:
     return out
 
 
-def _main_cue_count(song: Song) -> int:
+def _main_cue_count(song: Song, include_main: bool) -> int:
+    if not include_main:
+        return 0
     id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}
     return sum(1 for m in song.marks if m.lane_index in id_lanes)
 
@@ -103,7 +108,11 @@ def build_show_patch(
     for i, song in enumerate(songs):
         page = (main_page0 + i) if page_per_song else main_page0
         base = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
-        lane_rows = _button_lanes_with_marks(song)
+        selection = settings.export_content_by_song.get(song.id, {})
+        include_main = bool(selection.get("main", True))
+        raw_buttons = selection.get("buttons")
+        selected_buttons = {int(value) for value in raw_buttons} if isinstance(raw_buttons, list) else None
+        lane_rows = _button_lanes_with_marks(song, selected_buttons)
         buttons: list[ButtonPatch] = []
         for offset, (lane_index, name, mark_count) in enumerate(lane_rows):
             mark_slug = sanitize_ma_name(name, fallback=f"Button{lane_index}")
@@ -111,7 +120,7 @@ def build_show_patch(
                 ButtonPatch(
                     lane_index=lane_index,
                     name=name,
-                    sequence=seq + 1 + offset,
+                    sequence=seq + int(include_main) + offset,
                     executor=format_executor(page, btn_exec + offset),
                     mark_count=mark_count,
                     sequence_name=f"{base}_{mark_slug}",
@@ -128,10 +137,11 @@ def build_show_patch(
                 buttons=tuple(buttons),
                 timecode_pool=tc,
                 main_executor=format_executor(page, main_exec),
-                main_cue_count=_main_cue_count(song),
+                main_cue_count=_main_cue_count(song, include_main),
+                include_main=include_main,
             )
         )
-        used_slots = 1 + len(buttons)
+        used_slots = int(include_main) + len(buttons)
         if settings.console == "ma2":
             seq += max(used_slots, int(settings.ma2_sequence_slots_per_song or 20))
         else:
@@ -144,7 +154,8 @@ def sequence_chain_labels(slots: list[SongPatchSlot]) -> list[str]:
     """Flat labels for the top chain strip."""
     labels: list[str] = []
     for slot in slots:
-        labels.append(f"Seq {slot.main_sequence} {slot.main_sequence_name} ({slot.main_executor})")
+        if slot.include_main:
+            labels.append(f"Seq {slot.main_sequence} {slot.main_sequence_name} ({slot.main_executor})")
         for button in slot.buttons:
             labels.append(
                 f"Seq {button.sequence} {button.sequence_name} ({button.executor})"
@@ -188,6 +199,8 @@ def plans_from_show_patch(
                 start_offset_seconds=offset,
                 fps=fps,
                 button_allocations=button_alloc,
+                include_main=slot.include_main,
+                included_button_lane_indices={button.lane_index for button in slot.buttons},
                 main_sequence_name=slot.main_sequence_name,
                 timecode_name=(slot.ma_base if console == "ma2" else None),
             )

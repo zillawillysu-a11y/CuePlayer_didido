@@ -57,6 +57,63 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert abs(plans[0].profile.start_offset_seconds - 3600.0) < 1e-6
 
 
+def test_show_patch_can_export_only_selected_button_content(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.xml_inspect import load_xml_root, xml_tag_local
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+
+    song = _song_with_buttons("Song", ma="SongA", button_names=["Hit", "Crash"])
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=201,
+        main_executor="201.130",
+        button_executor_start="201.101",
+        export_content_by_song={song.id: {"main": False, "buttons": [3]}},
+    )
+    slots = build_show_patch([song], settings)
+    slot = slots[0]
+    assert slot.include_main is False
+    assert slot.main_cue_count == 0
+    assert slot.sequence_span == 1
+    assert [button.lane_index for button in slot.buttons] == [3]
+    assert slot.buttons[0].sequence == 201
+    assert sequence_chain_labels(slots) == [
+        "Seq 201 SongA_Crash (201.101)"
+    ]
+
+    plan = plans_from_show_patch(slots, settings)[0]
+    assert plan.main_cues == []
+    assert plan.profile.include_main is False
+    assert [lane.sequence_pool for lane in plan.button_lanes] == [201]
+
+    paths = Ma2Exporter().export_to_directory(plan, tmp_path)
+    assert "main_sequence" not in paths
+    assert "button_sequence_3" in paths
+    assert not any("_main.xml" in path.name for path in paths.values())
+    root = load_xml_root(paths["timecode"])
+    tracks = [element for element in root.iter() if xml_tag_local(element.tag) == "Track"]
+    assert len(tracks) == 1
+    assert tracks[0].get("index") == "0"
+    assert tracks[0].find("{http://schemas.malighting.de/grandma2/xml/MA}Object").get("name") == "SongA_Crash"
+
+    from cueplayer.exporters.ma3 import Ma3Exporter
+
+    ma3_settings = MaExportSettings(
+        console="ma3",
+        sequence_pool_start=201,
+        main_executor="201.130",
+        button_executor_start="201.101",
+        export_content_by_song={song.id: {"main": False, "buttons": [3]}},
+    )
+    ma3_plan = plans_from_show_patch(build_show_patch([song], ma3_settings), ma3_settings)[0]
+    ma3_paths = Ma3Exporter().export_to_directory(ma3_plan, tmp_path / "ma3")
+    assert "main_sequence" not in ma3_paths
+    assert "button_sequence_3" in ma3_paths
+    ma3_tc = load_xml_root(ma3_paths["timecode"])
+    track_names = [element.get("Name") for element in ma3_tc.iter() if xml_tag_local(element.tag) == "Track"]
+    assert track_names == ["SongA_Crash"]
+
+
 def test_ma3_show_export_one_macro(tmp_path) -> None:
     from cueplayer.exporters.ma3 import Ma3Exporter
     from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
