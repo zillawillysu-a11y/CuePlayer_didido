@@ -129,7 +129,7 @@ def test_import_plugin_uses_explicit_pool_and_ma2_visible_path(
 
     assert command.sent[-1] == (
         b'Import "CuePlayer_Live_Scan" At Plugin 9999 '
-        b'/path="/data/ma/actual/gma2/plugins" /nc\r\n'
+        b'/path="/data/ma/actual/gma2/plugins"\r\n'
     )
 
 
@@ -139,6 +139,22 @@ def test_import_plugin_rejects_reserved_plugin_one() -> None:
             plugin_pool=1,
             import_path="/data/ma/actual/gma2/plugins",
         )
+
+
+def test_local_import_matches_the_ma2_command_line_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket()
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    Ma2TelnetScanner("127.0.0.1").import_plugin(
+        plugin_pool=5, user="administrator", password="admin"
+    )
+
+    assert command.sent[-1] == b'Import "CuePlayer_Live_Scan" At Plugin 5\r\n'
 
 
 def test_scan_can_run_the_explicitly_installed_plugin_pool(

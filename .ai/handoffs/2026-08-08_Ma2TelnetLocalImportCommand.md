@@ -1,19 +1,16 @@
-# Latest AI task report
-
-**Date:** 2026-08-08
-**Branch:** `cursor/video-wave-import-artifact-028d`
+# MA2 Telnet local Import command
 
 ## Task objective
 
-Match CuePlayer's local MA2 Telnet Import command with the command verified by
-the operator in MA2's own command line.
+Match CuePlayer's local Telnet Import command with the command verified by the
+operator in MA2's own command line.
 
 ## What was implemented
 
-- Local imports now send exactly `Import "CuePlayer_Live_Scan" At Plugin N`.
-- Removed automatic `/path` and `/nc` options for local MA2 onPC imports.
-- Kept the Import Path field as an optional remote-console override.
-- Added a regression test for the exact local command at Plugin Pool 5.
+- Local imports now send `Import "CuePlayer_Live_Scan" At Plugin N` with no
+  automatic `/path` or `/nc` suffix.
+- The import path is optional and only used for remote-console deployments.
+- Added an exact-command regression test for local Plugin Pool 5.
 
 ## Files changed
 
@@ -24,8 +21,8 @@ the operator in MA2's own command line.
 
 ## Architecture decisions
 
-- The real MA2 command-line result is the source of truth for the local onPC
-  adapter. Optional paths remain only for remote consoles.
+- Real MA2 command-line behavior is the source of truth for the local onPC
+  adapter; optional path overrides remain available for remote consoles.
 
 ## Tests performed
 
@@ -34,8 +31,8 @@ the operator in MA2's own command line.
 
 ## Remaining issues
 
-- Real MA2 must confirm the Telnet Import log, then Plugin 5 execution and the
-  System Monitor scanner frame.
+- A real local Telnet Import needs confirmation in MA2 System Monitor, followed
+  by scanner Plugin execution and a valid frame.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task

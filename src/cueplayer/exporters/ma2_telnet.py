@@ -17,7 +17,6 @@ import time
 FRAME_BEGIN = "CUEPLAYER_SCAN_BEGIN"
 FRAME_END = "CUEPLAYER_SCAN_END"
 PLUGIN_NAME = "CuePlayer Live Scan"
-MA2_ONPC_PLUGIN_PATH = "/data/ma/actual/gma2/plugins"
 POOL_KINDS = ("sequence", "effect", "timecode", "macro", "view")
 _IAC = 255
 _DO = 253
@@ -163,7 +162,7 @@ class Ma2TelnetScanner:
         self,
         *,
         plugin_pool: int,
-        import_path: str,
+        import_path: str = "",
         user: str = "",
         password: str = "",
     ) -> str:
@@ -171,24 +170,21 @@ class Ma2TelnetScanner:
 
         MA2's Import command overwrites an occupied destination, so callers must
         obtain an explicit user confirmation before invoking this method.
-        ``import_path`` is MA2's path to the Plugin XML, not necessarily the
-        local CuePlayer filesystem path when scanning a remote console.
+        A custom ``import_path`` is only needed when the MA2 console cannot
+        already locate the Plugin file on its selected drive.
         """
         plugin_pool = int(plugin_pool)
         if plugin_pool < 2:
             raise Ma2TelnetError("Choose an unused Plugin Pool number of 2 or higher")
         path = import_path.strip()
-        if not path:
-            raise Ma2TelnetError("MA2 Plugin import path is required")
         safe_path = path.replace('"', "")
         with self._connect(self.command_port) as command:
             self._negotiate_telnet(command)
             self._login(command, user, password)
-            self._send_line(
-                command,
-                f'Import "CuePlayer_Live_Scan" At Plugin {plugin_pool} '
-                f'/path="{safe_path}" /nc',
-            )
+            import_command = f'Import "CuePlayer_Live_Scan" At Plugin {plugin_pool}'
+            if safe_path:
+                import_command += f' /path="{safe_path}"'
+            self._send_line(command, import_command)
             return self._read_feedback(command)
 
     def scan(

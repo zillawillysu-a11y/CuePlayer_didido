@@ -23,10 +23,11 @@ area shows only actual MA2 feedback.
    folder using the schema matching the selected MA2 version. After changing
    MA2 versions, write the Plugin again before importing it.
 4. Set an unused **Plugin Pool** number (CuePlayer defaults to `9999`) and an
-   **MA2 Plugin Import Path** that is visible to the MA2 console. For local
-   MA2 onPC, CuePlayer uses `/data/ma/actual/gma2/plugins`; do not use the
-   Windows `C:\\ProgramData...` filesystem path in this field. A remote console
-   needs the Plugin files copied to that console's Plugin directory first.
+   optional **MA2 Plugin Import Path**. For local MA2 onPC, leave the path
+   blank: CuePlayer sends the same `Import "CuePlayer_Live_Scan" At Plugin N`
+   command that works in MA2's local command line. A remote console needs the
+   Plugin files copied to a console-visible drive; enter its MA2-visible path
+   only in that case.
 5. Click **Import Plugin & Scan**, acknowledge the overwrite warning, and
    CuePlayer sends `Import "CuePlayer_Live_Scan" At Plugin <number>` through
    Command Telnet before running that exact Plugin Pool.

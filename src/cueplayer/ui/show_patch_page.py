@@ -35,11 +35,7 @@ from PySide6.QtWidgets import (
 from cueplayer.domain.models import MaExportSettings, Project
 from cueplayer.exporters.common import parse_page_executor, sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
-from cueplayer.exporters.ma2_telnet import (
-    MA2_ONPC_PLUGIN_PATH,
-    Ma2TelnetError,
-    Ma2TelnetScanner,
-)
+from cueplayer.exporters.ma2_telnet import Ma2TelnetError, Ma2TelnetScanner
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
@@ -487,9 +483,11 @@ class ShowPatchPage(QWidget):
             )
         live_scan_layout.addLayout(live_scan_fields)
         plugin_path_row = QHBoxLayout()
-        plugin_path_label = QLabel("MA2 Plugin Import Path")
+        plugin_path_label = QLabel("MA2 Plugin Import Path (optional)")
         plugin_path_label.setStyleSheet("color: #99a3b1; font-size: 11px;")
-        self.registry_plugin_import_path.setPlaceholderText(MA2_ONPC_PLUGIN_PATH)
+        self.registry_plugin_import_path.setPlaceholderText(
+            "Leave blank for local MA2 onPC; use only for a remote console"
+        )
         plugin_path_row.addWidget(plugin_path_label)
         plugin_path_row.addWidget(self.registry_plugin_import_path, stretch=1)
         live_scan_layout.addLayout(plugin_path_row)
@@ -1254,11 +1252,10 @@ class ShowPatchPage(QWidget):
             self.registry_scan_status.setText(f"Could not write scanner Plugin: {exc}")
             return
         local_plugin_folder = str(paths["plugin_xml"].parent)
-        current_path = self.registry_plugin_import_path.text().strip()
-        if not current_path or current_path == local_plugin_folder:
-            self.registry_plugin_import_path.setText(MA2_ONPC_PLUGIN_PATH)
+        if self.registry_plugin_import_path.text().strip() == local_plugin_folder:
+            self.registry_plugin_import_path.clear()
         self.registry_scan_status.setText(
-            f"Scanner Plugin written: {paths['plugin_xml'].name}. MA2 import path: {self.registry_plugin_import_path.text()}"
+            f"Scanner Plugin written: {paths['plugin_xml'].name}. Ready to import at Plugin Pool {self.registry_plugin_pool.value()}."
         )
         self._set_telnet_status("idle")
 
@@ -1322,11 +1319,7 @@ class ShowPatchPage(QWidget):
         except OSError as exc:
             self.registry_scan_status.setText(f"Could not write scanner Plugin: {exc}")
             return
-        local_plugin_folder = str(paths["plugin_xml"].parent)
         import_path = self.registry_plugin_import_path.text().strip()
-        if not import_path or import_path == local_plugin_folder:
-            import_path = MA2_ONPC_PLUGIN_PATH
-            self.registry_plugin_import_path.setText(import_path)
         answer = QMessageBox.warning(
             self,
             "Install scanner Plugin",

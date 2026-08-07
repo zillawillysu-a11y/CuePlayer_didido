@@ -1,22 +1,17 @@
 # Next task
 
-**Status:** Queued - awaiting real MA2/onPC Telnet login and install verification
+**Status:** Queued - awaiting real local Telnet Import verification
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Retest CuePlayer Live Scan with a real MA2 Show User/password, then verify
-Plugin installation and the full scanner round trip.
+Verify the local MA2 Telnet Import command and subsequent scanner execution.
 
 ## Requirements
 
-- Enter an existing, case-sensitive MA2 Show User/password and confirm the
-  Test Connection shows cleaned readable MA2 feedback after Telnet negotiation.
-- Regenerate the Scanner Plugin for MA2 3.9.60, import it at an empty numeric
-  Plugin Pool, then run Scan Current Show and inspect the System Monitor frame.
-- Confirm all three Telnet status lights become green after a completed scan.
-- Verify all five computed starts (Sequence, Effect, Timecode, Song Macro,
-  View) match actual occupied Pools.
-- Confirm errors/unsupported versions leave Console Setup unchanged.
+- Leave optional Import Path blank.
+- Use Import Plugin & Scan at an empty Plugin Pool, such as 5.
+- Verify MA2 logs `Import "CuePlayer_Live_Scan" At Plugin 5`, then `Plugin 5`.
+- Confirm all three Telnet status lights become green after scanner output.
 - Do not touch `startup_error.txt`.
