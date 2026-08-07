@@ -5,69 +5,52 @@
 
 ## Task objective
 
-Allow each exported song to include only its selected Main and/or Button
-content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
+Add a safe Telnet Plugin installation flow and visible connection status to the
+MA2 live Pool scanner.
 
 ## What was implemented
 
-- Added persisted per-song `main` and Button-lane selection. Missing selection
-  data remains backward-compatible and means all eligible content is exported.
-- Replaced the Content popup menu with the approved inline playlist layout:
-  clicking the `x/y selected` summary expands a row directly below the song
-  with checkboxes for Main and every Button lane that has marks.
-- Added **Clear Selection** to the inline row. It unchecks the current song's
-  Main and every Button while keeping that song enabled for export.
-- Added **Select All** to restore all exportable Main/Button content for the
-  current song.
-- Changed Button Sequence labels from `Song_Mark 2` to `Mark 2`; export XML
-  filenames still include the song name to avoid file collisions.
-- Unlinked Console Setup's Fixed Macro import start from the View Layout Macro
-  Pool start; each is now independently persisted and editable.
-- Corrected Export Options checkbox backgrounds so they use the same panel
-  surface rather than the global black control background.
-- Implemented a read-only MA2 Telnet live scanner: Command port triggers an
-  installed scanner Plugin, System Monitor returns framed Pool use data, and
-  validated results update safe Registry starts.
-- Made show allocation reserve and assign only selected sequences; a
-  Button-only song starts its first Button at that song's Sequence start.
-- Updated MA2 and MA3 exports so excluded Main content produces no Main
-  Sequence file, executor assignment, or Timecode Main Track.
-- Kept selected Buttons in their own Sequence, executor, and Timecode tracks.
+- Added a persisted Scanner Plugin Pool field (default `9999`) and MA2-visible
+  Plugin import path.
+- Added **Import Plugin & Scan**. It imports `CuePlayer_Live_Scan` into the
+  selected Plugin Pool, executes that exact Pool, and applies safe starts only
+  after a valid scanner frame returns.
+- Added three status lights: Command Telnet, System Monitor, and Plugin/Scan.
+- Kept the existing read-only Test Connection and Scan Current Show actions.
+- Added an explicit warning before import because MA2 can overwrite the chosen
+  Plugin Pool.
 
 ## Files changed
 
+- `src/cueplayer/exporters/ma2_telnet.py`
 - `src/cueplayer/domain/models.py`
 - `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/exporters/common.py`
-- `src/cueplayer/exporters/plan_from_song.py`
-- `src/cueplayer/exporters/show_patch.py`
-- `src/cueplayer/exporters/ma2/exporter.py`
-- `src/cueplayer/exporters/ma3/exporter.py`
 - `src/cueplayer/ui/show_patch_page.py`
-- `tests/ui/test_show_patch_ma2_discovery.py`
-- `src/cueplayer/exporters/ma2_telnet.py`
 - `tests/exporters/test_ma2_telnet.py`
+- `tests/persistence/test_schema.py`
+- `docs/MA2_TELNET_LIVE_SCAN.md`
 
 ## Architecture decisions
 
-- Selection belongs to `MaExportSettings` because it is show-export setup, not
-  intrinsic song data.
-- Planning remains the single source of truth: UI selection flows through
-  `build_show_patch` and `plans_from_show_patch` before either exporter writes
-  XML.
+- Command Telnet performs the explicit MA2 Import and Plugin execution; System
+  Monitor remains the read channel for a framed result.
+- Plugin Pool occupancy cannot be queried atomically, so CuePlayer requires an
+  operator-selected empty ID and confirmation instead of claiming it can safely
+  detect or prevent all overwrites.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-ma2-telnet-final-2`
-- Result: **36 passed** (simulated MA2 sockets; no physical MA2 console run yet).
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-install-status`
+- Result: **39 passed** using simulated Command/Monitor sockets.
 
 ## Remaining issues
 
-- A real MA2 console must verify its Command Telnet login, System Monitor
-  echo visibility, and scanner Plugin API compatibility.
-- `startup_error.txt` was not modified.
+- A real MA2/onPC must verify the installed version accepts the MA2 Plugin
+  import path and exposes the scanner frame in System Monitor.
+- `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Run the MA2 Telnet live scanner against a real console/onPC instance, then
-verify the calculated safe starts before an export.
+Run **Write Scan Plugin -> Import Plugin & Scan** against an empty MA2 Plugin
+Pool, then confirm all three status lights become green and the safe starts are
+correct.

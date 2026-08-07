@@ -14,9 +14,16 @@ It never stores, deletes, imports, or changes an object in the current show.
 3. Select the target MA2 Output Folder, then click **Write Scan Plugin**.
    CuePlayer writes `CuePlayer_Live_Scan.xml` and `.lua` to the MA2 `plugins`
    folder.
-4. In MA2, import that Plugin once and keep its name as **CuePlayer Live Scan**.
-5. Click **Test Connection** in CuePlayer. This only sends an `Echo` command.
-6. Click **Scan Current Show**. CuePlayer runs the installed Plugin and uses
+4. Set an unused **Plugin Pool** number (CuePlayer defaults to `9999`) and an
+   **MA2 Plugin Import Path** that is visible to the MA2 console. For local
+   MA2 onPC, writing the Plugin fills this path automatically. A remote console
+   needs the Plugin files copied to a console-visible drive first.
+5. Click **Import Plugin & Scan**, acknowledge the overwrite warning, and
+   CuePlayer sends `Import "CuePlayer_Live_Scan" At Plugin <number>` through
+   Command Telnet before running that exact Plugin Pool.
+6. Click **Test Connection** in CuePlayer to check only Command Telnet. Then
+   click **Scan Current Show** to run an already-installed scanner Plugin.
+   A completed scan uses
    its System Monitor result to calculate safe starts for Sequence, Effect,
    Timecode, Song Macro, and View pools.
 
@@ -27,6 +34,13 @@ It never stores, deletes, imports, or changes an object in the current show.
 - A timeout, missing scanner Plugin, invalid frame, or unsupported remote MA2
   version leaves the current CuePlayer configuration unchanged.
 - Scanner settings Host, Command Port, Monitor Port, and User are stored in
-  the project. Password is session-only.
+  the project. The scanner Plugin Pool and MA2 import path are also stored.
+  Password is session-only.
+- The three status lights show Command Telnet, System Monitor, and Plugin/Scan.
+  Green all three means the end-to-end scan completed. Red means that the
+  latest connection or scan attempt failed.
+- MA2 Import can overwrite an occupied Plugin Pool. CuePlayer requires a
+  confirmation but cannot query a Plugin Pool atomically, so select an empty
+  ID before using **Import Plugin & Scan**.
 - The first scan may take a few seconds because MA2 checks Pool objects up to
   number 9999 for each supported Pool type.

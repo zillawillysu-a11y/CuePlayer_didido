@@ -94,11 +94,52 @@ class Ma2TelnetScanner:
             self._login(command, user, password)
             self._send_line(command, 'Echo "CuePlayer connection test"')
 
-    def scan(self, *, user: str = "", password: str = "") -> Ma2PoolSnapshot:
+    def import_plugin(
+        self,
+        *,
+        plugin_pool: int,
+        import_path: str,
+        user: str = "",
+        password: str = "",
+    ) -> None:
+        """Install the generated scanner Plugin at an explicitly chosen Pool ID.
+
+        MA2's Import command overwrites an occupied destination, so callers must
+        obtain an explicit user confirmation before invoking this method.
+        ``import_path`` is MA2's path to the Plugin XML, not necessarily the
+        local CuePlayer filesystem path when scanning a remote console.
+        """
+        plugin_pool = int(plugin_pool)
+        if plugin_pool < 2:
+            raise Ma2TelnetError("Choose an unused Plugin Pool number of 2 or higher")
+        path = import_path.strip()
+        if not path:
+            raise Ma2TelnetError("MA2 Plugin import path is required")
+        safe_path = path.replace('"', "")
+        with self._connect(self.command_port) as command:
+            self._login(command, user, password)
+            self._send_line(
+                command,
+                f'Import "CuePlayer_Live_Scan" At Plugin {plugin_pool} '
+                f'/path="{safe_path}" /nc',
+            )
+
+    def scan(
+        self,
+        *,
+        user: str = "",
+        password: str = "",
+        plugin_pool: int | None = None,
+    ) -> Ma2PoolSnapshot:
         """Run the installed read-only scanner Plugin and wait for its frame."""
         with self._connect(self.monitor_port) as monitor, self._connect(self.command_port) as command:
             self._login(command, user, password)
-            self._send_line(command, f'Plugin "{PLUGIN_NAME}"')
+            command_text = (
+                f"Plugin {int(plugin_pool)}"
+                if plugin_pool is not None
+                else f'Plugin "{PLUGIN_NAME}"'
+            )
+            self._send_line(command, command_text)
             deadline = time.monotonic() + self.timeout_seconds
             chunks: list[str] = []
             while time.monotonic() < deadline:

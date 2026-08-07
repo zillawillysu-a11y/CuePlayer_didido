@@ -100,6 +100,8 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_telnet_command_port": int(settings.ma2_telnet_command_port),
         "ma2_telnet_monitor_port": int(settings.ma2_telnet_monitor_port),
         "ma2_telnet_user": settings.ma2_telnet_user,
+        "ma2_telnet_plugin_pool": int(settings.ma2_telnet_plugin_pool),
+        "ma2_telnet_plugin_import_path": settings.ma2_telnet_plugin_import_path,
         "export_song_ids": list(settings.export_song_ids),
         "export_content_by_song": {
             str(song_id): dict(content)
@@ -191,6 +193,10 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
             1, int(raw.get("ma2_telnet_monitor_port", 30001) or 30001)
         ),
         ma2_telnet_user=str(raw.get("ma2_telnet_user") or "CuePlayerScan"),
+        ma2_telnet_plugin_pool=max(
+            2, int(raw.get("ma2_telnet_plugin_pool", 9999) or 9999)
+        ),
+        ma2_telnet_plugin_import_path=str(raw.get("ma2_telnet_plugin_import_path") or ""),
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

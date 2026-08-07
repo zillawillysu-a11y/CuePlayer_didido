@@ -89,3 +89,57 @@ def test_test_connection_sends_login_and_read_only_echo(monkeypatch: pytest.Monk
     )
     Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer", password="secret")
     assert command.sent[-1] == b'Echo "CuePlayer connection test"\r\n'
+
+
+def test_import_plugin_uses_explicit_pool_and_ma2_visible_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket()
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    Ma2TelnetScanner("127.0.0.1").import_plugin(
+        plugin_pool=9999,
+        import_path="/data/ma/actual/gma2/plugins",
+        user="CuePlayer",
+        password="secret",
+    )
+
+    assert command.sent[-1] == (
+        b'Import "CuePlayer_Live_Scan" At Plugin 9999 '
+        b'/path="/data/ma/actual/gma2/plugins" /nc\r\n'
+    )
+
+
+def test_import_plugin_rejects_reserved_plugin_one() -> None:
+    with pytest.raises(Ma2TelnetError, match="2 or higher"):
+        Ma2TelnetScanner("127.0.0.1").import_plugin(
+            plugin_pool=1,
+            import_path="/data/ma/actual/gma2/plugins",
+        )
+
+
+def test_scan_can_run_the_explicitly_installed_plugin_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket()
+    monitor = _Socket(
+        [
+            (
+                b"CUEPLAYER_SCAN_BEGIN\r\nCUEPLAYER_SCAN_VERSION=3.9.60\r\n"
+                b"CUEPLAYER_SCAN_SEQUENCE=1\r\nCUEPLAYER_SCAN_EFFECT=201\r\n"
+                b"CUEPLAYER_SCAN_TIMECODE=201\r\nCUEPLAYER_SCAN_MACRO=201\r\n"
+                b"CUEPLAYER_SCAN_VIEW=201\r\nCUEPLAYER_SCAN_END\r\n"
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda address, _timeout: monitor if address[1] == 30001 else command,
+    )
+
+    Ma2TelnetScanner("127.0.0.1").scan(plugin_pool=9999)
+
+    assert command.sent[-1] == b"Plugin 9999\r\n"
