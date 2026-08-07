@@ -57,6 +57,21 @@ from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
 
 
+def _artifact_level_for_pixels(levels: list, samples_per_pixel: float):  # noqa: ANN201
+    """Use base bins when zoom exposes more pixels than the first pyramid level.
+
+    ``choose_peak_level`` deliberately falls back to ``levels[0]`` for normal
+    audio buffers. For the already-decimated video artifact that turns a
+    zoomed-in Music lane into large blocks while the Video lane uses base bins.
+    """
+    if not levels:
+        return None
+    first_bucket = min(max(1, int(level.samples_per_bucket)) for level in levels)
+    if float(samples_per_pixel) < float(first_bucket):
+        return None
+    return choose_peak_level(levels, samples_per_pixel)
+
+
 class TimelineWidget(QWidget):
     seek_requested = Signal(float)
     scrub_started = Signal()
@@ -778,10 +793,15 @@ class TimelineWidget(QWidget):
         self._video_waveforms_ready.emit(bool(complete))
 
     def set_song(self, song: Song | None) -> None:
+        previous_song_id = self._song.id if self._song is not None else None
+        next_song_id = song.id if song is not None else None
         self._song = song
-        # Never let the previous song's AudioBuffer define the new timeline
-        # duration. This capped a 2h video-only project at the prior 03:25 file.
-        self._audio = None
+        if previous_song_id != next_song_id:
+            # Never let the previous song's AudioBuffer define the new timeline
+            # duration. This capped a 2h video-only project at the prior 03:25 file.
+            # A same-song UI refresh happens after async audio loading, however, and
+            # must retain the buffer that just arrived.
+            self._audio = None
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
         self._dragging_audio_gain = False
@@ -5009,7 +5029,7 @@ class TimelineWidget(QWidget):
         clip = self._artifact_wave_clip
         # Prefer pyramid level when available.
         levels = list(art.levels) if art.levels else []
-        level = choose_peak_level(levels, samples_per_pixel) if levels else None
+        level = _artifact_level_for_pixels(levels, samples_per_pixel)
         cov = art.coverage
         origin = float(art.origin_seconds)
         n = art.n_bins

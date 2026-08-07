@@ -21,8 +21,9 @@ from PySide6.QtWidgets import QApplication
 
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import Song, VideoClip
+from cueplayer.media.audio_loader import PeakLevel
 from cueplayer.media.video_clip_waveform import ClipWaveformPeaks
-from cueplayer.ui.timeline_widget import TimelineWidget
+from cueplayer.ui.timeline_widget import TimelineWidget, _artifact_level_for_pixels
 
 
 @pytest.fixture
@@ -55,6 +56,19 @@ def _peaks() -> ClipWaveformPeaks:
         mins=np.full(128, -0.55, dtype=np.float32),
         maxs=np.full(128, 0.55, dtype=np.float32),
     )
+
+
+def test_zoomed_artifact_music_uses_base_bins_like_video_lane() -> None:
+    level = PeakLevel(
+        samples_per_bucket=32,
+        mins=np.asarray([-0.5], dtype=np.float32),
+        maxs=np.asarray([0.5], dtype=np.float32),
+    )
+    # Fewer than 32 base bins per screen pixel means pyramid would visibly
+    # block the Music lane; use source-aligned base mins/maxs instead.
+    assert _artifact_level_for_pixels([level], 0.6) is None
+    assert _artifact_level_for_pixels([level], 31.9) is None
+    assert _artifact_level_for_pixels([level], 32.0) is level
 
 
 def _inject_peaks(tl: TimelineWidget, clip: VideoClip, peaks: ClipWaveformPeaks) -> None:
@@ -275,6 +289,19 @@ def test_video_only_song_drops_previous_audio_duration(
     tl.set_song(song)
     assert tl._audio is None  # noqa: SLF001
     assert tl._duration() == pytest.approx(8216.675)  # noqa: SLF001
+
+
+def test_same_song_refresh_keeps_loaded_audio(app: QApplication, tmp_path: Path) -> None:
+    del app
+    song, _clip = _song_with_clip(tmp_path)
+    tl = TimelineWidget()
+    tl.set_song(song)
+    loaded_audio = type("LoadedAudio", (), {"duration_seconds": 205.259})()
+    tl._audio = loaded_audio  # noqa: SLF001
+
+    tl.set_song(song)
+
+    assert tl._audio is loaded_audio  # noqa: SLF001
 
 
 def test_zoom_resize_dpr_retain_waveform_via_geometry(
