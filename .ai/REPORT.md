@@ -5,22 +5,24 @@
 
 ## Task objective
 
-Make MA2 retain the CuePlayer View editor's horizontal Pool positions during
-View import.
+Make generated MA2 Song Views conform to the user's native
+`VIEWVIEWVIEW.xml` reference, preserving the CuePlayer View layout after
+import.
 
 ## What was implemented
 
-- Compared the current generated `0150_View_3.xml` with the MA2-native
-  `POOLALL.xml` supplied by the user.
-- Found that MA2 renders non-zero Widget `x` coordinates at the left edge
-  unless the Widget is marked `has_focus="true"`.
-- Automatically mark every right-positioned Pool as focusable, including the
-  Sequence Pool and optional pools such as MAtricks.
-- Preserved the current Macro handling and the editable 16×8 View geometry.
-- Added a regression test for Sequence and MAtricks widgets placed right of
-  the left edge.
-- Fixed the Timecode Pool to MA2's three-cell footprint: one title cell and
-  two built-in Timecode cells.  It can be moved but not resized.
+- Compared every generated Widget against the user-exported native MA2 View.
+- Changed Widget indices to one continuous sequence in native order; optional
+  Pool widgets no longer start at index 8.
+- Emit `has_focus` and `has_scrollfocus` together for every right-positioned
+  Pool, so MA2 honors its x coordinate.
+- Emit scroll attributes only for per-song Effects and Sequence, matching the
+  native View XML; ordinary Pools no longer receive spurious scroll fields.
+- Matched Mask Pool Data values to native MA2 output.
+- Timecode Pool is now at least three cells wide (title + two built-ins), but
+  can be extended to the right by dragging or editing its width.
+- Added regression checks for continuous indices, focus flags, and absent
+  generic scroll attributes.
 
 ## Files changed
 
@@ -32,20 +34,19 @@ View import.
 
 ## Architecture decisions
 
-- MA2 View XML is a native compatibility format: `has_focus` is required for
-  a Widget's non-zero horizontal placement, rather than merely UI focus.
-- The Timecode Pool is a fixed three-cell MA2 control, not a resizable
-  numbered Pool window.
+- The user-supplied `VIEWVIEWVIEW.xml` is the compatibility reference for
+  MA2 View serialization.
+- Timecode has a minimum three-cell footprint, not a fixed three-cell maximum.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-nonzero-x-focus`
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-layout-focus-timecode-2`
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-native-view-reference-2`
 - Result: **21 passed**.
 
 ## Remaining issues
 
-- A new CuePlayer export and MA2 View import is required to verify the fix.
+- Needs one real MA2 re-export/import verification using the newly generated
+  View XML.
 - Per-song Main/Button export content selection remains pending.
 - `startup_error.txt` was not modified.
 

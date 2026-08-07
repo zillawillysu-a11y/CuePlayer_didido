@@ -67,9 +67,10 @@ class Ma2ViewLayoutStage(QWidget):
         self.widgets = deepcopy(widgets or DEFAULT_VIEW_LAYOUT)
         for widget in self.widgets:
             if widget.get("type") == "timecode":
-                widget["w"] = TIMECODE_POOL_TOTAL_CELLS
-                widget["h"] = 1
-                widget["x"] = min(int(widget.get("x", 0)), 16 - TIMECODE_POOL_TOTAL_CELLS)
+                # Three cells is the Timecode Pool's minimum native footprint
+                # (title + two built-ins); the user may extend it rightward.
+                widget["w"] = min(16, max(TIMECODE_POOL_TOTAL_CELLS, int(widget.get("w", 1))))
+                widget["x"] = min(int(widget.get("x", 0)), 16 - int(widget["w"]))
         self.selected_index = min(self.selected_index, len(self.widgets) - 1)
         self.update()
 
@@ -140,8 +141,7 @@ class Ma2ViewLayoutStage(QWidget):
                 if not self.locked:
                     self._drag_origin = event.position().toPoint()
                     self._drag_snapshot = deepcopy(self.widgets[index])
-                    resizable = self.widgets[index].get("type") != "timecode"
-                    self._drag_mode = "resize" if resizable and point.x() > rect.right() - 18 and point.y() > rect.bottom() - 18 else "move"
+                    self._drag_mode = "resize" if point.x() > rect.right() - 18 and point.y() > rect.bottom() - 18 else "move"
                 return
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -156,7 +156,8 @@ class Ma2ViewLayoutStage(QWidget):
             widget["x"] = max(0, min(16 - int(source["w"]), int(source["x"]) + dx))
             widget["y"] = max(0, min(8 - int(source["h"]), int(source["y"]) + dy))
         else:
-            widget["w"] = max(1, min(16 - int(source["x"]), int(source["w"]) + dx))
+            minimum_width = TIMECODE_POOL_TOTAL_CELLS if widget.get("type") == "timecode" else 1
+            widget["w"] = max(minimum_width, min(16 - int(source["x"]), int(source["w"]) + dx))
             widget["h"] = max(1, min(8 - int(source["y"]), int(source["h"]) + dy))
         self.update()
 

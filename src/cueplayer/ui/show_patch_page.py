@@ -1371,9 +1371,6 @@ class ShowPatchPage(QWidget):
         self.view_pool_width.setValue(int(widget.get("w", 1)))
         self.view_pool_height.setValue(int(widget.get("h", 1)))
         self.view_pool_stride.setEnabled(widget.get("mode") == "perSong")
-        timecode_pool = widget.get("type") == "timecode"
-        self.view_pool_width.setEnabled(not timecode_pool)
-        self.view_pool_height.setEnabled(not timecode_pool)
         for control in controls:
             control.blockSignals(False)
         start = int(widget.get("start", 1)) + (self.view_stage.song_index * int(widget.get("stride", 1)) if widget.get("mode") == "perSong" else 0)
@@ -1406,14 +1403,12 @@ class ShowPatchPage(QWidget):
         widget = self.view_stage.widgets[self.view_stage.selected_index]
         pool_type = self.view_pool_type.currentData()
         is_timecode = pool_type == "timecode"
-        width = TIMECODE_POOL_TOTAL_CELLS if is_timecode else min(self.view_pool_width.value(), 16 - self.view_pool_x.value())
-        height = 1 if is_timecode else min(self.view_pool_height.value(), 8 - self.view_pool_y.value())
+        minimum_width = TIMECODE_POOL_TOTAL_CELLS if is_timecode else 1
+        width = max(minimum_width, min(self.view_pool_width.value(), 16 - self.view_pool_x.value()))
+        height = min(self.view_pool_height.value(), 8 - self.view_pool_y.value())
         widget.update(type=pool_type, mode=self.view_pool_mode.currentData(), start=self.view_pool_number_start.value(), stride=self.view_pool_stride.value(), x=min(self.view_pool_x.value(), 16 - width), y=self.view_pool_y.value(), w=width, h=height)
-        self.view_pool_width.setEnabled(not is_timecode)
-        self.view_pool_height.setEnabled(not is_timecode)
         if is_timecode:
             self.view_pool_width.setValue(width)
-            self.view_pool_height.setValue(height)
         if widget["type"] == "sequence" and widget["mode"] == "perSong":
             self.seq_start.setValue(int(widget["start"]))
             self.ma2_sequence_slots.setValue(int(widget["stride"]))

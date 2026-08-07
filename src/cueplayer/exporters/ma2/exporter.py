@@ -446,7 +446,7 @@ class Ma2Exporter:
             }
             widget = ET.SubElement(view, f"{{{MA2_NS}}}Widget", widget_attrs)
             data = ET.SubElement(widget, f"{{{MA2_NS}}}Data")
-            values = ("0", "0", "0", "3") if widget_type == "4d414352" else (
+            values = ("0", "0", "0", "3") if widget_type in {"4d414352", "5346494c"} else (
                 "0",
                 "1",
                 "0",
@@ -492,7 +492,7 @@ class Ma2Exporter:
                 return (4, source_index)
 
             ordered_layout = sorted(enumerate(layout), key=ma2_widget_order)
-            for fallback_index, (_source_index, spec) in enumerate(ordered_layout, start=4):
+            for fallback_index, (_source_index, spec) in enumerate(ordered_layout):
                 widget_type = type_codes.get(str(spec.get("type", "")))
                 if widget_type is None:
                     continue
@@ -520,26 +520,25 @@ class Ma2Exporter:
                         attrs["y"] = str(y)
                     attrs.update(anz_rows=str(rows), anz_cols=str(columns))
                 else:
-                    # In MA2's native POOLALL export, every Widget positioned
-                    # away from the left edge is focusable.  Without this flag
-                    # MA2 imports its x coordinate but renders the Pool at x=0.
-                    # This applies to Sequence and every optional Pool too,
-                    # not only Effects.
-                    if x or (pool_type == "effects" and spec.get("mode") == "perSong"):
-                        attrs["has_focus"] = "true"
+                    # MA2 ignores a non-zero x coordinate unless both focus
+                    # flags precede it, as seen in the native View export.
+                    # Timecode follows the same native focus convention even
+                    # when it is positioned at the left edge.
+                    if x or pool_type == "timecode":
+                        attrs.update(has_focus="true", has_scrollfocus="true")
                     if x:
                         attrs["x"] = str(x)
                     if y:
                         attrs["y"] = str(y)
                     attrs.update(anz_rows=str(rows), anz_cols=str(columns))
-                    scroll = (
-                        # MA2 displays Effect Pool item scroll_offset + 1.
-                        # This is independent of the View widget's dimensions.
-                        max(0, start - 1)
-                        if spec.get("type") == "effects"
-                        else max(0, start - 1)
-                    )
-                    attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
+                    # Only Effect and Sequence widgets use pool scrolling in
+                    # MA2's native View XML.  Adding scroll fields to other
+                    # widget types changes their imported layout behavior.
+                    if pool_type == "sequence" or (
+                        pool_type == "effects" and spec.get("mode") == "perSong"
+                    ):
+                        scroll = max(0, start - 1)
+                        attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
                 ma2_index = (
                     0
                     if pool_type == "effects" and spec.get("mode") == "fixed"

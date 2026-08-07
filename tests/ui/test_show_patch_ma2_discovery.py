@@ -137,7 +137,7 @@ def test_timecode_pool_uses_three_cells_including_its_title(
     assert "2 built-in Timecode slots" in page.view_allocation_status.text()
 
 
-def test_timecode_pool_layout_is_fixed_to_three_total_cells(app: QApplication) -> None:
+def test_timecode_pool_layout_can_extend_beyond_its_three_cell_minimum(app: QApplication) -> None:
     from cueplayer.ui.ma2_view_layout import Ma2ViewLayoutStage
 
     stage = Ma2ViewLayoutStage()
@@ -145,9 +145,14 @@ def test_timecode_pool_layout_is_fixed_to_three_total_cells(app: QApplication) -
         [{"type": "timecode", "mode": "fixed", "x": 14, "y": 2, "w": 7, "h": 3, "start": 1, "stride": 1}]
     )
 
+    assert stage.widgets[0]["w"] == 7
+    assert stage.widgets[0]["h"] == 3
+    assert stage.widgets[0]["x"] == 9
+
+    stage.set_layout(
+        [{"type": "timecode", "mode": "fixed", "x": 0, "y": 2, "w": 1, "h": 1, "start": 1, "stride": 1}]
+    )
     assert stage.widgets[0]["w"] == 3
-    assert stage.widgets[0]["h"] == 1
-    assert stage.widgets[0]["x"] == 13
 
 
 def test_custom_unicode_folder_survives_detection(

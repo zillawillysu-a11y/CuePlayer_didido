@@ -523,9 +523,14 @@ def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:
     paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
     root = ET.parse(paths["show:view_1"]).getroot()
     namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
-    types = [widget.get("type") for widget in root.findall(f"{namespace}View/{namespace}Widget")]
+    widgets = root.findall(f"{namespace}View/{namespace}Widget")
+    types = [widget.get("type") for widget in widgets]
     assert types == [
         "43414d50", "46494c54", "464f524d", "47524f55", "494d4750", "4c415950",
         "5346494c", "4d415458", "50414743", "50414745", "54434f44", "54435350",
         "54494d50", "444d5850", "56494557", "57454c54",
     ]
+    assert [widget.get("index") for widget in widgets] == [str(index) for index in range(16)]
+    assert all(widget.get("scroll_offset") is None for widget in widgets)
+    assert all(widget.get("has_focus") == "true" for widget in widgets[1:])
+    assert all(widget.get("has_scrollfocus") == "true" for widget in widgets[1:])
