@@ -18,8 +18,13 @@ import numpy as np
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
-from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS, load_video_audio
-from cueplayer.media.video_limits import clip_is_heavy, clip_source_duration_seconds
+from cueplayer.media.video_audio_loader import load_video_audio
+from cueplayer.media.video_audio_cache import get_video_audio
+from cueplayer.media.video_limits import (
+    MAX_VIDEO_AUDIO_DECODE_SECONDS,
+    clip_source_duration_seconds,
+    clip_uses_waveform_artifact,
+)
 from cueplayer.media.video_waveform_artifact import (
     EmbeddedWaveformArtifact,
     artifact_store,
@@ -244,13 +249,18 @@ def build_music_standin_from_video(
         0.05,
     )
 
-    # Short enough: one decode at native rate.
-    if span <= MAX_VIDEO_AUDIO_DECODE_SECONDS and not clip_is_heavy(clip):
+    # Short enough for full-rate PCM (shared process cache with Video lane).
+    if not clip_uses_waveform_artifact(clip) and span <= MAX_VIDEO_AUDIO_DECODE_SECONDS:
         if _cancelled():
             return None
-        buf = load_video_audio(
+        buf = get_video_audio(
             path, start_seconds=src_in, max_duration_seconds=span
         )
+        if buf is None:
+            # Fallback: direct load if cache path failed.
+            buf = load_video_audio(
+                path, start_seconds=src_in, max_duration_seconds=span
+            )
         if buf is None:
             return None
         return _place_on_timeline(
@@ -262,8 +272,8 @@ def build_music_standin_from_video(
             timeline_duration=timeline_duration,
         )
 
-    # Heavy / long: shared continuous artifact (Music + Video lane).
-    if clip_is_heavy(clip) or span > MAX_VIDEO_AUDIO_DECODE_SECONDS:
+    # Heavy / beyond PCM cap: shared continuous artifact (Music + Video lane).
+    if clip_uses_waveform_artifact(clip):
         store = artifact_store()
 
         def _on_art(art: EmbeddedWaveformArtifact) -> None:

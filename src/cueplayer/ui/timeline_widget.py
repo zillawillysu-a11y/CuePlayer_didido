@@ -792,6 +792,23 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop()
         self.update()
 
+    def seed_video_waveforms_from_standin(self, audio) -> None:  # noqa: ANN001
+        """Video-only: paint Video Track from the Music stand-in buffer immediately."""
+        if self._song is None or audio is None:
+            return
+        seeded = False
+        for clip in self._song.video_clips:
+            if clip.media_kind == "still":
+                continue
+            if self._video_waveform_cache.seed_from_standin(
+                clip, audio, notify=False
+            ):
+                seeded = True
+        if seeded:
+            self._video_waveform_revision = int(self._video_waveform_revision) + 1
+            self._invalidate_scrub_backdrop(reason="video_standin_seed")
+            self.update()
+
     def apply_mark_line_settings(
         self,
         *,

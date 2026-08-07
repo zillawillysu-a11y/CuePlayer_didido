@@ -13,7 +13,7 @@ import numpy as np
 
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
-from cueplayer.media.audio_loader import PeakLevel, build_peak_pyramid, choose_peak_level
+from cueplayer.media.audio_loader import AudioBuffer, PeakLevel, build_peak_pyramid, choose_peak_level
 from cueplayer.media.video_audio_cache import get_video_audio_mono_for_waveform
 from cueplayer.media.video_limits import (
     clip_source_duration_seconds,
@@ -118,6 +118,38 @@ def build_clip_waveform_data(
         coverage=(
             np.asarray(coverage, dtype=np.uint8) if coverage is not None else None
         ),
+    )
+
+
+def peaks_from_standin_audio(
+    clip: VideoClip, audio: AudioBuffer
+) -> ClipWaveformPeaks | None:
+    """Map a Music-lane video stand-in buffer into Video Track paint peaks.
+
+    Used for video-only songs so the Video lane paints immediately from the
+    same decode/cache as the Music lane (save/reload + first open).
+    """
+    sr = int(audio.sample_rate)
+    if sr <= 0 or audio.mono.size == 0:
+        return None
+    s0 = max(0, int(round(float(clip.start_seconds) * sr)))
+    s1 = min(
+        audio.mono.size,
+        max(s0 + 1, int(round(float(clip.end_seconds) * sr))),
+    )
+    segment = np.asarray(audio.mono[s0:s1], dtype=np.float32).copy()
+    if segment.size == 0:
+        return None
+    cov = np.isfinite(segment).astype(np.uint8)
+    # Timeline segment is already loop/trim-expanded; treat as source-linear
+    # from source_in so sample_source_* indexing stays consistent for the
+    # common non-loop video-only case (start=0, full span).
+    return build_clip_waveform_data(
+        clip,
+        mono=segment,
+        sample_rate=sr,
+        mono_origin_seconds=max(0.0, float(clip.source_in_seconds)),
+        coverage=cov,
     )
 
 
@@ -406,6 +438,25 @@ class VideoClipWaveformCache:
         self, clip: VideoClip, *, allow_submit: bool = True
     ) -> ClipWaveformPeaks | None:
         return self.get_peaks(clip, allow_submit=allow_submit)
+
+    def seed_from_standin(
+        self, clip: VideoClip, audio: AudioBuffer, *, notify: bool = True
+    ) -> bool:
+        """Install Video-lane peaks from Music stand-in (video-only, sync)."""
+        if clip.media_kind == "still":
+            return False
+        mapped = peaks_from_standin_audio(clip, audio)
+        if mapped is None or mapped.mono.size == 0:
+            return False
+        key = self.key_for(clip)
+        with self._lock:
+            self._peaks[key] = mapped
+            self._pending.discard(key)
+        if notify:
+            self._notify_ready(force=True, complete=True)
+        if perf_diag.is_enabled():
+            perf_diag.count("video_waveform.standin_seed")
+        return True
 
     def preload(self, clips: list[VideoClip]) -> None:
         for clip in clips:

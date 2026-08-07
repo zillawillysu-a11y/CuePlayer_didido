@@ -127,9 +127,9 @@ def test_memory_bound_not_full_rate_pcm() -> None:
     # Far below duration × 48000 × 4 bytes × channels.
     full_rate_bytes = dur * 48000 * 2 * 4
     artifact_bytes = n * (4 + 4 + 1)
-    # ~100 Hz overview is still ≪ full-rate PCM.
+    # ~200 Hz overview is still ≪ full-rate PCM.
     assert artifact_bytes < full_rate_bytes / 100.0
-    assert artifact_bytes < 2_000_000
+    assert artifact_bytes < 2_500_000
     assert n == int(np.ceil(dur * PEAKS_PER_SECOND)) or n == MAX_PEAK_BINS
 
 
@@ -320,6 +320,45 @@ def test_progressive_pending_is_nan_not_zero(
     assert seen_partial["ok"]
 
 
+def test_seed_from_standin_installs_video_lane_peaks(tmp_path: Path) -> None:
+    from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
+    from cueplayer.media.video_clip_waveform import (
+        VideoClipWaveformCache,
+        peaks_from_standin_audio,
+    )
+
+    path = tmp_path / "v.mp4"
+    path.write_bytes(b"x")
+    sr = 800
+    n = sr * 3
+    mono = (0.5 * np.sin(2 * np.pi * np.arange(n) / sr * 6)).astype(np.float32)
+    samples = np.stack([mono, mono], axis=1)
+    _, levels = build_peak_pyramid(samples, sr)
+    buf = AudioBuffer(
+        path=path,
+        sample_rate=sr,
+        samples=samples,
+        mono=mono,
+        peak_levels=levels,
+    )
+    clip = VideoClip.create(
+        name="v",
+        path=path,
+        start_seconds=0.0,
+        duration_seconds=3.0,
+        source_duration_seconds=3.0,
+    )
+    peaks = peaks_from_standin_audio(clip, buf)
+    assert peaks is not None
+    assert peaks.sample_rate == sr
+    assert peaks.mono.size == n
+    cache = VideoClipWaveformCache()
+    assert cache.seed_from_standin(clip, buf, notify=False)
+    assert cache.get_peaks(clip, allow_submit=False) is peaks or (
+        cache.get_peaks(clip, allow_submit=False) is not None
+    )
+
+
 def test_cache_key_stable_across_duration_probe_drift(tmp_path: Path) -> None:
     path = tmp_path / "stable.mp4"
     path.write_bytes(b"x")
@@ -346,7 +385,7 @@ def test_sync_hydrate_after_clear_restores_peaks(
     # Force disk under tmp so we don't pollute the user cache.
     monkeypatch.setattr(art_mod, "_CACHE_DIR", tmp_path / "wave_cache")
 
-    dur = 90.0
+    dur = HEAVY_VIDEO_SECONDS + 30.0
     clip = VideoClip.create(
         name="s",
         path=path,

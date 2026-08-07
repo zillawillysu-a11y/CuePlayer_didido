@@ -30,12 +30,11 @@ from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.video_audio_loader import load_video_audio
 
 # Artifact schema — bump when on-disk layout changes.
-ARTIFACT_FORMAT_VERSION = 3
-# Overview density: dense enough for Music-lane strokes + alignment at
-# typical zoom, cheap enough to build/reload quickly (400 Hz was too slow).
-# 15 min → 90k bins ≈ 810 KB.
-PEAKS_PER_SECOND = 100.0
-# Hard cap (~5.5 h at 100 Hz; longer files thin the effective rate).
+ARTIFACT_FORMAT_VERSION = 4
+# Overview density for heavy / multi-hour sources (song-length uses full PCM).
+# 15 min → 180k bins ≈ 1.6 MB. Zoom-out paint uses adaptive step to stay smooth.
+PEAKS_PER_SECOND = 200.0
+# Hard cap (~2.7 h at 200 Hz; longer files thin the effective rate).
 MAX_PEAK_BINS = 2_000_000
 # Contiguous decode window; lock held only for this slice then released.
 CHUNK_SECONDS = 8.0

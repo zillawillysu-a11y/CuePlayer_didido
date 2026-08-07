@@ -7054,6 +7054,7 @@ class MainWindow(QMainWindow):
                 self._video_standin_token += 1
                 self.timeline.set_audio_loading(False)
                 self.timeline.set_audio(cached, reset_view=False)
+                self.timeline.seed_video_waveforms_from_standin(cached)
                 self._sync_timeline_overview()
                 return
             # Disk peaks from a previous session — paint instantly, no re-decode.
@@ -7063,6 +7064,7 @@ class MainWindow(QMainWindow):
                 self._video_standin_token += 1
                 self.timeline.set_audio_loading(False)
                 self.timeline.set_audio(disk, reset_view=False)
+                self.timeline.seed_video_waveforms_from_standin(disk)
                 self._sync_timeline_overview()
                 if not self._media_warm_active:
                     self.status.showMessage(
@@ -7134,6 +7136,7 @@ class MainWindow(QMainWindow):
         ):
             partial = result[1]
             self.timeline.set_audio(partial, reset_view=False)
+            self.timeline.seed_video_waveforms_from_standin(partial)
             self.timeline.set_audio_loading(True, "video waveform…")
             self._sync_timeline_overview()
             return
@@ -7167,6 +7170,7 @@ class MainWindow(QMainWindow):
                     )
         # Display only — playback stays on VideoAudioMixer so we don't double.
         self.timeline.set_audio(result, reset_view=False)
+        self.timeline.seed_video_waveforms_from_standin(result)
         self._sync_timeline_overview()
         self.status.showMessage(
             f"Music waveform from video audio ({result.duration_seconds / 60.0:.0f} min)",

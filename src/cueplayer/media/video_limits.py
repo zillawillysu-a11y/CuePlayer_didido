@@ -22,10 +22,9 @@ HEAVY_VIDEO_SECONDS = 10 * 60.0
 # allocate ~300MB+ float32 while the UI needs the same path for Preview.
 MAX_VIDEO_AUDIO_DECODE_SECONDS = 5 * 60.0
 
-# Video Track / Music stand-in overview: prefer the shared disk-backed
-# artifact above this span so save/reload restores waves instantly and we
-# never re-decode multi-minute PCM on the full-rate path.
-WAVEFORM_ARTIFACT_SECONDS = 30.0
+# Shared continuous artifact is for sources that exceed the full-PCM decode
+# cap (or are marked heavy). Song-length clips keep Music-lane-quality
+# pyramids so Video Track can align when zoomed in.
 
 # Cap for heavy-clip waveform / cache peeks (mixer uses its own short sliding
 # windows in ``video_audio_mixer`` — do not couple those sizes here).
@@ -61,15 +60,16 @@ def clip_is_heavy(clip: VideoClip) -> bool:
 def clip_uses_waveform_artifact(clip: VideoClip) -> bool:
     """True when Video-lane peaks should use the shared continuous artifact.
 
-    Covers typical song-length videos (not only hour-long heavy sources) so
-    save/reload can hydrate from disk instead of re-decoding full PCM.
+    Only for heavy / beyond full-PCM decode cap. Shorter clips keep a real
+    peak pyramid (Music-lane density) so zoomed alignment stays sharp.
     """
     if getattr(clip, "media_kind", "video") == "still":
         return False
+    if clip_is_heavy(clip):
+        return True
     return (
-        clip_is_heavy(clip)
-        or clip_source_span_seconds(clip) >= WAVEFORM_ARTIFACT_SECONDS
-        or clip_source_duration_seconds(clip) >= WAVEFORM_ARTIFACT_SECONDS
+        clip_source_span_seconds(clip) > MAX_VIDEO_AUDIO_DECODE_SECONDS
+        or clip_source_duration_seconds(clip) > MAX_VIDEO_AUDIO_DECODE_SECONDS
     )
 
 
