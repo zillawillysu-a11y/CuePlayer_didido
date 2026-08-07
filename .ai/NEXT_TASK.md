@@ -1,13 +1,13 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA Export UI design review
+**Type:** MA Export UI and View Layout design review
 **Updated:** 2026-08-07
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Review the updated browser mockup with per-song Main/Button content selection.
+Review the updated browser mockup with per-song Main/Button content selection and the interactive Screen 3 View Layout editor.
 
 ## Verify
 
@@ -19,8 +19,11 @@ Review the updated browser mockup with per-song Main/Button content selection.
 - All interface chrome is English while Unicode song names remain readable.
 - Timecode values appear as plain pool numbers (`201`, `202`) without a redundant `TC` prefix.
 - Song Order is explicit in both the playlist and review, and drag reordering updates the Song List Sequence order.
+- View Layout Pool windows can be selected, dragged, resized, snapped, locked, duplicated, deleted, and edited numerically.
+- Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
+- Decide whether the first production version needs per-song layout overrides or only one shared template.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
 
-The user approves the workflow and zero-content behavior is defined for production implementation.
+The user approves the playlist and View Layout workflows, defines zero-content behavior, and decides the scope of per-song View overrides.

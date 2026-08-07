@@ -20,6 +20,8 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Converted all interface labels, instructions, validation text, and prototype alerts to English; Unicode song data remains unchanged.
 - Simplified Timecode values in the song list and export review from `TC 201` / `TC 202` to `201` / `202`.
 - Added an explicit Song Order column to the playlist and Export Review; drag reordering updates the order used to describe Song List Sequence import positions.
+- Added an interactive View Layout page that models a Screen 3 template with draggable and resizable Sequence, Group, Effect, and Template Effect Pool windows.
+- Added grid snapping, layout locking, exact geometry/Pool settings, song-range preview, Pool duplication/deletion, reset, and an Apply Template action.
 
 ## Files changed
 
@@ -30,19 +32,22 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - This remains an offline design prototype; production PySide6 and exporter behavior are unchanged.
 - Content selection is modeled per song rather than as a global filter.
 - Timecode remains one pool object per selected song, while its included tracks reflect selected Main/Button content in the proposed design.
+- View geometry is stored as percentages in the prototype so it scales with the 16:9 Screen 3 preview; a production implementation must map these values to MA2 View XML geometry.
 
 ## Tests performed
 
 - Python HTML parser: passed.
 - JavaScript parsed with Node `new Function`: passed.
+- View Layout control IDs, event functions, and duplicate-ID checks: passed.
 - `git diff --check`: passed.
 
 ## Remaining issues
 
 - User review is needed before production implementation.
 - Exact production behavior for songs with no selected content should be decided (block export or skip song).
+- Song-specific View overrides and persistence are not yet implemented; the current prototype demonstrates one shared template with per-song Pool range preview.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Review the revised per-song Content controls and decide how zero-content songs should behave, then implement the approved playlist workflow in PySide6.
+Review the interactive View Layout workflow, decide whether song-specific overrides are required for the first production version, and define zero-content song behavior before PySide6 implementation.

@@ -136,6 +136,28 @@
     .review-line { display: grid; grid-template-columns: 70px 1fr 120px 120px 80px; gap: 12px; padding: 10px 13px; border-top: 1px solid var(--line); }
     .review-line:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .view-layout { display: grid; grid-template-columns: minmax(720px, 1fr) 300px; gap: 18px; align-items: start; }
+    .view-toolbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .view-toolbar select { width: 240px; }
+    .view-stage-wrap { padding: 16px; background: #090b0e; }
+    .view-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 430px; overflow: hidden; border: 1px solid #47515e; background-color: #11151a; background-image: linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px); background-size: 5% 10%; user-select: none; }
+    .view-stage.locked .view-widget { cursor: default; }
+    .view-widget { position: absolute; min-width: 80px; min-height: 52px; border: 2px solid #5d6875; border-radius: 5px; background: #1b2026; overflow: hidden; cursor: move; box-shadow: 0 5px 16px rgba(0,0,0,.28); }
+    .view-widget.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.22); }
+    .view-widget-head { height: 26px; padding: 3px 8px; display: flex; justify-content: space-between; background: #303741; font-size: 12px; font-weight: 650; }
+    .view-widget.sequence .view-widget-head { background: #6d6500; }
+    .view-widget.group .view-widget-head { background: #14532d; }
+    .view-widget.effect .view-widget-head { background: #1e3a8a; }
+    .view-widget.template .view-widget-head { background: #6b214d; }
+    .pool-cells { display: grid; grid-template-columns: repeat(6, 1fr); height: calc(100% - 26px); }
+    .pool-cell { min-width: 0; padding: 3px; border-right: 1px solid #343b45; border-bottom: 1px solid #343b45; color: #b9c2ce; font-size: 10px; }
+    .resize-handle { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 45%, #c7d2df 46%, #c7d2df 56%, transparent 57%); }
+    .view-stage.locked .resize-handle { display: none; }
+    .inspector .section { padding: 15px; }
+    .inspector .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .inspector-status { margin-top: 10px; padding: 9px 10px; border-radius: 6px; background: #101318; color: var(--muted); font-size: 12px; }
+    .legend { display: flex; gap: 13px; padding: 0 16px 14px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+    .legend i { width: 9px; height: 9px; display: inline-block; border-radius: 2px; margin-right: 5px; }
     @media (max-width: 1220px) {
       .song-grid { grid-template-columns: 48px 62px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
     }
@@ -157,7 +179,8 @@
     <nav class="tabs">
       <button class="tab active" data-page="songs">1 · Songs & Pools</button>
       <button class="tab" data-page="setup">2 · Console Setup</button>
-      <button class="tab" data-page="review">3 · Review & Export</button>
+      <button class="tab" data-page="viewLayout">3 · View Layout</button>
+      <button class="tab" data-page="review">4 · Review & Export</button>
     </nav>
 
     <main>
@@ -219,6 +242,42 @@
         <div class="footer-actions"><button class="btn" data-goto="songs">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
       </section>
 
+      <section class="page" id="viewLayout">
+        <div class="notice"><strong>Design the Screen 3 template.</strong> Drag Pool windows, resize from the lower-right corner, or enter exact values in the Inspector. Song previews keep the layout and substitute that song's Pool ranges.</div>
+        <div class="view-layout">
+          <div class="card">
+            <div class="view-toolbar">
+              <select id="viewSong" aria-label="Preview song"></select>
+              <button class="btn" id="addPool">Add Pool</button>
+              <button class="btn" id="duplicatePool">Duplicate</button>
+              <button class="btn ghost" id="deletePool">Delete</button>
+              <label class="check"><input id="snapGrid" type="checkbox" checked> Snap to grid</label>
+              <label class="check"><input id="lockLayout" type="checkbox"> Lock layout</label>
+              <button class="btn ghost" id="resetLayout">Reset</button>
+            </div>
+            <div class="view-stage-wrap"><div class="view-stage" id="viewStage"></div></div>
+            <div class="legend"><span><i style="background:#6d6500"></i>Sequence</span><span><i style="background:#14532d"></i>Group</span><span><i style="background:#1e3a8a"></i>Effect</span><span><i style="background:#6b214d"></i>Template Effect</span></div>
+          </div>
+          <div class="card inspector">
+            <div class="card-head"><h2>Pool Inspector</h2><span class="badge" id="selectedPoolName">Sequence Pool</span></div>
+            <div class="section">
+              <div class="field"><label>Pool Type</label><select id="poolType"><option value="sequence">Sequence</option><option value="group">Group</option><option value="effect">Effect</option><option value="template">Template Effect</option></select></div>
+              <div class="fields">
+                <div class="field"><label>X</label><input id="poolX" type="number" min="0" max="95"></div>
+                <div class="field"><label>Y</label><input id="poolY" type="number" min="0" max="90"></div>
+                <div class="field"><label>Width</label><input id="poolW" type="number" min="5" max="100"></div>
+                <div class="field"><label>Height</label><input id="poolH" type="number" min="10" max="100"></div>
+                <div class="field"><label>Pool Start</label><input id="poolStart" type="number" min="1"></div>
+                <div class="field"><label>Visible Slots</label><input id="poolSlots" type="number" min="1" max="96"></div>
+              </div>
+              <div class="inspector-status" id="layoutStatus">Grid: 5% × 10% · Screen 3 · Template shared by all songs</div>
+            </div>
+            <div class="section"><button class="btn" id="applyAll">Apply Template to All Songs</button></div>
+          </div>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="setup">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
+      </section>
+
       <section class="page" id="review">
         <div class="notice" id="validation"><strong>Ready.</strong> Review every name and pool range before export.</div>
         <div class="review-grid">
@@ -243,6 +302,15 @@
     const $ = selector => document.querySelector(selector);
     const $$ = selector => [...document.querySelectorAll(selector)];
     const numberValue = id => Math.max(1, Number($(id).value) || 1);
+    const defaultViewWidgets = () => [
+      { id: 1, type: "sequence", x: 0, y: 0, w: 60, h: 30, start: 1, slots: 20 },
+      { id: 2, type: "group", x: 60, y: 0, w: 40, h: 30, start: 1, slots: 16 },
+      { id: 3, type: "effect", x: 0, y: 30, w: 60, h: 40, start: 201, slots: 80 },
+      { id: 4, type: "template", x: 60, y: 30, w: 40, h: 40, start: 1, slots: 32 }
+    ];
+    let viewWidgets = defaultViewWidgets();
+    let selectedWidgetId = 1;
+    let nextWidgetId = 5;
 
     function allocation(index) {
       const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
@@ -309,9 +377,90 @@
       $("#targetLabel").textContent = $("#console").value.replace("grand", "");
     }
 
+    function widgetLabel(type) {
+      return ({ sequence: "Sequence Pool", group: "Group Pool", effect: "Effect Pool", template: "Template Effect" })[type];
+    }
+
+    function previewStart(widget) {
+      const songIndex = Number($("#viewSong").value || 0);
+      if (widget.type === "sequence") return allocation(songIndex).seqStart;
+      if (widget.type === "effect") return allocation(songIndex).effectStart;
+      return widget.start;
+    }
+
+    function renderViewLayout() {
+      const stage = $("#viewStage");
+      stage.classList.toggle("locked", $("#lockLayout").checked);
+      stage.innerHTML = viewWidgets.map(widget => {
+        const start = previewStart(widget);
+        const cells = Array.from({ length: Math.min(widget.slots, 24) }, (_, i) => `<span class="pool-cell">${start + i}</span>`).join("");
+        return `<div class="view-widget ${widget.type} ${widget.id === selectedWidgetId ? "selected" : ""}" data-widget="${widget.id}" style="left:${widget.x}%;top:${widget.y}%;width:${widget.w}%;height:${widget.h}%">
+          <div class="view-widget-head"><span>${widgetLabel(widget.type)}</span><span>${start}–${start + widget.slots - 1}</span></div><div class="pool-cells">${cells}</div><span class="resize-handle" data-resize="${widget.id}"></span></div>`;
+      }).join("");
+      $$(".view-widget").forEach(element => element.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(element.dataset.widget), false)));
+      $$(".resize-handle").forEach(handle => handle.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(handle.dataset.resize), true)));
+      updateInspector();
+    }
+
+    function snap(value, step) {
+      return $("#snapGrid").checked ? Math.round(value / step) * step : Math.round(value * 10) / 10;
+    }
+
+    function beginWidgetPointer(event, id, resizing) {
+      event.preventDefault(); event.stopPropagation();
+      selectedWidgetId = id; renderViewLayout();
+      if ($("#lockLayout").checked) return;
+      const widget = viewWidgets.find(item => item.id === id);
+      const rect = $("#viewStage").getBoundingClientRect();
+      const origin = { x: event.clientX, y: event.clientY, wx: widget.x, wy: widget.y, ww: widget.w, wh: widget.h };
+      const move = moveEvent => {
+        const dx = (moveEvent.clientX - origin.x) / rect.width * 100;
+        const dy = (moveEvent.clientY - origin.y) / rect.height * 100;
+        if (resizing) {
+          widget.w = Math.min(100 - widget.x, Math.max(10, snap(origin.ww + dx, 5)));
+          widget.h = Math.min(100 - widget.y, Math.max(10, snap(origin.wh + dy, 10)));
+        } else {
+          widget.x = Math.min(100 - widget.w, Math.max(0, snap(origin.wx + dx, 5)));
+          widget.y = Math.min(100 - widget.h, Math.max(0, snap(origin.wy + dy, 10)));
+        }
+        renderViewLayout();
+      };
+      const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+      window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    }
+
+    function updateInspector() {
+      const widget = viewWidgets.find(item => item.id === selectedWidgetId);
+      if (!widget) return;
+      $("#selectedPoolName").textContent = widgetLabel(widget.type);
+      $("#poolType").value = widget.type;
+      [["#poolX", "x"], ["#poolY", "y"], ["#poolW", "w"], ["#poolH", "h"], ["#poolStart", "start"], ["#poolSlots", "slots"]].forEach(([id, key]) => $(id).value = widget[key]);
+    }
+
+    function updateSelectedWidget() {
+      const widget = viewWidgets.find(item => item.id === selectedWidgetId);
+      if (!widget) return;
+      widget.type = $("#poolType").value;
+      widget.x = Math.max(0, Math.min(95, Number($("#poolX").value) || 0));
+      widget.y = Math.max(0, Math.min(90, Number($("#poolY").value) || 0));
+      widget.w = Math.max(5, Math.min(100 - widget.x, Number($("#poolW").value) || 10));
+      widget.h = Math.max(10, Math.min(100 - widget.y, Number($("#poolH").value) || 10));
+      widget.start = Math.max(1, Number($("#poolStart").value) || 1);
+      widget.slots = Math.max(1, Math.min(96, Number($("#poolSlots").value) || 1));
+      renderViewLayout();
+    }
+
+    function initializeViewLayout() {
+      const current = $("#viewSong").value;
+      $("#viewSong").innerHTML = songs.map((song, index) => `<option value="${index}">${index + 1} · ${song.name}</option>`).join("");
+      if (current) $("#viewSong").value = current;
+      renderViewLayout();
+    }
+
     function showPage(id) {
       $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
       $$(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.page === id));
+      if (id === "viewLayout") initializeViewLayout();
       if (id === "review") renderReview();
     }
 
@@ -324,6 +473,15 @@
     $("#recalc").addEventListener("click", renderSongs);
     $("#validateTop").addEventListener("click", () => showPage("review"));
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
+    $("#viewSong").addEventListener("change", renderViewLayout);
+    $("#snapGrid").addEventListener("change", renderViewLayout);
+    $("#lockLayout").addEventListener("change", renderViewLayout);
+    ["#poolType", "#poolX", "#poolY", "#poolW", "#poolH", "#poolStart", "#poolSlots"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
+    $("#addPool").addEventListener("click", () => { const widget = { id: nextWidgetId++, type: "effect", x: 10, y: 10, w: 30, h: 30, start: 201, slots: 24 }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
+    $("#duplicatePool").addEventListener("click", () => { const source = viewWidgets.find(item => item.id === selectedWidgetId); if (!source) return; const widget = { ...source, id: nextWidgetId++, x: Math.min(100 - source.w, source.x + 5), y: Math.min(100 - source.h, source.y + 10) }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
+    $("#deletePool").addEventListener("click", () => { if (viewWidgets.length === 1) return; viewWidgets = viewWidgets.filter(item => item.id !== selectedWidgetId); selectedWidgetId = viewWidgets[0].id; renderViewLayout(); });
+    $("#resetLayout").addEventListener("click", () => { viewWidgets = defaultViewWidgets(); selectedWidgetId = 1; nextWidgetId = 5; renderViewLayout(); });
+    $("#applyAll").addEventListener("click", () => { $("#layoutStatus").textContent = "Template applied to all songs · Song-specific Pool ranges will be substituted during export"; });
     renderSongs();
   </script>
 </body>
