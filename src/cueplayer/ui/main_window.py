@@ -7012,6 +7012,9 @@ class MainWindow(QMainWindow):
         Cancel an in-flight standin on Play; resume after Pause/Stop if the
         Music lane still has no peaks.
         """
+        from cueplayer.media.video_waveform_artifact import set_waveform_build_paused
+
+        set_waveform_build_paused(bool(playing))
         if self._song_has_main_audio_file():
             return
         if playing:
@@ -7020,6 +7023,10 @@ class MainWindow(QMainWindow):
                 # Keep the loading flag so remote knows peaks are pending; the
                 # job itself stops so mixer windows can decode.
             return
+        # Pause → allow one coalesced GUI flush of peaks built during play.
+        flush = getattr(self.timeline._video_waveform_cache, "flush_pending_gui_notify", None)
+        if callable(flush):
+            flush()
         if (
             getattr(self.timeline, "_audio", None) is None
             and self._primary_video_clip_for_standin() is not None

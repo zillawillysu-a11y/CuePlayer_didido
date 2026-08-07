@@ -9,6 +9,7 @@ from time import monotonic_ns
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QCursor,
     QDragEnterEvent,
@@ -18,6 +19,7 @@ from PySide6.QtGui import (
     QInputDevice,
     QKeyEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
 )
@@ -4299,28 +4301,43 @@ class TimelineWidget(QWidget):
         amp = max(2.0, rect.height() / 2 - 3)
         color = QColor("#dbe4ff")
         color.setAlpha(70 if self._video_track_muted else 175)
-        painter.setPen(QPen(color, 1))
 
-        # Transport must not change static bake quality. Prefer the same
-        # sampling path in PLAYING and PAUSED; only gate worker submit above.
-        # Wide / zoomed-out clips still step columns to keep bake cheap.
+        # Continuous filled envelope into the retained static backdrop.
+        # Do NOT skip columns (old step=2/3 left comb-like visual holes even
+        # when artifact coverage was complete). Cost runs only on rebuild;
+        # playback ticks blit the pixmap.
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
-        # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
-        # overscan while a Video Track is open) does not stall the UI thread.
-        step = 1
-        if width_px > 2400 or samples_per_pixel >= 48:
-            step = 3
-        elif width_px > 1200 or samples_per_pixel >= 12:
-            step = 2
-
+        t_render = monotonic_ns()
         try:
-            for x in range(x_left, x_right, step):
+            tops: list[QPointF] = []
+            bots: list[QPointF] = []
+
+            def _flush_segment() -> None:
+                nonlocal tops, bots
+                if len(tops) < 2:
+                    tops = []
+                    bots = []
+                    return
+                path = QPainterPath(tops[0])
+                for p in tops[1:]:
+                    path.lineTo(p)
+                for p in reversed(bots):
+                    path.lineTo(p)
+                path.closeSubpath()
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawPath(path)
+                tops = []
+                bots = []
+
+            for x in range(x_left, x_right + 1):
                 t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + step)
+                t1 = self._time_for_x(x + 1)
                 clip_t0 = timeline_to_clip_local(t0, clip)
                 clip_t1 = timeline_to_clip_local(t1, clip)
                 if clip_t0 is None and clip_t1 is None:
+                    _flush_segment()
                     continue
                 if clip_t0 is None:
                     clip_t0 = 0.0
@@ -4338,15 +4355,24 @@ class TimelineWidget(QWidget):
                         clip,
                         clip_t0=clip_t0,
                         clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel * step,
+                        samples_per_pixel=samples_per_pixel,
                     )
-                # Pending / uncovered bins are NaN — never fabricate zero silence.
-                if not (lo == lo and hi == hi):  # NaN check
+                # Pending / uncovered bins are NaN — break the path (no fabricate).
+                if not (lo == lo and hi == hi):
+                    _flush_segment()
                     continue
-                painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
+                tops.append(QPointF(float(x), mid + hi * amp))
+                bots.append(QPointF(float(x), mid + lo * amp))
+            _flush_segment()
         except Exception:
             # Corrupt / partially-built peaks must never take down the UI.
             return
+        finally:
+            if perf_diag.is_enabled():
+                elapsed_ms = (monotonic_ns() - t_render) / 1_000_000.0
+                perf_diag.record_ms(
+                    "video_waveform.render.rebuild_ms", elapsed_ms
+                )
 
     def _paint_video_clip_waveform_coarse(
         self,

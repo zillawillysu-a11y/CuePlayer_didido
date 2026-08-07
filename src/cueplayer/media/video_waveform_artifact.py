@@ -36,8 +36,13 @@ PEAKS_PER_SECOND = 25.0
 MAX_PEAK_BINS = 200_000
 # Contiguous decode window; lock held only for this slice then released.
 CHUNK_SECONDS = 8.0
-# Yield so Preview / VideoAudioMixer can use av_path_lock.
-CHUNK_YIELD_SECONDS = 0.025
+# Yield so Preview / VideoAudioMixer can use av_path_lock. Longer than a
+# frame budget so playback decode is not starved between waveform windows.
+CHUNK_YIELD_SECONDS = 0.08
+# While playback is active, yield longer between chunks (or pause entirely).
+CHUNK_YIELD_WHILE_PLAYING_SECONDS = 0.25
+# GUI progressive publishes are coalesced to this cadence (final is immediate).
+PROGRESS_GUI_COALESCE_SECONDS = 2.5
 # First-audio-stream index (CuePlayer always uses stream 0 today).
 DEFAULT_AUDIO_STREAM_INDEX = 0
 
@@ -47,6 +52,26 @@ _CACHE_DIR = Path(
         Path.home() / ".cache" / "cueplayer" / "video_waveforms",
     )
 )
+
+# When True, continuous artifact builds pause between chunks so Preview wins.
+_playback_paused_builds = False
+_playback_pause_lock = threading.Lock()
+
+
+def set_waveform_build_paused(paused: bool) -> None:
+    """Pause/resume long-video waveform extraction around Play/Stop."""
+    global _playback_paused_builds
+    with _playback_pause_lock:
+        _playback_paused_builds = bool(paused)
+    if perf_diag.is_enabled():
+        perf_diag.note(
+            "video_waveform.artifact.paused_for_playback", int(bool(paused))
+        )
+
+
+def waveform_build_is_paused() -> bool:
+    with _playback_pause_lock:
+        return bool(_playback_paused_builds)
 
 
 @dataclass
@@ -317,11 +342,17 @@ def build_artifact_continuous(
 
     t0_wall = time.perf_counter()
     first_ready_ms: float | None = None
+    worker_active_ms = 0.0
+    av_window_ms_total = 0.0
     if perf_diag.is_enabled():
         perf_diag.count("video_waveform.artifact.build_started")
         perf_diag.note(
             "video_waveform.artifact.source_duration_s", float(art.duration_seconds)
         )
+
+    from cueplayer.util.thread_priority import lower_background_thread_priority
+
+    lower_background_thread_priority()
 
     end = float(art.origin_seconds) + float(art.duration_seconds)
     t = art.first_uncovered_source_time()
@@ -330,8 +361,11 @@ def build_artifact_continuous(
         if _cancelled():
             if perf_diag.is_enabled():
                 perf_diag.count("video_waveform.artifact.cancelled")
+                perf_diag.note(
+                    "video_waveform.artifact.worker_active_ms", worker_active_ms
+                )
             return art
-        while _paused():
+        while _paused() or waveform_build_is_paused():
             if _cancelled():
                 if perf_diag.is_enabled():
                     perf_diag.count("video_waveform.artifact.cancelled")
@@ -339,23 +373,37 @@ def build_artifact_continuous(
             time.sleep(0.05)
 
         window = min(CHUNK_SECONDS, end - t)
+        chunk_t0 = time.perf_counter()
         chunk = load_video_audio(
             path, start_seconds=t, max_duration_seconds=window
         )
+        av_ms = (time.perf_counter() - chunk_t0) * 1000.0
+        av_window_ms_total += av_ms
+        worker_active_ms += av_ms
+        if perf_diag.is_enabled():
+            perf_diag.record_ms("video_waveform.artifact.av_window_ms", av_ms)
+            perf_diag.count("video_waveform.artifact.chunks")
+
         if chunk is None or chunk.frames <= 0:
             # No audio in this window — mark bins as covered-empty (true silence)
             # so we do not leave "pending" forever on silent regions, and advance.
             _mark_silence_covered(art, t, window)
             t += window
-            time.sleep(CHUNK_YIELD_SECONDS)
+            time.sleep(
+                CHUNK_YIELD_WHILE_PLAYING_SECONDS
+                if waveform_build_is_paused()
+                else CHUNK_YIELD_SECONDS
+            )
             continue
 
+        fill_t0 = time.perf_counter()
         _fill_chunk_peaks(
             art,
             pcm=chunk.samples,
             pcm_rate=chunk.sample_rate,
             pcm_origin=float(chunk.origin_seconds),
         )
+        worker_active_ms += (time.perf_counter() - fill_t0) * 1000.0
         decoded_span = chunk.frames / float(chunk.sample_rate)
         t = float(chunk.origin_seconds) + decoded_span
         if t <= float(chunk.origin_seconds) + 1e-3:
@@ -379,7 +427,11 @@ def build_artifact_continuous(
                 "video_waveform.artifact.coverage_ratio", art.coverage_ratio
             )
 
-        time.sleep(CHUNK_YIELD_SECONDS)
+        time.sleep(
+            CHUNK_YIELD_WHILE_PLAYING_SECONDS
+            if waveform_build_is_paused()
+            else CHUNK_YIELD_SECONDS
+        )
 
     # Ensure full coverage flag (silence-marked bins already covered).
     if np.all(art.coverage != 0) or art.coverage_ratio >= 0.999:
@@ -396,6 +448,12 @@ def build_artifact_continuous(
         perf_diag.note(
             "video_waveform.artifact.total_build_ms",
             (time.perf_counter() - t0_wall) * 1000.0,
+        )
+        perf_diag.note(
+            "video_waveform.artifact.worker_active_ms", worker_active_ms
+        )
+        perf_diag.note(
+            "video_waveform.artifact.av_window_ms_total", av_window_ms_total
         )
         perf_diag.note("video_waveform.artifact.peak_bins", art.n_bins)
         perf_diag.note("video_waveform.artifact.memory_bytes", art.memory_bytes)
@@ -483,7 +541,7 @@ class EmbeddedWaveformArtifactStore:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="vid-wave-art"
         )
-        self._progress_coalesce_s = 0.35
+        self._progress_coalesce_s = PROGRESS_GUI_COALESCE_SECONDS
         self._last_progress_emit: dict[str, float] = {}
 
     def clear(self) -> None:
@@ -591,13 +649,24 @@ class EmbeddedWaveformArtifactStore:
                                 return
                             self._by_key[key] = a
                             last = self._last_progress_emit.get(key, 0.0)
+                            # Always publish completion; coalesce partials.
                             if (
-                                now - last < self._progress_coalesce_s
-                                and not a.complete
+                                not a.complete
+                                and now - last < self._progress_coalesce_s
+                                and last > 0.0
                             ):
                                 return
+                            # First partial: allow immediately (last==0).
                             self._last_progress_emit[key] = now
                             cbs = list(job.listeners)
+                        if perf_diag.is_enabled():
+                            perf_diag.count(
+                                "video_waveform.artifact.progressive_publish"
+                            )
+                            if a.complete:
+                                perf_diag.count(
+                                    "video_waveform.artifact.final_publish"
+                                )
                         for cb in cbs:
                             try:
                                 cb(a)

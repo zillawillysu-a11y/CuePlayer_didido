@@ -20,6 +20,7 @@ from cueplayer.media.video_waveform_artifact import (
     EmbeddedWaveformArtifact,
     artifact_store,
     signed_overview_from_artifact,
+    waveform_build_is_paused,
 )
 
 
@@ -261,6 +262,9 @@ class VideoClipWaveformCache:
         self._generation = 0
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vid-wave")
         self._on_ready: Callable[[], None] | None = None
+        self._last_gui_notify_mono = 0.0
+        self._gui_first_notified = False
+        self._gui_coalesce_s = 2.5
 
     def set_on_ready(self, callback: Callable[[], None] | None) -> None:
         self._on_ready = callback
@@ -270,6 +274,8 @@ class VideoClipWaveformCache:
             self._generation += 1
             self._peaks.clear()
             self._pending.clear()
+            self._last_gui_notify_mono = 0.0
+            self._gui_first_notified = False
         # Cancel in-flight shared artifact builds tied to the previous session.
         artifact_store().clear()
 
@@ -320,7 +326,36 @@ class VideoClipWaveformCache:
             # Heavy clips now build via the shared continuous artifact (not skipped).
             self.get_peaks(clip)
 
-    def _notify_ready(self) -> None:
+    def flush_pending_gui_notify(self) -> None:
+        """Force one GUI notify after Pause so progressive peaks become visible."""
+        self._notify_ready(force=True)
+
+    def _notify_ready(self, *, force: bool = False, complete: bool = False) -> None:
+        """Coalesce progressive GUI invalidations; always allow final/complete."""
+        import time as _time
+
+        now = _time.monotonic()
+        if not force and not complete:
+            if waveform_build_is_paused():
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "video_waveform.artifact.gui_notify_suppressed_playing"
+                    )
+                return
+            if self._gui_first_notified and (
+                now - self._last_gui_notify_mono < self._gui_coalesce_s
+            ):
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "video_waveform.artifact.gui_notify_coalesced"
+                    )
+                return
+        self._last_gui_notify_mono = now
+        self._gui_first_notified = True
+        if perf_diag.is_enabled():
+            perf_diag.count("video_waveform.artifact.gui_notify")
+            if complete:
+                perf_diag.count("video_waveform.backdrop_rebuild_after_ready")
         cb = self._on_ready
         if cb is not None:
             cb()
@@ -339,9 +374,8 @@ class VideoClipWaveformCache:
             if peaks is not None:
                 self._peaks[key] = peaks
             self._pending.discard(key)
-        # Callback may touch Qt — callers must marshal to the GUI thread.
         if peaks is not None:
-            self._notify_ready()
+            self._notify_ready(force=True, complete=True)
 
     def _build_from_shared_artifact(
         self, generation: int, key: ClipWaveformKey, clip: VideoClip
@@ -363,9 +397,7 @@ class VideoClipWaveformCache:
                     return
                 self._peaks[key] = mapped
                 self._pending.discard(key)
-            if perf_diag.is_enabled() and art.complete:
-                perf_diag.count("video_waveform.backdrop_rebuild_after_ready")
-            self._notify_ready()
+            self._notify_ready(complete=bool(art.complete))
 
         def _cancel() -> bool:
             return generation != self._generation
@@ -374,6 +406,7 @@ class VideoClipWaveformCache:
             path,
             duration_seconds=duration,
             cancel_check=_cancel,
+            pause_check=waveform_build_is_paused,
             on_update=_on_update,
         )
         if art is None:
