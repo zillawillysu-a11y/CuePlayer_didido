@@ -82,6 +82,11 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "page_per_song": bool(settings.page_per_song),
         "show_install_macro_name": settings.show_install_macro_name,
         "ma2_song_viewbutton": settings.ma2_song_viewbutton,
+        "ma2_include_fixed_macros": bool(settings.ma2_include_fixed_macros),
+        "ma2_include_song_macros": bool(settings.ma2_include_song_macros),
+        "ma2_include_song_list": bool(settings.ma2_include_song_list),
+        "ma2_template_page": int(settings.ma2_template_page),
+        "ma2_macro_pool_start": int(settings.ma2_macro_pool_start),
         "export_song_ids": list(settings.export_song_ids),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
@@ -112,6 +117,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
             raw.get("show_install_macro_name") or "CuePlayer_Show_Install"
         ),
         ma2_song_viewbutton=str(raw.get("ma2_song_viewbutton") or "1.20"),
+        ma2_include_fixed_macros=bool(raw.get("ma2_include_fixed_macros", True)),
+        ma2_include_song_macros=bool(raw.get("ma2_include_song_macros", True)),
+        ma2_include_song_list=bool(raw.get("ma2_include_song_list", True)),
+        ma2_template_page=int(raw.get("ma2_template_page", 100) or 100),
+        ma2_macro_pool_start=int(raw.get("ma2_macro_pool_start", 1001) or 1001),
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

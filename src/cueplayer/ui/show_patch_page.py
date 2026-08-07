@@ -183,6 +183,21 @@ class ShowPatchPage(QWidget):
         self.show_macro_name = QLineEdit(_DEFAULT_SHOW_MACRO)
         self.song_viewbutton = QLineEdit("1.20")
         self.song_viewbutton.setPlaceholderText("1.20")
+        self.ma2_fixed_macros = QCheckBox("Fixed control Macros")
+        self.ma2_song_macros = QCheckBox("Song Macros")
+        self.ma2_song_list = QCheckBox("Song List Sequence")
+        for checkbox in (
+            self.ma2_fixed_macros,
+            self.ma2_song_macros,
+            self.ma2_song_list,
+        ):
+            checkbox.setChecked(True)
+        self.ma2_template_page = NoWheelSpinBox()
+        self.ma2_template_page.setRange(1, 9999)
+        self.ma2_template_page.setValue(100)
+        self.ma2_macro_start = NoWheelSpinBox()
+        self.ma2_macro_start.setRange(1, 9999)
+        self.ma2_macro_start.setValue(1001)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
@@ -192,6 +207,11 @@ class ShowPatchPage(QWidget):
         opt_form.addRow("MA3 Data Pool", self.data_pool)
         opt_form.addRow("Install Name", self.show_macro_name)
         opt_form.addRow("MA2 Song ViewButton", self.song_viewbutton)
+        opt_form.addRow("MA2 Template Page", self.ma2_template_page)
+        opt_form.addRow("MA2 Macro Start", self.ma2_macro_start)
+        opt_form.addRow(self.ma2_fixed_macros)
+        opt_form.addRow(self.ma2_song_macros)
+        opt_form.addRow(self.ma2_song_list)
         opt_row.addWidget(opt_box)
 
         out_box = QGroupBox("Output Folder")
@@ -294,6 +314,11 @@ class ShowPatchPage(QWidget):
             self.data_pool,
             self.show_macro_name,
             self.song_viewbutton,
+            self.ma2_template_page,
+            self.ma2_macro_start,
+            self.ma2_fixed_macros,
+            self.ma2_song_macros,
+            self.ma2_song_list,
         ):
             if isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_settings_edited)
@@ -417,12 +442,25 @@ class ShowPatchPage(QWidget):
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
         self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
+        self.ma2_template_page.setValue(int(s.ma2_template_page or 100))
+        self.ma2_macro_start.setValue(int(s.ma2_macro_pool_start or 1001))
+        self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
+        self.ma2_song_macros.setChecked(bool(s.ma2_include_song_macros))
+        self.ma2_song_list.setChecked(bool(s.ma2_include_song_list))
         remembered = s.output_dir_ma3 if s.console == "ma3" else s.output_dir_ma2
         path = resolve_export_dir(s.console if s.console in ("ma2", "ma3") else "ma2", remembered or None)
         self.out_dir.setText(path)
         self.data_pool.setEnabled(s.console == "ma3")
         self.show_macro_name.setEnabled(True)
         self.song_viewbutton.setEnabled(s.console != "ma3")
+        for widget in (
+            self.ma2_template_page,
+            self.ma2_macro_start,
+            self.ma2_fixed_macros,
+            self.ma2_song_macros,
+            self.ma2_song_list,
+        ):
+            widget.setEnabled(s.console != "ma3")
         self._update_out_hint()
         self._suppress = False
 
@@ -443,6 +481,11 @@ class ShowPatchPage(QWidget):
             self.show_macro_name.text()
         )
         s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
+        s.ma2_template_page = int(self.ma2_template_page.value())
+        s.ma2_macro_pool_start = int(self.ma2_macro_start.value())
+        s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
+        s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
+        s.ma2_include_song_list = self.ma2_song_list.isChecked()
         # Keep export_song_ids in sync with checklist.
         ids = []
         for row in range(self.song_pick.count()):
@@ -491,6 +534,14 @@ class ShowPatchPage(QWidget):
         self.data_pool.setEnabled(new_console == "ma3")
         self.show_macro_name.setEnabled(True)
         self.song_viewbutton.setEnabled(new_console != "ma3")
+        for widget in (
+            self.ma2_template_page,
+            self.ma2_macro_start,
+            self.ma2_fixed_macros,
+            self.ma2_song_macros,
+            self.ma2_song_list,
+        ):
+            widget.setEnabled(new_console != "ma3")
         self._suppress = False
         if new_console == "ma3":
             s.output_dir_ma3 = path
@@ -724,6 +775,11 @@ class ShowPatchPage(QWidget):
                     directory,
                     show_install_name=show_macro_basename,
                     song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
+                    include_fixed_macros=self._project.ma_export.ma2_include_fixed_macros,
+                    include_song_macros=self._project.ma_export.ma2_include_song_macros,
+                    include_song_list=self._project.ma_export.ma2_include_song_list,
+                    template_page=self._project.ma_export.ma2_template_page,
+                    macro_pool_start=self._project.ma_export.ma2_macro_pool_start,
                 )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Export Failed", str(exc))

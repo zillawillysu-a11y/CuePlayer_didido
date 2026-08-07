@@ -125,20 +125,23 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert paths["show:plugin_lua"].name == "Show_Install_export.lua"
     assert paths["show:macro_xml"].name == "Show_Install_install_macro.xml"
     assert paths["show:song_list"].name == "Show_Install_Song_List.xml"
-    assert paths["show:song_change_macros"].name == "Show_Install_Song_Change.xml"
+    assert paths["show:fixed_macros"].name == "Show_Install_Fixed_Macros.xml"
+    assert paths["show:song_macros"].name == "Show_Install_Song_Macros.xml"
 
     song_list = paths["show:song_list"].read_text(encoding="utf-8")
-    song_macros = paths["show:song_change_macros"].read_text(encoding="utf-8")
+    fixed_macros = paths["show:fixed_macros"].read_text(encoding="utf-8")
+    song_macros = paths["show:song_macros"].read_text(encoding="utf-8")
     assert 'name="SHOW BEGIN"' in song_list
     assert 'name="CuePlayer Song List"' in song_list
     assert 'name="SongA"' in song_list and 'name="SongB"' in song_list
     assert 'Macro "SongA"' in song_list
-    assert 'name="Page Change"' in song_macros
-    assert 'name="Set Songviewbutton"' in song_macros
-    assert "SetVar $songviewbutton = 1.20" in song_macros
+    assert 'name="Page Change"' in fixed_macros
+    assert 'name="Set Songviewbutton"' in fixed_macros
+    assert "SetVar $songviewbutton = 1.20" in fixed_macros
+    assert 'name="Page Change"' not in song_macros
     assert 'SetVar $song = "SongA"' in song_macros
     assert "SetVar $songbpm = 120" in song_macros
-    assert 'Assign View $"song" At ViewButton $songviewbutton' in song_macros
+    assert 'Assign View $"song" At ViewButton $songviewbutton' in fixed_macros
 
     lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
     macro = paths["show:macro_xml"].read_text(encoding="utf-8")
@@ -178,6 +181,18 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert 'command="Top"' in lua
     assert "ButtonPage 1" in lua and "ButtonPage 2" in lua
     assert "FaderPage 1" in lua
+    assert (
+        'Import "Show_Install_Fixed_Macros" At Macro 1001 /path="macros"'
+        in lua
+    )
+    assert (
+        'Import "Show_Install_Song_Macros" At Macro 1009 /path="macros"'
+        in lua
+    )
+    assert 'Import "Show_Install_Song_List" At Sequence 5' in lua
+    assert 'Label Page 100 "CuePlayer Template Page"' in lua
+    assert 'Assign Sequence 5 At Page 1.100.130' in lua
+    assert 'Label Executor 100.130 "CuePlayer Song List"' in lua
     # Honor user Button 起始 (102).
     assert plans[0].button_lanes[0].executor.endswith(".102")
     assert plans[1].button_lanes[0].executor == "2.102"
@@ -210,3 +225,56 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
     assert 'luafile="Show_Install_export.lua"' in plugin_xml
     assert 'name="Show_Install"' in plugin_xml
+
+
+def test_ma2_export_matches_selected_3960_library(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("First", ma="First", button_names=["Hit"])
+    ]
+    settings = MaExportSettings(console="ma2", export_mode="full")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    library = tmp_path / "gma2_V_3.9.60" / "importexport"
+    paths = Ma2Exporter().export_show_to_directory(plans, library)
+
+    plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
+    plugin_lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    song_list = paths["show:song_list"].read_text(encoding="utf-8")
+    fixed_macros = paths["show:fixed_macros"].read_text(encoding="utf-8")
+    song_macros = paths["show:song_macros"].read_text(encoding="utf-8")
+    for text in (plugin_xml, plugin_lua, song_list, fixed_macros, song_macros):
+        assert "3.9.60/MA.xsd" in text
+        assert 'stream_vers="60"' in text
+
+
+def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("First", ma="First", button_names=[])]
+    settings = MaExportSettings(console="ma2", export_mode="full")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        include_fixed_macros=False,
+        include_song_macros=True,
+        include_song_list=False,
+        template_page=77,
+        macro_pool_start=200,
+    )
+
+    assert "show:fixed_macros" not in paths
+    assert "show:song_list" not in paths
+    assert "show:song_macros" in paths
+    lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    assert (
+        'Import "CuePlayer_Show_Install_Song_Macros" At Macro 200 /path="macros"'
+        in lua
+    )
+    assert "Song_List" not in lua
+    assert "Template Page" not in lua

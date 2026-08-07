@@ -1041,6 +1041,11 @@ class MaExportSettings:
     show_install_macro_name: str = "CuePlayer_Show_Install"
     # MA2 Page Change assigns the current song View to this ViewButton.
     ma2_song_viewbutton: str = "1.20"
+    ma2_include_fixed_macros: bool = True
+    ma2_include_song_macros: bool = True
+    ma2_include_song_list: bool = True
+    ma2_template_page: int = 100
+    ma2_macro_pool_start: int = 1001
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
     output_dir_ma2: str = ""

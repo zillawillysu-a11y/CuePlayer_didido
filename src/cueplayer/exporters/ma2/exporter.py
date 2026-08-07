@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ET
 
 from cueplayer.exporters.common import (
@@ -90,6 +91,25 @@ def _timecode_length_frames(plan: SongExportPlan) -> int:
 class Ma2Exporter:
     target_version = MA2_TARGET_VERSION
 
+    def __init__(self) -> None:
+        self._stream_version = "61"
+
+    def _configure_target_from_path(self, directory: Path) -> None:
+        """Match XML headers to the selected gma2_V_3.9.xx library."""
+        match = re.search(
+            r"gma2_v_3\.9\.(\d+)",
+            str(Path(directory)).replace("/", "\\"),
+            flags=re.IGNORECASE,
+        )
+        self._stream_version = match.group(1) if match else "61"
+
+    def _schema(self) -> str:
+        return (
+            "http://schemas.malighting.de/grandma2/xml/MA "
+            "http://schemas.malighting.de/grandma2/xml/"
+            f"3.9.{self._stream_version}/MA.xsd"
+        )
+
     def export_plan_summary(self, plan: SongExportPlan) -> dict:
         return {
             "console": "ma2",
@@ -113,6 +133,7 @@ class Ma2Exporter:
         include_plugin: bool = False,
         include_macro: bool = False,
     ) -> dict[str, Path]:
+        self._configure_target_from_path(directory)
         import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
         import_dir.mkdir(parents=True, exist_ok=True)
         paths: dict[str, Path] = {}
@@ -150,6 +171,11 @@ class Ma2Exporter:
         *,
         show_install_name: str = "CuePlayer_Show_Install",
         song_viewbutton: str = "1.20",
+        include_fixed_macros: bool = True,
+        include_song_macros: bool = True,
+        include_song_list: bool = True,
+        template_page: int = 100,
+        macro_pool_start: int = 1001,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -160,6 +186,7 @@ class Ma2Exporter:
         if not plans:
             return {}
         directory = Path(directory)
+        self._configure_target_from_path(directory)
         import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(directory)
         import_dir.mkdir(parents=True, exist_ok=True)
         all_paths: dict[str, Path] = {}
@@ -171,24 +198,44 @@ class Ma2Exporter:
 
         if any(p.profile.export_mode == "full" for p in plans):
             plugin_paths = self.write_show_install_plugin(
-                plans, directory, name=show_install_name
+                plans,
+                directory,
+                name=show_install_name,
+                include_fixed_macros=include_fixed_macros,
+                include_song_macros=include_song_macros,
+                include_song_list=include_song_list,
+                template_page=template_page,
+                macro_pool_start=macro_pool_start,
             )
             all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
             if "macro_xml" in plugin_paths:
                 all_paths["show:macro_xml"] = plugin_paths["macro_xml"]
-            all_paths["show:song_list"] = self.write_song_list_sequence(
-                plans,
-                directory,
-                name="CuePlayer Song List",
-                basename=f"{show_install_name}_Song_List",
-            )
-            all_paths["show:song_change_macros"] = self.write_song_change_macros(
-                plans,
-                directory,
-                basename=f"{show_install_name}_Song_Change",
-                song_viewbutton=song_viewbutton,
-            )
+            if include_song_list:
+                all_paths["show:song_list"] = self.write_song_list_sequence(
+                    plans,
+                    directory,
+                    name="CuePlayer Song List",
+                    basename=f"{show_install_name}_Song_List",
+                )
+            if include_fixed_macros:
+                all_paths["show:fixed_macros"] = self.write_song_change_macros(
+                    plans,
+                    directory,
+                    basename=f"{show_install_name}_Fixed_Macros",
+                    song_viewbutton=song_viewbutton,
+                    include_fixed=True,
+                    include_songs=False,
+                )
+            if include_song_macros:
+                all_paths["show:song_macros"] = self.write_song_change_macros(
+                    plans,
+                    directory,
+                    basename=f"{show_install_name}_Song_Macros",
+                    song_viewbutton=song_viewbutton,
+                    include_fixed=False,
+                    include_songs=True,
+                )
         return all_paths
 
     def write_song_list_sequence(
@@ -257,6 +304,8 @@ class Ma2Exporter:
         *,
         basename: str = "CuePlayer_Song_Change",
         song_viewbutton: str = "1.20",
+        include_fixed: bool = True,
+        include_songs: bool = True,
     ) -> Path:
         """Write the user's MA2 Song Change workflow plus one macro per song."""
         _import_dir, _plugins_dir, macros_dir = resolve_ma2_pool_dirs(Path(directory))
@@ -269,7 +318,7 @@ class Ma2Exporter:
             part.isdigit() for part in viewbutton_parts
         ):
             raise ValueError("MA2 Song ViewButton must look like 1.20")
-        definitions: list[tuple[str, list[str]]] = [
+        fixed_definitions: list[tuple[str, list[str]]] = [
             (
                 "Show Begin",
                 [
@@ -301,10 +350,11 @@ class Ma2Exporter:
             ),
             ("Set Songviewbutton", [f'SetVar $songviewbutton = {viewbutton}']),
         ]
+        song_definitions: list[tuple[str, list[str]]] = []
         for index, plan in enumerate(plans, start=1):
             song_name = sanitize_ma_name(plan.song_name, fallback=f"Song{index}")
             bpm = f"{float(plan.song_bpm):g}"
-            definitions.append(
+            song_definitions.append(
                 (
                     song_name,
                     [
@@ -315,6 +365,10 @@ class Ma2Exporter:
                 )
             )
 
+        definitions = (
+            (fixed_definitions if include_fixed else [])
+            + (song_definitions if include_songs else [])
+        )
         root = self._root()
         self._info(root, safe_base)
         for macro_index, (macro_name, commands) in enumerate(definitions):
@@ -349,10 +403,10 @@ class Ma2Exporter:
         return ET.Element(
             f"{{{MA2_NS}}}MA",
             {
-                f"{{{MA2_XSI}}}schemaLocation": MA2_SCHEMA,
+                f"{{{MA2_XSI}}}schemaLocation": self._schema(),
                 "major_vers": "3",
                 "minor_vers": "9",
-                "stream_vers": "61",
+                "stream_vers": self._stream_version,
             },
         )
 
@@ -708,8 +762,8 @@ class Ma2Exporter:
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<MA xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
             f'xmlns="{MA2_NS}" '
-            f'xsi:schemaLocation="{MA2_SCHEMA}" '
-            'major_vers="3" minor_vers="9" stream_vers="61">'
+            f'xsi:schemaLocation="{self._schema()}" '
+            f'major_vers="3" minor_vers="9" stream_vers="{self._stream_version}">'
             f'<Info datetime="{datetime.now().replace(microsecond=0).isoformat()}" '
             f'showfile="{tc_name}"/>'
             f'<Timecode index="0" name="{tc_name}" '
@@ -791,6 +845,11 @@ class Ma2Exporter:
         directory: Path,
         *,
         name: str = "CuePlayer_Show_Install",
+        include_fixed_macros: bool = True,
+        include_song_macros: bool = True,
+        include_song_list: bool = True,
+        template_page: int = 100,
+        macro_pool_start: int = 1001,
     ) -> dict[str, Path]:
         """
         CuePoints-style show Plugin: Store/Assign everything, then write+Import
@@ -823,6 +882,47 @@ class Ma2Exporter:
                     float(timecode_span_seconds(plan)),
                 )
             )
+        setup_cmd_lines = list(cmd_lines)
+        safe_name = sanitize_ma_name(name, fallback="CuePlayer_Show_Install")
+        extra_imports: list[str] = []
+        if include_fixed_macros or include_song_macros or include_song_list:
+            extra_imports.append("SelectDrive 1")
+        fixed_count = 8
+        if include_fixed_macros:
+            extra_imports.append(
+                f'Import "{safe_name}_Fixed_Macros" At Macro {int(macro_pool_start)} '
+                '/path="macros"'
+            )
+        if include_song_macros:
+            song_macro_start = int(macro_pool_start) + (
+                fixed_count if include_fixed_macros else 0
+            )
+            extra_imports.append(
+                f'Import "{safe_name}_Song_Macros" At Macro {song_macro_start} '
+                '/path="macros"'
+            )
+        if include_song_list:
+            sequence_pools = [int(p.profile.sequence_pool_start) for p in plans]
+            sequence_pools.extend(
+                int(lane.sequence_pool)
+                for plan in plans
+                for lane in plan.button_lanes
+                if lane.sequence_pool
+            )
+            song_list_pool = max(sequence_pools, default=0) + 1
+            page = max(1, int(template_page))
+            extra_imports.extend(
+                [
+                    f'Store Page {page}',
+                    f'Label Page {page} "CuePlayer Template Page"',
+                    f'Import "{safe_name}_Song_List" At Sequence {song_list_pool}',
+                    f'Label Sequence {song_list_pool} "CuePlayer Song List"',
+                    f'Assign Sequence {song_list_pool} At Page 1.{page}.130',
+                    f'Page {page}',
+                    f'Label Executor {page}.130 "CuePlayer Song List"',
+                ]
+            )
+        cmd_lines.extend(extra_imports)
         paths = self._write_plugin_pair(
             directory,
             basename=name,
@@ -837,7 +937,7 @@ class Ma2Exporter:
             directory,
             basename=name,
             display_name=f"{name}_SetupOnly",
-            cmd_lines=cmd_lines,
+            cmd_lines=setup_cmd_lines,
             info_name=name,
         )
         return paths
