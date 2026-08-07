@@ -7,16 +7,16 @@
 
 ## Current task
 
-Review `design/ma_export_playlist_mockup.html` in a browser and collect requested changes.
+Review the updated browser mockup with per-song Main/Button content selection.
 
 ## Verify
 
-- Chinese and English song names remain readable.
-- Playlist row density is comfortable.
-- Pool ranges are understandable without the old Sequence-chain text.
-- Frequent and advanced settings are grouped correctly.
-- Three-step workflow feels faster than the current single-page form.
+- Timecode Pool Start 201 is visible and understandable.
+- Template Page 200, Fixed Macro 101, and Song Macro 201 defaults are correct.
+- Expanding each song and selecting Main/Button content feels intuitive.
+- Review clearly communicates what each song will export.
+- Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
 
-The user approves the mockup or supplies a concrete revision list for the production PySide6 implementation.
+The user approves the workflow and zero-content behavior is defined for production implementation.

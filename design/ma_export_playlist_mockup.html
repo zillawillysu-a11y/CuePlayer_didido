@@ -81,7 +81,7 @@
     .badge { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 12px; }
     .song-grid {
       display: grid;
-      grid-template-columns: 36px minmax(245px, 1.35fr) minmax(220px, 1.1fr) 108px 108px 80px 82px 40px;
+      grid-template-columns: 36px minmax(225px, 1.3fr) minmax(200px, 1fr) 102px 102px 78px 78px 96px 34px;
       gap: 12px;
       align-items: center;
     }
@@ -90,6 +90,15 @@
     .song-row:first-of-type { border-top: 0; }
     .song-row:hover { background: #191d23; }
     .song-row.dragging { opacity: .55; }
+    .song-content {
+      display: none;
+      padding: 13px 58px 15px;
+      border-top: 1px solid var(--line);
+      background: #111419;
+    }
+    .song-content.open { display: block; }
+    .content-options { display: flex; flex-wrap: wrap; gap: 9px 22px; margin-top: 9px; }
+    .content-toggle { min-height: 30px; padding: 0 10px; }
     .song-title { min-width: 0; }
     .song-title strong, .song-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .song-title span { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -128,7 +137,7 @@
     .review-line:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
     @media (max-width: 1220px) {
-      .song-grid { grid-template-columns: 34px minmax(210px, 1.2fr) minmax(190px, 1fr) 94px 94px 65px 70px 34px; gap: 8px; }
+      .song-grid { grid-template-columns: 34px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
     }
   </style>
 </head>
@@ -156,7 +165,7 @@
         <div class="notice"><strong>Pool 一眼就能確認。</strong> 每首 MA2 歌曲預留 20 個 Sequence、80 個 Effect；修改起始值後，範圍會立即更新。</div>
         <div class="card">
           <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
-          <div class="song-grid song-header"><span></span><span>歌曲</span><span>MA 英文名稱</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span></span></div>
+          <div class="song-grid song-header"><span></span><span>歌曲</span><span>MA 英文名稱</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>內容</span><span></span></div>
           <div id="songRows"></div>
         </div>
         <div class="playlist-actions">
@@ -176,6 +185,7 @@
                 <div class="field"><label>Mode</label><select><option>Full · Plugin Install</option><option>Timecode Only</option></select></div>
                 <div class="field"><label>Sequence Pool Start</label><input id="seqStart" type="number" min="1" value="1"></div>
                 <div class="field"><label>Sequence Slots Per Song</label><input id="seqSlots" type="number" min="1" value="20"></div>
+                <div class="field"><label>Timecode Pool Start</label><input id="tcStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>Effect Pool Start</label><input id="effectStart" type="number" min="1" value="201"></div>
                 <div class="field"><label>View Pool Start</label><input type="number" min="1" value="201"></div>
                 <div class="field"><label>Main Executor</label><input type="text" value="1.130"></div>
@@ -197,9 +207,9 @@
           <details>
             <summary>進階 MA2 設定</summary>
             <div class="fields">
-              <div class="field"><label>Template Page</label><input type="number" value="100"></div>
-              <div class="field"><label>Fixed Macro Start</label><input type="number" value="1001"></div>
-              <div class="field"><label>Song Macro Start</label><input type="number" value="1009"></div>
+              <div class="field"><label>Template Page</label><input type="number" value="200"></div>
+              <div class="field"><label>Fixed Macro Start</label><input type="number" value="101"></div>
+              <div class="field"><label>Song Macro Start</label><input type="number" value="201"></div>
               <div class="field"><label>Song ViewButton</label><input type="text" value="1.20"></div>
               <div class="field"><label>Preset Cue ID</label><input type="number" value="0.500" step="0.001"></div>
               <div class="field"><label>Latency</label><input type="text" value="0.0 ms"></div>
@@ -225,9 +235,9 @@
 
   <script>
     const songs = [
-      { name: "TEST · 真爭得想起來", en: "TEST", tc: 1, marks: 4, selected: true },
-      { name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", tc: 2, marks: 6, selected: true },
-      { name: "SKY LIGHT", en: "SKY_LIGHT", tc: 3, marks: 1, selected: true }
+      { name: "TEST · 真爭得想起來", en: "TEST", marks: 4, selected: true, open: false, contents: [{ name: "Main", on: true }, { name: "Hit", on: true }, { name: "Stomp", on: true }] },
+      { name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", marks: 6, selected: true, open: true, contents: [{ name: "Main", on: true }, { name: "Mark 2", on: true }, { name: "Mark 3", on: true }, { name: "Mark 4", on: false }, { name: "Mark 5", on: false }, { name: "Mark 6", on: false }] },
+      { name: "SKY LIGHT", en: "SKY_LIGHT", marks: 1, selected: true, open: false, contents: [{ name: "Main", on: true }] }
     ];
 
     const $ = selector => document.querySelector(selector);
@@ -238,23 +248,32 @@
       const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
       const seqEnd = seqStart + numberValue("#seqSlots") - 1;
       const effectStart = numberValue("#effectStart") + index * 80;
-      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + 79 };
+      const timecode = numberValue("#tcStart") + index;
+      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + 79, timecode };
     }
 
     function renderSongs() {
       $("#songRows").innerHTML = songs.map((song, index) => {
         const a = allocation(index);
-        return `<div class="song-grid song-row" draggable="true" data-index="${index}">
+        const chosen = song.contents.filter(content => content.on).map(content => content.name);
+        return `<div class="song-block"><div class="song-grid song-row" draggable="true" data-index="${index}">
           <input class="song-check" type="checkbox" ${song.selected ? "checked" : ""} aria-label="Export ${song.en}">
           <div class="song-title"><strong>${song.name}</strong><span>Song ${index + 1}</span></div>
           <input class="english-name" type="text" value="${song.en}" aria-label="MA export name">
           <span class="range">${a.seqStart}–${a.seqEnd}</span>
           <span class="range">${a.effectStart}–${a.effectEnd}</span>
-          <span>TC ${song.tc}</span><span>${song.marks} cues</span><span class="drag" title="Drag to reorder">⋮⋮</span>
-        </div>`;
+          <span>TC ${a.timecode}</span><span>${song.marks} cues</span>
+          <button class="btn content-toggle" data-content-index="${index}">${chosen.length}/${song.contents.length} selected</button>
+          <span class="drag" title="Drag to reorder">⋮⋮</span>
+        </div><div class="song-content ${song.open ? "open" : ""}" data-content-panel="${index}">
+          <strong>Export Content</strong><span class="muted"> · 只輸出這首歌需要的 Main／Button Sequence 與對應 Timecode Track</span>
+          <div class="content-options">${song.contents.map((content, contentIndex) => `<label class="check"><input class="content-check" data-song="${index}" data-content="${contentIndex}" type="checkbox" ${content.on ? "checked" : ""}> ${content.name}</label>`).join("")}</div>
+        </div></div>`;
       }).join("");
       $$(".song-check").forEach((box, i) => box.addEventListener("change", () => { songs[i].selected = box.checked; refreshCounts(); }));
       $$(".english-name").forEach((input, i) => input.addEventListener("input", () => { songs[i].en = input.value; renderReview(); }));
+      $$(".content-toggle").forEach(button => button.addEventListener("click", () => { const i = Number(button.dataset.contentIndex); songs[i].open = !songs[i].open; renderSongs(); }));
+      $$(".content-check").forEach(box => box.addEventListener("change", () => { songs[Number(box.dataset.song)].contents[Number(box.dataset.content)].on = box.checked; renderSongs(); }));
       enableDrag(); refreshCounts(); renderReview();
     }
 
@@ -283,7 +302,8 @@
       $("#reviewList").innerHTML = `<div class="review-line"><span>Song / MA name</span><span>Sequence</span><span>Effect</span><span>Timecode</span></div>` +
         selected.map(({ song, index }) => {
           const a = allocation(index);
-          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>TC ${song.tc}</span></div>`;
+          const content = song.contents.filter(item => item.on).map(item => item.name).join(", ") || "Nothing selected";
+          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>TC ${a.timecode}</span></div>`;
         }).join("");
       $("#targetLabel").textContent = $("#console").value.replace("grand", "");
     }
@@ -296,7 +316,7 @@
 
     $$(".tab").forEach(tab => tab.addEventListener("click", () => showPage(tab.dataset.page)));
     $$('[data-goto]').forEach(button => button.addEventListener("click", () => showPage(button.dataset.goto)));
-    ["#seqStart", "#seqSlots", "#effectStart"].forEach(id => $(id).addEventListener("input", renderSongs));
+    ["#seqStart", "#seqSlots", "#tcStart", "#effectStart"].forEach(id => $(id).addEventListener("input", renderSongs));
     $("#console").addEventListener("change", renderReview);
     $("#selectAll").addEventListener("click", () => { songs.forEach(song => song.selected = true); renderSongs(); });
     $("#selectNone").addEventListener("click", () => { songs.forEach(song => song.selected = false); renderSongs(); });

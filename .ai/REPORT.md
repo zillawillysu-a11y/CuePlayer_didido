@@ -6,17 +6,16 @@
 
 ## Task objective
 
-Create a free, browser-openable interactive mockup for redesigning the dense MA Export interface as a playlist workflow.
+Revise the interactive MA Export playlist mockup with requested defaults and per-song export content selection.
 
 ## What was implemented
 
-- Added a standalone HTML/CSS/JavaScript prototype under `design/`.
-- Three-step flow: Songs & Pools, Console Setup, Review & Export.
-- Playlist rows show Chinese/display name, editable MA English name, Sequence range, Effect range, Timecode, and cue count.
-- Song selection, Select All/None, drag reorder, and live pool recalculation are interactive.
-- Console page separates frequent settings from collapsible advanced MA2 settings.
-- Review page summarizes selected songs and calculated pool ranges.
-- Export button is explicitly non-destructive and only displays a prototype notice.
+- Added Timecode Pool Start with default 201 and live per-song allocation.
+- Changed mockup defaults: Fixed Macro Start 101, Song Macro Start 201, Template Page 200.
+- Added an expandable Export Content panel to every song row.
+- Main and individual Button contents can be selected independently per song.
+- Song rows summarize selected/available contents.
+- Review page lists the chosen Main/Button contents and calculated Timecode pool for each song.
 
 ## Files changed
 
@@ -24,9 +23,9 @@ Create a free, browser-openable interactive mockup for redesigning the dense MA 
 
 ## Architecture decisions
 
-- Prototype is dependency-free and offline; it does not touch PySide6 or exporter behavior.
-- HTML is a design-review artifact before committing to the production UI migration.
-- Sites skill instructions were unavailable due local permission denial, so a single-file fallback was used.
+- This remains an offline design prototype; production PySide6 and exporter behavior are unchanged.
+- Content selection is modeled per song rather than as a global filter.
+- Timecode remains one pool object per selected song, while its included tracks reflect selected Main/Button content in the proposed design.
 
 ## Tests performed
 
@@ -36,10 +35,10 @@ Create a free, browser-openable interactive mockup for redesigning the dense MA 
 
 ## Remaining issues
 
-- User review is needed before implementing the layout in PySide6.
-- Browser prototype does not perform real export or persistence.
+- User review is needed before production implementation.
+- Exact production behavior for songs with no selected content should be decided (block export or skip song).
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Review the interactive mockup, record requested layout/wording changes, then implement the approved design in `ShowPatchPage` without changing exporter behavior.
+Review the revised per-song Content controls and decide how zero-content songs should behave, then implement the approved playlist workflow in PySide6.
