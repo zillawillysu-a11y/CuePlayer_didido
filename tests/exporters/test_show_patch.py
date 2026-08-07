@@ -439,6 +439,34 @@ def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
     assert widget.get("y") == "3"
     assert widget.get("anz_cols") == "12"
     assert widget.get("anz_rows") == "4"
+    assert widget.get("scroll_offset") == "320"  # Effect Start 401 is 401 - 81.
+
+
+def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Song", ma="Song", button_names=[])]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    layout = [
+        {"type": "sequence", "mode": "perSong", "x": 0, "y": 0, "w": 10, "h": 1, "start": 201, "stride": 20},
+        {"type": "macros", "mode": "fixed", "x": 10, "y": 0, "w": 6, "h": 1, "start": 191, "stride": 1},
+    ]
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
+    root = ET.parse(paths["show:view_1"]).getroot()
+    namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
+    widgets = root.findall(f"{namespace}View/{namespace}Widget")
+    macro = next(widget for widget in widgets if widget.get("type") == "4d414352")
+    assert macro.get("x") == "10"
+    assert macro.get("y") == "0"
+    assert macro.get("has_focus") == "true"
+    assert macro.get("has_scrollfocus") == "true"
+    assert macro.get("scroll_offset") is None
+    assert macro.get("scroll_index") is None
 
 
 def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:

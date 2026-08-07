@@ -486,21 +486,23 @@ class Ma2Exporter:
                 start = max(1, int(spec.get("start", 1)))
                 if spec.get("mode") == "perSong":
                     start += song_index * max(1, int(spec.get("stride", 1)))
-                scroll = (
-                    max(0, start - (rows * columns + 1))
-                    if spec.get("type") == "effects"
-                    else max(0, start - 1)
-                )
                 attrs = {
                     "x": str(max(0, int(spec.get("x", 0)))),
                     "y": str(max(0, int(spec.get("y", 0)))),
                     "anz_rows": str(rows),
                     "anz_cols": str(columns),
-                    "scroll_offset": str(scroll),
-                    "scroll_index": str(scroll),
                 }
-                if widget_type == "4d414352" and index == 0:
+                if widget_type == "4d414352":
                     attrs.update(has_focus="true", has_scrollfocus="true")
+                else:
+                    scroll = (
+                        # MA2 Effect pool scroll is based on its fixed 80-slot
+                        # pool page, not the View widget's current dimensions.
+                        max(0, start - 81)
+                        if spec.get("type") == "effects"
+                        else max(0, start - 1)
+                    )
+                    attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
                 add_widget(index, widget_type, **attrs)
             write_xml(root, path, default_namespace=MA2_NS)
             self._fix_ma2_xsi(path)

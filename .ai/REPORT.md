@@ -5,31 +5,32 @@
 
 ## Task objective
 
-Make planned Registry allocations visibly light up like the approved web design.
+Fix MA2 View XML positioning for Macro and Effect widgets.
 
 ## What was implemented
 
-- Replaced the plain `Planned` Status table text with a green indicator dot and Planned label.
-- Added a tooltip clarifying that it is a planned allocation, not an MA2 live-scan confirmation.
+- Restored Macro widget-specific XML: fixed position attributes plus required focus flags, without scroll attributes.
+- Corrected Effect scroll calculation to MA2's fixed 80-slot baseline: `Effect Start − 81`, independent of View widget size.
 
 ## Files changed
 
-- `src/cueplayer/ui/show_patch_page.py`
-- `tests/ui/test_show_patch_ma2_discovery.py`
+- `src/cueplayer/exporters/ma2/exporter.py`
+- `tests/exporters/test_show_patch.py`
 
 ## Architecture decisions
 
-- Registry status remains presentation-only; it does not claim a Telnet connection or mutate export allocation.
+- Macro widgets are not general scrollable pools in MA2 XML.
+- Effect scrolling is a MA2 pool semantic, not a function of the UI layout dimensions.
 
 ## Tests performed
 
-- Offscreen Show Patch UI tests: 7 passed.
+- Focused MA2 exporter and Show Patch UI tests: 18 passed.
 - Python compile and `git diff --check`: passed.
 
 ## Remaining issues
 
 - Per-song Main/Button export content selection remains pending.
-- Telnet remains intentionally disabled.
+- Telnet remains disabled.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
