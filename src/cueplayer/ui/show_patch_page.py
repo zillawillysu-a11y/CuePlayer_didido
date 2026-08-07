@@ -35,7 +35,11 @@ from PySide6.QtWidgets import (
 from cueplayer.domain.models import MaExportSettings, Project
 from cueplayer.exporters.common import parse_page_executor, sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
-from cueplayer.exporters.ma2_telnet import Ma2TelnetError, Ma2TelnetScanner
+from cueplayer.exporters.ma2_telnet import (
+    MA2_ONPC_PLUGIN_PATH,
+    Ma2TelnetError,
+    Ma2TelnetScanner,
+)
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
@@ -485,9 +489,7 @@ class ShowPatchPage(QWidget):
         plugin_path_row = QHBoxLayout()
         plugin_path_label = QLabel("MA2 Plugin Import Path")
         plugin_path_label.setStyleSheet("color: #99a3b1; font-size: 11px;")
-        self.registry_plugin_import_path.setPlaceholderText(
-            "MA2-visible folder containing CuePlayer_Live_Scan.xml"
-        )
+        self.registry_plugin_import_path.setPlaceholderText(MA2_ONPC_PLUGIN_PATH)
         plugin_path_row.addWidget(plugin_path_label)
         plugin_path_row.addWidget(self.registry_plugin_import_path, stretch=1)
         live_scan_layout.addLayout(plugin_path_row)
@@ -1251,10 +1253,12 @@ class ShowPatchPage(QWidget):
         except OSError as exc:
             self.registry_scan_status.setText(f"Could not write scanner Plugin: {exc}")
             return
-        if not self.registry_plugin_import_path.text().strip():
-            self.registry_plugin_import_path.setText(str(paths["plugin_xml"].parent))
+        local_plugin_folder = str(paths["plugin_xml"].parent)
+        current_path = self.registry_plugin_import_path.text().strip()
+        if not current_path or current_path == local_plugin_folder:
+            self.registry_plugin_import_path.setText(MA2_ONPC_PLUGIN_PATH)
         self.registry_scan_status.setText(
-            f"Scanner Plugin written: {paths['plugin_xml'].name}. Choose an empty Plugin Pool, then use Import Plugin & Scan."
+            f"Scanner Plugin written: {paths['plugin_xml'].name}. MA2 import path: {self.registry_plugin_import_path.text()}"
         )
         self._set_telnet_status("idle")
 
@@ -1307,12 +1311,22 @@ class ShowPatchPage(QWidget):
 
     def _import_scan_plugin_and_scan(self, _checked: bool = False) -> None:
         plugin_pool = int(self.registry_plugin_pool.value())
-        import_path = self.registry_plugin_import_path.text().strip()
-        if not import_path:
+        raw_directory = self.out_dir.text().strip()
+        if not raw_directory:
             self.registry_scan_status.setText(
-                "Write Scan Plugin first, or enter the MA2-visible Plugin folder."
+                "Choose an MA2 Output Folder before installing the scanner Plugin."
             )
             return
+        try:
+            paths = Ma2Exporter().write_live_scan_plugin(Path(raw_directory))
+        except OSError as exc:
+            self.registry_scan_status.setText(f"Could not write scanner Plugin: {exc}")
+            return
+        local_plugin_folder = str(paths["plugin_xml"].parent)
+        import_path = self.registry_plugin_import_path.text().strip()
+        if not import_path or import_path == local_plugin_folder:
+            import_path = MA2_ONPC_PLUGIN_PATH
+            self.registry_plugin_import_path.setText(import_path)
         answer = QMessageBox.warning(
             self,
             "Install scanner Plugin",
@@ -1326,7 +1340,7 @@ class ShowPatchPage(QWidget):
         scanner = self._ma2_telnet_scanner()
         try:
             self._set_telnet_status("scanning")
-            scanner.import_plugin(
+            import_feedback = scanner.import_plugin(
                 plugin_pool=plugin_pool,
                 import_path=import_path,
                 user=self.registry_user.text(),
@@ -1356,9 +1370,11 @@ class ShowPatchPage(QWidget):
             )
             self._set_telnet_status("error")
             return
-        self.registry_scan_status.setText(
-            f"Plugin {plugin_pool} installed and scan completed successfully."
-        )
+        status_text = f"Plugin {plugin_pool} installed and scan completed successfully."
+        if import_feedback.strip():
+            compact_import_feedback = " ".join(import_feedback.split())[:120]
+            status_text += f" MA2: {compact_import_feedback}"
+        self.registry_scan_status.setText(status_text)
         self._set_telnet_status("ready")
 
     def _load_settings_into_ui(self) -> None:

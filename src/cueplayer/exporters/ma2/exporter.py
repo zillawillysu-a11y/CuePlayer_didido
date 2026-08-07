@@ -128,6 +128,7 @@ class Ma2Exporter:
 
     def write_live_scan_plugin(self, directory: Path) -> dict[str, Path]:
         """Write the read-only Telnet scanner Plugin beside normal MA2 plugins."""
+        self._configure_target_from_path(Path(directory))
         _import_dir, plugins_dir, _macros_dir = resolve_ma2_pool_dirs(Path(directory))
         plugins_dir.mkdir(parents=True, exist_ok=True)
         basename = "CuePlayer_Live_Scan"

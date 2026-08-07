@@ -20,11 +20,13 @@ area shows only actual MA2 feedback.
    the password is never saved in the CuePlayer project.
 3. Select the target MA2 Output Folder, then click **Write Scan Plugin**.
    CuePlayer writes `CuePlayer_Live_Scan.xml` and `.lua` to the MA2 `plugins`
-   folder.
+   folder using the schema matching the selected MA2 version. After changing
+   MA2 versions, write the Plugin again before importing it.
 4. Set an unused **Plugin Pool** number (CuePlayer defaults to `9999`) and an
    **MA2 Plugin Import Path** that is visible to the MA2 console. For local
-   MA2 onPC, writing the Plugin fills this path automatically. A remote console
-   needs the Plugin files copied to a console-visible drive first.
+   MA2 onPC, CuePlayer uses `/data/ma/actual/gma2/plugins`; do not use the
+   Windows `C:\\ProgramData...` filesystem path in this field. A remote console
+   needs the Plugin files copied to that console's Plugin directory first.
 5. Click **Import Plugin & Scan**, acknowledge the overwrite warning, and
    CuePlayer sends `Import "CuePlayer_Live_Scan" At Plugin <number>` through
    Command Telnet before running that exact Plugin Pool.

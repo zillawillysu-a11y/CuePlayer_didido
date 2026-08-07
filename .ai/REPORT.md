@@ -5,21 +5,22 @@
 
 ## Task objective
 
-Run the MA2 scanner by configured Plugin Pool number after MA2 rejected a
-Plugin display-name command.
+Fix Scanner Plugin import compatibility after manual MA2 3.9.60 import failed.
 
 ## What was implemented
 
 - Changed the Telnet client to issue MA2's required command-line form:
   `Login "<MA2 Show User>" "<password>"`.
-- Changed **Scan Current Show** to execute `Plugin <configured pool>`.
-- Made the transport require a numeric Plugin Pool for every scan, preventing
-  accidental regressions to the unsupported display-name command.
-- Added UI coverage for forwarding the configured Plugin Pool to the scanner.
+- Made Scanner Plugin XML configure its schema from the selected MA2 output
+  directory; a 3.9.60 directory now generates 3.9.60 XML rather than 3.9.61.
+- Corrected the automatic onPC import path to MA2's virtual plugins path
+  `/data/ma/actual/gma2/plugins` instead of a Windows filesystem path.
+- Import Plugin & Scan always rewrites the scanner Plugin before importing it.
 
 ## Files changed
 
 - `src/cueplayer/exporters/ma2_telnet.py`
+- `src/cueplayer/exporters/ma2/exporter.py`
 - `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_ma2_telnet.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
@@ -27,21 +28,22 @@ Plugin display-name command.
 
 ## Architecture decisions
 
-- MA2 Plugin execution is addressed by Pool number; the Plugin name remains a
-  label only.
+- The Plugin XML schema must match the selected MA2 library version.
+- MA2 Command Import paths use MA2's virtual filesystem paths, not Windows
+  filesystem paths.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-plugin-pool`
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-scanner-plugin-import`
 - Result: **42 passed** using simulated Command/Monitor sockets.
 
 ## Remaining issues
 
-- Real MA2/onPC still needs a scan test through the installed numeric Plugin
-  Pool and System Monitor frame.
+- Regenerate the scanner Plugin and retest manual or Telnet import on MA2
+  3.9.60, then confirm its System Monitor frame.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Verify the scanner is present in the configured Plugin Pool, then run
-**Scan Current Show** and confirm all three status lights become green.
+Click Write Scan Plugin to regenerate the matching XML, then use Import Plugin
+& Scan at an empty Plugin Pool and confirm all three status lights become green.

@@ -344,9 +344,12 @@ def test_ma2_export_matches_selected_3960_library(tmp_path) -> None:
     from cueplayer.exporters.ma2 import Ma2Exporter
     from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
 
-    scanner_paths = Ma2Exporter().write_live_scan_plugin(tmp_path / "scanner")
+    scanner_library = tmp_path / "gma2_V_3.9.60" / "importexport"
+    scanner_paths = Ma2Exporter().write_live_scan_plugin(scanner_library)
     assert scanner_paths["plugin_xml"].is_file()
-    assert "CuePlayer Live Scan" in scanner_paths["plugin_xml"].read_text(encoding="utf-8")
+    scanner_xml = scanner_paths["plugin_xml"].read_text(encoding="utf-8")
+    assert "CuePlayer Live Scan" in scanner_xml
+    assert "3.9.60/MA.xsd" in scanner_xml
     assert "CUEPLAYER_SCAN_BEGIN" in scanner_paths["plugin_lua"].read_text(encoding="utf-8")
 
     project = Project.create("Show")

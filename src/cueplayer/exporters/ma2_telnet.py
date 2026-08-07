@@ -17,6 +17,7 @@ import time
 FRAME_BEGIN = "CUEPLAYER_SCAN_BEGIN"
 FRAME_END = "CUEPLAYER_SCAN_END"
 PLUGIN_NAME = "CuePlayer Live Scan"
+MA2_ONPC_PLUGIN_PATH = "/data/ma/actual/gma2/plugins"
 POOL_KINDS = ("sequence", "effect", "timecode", "macro", "view")
 _IAC = 255
 _DO = 253
@@ -165,7 +166,7 @@ class Ma2TelnetScanner:
         import_path: str,
         user: str = "",
         password: str = "",
-    ) -> None:
+    ) -> str:
         """Install the generated scanner Plugin at an explicitly chosen Pool ID.
 
         MA2's Import command overwrites an occupied destination, so callers must
@@ -188,6 +189,7 @@ class Ma2TelnetScanner:
                 f'Import "CuePlayer_Live_Scan" At Plugin {plugin_pool} '
                 f'/path="{safe_path}" /nc',
             )
+            return self._read_feedback(command)
 
     def scan(
         self,
