@@ -27,6 +27,7 @@ Review the updated browser mockup with per-song Main/Button content selection an
 - Per Song Effects reserve 100 Pool numbers by default, allow any valid value from 1, and stay synchronized between Common Settings and View Inspector.
 - View Inspector intentionally omits Column, Row, Columns, Rows, and Visible Pool Slots; position and size are controlled directly on the canvas.
 - Pool title cells show only the Pool name, wrap long labels, and use color to communicate Fixed versus Per Song allocation.
+- Pool Start and Reserved Slots Per Song are displayed side by side in the Inspector.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
 - Confirm the default Fixed/Per Song modes, Pool starts, and reserved-slot values.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
