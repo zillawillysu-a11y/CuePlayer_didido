@@ -945,6 +945,7 @@ def _build_artifact_isolated(
     stream_index: int,
     cancel_check: Callable[[], bool] | None,
     pause_check: Callable[[], bool] | None,
+    on_percent: Callable[[int], None] | None = None,
 ) -> VideoWaveformArtifact | None:
     """Decode in another interpreter so PyAV cannot starve Qt's GIL."""
     key = artifact_cache_key(
@@ -955,6 +956,12 @@ def _build_artifact_isolated(
     env = os.environ.copy()
     env["CUEPLAYER_WAVEFORM_IN_PROCESS"] = "1"
     env.pop("CUEPLAYER_PERF", None)
+    progress_path = _disk_path(key).with_suffix(".progress")
+    try:
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     command = [
         sys.executable,
         "-m",
@@ -962,6 +969,7 @@ def _build_artifact_isolated(
         str(path),
         repr(float(duration_seconds)),
         str(int(stream_index)),
+        str(progress_path),
     ]
     kwargs: dict[str, object] = {
         "stdout": subprocess.DEVNULL,
@@ -975,6 +983,7 @@ def _build_artifact_isolated(
     except OSError:
         return None
     try:
+        last_percent = -1
         while proc.poll() is None:
             cancelled = bool(cancel_check and cancel_check())
             # This process has its own GIL and a lowered worker priority. Keep
@@ -987,12 +996,26 @@ def _build_artifact_isolated(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 return None
+            try:
+                percent = max(0, min(99, int(progress_path.read_text(encoding="ascii"))))
+            except (OSError, ValueError):
+                percent = last_percent
+            if percent >= 0 and percent != last_percent:
+                last_percent = percent
+                if on_percent is not None:
+                    on_percent(percent)
             time.sleep(0.05)
     finally:
         if proc.poll() is None:
             proc.kill()
     if proc.returncode != 0:
         return None
+    if on_percent is not None:
+        on_percent(100)
+    try:
+        progress_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     return load_artifact_from_disk(key)
 
 
@@ -1005,6 +1028,7 @@ class _JobState:
     listeners: list[Callable[[VideoWaveformArtifact], None]] = field(
         default_factory=list
     )
+    percent_listeners: list[Callable[[int], None]] = field(default_factory=list)
 
 
 class VideoWaveformArtifactStore:
@@ -1086,6 +1110,7 @@ class VideoWaveformArtifactStore:
         cancel_check: Callable[[], bool] | None = None,
         pause_check: Callable[[], bool] | None = None,
         on_update: Callable[[VideoWaveformArtifact], None] | None = None,
+        on_percent: Callable[[int], None] | None = None,
     ) -> VideoWaveformArtifact | None:
         """Hydrate disk / return partial / start single-flight build. Never waits."""
         key = artifact_cache_key(
@@ -1107,6 +1132,8 @@ class VideoWaveformArtifactStore:
             if job is not None and job.future is not None and not job.future.done():
                 if on_update is not None:
                     job.listeners.append(on_update)
+                if on_percent is not None:
+                    job.percent_listeners.append(on_percent)
                 if perf_diag.is_enabled():
                     perf_diag.count("waveform_artifact.job_deduplicated")
                 return job.art
@@ -1120,11 +1147,13 @@ class VideoWaveformArtifactStore:
                 return None
             self._by_key[key] = art_ref
             listeners = [on_update] if on_update is not None else []
+            percent_listeners = [on_percent] if on_percent is not None else []
             job = _JobState(
                 cache_key=key,
                 art=art_ref,
                 generation=gen,
                 listeners=list(listeners),
+                percent_listeners=list(percent_listeners),
             )
             self._jobs[key] = job
 
@@ -1169,6 +1198,15 @@ class VideoWaveformArtifactStore:
                         return True
                     return bool(cancel_check and cancel_check())
 
+                def _percent(pct: int) -> None:
+                    with self._lock:
+                        cbs = list(job.percent_listeners)
+                    for cb in cbs:
+                        try:
+                            cb(int(pct))
+                        except Exception:
+                            pass
+
                 isolated = _use_isolated_waveform_process()
                 if isolated:
                     if perf_diag.is_enabled():
@@ -1179,6 +1217,7 @@ class VideoWaveformArtifactStore:
                         stream_index=stream_index,
                         cancel_check=_cancel,
                         pause_check=pause_check,
+                        on_percent=_percent,
                     )
                 else:
                     result = build_artifact_continuous(
@@ -1219,6 +1258,7 @@ class VideoWaveformArtifactStore:
         cancel_check: Callable[[], bool] | None = None,
         pause_check: Callable[[], bool] | None = None,
         on_update: Callable[[VideoWaveformArtifact], None] | None = None,
+        on_percent: Callable[[int], None] | None = None,
         timeout: float = 3600.0,
     ) -> VideoWaveformArtifact | None:
         """Background-thread wait for completion. NEVER call from GUI thread."""
@@ -1229,6 +1269,7 @@ class VideoWaveformArtifactStore:
             cancel_check=cancel_check,
             pause_check=pause_check,
             on_update=on_update,
+            on_percent=on_percent,
         )
         if art is not None and art.complete:
             return art

@@ -132,6 +132,7 @@ def build_music_standin_from_video(
     cancel_check: Callable[[], bool] | None = None,
     on_progress: Callable[[VideoWaveformArtifact], None] | None = None,
     pause_check: Callable[[], bool] | None = None,
+    on_percent: Callable[[int], None] | None = None,
 ) -> VideoWaveformArtifact | None:
     """
     Shared artifact for the Music lane (progressive partials OK).
@@ -175,6 +176,7 @@ def build_music_standin_from_video(
         cancel_check=cancel_check,
         pause_check=_pause,
         on_update=_on_art,
+        on_percent=on_percent,
     )
     if art is None or _cancelled():
         return None

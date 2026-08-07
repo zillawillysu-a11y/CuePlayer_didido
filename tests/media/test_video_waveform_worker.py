@@ -21,7 +21,7 @@ def test_worker_builds_and_saves_complete_artifact(tmp_path: Path) -> None:
         ),
         patch("cueplayer.media.video_waveform_worker.save_artifact_to_disk") as save,
     ):
-        result = main([str(media), "2.0", "0"])
+        result = main([str(media), "2.0", "0", str(tmp_path / "progress")])
     assert result == 0
     save.assert_called_once()
 

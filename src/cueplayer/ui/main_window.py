@@ -7176,6 +7176,9 @@ class MainWindow(QMainWindow):
                     on_progress=lambda a: self._video_standin_finished.emit(
                         token, ("progress_art", a)
                     ),
+                    on_percent=lambda pct: self._video_standin_finished.emit(
+                        token, ("percent", int(pct))
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 self._video_standin_finished.emit(token, exc)
@@ -7209,6 +7212,20 @@ class MainWindow(QMainWindow):
                 self.timeline.set_audio_loading(True, f"{clip.name} (video)")
             return
         from cueplayer.media.video_waveform_artifact import VideoWaveformArtifact
+
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == "percent"
+        ):
+            percent = max(0, min(100, int(result[1])))
+            self.timeline.set_audio_loading(
+                True, f"Building waveform… {percent}%"
+            )
+            self.status.showMessage(
+                f"Building video waveform… {percent}%", 0
+            )
+            return
 
         if (
             isinstance(result, tuple)
