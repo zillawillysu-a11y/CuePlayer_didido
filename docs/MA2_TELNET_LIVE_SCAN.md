@@ -6,6 +6,8 @@ It never stores, deletes, imports, or changes an object in the current show.
 
 CuePlayer performs the required Telnet option negotiation before it sends MA2
 commands, then uses MA2's command-line `Login "user" "password"` syntax.
+Telnet control bytes are filtered from CuePlayer's status text, so the status
+area shows only actual MA2 feedback.
 
 ## First-time MA2 setup
 

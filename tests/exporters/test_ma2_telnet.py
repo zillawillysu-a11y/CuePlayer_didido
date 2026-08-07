@@ -177,3 +177,18 @@ def test_telnet_negotiation_declines_optional_server_features(
 
     assert command.sent[0] == bytes([255, 252, 1])
     assert command.sent[1] == b'Login "CuePlayer" ""\r\n'
+
+
+def test_connection_hides_telnet_control_bytes_from_status_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = _Socket([b"", bytes([255, 253, 1]) + b"MA2 ready\r\n"])
+    monkeypatch.setattr(
+        "cueplayer.exporters.ma2_telnet.socket.create_connection",
+        lambda *_args: command,
+    )
+
+    feedback = Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer")
+
+    assert feedback == "MA2 ready\r\n"
+    assert command.sent[-1] == bytes([255, 252, 1])

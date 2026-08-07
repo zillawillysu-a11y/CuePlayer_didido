@@ -5,8 +5,8 @@
 
 ## Task objective
 
-Correct MA2 Telnet protocol handling after a real MA2 connection closed after
-creating its command line.
+Filter Telnet control packets from MA2 feedback after a real connection showed
+binary negotiation bytes as `MMMM...` in CuePlayer's status area.
 
 ## What was implemented
 
@@ -14,6 +14,8 @@ creating its command line.
   `Login "<MA2 Show User>" "<password>"`.
 - Added minimal Telnet option negotiation before Command or System Monitor
   traffic, so MA2 is not treated as a raw TCP endpoint.
+- Filters Telnet IAC control bytes from feedback and continues responding to
+  Telnet negotiation occurring after the initial greeting.
 - Rejected missing show users before any command is sent.
 - Renamed the UI field to **MA2 Show User** and clarified that its value must
   match an existing, case-sensitive MA2 show user.
@@ -35,11 +37,12 @@ creating its command line.
   not a valid MA2 login exchange.
 - Telnet negotiation explicitly declines optional terminal features that
   CuePlayer does not use.
+- UI status receives only decoded MA2 text, never raw Telnet control bytes.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-negotiate`
-- Result: **41 passed** using simulated Command/Monitor sockets.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_ma2_telnet.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-telnet-control-filter`
+- Result: **42 passed** using simulated Command/Monitor sockets.
 
 ## Remaining issues
 
@@ -49,6 +52,6 @@ creating its command line.
 
 ## Suggested next task
 
-Enter a real MA2 Show User/password, click Test Connection, then run
-**Import Plugin & Scan** against an empty Plugin Pool and confirm all three
-status lights become green.
+Retest Test Connection with a real MA2 Show User/password. Confirm the status
+shows readable MA2 text, then run **Import Plugin & Scan** against an empty
+Plugin Pool and confirm all three status lights become green.

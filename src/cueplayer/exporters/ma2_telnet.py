@@ -95,22 +95,37 @@ class Ma2TelnetScanner:
             return
         if not greeting:
             return
+        self._telnet_text(conn, greeting)
+
+    @staticmethod
+    def _telnet_text(conn: socket.socket, data: bytes) -> str:
+        """Reply to Telnet control bytes and return only displayable text."""
         response = bytearray()
+        text = bytearray()
         index = 0
-        while index + 2 < len(greeting):
-            if greeting[index] != _IAC:
+        while index < len(data):
+            if data[index] != _IAC:
+                text.append(data[index])
                 index += 1
                 continue
-            command = greeting[index + 1]
+            if index + 1 >= len(data):
+                break
+            command = data[index + 1]
             if command in (_DO, _DONT, _WILL, _WONT):
-                option = greeting[index + 2]
+                if index + 2 >= len(data):
+                    break
+                option = data[index + 2]
                 reply = _WONT if command in (_DO, _DONT) else _DONT
                 response.extend((_IAC, reply, option))
                 index += 3
+            elif command == _IAC:
+                text.append(_IAC)
+                index += 2
             else:
                 index += 2
         if response:
             conn.sendall(bytes(response))
+        return text.decode("utf-8", errors="replace")
 
     def _read_feedback(self, conn: socket.socket) -> str:
         """Read one short post-command response without blocking the UI long."""
@@ -119,7 +134,7 @@ class Ma2TelnetScanner:
             data = conn.recv(4096)
         except TimeoutError:
             return ""
-        return data.decode("utf-8", errors="replace") if data else ""
+        return self._telnet_text(conn, data) if data else ""
 
     def _login(self, conn: socket.socket, user: str, password: str) -> None:
         """Issue MA2's required command-line Login command.
@@ -203,7 +218,7 @@ class Ma2TelnetScanner:
                     continue
                 if not block:
                     break
-                chunks.append(block.decode("utf-8", errors="replace"))
+                chunks.append(self._telnet_text(monitor, block))
                 joined = "".join(chunks)
                 if FRAME_BEGIN in joined and FRAME_END in joined:
                     return parse_scan_frame(joined)
