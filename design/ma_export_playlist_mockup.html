@@ -262,7 +262,7 @@
           <input class="english-name" type="text" value="${song.en}" aria-label="MA export name">
           <span class="range">${a.seqStart}–${a.seqEnd}</span>
           <span class="range">${a.effectStart}–${a.effectEnd}</span>
-          <span>TC ${a.timecode}</span><span>${song.marks} cues</span>
+          <span>${a.timecode}</span><span>${song.marks} cues</span>
           <button class="btn content-toggle" data-content-index="${index}">${chosen.length}/${song.contents.length} selected</button>
           <span class="drag" title="Drag to reorder">⋮⋮</span>
         </div><div class="song-content ${song.open ? "open" : ""}" data-content-panel="${index}">
@@ -303,7 +303,7 @@
         selected.map(({ song, index }) => {
           const a = allocation(index);
           const content = song.contents.filter(item => item.on).map(item => item.name).join(", ") || "Nothing selected";
-          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>TC ${a.timecode}</span></div>`;
+          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>${a.timecode}</span></div>`;
         }).join("");
       $("#targetLabel").textContent = $("#console").value.replace("grand", "");
     }

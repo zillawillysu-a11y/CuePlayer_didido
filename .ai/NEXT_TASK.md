@@ -17,6 +17,7 @@ Review the updated browser mockup with per-song Main/Button content selection.
 - Expanding each song and selecting Main/Button content feels intuitive.
 - Review clearly communicates what each song will export.
 - All interface chrome is English while Unicode song names remain readable.
+- Timecode values appear as plain pool numbers (`201`, `202`) without a redundant `TC` prefix.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
