@@ -4295,29 +4295,21 @@ class TimelineWidget(QWidget):
         if peaks is None or peaks.mono.size == 0:
             return
 
-        mid = rect.center().y()
-        amp = max(2.0, rect.height() / 2 - 3)
+        mid = float(rect.center().y())
+        amp = max(2.0, float(rect.height()) / 2.0 - 3.0)
         color = QColor("#dbe4ff")
         color.setAlpha(70 if self._video_track_muted else 175)
         painter.setPen(QPen(color, 1))
 
-        # Transport must not change static bake quality. Prefer the same
-        # sampling path in PLAYING and PAUSED; only gate worker submit above.
-        # Wide / zoomed-out clips still step columns to keep bake cheap.
+        # Continuous per-pixel envelope (no step=2/3 comb holes). Viewport is
+        # already clipped; O(visible px) matches Music-lane paint cost.
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
-        # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
-        # overscan while a Video Track is open) does not stall the UI thread.
-        step = 1
-        if width_px > 2400 or samples_per_pixel >= 48:
-            step = 3
-        elif width_px > 1200 or samples_per_pixel >= 12:
-            step = 2
 
         try:
-            for x in range(x_left, x_right, step):
+            for x in range(x_left, x_right):
                 t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + step)
+                t1 = self._time_for_x(x + 1)
                 clip_t0 = timeline_to_clip_local(t0, clip)
                 clip_t1 = timeline_to_clip_local(t1, clip)
                 if clip_t0 is None and clip_t1 is None:
@@ -4338,11 +4330,15 @@ class TimelineWidget(QWidget):
                         clip,
                         clip_t0=clip_t0,
                         clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel * step,
+                        samples_per_pixel=samples_per_pixel,
                     )
-                painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
+                # Pending / uncovered = NaN — never fabricate silence.
+                if not (lo == lo and hi == hi):
+                    continue
+                painter.drawLine(
+                    QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp)
+                )
         except Exception:
-            # Corrupt / partially-built peaks must never take down the UI.
             return
 
     def _paint_video_clip_waveform_coarse(
