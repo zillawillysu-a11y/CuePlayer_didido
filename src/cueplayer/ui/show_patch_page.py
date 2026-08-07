@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from cueplayer.domain.models import MaExportSettings, Project
-from cueplayer.exporters.common import sanitize_ma_name
+from cueplayer.exporters.common import parse_page_executor, sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.ma_default_dirs import (
@@ -225,18 +225,19 @@ class ShowPatchPage(QWidget):
 
         fader_box = QGroupBox("Fader (Executor)")
         fader_form = QFormLayout(fader_box)
-        self.main_fader = QLineEdit("201.130")
-        self.button_fader = QLineEdit("201.101")
-        self.main_fader.setPlaceholderText("201.130")
-        self.button_fader.setPlaceholderText("201.101")
-        self.page_per_song = QCheckBox("New Page per song (1.201 → 2.201 → …)")
+        self.executor_page = NoWheelSpinBox()
+        self.executor_page.setRange(1, 9999)
+        self.executor_page.setValue(201)
+        self.main_fader = QLabel("Main → Page.130")
+        self.button_fader = QLabel("Buttons → Page.101+")
+        self.page_per_song = QCheckBox("Next Page per song (201 → 202 → …)")
         self.page_per_song.setChecked(True)
         self.page_per_song.setToolTip(
-            "Each song uses its own Page, with Main=101 and Buttons starting at 201; "
-            "Install will label that Page with the song's English name"
+            "Each song advances to the next Page. Main stays at .130 and Buttons start at .101."
         )
-        fader_form.addRow("Main", self.main_fader)
-        fader_form.addRow("Button Start", self.button_fader)
+        fader_form.addRow("Page", self.executor_page)
+        fader_form.addRow(self.main_fader)
+        fader_form.addRow(self.button_fader)
         fader_form.addRow(self.page_per_song)
         settings_row.addWidget(fader_box, stretch=1)
         self.setup_page_layout.addLayout(settings_row)
@@ -675,8 +676,7 @@ class ShowPatchPage(QWidget):
         for widget in (
             self.seq_start,
             self.tc_start,
-            self.main_fader,
-            self.button_fader,
+            self.executor_page,
             self.page_per_song,
             self.mode_combo,
             self.latency_ms,
@@ -1017,8 +1017,11 @@ class ShowPatchPage(QWidget):
         self.ma2_radio.setChecked(s.console != "ma3")
         self.seq_start.setValue(int(s.sequence_pool_start))
         self.tc_start.setValue(int(s.timecode_pool_start))
-        self.main_fader.setText(s.main_executor or "201.130")
-        self.button_fader.setText(s.button_executor_start or "201.101")
+        try:
+            page, _executor = parse_page_executor(s.main_executor or "201.130")
+        except ValueError:
+            page = 201
+        self.executor_page.setValue(page)
         self.page_per_song.setChecked(bool(s.page_per_song))
         idx = self.mode_combo.findData(s.export_mode)
         self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -1079,8 +1082,9 @@ class ShowPatchPage(QWidget):
         s.export_mode = str(self.mode_combo.currentData() or "full")
         s.sequence_pool_start = int(self.seq_start.value())
         s.timecode_pool_start = int(self.tc_start.value())
-        s.main_executor = self.main_fader.text().strip() or "201.130"
-        s.button_executor_start = self.button_fader.text().strip() or "201.101"
+        page = int(self.executor_page.value())
+        s.main_executor = f"{page}.130"
+        s.button_executor_start = f"{page}.101"
         s.page_per_song = self.page_per_song.isChecked()
         s.latency_ms = float(self.latency_ms.value())
         s.data_pool = self.data_pool.text().strip() or "Default"

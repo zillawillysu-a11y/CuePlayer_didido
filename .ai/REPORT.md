@@ -5,26 +5,27 @@
 
 ## Task objective
 
-Fix MA2 View XML positioning for Macro and Effect widgets.
+Replace confusing Main/Button Executor text entry with one shared Page setting.
 
 ## What was implemented
 
-- Restored Macro widget-specific XML: fixed position attributes plus required focus flags, without scroll attributes.
-- Corrected Effect scroll calculation to MA2's fixed 80-slot baseline: `Effect Start − 81`, independent of View widget size.
+- Replaced Main and Button Start editable executor fields with `Page`.
+- Main is generated as `Page.130`; Buttons are generated as `Page.101+`.
+- Kept optional Next Page per song behavior, so every song still keeps Main and Buttons together on its own page when enabled.
+- Existing persisted executor values load their Page component for compatibility.
 
 ## Files changed
 
-- `src/cueplayer/exporters/ma2/exporter.py`
-- `tests/exporters/test_show_patch.py`
+- `src/cueplayer/ui/show_patch_page.py`
+- `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
 
-- Macro widgets are not general scrollable pools in MA2 XML.
-- Effect scrolling is a MA2 pool semantic, not a function of the UI layout dimensions.
+- Executor strings remain in the domain/exporter boundary for compatibility; the UI owns the simpler Page-only projection.
 
 ## Tests performed
 
-- Focused MA2 exporter and Show Patch UI tests: 18 passed.
+- Focused Show Patch UI and MA2 exporter tests: 18 passed.
 - Python compile and `git diff --check`: passed.
 
 ## Remaining issues

@@ -168,8 +168,7 @@ def test_registry_sync_updates_allocations_but_preserves_fixed_controls(
     page.set_project(project)
     page.ma2_fixed_macro_start.setValue(101)
     page.ma2_template_page.setValue(200)
-    page.main_fader.setText("201.130")
-    page.button_fader.setText("201.101")
+    page.executor_page.setValue(201)
 
     applied = page.apply_registry_scan_result(
         remote_version="3.9.63.6",
@@ -189,8 +188,9 @@ def test_registry_sync_updates_allocations_but_preserves_fixed_controls(
     assert page.ma2_view_pool_start.value() == 203
     assert page.ma2_fixed_macro_start.value() == 101
     assert page.ma2_template_page.value() == 200
-    assert page.main_fader.text() == "201.130"
-    assert page.button_fader.text() == "201.101"
+    assert page.executor_page.value() == 201
+    assert project.ma_export.main_executor == "201.130"
+    assert project.ma_export.button_executor_start == "201.101"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
