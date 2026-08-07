@@ -933,6 +933,11 @@ def _use_isolated_waveform_process() -> bool:
     )
 
 
+def waveform_build_uses_isolated_process() -> bool:
+    """Public policy query used by UI playback/waveform coordination."""
+    return _use_isolated_waveform_process()
+
+
 def _build_artifact_isolated(
     path: Path,
     *,
@@ -972,8 +977,10 @@ def _build_artifact_isolated(
     try:
         while proc.poll() is None:
             cancelled = bool(cancel_check and cancel_check())
-            paused = bool(pause_check and pause_check()) or waveform_build_is_paused()
-            if cancelled or paused:
+            # This process has its own GIL and a lowered worker priority. Keep
+            # scanning while CuePlayer plays so the waveform can appear live.
+            # Only cancellation (song/project change) should terminate it.
+            if cancelled:
                 proc.terminate()
                 try:
                     proc.wait(timeout=2.0)

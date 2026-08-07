@@ -7077,14 +7077,20 @@ class MainWindow(QMainWindow):
 
         Cancel in-flight standin on Play; resume after Pause/Stop if needed.
         """
-        from cueplayer.media.video_waveform_artifact import set_waveform_build_paused
+        from cueplayer.media.video_waveform_artifact import (
+            set_waveform_build_paused,
+            waveform_build_uses_isolated_process,
+        )
 
-        set_waveform_build_paused(bool(playing))
+        isolated = waveform_build_uses_isolated_process()
+        set_waveform_build_paused(bool(playing) and not isolated)
         if self._song_has_main_audio_file():
             return
-        if playing:
+        if playing and not isolated:
             if self.timeline.audio_loading():
                 self._video_standin_token += 1
+            return
+        if playing:
             return
         flush = getattr(self.timeline, "_video_waveform_cache", None)
         if flush is not None and hasattr(flush, "flush_pending_gui_notify"):
@@ -7100,7 +7106,12 @@ class MainWindow(QMainWindow):
         """Fill the Music waveform from the shared VideoWaveformArtifact."""
         if self._song_has_main_audio_file():
             return
-        if bool(getattr(self.engine, "playing", False)):
+        from cueplayer.media.video_waveform_artifact import (
+            waveform_build_uses_isolated_process,
+        )
+
+        isolated = waveform_build_uses_isolated_process()
+        if bool(getattr(self.engine, "playing", False)) and not isolated:
             return
         clip = self._primary_video_clip_for_standin()
         if clip is None:
@@ -7147,7 +7158,10 @@ class MainWindow(QMainWindow):
                 return (
                     token != self._video_standin_token
                     or song_id != self.current_song.id
-                    or bool(getattr(self.engine, "playing", False))
+                    or (
+                        bool(getattr(self.engine, "playing", False))
+                        and not isolated
+                    )
                 )
 
             try:
@@ -7155,7 +7169,10 @@ class MainWindow(QMainWindow):
                     clip_snapshot,
                     timeline_duration=duration,
                     cancel_check=_cancel,
-                    pause_check=lambda: bool(getattr(self.engine, "playing", False)),
+                    pause_check=lambda: (
+                        bool(getattr(self.engine, "playing", False))
+                        and not isolated
+                    ),
                     on_progress=lambda a: self._video_standin_finished.emit(
                         token, ("progress_art", a)
                     ),
