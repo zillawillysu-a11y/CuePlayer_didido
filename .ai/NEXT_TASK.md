@@ -1,12 +1,12 @@
 # Next task
 
-**Status:** Queued - awaiting real local Telnet scanner verification after timeout fix
+**Status:** Queued - awaiting real local Telnet verification after Login pacing fix
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify the 15-second MA2 scanner wait after Plugin import/execution.
+Verify Login pacing, then Plugin import/execution and the 15-second scanner wait.
 
 ## Requirements
 

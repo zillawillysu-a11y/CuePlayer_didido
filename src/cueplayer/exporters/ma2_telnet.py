@@ -158,6 +158,10 @@ class Ma2TelnetScanner:
         safe_password = password.replace('"', "")
         # Do not log either value or persist the password.
         self._send_line(conn, f'Login "{safe_user}" "{safe_password}"')
+        # MA2 needs a short command-line turn after Login before it accepts the
+        # next command.  Sending Plugin/Import immediately can make MA2 log a
+        # TCP client's ``Send`` exception and close the session.
+        time.sleep(0.25)
 
     def test_connection(self, *, user: str = "", password: str = "") -> str:
         with self._connect(self.command_port) as command:

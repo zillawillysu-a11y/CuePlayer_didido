@@ -1,15 +1,15 @@
-# MA2 Telnet Scan Timeout Handoff
+# MA2 Telnet Login Pacing Handoff
 
 ## Task objective
 
-Keep the MA2 live scanner connected long enough for its read-only Lua Pool
-enumeration and improve no-frame diagnostics.
+Prevent MA2 Command Telnet from closing when the next command follows Login too
+quickly.
 
 ## What was implemented
 
-- Default scanner timeout is now 15 seconds instead of 3.
-- Errors distinguish monitor data without a frame from an entirely empty
-  monitor response.
+- Login now yields the MA2 command line for 250 ms before the next command.
+- Scanner timeout remains 15 seconds and errors distinguish monitor data versus
+  an empty monitor response.
 
 ## Files changed
 
@@ -30,5 +30,5 @@ Real MA2 verification is still required. `startup_error.txt` was not touched.
 
 ## Suggested next task
 
-Run Import Plugin & Scan with Plugin Pool 5 and report the status message plus
-System Monitor output if no frame arrives.
+Run Test Connection and Import Plugin & Scan with Plugin Pool 5; report any
+remaining `Send` exception.

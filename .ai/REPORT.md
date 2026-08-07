@@ -5,16 +5,13 @@
 
 ## Task objective
 
-Prevent the live scanner from disconnecting before a slow MA2 Lua Pool scan
-finishes, and make the no-frame error explain whether System Monitor returned
-anything.
+Prevent MA2 from closing Command Telnet when CuePlayer sends the next command
+immediately after Login.
 
 ## What was implemented
 
-- Increased the scanner transport default timeout from 3 seconds to 15 seconds;
-  the Plugin checks five Pools and can legitimately need more than 3 seconds.
-- Split the no-frame error into two diagnostics: monitor returned data versus
-  monitor returned no scanner output.
+- Added a 250 ms command-line turn after Login before Import, Echo, or Plugin.
+- Kept the 15-second scanner timeout and the two no-frame diagnostics.
 
 ## Files changed
 
@@ -33,11 +30,11 @@ anything.
 
 ## Remaining issues
 
-- Real MA2 must confirm the longer Scan wait receives the scanner frame.
+- Real MA2 must confirm Login is followed by Import/Plugin without `Send`
+  exceptions.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Retest Import Plugin & Scan at Plugin Pool 5. If it still fails, copy the new
-status message and the MA2 System Monitor lines produced during the 15-second
-scan.
+Retest Test Connection, then Import Plugin & Scan at Plugin Pool 5. If it still
+fails, copy the MA2 log around Login and the next command.
