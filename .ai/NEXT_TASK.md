@@ -18,6 +18,7 @@ Review the updated browser mockup with per-song Main/Button content selection.
 - Review clearly communicates what each song will export.
 - All interface chrome is English while Unicode song names remain readable.
 - Timecode values appear as plain pool numbers (`201`, `202`) without a redundant `TC` prefix.
+- Song Order is explicit in both the playlist and review, and drag reordering updates the Song List Sequence order.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when

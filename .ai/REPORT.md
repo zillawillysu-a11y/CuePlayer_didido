@@ -19,6 +19,7 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Review page lists the chosen Main/Button contents and calculated Timecode pool for each song.
 - Converted all interface labels, instructions, validation text, and prototype alerts to English; Unicode song data remains unchanged.
 - Simplified Timecode values in the song list and export review from `TC 201` / `TC 202` to `201` / `202`.
+- Added an explicit Song Order column to the playlist and Export Review; drag reordering updates the order used to describe Song List Sequence import positions.
 
 ## Files changed
 

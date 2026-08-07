@@ -81,7 +81,7 @@
     .badge { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 12px; }
     .song-grid {
       display: grid;
-      grid-template-columns: 36px minmax(225px, 1.3fr) minmax(200px, 1fr) 102px 102px 78px 78px 96px 34px;
+      grid-template-columns: 52px 70px minmax(225px, 1.3fr) minmax(200px, 1fr) 102px 102px 78px 78px 96px 34px;
       gap: 12px;
       align-items: center;
     }
@@ -133,11 +133,11 @@
     .review-card strong { display: block; font-size: 20px; margin: 8px 0 3px; }
     .ok { color: var(--good); }
     .review-list { margin-top: 15px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-    .review-line { display: grid; grid-template-columns: 1fr 120px 120px 80px; gap: 12px; padding: 10px 13px; border-top: 1px solid var(--line); }
+    .review-line { display: grid; grid-template-columns: 70px 1fr 120px 120px 80px; gap: 12px; padding: 10px 13px; border-top: 1px solid var(--line); }
     .review-line:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
     @media (max-width: 1220px) {
-      .song-grid { grid-template-columns: 34px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
+      .song-grid { grid-template-columns: 48px 62px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
     }
   </style>
 </head>
@@ -165,7 +165,7 @@
         <div class="notice"><strong>Pool allocation at a glance.</strong> Each MA2 song reserves 20 Sequences and 80 Effects. Ranges update immediately when a start value changes.</div>
         <div class="card">
           <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
-          <div class="song-grid song-header"><span></span><span>Song</span><span>MA Export Name</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>Content</span><span></span></div>
+          <div class="song-grid song-header"><span>Export</span><span>Song Order</span><span>Song</span><span>MA Export Name</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>Content</span><span></span></div>
           <div id="songRows"></div>
         </div>
         <div class="playlist-actions">
@@ -258,7 +258,8 @@
         const chosen = song.contents.filter(content => content.on).map(content => content.name);
         return `<div class="song-block"><div class="song-grid song-row" draggable="true" data-index="${index}">
           <input class="song-check" type="checkbox" ${song.selected ? "checked" : ""} aria-label="Export ${song.en}">
-          <div class="song-title"><strong>${song.name}</strong><span>Song ${index + 1}</span></div>
+          <strong class="range">${index + 1}</strong>
+          <div class="song-title"><strong>${song.name}</strong><span>Song List position ${index + 1}</span></div>
           <input class="english-name" type="text" value="${song.en}" aria-label="MA export name">
           <span class="range">${a.seqStart}–${a.seqEnd}</span>
           <span class="range">${a.effectStart}–${a.effectEnd}</span>
@@ -299,11 +300,11 @@
 
     function renderReview() {
       const selected = songs.map((song, index) => ({ song, index })).filter(x => x.song.selected);
-      $("#reviewList").innerHTML = `<div class="review-line"><span>Song / MA name</span><span>Sequence</span><span>Effect</span><span>Timecode</span></div>` +
+      $("#reviewList").innerHTML = `<div class="review-line"><span>Song Order</span><span>Song / MA name</span><span>Sequence</span><span>Effect</span><span>Timecode</span></div>` +
         selected.map(({ song, index }) => {
           const a = allocation(index);
           const content = song.contents.filter(item => item.on).map(item => item.name).join(", ") || "Nothing selected";
-          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>${a.timecode}</span></div>`;
+          return `<div class="review-line"><strong>${index + 1}</strong><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>${a.timecode}</span></div>`;
         }).join("");
       $("#targetLabel").textContent = $("#console").value.replace("grand", "");
     }
