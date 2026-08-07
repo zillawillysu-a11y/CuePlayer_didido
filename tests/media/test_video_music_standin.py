@@ -12,6 +12,17 @@ from cueplayer.media.video_music_standin import (
     _downsample_to_overview,
     build_music_standin_from_video,
 )
+from cueplayer.media.video_waveform_artifact import (
+    ARTIFACT_FORMAT_VERSION,
+    PEAKS_PER_SECOND,
+    artifact_bin_count,
+    artifact_has_false_zero_gaps,
+    artifact_store,
+    build_artifact_continuous,
+    load_artifact_from_disk,
+    save_artifact_to_disk,
+    artifact_cache_key,
+)
 from tests.media.test_video_audio_loader import _make_clip_with_tone
 
 
@@ -79,9 +90,12 @@ def test_build_music_standin_honors_cancel_check(tmp_path: Path) -> None:
     ) is None
 
 
-def test_heavy_standin_uses_sparse_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Multi-hour clips must not decode every contiguous 10s window."""
+def test_heavy_standin_uses_continuous_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multi-hour clips must scan continuously — no sparse 12s zero islands."""
     from cueplayer.media import video_music_standin as standin_mod
+    from cueplayer.media import video_waveform_artifact as art_mod
     from cueplayer.media.video_audio_loader import VideoAudioBuffer
 
     path = tmp_path / "long.mp4"
@@ -113,10 +127,24 @@ def test_heavy_standin_uses_sparse_probes(tmp_path: Path, monkeypatch: pytest.Mo
             origin_seconds=float(start_seconds),
         )
 
+    monkeypatch.setattr(art_mod, "load_video_audio", _fake_load)
     monkeypatch.setattr(standin_mod, "load_video_audio", _fake_load)
-    monkeypatch.setattr(standin_mod, "time", type("T", (), {"sleep": staticmethod(lambda _s: None)})())
+    monkeypatch.setattr(art_mod.time, "sleep", lambda _s: None)
+    # Keep test fast: shrink chunk + duration via monkeypatch on constants.
+    monkeypatch.setattr(art_mod, "CHUNK_SECONDS", 30.0)
+    monkeypatch.setattr(art_mod, "MAX_PEAK_BINS", 500)
+    monkeypatch.setattr(art_mod, "PEAKS_PER_SECOND", 0.5)
+
+    art_mod.artifact_store().clear()
     buf = build_music_standin_from_video(clip, timeline_duration=7200.0)
     assert buf is not None
-    # Contiguous 10s windows would be ~720 calls; sparse stays near probe cap.
-    assert 40 <= len(calls) <= 400
-    assert calls[0] == pytest.approx(0.0, abs=0.05)
+    # Contiguous chunks advance by ~CHUNK_SECONDS, not 12s sparse probes.
+    assert len(calls) >= 2
+    gaps = [calls[i + 1] - calls[i] for i in range(len(calls) - 1)]
+    assert all(g < 60.0 for g in gaps[:20])
+    # No fabricated pending holes inside covered region.
+    finite = np.isfinite(buf.mono)
+    if np.any(finite):
+        # Contiguous prefix from clip start — no island pattern.
+        prefix = int(np.argmax(~finite)) if not np.all(finite) else finite.size
+        assert prefix > 10 or np.all(finite)

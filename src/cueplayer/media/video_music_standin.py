@@ -2,39 +2,38 @@
 
 Used when a song has video but no separate music file — the main waveform
 should still show something useful for marking (rehearsal videos, etc.).
-Long sources are downsampled into an overview buffer so we never allocate
-full-rate PCM for a multi-hour file.
 
-Heavy / multi-hour clips use a *sparse* probe pattern (short seeks with large
-gaps) so the build finishes quickly and yields ``av_path_lock`` often enough
-for Preview + VideoAudioMixer (Web Remote Listen) to keep decoding.
+Long / heavy sources share ``EmbeddedWaveformArtifactStore`` with the Video
+Track lane — one continuous low-resolution scan (no sparse 12 s probes, no
+dual full-rate PCM caches).
 """
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.audio_loader import AudioBuffer, build_peak_pyramid
-from cueplayer.media.video_audio_loader import MAX_VIDEO_AUDIO_DECODE_SECONDS, load_video_audio
-from cueplayer.media.video_limits import clip_is_heavy
+from cueplayer.media.video_audio_loader import load_video_audio
+from cueplayer.media.video_audio_cache import get_video_audio
+from cueplayer.media.video_limits import (
+    MAX_VIDEO_AUDIO_DECODE_SECONDS,
+    clip_source_duration_seconds,
+    clip_uses_waveform_artifact,
+)
+from cueplayer.media.video_waveform_artifact import (
+    EmbeddedWaveformArtifact,
+    artifact_store,
+    signed_overview_from_artifact,
+)
 
-# Overview rate for long videos — enough for timeline marking when zoomed out,
-# ~1.6 MB mono per hour.
+# Overview rate for medium-length videos (non-heavy continuous path).
 _OVERVIEW_HZ = 400
-# Dense overview (non-heavy): decode this much source audio per pass.
-# Shorter windows release ``av_path_lock`` more often so Preview/seek stay alive.
 _OVERVIEW_WINDOW_SECONDS = 10.0
-# Heavy clips: short probe + large step so a 2h file does not monopolize PyAV.
-_HEAVY_PROBE_SECONDS = 1.25
-_HEAVY_MAX_PROBES = 360
-_HEAVY_MIN_STEP_SECONDS = 12.0
-# Yield the path lock between probes so mixer / Preview can run.
-_HEAVY_YIELD_SECONDS = 0.04
 
 
 def _buffer_from_stereo(
@@ -55,6 +54,76 @@ def _buffer_from_stereo(
         sample_rate=int(sample_rate),
         samples=samples,
         mono=mono,
+        peak_levels=levels,
+    )
+
+
+def _buffer_from_signed_overview(
+    path: Path,
+    *,
+    overview: np.ndarray,
+    overview_hz: float,
+    timeline_duration: float,
+    clip: VideoClip,
+) -> AudioBuffer:
+    """Place source-time overview peaks onto the song timeline.
+
+    Pending (NaN) bins stay NaN so the Music painter skips them — they must
+    not render as fabricated zero silence.
+    """
+    total_dur = max(0.05, float(timeline_duration), float(clip.end_seconds))
+    hz = max(1.0, float(overview_hz))
+    total_frames = max(1, int(round(total_dur * hz)))
+    out = np.full(total_frames, np.nan, dtype=np.float32)
+
+    src_in = max(0.0, float(clip.source_in_seconds))
+    span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
+    clip_start = max(0.0, float(clip.start_seconds))
+    clip_end = min(total_dur, float(clip.end_seconds))
+
+    i0 = int(round(clip_start * hz))
+    i1 = int(round(clip_end * hz))
+    i0 = max(0, min(total_frames, i0))
+    i1 = max(i0, min(total_frames, i1))
+    if i1 <= i0 or overview.size == 0:
+        stereo = np.stack([out, out], axis=1)
+        # Pyramid cannot use NaN — finite-zero scaffold; mono keeps NaN for paint.
+        finite = np.nan_to_num(out, nan=0.0)
+        samples = np.stack([finite, finite], axis=1).astype(np.float32)
+        _, levels = build_peak_pyramid(samples, int(round(hz)))
+        return AudioBuffer(
+            path=path,
+            sample_rate=int(round(hz)),
+            samples=samples,
+            mono=out,
+            peak_levels=levels,
+        )
+
+    n = i1 - i0
+    local_t = np.arange(n, dtype=np.float64) / hz
+    if clip.media_kind == "still":
+        src_t = np.full(n, src_in, dtype=np.float64)
+    else:
+        src_t = src_in + np.mod(local_t, span)
+    idx = np.round(src_t * hz).astype(np.int64)
+    # overview is indexed from source 0 at overview_hz (== artifact pps).
+    valid = (idx >= 0) & (idx < overview.size)
+    dest = np.arange(i0, i1, dtype=np.int64)
+    for d, src_i, ok in zip(dest, idx, valid, strict=False):
+        if not ok:
+            continue
+        val = overview[int(src_i)]
+        if np.isfinite(val):
+            out[int(d)] = float(val)
+
+    finite = np.nan_to_num(out, nan=0.0).astype(np.float32)
+    samples = np.stack([finite, finite], axis=1)
+    _, levels = build_peak_pyramid(samples, int(round(hz)))
+    return AudioBuffer(
+        path=path,
+        sample_rate=int(round(hz)),
+        samples=samples,
+        mono=out.astype(np.float32, copy=False),
         peak_levels=levels,
     )
 
@@ -84,7 +153,6 @@ def _place_on_timeline(
     else:
         stereo = pcm[:, :2]
 
-    # For each output frame inside the clip, sample from PCM by source time.
     clip_end = min(total_dur, float(clip.end_seconds))
     i0 = int(round(clip_start * pcm_rate))
     i1 = int(round(clip_end * pcm_rate))
@@ -112,7 +180,6 @@ def _downsample_to_overview(samples: np.ndarray, src_rate: int, overview_hz: int
 
     Keeps the sample with the largest absolute value **with sign** so the
     Music-lane painter (bipolar mid±peak) fills both halves of the lane.
-    Absolute-only peaks used to draw as a comb under the midline only.
     """
     if samples.ndim == 2:
         mono = samples.mean(axis=1).astype(np.float32)
@@ -128,19 +195,40 @@ def _downsample_to_overview(samples: np.ndarray, src_rate: int, overview_hz: int
     return chunk[np.arange(buckets), idx].astype(np.float32)
 
 
+def _audio_from_artifact(
+    path: Path,
+    clip: VideoClip,
+    art: EmbeddedWaveformArtifact,
+    *,
+    timeline_duration: float,
+) -> AudioBuffer:
+    if perf_diag.is_enabled():
+        perf_diag.count("video_waveform.artifact.consumer_main_lane")
+    overview = signed_overview_from_artifact(art)
+    return _buffer_from_signed_overview(
+        path,
+        overview=overview,
+        overview_hz=float(art.peaks_per_second),
+        timeline_duration=timeline_duration,
+        clip=clip,
+    )
+
+
 def build_music_standin_from_video(
     clip: VideoClip,
     *,
     timeline_duration: float,
     cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[AudioBuffer], None] | None = None,
+    pause_check: Callable[[], bool] | None = None,
 ) -> AudioBuffer | None:
     """
-    Return a display/playback-style AudioBuffer for the Music lane, or None
-    when the video has no audio stream.
+    Return a display AudioBuffer for the Music lane, or None when the video
+    has no audio stream.
 
-    ``cancel_check`` (optional) is polled between overview windows — return
-    True to abort early (song switch / newer standin token) so long builds
-    do not keep holding ``av_path_lock`` after the user has moved on.
+    ``cancel_check`` is polled between overview windows / artifact chunks.
+    ``on_progress`` may receive partial buffers (pending regions are NaN).
+    ``pause_check`` (optional) throttles the shared artifact while playing.
     """
     path = Path(clip.path)
     if not path.is_file() or clip.media_kind == "still":
@@ -155,14 +243,24 @@ def build_music_standin_from_video(
     src_in = max(0.0, float(clip.source_in_seconds))
     span = max(0.05, float(clip.source_span_seconds or clip.duration_seconds))
     timeline_duration = max(0.05, float(timeline_duration), float(clip.end_seconds))
+    source_duration = max(
+        clip_source_duration_seconds(clip),
+        span,
+        0.05,
+    )
 
-    # Short enough: one decode at native rate.
-    if span <= MAX_VIDEO_AUDIO_DECODE_SECONDS and not clip_is_heavy(clip):
+    # Short enough for full-rate PCM (shared process cache with Video lane).
+    if not clip_uses_waveform_artifact(clip) and span <= MAX_VIDEO_AUDIO_DECODE_SECONDS:
         if _cancelled():
             return None
-        buf = load_video_audio(
+        buf = get_video_audio(
             path, start_seconds=src_in, max_duration_seconds=span
         )
+        if buf is None:
+            # Fallback: direct load if cache path failed.
+            buf = load_video_audio(
+                path, start_seconds=src_in, max_duration_seconds=span
+            )
         if buf is None:
             return None
         return _place_on_timeline(
@@ -174,21 +272,37 @@ def build_music_standin_from_video(
             timeline_duration=timeline_duration,
         )
 
-    # Long rehearsal: sparse overview across the whole timeline length.
+    # Heavy / beyond PCM cap: shared continuous artifact (Music + Video lane).
+    if clip_uses_waveform_artifact(clip):
+        store = artifact_store()
+
+        def _on_art(art: EmbeddedWaveformArtifact) -> None:
+            if on_progress is None or _cancelled():
+                return
+            buf = _audio_from_artifact(
+                path, clip, art, timeline_duration=timeline_duration
+            )
+            on_progress(buf)
+
+        art = store.build_or_wait(
+            path,
+            duration_seconds=source_duration,
+            cancel_check=cancel_check,
+            pause_check=pause_check,
+            on_update=_on_art,
+        )
+        if art is None or _cancelled():
+            return None
+        return _audio_from_artifact(
+            path, clip, art, timeline_duration=timeline_duration
+        )
+
+    # Medium non-heavy: contiguous overview windows (legacy path).
     overview_hz = _OVERVIEW_HZ
     total_frames = max(1, int(round(timeline_duration * overview_hz)))
-    overview = np.zeros(total_frames, dtype=np.float32)
+    overview = np.full(total_frames, np.nan, dtype=np.float32)
 
-    heavy = clip_is_heavy(clip)
-    if heavy:
-        # Cap probe count so multi-hour files finish without starving Listen.
-        probes = min(_HEAVY_MAX_PROBES, max(48, int(span / _HEAVY_MIN_STEP_SECONDS) + 1))
-        step = max(_HEAVY_MIN_STEP_SECONDS, span / float(probes))
-        window = min(_HEAVY_PROBE_SECONDS, step * 0.45, MAX_VIDEO_AUDIO_DECODE_SECONDS)
-    else:
-        step = 0.0  # contiguous advance from decode length
-        window = min(_OVERVIEW_WINDOW_SECONDS, MAX_VIDEO_AUDIO_DECODE_SECONDS)
-
+    window = min(_OVERVIEW_WINDOW_SECONDS, MAX_VIDEO_AUDIO_DECODE_SECONDS)
     t = src_in
     end = src_in + span
     while t < end - 1e-6:
@@ -198,12 +312,9 @@ def build_music_standin_from_video(
             path, start_seconds=t, max_duration_seconds=min(window, end - t)
         )
         if chunk is None or chunk.frames <= 0:
-            t += step if heavy else window
-            if heavy:
-                time.sleep(_HEAVY_YIELD_SECONDS)
+            t += window
             continue
         peaks = _downsample_to_overview(chunk.samples, chunk.sample_rate, overview_hz)
-        # Map chunk origin → timeline via clip.start + (src - src_in).
         origin = float(chunk.origin_seconds)
         for i, peak in enumerate(peaks):
             src_t = origin + (i / float(overview_hz))
@@ -213,18 +324,19 @@ def build_music_standin_from_video(
             timeline_t = float(clip.start_seconds) + local
             idx = int(round(timeline_t * overview_hz))
             if 0 <= idx < total_frames:
-                # Keep the stronger signed peak (not abs-max → unipolar).
-                if abs(float(peak)) > abs(float(overview[idx])):
+                if not np.isfinite(overview[idx]) or abs(float(peak)) > abs(
+                    float(overview[idx])
+                ):
                     overview[idx] = float(peak)
-        if heavy:
-            t = origin + step
-            time.sleep(_HEAVY_YIELD_SECONDS)
-        else:
-            t = origin + (chunk.frames / float(chunk.sample_rate))
-            if t <= origin + 1e-3:
-                t += window
+        t = origin + (chunk.frames / float(chunk.sample_rate))
+        if t <= origin + 1e-3:
+            t += window
 
     if _cancelled():
         return None
-    stereo = np.stack([overview, overview], axis=1)
+    # Remaining NaN → true uncovered pending; convert only leading/covered.
+    # For medium path we treated missing chunks as skipped — mark decoded
+    # gaps inside the clip as silence (0) only where we attempted decode.
+    finite = np.nan_to_num(overview, nan=0.0)
+    stereo = np.stack([finite, finite], axis=1)
     return _buffer_from_stereo(path, overview_hz, stereo)

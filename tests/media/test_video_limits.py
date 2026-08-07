@@ -16,6 +16,7 @@ from cueplayer.media.video_limits import (
     MAX_VIDEO_AUDIO_DECODE_SECONDS,
     audio_decode_cap_for_clip,
     clip_is_heavy,
+    clip_uses_waveform_artifact,
     source_needs_long_video_warning,
 )
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
@@ -43,6 +44,25 @@ def test_short_clip_uses_normal_audio_cap() -> None:
     assert audio_decode_cap_for_clip(clip) == MAX_VIDEO_AUDIO_DECODE_SECONDS
 
 
+def test_song_length_clip_keeps_full_pcm_waveform() -> None:
+    """Song-length Video Track must use Music-lane PCM pyramids (not 30s artifact)."""
+    clip = VideoClip.create(
+        name="song",
+        path=Path("s.mp4"),
+        duration_seconds=180.0,
+        source_duration_seconds=180.0,
+    )
+    assert not clip_is_heavy(clip)
+    assert not clip_uses_waveform_artifact(clip)
+    over = VideoClip.create(
+        name="long",
+        path=Path("l.mp4"),
+        duration_seconds=MAX_VIDEO_AUDIO_DECODE_SECONDS + 1.0,
+        source_duration_seconds=MAX_VIDEO_AUDIO_DECODE_SECONDS + 1.0,
+    )
+    assert clip_uses_waveform_artifact(over)
+
+
 def test_source_needs_long_video_warning_by_duration() -> None:
     assert source_needs_long_video_warning(duration_seconds=45 * 60)
     assert not source_needs_long_video_warning(duration_seconds=5 * 60)
@@ -61,7 +81,8 @@ def test_scrub_cache_skips_heavy_clips() -> None:
         executor.submit.assert_not_called()
 
 
-def test_waveform_preload_skips_heavy_clips() -> None:
+def test_waveform_preload_submits_heavy_clips_via_shared_artifact() -> None:
+    """Heavy clips use the continuous artifact path — preload must submit."""
     clip = VideoClip.create(
         name="rehearsal",
         path=Path("r.mp4"),
@@ -71,7 +92,7 @@ def test_waveform_preload_skips_heavy_clips() -> None:
     cache = VideoClipWaveformCache()
     with patch.object(cache, "get_peaks") as get_peaks:
         cache.preload([clip])
-        get_peaks.assert_not_called()
+        get_peaks.assert_called_once_with(clip)
 
 
 def test_mixer_preload_still_loads_heavy_clips() -> None:

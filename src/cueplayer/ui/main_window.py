@@ -7012,6 +7012,9 @@ class MainWindow(QMainWindow):
         Cancel an in-flight standin on Play; resume after Pause/Stop if the
         Music lane still has no peaks.
         """
+        from cueplayer.media.video_waveform_artifact import set_waveform_build_paused
+
+        set_waveform_build_paused(bool(playing))
         if self._song_has_main_audio_file():
             return
         if playing:
@@ -7020,6 +7023,10 @@ class MainWindow(QMainWindow):
                 # Keep the loading flag so remote knows peaks are pending; the
                 # job itself stops so mixer windows can decode.
             return
+        # Pause → allow one coalesced GUI flush of peaks built during play.
+        flush = getattr(self.timeline._video_waveform_cache, "flush_pending_gui_notify", None)
+        if callable(flush):
+            flush()
         if (
             getattr(self.timeline, "_audio", None) is None
             and self._primary_video_clip_for_standin() is not None
@@ -7047,6 +7054,7 @@ class MainWindow(QMainWindow):
                 self._video_standin_token += 1
                 self.timeline.set_audio_loading(False)
                 self.timeline.set_audio(cached, reset_view=False)
+                self.timeline.seed_video_waveforms_from_standin(cached)
                 self._sync_timeline_overview()
                 return
             # Disk peaks from a previous session — paint instantly, no re-decode.
@@ -7056,6 +7064,7 @@ class MainWindow(QMainWindow):
                 self._video_standin_token += 1
                 self.timeline.set_audio_loading(False)
                 self.timeline.set_audio(disk, reset_view=False)
+                self.timeline.seed_video_waveforms_from_standin(disk)
                 self._sync_timeline_overview()
                 if not self._media_warm_active:
                     self.status.showMessage(
@@ -7085,6 +7094,10 @@ class MainWindow(QMainWindow):
                     clip_snapshot,
                     timeline_duration=duration,
                     cancel_check=_cancel,
+                    pause_check=lambda: bool(getattr(self.engine, "playing", False)),
+                    on_progress=lambda buf: self._video_standin_finished.emit(
+                        token, ("progress", buf)
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 self._video_standin_finished.emit(token, exc)
@@ -7114,6 +7127,19 @@ class MainWindow(QMainWindow):
             if clip is not None and getattr(self.timeline, "_audio", None) is None:
                 self.timeline.set_audio_loading(True, f"{clip.name} (video)")
             return
+        # Progressive coalesced updates from the shared continuous artifact.
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == "progress"
+            and isinstance(result[1], AudioBuffer)
+        ):
+            partial = result[1]
+            self.timeline.set_audio(partial, reset_view=False)
+            self.timeline.seed_video_waveforms_from_standin(partial)
+            self.timeline.set_audio_loading(True, "video waveform…")
+            self._sync_timeline_overview()
+            return
         if result is None:
             self.timeline.set_audio_loading(False)
             self.timeline.set_audio(None)
@@ -7135,11 +7161,16 @@ class MainWindow(QMainWindow):
             )
             if key is not None:
                 self._video_standin_cache[key] = result
-                self._audio_prefetch_executor.submit(
-                    save_cached_video_standin, key, result
-                )
+                # Only persist complete (no pending NaN) stand-ins.
+                import numpy as _np
+
+                if not bool(_np.any(_np.isnan(result.mono))):
+                    self._audio_prefetch_executor.submit(
+                        save_cached_video_standin, key, result
+                    )
         # Display only — playback stays on VideoAudioMixer so we don't double.
-        self.timeline.set_audio(result, reset_view=True)
+        self.timeline.set_audio(result, reset_view=False)
+        self.timeline.seed_video_waveforms_from_standin(result)
         self._sync_timeline_overview()
         self.status.showMessage(
             f"Music waveform from video audio ({result.duration_seconds / 60.0:.0f} min)",

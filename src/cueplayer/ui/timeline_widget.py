@@ -9,6 +9,7 @@ from time import monotonic_ns
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QCursor,
     QDragEnterEvent,
@@ -18,6 +19,7 @@ from PySide6.QtGui import (
     QInputDevice,
     QKeyEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
 )
@@ -789,6 +791,23 @@ class TimelineWidget(QWidget):
         self._video_waveform_cache.preload(list(self._song.video_clips))
         self._invalidate_scrub_backdrop()
         self.update()
+
+    def seed_video_waveforms_from_standin(self, audio) -> None:  # noqa: ANN001
+        """Video-only: paint Video Track from the Music stand-in buffer immediately."""
+        if self._song is None or audio is None:
+            return
+        seeded = False
+        for clip in self._song.video_clips:
+            if clip.media_kind == "still":
+                continue
+            if self._video_waveform_cache.seed_from_standin(
+                clip, audio, notify=False
+            ):
+                seeded = True
+        if seeded:
+            self._video_waveform_revision = int(self._video_waveform_revision) + 1
+            self._invalidate_scrub_backdrop(reason="video_standin_seed")
+            self.update()
 
     def apply_mark_line_settings(
         self,
@@ -4273,12 +4292,11 @@ class TimelineWidget(QWidget):
     def _paint_video_clip_waveform(self, painter: QPainter, clip: VideoClip, rect: QRectF) -> None:
         if clip.hidden or clip.media_kind == "still":
             return
-        # Always paint when peaks are cached. The play/scrub path rebuilds a
-        # static backdrop that is reused for many frames — skipping here left
-        # empty blue clip rects for the whole play session (waves only returned
-        # on pause). Decode stays async via VideoClipWaveformCache.
-        x_left = int(rect.left())
-        x_right = int(rect.right())
+        # Same visual language as Music lane: one bipolar peak stroke per pixel.
+        # Decode stays async via VideoClipWaveformCache; this path only reads
+        # retained peaks. Rect is already clipped to the visible content strip.
+        x_left = int(math.floor(rect.left()))
+        x_right = int(math.ceil(rect.right()))
         width_px = x_right - x_left
         if width_px < 4:
             return
@@ -4287,33 +4305,30 @@ class TimelineWidget(QWidget):
         if duration <= 1e-9:
             return
 
-        # Do not start new PyAV waveform workers mid-play (av_path_lock /
-        # GIL contention with the mixer). Cached peaks still paint.
         peaks = self._video_waveform_cache.peaks_for_paint(
             clip, allow_submit=not self._playing
         )
         if peaks is None or peaks.mono.size == 0:
             return
 
-        mid = rect.center().y()
-        amp = max(2.0, rect.height() / 2 - 3)
+        mid = float(rect.center().y())
+        amp = max(2.0, float(rect.height()) / 2.0 - 3.0)
         color = QColor("#dbe4ff")
-        color.setAlpha(70 if self._video_track_muted else 175)
+        color.setAlpha(90 if self._video_track_muted else 210)
         painter.setPen(QPen(color, 1))
 
-        # Transport must not change static bake quality. Prefer the same
-        # sampling path in PLAYING and PAUSED; only gate worker submit above.
-        # Wide / zoomed-out clips still step columns to keep bake cheap.
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
-        # Wide / zoomed-out clips: skip columns so backdrop bake (esp. with
-        # overscan while a Video Track is open) does not stall the UI thread.
+        # Zoomed-out / wide bake: sample fewer columns so backdrop rebuild stays
+        # cheap. Pen width fills the skipped columns (Music look when zoomed in).
         step = 1
         if width_px > 2400 or samples_per_pixel >= 48:
-            step = 3
-        elif width_px > 1200 or samples_per_pixel >= 12:
+            step = 4
+        elif width_px > 1400 or samples_per_pixel >= 16:
             step = 2
+        painter.setPen(QPen(color, float(max(1, step))))
 
+        t_render = monotonic_ns()
         try:
             for x in range(x_left, x_right, step):
                 t0 = self._time_for_x(x)
@@ -4340,43 +4355,20 @@ class TimelineWidget(QWidget):
                         clip_t1=clip_t1,
                         samples_per_pixel=samples_per_pixel * step,
                     )
-                painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
-        except Exception:
-            # Corrupt / partially-built peaks must never take down the UI.
-            return
-
-    def _paint_video_clip_waveform_coarse(
-        self,
-        painter: QPainter,
-        peaks: ClipWaveformPeaks,
-        *,
-        duration: float,
-        x_left: int,
-        x_right: int,
-        mid: float,
-        amp: float,
-        clip_start: float,
-    ) -> None:
-        """O(buckets) overview paint for play-time backdrop bake."""
-        n = int(peaks.mins.size)
-        if n <= 0 or duration <= 1e-9:
-            return
-        try:
-            for i in range(n):
-                t0 = duration * (i / n)
-                t1 = duration * ((i + 1) / n)
-                x0 = int(self._x_for_time(clip_start + t0))
-                x1 = int(self._x_for_time(clip_start + t1))
-                if x1 < x_left or x0 > x_right:
+                # Pending / uncovered bins are NaN — never fabricate zero silence.
+                if not (lo == lo and hi == hi):
                     continue
-                x0 = max(x_left, x0)
-                x1 = min(x_right, max(x0 + 1, x1))
-                lo = float(peaks.mins[i])
-                hi = float(peaks.maxs[i])
-                xm = (x0 + x1) * 0.5
-                painter.drawLine(QPointF(xm, mid + lo * amp), QPointF(xm, mid + hi * amp))
+                painter.drawLine(
+                    QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp)
+                )
         except Exception:
             return
+        finally:
+            if perf_diag.is_enabled():
+                elapsed_ms = (monotonic_ns() - t_render) / 1_000_000.0
+                perf_diag.record_ms(
+                    "video_waveform.render.rebuild_ms", elapsed_ms
+                )
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
         painter.save()
@@ -4699,7 +4691,12 @@ class TimelineWidget(QWidget):
         view_right = right
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
-        if samples_per_pixel <= 1.5:
+        # Video stand-in progressive peaks use NaN for pending bins — paint via
+        # mono so we never draw fabricated zero silence from the zero-filled pyramid.
+        use_raw = samples_per_pixel <= 1.5 or bool(
+            np.any(np.isnan(self._audio.mono))
+        )
+        if use_raw:
             self._paint_waveform_raw(
                 painter, self._audio, mid, amp, view_left, view_right
             )
@@ -4869,8 +4866,11 @@ class TimelineWidget(QWidget):
             segment = mono[s0:s1]
             if segment.size == 0:
                 continue
-            lo = float(segment.min())
-            hi = float(segment.max())
+            if not np.any(np.isfinite(segment)):
+                # Pending / uncovered — do not paint as zero silence.
+                continue
+            lo = float(np.nanmin(segment))
+            hi = float(np.nanmax(segment))
             painter.drawLine(QPointF(x, mid + lo * amp), QPointF(x, mid + hi * amp))
 
     def _paint_lanes(self, painter: QPainter, *, start_y: int) -> None:
