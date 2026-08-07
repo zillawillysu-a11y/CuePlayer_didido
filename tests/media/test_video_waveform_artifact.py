@@ -54,6 +54,7 @@ def _clear_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import cueplayer.media.video_waveform_artifact as art_mod
 
     monkeypatch.setattr(art_mod, "_CACHE_DIR", tmp_path / "wave_cache")
+    monkeypatch.setenv("CUEPLAYER_WAVEFORM_IN_PROCESS", "1")
     artifact_store().clear()
     set_waveform_build_paused(False)
     set_waveform_gui_suppressed_for_zoom(False)

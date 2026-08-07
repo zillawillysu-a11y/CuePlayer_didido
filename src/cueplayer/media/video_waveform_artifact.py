@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -922,6 +924,71 @@ def build_artifact_continuous(
     return art
 
 
+def _use_isolated_waveform_process() -> bool:
+    """Windows PyAV may retain the GIL; a thread cannot protect Qt from that."""
+    return bool(
+        os.name == "nt"
+        and os.environ.get("CUEPLAYER_WAVEFORM_IN_PROCESS") != "1"
+        and SequentialWaveformDecoder.__module__ == __name__
+    )
+
+
+def _build_artifact_isolated(
+    path: Path,
+    *,
+    duration_seconds: float,
+    stream_index: int,
+    cancel_check: Callable[[], bool] | None,
+    pause_check: Callable[[], bool] | None,
+) -> VideoWaveformArtifact | None:
+    """Decode in another interpreter so PyAV cannot starve Qt's GIL."""
+    key = artifact_cache_key(
+        path, stream_index=stream_index, duration_seconds=duration_seconds
+    )
+    if key is None:
+        return None
+    env = os.environ.copy()
+    env["CUEPLAYER_WAVEFORM_IN_PROCESS"] = "1"
+    env.pop("CUEPLAYER_PERF", None)
+    command = [
+        sys.executable,
+        "-m",
+        "cueplayer.media.video_waveform_worker",
+        str(path),
+        repr(float(duration_seconds)),
+        str(int(stream_index)),
+    ]
+    kwargs: dict[str, object] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": env,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        proc = subprocess.Popen(command, **kwargs)  # noqa: S603
+    except OSError:
+        return None
+    try:
+        while proc.poll() is None:
+            cancelled = bool(cancel_check and cancel_check())
+            paused = bool(pause_check and pause_check()) or waveform_build_is_paused()
+            if cancelled or paused:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return None
+            time.sleep(0.05)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    if proc.returncode != 0:
+        return None
+    return load_artifact_from_disk(key)
+
+
 @dataclass
 class _JobState:
     cache_key: str
@@ -1095,22 +1162,34 @@ class VideoWaveformArtifactStore:
                         return True
                     return bool(cancel_check and cancel_check())
 
-                result = build_artifact_continuous(
-                    path,
-                    duration_seconds=duration_seconds,
-                    stream_index=stream_index,
-                    cancel_check=_cancel,
-                    pause_check=pause_check,
-                    on_progress=_progress,
-                    existing=art_ref,
-                )
+                isolated = _use_isolated_waveform_process()
+                if isolated:
+                    if perf_diag.is_enabled():
+                        perf_diag.count("waveform_artifact.isolated_process")
+                    result = _build_artifact_isolated(
+                        path,
+                        duration_seconds=duration_seconds,
+                        stream_index=stream_index,
+                        cancel_check=_cancel,
+                        pause_check=pause_check,
+                    )
+                else:
+                    result = build_artifact_continuous(
+                        path,
+                        duration_seconds=duration_seconds,
+                        stream_index=stream_index,
+                        cancel_check=_cancel,
+                        pause_check=pause_check,
+                        on_progress=_progress,
+                        existing=art_ref,
+                    )
                 if result is None:
                     return None
                 with self._lock:
                     if gen != self._generation:
                         return result
                     self._by_key[key] = result
-                    if result.complete:
+                    if result.complete and not isolated:
                         save_artifact_to_disk(key, result)
                     cbs = list(job.listeners)
                     self._jobs.pop(key, None)
