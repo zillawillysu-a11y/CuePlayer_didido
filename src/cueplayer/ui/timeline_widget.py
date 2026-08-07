@@ -2422,6 +2422,25 @@ class TimelineWidget(QWidget):
         if view_w <= 1.0:
             return
         x = self._x_for_time(self._position)
+        visible_seconds = view_w / max(1e-9, self._pixels_per_second)
+        if self._video_lane_visible() and visible_seconds <= 1.5:
+            # At extreme zoom, continuously scrolling two detailed waveform
+            # lanes consumes the 128 px retained cache every few audio ticks.
+            # Page from 88% back to 12% instead: the playhead moves smoothly
+            # inside a stable native raster and only occasionally rebakes.
+            left = float(self._header_width) + view_w * 0.12
+            right = float(self._header_width) + view_w * 0.88
+            if x < left:
+                self._scroll_x = round(
+                    self._position * self._pixels_per_second - view_w * 0.88
+                )
+                self._clamp_scroll()
+            elif x > right:
+                self._scroll_x = round(
+                    self._position * self._pixels_per_second - view_w * 0.12
+                )
+                self._clamp_scroll()
+            return
         left = float(self._header_width) + view_w * 0.25
         right = float(self._header_width) + view_w * 0.75
         if x < left:
@@ -2814,12 +2833,11 @@ class TimelineWidget(QWidget):
         # 3.5 screens and produced the measured 64--186 ms hitch.  A small
         # native-resolution margin is sufficient here; ordinary pan can grow
         # the cache later after it leaves that margin.
-        if reason == "zoom_idle":
-            overscan = 128
-        elif self._playing:
-            overscan = self._playback_backdrop_overscan(view_w)
-        else:
-            overscan = max(128, int(view_w * 1.25))
+        overscan = (
+            128
+            if reason == "zoom_idle" or self._playing
+            else max(128, int(view_w * 1.25))
+        )
         paint_w = int(self.width()) + 2 * overscan
         saved_scroll = self._scroll_x
         self._scroll_x = saved_scroll - float(overscan)
@@ -2882,22 +2900,6 @@ class TimelineWidget(QWidget):
                 "timeline.zoom.annotation_sprite_count", len(sprites)
             )
 
-    def _playback_backdrop_overscan(self, view_w: float) -> int:
-        """Keep enough native pixels for high-zoom continuous auto-follow.
-
-        A fixed 128 px margin can be consumed in a single 30 Hz tick at high
-        PPS, forcing a full waveform rebuild on nearly every video frame. Aim
-        for roughly 1.5 seconds of travel, capped to 1.25 view widths so the
-        two retained pixmaps remain bounded on high-DPI displays.
-        """
-        pps = max(0.0, self._pixels_per_second)
-        # Normal zoom already takes over a second to consume 128 px; retain the
-        # low-latency small bake there. The larger cache is only for the
-        # high-zoom regime that can exhaust it in a handful of frames.
-        if pps <= 256.0:
-            return 128
-        travel = int(math.ceil(pps * 1.5))
-        return max(128, min(int(max(128.0, view_w * 1.25)), travel))
 
     def _bake_mark_annotation_sprites(self) -> list[dict]:
         """Canonical Mark annotation cache for zoom preview.

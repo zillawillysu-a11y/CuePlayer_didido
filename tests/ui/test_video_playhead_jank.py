@@ -53,18 +53,44 @@ def test_rapid_zoom_repaint_is_trailing_edge_throttled(app: QApplication) -> Non
     widget._zoom_preview_repaint_timer.stop()  # noqa: SLF001
 
 
-def test_high_zoom_playback_cache_covers_multiple_follow_ticks(
-    app: QApplication,
-) -> None:
+def test_extreme_zoom_video_lane_uses_paged_follow(app: QApplication) -> None:
+    song = Song.create("Paged")
     widget = TimelineWidget()
     widget.resize(1200, 500)
+    widget.set_song(song)
+    widget.set_show_video_track(True, emit=False)
+    widget.set_playing(True)
     widget._pixels_per_second = 2500.0  # noqa: SLF001
+    view_w = widget._view_width()  # noqa: SLF001
+    widget._scroll_x = 10.0 * widget._pixels_per_second - view_w * 0.9  # noqa: SLF001
+    widget._position = 10.0  # noqa: SLF001
 
-    overscan = widget._playback_backdrop_overscan(widget._view_width())  # noqa: SLF001
+    widget._follow_playhead()  # noqa: SLF001
 
-    assert overscan > 128
-    assert overscan >= int(widget._view_width())
-    assert overscan <= int(widget._view_width() * 1.25)
+    x = widget._x_for_time(widget._position)  # noqa: SLF001
+    expected = widget.header_width() + view_w * 0.12
+    assert x == pytest.approx(expected, abs=1.0)
+
+
+def test_extreme_zoom_hidden_video_lane_keeps_continuous_edge_follow(
+    app: QApplication,
+) -> None:
+    song = Song.create("Continuous")
+    widget = TimelineWidget()
+    widget.resize(1200, 500)
+    widget.set_song(song)
+    widget.set_show_video_track(False, emit=False)
+    widget.set_playing(True)
+    widget._pixels_per_second = 2500.0  # noqa: SLF001
+    view_w = widget._view_width()  # noqa: SLF001
+    widget._scroll_x = 10.0 * widget._pixels_per_second - view_w * 0.9  # noqa: SLF001
+    widget._position = 10.0  # noqa: SLF001
+
+    widget._follow_playhead()  # noqa: SLF001
+
+    x = widget._x_for_time(widget._position)  # noqa: SLF001
+    expected = widget.header_width() + view_w * 0.75
+    assert x == pytest.approx(expected, abs=1.0)
 
 
 def test_view_changed_throttled_while_playing(app: QApplication) -> None:
