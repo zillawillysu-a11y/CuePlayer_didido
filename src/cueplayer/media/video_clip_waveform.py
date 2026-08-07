@@ -1,4 +1,4 @@
-"""Downsampled peak envelopes for video-clip lane waveforms."""
+"""Video Track lane peaks — views over the shared VideoWaveformArtifact."""
 
 from __future__ import annotations
 
@@ -11,10 +11,16 @@ from typing import Callable
 
 import numpy as np
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
-from cueplayer.media.audio_loader import PeakLevel, build_peak_pyramid, choose_peak_level
-from cueplayer.media.video_audio_cache import get_video_audio_mono_for_waveform
-from cueplayer.media.video_limits import clip_is_heavy
+from cueplayer.media.audio_loader import PeakLevel, choose_peak_level
+from cueplayer.media.video_limits import clip_source_duration_seconds
+from cueplayer.media.video_waveform_artifact import (
+    VideoWaveformArtifact,
+    artifact_store,
+    signed_overview_from_artifact,
+    waveform_build_is_paused,
+)
 
 
 @dataclass(frozen=True)
@@ -29,79 +35,24 @@ class ClipWaveformKey:
 
 @dataclass
 class ClipWaveformPeaks:
-    """Zoom-aware waveform data — same pyramid strategy as the main audio lane."""
+    """Zoom-aware waveform data sourced from VideoWaveformArtifact."""
 
     sample_rate: int
     mono_origin_seconds: float
-    mono: np.ndarray  # display-normalized mono indexed by source time - origin
+    mono: np.ndarray  # signed overview; NaN = pending
     peak_levels: list[PeakLevel]
-    # Legacy single-resolution envelope (preview / tests).
-    mins: np.ndarray
+    mins: np.ndarray  # source-aligned bipolar base
     maxs: np.ndarray
-
-
-def build_clip_waveform_data(
-    clip: VideoClip,
-    *,
-    mono: np.ndarray,
-    sample_rate: int,
-    mono_origin_seconds: float = 0.0,
-) -> ClipWaveformPeaks | None:
-    """Build pyramid + mono for a clip's embedded audio (source-time indexed)."""
-    if mono.size == 0 or sample_rate <= 0:
-        return None
-    duration = max(0.0, float(clip.duration_seconds))
-    if duration <= 1e-9:
-        return None
-
-    display, levels = build_peak_pyramid(mono.reshape(-1, 1), sample_rate)
-
-    # Coarse overview buckets across clip timeline for instant preview paint.
-    buckets = max(64, min(512, int(duration * 40)))
-    span = max(0.0, clip.source_span_seconds)
-    src_in = max(0.0, float(clip.source_in_seconds))
-    origin = float(mono_origin_seconds)
-    spb = duration / buckets
-    half_window = max(1, int(round(sample_rate * max(spb / 2.0, 1.0 / buckets))))
-    mins = np.zeros(buckets, dtype=np.float32)
-    maxs = np.zeros(buckets, dtype=np.float32)
-    t_mids = (np.arange(buckets, dtype=np.float64) + 0.5) * spb
-    if clip.media_kind == "still":
-        src_times = np.full(buckets, src_in, dtype=np.float64)
-    elif span <= 1e-9:
-        src_times = np.full(buckets, src_in, dtype=np.float64)
-    else:
-        src_times = src_in + np.mod(t_mids, span)
-    centers = np.round((src_times - origin) * sample_rate).astype(np.int64)
-    for b in range(buckets):
-        center = int(centers[b])
-        s0 = max(0, center - half_window)
-        s1 = min(display.size, center + half_window)
-        if s0 >= s1:
-            continue
-        segment = display[s0:s1]
-        mins[b] = float(segment.min())
-        maxs[b] = float(segment.max())
-
-    return ClipWaveformPeaks(
-        sample_rate=int(sample_rate),
-        mono_origin_seconds=origin,
-        mono=display,
-        peak_levels=levels,
-        mins=mins,
-        maxs=maxs,
-    )
+    coverage: np.ndarray | None = None
 
 
 def timeline_to_clip_local(timeline_t: float, clip: VideoClip) -> float | None:
-    """Map absolute timeline seconds to clip-local seconds, or None if outside."""
     if timeline_t < clip.start_seconds or timeline_t > clip.end_seconds:
         return None
     return timeline_t - clip.start_seconds
 
 
 def clip_local_to_source_time(clip: VideoClip, clip_local_t: float) -> float:
-    """Clip-local timeline seconds → source media seconds (trim + loop)."""
     src_in = max(0.0, float(clip.source_in_seconds))
     if clip.media_kind == "still":
         return src_in
@@ -111,6 +62,42 @@ def clip_local_to_source_time(clip: VideoClip, clip_local_t: float) -> float:
     return src_in + (clip_local_t % span)
 
 
+def peaks_from_artifact(
+    clip: VideoClip, art: VideoWaveformArtifact
+) -> ClipWaveformPeaks | None:
+    """Map shared source artifact into clip paint peaks (trim/loop via sampling)."""
+    if perf_diag.is_enabled():
+        perf_diag.count("waveform_artifact.consumer_video_lane")
+    if art.n_bins <= 0:
+        return None
+    sr = max(1, int(round(float(art.peaks_per_second))))
+    mono = signed_overview_from_artifact(art)
+    cov = np.asarray(art.coverage, dtype=np.uint8)
+    mins = np.asarray(art.mins, dtype=np.float32).copy()
+    maxs = np.asarray(art.maxs, dtype=np.float32).copy()
+    pending = cov == 0
+    mins[pending] = np.nan
+    maxs[pending] = np.nan
+    levels = list(art.levels) if art.levels else []
+    if not levels:
+        # Derive on the fly if disk lacked levels.
+        art.rebuild_pyramid()
+        levels = list(art.levels)
+    return ClipWaveformPeaks(
+        sample_rate=sr,
+        mono_origin_seconds=float(art.origin_seconds),
+        mono=mono,
+        peak_levels=levels,
+        mins=mins,
+        maxs=maxs,
+        coverage=cov,
+    )
+
+
+# Alias used by tests / older call sites.
+peaks_from_embedded_artifact = peaks_from_artifact
+
+
 def sample_clip_peaks_for_times(
     peaks: ClipWaveformPeaks,
     *,
@@ -118,17 +105,20 @@ def sample_clip_peaks_for_times(
     clip_t0: float,
     clip_t1: float,
 ) -> tuple[float, float]:
-    """Signed min/max for clip-local time span [clip_t0, clip_t1) — overview envelope."""
     n = int(peaks.mins.size)
     if n == 0 or duration <= 1e-9:
-        return 0.0, 0.0
+        return float("nan"), float("nan")
     clip_t0 = max(0.0, min(duration, clip_t0))
     clip_t1 = max(clip_t0, min(duration, clip_t1))
     b0 = int(clip_t0 / duration * n)
     b1 = min(n, max(b0 + 1, int(clip_t1 / duration * n)))
-    lo = float(peaks.mins[b0:b1].min())
-    hi = float(peaks.maxs[b0:b1].max())
-    return lo, hi
+    segment_lo = peaks.mins[b0:b1]
+    segment_hi = peaks.maxs[b0:b1]
+    if segment_lo.size == 0:
+        return float("nan"), float("nan")
+    if np.all(np.isnan(segment_lo)) and np.all(np.isnan(segment_hi)):
+        return float("nan"), float("nan")
+    return float(np.nanmin(segment_lo)), float(np.nanmax(segment_hi))
 
 
 def sample_source_peaks_for_clip_times(
@@ -139,7 +129,6 @@ def sample_source_peaks_for_clip_times(
     clip_t1: float,
     samples_per_pixel: float,
 ) -> tuple[float, float]:
-    """Peak min/max for a clip-local span using the source-time pyramid."""
     src0 = clip_local_to_source_time(clip, clip_t0)
     src1 = clip_local_to_source_time(clip, max(clip_t0, clip_t1 - 1e-9))
     sr = peaks.sample_rate
@@ -148,12 +137,30 @@ def sample_source_peaks_for_clip_times(
     s1 = int(round((src1 - origin) * sr))
     s0 = max(0, s0)
     s1 = max(s0 + 1, min(peaks.mono.size, s1))
+    if peaks.coverage is not None:
+        c0 = max(0, min(peaks.coverage.size, s0))
+        c1 = max(c0, min(peaks.coverage.size, s1))
+        if c0 >= c1 or not np.any(peaks.coverage[c0:c1]):
+            return float("nan"), float("nan")
+    # Prefer source-aligned bipolar envelope when present.
+    if (
+        peaks.mins.size == peaks.mono.size
+        and peaks.maxs.size == peaks.mono.size
+        and peaks.mins.size > 0
+    ):
+        lo_seg = peaks.mins[s0:s1]
+        hi_seg = peaks.maxs[s0:s1]
+        if lo_seg.size == 0 or (
+            np.all(np.isnan(lo_seg)) and np.all(np.isnan(hi_seg))
+        ):
+            return float("nan"), float("nan")
+        return float(np.nanmin(lo_seg)), float(np.nanmax(hi_seg))
     level = choose_peak_level(peaks.peak_levels, samples_per_pixel)
     if level is None:
         segment = peaks.mono[s0:s1]
-        if segment.size == 0:
-            return 0.0, 0.0
-        return float(segment.min()), float(segment.max())
+        if segment.size == 0 or np.all(np.isnan(segment)):
+            return float("nan"), float("nan")
+        return float(np.nanmin(segment)), float(np.nanmax(segment))
     b0 = max(0, s0 // level.samples_per_bucket)
     b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
     return float(level.mins[b0:b1].min()), float(level.maxs[b0:b1].max())
@@ -166,33 +173,17 @@ def sample_source_raw_for_clip_times(
     clip_t0: float,
     clip_t1: float,
 ) -> tuple[float, float]:
-    """Raw mono min/max for a clip-local span (high zoom)."""
-    src0 = clip_local_to_source_time(clip, clip_t0)
-    src1 = clip_local_to_source_time(clip, max(clip_t0, clip_t1 - 1e-9))
-    sr = peaks.sample_rate
-    origin = peaks.mono_origin_seconds
-    s0 = max(0, int(round((src0 - origin) * sr)))
-    s1 = max(s0 + 1, min(peaks.mono.size, int(round((src1 - origin) * sr))))
-    segment = peaks.mono[s0:s1]
-    if segment.size == 0:
-        return 0.0, 0.0
-    return float(segment.min()), float(segment.max())
-
-
-def build_clip_waveform_data_from_path(clip: VideoClip) -> ClipWaveformPeaks | None:
-    mono, sample_rate, origin = get_video_audio_mono_for_waveform(clip)
-    if mono is None:
-        return None
-    return build_clip_waveform_data(
+    return sample_source_peaks_for_clip_times(
+        peaks,
         clip,
-        mono=mono,
-        sample_rate=sample_rate,
-        mono_origin_seconds=origin,
+        clip_t0=clip_t0,
+        clip_t1=clip_t1,
+        samples_per_pixel=1.0,
     )
 
 
 class VideoClipWaveformCache:
-    """Per-clip pyramid cache with background decode/build."""
+    """Per-clip view cache over the shared VideoWaveformArtifactStore."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -201,6 +192,9 @@ class VideoClipWaveformCache:
         self._generation = 0
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vid-wave")
         self._on_ready: Callable[[], None] | None = None
+        self._last_gui_notify_mono = 0.0
+        self._gui_first_notified = False
+        self._gui_coalesce_s = 1.5
 
     def set_on_ready(self, callback: Callable[[], None] | None) -> None:
         self._on_ready = callback
@@ -210,6 +204,16 @@ class VideoClipWaveformCache:
             self._generation += 1
             self._peaks.clear()
             self._pending.clear()
+            self._last_gui_notify_mono = 0.0
+            self._gui_first_notified = False
+        # Keep shared artifact RAM/disk for warm hydrate across song switches.
+
+    def _artifact_duration_for(self, clip: VideoClip) -> float:
+        return max(
+            clip_source_duration_seconds(clip),
+            float(clip.source_span_seconds or clip.duration_seconds or 0.0),
+            0.05,
+        )
 
     @staticmethod
     def _mtime_ns(path: Path) -> int:
@@ -232,10 +236,25 @@ class VideoClipWaveformCache:
             media_kind=str(clip.media_kind),
         )
 
+    def _try_hydrate(self, key: ClipWaveformKey, clip: VideoClip) -> ClipWaveformPeaks | None:
+        duration = self._artifact_duration_for(clip)
+        art = artifact_store().get_or_load_disk(
+            Path(clip.path), duration_seconds=duration
+        )
+        if art is None or art.coverage_ratio <= 0:
+            return None
+        mapped = peaks_from_artifact(clip, art)
+        if mapped is None:
+            return None
+        with self._lock:
+            self._peaks[key] = mapped
+            self._pending.discard(key)
+        if perf_diag.is_enabled():
+            perf_diag.count("waveform_artifact.sync_hydrate")
+        return mapped
+
     def get_peaks(self, clip: VideoClip, *, allow_submit: bool = True) -> ClipWaveformPeaks | None:
-        # Paint path also calls this — must skip heavy clips here, not only
-        # in preload(), or the first paint would still decode huge PCM.
-        if clip_is_heavy(clip):
+        if clip.media_kind == "still":
             return None
         key = self.key_for(clip)
         with self._lock:
@@ -243,12 +262,37 @@ class VideoClipWaveformCache:
                 return self._peaks[key]
             if key in self._pending:
                 return None
-            if not allow_submit:
-                return None
+        hydrated = self._try_hydrate(key, clip)
+        if hydrated is not None and (
+            hydrated.coverage is None
+            or np.all(hydrated.coverage != 0)
+            or not allow_submit
+        ):
+            # Complete (or partial when submit disallowed) — return now.
+            if hydrated.coverage is None or np.count_nonzero(hydrated.coverage) > 0:
+                # Still ensure building if incomplete.
+                if allow_submit and hydrated.coverage is not None and not np.all(
+                    hydrated.coverage != 0
+                ):
+                    self._submit_build(key, clip)
+                return hydrated
+        if hydrated is not None:
+            # Partial available — paint it and keep building.
+            if allow_submit:
+                self._submit_build(key, clip)
+            return hydrated
+        if not allow_submit:
+            return None
+        self._submit_build(key, clip)
+        return None
+
+    def _submit_build(self, key: ClipWaveformKey, clip: VideoClip) -> None:
+        with self._lock:
+            if key in self._pending:
+                return
             self._pending.add(key)
             generation = self._generation
         self._executor.submit(self._build_async, generation, key, clip)
-        return None
 
     def peaks_for_paint(
         self, clip: VideoClip, *, allow_submit: bool = True
@@ -259,23 +303,79 @@ class VideoClipWaveformCache:
         for clip in clips:
             if clip.media_kind == "still":
                 continue
-            # Skip hour-long sources — decoding capped PCM still holds
-            # av_path_lock long enough to freeze Clean Output / Preview.
-            if clip_is_heavy(clip):
-                continue
             self.get_peaks(clip)
 
-    def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
-        try:
-            peaks = build_clip_waveform_data_from_path(clip)
-        except Exception:
-            peaks = None
-        with self._lock:
-            if generation != self._generation:
+    def flush_pending_gui_notify(self) -> None:
+        self._notify_ready(force=True)
+
+    def _notify_ready(self, *, force: bool = False, complete: bool = False) -> None:
+        import time as _time
+
+        now = _time.monotonic()
+        if not force and not complete:
+            if waveform_build_is_paused():
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "waveform_artifact.gui_notify_suppressed_playing"
+                    )
                 return
-            self._peaks[key] = peaks
-            self._pending.discard(key)
-        # Callback may touch Qt — callers must marshal to the GUI thread.
+            if self._gui_first_notified and (
+                now - self._last_gui_notify_mono < self._gui_coalesce_s
+            ):
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.gui_notify_coalesced")
+                return
+        self._last_gui_notify_mono = now
+        self._gui_first_notified = True
+        if perf_diag.is_enabled():
+            perf_diag.count("waveform_artifact.gui_notify")
+            if complete:
+                perf_diag.count("waveform_artifact.backdrop_rebuild_after_ready")
         cb = self._on_ready
         if cb is not None:
             cb()
+
+    def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
+        duration = self._artifact_duration_for(clip)
+        path = Path(clip.path)
+
+        def _on_update(art: VideoWaveformArtifact) -> None:
+            with self._lock:
+                if generation != self._generation:
+                    return
+                mapped = peaks_from_artifact(clip, art)
+                if mapped is None:
+                    return
+                self._peaks[key] = mapped
+                self._pending.discard(key)
+            self._notify_ready(complete=bool(art.complete))
+
+        def _cancel() -> bool:
+            return generation != self._generation
+
+        # Non-blocking ensure — worker may wait for completion.
+        store = artifact_store()
+        store.ensure_building(
+            path,
+            duration_seconds=duration,
+            cancel_check=_cancel,
+            pause_check=waveform_build_is_paused,
+            on_update=_on_update,
+        )
+        art = store.wait_in_worker(
+            path,
+            duration_seconds=duration,
+            cancel_check=_cancel,
+            pause_check=waveform_build_is_paused,
+            on_update=_on_update,
+        )
+        with self._lock:
+            if generation != self._generation:
+                return
+            if art is not None:
+                mapped = peaks_from_artifact(clip, art)
+                if mapped is not None:
+                    self._peaks[key] = mapped
+            self._pending.discard(key)
+        if art is not None:
+            self._notify_ready(force=True, complete=bool(art.complete))
