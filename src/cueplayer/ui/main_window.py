@@ -7907,7 +7907,13 @@ class MainWindow(QMainWindow):
         self.timeline.set_selected_video_clip_ids([])
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
-        self.timeline.update()
+        # Video clips are part of the baked play/scrub backdrop. A plain
+        # update() repaints that stale image, so the deleted clip appeared to
+        # survive until the next zoom/scroll invalidation.
+        self.timeline.refresh_video_clip_waveforms()
+        self.video_sync.update_position(
+            float(self.playback.position), source="clip_deleted"
+        )
         if not self._song_has_main_audio_file():
             self._schedule_video_music_standin()
         self._mark_dirty()
