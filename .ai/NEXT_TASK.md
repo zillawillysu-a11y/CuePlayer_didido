@@ -21,10 +21,13 @@ Review the updated browser mockup with per-song Main/Button content selection an
 - Song Order is explicit in both the playlist and review, and drag reordering updates the Song List Sequence order.
 - View Layout Pool windows use the verified Screen 3 `16 × 8` grid and can be selected, dragged, resized by whole cells, locked, duplicated, deleted, and edited numerically.
 - Every Pool title consumes one full grid cell; visible capacity is `columns × rows - 1`, and overlap is reported.
+- Screen 3 is permanently fixed at 16 × 8 and is never user-configurable.
+- All songs share one View geometry; every Pool independently selects Fixed or Per Song allocation.
+- The Pool Type menu contains the supplied grandMA2 Pool names, and same-type number ranges are checked for overlap.
 - Switching the preview song substitutes that song's Sequence and Effect Pool ranges without moving the shared template.
-- Decide whether the first production version needs per-song layout overrides or only one shared template.
+- Confirm the default Fixed/Per Song modes, Pool starts, and reserved-slot values.
 - Decide whether a selected song with no content should be blocked or automatically skipped.
 
 ## Done when
 
-The user approves the playlist and View Layout workflows, defines zero-content behavior, and decides the scope of per-song View overrides.
+The user approves the playlist and shared View Layout workflows, confirms allocation defaults, and defines zero-content behavior.

@@ -24,6 +24,9 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Added grid snapping, layout locking, exact geometry/Pool settings, song-range preview, Pool duplication/deletion, reset, and an Apply Template action.
 - Corrected the View Layout model from percentage geometry to the verified Screen 3 `16 × 8` Pool grid shown in user references.
 - Pool titles now consume the first full grid cell; visible capacity is always `columns × rows - 1`, and overlapping Pool windows are flagged.
+- Replaced prototype-only Pool names with the complete grandMA2 Pool window list supplied by the user.
+- Standardized on one shared View geometry for every song; each Pool window independently chooses Fixed or Per Song number allocation.
+- Added configurable reserved slots per song and collision validation for ranges of the same Pool type.
 
 ## Files changed
 
@@ -35,6 +38,8 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - Content selection is modeled per song rather than as a global filter.
 - Timecode remains one pool object per selected song, while its included tracks reflect selected Main/Button content in the proposed design.
 - View geometry is stored as integer Screen 3 columns/rows on a fixed `16 × 8` grid; rendering converts those cells to percentages only for browser display.
+- The Screen 3 `16 × 8` grid is a permanent invariant and is not configurable.
+- Visible capacity is separate from Per Song allocation stride, allowing 79 visible Effects while reserving 80 numbers per song.
 
 ## Tests performed
 
@@ -43,15 +48,16 @@ Revise the interactive MA Export playlist mockup with requested defaults and per
 - View Layout control IDs, event functions, and duplicate-ID checks: passed.
 - Verified default capacities of 9, 5, 79, and 31 visible Pool slots after each title consumes one cell.
 - Verified all default windows remain inside the 16 × 8 grid and overlap detection is present.
+- Verified all 19 supplied grandMA2 Pool types are available and Fixed/Per Song controls are wired.
 - `git diff --check`: passed.
 
 ## Remaining issues
 
 - User review is needed before production implementation.
 - Exact production behavior for songs with no selected content should be decided (block export or skip song).
-- Song-specific View overrides and persistence are not yet implemented; the current prototype demonstrates one shared template with per-song Pool range preview.
+- Persistence and MA2 XML generation for the shared layout are not yet implemented.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Review the interactive View Layout workflow, decide whether song-specific overrides are required for the first production version, and define zero-content song behavior before PySide6 implementation.
+Review Fixed versus Per Song allocation controls and default ranges, then define zero-content song behavior before PySide6 implementation.

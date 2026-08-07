@@ -147,10 +147,8 @@
     .pool-title-cell, .pool-cell { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 3px; border-right: 1px solid #3a424c; border-bottom: 1px solid #3a424c; overflow: hidden; }
     .pool-title-cell { flex-direction: column; gap: 2px; text-align: center; background: #303741; font-size: 11px; font-weight: 700; }
     .pool-title-cell small { font-size: 9px; font-weight: 500; opacity: .8; }
-    .view-widget.sequence .pool-title-cell { background: #6d6500; }
-    .view-widget.group .pool-title-cell { background: #14532d; }
-    .view-widget.effect .pool-title-cell { background: #1e3a8a; }
-    .view-widget.template .pool-title-cell { background: #6b214d; }
+    .view-widget.fixed .pool-title-cell { background: #6b214d; }
+    .view-widget.perSong .pool-title-cell { background: #1e3a8a; }
     .pool-cell { align-items: flex-start; justify-content: flex-start; color: #b9c2ce; font-size: 10px; }
     .resize-handle { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 45%, #c7d2df 46%, #c7d2df 56%, transparent 57%); }
     .view-stage.locked .resize-handle { display: none; }
@@ -258,12 +256,13 @@
               <button class="btn ghost" id="resetLayout">Reset</button>
             </div>
             <div class="view-stage-wrap"><div class="view-stage" id="viewStage"></div></div>
-            <div class="legend"><span><i style="background:#6d6500"></i>Sequence</span><span><i style="background:#14532d"></i>Group</span><span><i style="background:#1e3a8a"></i>Effect</span><span><i style="background:#6b214d"></i>Template Effect</span></div>
+            <div class="legend"><span><i style="background:#6b214d"></i>Fixed Pool range</span><span><i style="background:#1e3a8a"></i>Per Song · unique Pool range</span><span>One shared layout for every song</span></div>
           </div>
           <div class="card inspector">
-            <div class="card-head"><h2>Pool Inspector</h2><span class="badge" id="selectedPoolName">Sequence Pool</span></div>
+            <div class="card-head"><h2>Pool Inspector</h2><span class="badge" id="selectedPoolName">Sequence</span></div>
             <div class="section">
-              <div class="field"><label>Pool Type</label><select id="poolType"><option value="sequence">Sequence</option><option value="group">Group</option><option value="effect">Effect</option><option value="template">Template Effect</option></select></div>
+              <div class="field"><label>Pool Type</label><select id="poolType"><option value="camera">Camera Pool</option><option value="effects">Effects</option><option value="filters">Filters</option><option value="forms">Forms</option><option value="groups">Groups</option><option value="images">Images</option><option value="layout">Layout Pool</option><option value="macros">Macros</option><option value="masks">Masks</option><option value="matricks">MAtricks</option><option value="pagesChannel">Pages Channel</option><option value="pagesExec">Pages Exec</option><option value="sequence">Sequence</option><option value="timecode">Timecode Pool</option><option value="timecodeSlots">Timecode Slots Pool</option><option value="timer">Timer</option><option value="views">Views</option><option value="universes">Universes</option><option value="worlds">Worlds</option></select></div>
+              <div class="field" style="margin-top:10px"><label>Pool Allocation</label><select id="poolMode"><option value="fixed">Fixed · same numbers for every song</option><option value="perSong">Per Song · unique numbers</option></select></div>
               <div class="fields">
                 <div class="field"><label>Column</label><input id="poolX" type="number" min="1" max="16"></div>
                 <div class="field"><label>Row</label><input id="poolY" type="number" min="1" max="8"></div>
@@ -271,10 +270,11 @@
                 <div class="field"><label>Rows</label><input id="poolH" type="number" min="1" max="8"></div>
                 <div class="field"><label>Pool Start</label><input id="poolStart" type="number" min="1"></div>
                 <div class="field"><label>Visible Pool Slots</label><input id="poolSlots" type="number" readonly></div>
+                <div class="field wide"><label>Reserved Slots Per Song</label><input id="poolStride" type="number" min="1"></div>
               </div>
               <div class="inspector-status" id="layoutStatus">Screen 3: 16 columns × 8 rows · Pool Title uses one slot</div>
             </div>
-            <div class="section"><button class="btn" id="applyAll">Apply Template to All Songs</button></div>
+            <div class="section"><span class="muted">This single layout is used by every song. Only Pool numbers marked Per Song are advanced by Song Order.</span></div>
           </div>
         </div>
         <div class="footer-actions"><button class="btn" data-goto="setup">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
@@ -305,10 +305,10 @@
     const $$ = selector => [...document.querySelectorAll(selector)];
     const numberValue = id => Math.max(1, Number($(id).value) || 1);
     const defaultViewWidgets = () => [
-      { id: 1, type: "sequence", x: 0, y: 0, w: 10, h: 1, start: 1 },
-      { id: 2, type: "group", x: 10, y: 0, w: 6, h: 1, start: 1 },
-      { id: 3, type: "effect", x: 0, y: 1, w: 16, h: 5, start: 201 },
-      { id: 4, type: "template", x: 0, y: 6, w: 16, h: 2, start: 1 }
+      { id: 1, type: "sequence", mode: "perSong", x: 0, y: 0, w: 10, h: 1, start: 1, stride: 20 },
+      { id: 2, type: "macros", mode: "fixed", x: 10, y: 0, w: 6, h: 1, start: 1, stride: 5 },
+      { id: 3, type: "effects", mode: "perSong", x: 0, y: 1, w: 16, h: 5, start: 201, stride: 80 },
+      { id: 4, type: "effects", mode: "fixed", x: 0, y: 6, w: 16, h: 2, start: 1, stride: 31 }
     ];
     let viewWidgets = defaultViewWidgets();
     let selectedWidgetId = 1;
@@ -380,14 +380,12 @@
     }
 
     function widgetLabel(type) {
-      return ({ sequence: "Sequence Pool", group: "Group Pool", effect: "Effect Pool", template: "Template Effect" })[type];
+      return ({ camera: "Camera Pool", effects: "Effects", filters: "Filters", forms: "Forms", groups: "Groups", images: "Images", layout: "Layout Pool", macros: "Macros", masks: "Masks", matricks: "MAtricks", pagesChannel: "Pages Channel", pagesExec: "Pages Exec", sequence: "Sequence", timecode: "Timecode Pool", timecodeSlots: "Timecode Slots Pool", timer: "Timer", views: "Views", universes: "Universes", worlds: "Worlds" })[type];
     }
 
     function previewStart(widget) {
       const songIndex = Number($("#viewSong").value || 0);
-      if (widget.type === "sequence") return allocation(songIndex).seqStart;
-      if (widget.type === "effect") return allocation(songIndex).effectStart;
-      return widget.start;
+      return widget.mode === "perSong" ? widget.start + songIndex * widget.stride : widget.start;
     }
 
     function renderViewLayout() {
@@ -397,8 +395,8 @@
         const start = previewStart(widget);
         const slots = widget.w * widget.h - 1;
         const cells = Array.from({ length: slots }, (_, i) => `<span class="pool-cell">${start + i}</span>`).join("");
-        return `<div class="view-widget ${widget.type} ${widget.id === selectedWidgetId ? "selected" : ""}" data-widget="${widget.id}" style="left:${widget.x / 16 * 100}%;top:${widget.y / 8 * 100}%;width:${widget.w / 16 * 100}%;height:${widget.h / 8 * 100}%;grid-template-columns:repeat(${widget.w},1fr);grid-template-rows:repeat(${widget.h},1fr)">
-          <div class="pool-title-cell"><span>${widgetLabel(widget.type)}</span><small>${slots} slots</small></div>${cells}<span class="resize-handle" data-resize="${widget.id}"></span></div>`;
+        return `<div class="view-widget ${widget.mode} ${widget.id === selectedWidgetId ? "selected" : ""}" data-widget="${widget.id}" style="left:${widget.x / 16 * 100}%;top:${widget.y / 8 * 100}%;width:${widget.w / 16 * 100}%;height:${widget.h / 8 * 100}%;grid-template-columns:repeat(${widget.w},1fr);grid-template-rows:repeat(${widget.h},1fr)">
+          <div class="pool-title-cell"><span>${widgetLabel(widget.type)}</span><small>${widget.mode === "fixed" ? "Fixed" : "Per Song"} · ${slots}</small></div>${cells}<span class="resize-handle" data-resize="${widget.id}"></span></div>`;
       }).join("");
       $$(".view-widget").forEach(element => element.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(element.dataset.widget), false)));
       $$(".resize-handle").forEach(handle => handle.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(handle.dataset.resize), true)));
@@ -434,12 +432,15 @@
       if (!widget) return;
       $("#selectedPoolName").textContent = widgetLabel(widget.type);
       $("#poolType").value = widget.type;
+      $("#poolMode").value = widget.mode;
       $("#poolX").value = widget.x + 1;
       $("#poolY").value = widget.y + 1;
       $("#poolW").value = widget.w;
       $("#poolH").value = widget.h;
       $("#poolStart").value = widget.start;
       $("#poolSlots").value = widget.w * widget.h - 1;
+      $("#poolStride").value = widget.stride;
+      $("#poolStride").disabled = widget.mode === "fixed";
     }
 
     function widgetsOverlap(a, b) {
@@ -447,22 +448,33 @@
     }
 
     function updateLayoutStatus() {
-      const collision = viewWidgets.some((widget, index) => viewWidgets.slice(index + 1).some(other => widgetsOverlap(widget, other)));
-      $("#layoutStatus").classList.toggle("warning", collision);
-      $("#layoutStatus").textContent = collision
-        ? "Pool windows overlap · Move or resize them before export"
-        : "Screen 3: 16 columns × 8 rows · Pool Title uses one slot";
+      const layoutCollision = viewWidgets.some((widget, index) => viewWidgets.slice(index + 1).some(other => widgetsOverlap(widget, other)));
+      const ranges = viewWidgets.flatMap(widget => {
+        const count = widget.mode === "perSong" ? songs.length : 1;
+        const visible = widget.w * widget.h - 1;
+        return Array.from({ length: count }, (_, songIndex) => ({ widget, songIndex, start: widget.start + (widget.mode === "perSong" ? songIndex * widget.stride : 0), end: widget.start + (widget.mode === "perSong" ? songIndex * widget.stride : 0) + visible - 1 }));
+      });
+      const poolCollision = ranges.some((range, index) => ranges.slice(index + 1).some(other => range.widget.type === other.widget.type && range.widget.id !== other.widget.id && range.start <= other.end && other.start <= range.end)) || viewWidgets.some(widget => widget.mode === "perSong" && widget.stride < widget.w * widget.h - 1);
+      const warning = layoutCollision || poolCollision;
+      $("#layoutStatus").classList.toggle("warning", warning);
+      $("#layoutStatus").textContent = layoutCollision
+        ? "View windows overlap · Move or resize them before export"
+        : poolCollision
+          ? "Pool number ranges overlap · Adjust Pool Start or Reserved Slots Per Song"
+          : "Shared 16 × 8 layout · Fixed and Per Song Pool ranges do not overlap";
     }
 
     function updateSelectedWidget() {
       const widget = viewWidgets.find(item => item.id === selectedWidgetId);
       if (!widget) return;
       widget.type = $("#poolType").value;
+      widget.mode = $("#poolMode").value;
       widget.x = Math.max(0, Math.min(15, (Number($("#poolX").value) || 1) - 1));
       widget.y = Math.max(0, Math.min(7, (Number($("#poolY").value) || 1) - 1));
       widget.w = Math.max(1, Math.min(16 - widget.x, Number($("#poolW").value) || 1));
       widget.h = Math.max(1, Math.min(8 - widget.y, Number($("#poolH").value) || 1));
       widget.start = Math.max(1, Number($("#poolStart").value) || 1);
+      widget.stride = Math.max(1, Number($("#poolStride").value) || 1);
       renderViewLayout();
     }
 
@@ -491,12 +503,11 @@
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
     $("#viewSong").addEventListener("change", renderViewLayout);
     $("#lockLayout").addEventListener("change", renderViewLayout);
-    ["#poolType", "#poolX", "#poolY", "#poolW", "#poolH", "#poolStart"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
-    $("#addPool").addEventListener("click", () => { const widget = { id: nextWidgetId++, type: "effect", x: 0, y: 0, w: 4, h: 2, start: 201 }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
+    ["#poolType", "#poolMode", "#poolX", "#poolY", "#poolW", "#poolH", "#poolStart", "#poolStride"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
+    $("#addPool").addEventListener("click", () => { const widget = { id: nextWidgetId++, type: "effects", mode: "fixed", x: 0, y: 0, w: 4, h: 2, start: 1, stride: 7 }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
     $("#duplicatePool").addEventListener("click", () => { const source = viewWidgets.find(item => item.id === selectedWidgetId); if (!source) return; const widget = { ...source, id: nextWidgetId++, x: Math.min(16 - source.w, source.x + 1), y: Math.min(8 - source.h, source.y + 1) }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
     $("#deletePool").addEventListener("click", () => { if (viewWidgets.length === 1) return; viewWidgets = viewWidgets.filter(item => item.id !== selectedWidgetId); selectedWidgetId = viewWidgets[0].id; renderViewLayout(); });
     $("#resetLayout").addEventListener("click", () => { viewWidgets = defaultViewWidgets(); selectedWidgetId = 1; nextWidgetId = 5; renderViewLayout(); });
-    $("#applyAll").addEventListener("click", () => { updateLayoutStatus(); if (!$("#layoutStatus").classList.contains("warning")) $("#layoutStatus").textContent = "16 × 8 template applied to all songs · Every title uses one Pool slot"; });
     renderSongs();
   </script>
 </body>
