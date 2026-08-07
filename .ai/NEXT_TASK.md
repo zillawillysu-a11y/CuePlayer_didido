@@ -1,6 +1,6 @@
 # Next task
 
-**Status:** Queued — inline selection UI completed; awaiting real MA2 verification
+**Status:** Queued — inline selection and clear control completed; awaiting real MA2 verification
 **Type:** MA Export validation
 **Updated:** 2026-08-08
 

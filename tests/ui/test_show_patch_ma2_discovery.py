@@ -267,6 +267,13 @@ def test_playlist_content_selection_persists_and_updates_summary(
     assert [check.text() for check in detail.findChildren(QCheckBox)] == [
         "Main", "Mark 2", "Mark 3"
     ]
+    page._clear_content_selection(song.id)
+    assert project.ma_export.export_content_by_song[song.id] == {
+        "main": False,
+        "buttons": [],
+    }
+    assert page.playlist_table.item(0, 0).checkState().value == 2
+    assert page.playlist_table.cellWidget(0, 8).text() == "0/3 selected"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(

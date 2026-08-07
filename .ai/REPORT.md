@@ -15,6 +15,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 - Replaced the Content popup menu with the approved inline playlist layout:
   clicking the `x/y selected` summary expands a row directly below the song
   with checkboxes for Main and every Button lane that has marks.
+- Added **Clear Selection** to the inline row. It unchecks the current song's
+  Main and every Button while keeping that song enabled for export.
 - Made show allocation reserve and assign only selected sequences; a
   Button-only song starts its first Button at that song's Sequence start.
 - Updated MA2 and MA3 exports so excluded Main content produces no Main
@@ -43,8 +45,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\ui\\test_show_patch_ma2_discovery.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py --basetemp .test-tmp-inline-content`
-- Result: **29 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\ui\\test_show_patch_ma2_discovery.py tests\\exporters\\test_show_patch.py --basetemp .test-tmp-clear-selection`
+- Result: **24 passed**.
 
 ## Remaining issues
 
