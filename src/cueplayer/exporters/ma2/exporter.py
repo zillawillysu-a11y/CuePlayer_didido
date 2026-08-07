@@ -175,7 +175,10 @@ class Ma2Exporter:
         include_song_macros: bool = True,
         include_song_list: bool = True,
         template_page: int = 100,
-        macro_pool_start: int = 1001,
+        fixed_macro_start: int = 1001,
+        song_macro_start: int = 1009,
+        add_main_preset_cue: bool = False,
+        main_preset_cue_id: float = 0.5,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
@@ -205,7 +208,10 @@ class Ma2Exporter:
                 include_song_macros=include_song_macros,
                 include_song_list=include_song_list,
                 template_page=template_page,
-                macro_pool_start=macro_pool_start,
+                fixed_macro_start=fixed_macro_start,
+                song_macro_start=song_macro_start,
+                add_main_preset_cue=add_main_preset_cue,
+                main_preset_cue_id=main_preset_cue_id,
             )
             all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
@@ -267,20 +273,11 @@ class Ma2Exporter:
             },
         )
         ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"NIL_PLACEHOLDER": "true"})
-        preset = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": "0"})
-        ET.SubElement(
-            preset,
-            f"{{{MA2_NS}}}Number",
-            {"number": "0", "sub_number": "5"},
-        )
-        ET.SubElement(
-            preset,
-            f"{{{MA2_NS}}}CuePart",
-            {"index": "0", "name": "SHOW BEGIN"},
-        )
         for index, plan in enumerate(plans, start=1):
             song_name = sanitize_ma_name(plan.song_name, fallback=f"Song{index}")
-            cue = ET.SubElement(sequ, f"{{{MA2_NS}}}Cue", {"index": str(index)})
+            cue = ET.SubElement(
+                sequ, f"{{{MA2_NS}}}Cue", {"index": str(index - 1)}
+            )
             ET.SubElement(
                 cue,
                 f"{{{MA2_NS}}}Number",
@@ -617,7 +614,13 @@ class Ma2Exporter:
         )
         self._fix_ma2_xsi(path)
 
-    def install_commands_for_plan(self, plan: SongExportPlan) -> list[str]:
+    def install_commands_for_plan(
+        self,
+        plan: SongExportPlan,
+        *,
+        add_main_preset_cue: bool = False,
+        main_preset_cue_id: float = 0.5,
+    ) -> list[str]:
         """
         CuePoints-style setup for one song (no Timecode Import).
 
@@ -661,6 +664,19 @@ class Ma2Exporter:
                 cmd_lines.append(
                     f'Label Sequence {main_seq} Cue {cue_label_no} "{link_name}"'
                 )
+        if add_main_preset_cue:
+            preset_id = format_ma_cue_number(float(main_preset_cue_id))
+            existing_ids = {
+                format_ma_cue_number(cue.cue_number) for cue in plan.main_cues
+            }
+            if preset_id in existing_ids:
+                raise ValueError(
+                    f'MA2 Main Preset Cue ID {preset_id} conflicts with an existing '
+                    f'cue in "{plan.song_name}"'
+                )
+            cmd_lines.append(
+                f'Store Sequence {main_seq} Cue {preset_id} "Preset" /noconfirm'
+            )
         cmd_lines.extend(
             [
                 f'Label Sequence {main_seq} "{plan.profile.main_sequence_name}"',
@@ -849,7 +865,10 @@ class Ma2Exporter:
         include_song_macros: bool = True,
         include_song_list: bool = True,
         template_page: int = 100,
-        macro_pool_start: int = 1001,
+        fixed_macro_start: int = 1001,
+        song_macro_start: int = 1009,
+        add_main_preset_cue: bool = False,
+        main_preset_cue_id: float = 0.5,
     ) -> dict[str, Path]:
         """
         CuePoints-style show Plugin: Store/Assign everything, then write+Import
@@ -860,7 +879,13 @@ class Ma2Exporter:
         for plan in plans:
             if plan.profile.export_mode != "full":
                 continue
-            cmd_lines.extend(self.install_commands_for_plan(plan))
+            cmd_lines.extend(
+                self.install_commands_for_plan(
+                    plan,
+                    add_main_preset_cue=add_main_preset_cue,
+                    main_preset_cue_id=main_preset_cue_id,
+                )
+            )
             tc_label = plan.profile.timecode_name or plan.song_name or f"TC{plan.profile.timecode_pool}"
             song_stem = sanitize_ma_name(
                 Path(plan.profile.timecode_file).stem or plan.song_name or "TC",
@@ -887,18 +912,14 @@ class Ma2Exporter:
         extra_imports: list[str] = []
         if include_fixed_macros or include_song_macros or include_song_list:
             extra_imports.append("SelectDrive 1")
-        fixed_count = 8
         if include_fixed_macros:
             extra_imports.append(
-                f'Import "{safe_name}_Fixed_Macros" At Macro {int(macro_pool_start)} '
+                f'Import "{safe_name}_Fixed_Macros" At Macro {int(fixed_macro_start)} '
                 '/path="macros"'
             )
         if include_song_macros:
-            song_macro_start = int(macro_pool_start) + (
-                fixed_count if include_fixed_macros else 0
-            )
             extra_imports.append(
-                f'Import "{safe_name}_Song_Macros" At Macro {song_macro_start} '
+                f'Import "{safe_name}_Song_Macros" At Macro {int(song_macro_start)} '
                 '/path="macros"'
             )
         if include_song_list:

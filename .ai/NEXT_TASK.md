@@ -7,18 +7,17 @@
 
 ## Current task
 
-Smoke-test the generated Full Export Plugin in grandMA2 onPC 3.9.60 and 3.9.61.
+Smoke-test the revised Full Export Plugin in grandMA2 onPC 3.9.60 and 3.9.61.
 
 ## Verify
 
-- Fixed control Macros import at the configured Macro Pool Start.
-- Song Macros follow without overlap.
-- Template Page is created and named.
-- Song List Sequence is assigned to Template Page executor 130.
-- Song navigation macros work.
-- Per-song Sequences and Timecodes install correctly.
-- Generated XML uses the matching 3.9.60 or 3.9.61 schema.
+- Fixed and Song Macros import at their independently configured pool starts.
+- Optional `Preset` cue is created at the configured Cue ID on every Main Sequence.
+- A conflicting Preset Cue ID produces a clear export error.
+- Song List starts at Cue 1 and contains songs only.
+- Main Sequence and Timecode labels are the English song name without suffixes.
+- Template Page executor 130 and per-song Timecodes still install correctly.
 
 ## Done when
 
-Both supported MA2 versions have recorded smoke-test results; any console-specific command incompatibility has a regression test and focused fix.
+Both supported MA2 versions have recorded smoke-test results and any console-specific incompatibility has a regression test and focused fix.

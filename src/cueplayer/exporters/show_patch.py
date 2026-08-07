@@ -28,7 +28,7 @@ class SongPatchSlot:
     ma_base: str
     page: int
     main_sequence: int
-    main_sequence_name: str  # e.g. Song_Main
+    main_sequence_name: str  # MA2: Song; MA3: Song_Main
     buttons: tuple[ButtonPatch, ...]
     timecode_pool: int
     main_executor: str
@@ -91,7 +91,7 @@ def build_show_patch(
       Song1 Main → Song1 ButtonA → Song1 ButtonB → Song2 Main → …
 
     By default each song uses its own Page (1.201, 2.201, …), labeled with the
-    song English name. Sequence names: {EN}_Main, {EN}_{MarkName}.
+    song English name. Main Sequence: MA2={EN}, MA3={EN}_Main.
     """
     seq = max(1, int(settings.sequence_pool_start))
     tc = max(1, int(settings.timecode_pool_start))
@@ -124,7 +124,7 @@ def build_show_patch(
                 ma_base=base,
                 page=page,
                 main_sequence=seq,
-                main_sequence_name=f"{base}_Main",
+                main_sequence_name=(base if settings.console == "ma2" else f"{base}_Main"),
                 buttons=tuple(buttons),
                 timecode_pool=tc,
                 main_executor=format_executor(page, main_exec),
@@ -184,6 +184,8 @@ def plans_from_show_patch(
                 start_offset_seconds=offset,
                 fps=fps,
                 button_allocations=button_alloc,
+                main_sequence_name=slot.main_sequence_name,
+                timecode_name=(slot.ma_base if console == "ma2" else None),
             )
         )
     return plans

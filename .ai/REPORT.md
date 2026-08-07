@@ -6,22 +6,24 @@
 
 ## Task objective
 
-Complete the grandMA2 Full Export as one Plugin-driven installation, including independently selectable fixed macros, song macros, and Song List Sequence, configurable Template Page and Macro Pool start, and 3.9.60/3.9.61 schema matching.
+Refine MA2 Full Export pool controls, optional Main Preset cue creation, Song List contents, and MA object naming.
 
 ## What was implemented
 
-- Added three persisted MA2 Full Export component toggles.
-- Added persisted Template Page and Macro Pool Start settings to Show Patch UI.
-- Full Export writes one install Plugin plus selected supporting XML files.
-- Plugin creates/labels the Template Page, imports and assigns Song List Sequence to executor 130.
-- Plugin imports fixed/song Macro XML at the configured non-overlapping pool positions.
-- Fixed live-test failure where Macro XML was not found: Macro imports now explicitly use `/path="macros"`.
-- XML schema and `stream_vers` automatically match `gma2_V_3.9.60` or `gma2_V_3.9.61` in the selected output path.
+- Replaced the single MA2 Macro Start with independent Fixed Macro Start and Song Macro Start settings.
+- Added a persisted `Add Main Cue named Preset` option and configurable Preset Cue ID.
+- Plugin adds the Preset cue to every Main Sequence when enabled and rejects IDs that collide with existing Main cues.
+- Removed the `0.005 SHOW BEGIN` cue from Song List Sequence; it now contains songs only, starting at Cue 1.
+- MA2 Timecode pool labels now use the English song name without `_TC`.
+- MA2 Main Sequence labels now use the English song name without `_Main`.
+- MA3 naming remains unchanged.
+- Legacy `ma2_macro_pool_start` project data migrates to Fixed Macro Start.
 
 ## Files changed
 
 - `src/cueplayer/domain/models.py`
 - `src/cueplayer/exporters/ma2/exporter.py`
+- `src/cueplayer/exporters/show_patch.py`
 - `src/cueplayer/persistence/project_store.py`
 - `src/cueplayer/ui/show_patch_page.py`
 - `tests/exporters/test_show_patch.py`
@@ -29,22 +31,21 @@ Complete the grandMA2 Full Export as one Plugin-driven installation, including i
 
 ## Architecture decisions
 
-- MA2 behavior remains inside the MA2 exporter; UI only persists and passes settings.
-- No playback clock, media, or unrelated architecture changes.
-- Macro files remain in MA2's library `macros` directory and the Plugin addresses that directory explicitly.
+- Show Patch determines console-specific display names; MA3 keeps its existing suffixes.
+- Preset Cue collision validation is performed by the MA2 exporter before emitting the conflicting Store command.
+- No playback, media, or clock behavior changed.
 
 ## Tests performed
 
-- `pytest` exporter/directory/persistence slice: **18 passed**.
+- Relevant exporter/directory/persistence pytest slice: **20 passed**.
 - Python `compileall`: passed.
 - `git diff --check`: passed.
-- Ruff was unavailable in the current virtual environment (`No module named ruff`).
 
 ## Remaining issues
 
-- Run one final grandMA2 onPC 3.9.60/3.9.61 smoke test to confirm console command parsing and installed pool objects.
+- Validate the revised controls and generated commands in grandMA2 onPC 3.9.60 and 3.9.61.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Perform a grandMA2 onPC smoke test of the generated Full Export Plugin on both 3.9.60 and 3.9.61, recording Macro pools, Template Page executor 130, Song List navigation, and Timecode results.
+Smoke-test the revised MA2 Full Export Plugin on 3.9.60 and 3.9.61, including separate Macro starts, optional Preset Cue, songs-only Song List, and suffix-free Main/Timecode names.

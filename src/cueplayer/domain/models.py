@@ -1045,7 +1045,10 @@ class MaExportSettings:
     ma2_include_song_macros: bool = True
     ma2_include_song_list: bool = True
     ma2_template_page: int = 100
-    ma2_macro_pool_start: int = 1001
+    ma2_fixed_macro_start: int = 1001
+    ma2_song_macro_start: int = 1009
+    ma2_add_main_preset_cue: bool = False
+    ma2_main_preset_cue_id: float = 0.5
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
     output_dir_ma2: str = ""

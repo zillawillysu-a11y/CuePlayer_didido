@@ -35,17 +35,19 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert slots[0].display_name == "SongA"
     assert slots[0].page == 1
     assert slots[1].page == 2
-    assert slots[0].main_sequence_name == "SongA_Main"
+    assert slots[0].main_sequence_name == "SongA"
     assert [b.sequence_name for b in slots[0].buttons] == ["SongA_Hit", "SongA_Crash"]
-    assert slots[1].main_sequence_name == "SongB_Main"
+    assert slots[1].main_sequence_name == "SongB"
     assert [b.executor for b in slots[1].buttons] == ["2.201", "2.202"]
     labels = sequence_chain_labels(slots)
-    assert "SongA_Main" in labels[0]
+    assert "SongA" in labels[0]
     assert "SongA_Hit" in labels[1]
 
     from cueplayer.exporters.show_patch import plans_from_show_patch
 
     plans = plans_from_show_patch(slots, settings)
+    assert plans[0].profile.main_sequence_name == "SongA"
+    assert plans[0].profile.timecode_name == "SongA"
     assert plans[0].profile.page_name == "SongA"
     assert plans[1].profile.page_name == "SongB"
     assert plans[1].profile.page == 2
@@ -116,7 +118,13 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     )
     slots = build_show_patch(project.songs, settings)
     plans = plans_from_show_patch(slots, settings)
-    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, show_install_name="Show_Install")
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        show_install_name="Show_Install",
+        add_main_preset_cue=True,
+        main_preset_cue_id=0.5,
+    )
 
     assert "show:plugin_xml" in paths
     assert "show:plugin_lua" in paths
@@ -131,7 +139,8 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     song_list = paths["show:song_list"].read_text(encoding="utf-8")
     fixed_macros = paths["show:fixed_macros"].read_text(encoding="utf-8")
     song_macros = paths["show:song_macros"].read_text(encoding="utf-8")
-    assert 'name="SHOW BEGIN"' in song_list
+    assert 'name="SHOW BEGIN"' not in song_list
+    assert 'number="0" sub_number="5"' not in song_list
     assert 'name="CuePlayer Song List"' in song_list
     assert 'name="SongA"' in song_list and 'name="SongB"' in song_list
     assert 'Macro "SongA"' in song_list
@@ -147,6 +156,12 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     macro = paths["show:macro_xml"].read_text(encoding="utf-8")
     # CuePoints-style: Store main + buttons (no Import Sequence XML).
     assert 'Store Sequence 1 Cue 1 "ZhuGe"' in lua or "Store Sequence 1 Cue 1" in lua
+    assert 'Store Sequence 1 Cue 0.5 "Preset" /noconfirm' in lua
+    assert 'Store Sequence 3 Cue 0.5 "Preset" /noconfirm' in lua
+    assert 'name="SongA"' in lua
+    assert 'name="SongA_TC"' not in lua
+    assert 'Label Sequence 1 "SongA"' in lua
+    assert 'Label Sequence 1 "SongA_Main"' not in lua
     assert "Store Sequence" in lua and "Store Sequence" in macro
     assert 'Import "' not in macro  # setup-only — no TC/Seq Import
     assert "At Page 1.1.101" in lua
@@ -265,7 +280,8 @@ def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
         include_song_macros=True,
         include_song_list=False,
         template_page=77,
-        macro_pool_start=200,
+        fixed_macro_start=100,
+        song_macro_start=200,
     )
 
     assert "show:fixed_macros" not in paths
@@ -278,3 +294,23 @@ def test_ma2_show_components_can_be_disabled_independently(tmp_path) -> None:
     )
     assert "Song_List" not in lua
     assert "Template Page" not in lua
+
+
+def test_ma2_main_preset_cue_rejects_existing_cue_id(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("First", ma="First", button_names=[])]
+    settings = MaExportSettings(console="ma2", export_mode="full")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Preset Cue ID 1.*conflicts"):
+        Ma2Exporter().export_show_to_directory(
+            plans,
+            tmp_path,
+            add_main_preset_cue=True,
+            main_preset_cue_id=1,
+        )

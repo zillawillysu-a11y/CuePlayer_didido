@@ -110,7 +110,8 @@ class ShowPatchPage(QWidget):
         title = QLabel("Export · Sequence / Fader")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
         hint = QLabel(
-            "Check the songs to export. Sequence: Song_Main / Song_Hit (Mark name). "
+            "Check the songs to export. MA2 Main: Song; MA3 Main: Song_Main; "
+            "Button Sequence: Song_Hit (Mark name). "
             "Each song has one Timecode containing the Main Go+ and all Button Tops."
         )
         hint.setWordWrap(True)
@@ -195,9 +196,17 @@ class ShowPatchPage(QWidget):
         self.ma2_template_page = NoWheelSpinBox()
         self.ma2_template_page.setRange(1, 9999)
         self.ma2_template_page.setValue(100)
-        self.ma2_macro_start = NoWheelSpinBox()
-        self.ma2_macro_start.setRange(1, 9999)
-        self.ma2_macro_start.setValue(1001)
+        self.ma2_fixed_macro_start = NoWheelSpinBox()
+        self.ma2_fixed_macro_start.setRange(1, 9999)
+        self.ma2_fixed_macro_start.setValue(1001)
+        self.ma2_song_macro_start = NoWheelSpinBox()
+        self.ma2_song_macro_start.setRange(1, 9999)
+        self.ma2_song_macro_start.setValue(1009)
+        self.ma2_add_preset_cue = QCheckBox("Add Main Cue named Preset")
+        self.ma2_preset_cue_id = NoWheelDoubleSpinBox()
+        self.ma2_preset_cue_id.setRange(0.001, 9999.999)
+        self.ma2_preset_cue_id.setDecimals(3)
+        self.ma2_preset_cue_id.setValue(0.5)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
@@ -208,7 +217,10 @@ class ShowPatchPage(QWidget):
         opt_form.addRow("Install Name", self.show_macro_name)
         opt_form.addRow("MA2 Song ViewButton", self.song_viewbutton)
         opt_form.addRow("MA2 Template Page", self.ma2_template_page)
-        opt_form.addRow("MA2 Macro Start", self.ma2_macro_start)
+        opt_form.addRow("MA2 Fixed Macro Start", self.ma2_fixed_macro_start)
+        opt_form.addRow("MA2 Song Macro Start", self.ma2_song_macro_start)
+        opt_form.addRow(self.ma2_add_preset_cue)
+        opt_form.addRow("MA2 Preset Cue ID", self.ma2_preset_cue_id)
         opt_form.addRow(self.ma2_fixed_macros)
         opt_form.addRow(self.ma2_song_macros)
         opt_form.addRow(self.ma2_song_list)
@@ -315,7 +327,10 @@ class ShowPatchPage(QWidget):
             self.show_macro_name,
             self.song_viewbutton,
             self.ma2_template_page,
-            self.ma2_macro_start,
+            self.ma2_fixed_macro_start,
+            self.ma2_song_macro_start,
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -443,7 +458,10 @@ class ShowPatchPage(QWidget):
         )
         self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
         self.ma2_template_page.setValue(int(s.ma2_template_page or 100))
-        self.ma2_macro_start.setValue(int(s.ma2_macro_pool_start or 1001))
+        self.ma2_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 1001))
+        self.ma2_song_macro_start.setValue(int(s.ma2_song_macro_start or 1009))
+        self.ma2_add_preset_cue.setChecked(bool(s.ma2_add_main_preset_cue))
+        self.ma2_preset_cue_id.setValue(float(s.ma2_main_preset_cue_id or 0.5))
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
         self.ma2_song_macros.setChecked(bool(s.ma2_include_song_macros))
         self.ma2_song_list.setChecked(bool(s.ma2_include_song_list))
@@ -455,7 +473,10 @@ class ShowPatchPage(QWidget):
         self.song_viewbutton.setEnabled(s.console != "ma3")
         for widget in (
             self.ma2_template_page,
-            self.ma2_macro_start,
+            self.ma2_fixed_macro_start,
+            self.ma2_song_macro_start,
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -482,7 +503,10 @@ class ShowPatchPage(QWidget):
         )
         s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
         s.ma2_template_page = int(self.ma2_template_page.value())
-        s.ma2_macro_pool_start = int(self.ma2_macro_start.value())
+        s.ma2_fixed_macro_start = int(self.ma2_fixed_macro_start.value())
+        s.ma2_song_macro_start = int(self.ma2_song_macro_start.value())
+        s.ma2_add_main_preset_cue = self.ma2_add_preset_cue.isChecked()
+        s.ma2_main_preset_cue_id = float(self.ma2_preset_cue_id.value())
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
         s.ma2_include_song_list = self.ma2_song_list.isChecked()
@@ -536,7 +560,10 @@ class ShowPatchPage(QWidget):
         self.song_viewbutton.setEnabled(new_console != "ma3")
         for widget in (
             self.ma2_template_page,
-            self.ma2_macro_start,
+            self.ma2_fixed_macro_start,
+            self.ma2_song_macro_start,
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -779,7 +806,10 @@ class ShowPatchPage(QWidget):
                     include_song_macros=self._project.ma_export.ma2_include_song_macros,
                     include_song_list=self._project.ma_export.ma2_include_song_list,
                     template_page=self._project.ma_export.ma2_template_page,
-                    macro_pool_start=self._project.ma_export.ma2_macro_pool_start,
+                    fixed_macro_start=self._project.ma_export.ma2_fixed_macro_start,
+                    song_macro_start=self._project.ma_export.ma2_song_macro_start,
+                    add_main_preset_cue=self._project.ma_export.ma2_add_main_preset_cue,
+                    main_preset_cue_id=self._project.ma_export.ma2_main_preset_cue_id,
                 )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Export Failed", str(exc))
