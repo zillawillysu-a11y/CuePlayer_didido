@@ -461,6 +461,9 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
     namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
     widgets = root.findall(f"{namespace}View/{namespace}Widget")
     macro = next(widget for widget in widgets if widget.get("type") == "4d414352")
+    sequence = next(widget for widget in widgets if widget.get("type") == "53455155")
+    assert sequence.get("index") == "2"
+    assert macro.get("index") == "3"
     assert macro.get("x") == "10"
     assert macro.get("y") is None
     assert macro.get("has_focus") == "true"

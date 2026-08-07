@@ -5,27 +5,25 @@
 
 ## Task objective
 
-Make Page, Main executor number, and Button start executor number independently editable.
+Ensure MA2 keeps Macro separate from Sequence after View import.
 
 ## What was implemented
 
-- Added numeric Main and Button Start fields beside Page.
-- Settings now generate `Page.Main` and `Page.ButtonStart` from the three user-entered values.
-- Retained Next Page per song; it increments only Page.
-- Existing executor strings split back into the three fields when loaded.
+- Assigned fixed MA2 Widget indices instead of relying on editor order: Fixed Effects 0, Song Effects 1, Sequence 2, Macro 3.
+- Retained the user's free visual geometry while using MA2's required XML index contract.
 
 ## Files changed
 
-- `src/cueplayer/ui/show_patch_page.py`
-- `tests/ui/test_show_patch_ma2_discovery.py`
+- `src/cueplayer/exporters/ma2/exporter.py`
+- `tests/exporters/test_show_patch.py`
 
 ## Architecture decisions
 
-- The domain/exporter continues to use executor strings; the UI owns the numeric decomposition.
+- MA2 Widget index is a semantic compatibility field for the standard Screen 3 layout.
 
 ## Tests performed
 
-- Focused Show Patch UI and MA2 exporter suite: 19 passed.
+- Focused MA2 exporter and Show Patch UI suite: 19 passed.
 - Python compile and `git diff --check`: passed.
 
 ## Remaining issues

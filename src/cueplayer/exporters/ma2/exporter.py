@@ -477,7 +477,22 @@ class Ma2Exporter:
                 "views": "56494557",
                 "worlds": "57454c54",
             }
-            for index, spec in enumerate(layout):
+            # MA2 uses Widget index as part of the placement contract for the
+            # standard Screen 3 pools.  Keep its known working S1 order even
+            # when the editor's visual list is Sequence, Macro, Effects.
+            def ma2_widget_order(item: tuple[int, dict[str, object]]) -> tuple[int, int]:
+                source_index, spec = item
+                pool_type = str(spec.get("type", ""))
+                if pool_type == "effects":
+                    return (0 if spec.get("mode") == "fixed" else 1, source_index)
+                if pool_type == "sequence":
+                    return (2, source_index)
+                if pool_type == "macros":
+                    return (3, source_index)
+                return (4, source_index)
+
+            ordered_layout = sorted(enumerate(layout), key=ma2_widget_order)
+            for fallback_index, (_source_index, spec) in enumerate(ordered_layout, start=4):
                 widget_type = type_codes.get(str(spec.get("type", "")))
                 if widget_type is None:
                     continue
@@ -509,7 +524,19 @@ class Ma2Exporter:
                         else max(0, start - 1)
                     )
                     attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
-                add_widget(index, widget_type, **attrs)
+                pool_type = str(spec.get("type", ""))
+                ma2_index = (
+                    0
+                    if pool_type == "effects" and spec.get("mode") == "fixed"
+                    else 1
+                    if pool_type == "effects"
+                    else 2
+                    if pool_type == "sequence"
+                    else 3
+                    if pool_type == "macros"
+                    else fallback_index
+                )
+                add_widget(ma2_index, widget_type, **attrs)
             write_xml(root, path, default_namespace=MA2_NS)
             self._fix_ma2_xsi(path)
             return path
