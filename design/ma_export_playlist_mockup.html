@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CuePlayer · MA Export Playlist Mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d0f12;
+      --panel: #15181d;
+      --panel-2: #1b1f25;
+      --line: #2b313a;
+      --muted: #99a3b1;
+      --text: #eef2f7;
+      --accent: #3b82f6;
+      --accent-soft: #172b4d;
+      --good: #4ade80;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --input: #101318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 1060px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 "Segoe UI", "Microsoft JhengHei", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-rows: auto auto 1fr; }
+    header {
+      padding: 22px 28px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .2px; }
+    h2 { margin: 0; font-size: 16px; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .actions, .tabs, .inline { display: flex; align-items: center; gap: 9px; }
+    .btn {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 14px;
+      color: var(--text);
+      background: var(--panel-2);
+    }
+    .btn:hover { border-color: #4a5565; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 650; }
+    .btn.ghost { background: transparent; }
+    .tabs { padding: 12px 28px 0; }
+    .tab {
+      min-height: 36px;
+      padding: 0 15px;
+      border: 1px solid transparent;
+      border-radius: 7px 7px 0 0;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tab.active { color: var(--text); background: var(--panel); border-color: var(--line); border-bottom-color: var(--panel); }
+    main { padding: 20px 28px 30px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .notice {
+      padding: 12px 14px;
+      border: 1px solid #294c83;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: #dceaff;
+      margin-bottom: 16px;
+    }
+    .card { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; overflow: hidden; }
+    .card-head { min-height: 44px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 12px; }
+    .song-grid {
+      display: grid;
+      grid-template-columns: 36px minmax(245px, 1.35fr) minmax(220px, 1.1fr) 108px 108px 80px 82px 40px;
+      gap: 12px;
+      align-items: center;
+    }
+    .song-header { padding: 9px 14px; color: var(--muted); background: var(--panel-2); font-size: 12px; }
+    .song-row { min-height: 68px; padding: 10px 14px; border-top: 1px solid var(--line); }
+    .song-row:first-of-type { border-top: 0; }
+    .song-row:hover { background: #191d23; }
+    .song-row.dragging { opacity: .55; }
+    .song-title { min-width: 0; }
+    .song-title strong, .song-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .song-title span { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      min-height: 36px;
+      padding: 6px 10px;
+      border: 1px solid #38414d;
+      border-radius: 6px;
+      color: var(--text);
+      background: var(--input);
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.18); }
+    .range { font-variant-numeric: tabular-nums; }
+    .drag { color: var(--muted); text-align: center; font-size: 18px; user-select: none; }
+    .playlist-actions { padding: 13px 0; display: flex; gap: 8px; }
+    .setup-layout { display: grid; grid-template-columns: minmax(680px, 1.4fr) minmax(320px, .6fr); gap: 18px; align-items: start; }
+    .section { padding: 17px; }
+    .section + .section { border-top: 1px solid var(--line); }
+    .fields { margin-top: 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+    .field.wide { grid-column: 1 / -1; }
+    .checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 18px; margin-top: 14px; }
+    .check { display: flex; align-items: center; gap: 8px; }
+    details { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    summary { min-height: 44px; padding: 0 15px; display: flex; align-items: center; cursor: pointer; font-weight: 650; }
+    details .fields { padding: 0 15px 16px; grid-template-columns: 1fr; }
+    .review-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 16px 0; }
+    .review-card { padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    .review-card strong { display: block; font-size: 20px; margin: 8px 0 3px; }
+    .ok { color: var(--good); }
+    .review-list { margin-top: 15px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .review-line { display: grid; grid-template-columns: 1fr 120px 120px 80px; gap: 12px; padding: 10px 13px; border-top: 1px solid var(--line); }
+    .review-line:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
+    .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    @media (max-width: 1220px) {
+      .song-grid { grid-template-columns: 34px minmax(210px, 1.2fr) minmax(190px, 1fr) 94px 94px 65px 70px 34px; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Export · MA Playlist</h1>
+        <p class="muted">先整理歌單與 Pool，再設定 Console，最後檢查並匯出。</p>
+      </div>
+      <div class="actions">
+        <button class="btn" id="validateTop">Validate</button>
+        <button class="btn primary" data-goto="review">Export <span class="selected-count">3</span> Songs</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-page="songs">1 · Songs & Pools</button>
+      <button class="tab" data-page="setup">2 · Console Setup</button>
+      <button class="tab" data-page="review">3 · Review & Export</button>
+    </nav>
+
+    <main>
+      <section class="page active" id="songs">
+        <div class="notice"><strong>Pool 一眼就能確認。</strong> 每首 MA2 歌曲預留 20 個 Sequence、80 個 Effect；修改起始值後，範圍會立即更新。</div>
+        <div class="card">
+          <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
+          <div class="song-grid song-header"><span></span><span>歌曲</span><span>MA 英文名稱</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span></span></div>
+          <div id="songRows"></div>
+        </div>
+        <div class="playlist-actions">
+          <button class="btn" id="selectAll">Select All</button>
+          <button class="btn ghost" id="selectNone">Select None</button>
+          <button class="btn ghost" id="recalc">Recalculate Pools</button>
+        </div>
+      </section>
+
+      <section class="page" id="setup">
+        <div class="setup-layout">
+          <div class="card">
+            <div class="section">
+              <h2>常用設定</h2>
+              <div class="fields">
+                <div class="field"><label>Console</label><select id="console"><option>grandMA2 3.9.60</option><option>grandMA2 3.9.61</option><option>grandMA3</option></select></div>
+                <div class="field"><label>Mode</label><select><option>Full · Plugin Install</option><option>Timecode Only</option></select></div>
+                <div class="field"><label>Sequence Pool Start</label><input id="seqStart" type="number" min="1" value="1"></div>
+                <div class="field"><label>Sequence Slots Per Song</label><input id="seqSlots" type="number" min="1" value="20"></div>
+                <div class="field"><label>Effect Pool Start</label><input id="effectStart" type="number" min="1" value="201"></div>
+                <div class="field"><label>View Pool Start</label><input type="number" min="1" value="201"></div>
+                <div class="field"><label>Main Executor</label><input type="text" value="1.130"></div>
+                <div class="field"><label>Button Start</label><input type="text" value="1.101"></div>
+                <div class="field wide"><label>Output Folder</label><input type="text" value="C:\ProgramData\MA Lighting Technologies\grandma\gma2_V_3.9.60\importexport"></div>
+              </div>
+            </div>
+            <div class="section">
+              <h2>輸出內容</h2>
+              <div class="checks">
+                <label class="check"><input type="checkbox" checked> Fixed control Macros</label>
+                <label class="check"><input type="checkbox" checked> Song Macros</label>
+                <label class="check"><input type="checkbox" checked> Song List Sequence</label>
+                <label class="check"><input type="checkbox" checked> Song Views (Screen 3)</label>
+                <label class="check"><input type="checkbox" checked> Add Main Cue named Preset</label>
+              </div>
+            </div>
+          </div>
+          <details>
+            <summary>進階 MA2 設定</summary>
+            <div class="fields">
+              <div class="field"><label>Template Page</label><input type="number" value="100"></div>
+              <div class="field"><label>Fixed Macro Start</label><input type="number" value="1001"></div>
+              <div class="field"><label>Song Macro Start</label><input type="number" value="1009"></div>
+              <div class="field"><label>Song ViewButton</label><input type="text" value="1.20"></div>
+              <div class="field"><label>Preset Cue ID</label><input type="number" value="0.500" step="0.001"></div>
+              <div class="field"><label>Latency</label><input type="text" value="0.0 ms"></div>
+            </div>
+          </details>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="songs">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
+      </section>
+
+      <section class="page" id="review">
+        <div class="notice" id="validation"><strong>Ready.</strong> 所有名稱與 Pool 範圍都可以在匯出前檢查。</div>
+        <div class="review-grid">
+          <div class="review-card"><span class="muted">Pool Safety</span><strong class="ok">No overlaps</strong><span class="muted">Sequence、Effect、View、Macro 已檢查</span></div>
+          <div class="review-card"><span class="muted">Selected Songs</span><strong><span class="selected-count">3</span> Songs</strong><span class="muted">每首包含 Sequence、View、Timecode</span></div>
+          <div class="review-card"><span class="muted">Target</span><strong id="targetLabel">MA2 3.9.60</strong><span class="muted">Schema 依輸出路徑選擇</span></div>
+        </div>
+        <h2>Export Plan</h2>
+        <div class="review-list" id="reviewList"></div>
+        <div class="footer-actions"><button class="btn" data-goto="setup">Back</button><button class="btn primary" id="fakeExport">Export Checked Songs…</button></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const songs = [
+      { name: "TEST · 真爭得想起來", en: "TEST", tc: 1, marks: 4, selected: true },
+      { name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", tc: 2, marks: 6, selected: true },
+      { name: "SKY LIGHT", en: "SKY_LIGHT", tc: 3, marks: 1, selected: true }
+    ];
+
+    const $ = selector => document.querySelector(selector);
+    const $$ = selector => [...document.querySelectorAll(selector)];
+    const numberValue = id => Math.max(1, Number($(id).value) || 1);
+
+    function allocation(index) {
+      const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
+      const seqEnd = seqStart + numberValue("#seqSlots") - 1;
+      const effectStart = numberValue("#effectStart") + index * 80;
+      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + 79 };
+    }
+
+    function renderSongs() {
+      $("#songRows").innerHTML = songs.map((song, index) => {
+        const a = allocation(index);
+        return `<div class="song-grid song-row" draggable="true" data-index="${index}">
+          <input class="song-check" type="checkbox" ${song.selected ? "checked" : ""} aria-label="Export ${song.en}">
+          <div class="song-title"><strong>${song.name}</strong><span>Song ${index + 1}</span></div>
+          <input class="english-name" type="text" value="${song.en}" aria-label="MA export name">
+          <span class="range">${a.seqStart}–${a.seqEnd}</span>
+          <span class="range">${a.effectStart}–${a.effectEnd}</span>
+          <span>TC ${song.tc}</span><span>${song.marks} cues</span><span class="drag" title="Drag to reorder">⋮⋮</span>
+        </div>`;
+      }).join("");
+      $$(".song-check").forEach((box, i) => box.addEventListener("change", () => { songs[i].selected = box.checked; refreshCounts(); }));
+      $$(".english-name").forEach((input, i) => input.addEventListener("input", () => { songs[i].en = input.value; renderReview(); }));
+      enableDrag(); refreshCounts(); renderReview();
+    }
+
+    function enableDrag() {
+      let from = null;
+      $$(".song-row").forEach(row => {
+        row.addEventListener("dragstart", () => { from = Number(row.dataset.index); row.classList.add("dragging"); });
+        row.addEventListener("dragend", () => row.classList.remove("dragging"));
+        row.addEventListener("dragover", event => event.preventDefault());
+        row.addEventListener("drop", () => {
+          const to = Number(row.dataset.index);
+          if (from === null || from === to) return;
+          const [moved] = songs.splice(from, 1); songs.splice(to, 0, moved); renderSongs();
+        });
+      });
+    }
+
+    function refreshCounts() {
+      const count = songs.filter(song => song.selected).length;
+      $$(".selected-count").forEach(el => el.textContent = count);
+      renderReview();
+    }
+
+    function renderReview() {
+      const selected = songs.map((song, index) => ({ song, index })).filter(x => x.song.selected);
+      $("#reviewList").innerHTML = `<div class="review-line"><span>Song / MA name</span><span>Sequence</span><span>Effect</span><span>Timecode</span></div>` +
+        selected.map(({ song, index }) => {
+          const a = allocation(index);
+          return `<div class="review-line"><span>${song.name}<br><span class="muted">${song.en}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>TC ${song.tc}</span></div>`;
+        }).join("");
+      $("#targetLabel").textContent = $("#console").value.replace("grand", "");
+    }
+
+    function showPage(id) {
+      $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
+      $$(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.page === id));
+      if (id === "review") renderReview();
+    }
+
+    $$(".tab").forEach(tab => tab.addEventListener("click", () => showPage(tab.dataset.page)));
+    $$('[data-goto]').forEach(button => button.addEventListener("click", () => showPage(button.dataset.goto)));
+    ["#seqStart", "#seqSlots", "#effectStart"].forEach(id => $(id).addEventListener("input", renderSongs));
+    $("#console").addEventListener("change", renderReview);
+    $("#selectAll").addEventListener("click", () => { songs.forEach(song => song.selected = true); renderSongs(); });
+    $("#selectNone").addEventListener("click", () => { songs.forEach(song => song.selected = false); renderSongs(); });
+    $("#recalc").addEventListener("click", renderSongs);
+    $("#validateTop").addEventListener("click", () => showPage("review"));
+    $("#fakeExport").addEventListener("click", () => alert("這是設計原型，不會執行真正匯出。"));
+    renderSongs();
+  </script>
+</body>
+</html>

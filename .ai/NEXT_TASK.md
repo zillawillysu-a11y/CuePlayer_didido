@@ -1,22 +1,22 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA2 Song View first-cell validation
+**Type:** MA Export UI design review
 **Updated:** 2026-08-07
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Re-export and validate corrected Song View Sequence positioning in grandMA2 onPC.
+Review `design/ma_export_playlist_mockup.html` in a browser and collect requested changes.
 
 ## Verify
 
-- Song 1 View begins with Sequence 1 in the first cell.
-- Song 2 View begins with Sequence 21 in the first cell.
-- Song 3 View begins with Sequence 41 in the first cell.
-- Effect and Template Effect pool positioning remains unchanged.
-- View switching still works through the configured ViewButton.
+- Chinese and English song names remain readable.
+- Playlist row density is comfortable.
+- Pool ranges are understandable without the old Sequence-chain text.
+- Frequent and advanced settings are grouped correctly.
+- Three-step workflow feels faster than the current single-page form.
 
 ## Done when
 
-The first three generated Views show their Main Sequence in the first cell, or any remaining MA2-specific offset is captured and covered by a focused regression test.
+The user approves the mockup or supplies a concrete revision list for the production PySide6 implementation.
