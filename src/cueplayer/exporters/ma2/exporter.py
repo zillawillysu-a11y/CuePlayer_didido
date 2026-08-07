@@ -457,9 +457,25 @@ class Ma2Exporter:
 
         if layout:
             type_codes = {
+                "camera": "43414d50",
                 "effects": "454e4749",
+                "filters": "46494c54",
+                "forms": "464f524d",
+                "groups": "47524f55",
+                "images": "494d4750",
+                "layout": "4c415950",
                 "sequence": "53455155",
                 "macros": "4d414352",
+                "masks": "5346494c",
+                "matricks": "4d415458",
+                "pagesChannel": "50414743",
+                "pagesExec": "50414745",
+                "timecode": "54434f44",
+                "timecodeSlots": "54435350",
+                "timer": "54494d50",
+                "universes": "444d5850",
+                "views": "56494557",
+                "worlds": "57454c54",
             }
             for index, spec in enumerate(layout):
                 widget_type = type_codes.get(str(spec.get("type", "")))

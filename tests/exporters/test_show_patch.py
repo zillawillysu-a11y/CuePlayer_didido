@@ -439,3 +439,28 @@ def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
     assert widget.get("y") == "3"
     assert widget.get("anz_cols") == "12"
     assert widget.get("anz_rows") == "4"
+
+
+def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Song", ma="Song", button_names=[])]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    layout = [
+        {"type": pool_type, "mode": "fixed", "x": index, "y": 0, "w": 1, "h": 1, "start": 1, "stride": 1}
+        for index, pool_type in enumerate(("camera", "filters", "forms", "groups", "images", "layout", "masks", "matricks", "pagesChannel", "pagesExec", "timecode", "timecodeSlots", "timer", "universes", "views", "worlds"))
+    ]
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
+    root = ET.parse(paths["show:view_1"]).getroot()
+    namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
+    types = [widget.get("type") for widget in root.findall(f"{namespace}View/{namespace}Widget")]
+    assert types == [
+        "43414d50", "46494c54", "464f524d", "47524f55", "494d4750", "4c415950",
+        "5346494c", "4d415458", "50414743", "50414745", "54434f44", "54435350",
+        "54494d50", "444d5850", "56494557", "57454c54",
+    ]

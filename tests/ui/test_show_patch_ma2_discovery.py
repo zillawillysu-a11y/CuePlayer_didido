@@ -118,6 +118,22 @@ def test_view_allocation_controls_drive_shared_export_settings(
     assert len(page.view_stage.widgets) == before
 
 
+def test_timecode_pool_reserves_its_three_builtin_slots(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+    page.view_stage.widgets = [{"type": "timecode", "mode": "perSong", "x": 0, "y": 0, "w": 5, "h": 1, "start": 201, "stride": 1}]
+    page.view_stage.selected_index = 0
+    page._load_view_inspector(0)
+
+    assert "3 built-in Timecode slots" in page.view_allocation_status.text()
+
+
 def test_custom_unicode_folder_survives_detection(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

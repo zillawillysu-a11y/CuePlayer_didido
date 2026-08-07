@@ -178,7 +178,7 @@ class ShowPatchPage(QWidget):
             "color: #eef2f7; border: 1px solid #2b313a; border-radius: 7px; gridline-color: #2b313a; }"
             "QHeaderView::section { background: #1b1f25; color: #99a3b1; border: none; "
             "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
-            "QLabel { color: #eef2f7; }"
+            "QLabel { color: #eef2f7; background: transparent; border: none; }"
         )
 
         self.chain_label = QLabel("")
@@ -560,7 +560,27 @@ class ShowPatchPage(QWidget):
         view_inspector = QGroupBox("Pool Inspector")
         inspector_form = QFormLayout(view_inspector)
         self.view_pool_type = QComboBox()
-        for key, label in (("sequence", "Sequence"), ("effects", "Effects"), ("macros", "Macros"), ("timecode", "Timecode Pool")):
+        for key, label in (
+            ("camera", "Camera Pool"),
+            ("effects", "Effects"),
+            ("filters", "Filters"),
+            ("forms", "Forms"),
+            ("groups", "Groups"),
+            ("images", "Images"),
+            ("layout", "Layout Pool"),
+            ("macros", "Macros"),
+            ("masks", "Masks"),
+            ("matricks", "MAtricks"),
+            ("pagesChannel", "Pages Channel"),
+            ("pagesExec", "Pages Exec"),
+            ("sequence", "Sequence"),
+            ("timecode", "Timecode Pool"),
+            ("timecodeSlots", "Timecode Slots Pool"),
+            ("timer", "Timer"),
+            ("views", "Views"),
+            ("universes", "Universes"),
+            ("worlds", "Worlds"),
+        ):
             self.view_pool_type.addItem(label, key)
         self.view_pool_mode = QComboBox()
         self.view_pool_mode.addItem("Fixed · same numbers", "fixed")
@@ -1323,6 +1343,7 @@ class ShowPatchPage(QWidget):
             control.blockSignals(False)
         start = int(widget.get("start", 1)) + (self.view_stage.song_index * int(widget.get("stride", 1)) if widget.get("mode") == "perSong" else 0)
         visible = int(widget.get("w", 1)) * int(widget.get("h", 1)) - 1
+        builtin_slots = 3 if widget.get("type") == "timecode" else 0
         overlaps = False
         for left_index, left in enumerate(self.view_stage.widgets):
             left_rect = (int(left["x"]), int(left["y"]), int(left["x"]) + int(left["w"]), int(left["y"]) + int(left["h"]))
@@ -1331,15 +1352,16 @@ class ShowPatchPage(QWidget):
                 if left_rect[0] < right_rect[2] and right_rect[0] < left_rect[2] and left_rect[1] < right_rect[3] and right_rect[1] < left_rect[3]:
                     overlaps = True
                     break
-        stride_warning = widget.get("mode") == "perSong" and int(widget.get("stride", 1)) < visible
+        stride_warning = widget.get("mode") == "perSong" and int(widget.get("stride", 1)) < max(0, visible - builtin_slots)
         if overlaps:
             self.view_allocation_status.setText("Layout overlap · move or resize a Pool window")
             self.view_allocation_status.setStyleSheet("color: #f87171;")
         elif stride_warning:
-            self.view_allocation_status.setText(f"Reserved range too small · {visible} visible Pool slots")
+            self.view_allocation_status.setText(f"Reserved range too small · {visible - builtin_slots} numbered Pool slots")
             self.view_allocation_status.setStyleSheet("color: #f87171;")
         else:
-            self.view_allocation_status.setText(f"Screen 3 · {visible} visible Pool slots · starts at {start}")
+            timecode_note = " · 3 built-in Timecode slots" if builtin_slots else ""
+            self.view_allocation_status.setText(f"Screen 3 · {visible - builtin_slots} numbered Pool slots · starts at {start}{timecode_note}")
             self.view_allocation_status.setStyleSheet("color: #99a3b1;")
 
     def _update_selected_view_pool(self, *_args) -> None:

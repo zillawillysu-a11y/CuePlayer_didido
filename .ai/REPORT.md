@@ -5,48 +5,39 @@
 
 ## Task objective
 
-Close the production gap with the approved HTML mockup: repair the crowded Console Setup layout and make View Layout a real shared Screen 3 editor.
+Expand the View editor using verified MA2 Pool widget codes and unify the Console Setup label background color.
 
 ## What was implemented
 
-- Reflowed Export Options into a compact three-column field grid so labels and values no longer stack into an unreadable strip.
-- Rebuilt View Layout as the approved left-stage/right-Inspector composition.
-- Added a fixed 16×8 Screen 3 canvas with direct whole-cell dragging and lower-right resizing.
-- Added Add, Duplicate, Delete, Lock, Reset, song preview, exact Column/Row/Width/Height, Pool type, Fixed/Per Song, Pool Start, and reservation controls.
-- Persisted the shared View layout with the project.
-- Added overlap and insufficient-reservation warnings.
-- Made supported Sequence, Effects, and Macros geometry/ranges drive generated MA2 View XML.
+- Parsed the user-provided `POOLALL.xml` and added every verified Pool type to the View Inspector and MA2 XML exporter.
+- Added Camera, Filters, Forms, Groups, Images, Layout, Masks, MAtricks, Pages Channel/Exec, Timecode, Timecode Slots, Timer, Universes, Views, and Worlds.
+- Timecode Pool visibly reserves its three MA2 built-in slots, which are excluded from numbered per-song capacity.
+- Set labels to transparent backgrounds so the cards use one consistent dark blue-grey rather than black label blocks.
 
 ## Files changed
 
 - `src/cueplayer/ui/ma2_view_layout.py`
 - `src/cueplayer/ui/show_patch_page.py`
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/persistence/project_store.py`
 - `src/cueplayer/exporters/ma2/exporter.py`
-- Related persistence, exporter, and UI tests.
+- Exporter and UI tests.
 
 ## Architecture decisions
 
-- The editor remains permanently 16×8 and stores whole-cell geometry only.
-- Pool title consumes the first visible cell.
-- One layout is shared by all songs; only Per Song ranges advance by song order.
-- Unsupported MA2 widget type codes are not fabricated; this slice exports Sequence, Effects, and Macros.
+- MA2 Widget codes are read from `POOLALL.xml`; no code is guessed.
+- The shared 16×8 layout remains the only View configuration source.
 
 ## Tests performed
 
-- Focused UI/domain persistence/MA2 exporter tests: 20 passed.
-- Python compile: passed.
-- `git diff --check`: passed.
-- Offscreen 1600×900 screenshots inspected for Console Setup and View Layout.
+- Focused UI/persistence/MA2 exporter suite: 22 passed.
+- Python compile and `git diff --check`: passed.
+- Offscreen Console Setup screenshot inspected.
 
 ## Remaining issues
 
-- Add verified MA2 XML widget codes/fixtures before enabling the rest of the Pool-type list.
-- Per-song Main/Button content selection remains pending.
+- Per-song Main/Button export content selection remains pending.
 - Telnet remains intentionally disabled.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Add per-song Main/Button export content selection and verify additional MA2 Pool widget types from real exported View fixtures.
+Add per-song Main/Button export content selection.

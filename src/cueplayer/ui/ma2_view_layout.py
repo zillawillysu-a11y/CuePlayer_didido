@@ -17,10 +17,25 @@ DEFAULT_VIEW_LAYOUT: list[dict[str, object]] = [
 ]
 
 POOL_LABELS = {
+    "camera": "Camera Pool",
     "effects": "Effects",
+    "filters": "Filters",
+    "forms": "Forms",
+    "groups": "Groups",
+    "images": "Images",
+    "layout": "Layout Pool",
     "macros": "Macros",
+    "masks": "Masks",
+    "matricks": "MAtricks",
+    "pagesChannel": "Pages Channel",
+    "pagesExec": "Pages Exec",
     "sequence": "Sequence",
     "timecode": "Timecode Pool",
+    "timecodeSlots": "Timecode Slots Pool",
+    "timer": "Timer",
+    "views": "Views",
+    "universes": "Universes",
+    "worlds": "Worlds",
 }
 
 
@@ -83,13 +98,23 @@ class Ma2ViewLayoutStage(QWidget):
             if widget.get("mode") == "perSong":
                 start += self.song_index * int(widget.get("stride", 1))
             slots = int(widget["w"]) * int(widget["h"]) - 1
+            builtin_slots = 3 if widget.get("type") == "timecode" else 0
             for offset in range(max(0, slots)):
                 cell = offset + 1
                 column = cell % int(widget["w"])
                 row = cell // int(widget["w"])
                 cell_rect = QRectF(rect.left() + column * cw, rect.top() + row * ch, cw, ch)
                 painter.setPen(QColor("#b9c2ce"))
-                painter.drawText(cell_rect.adjusted(5, 3, -2, -2), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, str(start + offset))
+                text = (
+                    f"Built-in\nSlot {offset + 1}"
+                    if offset < builtin_slots
+                    else str(start + offset - builtin_slots)
+                )
+                painter.drawText(
+                    cell_rect.adjusted(5, 3, -2, -2),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+                    text,
+                )
             if selected and not self.locked:
                 painter.fillRect(QRectF(rect.right() - 12, rect.bottom() - 12, 10, 10), QColor("#3b82f6"))
 
