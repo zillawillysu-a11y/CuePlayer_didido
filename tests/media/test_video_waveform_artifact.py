@@ -43,6 +43,12 @@ from cueplayer.media.video_waveform_artifact import (
 from cueplayer.media.video_audio_loader import VideoAudioBuffer
 
 
+def test_default_waveform_batches_are_coarse_enough_for_long_video() -> None:
+    import cueplayer.media.video_waveform_artifact as art_mod
+
+    assert art_mod.BATCH_SECONDS >= 4.0
+
+
 @pytest.fixture(autouse=True)
 def _clear_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import cueplayer.media.video_waveform_artifact as art_mod

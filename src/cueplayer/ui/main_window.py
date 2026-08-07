@@ -962,6 +962,7 @@ class MainWindow(QMainWindow):
     _media_warm_progress = Signal()  # waveform / LTC batch progress on UI thread
     _video_standin_finished = Signal(int, object)  # token, AudioBuffer | None | Exception
     _video_probe_finished = Signal(object)  # background probe result bundle
+    _media_cache_cleared = Signal(object)  # bytes removed | Exception
     startup_ready = Signal()
 
     def __init__(self, project: Project | None = None) -> None:
@@ -1037,6 +1038,7 @@ class MainWindow(QMainWindow):
         self._audio_pcm_ready.connect(self._on_audio_pcm_ready)
         self._video_standin_finished.connect(self._on_video_standin_finished)
         self._video_probe_finished.connect(self._on_video_probe_finished)
+        self._media_cache_cleared.connect(self._on_media_cache_cleared)
         self._audio_ltc_cache.update(load_all_ltc_channels())
         self._media_warm_progress.connect(self._refresh_media_warm_status)
         self._bpm_detect_inflight: set[str] = set()
@@ -2382,6 +2384,12 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(act_audio)
         tools_menu.addAction(act_web_remote)
+        act_clear_cache = QAction("Clear Media &Cache…", self)
+        act_clear_cache.setToolTip(
+            "Show disk usage and remove recoverable audio / video waveform caches"
+        )
+        act_clear_cache.triggered.connect(self._clear_media_cache)
+        tools_menu.addAction(act_clear_cache)
         # Sprint 8: experimental Tools entries hidden unless flag is True.
         if ENABLE_EXPERIMENTAL_FEATURES:
             tools_menu.addAction(act_align_anchors)
@@ -5303,6 +5311,58 @@ class MainWindow(QMainWindow):
         dialog = MaPreflightDialog(report, self)
         dialog.navigate_requested.connect(self._on_preflight_navigate)
         dialog.exec()
+
+    @staticmethod
+    def _format_cache_size(n_bytes: int) -> str:
+        return f"{max(0, int(n_bytes)) / (1024**3):.2f} GB"
+
+    def _clear_media_cache(self) -> None:
+        from cueplayer.media.cache_management import (
+            audio_cache_dir,
+            media_cache_stats,
+            video_wave_cache_dir,
+        )
+
+        stats = media_cache_stats()
+        answer = QMessageBox.question(
+            self,
+            "Clear Media Cache",
+            (
+                f"Cached media uses {self._format_cache_size(stats.total_bytes)} "
+                f"in {stats.file_count} files.\n\n"
+                f"Audio: {self._format_cache_size(stats.audio_bytes)}\n"
+                f"Video waveforms: {self._format_cache_size(stats.video_wave_bytes)}\n\n"
+                f"Audio cache folder:\n{audio_cache_dir()}\n\n"
+                f"Video waveform folder:\n{video_wave_cache_dir()}\n\n"
+                "These files are recoverable and will be rebuilt when needed. "
+                "Clear them now?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.status.showMessage("Clearing media cache in background…", 0)
+
+        def _job() -> None:
+            try:
+                from cueplayer.media.cache_management import clear_media_caches
+
+                self._media_cache_cleared.emit(clear_media_caches())
+            except Exception as exc:  # noqa: BLE001
+                self._media_cache_cleared.emit(exc)
+
+        self._video_probe_executor.submit(_job)
+
+    def _on_media_cache_cleared(self, result: object) -> None:
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Unable to Clear Cache", str(result))
+            return
+        removed = int(result)
+        self.status.showMessage(
+            f"Media cache cleared ({self._format_cache_size(removed)} removed)",
+            5000,
+        )
 
     def _write_performance_report(self) -> None:
         """Tools → Write Performance Report… (only when CUEPLAYER_PERF enabled)."""

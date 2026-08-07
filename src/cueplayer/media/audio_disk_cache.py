@@ -183,6 +183,10 @@ def save_cached_audio(path: Path, buffer: AudioBuffer) -> None:
         tmp_file.replace(_cache_file(key))
     except Exception:
         pass
+    finally:
+        from cueplayer.media.cache_management import prune_media_caches
+
+        prune_media_caches()
 
 
 def load_audio_cached(

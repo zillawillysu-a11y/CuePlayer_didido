@@ -39,7 +39,7 @@ PYRAMID_FACTORS = (4, 16, 64, 256)
 # Legacy name kept for tests that patch window sizing; sequential decoder
 # uses BATCH_SECONDS between cancel/pause checks (not one open per window).
 CHUNK_SECONDS = 8.0
-BATCH_SECONDS = 0.5
+BATCH_SECONDS = 8.0
 # PyAV decoding and peak reduction both run off the GUI thread, but long
 # containers can still monopolize Python/CPU if successful batches are scanned
 # back-to-back. A short cooperative gap keeps Qt's event loop responsive.
@@ -387,6 +387,9 @@ def save_artifact_to_disk(cache_key: str, art: VideoWaveformArtifact) -> None:
             arrays[f"level_{i}_maxs"] = level.maxs.astype(np.float32, copy=False)
         np.savez(str(tmp), **arrays)
         Path(str(tmp) + ".npz").replace(out)
+        from cueplayer.media.cache_management import prune_media_caches
+
+        prune_media_caches()
         if perf_diag.is_enabled():
             perf_diag.count("waveform_artifact.disk_saved")
     except Exception:
