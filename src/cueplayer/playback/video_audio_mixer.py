@@ -47,6 +47,7 @@ _EVENT_RING_MAX = 256
 # Treat windows as contiguous when they overlap or touch within one sample.
 _CONTIGUOUS_ADJACENCY_FRAMES = 1
 _COLD_SEEK_GAP_WINDOW_S = 2.0
+_COLD_START_WINDOW_SECONDS = 2.0
 # A several-minute clip took ~9.3 s to decode as one PCM block on the measured
 # Windows machine, so pressing Play immediately after a song switch began with
 # silence. Use the already-proven sliding-window path well below the separate
@@ -525,6 +526,23 @@ class VideoAudioMixer:
         if self.muted or self._schedule_suspended:
             return
         start, dur = self._window_for(clip, source_time)
+        cold_start = bool(
+            self._uses_windowed_decode(clip)
+            and time.monotonic() < float(self._cold_seek_until_mono)
+            and not self._covers_source_published(clip.id, source_time)
+            and self._pin_source_time is not None
+            and abs(float(source_time) - float(self._pin_source_time)) < 0.25
+        )
+        if cold_start:
+            src_in = max(0.0, float(clip.source_in_seconds))
+            src_out = src_in + max(
+                0.05, float(clip.source_span_seconds or clip.duration_seconds)
+            )
+            start = min(max(src_in, float(source_time)), src_out)
+            dur = min(
+                _COLD_START_WINDOW_SECONDS,
+                max(0.05, src_out - start),
+            )
         key = (
             str(clip.path),
             self._playback_rate,
@@ -561,6 +579,7 @@ class VideoAudioMixer:
                 ),
                 "source_time": float(source_time),
                 "start": float(start),
+                "cold_start": cold_start,
             }
         perf_diag.count("video_audio.unique_window_keys")
         perf_diag.note("video_audio.last_window_request_mono", time.monotonic())
@@ -626,6 +645,7 @@ class VideoAudioMixer:
             samples = np.array(samples, dtype=np.float32, copy=True, order="C")
 
         follow_up: float | None = None
+        cold_start = False
         pin_snapshot = self._pin_source_time
         with self._lock:
             if self._inflight.get(clip_id) != key:
@@ -645,6 +665,7 @@ class VideoAudioMixer:
                 pub_mono = time.monotonic()
                 meta = self._req_meta.pop(key, None)
                 lead_s = None
+                cold_start = bool(meta and meta.get("cold_start"))
                 if meta is not None:
                     first_req = int(meta.get("first_required_frame", origin_frame))
                     pin_f = (
@@ -693,7 +714,13 @@ class VideoAudioMixer:
                                 (self._cache.get(clip_id) or OrderedDict()).values()
                             ),
                         )
-                        if follow_up is not None and self._has_sample_locked(
+                        if cold_start and fr is not None:
+                            # The short jump-priority window intentionally
+                            # releases av_path_lock quickly for RGB decode.
+                            # Continue exactly at its frontier before honoring
+                            # any far quantized prefetch request.
+                            follow_up = float(fr) / float(self._playback_rate) + 1e-6
+                        elif follow_up is not None and self._has_sample_locked(
                             clip_id, follow_up
                         ):
                             follow_up = None

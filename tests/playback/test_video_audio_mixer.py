@@ -277,6 +277,39 @@ def test_rapid_window_requests_coalesce_to_latest_need(monkeypatch: pytest.Monke
     assert decode_calls[1] == pytest.approx(297.0, abs=0.05)
 
 
+def test_discontinuous_seek_starts_with_short_audio_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    song = Song.create("Jump")
+    clip = VideoClip.create(
+        name="c",
+        path=Path("c.mp4"),
+        duration_seconds=600.0,
+        source_duration_seconds=600.0,
+    )
+    song.add_video_clip(clip)
+    mixer = VideoAudioMixer()
+    mixer.set_playback_rate(SR)
+    mixer.set_song(song)
+    mixer._pin_source_time = 123.25  # noqa: SLF001
+    mixer._cold_seek_until_mono = time.monotonic() + 2.0  # noqa: SLF001
+    submitted: list[tuple] = []
+    monkeypatch.setattr(
+        mixer._executor,  # noqa: SLF001
+        "submit",
+        lambda fn, *args: submitted.append((fn, *args)),
+    )
+
+    mixer._request_window(clip, 123.25)  # noqa: SLF001
+
+    assert len(submitted) == 1
+    _fn, _clip_id, key, _clip, start, duration = submitted[0]
+    assert start == pytest.approx(123.25)
+    assert duration == pytest.approx(2.0)
+    assert key[2:] == (123.25, 2.0)
+    assert mixer._req_meta[key]["cold_start"] is True  # noqa: SLF001
+
+
 def test_schedule_for_song_time_prefetches_when_ahead_is_low(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
