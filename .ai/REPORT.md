@@ -5,13 +5,13 @@
 
 ## Task objective
 
-Prevent MA2 from closing Command Telnet when CuePlayer sends the next command
-immediately after Login.
+Make Test Connection use only the MA2 Login handshake and avoid an unsupported
+follow-up command.
 
 ## What was implemented
 
-- Added a 250 ms command-line turn after Login before Import, Echo, or Plugin.
-- Kept the 15-second scanner timeout and the two no-frame diagnostics.
+- Test Connection no longer sends `Echo`; MA2 reports that command as an error.
+- Kept the 250 ms Login pacing and 15-second scanner timeout.
 
 ## Files changed
 
@@ -30,11 +30,10 @@ immediately after Login.
 
 ## Remaining issues
 
-- Real MA2 must confirm Login is followed by Import/Plugin without `Send`
-  exceptions.
+- Real MA2 must confirm Login and Import/Plugin without command-line errors.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Retest Test Connection, then Import Plugin & Scan at Plugin Pool 5. If it still
-fails, copy the MA2 log around Login and the next command.
+Retest Test Connection, then Import Plugin & Scan at Plugin Pool 5. Confirm no
+`Error: Echo` appears because Echo is no longer sent.

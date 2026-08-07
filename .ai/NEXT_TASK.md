@@ -1,12 +1,12 @@
 # Next task
 
-**Status:** Queued - awaiting real local Telnet verification after Login pacing fix
+**Status:** Queued - awaiting real local Telnet verification after removing Echo probe
 **Type:** MA2 Telnet validation
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify Login pacing, then Plugin import/execution and the 15-second scanner wait.
+Verify Login-only Test Connection, then Plugin import/execution and the 15-second scanner wait.
 
 ## Requirements
 

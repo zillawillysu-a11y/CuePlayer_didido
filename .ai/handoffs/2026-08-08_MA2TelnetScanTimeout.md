@@ -1,15 +1,13 @@
-# MA2 Telnet Login Pacing Handoff
+# MA2 Telnet Login Test Handoff
 
 ## Task objective
 
-Prevent MA2 Command Telnet from closing when the next command follows Login too
-quickly.
+Ensure Test Connection does not issue an unsupported MA2 command after Login.
 
 ## What was implemented
 
-- Login now yields the MA2 command line for 250 ms before the next command.
-- Scanner timeout remains 15 seconds and errors distinguish monitor data versus
-  an empty monitor response.
+- Test Connection sends Login only; the previous Echo probe was removed.
+- Login still yields 250 ms before later Import/Plugin commands.
 
 ## Files changed
 
@@ -31,4 +29,4 @@ Real MA2 verification is still required. `startup_error.txt` was not touched.
 ## Suggested next task
 
 Run Test Connection and Import Plugin & Scan with Plugin Pool 5; report any
-remaining `Send` exception.
+remaining MA2 command-line error.

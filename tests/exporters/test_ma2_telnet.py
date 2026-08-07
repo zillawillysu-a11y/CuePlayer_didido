@@ -94,10 +94,7 @@ def test_test_connection_sends_login_and_read_only_echo(monkeypatch: pytest.Monk
         lambda *_args: command,
     )
     Ma2TelnetScanner("127.0.0.1").test_connection(user="CuePlayer", password="secret")
-    assert command.sent == [
-        b'Login "CuePlayer" "secret"\r\n',
-        b'Echo "CuePlayer connection test"\r\n',
-    ]
+    assert command.sent == [b'Login "CuePlayer" "secret"\r\n']
 
 
 def test_login_requires_a_ma2_show_user(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,7 +220,4 @@ def test_command_waits_for_ma2_login_prompt_before_writing_input(
 
     Ma2TelnetScanner("127.0.0.1").test_connection(user="administrator", password="admin")
 
-    assert command.sent == [
-        b'Login "administrator" "admin"\r\n',
-        b'Echo "CuePlayer connection test"\r\n',
-    ]
+    assert command.sent == [b'Login "administrator" "admin"\r\n']

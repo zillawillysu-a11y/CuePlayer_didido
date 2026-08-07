@@ -167,7 +167,9 @@ class Ma2TelnetScanner:
         with self._connect(self.command_port) as command:
             self._negotiate_telnet(command, wait_for_login_prompt=True)
             self._login(command, user, password)
-            self._send_line(command, 'Echo "CuePlayer connection test"')
+            # Login is the connectivity test.  MA2's Command Line does not
+            # provide a portable no-op Echo command; sending one only creates
+            # a misleading ``Error: Echo`` in Command Line Feedback.
             return self._read_feedback(command)
 
     def import_plugin(
