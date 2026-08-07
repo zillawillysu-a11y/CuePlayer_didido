@@ -12,8 +12,9 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 - Added persisted per-song `main` and Button-lane selection. Missing selection
   data remains backward-compatible and means all eligible content is exported.
-- Added the **Content** button in the Songs & Pools playlist. It opens a menu
-  for the Main sequence/Go+ cues and every Button lane that has marks.
+- Replaced the Content popup menu with the approved inline playlist layout:
+  clicking the `x/y selected` summary expands a row directly below the song
+  with checkboxes for Main and every Button lane that has marks.
 - Made show allocation reserve and assign only selected sequences; a
   Button-only song starts its first Button at that song's Sequence start.
 - Updated MA2 and MA3 exports so excluded Main content produces no Main
@@ -30,8 +31,6 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 - `src/cueplayer/exporters/ma2/exporter.py`
 - `src/cueplayer/exporters/ma3/exporter.py`
 - `src/cueplayer/ui/show_patch_page.py`
-- `tests/exporters/test_show_patch.py`
-- `tests/persistence/test_schema.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
@@ -44,8 +43,8 @@ content, while keeping allocation, MA2/MA3 XML, and the playlist UI aligned.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\exporters\\test_show_patch.py tests\\exporters\\test_plan_from_song.py tests\\persistence\\test_schema.py tests\\ui\\test_show_patch_ma2_discovery.py --basetemp .test-tmp-per-song-content-final`
-- Result: **32 passed**.
+- `QT_QPA_PLATFORM=offscreen .venv\\Scripts\\python.exe -m pytest tests\\ui\\test_show_patch_ma2_discovery.py tests\\exporters\\test_show_patch.py tests\\persistence\\test_schema.py --basetemp .test-tmp-inline-content`
+- Result: **29 passed**.
 
 ## Remaining issues
 

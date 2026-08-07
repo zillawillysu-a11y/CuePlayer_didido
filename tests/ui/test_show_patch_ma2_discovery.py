@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox
 
 from cueplayer.domain.models import Project, Song
 from cueplayer.exporters.ma_default_dirs import Ma2Discovery, Ma2Installation
@@ -70,7 +70,7 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert status_light is not None
     assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
-    assert page.playlist_table.rowCount() == 1
+    assert page.playlist_table.rowCount() == 2
     assert page.playlist_table.columnCount() == 9
     assert page.registry_command_port.value() == 30000
     assert page.registry_monitor_port.value() == 30001
@@ -259,7 +259,14 @@ def test_playlist_content_selection_persists_and_updates_summary(
     }
     content = page.playlist_table.cellWidget(0, 8)
     assert content is not None
-    assert content.text() == "No Main · 1/2 Buttons"
+    assert content.text() == "1/3 selected"
+    page._toggle_content_details(song.id)
+    assert not page.playlist_table.isRowHidden(1)
+    detail = page.playlist_table.cellWidget(1, 0)
+    assert detail is not None
+    assert [check.text() for check in detail.findChildren(QCheckBox)] == [
+        "Main", "Mark 2", "Mark 3"
+    ]
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
