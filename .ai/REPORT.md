@@ -5,13 +5,14 @@
 
 ## Task objective
 
-Make Test Connection use only the MA2 Login handshake and avoid an unsupported
-follow-up command.
+Keep the Import Telnet socket open long enough for MA2 to finish importing the
+scanner Plugin instead of closing during its response.
 
 ## What was implemented
 
-- Test Connection no longer sends `Echo`; MA2 reports that command as an error.
-- Kept the 250 ms Login pacing and 15-second scanner timeout.
+- Import feedback now drains for up to 1.5 seconds before closing.
+- Test Connection remains Login-only; 250 ms Login pacing and 15-second scan
+  timeout remain.
 
 ## Files changed
 
@@ -30,10 +31,11 @@ follow-up command.
 
 ## Remaining issues
 
-- Real MA2 must confirm Login and Import/Plugin without command-line errors.
+- Real MA2 must confirm Import completes without `Send` and the Plugin is not
+  empty.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Retest Test Connection, then Import Plugin & Scan at Plugin Pool 5. Confirm no
-`Error: Echo` appears because Echo is no longer sent.
+Retest Import Plugin & Scan at Plugin Pool 6. Confirm the imported Plugin has
+the scanner body and no new `Send` appears during Import.

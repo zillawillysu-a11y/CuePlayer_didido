@@ -1,13 +1,14 @@
-# MA2 Telnet Login Test Handoff
+# MA2 Telnet Import Completion Handoff
 
 ## Task objective
 
-Ensure Test Connection does not issue an unsupported MA2 command after Login.
+Ensure MA2 completes the Import command before CuePlayer closes Command Telnet.
 
 ## What was implemented
 
-- Test Connection sends Login only; the previous Echo probe was removed.
-- Login still yields 250 ms before later Import/Plugin commands.
+- Import feedback is drained for up to 1.5 seconds before socket close.
+- Test Connection sends Login only; Login still yields 250 ms before later
+  Import/Plugin commands.
 
 ## Files changed
 
@@ -28,5 +29,5 @@ Real MA2 verification is still required. `startup_error.txt` was not touched.
 
 ## Suggested next task
 
-Run Test Connection and Import Plugin & Scan with Plugin Pool 5; report any
-remaining MA2 command-line error.
+Run Import Plugin & Scan with Plugin Pool 6 and report whether the Plugin body
+is present and whether MA2 logs another `Send` exception.

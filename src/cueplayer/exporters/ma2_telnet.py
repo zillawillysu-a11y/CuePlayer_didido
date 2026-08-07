@@ -135,14 +135,20 @@ class Ma2TelnetScanner:
             conn.sendall(bytes(response))
         return text.decode("utf-8", errors="replace")
 
-    def _read_feedback(self, conn: socket.socket) -> str:
-        """Read one short post-command response without blocking the UI long."""
-        try:
-            conn.settimeout(min(0.5, self.timeout_seconds))
-            data = conn.recv(4096)
-        except TimeoutError:
-            return ""
-        return self._telnet_text(conn, data) if data else ""
+    def _read_feedback(self, conn: socket.socket, *, wait_seconds: float = 0.5) -> str:
+        """Read post-command feedback while allowing MA2 to finish the command."""
+        deadline = time.monotonic() + max(0.05, wait_seconds)
+        chunks: list[str] = []
+        while time.monotonic() < deadline:
+            try:
+                conn.settimeout(min(0.5, max(0.05, deadline - time.monotonic())))
+                data = conn.recv(4096)
+            except TimeoutError:
+                continue
+            if not data:
+                break
+            chunks.append(self._telnet_text(conn, data))
+        return "".join(chunks)
 
     def _login(self, conn: socket.socket, user: str, password: str) -> None:
         """Issue MA2's required command-line Login command.
@@ -199,7 +205,9 @@ class Ma2TelnetScanner:
             if safe_path:
                 import_command += f' /path="{safe_path}"'
             self._send_line(command, import_command)
-            return self._read_feedback(command)
+            # Import can take longer than the command socket's first response;
+            # keep it open so MA2 does not report a Send exception mid-import.
+            return self._read_feedback(command, wait_seconds=1.5)
 
     def scan(
         self,
