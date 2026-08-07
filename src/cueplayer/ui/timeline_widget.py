@@ -776,6 +776,9 @@ class TimelineWidget(QWidget):
 
     def set_song(self, song: Song | None) -> None:
         self._song = song
+        # Never let the previous song's AudioBuffer define the new timeline
+        # duration. This capped a 2h video-only project at the prior 03:25 file.
+        self._audio = None
         self._selected_mark_ids.clear()
         self._selected_clip_ids.clear()
         self._dragging_audio_gain = False
@@ -1590,6 +1593,9 @@ class TimelineWidget(QWidget):
         Progressive partials paint directly from artifact peaks — no full-duration
         AudioBuffer / pyramid rebuild. Same revision as the Video Track lane.
         """
+        # Artifact-backed Music is the active source for video-only songs; a
+        # stale/legacy AudioBuffer must not override its full song duration.
+        self._audio = None
         self._artifact_wave = art
         self._artifact_wave_clip = clip
         self._artifact_wave_complete = bool(complete and art is not None and art.complete)
@@ -2623,24 +2629,34 @@ class TimelineWidget(QWidget):
         src_right = hw + overscan + t_right * old_pps - old_scroll
         src_w = max(1.0, src_right - src_left)
         spatial_logical_w = float(spatial.width()) / dpr
-        if src_left < float(hw) or src_right > spatial_logical_w:
-            # Zooming out can request time outside the retained overscan. Qt
-            # clips that source rect, then scales only the intersection into
-            # the destination — the waveform and hundreds of Marks appear
-            # squeezed into the centre until the idle bake. Keep the prior
-            # native frame stable instead; the sharp idle swap applies the new
-            # geometry a moment later without displaying false positions.
+        # Map only the available source intersection to its true destination.
+        # This keeps zoom-out following the wheel without compressing clipped
+        # pixels into the full view; uncached edges remain blank until idle bake.
+        source_left = max(float(hw), src_left)
+        source_right = min(spatial_logical_w, src_right)
+        if source_left >= source_right:
+            perf_diag.count("timeline.zoom.preview_outside_cache_empty")
+            self._paint_zoom_screen_annotations(painter)
+            return True
+        if source_left != src_left or source_right != src_right:
             perf_diag.count("timeline.zoom.preview_outside_cache")
-            return self._blit_native_pixmap(
-                painter,
-                self._scrub_backdrop,
-                overscan=overscan,
-                delta=0,
-            )
+        dest_left = float(hw) + (
+            (source_left - src_left) / src_w
+        ) * float(content_w)
+        dest_right = float(hw) + (
+            (source_right - src_left) / src_w
+        ) * float(content_w)
         painter.save()
         painter.setClipRect(hw, 0, content_w, h)
         painter.drawPixmap(
-            hw, 0, content_w, h, spatial, _dev(src_left), 0, _dev(src_w), _dev(h)
+            QRectF(dest_left, 0.0, max(1.0, dest_right - dest_left), float(h)),
+            spatial,
+            QRectF(
+                float(_dev(source_left)),
+                0.0,
+                float(_dev(source_right - source_left)),
+                float(_dev(h)),
+            ),
         )
         painter.restore()
         # Screen-space annotations (constant pixel size) on top of scaled spatial.

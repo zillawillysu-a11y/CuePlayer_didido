@@ -88,8 +88,8 @@ def test_zoom_final_rebuild_is_atomic(app: QApplication) -> None:
     assert tl._scrub_backdrop_overscan == 128  # noqa: SLF001
 
 
-def test_zoom_outside_retained_cache_keeps_native_frame(app: QApplication) -> None:
-    """Zoom-out must not squeeze the clipped source intersection to the centre."""
+def test_zoom_outside_retained_cache_still_follows_transform(app: QApplication) -> None:
+    """Zoom-out maps the available intersection instead of freezing old frame."""
     tl = TimelineWidget()
     tl.resize(800, 400)
     tl.show()
@@ -98,14 +98,8 @@ def test_zoom_outside_retained_cache_keeps_native_frame(app: QApplication) -> No
     tl._rebuild_scrub_backdrop(reason="seed")  # noqa: SLF001
     tl._begin_view_transform_gesture()  # noqa: SLF001
     tl._pixels_per_second *= 0.1  # noqa: SLF001
-    native_calls: list[int] = []
-    original = tl._blit_native_pixmap  # noqa: SLF001
-
-    def _native(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        native_calls.append(1)
-        return original(*args, **kwargs)
-
-    tl._blit_native_pixmap = _native  # type: ignore[method-assign]  # noqa: SLF001
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
     pm = QPixmap(800, 400)
     pm.fill(Qt.GlobalColor.black)
     painter = QPainter(pm)
@@ -113,7 +107,12 @@ def test_zoom_outside_retained_cache_keeps_native_frame(app: QApplication) -> No
         assert tl._blit_zoom_preview(painter)  # noqa: SLF001
     finally:
         painter.end()
-    assert native_calls
+    assert int(
+        perf_diag.snapshot()["counters"].get(
+            "timeline.zoom.preview_outside_cache", 0
+        )
+    ) == 1
+    perf_diag.set_enabled(False)
 
 
 def test_playing_backdrop_uses_small_overscan(app: QApplication) -> None:

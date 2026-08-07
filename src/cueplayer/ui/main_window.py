@@ -7543,11 +7543,10 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_show_video_track_toggled(self, checked: bool) -> None:
-        self.project.set_show_video_track(bool(checked))
+        # set_show_video_track emits the canonical visibility handler. Avoid a
+        # second geometry/decode-budget pass per menu click; repeated duplicate
+        # repaints starved queued Video frame presentation.
         self.timeline.set_show_video_track(bool(checked))
-        self.video_sync.set_timeline_video_heavy(bool(checked))
-        self._sync_timeline_geometry()
-        self._mark_dirty()
 
     def _on_video_clip_volume_changed(self, clip_id: str, volume: float) -> None:
         # Volume is already applied to the clip by the timeline widget; this

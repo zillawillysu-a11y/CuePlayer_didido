@@ -264,6 +264,19 @@ def test_song_switch_does_not_keep_stale_waveform(
     assert tl._video_waveform_baked_revision == tl._video_waveform_revision  # noqa: SLF001
 
 
+def test_video_only_song_drops_previous_audio_duration(
+    app: QApplication, tmp_path: Path
+) -> None:
+    del app
+    song, _clip = _song_with_clip(tmp_path)
+    song.duration_seconds = 8216.675
+    tl = TimelineWidget()
+    tl._audio = type("OldAudio", (), {"duration_seconds": 205.259})()  # noqa: SLF001
+    tl.set_song(song)
+    assert tl._audio is None  # noqa: SLF001
+    assert tl._duration() == pytest.approx(8216.675)  # noqa: SLF001
+
+
 def test_zoom_resize_dpr_retain_waveform_via_geometry(
     app: QApplication, tmp_path: Path
 ) -> None:
