@@ -99,7 +99,7 @@ def test_video_lane_peak_strokes_are_continuous_dense(
 def test_video_wave_paint_samples_per_pixel_like_music(
     app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Zoom rebuilds sample peaks once per visible pixel (Music-lane style)."""
+    """Zoomed-in bake samples peaks once per visible pixel (Music-lane style)."""
     del app
     media = tmp_path / "clip.mov"
     media.write_bytes(b"fake")
@@ -116,7 +116,8 @@ def test_video_wave_paint_samples_per_pixel_like_music(
     tl.resize(1200, 400)
     tl.set_show_video_track(True, emit=False)
     tl.set_song(song)
-    tl._pixels_per_second = 20.0  # noqa: SLF001
+    # High zoom → samples_per_pixel low → step=1 Music strokes.
+    tl._pixels_per_second = 80.0  # noqa: SLF001
 
     n = 64
     peaks = ClipWaveformPeaks(
@@ -150,17 +151,78 @@ def test_video_wave_paint_samples_per_pixel_like_music(
     pm.fill()
     painter = QPainter(pm)
     x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
-    x1 = int(tl._x_for_time(60.0))  # noqa: SLF001
-    # Clip rect is viewport-clipped in real paint; here clamp to pixmap width.
-    rx1 = min(x1, 780)
+    x1 = int(tl._x_for_time(8.0))  # noqa: SLF001  # short visible span
     tl._paint_video_clip_waveform(  # noqa: SLF001
-        painter, clip, QRectF(float(x0), 10.0, float(max(50, rx1 - x0)), 60.0)
+        painter, clip, QRectF(float(x0), 10.0, float(max(50, x1 - x0)), 60.0)
     )
     painter.end()
-    visible_px = max(1, rx1 - x0)
-    # samples_per_pixel = 25/20 = 1.25 → use_raw path
+    visible_px = max(1, x1 - x0)
+    # samples_per_pixel = 25/80 ≈ 0.31 → use_raw, step=1
     assert calls["raw"] == visible_px
     assert calls["peaks"] == 0
+
+
+def test_zoomed_out_paint_uses_adaptive_step(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overview zoom must not sample every pixel (Zoom hitch regression)."""
+    del app
+    media = tmp_path / "clip.mov"
+    media.write_bytes(b"fake")
+    song = Song.create("Vid")
+    clip = VideoClip.create(
+        path=media,
+        name="Clip",
+        start_seconds=0.0,
+        duration_seconds=120.0,
+        media_kind="video",
+    )
+    song.video_clips.append(clip)
+    tl = TimelineWidget()
+    tl.resize(1200, 400)
+    tl.set_show_video_track(True, emit=False)
+    tl.set_song(song)
+    tl._pixels_per_second = 2.0  # noqa: SLF001  # heavily zoomed out
+
+    n = 256
+    peaks = ClipWaveformPeaks(
+        sample_rate=100,
+        mono_origin_seconds=0.0,
+        mono=np.ones(n, dtype=np.float32) * 0.4,
+        peak_levels=[],
+        mins=np.full(n, -0.5, dtype=np.float32),
+        maxs=np.full(n, 0.5, dtype=np.float32),
+        coverage=np.ones(n, dtype=np.uint8),
+    )
+    key = tl._video_waveform_cache.key_for(clip)  # noqa: SLF001
+    tl._video_waveform_cache._peaks[key] = peaks  # noqa: SLF001
+
+    import cueplayer.ui.timeline_widget as tw
+
+    calls = {"peaks": 0}
+
+    def _boom_peaks(*_a, **_k):  # noqa: ANN001
+        calls["peaks"] += 1
+        return -0.5, 0.5
+
+    monkeypatch.setattr(tw, "sample_source_peaks_for_clip_times", _boom_peaks)
+    monkeypatch.setattr(
+        tw, "sample_source_raw_for_clip_times", lambda *_a, **_k: (-0.5, 0.5)
+    )
+
+    pm = QPixmap(900, 80)
+    pm.fill()
+    painter = QPainter(pm)
+    x0 = int(tl._x_for_time(0.0))  # noqa: SLF001
+    x1 = min(880, int(tl._x_for_time(120.0)))  # noqa: SLF001
+    width = max(50, x1 - x0)
+    tl._paint_video_clip_waveform(  # noqa: SLF001
+        painter, clip, QRectF(float(x0), 10.0, float(width), 60.0)
+    )
+    painter.end()
+    # samples_per_pixel = 100/2 = 50 → step=4
+    assert calls["peaks"] <= (width // 4) + 2
+    assert calls["peaks"] < width * 0.5
 
 
 def test_gui_notify_coalesces_while_building(app: QApplication) -> None:

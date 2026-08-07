@@ -15,7 +15,10 @@ from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.audio_loader import PeakLevel, build_peak_pyramid, choose_peak_level
 from cueplayer.media.video_audio_cache import get_video_audio_mono_for_waveform
-from cueplayer.media.video_limits import clip_is_heavy, clip_source_duration_seconds
+from cueplayer.media.video_limits import (
+    clip_source_duration_seconds,
+    clip_uses_waveform_artifact,
+)
 from cueplayer.media.video_waveform_artifact import (
     EmbeddedWaveformArtifact,
     artifact_store,
@@ -308,7 +311,7 @@ class VideoClipWaveformCache:
         self._on_ready: Callable[[], None] | None = None
         self._last_gui_notify_mono = 0.0
         self._gui_first_notified = False
-        self._gui_coalesce_s = 2.5
+        self._gui_coalesce_s = 1.5
 
     def set_on_ready(self, callback: Callable[[], None] | None) -> None:
         self._on_ready = callback
@@ -320,8 +323,40 @@ class VideoClipWaveformCache:
             self._pending.clear()
             self._last_gui_notify_mono = 0.0
             self._gui_first_notified = False
-        # Cancel in-flight shared artifact builds tied to the previous session.
-        artifact_store().clear()
+        # Keep shared artifact RAM/disk so save→reload / song switch can
+        # hydrate Video-lane peaks instantly. In-flight builds still see the
+        # bumped generation via cancel_check and abort publishing.
+
+    def _artifact_duration_for(self, clip: VideoClip) -> float:
+        return max(
+            clip_source_duration_seconds(clip),
+            float(clip.source_span_seconds or clip.duration_seconds or 0.0),
+            0.05,
+        )
+
+    def _try_hydrate_from_disk(
+        self, key: ClipWaveformKey, clip: VideoClip
+    ) -> ClipWaveformPeaks | None:
+        """Sync disk/RAM artifact → paint peaks (no worker hop)."""
+        if not clip_uses_waveform_artifact(clip):
+            return None
+        duration = self._artifact_duration_for(clip)
+        art = artifact_store().get_or_load_disk(
+            Path(clip.path), duration_seconds=duration
+        )
+        if art is None or not art.complete:
+            return None
+        if float(art.duration_seconds) + 0.5 < duration:
+            return None
+        mapped = peaks_from_embedded_artifact(clip, art)
+        if mapped is None:
+            return None
+        with self._lock:
+            self._peaks[key] = mapped
+            self._pending.discard(key)
+        if perf_diag.is_enabled():
+            perf_diag.count("video_waveform.artifact.sync_hydrate")
+        return mapped
 
     @staticmethod
     def _mtime_ns(path: Path) -> int:
@@ -351,7 +386,16 @@ class VideoClipWaveformCache:
                 return self._peaks[key]
             if key in self._pending:
                 return None
-            if not allow_submit:
+        # Instant restore after save/reload when disk artifact exists.
+        hydrated = self._try_hydrate_from_disk(key, clip)
+        if hydrated is not None:
+            return hydrated
+        if not allow_submit:
+            return None
+        with self._lock:
+            if key in self._peaks:
+                return self._peaks[key]
+            if key in self._pending:
                 return None
             self._pending.add(key)
             generation = self._generation
@@ -367,7 +411,7 @@ class VideoClipWaveformCache:
         for clip in clips:
             if clip.media_kind == "still":
                 continue
-            # Heavy clips now build via the shared continuous artifact (not skipped).
+            # Artifact path (disk hydrate or background build) for song-length+.
             self.get_peaks(clip)
 
     def flush_pending_gui_notify(self) -> None:
@@ -406,7 +450,7 @@ class VideoClipWaveformCache:
 
     def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
         try:
-            if clip_is_heavy(clip):
+            if clip_uses_waveform_artifact(clip):
                 peaks = self._build_from_shared_artifact(generation, key, clip)
             else:
                 peaks = build_clip_waveform_data_from_path(clip)
@@ -425,11 +469,7 @@ class VideoClipWaveformCache:
         self, generation: int, key: ClipWaveformKey, clip: VideoClip
     ) -> ClipWaveformPeaks | None:
         store = artifact_store()
-        duration = max(
-            clip_source_duration_seconds(clip),
-            float(clip.source_span_seconds or clip.duration_seconds or 0.0),
-            0.05,
-        )
+        duration = self._artifact_duration_for(clip)
         path = Path(clip.path)
 
         def _on_update(art: EmbeddedWaveformArtifact) -> None:

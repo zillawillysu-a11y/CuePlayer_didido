@@ -127,9 +127,9 @@ def test_memory_bound_not_full_rate_pcm() -> None:
     # Far below duration × 48000 × 4 bytes × channels.
     full_rate_bytes = dur * 48000 * 2 * 4
     artifact_bytes = n * (4 + 4 + 1)
-    # Music-lane density (~400 Hz) is still ≪ full-rate PCM.
-    assert artifact_bytes < full_rate_bytes / 50.0
-    assert artifact_bytes < 5_000_000
+    # ~100 Hz overview is still ≪ full-rate PCM.
+    assert artifact_bytes < full_rate_bytes / 100.0
+    assert artifact_bytes < 2_000_000
     assert n == int(np.ceil(dur * PEAKS_PER_SECOND)) or n == MAX_PEAK_BINS
 
 
@@ -318,3 +318,57 @@ def test_progressive_pending_is_nan_not_zero(
         on_progress=_on,
     )
     assert seen_partial["ok"]
+
+
+def test_cache_key_stable_across_duration_probe_drift(tmp_path: Path) -> None:
+    path = tmp_path / "stable.mp4"
+    path.write_bytes(b"x")
+    k1 = artifact_cache_key(path, duration_seconds=180.0)
+    k2 = artifact_cache_key(path, duration_seconds=180.012)
+    k3 = artifact_cache_key(path, duration_seconds=205.0)
+    assert k1 is not None and k1 == k2 == k3
+
+
+def test_sync_hydrate_after_clear_restores_peaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save→reload must paint immediately from disk, not wait on a rebuild."""
+    path = tmp_path / "song.mp4"
+    path.write_bytes(b"x")
+    import cueplayer.media.video_waveform_artifact as art_mod
+
+    monkeypatch.setattr(art_mod, "load_video_audio", _fake_tone_loader(path))
+    monkeypatch.setattr(art_mod, "CHUNK_SECONDS", 30.0)
+    monkeypatch.setattr(art_mod, "CHUNK_YIELD_SECONDS", 0.0)
+    monkeypatch.setattr(art_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(art_mod, "MAX_PEAK_BINS", 400)
+    monkeypatch.setattr(art_mod, "PEAKS_PER_SECOND", 2.0)
+    # Force disk under tmp so we don't pollute the user cache.
+    monkeypatch.setattr(art_mod, "_CACHE_DIR", tmp_path / "wave_cache")
+
+    dur = 90.0
+    clip = VideoClip.create(
+        name="s",
+        path=path,
+        start_seconds=0.0,
+        duration_seconds=dur,
+        source_duration_seconds=dur,
+    )
+    cache = VideoClipWaveformCache()
+    peaks = cache._build_from_shared_artifact(  # noqa: SLF001
+        cache._generation, cache.key_for(clip), clip  # noqa: SLF001
+    )
+    assert peaks is not None
+    key = artifact_cache_key(path, duration_seconds=dur)
+    assert key is not None
+    assert (tmp_path / "wave_cache" / f"vwave_{key}.npz").is_file()
+
+    # Simulate set_song: wipe RAM peaks + in-memory artifact store.
+    cache.clear()
+    artifact_store().clear()
+
+    # Sync hydrate from disk — no async worker (allow_submit=False).
+    restored = cache.get_peaks(clip, allow_submit=False)
+    assert restored is not None
+    assert restored.mono.size > 0
+    assert int(np.count_nonzero(restored.coverage)) > 0

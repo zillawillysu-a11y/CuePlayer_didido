@@ -4302,12 +4302,20 @@ class TimelineWidget(QWidget):
 
         samples_per_pixel = peaks.sample_rate / max(1e-6, self._pixels_per_second)
         use_raw = samples_per_pixel <= 1.5
+        # Zoomed-out / wide bake: sample fewer columns so backdrop rebuild stays
+        # cheap. Pen width fills the skipped columns (Music look when zoomed in).
+        step = 1
+        if width_px > 2400 or samples_per_pixel >= 48:
+            step = 4
+        elif width_px > 1400 or samples_per_pixel >= 16:
+            step = 2
+        painter.setPen(QPen(color, float(max(1, step))))
 
         t_render = monotonic_ns()
         try:
-            for x in range(x_left, x_right):
+            for x in range(x_left, x_right, step):
                 t0 = self._time_for_x(x)
-                t1 = self._time_for_x(x + 1)
+                t1 = self._time_for_x(x + step)
                 clip_t0 = timeline_to_clip_local(t0, clip)
                 clip_t1 = timeline_to_clip_local(t1, clip)
                 if clip_t0 is None and clip_t1 is None:
@@ -4328,7 +4336,7 @@ class TimelineWidget(QWidget):
                         clip,
                         clip_t0=clip_t0,
                         clip_t1=clip_t1,
-                        samples_per_pixel=samples_per_pixel,
+                        samples_per_pixel=samples_per_pixel * step,
                     )
                 # Pending / uncovered bins are NaN — never fabricate zero silence.
                 if not (lo == lo and hi == hi):

@@ -9,6 +9,7 @@ Design goals (Sprint 8 follow-up):
 - Bounded min/max envelopes (never full-rate duration×48000 float PCM)
 - Chunked decode that releases ``av_path_lock`` between windows
 - Disk cache keyed by path + mtime/size + stream + format version
+  (duration probe drift must not invalidate; sync hydrate on reload)
 - Progressive coverage (pending ≠ zero silence)
 """
 
@@ -29,21 +30,22 @@ from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.video_audio_loader import load_video_audio
 
 # Artifact schema — bump when on-disk layout changes.
-ARTIFACT_FORMAT_VERSION = 2
-# Match Music-lane overview density so Video Track can align visually.
-# 15 min → 360k bins ≈ 3.2 MB (mins+maxs+coverage).
-PEAKS_PER_SECOND = 400.0
-# Hard cap (~1.4 h at 400 Hz; longer files thin the effective rate).
+ARTIFACT_FORMAT_VERSION = 3
+# Overview density: dense enough for Music-lane strokes + alignment at
+# typical zoom, cheap enough to build/reload quickly (400 Hz was too slow).
+# 15 min → 90k bins ≈ 810 KB.
+PEAKS_PER_SECOND = 100.0
+# Hard cap (~5.5 h at 100 Hz; longer files thin the effective rate).
 MAX_PEAK_BINS = 2_000_000
 # Contiguous decode window; lock held only for this slice then released.
 CHUNK_SECONDS = 8.0
-# Yield so Preview / VideoAudioMixer can use av_path_lock. Longer than a
-# frame budget so playback decode is not starved between waveform windows.
-CHUNK_YIELD_SECONDS = 0.08
+# Yield so Preview / VideoAudioMixer can use av_path_lock. Keep short when
+# idle — long yields made first-build feel "very very slow".
+CHUNK_YIELD_SECONDS = 0.02
 # While playback is active, yield longer between chunks (or pause entirely).
 CHUNK_YIELD_WHILE_PLAYING_SECONDS = 0.25
 # GUI progressive publishes are coalesced to this cadence (final is immediate).
-PROGRESS_GUI_COALESCE_SECONDS = 2.5
+PROGRESS_GUI_COALESCE_SECONDS = 1.5
 # First-audio-stream index (CuePlayer always uses stream 0 today).
 DEFAULT_AUDIO_STREAM_INDEX = 0
 
@@ -153,16 +155,22 @@ def artifact_cache_key(
     path: Path,
     *,
     stream_index: int = DEFAULT_AUDIO_STREAM_INDEX,
-    duration_seconds: float,
+    duration_seconds: float = 0.0,
 ) -> str | None:
+    """Stable per-file key (mtime/size/format/pps).
+
+    Duration is intentionally *not* part of the key: source-duration probe
+    drift after save/reload must not invalidate a complete disk artifact.
+    ``duration_seconds`` is kept for call-site compatibility only.
+    """
+    del duration_seconds
     meta = _stat_key(path)
     if meta is None:
         return None
     resolved, mtime_ns, size = meta
-    pps = artifact_peaks_per_second_for_duration(duration_seconds)
     raw = (
         f"{resolved}\0{mtime_ns}\0{size}\0{stream_index}\0"
-        f"{ARTIFACT_FORMAT_VERSION}\0{pps:.6f}\0{round(float(duration_seconds), 3)}"
+        f"{ARTIFACT_FORMAT_VERSION}\0{PEAKS_PER_SECOND:.6f}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
@@ -278,37 +286,37 @@ def _fill_chunk_peaks(
 
     pps = float(art.peaks_per_second)
     origin = float(art.origin_seconds)
-    newly = 0
-    # Map each PCM sample to an artifact bin; keep signed extrema.
-    # Vectorized via bucket index.
     src_t0 = float(pcm_origin)
-    src_t1 = src_t0 + mono.size / float(pcm_rate)
-    b0 = int(np.floor((src_t0 - origin) * pps))
-    b1 = int(np.ceil((src_t1 - origin) * pps))
-    b0 = max(0, b0)
-    b1 = min(art.n_bins, max(b0 + 1, b1))
-    if b0 >= b1:
+    # Map each PCM sample to a bin index, then reduce with peak-hold.
+    idx = np.floor((src_t0 - origin + np.arange(mono.size, dtype=np.float64) / float(pcm_rate)) * pps).astype(
+        np.int64
+    )
+    valid = (idx >= 0) & (idx < art.n_bins)
+    if not np.any(valid):
         return 0
-
-    # For each bin, take peak-hold over overlapping PCM.
-    for b in range(b0, b1):
-        t_lo = origin + b / pps
-        t_hi = origin + (b + 1) / pps
-        i0 = max(0, int(np.floor((t_lo - src_t0) * pcm_rate)))
-        i1 = min(mono.size, int(np.ceil((t_hi - src_t0) * pcm_rate)))
-        if i0 >= i1:
-            continue
-        seg = mono[i0:i1]
-        lo = float(seg.min())
-        hi = float(seg.max())
-        if art.coverage[b] == 0:
-            art.mins[b] = lo
-            art.maxs[b] = hi
-            art.coverage[b] = 1
-            newly += 1
-        else:
-            art.mins[b] = min(float(art.mins[b]), lo)
-            art.maxs[b] = max(float(art.maxs[b]), hi)
+    idx = idx[valid]
+    vals = mono[valid]
+    # First-touch mins/maxs for newly covered bins via scatter.
+    # Use nan-init workspace then merge into art.
+    n = art.n_bins
+    lo_acc = np.full(n, np.inf, dtype=np.float32)
+    hi_acc = np.full(n, -np.inf, dtype=np.float32)
+    np.minimum.at(lo_acc, idx, vals)
+    np.maximum.at(hi_acc, idx, vals)
+    touched = np.isfinite(lo_acc) & np.isfinite(hi_acc)
+    if not np.any(touched):
+        return 0
+    newly = 0
+    fresh = touched & (art.coverage == 0)
+    if np.any(fresh):
+        art.mins[fresh] = lo_acc[fresh]
+        art.maxs[fresh] = hi_acc[fresh]
+        art.coverage[fresh] = 1
+        newly = int(np.count_nonzero(fresh))
+    update = touched & (art.coverage != 0) & (~fresh)
+    if np.any(update):
+        art.mins[update] = np.minimum(art.mins[update], lo_acc[update])
+        art.maxs[update] = np.maximum(art.maxs[update], hi_acc[update])
     return newly
 
 
@@ -570,13 +578,22 @@ class EmbeddedWaveformArtifactStore:
         )
         if key is None:
             return None
+        need = float(duration_seconds)
+
+        def _usable(art: EmbeddedWaveformArtifact | None) -> EmbeddedWaveformArtifact | None:
+            if art is None or not art.complete:
+                return None
+            if float(art.duration_seconds) + 0.5 < need:
+                return None
+            return art
+
         with self._lock:
-            hit = self._by_key.get(key)
-            if hit is not None and hit.complete:
+            hit = _usable(self._by_key.get(key))
+            if hit is not None:
                 if perf_diag.is_enabled():
                     perf_diag.count("video_waveform.artifact.cache_hit")
                 return hit
-        disk = load_artifact_from_disk(key)
+        disk = _usable(load_artifact_from_disk(key))
         if disk is not None:
             with self._lock:
                 self._by_key[key] = disk
@@ -610,7 +627,11 @@ class EmbeddedWaveformArtifactStore:
         existing = self.get_or_load_disk(
             path, duration_seconds=duration_seconds, stream_index=stream_index
         )
-        if existing is not None and existing.complete:
+        if (
+            existing is not None
+            and existing.complete
+            and float(existing.duration_seconds) + 0.5 >= float(duration_seconds)
+        ):
             if on_update is not None:
                 on_update(existing)
             return existing
