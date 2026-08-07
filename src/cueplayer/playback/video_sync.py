@@ -65,7 +65,7 @@ _MIN_SCRUB_DECODE_INTERVAL = 1.0 / _MAX_SCRUB_DECODE_HZ
 # Video Track lane is open (timeline paint + clip waveforms share the UI
 # thread) we drop to the heavy budget so playhead motion stays usable.
 _MAX_PLAY_DECODE_HZ = 30.0
-_MAX_PLAY_DECODE_HZ_HEAVY = 24.0
+_MAX_PLAY_DECODE_HZ_HEAVY = 30.0
 _MIN_PLAY_DECODE_INTERVAL = 1.0 / _MAX_PLAY_DECODE_HZ
 _MIN_PLAY_DECODE_INTERVAL_HEAVY = 1.0 / _MAX_PLAY_DECODE_HZ_HEAVY
 
@@ -618,6 +618,16 @@ class VideoSyncController(QObject):
         self._start_seek_liveness_watch(jump_id, target, prev)
         if is_playing and self._video_output_active:
             self._playing = True
+            # If the sparse scrub ladder is already warm, replace the stale
+            # pre-seek frame immediately while the exact playback decoder seeks
+            # to the new GOP.  This is a cache lookup only (never PyAV on UI).
+            song = self._song
+            if song is not None:
+                poster = self._scrub_composite(song, target)
+                if self._is_valid_frame_array(poster):
+                    assert isinstance(poster, np.ndarray)
+                    self._emit_frame(poster, reason="seek_jump_poster")
+                    self._note_display_source(DisplaySource.POSTER)
             self._schedule_playback_target(
                 target,
                 scheduler=f"seek_jump_{self._seek_jump_input_source}",
@@ -769,10 +779,11 @@ class VideoSyncController(QObject):
         QTimer.singleShot(0, self._decode_last_position_if_active)
 
     def set_timeline_video_heavy(self, heavy: bool) -> None:
-        """Lower play-decode Hz when the Video Track lane is open.
+        """Keep the normal play-decode cadence when Video Track is open.
 
-        Timeline playhead + clip waveforms share the UI thread with Preview /
-        Clean paint. Keep 30 Hz when the lane is hidden; use 24 Hz when open.
+        Timeline zoom/paint now has its own bounded repaint cadence, so lowering
+        Preview from 30 to 24 Hz only made opening the lane permanently look
+        less fluid without buying useful UI headroom.
         """
         heavy = bool(heavy)
         if heavy == self._timeline_video_heavy:

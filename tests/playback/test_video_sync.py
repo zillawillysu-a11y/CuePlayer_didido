@@ -365,6 +365,32 @@ def test_duplicate_decoded_frame_is_not_reemitted(app: QApplication, red_clip_pa
     assert len(frames) == 1
 
 
+def test_playing_seek_jump_presents_warm_poster_before_exact_decode(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del app
+    song = Song.create("Jump")
+    clip = VideoClip.create(
+        name="clip",
+        path=Path("warm.mp4"),
+        start_seconds=0.0,
+        duration_seconds=10.0,
+    )
+    song.add_video_clip(clip)
+    controller = VideoSyncController()
+    controller.set_song(song)
+    controller._playing = True  # noqa: SLF001
+    poster = np.zeros((8, 8, 3), dtype=np.uint8)
+    monkeypatch.setattr(controller, "_scrub_composite", lambda *_args: poster)
+    monkeypatch.setattr(controller, "_schedule_playback_target", lambda *_args, **_kwargs: None)
+    frames: list[object] = []
+    controller.frame_changed.connect(frames.append)
+
+    controller.note_discontinuous_seek(5.0, from_seconds=1.0, playing=True)
+
+    assert frames == [poster]
+
+
 def test_decode_quality_defaults_full_and_invalidates_cached_decoders(
     app: QApplication, red_clip_path: Path
 ) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from time import monotonic_ns
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,23 @@ def test_play_decode_cap_leaves_headroom_for_timeline() -> None:
     assert video_sync_mod._MAX_PLAY_DECODE_HZ >= 24.0
     assert video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY <= video_sync_mod._MAX_PLAY_DECODE_HZ
     assert video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY >= 20.0
+
+
+def test_open_video_track_keeps_full_preview_cadence() -> None:
+    assert (
+        video_sync_mod._MAX_PLAY_DECODE_HZ_HEAVY
+        == video_sync_mod._MAX_PLAY_DECODE_HZ
+    )
+
+
+def test_rapid_zoom_repaint_is_trailing_edge_throttled(app: QApplication) -> None:
+    widget = TimelineWidget()
+    widget._zoom_preview_last_repaint_ns = monotonic_ns()  # noqa: SLF001
+
+    widget._request_zoom_preview_repaint()  # noqa: SLF001
+
+    assert widget._zoom_preview_repaint_timer.isActive()  # noqa: SLF001
+    widget._zoom_preview_repaint_timer.stop()  # noqa: SLF001
 
 
 def test_view_changed_throttled_while_playing(app: QApplication) -> None:

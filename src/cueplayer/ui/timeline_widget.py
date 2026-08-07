@@ -284,6 +284,13 @@ class TimelineWidget(QWidget):
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = 0
+        self._zoom_preview_last_repaint_ns = 0
+        self._zoom_preview_repaint_interval_ns = 33_000_000
+        self._zoom_preview_repaint_timer = QTimer(self)
+        self._zoom_preview_repaint_timer.setSingleShot(True)
+        self._zoom_preview_repaint_timer.timeout.connect(
+            self._flush_zoom_preview_repaint
+        )
         self._view_transform_last_view_changed_ns = 0
         self._view_transform_view_changed_interval_ns = 66_000_000
         # ≥250–300 ms: continuous physical wheel must not trigger repeated
@@ -1996,7 +2003,7 @@ class TimelineWidget(QWidget):
             perf_diag.count("timeline.zoom.raw_events")
             with perf_diag.span("timeline.zoom.temporary_transform_ms"):
                 self._begin_view_transform_gesture()
-                self.update()
+                self._request_zoom_preview_repaint()
                 self._emit_view_changed_throttled()
             perf_diag.count("timeline.zoom.coalesced_events")
         else:
@@ -2062,7 +2069,27 @@ class TimelineWidget(QWidget):
         else:
             self._zoom_quality_timer.start()
 
+    def _request_zoom_preview_repaint(self) -> None:
+        """Paint continuous wheel zoom at <=30 Hz, retaining the latest state."""
+        now = monotonic_ns()
+        elapsed = now - self._zoom_preview_last_repaint_ns
+        if elapsed >= self._zoom_preview_repaint_interval_ns:
+            self._zoom_preview_last_repaint_ns = now
+            self.update()
+            return
+        if not self._zoom_preview_repaint_timer.isActive():
+            remaining_ns = self._zoom_preview_repaint_interval_ns - elapsed
+            self._zoom_preview_repaint_timer.start(
+                max(1, int((remaining_ns + 999_999) // 1_000_000))
+            )
+
+    def _flush_zoom_preview_repaint(self) -> None:
+        self._zoom_preview_last_repaint_ns = monotonic_ns()
+        self.update()
+
     def _cancel_view_transform_gesture(self, *, rebuild: bool, reason: str) -> None:
+        if self._zoom_preview_repaint_timer.isActive():
+            self._zoom_preview_repaint_timer.stop()
         if self._zoom_quality_timer.isActive():
             self._zoom_quality_timer.stop()
         self._view_transform_busy = False
@@ -2077,6 +2104,8 @@ class TimelineWidget(QWidget):
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         self._view_transform_last_busy_ns = monotonic_ns()
+        if self._zoom_preview_repaint_timer.isActive():
+            self._zoom_preview_repaint_timer.stop()
         set_waveform_gui_suppressed_for_zoom(False)
         # Flush any progressive publishes coalesced during the gesture.
         flush = getattr(self._video_waveform_cache, "flush_pending_gui_notify", None)
