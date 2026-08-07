@@ -218,12 +218,13 @@
           <h2>MA2 Live Pool Scan</h2>
           <div class="connection-grid" style="margin-top:13px">
             <div class="field"><label>MA2 Host</label><input id="maHost" type="text" value="127.0.0.1"></div>
-            <div class="field"><label>Target Version</label><select id="maVersion"><option>3.3.4.3 · minimum</option><option>3.9.60</option><option>3.9.61</option><option>3.9.63.6 · latest</option></select></div>
+            <div class="field"><label>Target Version</label><select id="maVersion"><option value="3.3.4.3">3.3.4.3 · minimum</option><option value="3.9.60">3.9.60</option><option value="3.9.61">3.9.61</option><option value="3.9.63.6">3.9.63.6 · latest</option></select></div>
             <div class="field"><label>Command</label><input id="maCommandPort" type="number" value="30000"></div>
             <div class="field"><label>Monitor</label><input id="maMonitorPort" type="number" value="30001"></div>
             <div class="field"><label>User</label><input id="maUser" type="text" value="CuePlayerScan"></div>
             <div class="field"><label>Password</label><input id="maPassword" type="password" value=""></div>
           </div>
+          <div class="connection-status" id="maDetectionStatus"><span>Installed versions not detected</span><span class="inline"><button class="btn" id="detectMaVersions">Detect Installed Versions</button></span></div>
           <div class="connection-status" id="maConnectionStatus"><span>Not connected · Telnet scan prototype</span><span class="inline"><button class="btn" id="testMaConnection">Test Connection</button><button class="btn primary" id="scanMaPools">Scan Current Show</button></span></div>
         </div>
         <div class="registry-summary">
@@ -657,8 +658,39 @@
     $("#recalc").addEventListener("click", renderSongs);
     $("#validateTop").addEventListener("click", () => showPage("review"));
     $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
-    $("#testMaConnection").addEventListener("click", () => { $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype connected · ${$("#maHost").value}:${$("#maCommandPort").value} · MA2 ${$("#maVersion").value}`; });
-    $("#scanMaPools").addEventListener("click", () => { $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); });
+    const minimumMa2Version = "3.3.4.3";
+    const prototypeInstalledVersions = ["3.9.60", "3.9.63.6"];
+    const compareVersions = (left, right) => {
+      const a = left.split(".").map(Number), b = right.split(".").map(Number);
+      for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+        if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0);
+      }
+      return 0;
+    };
+    function validateTargetVersion(remoteVersion = null) {
+      const target = $("#maVersion").value;
+      if (compareVersions(target, minimumMa2Version) < 0) {
+        $("#maConnectionStatus").classList.remove("connected");
+        $("#maConnectionStatus span:first-child").textContent = `Blocked · MA2 ${target} is below the 3.3.4.3 minimum`;
+        return false;
+      }
+      if (remoteVersion && remoteVersion !== target) {
+        $("#maConnectionStatus").classList.remove("connected");
+        $("#maConnectionStatus span:first-child").textContent = `Version mismatch · Target ${target} · Remote ${remoteVersion}`;
+        return false;
+      }
+      return true;
+    }
+    $("#detectMaVersions").addEventListener("click", () => {
+      const runningVersion = prototypeInstalledVersions.at(-1);
+      $("#maVersion").value = runningVersion;
+      $("#maDetectionStatus").classList.add("connected");
+      $("#maDetectionStatus span:first-child").textContent = `Prototype detection · Running ${runningVersion} · Installed ${prototypeInstalledVersions.join(", ")}`;
+      validateTargetVersion();
+    });
+    $("#maVersion").addEventListener("change", () => validateTargetVersion());
+    $("#testMaConnection").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype connected · ${$("#maHost").value}:${$("#maCommandPort").value} · Remote MA2 ${remoteVersion}`; });
+    $("#scanMaPools").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · MA2 ${remoteVersion} · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); });
     $("#allocationMode").addEventListener("change", () => { const manual = $("#allocationMode").value === "manual"; ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual); if (!manual) writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
     $("#allocationSong").addEventListener("change", () => { draftSongId = $("#allocationSong").value; draftAllocation = null; renderRegistry(); });
     ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).addEventListener("input", validateDraft));

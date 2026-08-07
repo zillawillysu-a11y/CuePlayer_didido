@@ -15,6 +15,14 @@
 - Telnet uses command port 30000 and optional read-only System Monitor port 30001.
 - Scanner records include the detected MA2 version so CuePlayer can select the correct parser/profile.
 
+## Version detection
+
+- On Windows, CuePlayer first enumerates installed `gma2_V_*` directories under the MA Lighting Technologies grandMA data directory.
+- If grandMA2 onPC is running, the executable file version is preferred because it can identify the full build, such as `3.9.63.6`.
+- The export output path remains the final XML-profile check; a path/version mismatch must be shown before export.
+- After a live scan connects, the remote console version is authoritative for that connection. A local/remote mismatch must be visible and must not silently select a schema.
+- Automatic detection never removes the manual Target Version selector.
+
 ## Verification required
 
 - Golden XML fixtures for 3.3.4.3, 3.9.60, 3.9.61, and 3.9.63.6 families.
