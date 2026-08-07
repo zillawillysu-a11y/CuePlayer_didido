@@ -4750,11 +4750,25 @@ class TimelineWidget(QWidget):
         return False
 
     def _paint_progressive_waveform_overlay(self, painter: QPainter) -> None:
-        """Repaint Music + Video wave regions only — Marks stay in the blit."""
+        """Repaint Music + Video wave regions only — then restore Mark stems.
+
+        Video clip fill is opaque. Painting it over the retained bake would bury
+        Mark stems that cross the wave/Video band (Video-only songs looked like
+        the waveform had covered every Mark). Re-stroke stems/labels here; lane
+        shapes below the Video band stay in the blit.
+        """
         with perf_diag.span("timeline.waveform_layer.overlay_paint_ms"):
             self._paint_waveform(painter)
             if self._video_lane_visible():
                 self._paint_video_lane(painter)
+            if self._song is not None and self._song.marks:
+                self._paint_marks(
+                    painter,
+                    start_y=self._tracks_top_y(),
+                    waveform_lines=True,
+                    lane_shapes=False,
+                    mode="static",
+                )
 
     def _song_expects_waveform(self) -> bool:
         """True when the song has media that should fill the Music lane."""

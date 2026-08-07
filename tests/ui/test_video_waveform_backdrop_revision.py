@@ -99,6 +99,55 @@ def _backdrop_has_non_bg_pixels(tl: TimelineWidget) -> bool:
     return len(seen) > 2
 
 
+def test_progressive_overlay_restrokes_mark_stems(
+    app: QApplication, tmp_path: Path
+) -> None:
+    """Video-lane progressive overlay must not bury Mark stems permanently."""
+    del app
+    song, clip = _song_with_clip(tmp_path)
+    from cueplayer.domain.models import Mark
+
+    song.marks.append(
+        Mark.create(lane_index=0, time_seconds=1.0, display_name="M1")
+    )
+    song.sort_marks()
+    tl = TimelineWidget()
+    tl.resize(800, 420)
+    tl.set_show_video_track(True, emit=False)
+    tl.set_song(song)
+    _inject_peaks(tl, clip, _peaks())
+    tl._rebuild_scrub_backdrop(reason="with_marks")  # noqa: SLF001
+    assert tl._scrub_backdrop is not None  # noqa: SLF001
+
+    calls: list[tuple[bool, bool]] = []
+    orig = tl._paint_marks  # noqa: SLF001
+
+    def _wrap(painter, *, start_y: int, waveform_lines: bool = True, lane_shapes: bool = True, mode: str = "live"):  # noqa: ANN001
+        calls.append((bool(waveform_lines), bool(lane_shapes)))
+        return orig(
+            painter,
+            start_y=start_y,
+            waveform_lines=waveform_lines,
+            lane_shapes=lane_shapes,
+            mode=mode,
+        )
+
+    tl._paint_marks = _wrap  # type: ignore[method-assign]  # noqa: SLF001
+    from PySide6.QtGui import QPainter, QPixmap
+    from PySide6.QtCore import Qt
+
+    pm = QPixmap(800, 420)
+    pm.fill(Qt.GlobalColor.black)
+    painter = QPainter(pm)
+    try:
+        tl._paint_progressive_waveform_overlay(painter)  # noqa: SLF001
+    finally:
+        painter.end()
+    assert any(wl and not ls for wl, ls in calls), (
+        "progressive overlay must re-stroke Mark stems (waveform_lines, no lane shapes)"
+    )
+
+
 def test_waveform_ready_before_first_paint_bakes_peaks(
     app: QApplication, tmp_path: Path
 ) -> None:
