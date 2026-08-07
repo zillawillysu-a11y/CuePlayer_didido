@@ -1,26 +1,33 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** Production MA2 discovery and setup synchronization
+**Type:** MA Export PySide6 interface redesign
 **Updated:** 2026-08-08
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Implement read-only Windows MA2 version/output-folder discovery and connect production Registry results to Console Setup using the approved mockup behavior.
+Replace the legacy ShowPatchPage visual layout with the approved playlist-style PySide6 workflow represented by `design/ma_export_playlist_mockup.html`.
+
+## Required pages
+
+1. Songs & Pools
+2. Export Registry
+3. Console Setup
+4. View Layout
+5. Review & Export
 
 ## Requirements
 
-- Discover installed `gma2_V_*` folders and the running onPC full executable version.
-- Default Output Folder to the selected version's `importexport` folder.
-- Provide a native Windows/PySide6 Browse action and a way to restore the version default.
-- Preserve a user-selected custom folder across later version changes.
-- Synchronize successful Registry results into Sequence, Effects, Timecode, Song Macro, and View starts.
-- Do not alter Fixed Macro Start, Template Page, or executors during synchronization.
-- Reject versions below 3.3.4.3 and block mismatched/failed results from changing setup.
-- Keep Windows discovery in an adapter/service and preserve Unicode path support.
-- Do not implement Telnet transport in this task.
+- Reuse existing export logic; do not rewrite the MA2/MA3 exporters.
+- Reuse production MA2 version detection, output-folder follow/custom mode, and `apply_registry_scan_result`.
+- Keep all interface chrome in English and preserve Unicode song display.
+- Preserve per-song Main/Button content selection and explicit Song Order.
+- Preserve approved defaults and Fixed/Per Song View allocation behavior.
+- Keep Screen 3 fixed at 16 × 8 and Pool titles consuming one cell.
+- Do not implement Telnet transport in the visual-redesign task.
+- Do not touch `startup_error.txt`.
 
 ## Done when
 
-Focused tests cover version-following/custom folder modes, scan success/failure synchronization, protected fixed settings, unsupported versions, multiple installations, and Unicode paths.
+The running PySide6 application visibly follows the approved five-page mockup, existing export behavior remains green, and focused UI tests cover page navigation, readable fields, Registry/Setup synchronization, View grid invariants, and export review.

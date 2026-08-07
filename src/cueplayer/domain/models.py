@@ -1029,9 +1029,9 @@ class MaExportSettings:
     console: str = "ma2"  # ma2 | ma3
     export_mode: str = "full"  # full | timecode_only
     sequence_pool_start: int = 1
-    timecode_pool_start: int = 1
-    main_executor: str = "1.101"
-    button_executor_start: str = "1.201"
+    timecode_pool_start: int = 201
+    main_executor: str = "201.130"
+    button_executor_start: str = "201.101"
     timecode_slot: int = 1
     data_pool: str = "Default"
     latency_ms: float = 0.0
@@ -1044,9 +1044,9 @@ class MaExportSettings:
     ma2_include_fixed_macros: bool = True
     ma2_include_song_macros: bool = True
     ma2_include_song_list: bool = True
-    ma2_template_page: int = 100
-    ma2_fixed_macro_start: int = 1001
-    ma2_song_macro_start: int = 1009
+    ma2_template_page: int = 200
+    ma2_fixed_macro_start: int = 101
+    ma2_song_macro_start: int = 201
     ma2_add_main_preset_cue: bool = False
     ma2_main_preset_cue_id: float = 0.5
     ma2_include_song_views: bool = True
@@ -1057,6 +1057,8 @@ class MaExportSettings:
     export_song_ids: list[str] = field(default_factory=list)
     output_dir_ma2: str = ""
     output_dir_ma3: str = ""
+    ma2_target_version: str = ""
+    ma2_output_dir_follows_version: bool = True
 
 
 # How LTC reaches the output bus.

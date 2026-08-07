@@ -5,8 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from cueplayer.exporters.ma_default_dirs import (
+    discover_ma2_environment,
+    discover_ma2_installations,
     default_ma2_export_dir,
     default_ma3_export_dir,
+    ma2_export_dir_for_version,
+    ma2_version_from_path,
+    ma2_version_supported,
     resolve_export_dir,
 )
 
@@ -35,6 +40,44 @@ def test_detect_ma_folders_if_installed() -> None:
         assert ma2.is_dir()
     if ma3 is not None:
         assert ma3.is_dir()
+
+
+def test_discover_ma2_installations_sorts_and_ignores_noise(tmp_path: Path) -> None:
+    for name in ("gma2_V_3.9.60", "gma2_V_3.3.4", "gma2_V_3.9.63"):
+        (tmp_path / name / "importexport").mkdir(parents=True)
+    (tmp_path / "gma2_V_invalid" / "importexport").mkdir(parents=True)
+    (tmp_path / "gma2_V_3.9.61").mkdir()
+
+    found = discover_ma2_installations(tmp_path)
+
+    assert [item.version for item in found] == ["3.3.4", "3.9.60", "3.9.63"]
+    assert found[-1].importexport_dir.name == "importexport"
+
+
+def test_discovery_prefers_supported_running_full_build(tmp_path: Path) -> None:
+    (tmp_path / "gma2_V_3.9.60" / "importexport").mkdir(parents=True)
+    discovery = discover_ma2_environment(tmp_path, lambda: "3.9.63.6")
+    assert discovery.running_version == "3.9.63.6"
+    assert discovery.recommended_version == "3.9.63.6"
+
+
+def test_discovery_falls_back_to_newest_supported_install(tmp_path: Path) -> None:
+    for name in ("gma2_V_3.2.2", "gma2_V_3.3.4", "gma2_V_3.9.60"):
+        (tmp_path / name / "importexport").mkdir(parents=True)
+    discovery = discover_ma2_environment(tmp_path, lambda: None)
+    assert discovery.recommended_version == "3.9.60"
+    assert not ma2_version_supported("3.3.4.2")
+    assert ma2_version_supported("3.3.4.3")
+
+
+def test_full_build_maps_to_matching_importexport(tmp_path: Path) -> None:
+    expected = tmp_path / "gma2_V_3.9.63" / "importexport"
+    expected.mkdir(parents=True)
+    installs = discover_ma2_installations(tmp_path)
+    assert ma2_export_dir_for_version("3.9.63.6", installs) == expected
+    assert ma2_export_dir_for_version("3.9.61", installs) is None
+    assert ma2_version_from_path(expected) == "3.9.63"
+    assert ma2_version_from_path(tmp_path / "custom") is None
 
 
 def test_resolve_rejects_cross_console_remembered(tmp_path: Path) -> None:

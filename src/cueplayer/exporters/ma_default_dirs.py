@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 import re
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 _PROGRAM_DATA = Path(r"C:\ProgramData")
 _MA2_ROOT = _PROGRAM_DATA / "MA Lighting Technologies" / "grandma"
 _MA3_ROOT = _PROGRAM_DATA / "MALightingTechnology"
+MA2_MINIMUM_VERSION = "3.3.4.3"
+
+
+@dataclass(frozen=True)
+class Ma2Installation:
+    version: str
+    library_dir: Path
+    importexport_dir: Path
+
+
+@dataclass(frozen=True)
+class Ma2Discovery:
+    installations: tuple[Ma2Installation, ...]
+    running_version: str | None
+
+    @property
+    def recommended_version(self) -> str | None:
+        if self.running_version and ma2_version_supported(self.running_version):
+            return self.running_version
+        supported = [item for item in self.installations if ma2_version_supported(item.version)]
+        return supported[-1].version if supported else None
 
 
 def _version_key(name: str) -> tuple[int, ...]:
@@ -16,21 +40,78 @@ def _version_key(name: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums) if nums else (0,)
 
 
+def ma2_version_supported(version: str) -> bool:
+    return _version_key(version) >= _version_key(MA2_MINIMUM_VERSION)
+
+
+def discover_ma2_installations(root: Path = _MA2_ROOT) -> tuple[Ma2Installation, ...]:
+    """Enumerate installed MA2 libraries without modifying their contents."""
+    if not root.is_dir():
+        return ()
+    found: list[Ma2Installation] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        match = re.fullmatch(r"gma2_V_(\d+(?:\.\d+){2,3})", child.name, re.IGNORECASE)
+        if match is None:
+            continue
+        importexport = child / "importexport"
+        if importexport.is_dir():
+            found.append(Ma2Installation(match.group(1), child, importexport))
+    return tuple(sorted(found, key=lambda item: _version_key(item.version)))
+
+
+def _running_ma2_version_windows() -> str | None:
+    """Read the active grandMA2 onPC executable FileVersion through PowerShell."""
+    command = (
+        "$p=Get-CimInstance Win32_Process | Where-Object { "
+        "$_.Name -match '^(grandma2|gma2).*\\.exe$' -and $_.ExecutablePath }; "
+        "$p | ForEach-Object { (Get-Item -LiteralPath $_.ExecutablePath).VersionInfo.FileVersion }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    versions = re.findall(r"\d+(?:\.\d+){2,3}", result.stdout or "")
+    return max(versions, key=_version_key) if versions else None
+
+
+def discover_ma2_environment(
+    root: Path = _MA2_ROOT,
+    running_version_reader: Callable[[], str | None] = _running_ma2_version_windows,
+) -> Ma2Discovery:
+    return Ma2Discovery(discover_ma2_installations(root), running_version_reader())
+
+
+def ma2_export_dir_for_version(
+    version: str, installations: tuple[Ma2Installation, ...]
+) -> Path | None:
+    """Match a full build (3.9.63.6) to its library folder (gma2_V_3.9.63)."""
+    wanted = _version_key(version)[:3]
+    matches = [item for item in installations if _version_key(item.version)[:3] == wanted]
+    return matches[-1].importexport_dir if matches else None
+
+
+def ma2_version_from_path(path: Path | str) -> str | None:
+    match = re.search(
+        r"gma2_V_(\d+(?:\.\d+){2,3})",
+        str(path).replace("/", "\\"),
+        re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
 def default_ma2_export_dir() -> Path | None:
     """Newest installed grandMA2 `importexport` folder, if present."""
-    if not _MA2_ROOT.is_dir():
-        return None
-    candidates: list[Path] = []
-    for child in _MA2_ROOT.iterdir():
-        if not child.is_dir() or not child.name.lower().startswith("gma2"):
-            continue
-        target = child / "importexport"
-        if target.is_dir():
-            candidates.append(target)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: _version_key(p.parent.name))
-    return candidates[-1]
+    installations = discover_ma2_installations()
+    return installations[-1].importexport_dir if installations else None
 
 
 def resolve_ma2_pool_dirs(root: Path) -> tuple[Path, Path, Path]:

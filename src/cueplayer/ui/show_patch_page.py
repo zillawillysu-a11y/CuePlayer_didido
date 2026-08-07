@@ -34,7 +34,15 @@ from cueplayer.domain.models import MaExportSettings, Project
 from cueplayer.exporters.common import sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
 from cueplayer.exporters.ma3 import Ma3Exporter
-from cueplayer.exporters.ma_default_dirs import resolve_export_dir
+from cueplayer.exporters.ma_default_dirs import (
+    MA2_MINIMUM_VERSION,
+    Ma2Discovery,
+    discover_ma2_environment,
+    ma2_export_dir_for_version,
+    ma2_version_from_path,
+    ma2_version_supported,
+    resolve_export_dir,
+)
 from cueplayer.exporters.show_patch import (
     SongPatchSlot,
     build_show_patch,
@@ -102,6 +110,7 @@ class ShowPatchPage(QWidget):
         self._project: Project | None = None
         self._slots: list[SongPatchSlot] = []
         self._suppress = False
+        self._ma2_discovery = Ma2Discovery((), None)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 8, 12, 8)
@@ -138,6 +147,15 @@ class ShowPatchPage(QWidget):
         group.addButton(self.ma3_radio)
         console_layout.addWidget(self.ma2_radio)
         console_layout.addWidget(self.ma3_radio)
+        self.ma2_version = QComboBox()
+        self.ma2_version.setEditable(True)
+        self.ma2_version.addItems([MA2_MINIMUM_VERSION, "3.9.60", "3.9.61", "3.9.63.6"])
+        self.ma2_detect_btn = QPushButton("Detect MA2")
+        self.ma2_detect_status = QLabel("Not detected")
+        self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+        console_layout.addWidget(self.ma2_version)
+        console_layout.addWidget(self.ma2_detect_btn)
+        console_layout.addWidget(self.ma2_detect_status)
         settings_row.addWidget(console_box)
 
         pool_box = QGroupBox("Pool Start")
@@ -147,17 +165,17 @@ class ShowPatchPage(QWidget):
         self.seq_start.setValue(1)
         self.tc_start = NoWheelSpinBox()
         self.tc_start.setRange(1, 9999)
-        self.tc_start.setValue(1)
+        self.tc_start.setValue(201)
         pool_form.addRow("Sequence", self.seq_start)
         pool_form.addRow("Timecode", self.tc_start)
         settings_row.addWidget(pool_box)
 
         fader_box = QGroupBox("Fader (Executor)")
         fader_form = QFormLayout(fader_box)
-        self.main_fader = QLineEdit("1.101")
-        self.button_fader = QLineEdit("1.201")
-        self.main_fader.setPlaceholderText("1.101")
-        self.button_fader.setPlaceholderText("1.201")
+        self.main_fader = QLineEdit("201.130")
+        self.button_fader = QLineEdit("201.101")
+        self.main_fader.setPlaceholderText("201.130")
+        self.button_fader.setPlaceholderText("201.101")
         self.page_per_song = QCheckBox("New Page per song (1.201 → 2.201 → …)")
         self.page_per_song.setChecked(True)
         self.page_per_song.setToolTip(
@@ -195,13 +213,13 @@ class ShowPatchPage(QWidget):
             checkbox.setChecked(True)
         self.ma2_template_page = NoWheelSpinBox()
         self.ma2_template_page.setRange(1, 9999)
-        self.ma2_template_page.setValue(100)
+        self.ma2_template_page.setValue(200)
         self.ma2_fixed_macro_start = NoWheelSpinBox()
         self.ma2_fixed_macro_start.setRange(1, 9999)
-        self.ma2_fixed_macro_start.setValue(1001)
+        self.ma2_fixed_macro_start.setValue(101)
         self.ma2_song_macro_start = NoWheelSpinBox()
         self.ma2_song_macro_start.setRange(1, 9999)
-        self.ma2_song_macro_start.setValue(1009)
+        self.ma2_song_macro_start.setValue(201)
         self.ma2_add_preset_cue = QCheckBox("Add Main Cue named Preset")
         self.ma2_preset_cue_id = NoWheelDoubleSpinBox()
         self.ma2_preset_cue_id.setRange(0.001, 9999.999)
@@ -246,7 +264,7 @@ class ShowPatchPage(QWidget):
         out_row = QHBoxLayout()
         self.out_dir = QLineEdit()
         browse = QPushButton("Browse…")
-        restore = QPushButton("Restore Default")
+        restore = QPushButton("Use Version Default")
         browse.clicked.connect(self._browse_out)
         restore.clicked.connect(self._restore_default_dir)
         out_row.addWidget(self.out_dir, stretch=1)
@@ -364,6 +382,8 @@ class ShowPatchPage(QWidget):
                 widget.textChanged.connect(self._on_settings_edited)
 
         self.out_dir.textChanged.connect(self._on_out_dir_edited)
+        self.ma2_version.currentTextChanged.connect(self._on_ma2_version_changed)
+        self.ma2_detect_btn.clicked.connect(self._detect_ma2_versions)
         self.ma2_radio.toggled.connect(self._on_console_toggled)
         self.ma3_radio.toggled.connect(self._on_console_toggled)
         self.song_pick.itemChanged.connect(self._on_song_pick_changed)
@@ -375,6 +395,7 @@ class ShowPatchPage(QWidget):
     def set_project(self, project: Project) -> None:
         self._project = project
         self._load_settings_into_ui()
+        self._detect_ma2_versions(quiet=True)
         self._rebuild_song_pick()
         self.refresh()
 
@@ -456,6 +477,109 @@ class ShowPatchPage(QWidget):
     def _console(self) -> str:
         return "ma3" if self.ma3_radio.isChecked() else "ma2"
 
+    def _detect_ma2_versions(self, _checked: bool = False, *, quiet: bool = False) -> None:
+        self._ma2_discovery = discover_ma2_environment()
+        versions = {item.version for item in self._ma2_discovery.installations}
+        if self._ma2_discovery.running_version:
+            versions.add(self._ma2_discovery.running_version)
+        if self._project and self._project.ma_export.ma2_target_version:
+            versions.add(self._project.ma_export.ma2_target_version)
+        versions.update({MA2_MINIMUM_VERSION, "3.9.60", "3.9.61", "3.9.63.6"})
+        selected = (
+            self._project.ma_export.ma2_target_version
+            if self._project and self._project.ma_export.ma2_target_version
+            else self._ma2_discovery.recommended_version or MA2_MINIMUM_VERSION
+        )
+        self.ma2_version.blockSignals(True)
+        self.ma2_version.clear()
+        self.ma2_version.addItems(
+            sorted(versions, key=lambda value: tuple(int(n) for n in value.split(".")))
+        )
+        self.ma2_version.setCurrentText(selected)
+        self.ma2_version.blockSignals(False)
+        installed = ", ".join(item.version for item in self._ma2_discovery.installations) or "none"
+        running = self._ma2_discovery.running_version or "not running"
+        self.ma2_detect_status.setText(f"Running {running} · Installed {installed}")
+        if not ma2_version_supported(selected):
+            self.ma2_detect_status.setText(
+                f"Unsupported {selected} · minimum {MA2_MINIMUM_VERSION}"
+            )
+            self.ma2_detect_status.setStyleSheet("color: #f87171;")
+        else:
+            self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+        if self._project:
+            self._project.ma_export.ma2_target_version = selected
+            if self._project.ma_export.ma2_output_dir_follows_version:
+                self._apply_version_default_dir(selected, quiet=quiet)
+
+    def _apply_version_default_dir(self, version: str, *, quiet: bool = False) -> bool:
+        path = ma2_export_dir_for_version(version, self._ma2_discovery.installations)
+        if path is None:
+            if not quiet:
+                QMessageBox.information(
+                    self,
+                    "Version Folder Not Found",
+                    f"No installed gma2_V_* folder matches MA2 {version}. Choose a folder manually.",
+                )
+            return False
+        self._suppress = True
+        self.out_dir.setText(str(path))
+        self._suppress = False
+        if self._project:
+            self._project.ma_export.output_dir_ma2 = str(path)
+            self._project.ma_export.ma2_output_dir_follows_version = True
+        self._update_out_hint()
+        return True
+
+    def _on_ma2_version_changed(self, version: str) -> None:
+        if self._suppress or self._project is None:
+            return
+        version = version.strip()
+        self._project.ma_export.ma2_target_version = version
+        if not ma2_version_supported(version):
+            self.ma2_detect_status.setText(
+                f"Unsupported {version} · minimum {MA2_MINIMUM_VERSION}"
+            )
+            self.ma2_detect_status.setStyleSheet("color: #f87171;")
+            return
+        self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+        if self._project.ma_export.ma2_output_dir_follows_version:
+            self._apply_version_default_dir(version, quiet=True)
+        self.settings_changed.emit()
+
+    def apply_registry_scan_result(
+        self,
+        *,
+        remote_version: str,
+        sequence_start: int,
+        effect_start: int,
+        timecode_start: int,
+        song_macro_start: int,
+        view_start: int,
+        host: str = "MA2",
+    ) -> bool:
+        """Apply a validated scanner allocation without changing fixed controls."""
+        if self._project is None or not ma2_version_supported(remote_version):
+            return False
+        self._suppress = True
+        self.ma2_version.setCurrentText(remote_version)
+        self.seq_start.setValue(max(1, sequence_start))
+        self.ma2_effect_pool_start.setValue(max(1, effect_start))
+        self.tc_start.setValue(max(1, timecode_start))
+        self.ma2_song_macro_start.setValue(max(1, song_macro_start))
+        self.ma2_view_pool_start.setValue(max(1, view_start))
+        self._suppress = False
+        self._project.ma_export.ma2_target_version = remote_version
+        if self._project.ma_export.ma2_output_dir_follows_version:
+            self._apply_version_default_dir(remote_version, quiet=True)
+        self._write_ui_to_settings()
+        self.ma2_detect_status.setText(
+            f"Registry synchronized from {host} · MA2 {remote_version}"
+        )
+        self.refresh()
+        self.settings_changed.emit()
+        return True
+
     def _load_settings_into_ui(self) -> None:
         if self._project is None:
             return
@@ -465,8 +589,8 @@ class ShowPatchPage(QWidget):
         self.ma2_radio.setChecked(s.console != "ma3")
         self.seq_start.setValue(int(s.sequence_pool_start))
         self.tc_start.setValue(int(s.timecode_pool_start))
-        self.main_fader.setText(s.main_executor or "1.101")
-        self.button_fader.setText(s.button_executor_start or "1.201")
+        self.main_fader.setText(s.main_executor or "201.130")
+        self.button_fader.setText(s.button_executor_start or "201.101")
         self.page_per_song.setChecked(bool(s.page_per_song))
         idx = self.mode_combo.findData(s.export_mode)
         self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -476,9 +600,9 @@ class ShowPatchPage(QWidget):
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
         self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
-        self.ma2_template_page.setValue(int(s.ma2_template_page or 100))
-        self.ma2_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 1001))
-        self.ma2_song_macro_start.setValue(int(s.ma2_song_macro_start or 1009))
+        self.ma2_template_page.setValue(int(s.ma2_template_page or 200))
+        self.ma2_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 101))
+        self.ma2_song_macro_start.setValue(int(s.ma2_song_macro_start or 201))
         self.ma2_add_preset_cue.setChecked(bool(s.ma2_add_main_preset_cue))
         self.ma2_preset_cue_id.setValue(float(s.ma2_main_preset_cue_id or 0.5))
         self.ma2_song_views.setChecked(bool(s.ma2_include_song_views))
@@ -488,10 +612,13 @@ class ShowPatchPage(QWidget):
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
         self.ma2_song_macros.setChecked(bool(s.ma2_include_song_macros))
         self.ma2_song_list.setChecked(bool(s.ma2_include_song_list))
+        self.ma2_version.setCurrentText(s.ma2_target_version or MA2_MINIMUM_VERSION)
         remembered = s.output_dir_ma3 if s.console == "ma3" else s.output_dir_ma2
         path = resolve_export_dir(s.console if s.console in ("ma2", "ma3") else "ma2", remembered or None)
         self.out_dir.setText(path)
         self.data_pool.setEnabled(s.console == "ma3")
+        self.ma2_version.setEnabled(s.console != "ma3")
+        self.ma2_detect_btn.setEnabled(s.console != "ma3")
         self.show_macro_name.setEnabled(True)
         self.song_viewbutton.setEnabled(s.console != "ma3")
         for widget in (
@@ -520,8 +647,8 @@ class ShowPatchPage(QWidget):
         s.export_mode = str(self.mode_combo.currentData() or "full")
         s.sequence_pool_start = int(self.seq_start.value())
         s.timecode_pool_start = int(self.tc_start.value())
-        s.main_executor = self.main_fader.text().strip() or "1.101"
-        s.button_executor_start = self.button_fader.text().strip() or "1.201"
+        s.main_executor = self.main_fader.text().strip() or "201.130"
+        s.button_executor_start = self.button_fader.text().strip() or "201.101"
         s.page_per_song = self.page_per_song.isChecked()
         s.latency_ms = float(self.latency_ms.value())
         s.data_pool = self.data_pool.text().strip() or "Default"
@@ -541,6 +668,7 @@ class ShowPatchPage(QWidget):
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
         s.ma2_include_song_list = self.ma2_song_list.isChecked()
+        s.ma2_target_version = self.ma2_version.currentText().strip()
         # Keep export_song_ids in sync with checklist.
         ids = []
         for row in range(self.song_pick.count()):
@@ -564,6 +692,8 @@ class ShowPatchPage(QWidget):
     def _on_out_dir_edited(self, *_args) -> None:
         if self._suppress or self._project is None:
             return
+        if self._console() == "ma2":
+            self._project.ma_export.ma2_output_dir_follows_version = False
         self._write_ui_to_settings()
         self._update_out_hint()
         self.settings_changed.emit()
@@ -587,6 +717,8 @@ class ShowPatchPage(QWidget):
         self._suppress = True
         self.out_dir.setText(path)
         self.data_pool.setEnabled(new_console == "ma3")
+        self.ma2_version.setEnabled(new_console != "ma3")
+        self.ma2_detect_btn.setEnabled(new_console != "ma3")
         self.show_macro_name.setEnabled(True)
         self.song_viewbutton.setEnabled(new_console != "ma3")
         for widget in (
@@ -616,9 +748,15 @@ class ShowPatchPage(QWidget):
     def _update_out_hint(self) -> None:
         console = self._console()
         if console == "ma2":
+            mode = (
+                "following Target Version"
+                if self._project and self._project.ma_export.ma2_output_dir_follows_version
+                else "custom folder"
+            )
             self.out_hint.setText(
                 "MA2: pick gma2_V_*/importexport — "
-                "Seq/TC → importexport, Install Plugin → plugins (writes Timecode when run)"
+                "Seq/TC → importexport, Install Plugin → plugins (writes Timecode when run) · "
+                + mode
             )
         else:
             self.out_hint.setText(
@@ -629,9 +767,17 @@ class ShowPatchPage(QWidget):
     def _browse_out(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose Export Folder", self.out_dir.text())
         if path:
+            if self._project and self._console() == "ma2":
+                self._project.ma_export.ma2_output_dir_follows_version = False
             self.out_dir.setText(path)
 
     def _restore_default_dir(self) -> None:
+        if self._console() == "ma2":
+            if self._project:
+                self._project.ma_export.ma2_output_dir_follows_version = True
+            if self._apply_version_default_dir(self.ma2_version.currentText().strip()):
+                self.settings_changed.emit()
+            return
         path = resolve_export_dir(self._console(), remembered=None)
         if not path:
             QMessageBox.information(self, "No Default Found", "No grandMA install path was detected on this computer.")
@@ -760,6 +906,25 @@ class ShowPatchPage(QWidget):
         if not out:
             QMessageBox.warning(self, "Missing Folder", "Choose an output folder first.")
             return
+        if self._console() == "ma2":
+            target_version = self.ma2_version.currentText().strip()
+            if not ma2_version_supported(target_version):
+                QMessageBox.warning(
+                    self,
+                    "Unsupported grandMA2 Version",
+                    f"grandMA2 {target_version} is below the supported minimum {MA2_MINIMUM_VERSION}.",
+                )
+                return
+            folder_version = ma2_version_from_path(out)
+            if folder_version and tuple(int(n) for n in folder_version.split("."))[:3] != tuple(
+                int(n) for n in target_version.split(".")
+            )[:3]:
+                QMessageBox.warning(
+                    self,
+                    "MA2 Version / Folder Mismatch",
+                    f"Target Version is {target_version}, but Output Folder belongs to {folder_version}.",
+                )
+                return
         directory = Path(out)
         try:
             directory.mkdir(parents=True, exist_ok=True)

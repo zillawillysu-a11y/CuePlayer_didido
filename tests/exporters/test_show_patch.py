@@ -178,7 +178,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     # One Timecode Import per song (not one merged show TC).
     assert lua.count("At Timecode") == 2
     assert "Show_Install_TC_" in lua
-    assert "At Timecode 1" in lua and "At Timecode 2" in lua
+    assert "At Timecode 201" in lua and "At Timecode 202" in lua
     # Song-relative FPS frames on the TC timeline (not hour+ absolute).
     assert 'time="108' not in lua
     assert "/Offset=1h" in lua
