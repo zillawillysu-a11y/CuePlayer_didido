@@ -520,7 +520,12 @@ class Ma2Exporter:
                         attrs["y"] = str(y)
                     attrs.update(anz_rows=str(rows), anz_cols=str(columns))
                 else:
-                    if pool_type == "effects" and spec.get("mode") == "perSong":
+                    # In MA2's native POOLALL export, every Widget positioned
+                    # away from the left edge is focusable.  Without this flag
+                    # MA2 imports its x coordinate but renders the Pool at x=0.
+                    # This applies to Sequence and every optional Pool too,
+                    # not only Effects.
+                    if x or (pool_type == "effects" and spec.get("mode") == "perSong"):
                         attrs["has_focus"] = "true"
                     if x:
                         attrs["x"] = str(x)

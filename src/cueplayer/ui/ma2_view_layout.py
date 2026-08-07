@@ -16,6 +16,8 @@ DEFAULT_VIEW_LAYOUT: list[dict[str, object]] = [
     {"type": "effects", "mode": "fixed", "x": 0, "y": 6, "w": 16, "h": 2, "start": 1, "stride": 1},
 ]
 
+TIMECODE_POOL_TOTAL_CELLS = 3
+
 POOL_LABELS = {
     "camera": "Camera Pool",
     "effects": "Effects",
@@ -63,6 +65,11 @@ class Ma2ViewLayoutStage(QWidget):
 
     def set_layout(self, widgets: list[dict[str, object]]) -> None:
         self.widgets = deepcopy(widgets or DEFAULT_VIEW_LAYOUT)
+        for widget in self.widgets:
+            if widget.get("type") == "timecode":
+                widget["w"] = TIMECODE_POOL_TOTAL_CELLS
+                widget["h"] = 1
+                widget["x"] = min(int(widget.get("x", 0)), 16 - TIMECODE_POOL_TOTAL_CELLS)
         self.selected_index = min(self.selected_index, len(self.widgets) - 1)
         self.update()
 
@@ -98,7 +105,9 @@ class Ma2ViewLayoutStage(QWidget):
             if widget.get("mode") == "perSong":
                 start += self.song_index * int(widget.get("stride", 1))
             slots = int(widget["w"]) * int(widget["h"]) - 1
-            builtin_slots = 3 if widget.get("type") == "timecode" else 0
+            # MA2's Timecode Pool window consumes three Screen 3 cells in
+            # total: one title cell plus its two built-in slots.
+            builtin_slots = TIMECODE_POOL_TOTAL_CELLS - 1 if widget.get("type") == "timecode" else 0
             for offset in range(max(0, slots)):
                 cell = offset + 1
                 column = cell % int(widget["w"])
@@ -131,7 +140,8 @@ class Ma2ViewLayoutStage(QWidget):
                 if not self.locked:
                     self._drag_origin = event.position().toPoint()
                     self._drag_snapshot = deepcopy(self.widgets[index])
-                    self._drag_mode = "resize" if point.x() > rect.right() - 18 and point.y() > rect.bottom() - 18 else "move"
+                    resizable = self.widgets[index].get("type") != "timecode"
+                    self._drag_mode = "resize" if resizable and point.x() > rect.right() - 18 and point.y() > rect.bottom() - 18 else "move"
                 return
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802

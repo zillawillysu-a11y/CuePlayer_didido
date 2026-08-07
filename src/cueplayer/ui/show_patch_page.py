@@ -52,7 +52,11 @@ from cueplayer.exporters.show_patch import (
     sequence_chain_labels,
 )
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
-from cueplayer.ui.ma2_view_layout import Ma2ViewLayoutStage, default_view_layout
+from cueplayer.ui.ma2_view_layout import (
+    TIMECODE_POOL_TOTAL_CELLS,
+    Ma2ViewLayoutStage,
+    default_view_layout,
+)
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
 from cueplayer.ui.theme import contrast_text_color
 
@@ -1367,11 +1371,15 @@ class ShowPatchPage(QWidget):
         self.view_pool_width.setValue(int(widget.get("w", 1)))
         self.view_pool_height.setValue(int(widget.get("h", 1)))
         self.view_pool_stride.setEnabled(widget.get("mode") == "perSong")
+        timecode_pool = widget.get("type") == "timecode"
+        self.view_pool_width.setEnabled(not timecode_pool)
+        self.view_pool_height.setEnabled(not timecode_pool)
         for control in controls:
             control.blockSignals(False)
         start = int(widget.get("start", 1)) + (self.view_stage.song_index * int(widget.get("stride", 1)) if widget.get("mode") == "perSong" else 0)
         visible = int(widget.get("w", 1)) * int(widget.get("h", 1)) - 1
-        builtin_slots = 3 if widget.get("type") == "timecode" else 0
+        # The full Timecode Pool window is three cells: title + two MA2 slots.
+        builtin_slots = TIMECODE_POOL_TOTAL_CELLS - 1 if widget.get("type") == "timecode" else 0
         overlaps = False
         for left_index, left in enumerate(self.view_stage.widgets):
             left_rect = (int(left["x"]), int(left["y"]), int(left["x"]) + int(left["w"]), int(left["y"]) + int(left["h"]))
@@ -1388,7 +1396,7 @@ class ShowPatchPage(QWidget):
             self.view_allocation_status.setText(f"Reserved range too small · {visible - builtin_slots} numbered Pool slots")
             self.view_allocation_status.setStyleSheet("color: #f87171;")
         else:
-            timecode_note = " · 3 built-in Timecode slots" if builtin_slots else ""
+            timecode_note = " · 2 built-in Timecode slots (3 cells total)" if builtin_slots else ""
             self.view_allocation_status.setText(f"Screen 3 · {visible - builtin_slots} numbered Pool slots · starts at {start}{timecode_note}")
             self.view_allocation_status.setStyleSheet("color: #99a3b1;")
 
@@ -1396,7 +1404,16 @@ class ShowPatchPage(QWidget):
         if self._suppress or not (0 <= self.view_stage.selected_index < len(self.view_stage.widgets)):
             return
         widget = self.view_stage.widgets[self.view_stage.selected_index]
-        widget.update(type=self.view_pool_type.currentData(), mode=self.view_pool_mode.currentData(), start=self.view_pool_number_start.value(), stride=self.view_pool_stride.value(), x=self.view_pool_x.value(), y=self.view_pool_y.value(), w=min(self.view_pool_width.value(), 16 - self.view_pool_x.value()), h=min(self.view_pool_height.value(), 8 - self.view_pool_y.value()))
+        pool_type = self.view_pool_type.currentData()
+        is_timecode = pool_type == "timecode"
+        width = TIMECODE_POOL_TOTAL_CELLS if is_timecode else min(self.view_pool_width.value(), 16 - self.view_pool_x.value())
+        height = 1 if is_timecode else min(self.view_pool_height.value(), 8 - self.view_pool_y.value())
+        widget.update(type=pool_type, mode=self.view_pool_mode.currentData(), start=self.view_pool_number_start.value(), stride=self.view_pool_stride.value(), x=min(self.view_pool_x.value(), 16 - width), y=self.view_pool_y.value(), w=width, h=height)
+        self.view_pool_width.setEnabled(not is_timecode)
+        self.view_pool_height.setEnabled(not is_timecode)
+        if is_timecode:
+            self.view_pool_width.setValue(width)
+            self.view_pool_height.setValue(height)
         if widget["type"] == "sequence" and widget["mode"] == "perSong":
             self.seq_start.setValue(int(widget["start"]))
             self.ma2_sequence_slots.setValue(int(widget["stride"]))

@@ -463,6 +463,7 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
     macro = next(widget for widget in widgets if widget.get("type") == "4d414352")
     sequence = next(widget for widget in widgets if widget.get("type") == "53455155")
     assert sequence.get("index") == "2"
+    assert sequence.get("x") is None
     assert macro.get("index") == "3"
     assert macro.get("x") == "10"
     assert macro.get("y") is None
@@ -477,6 +478,32 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
         'type="4d414352" display_nr="2" has_focus="true" '
         'has_scrollfocus="true" x="10" anz_rows="1" anz_cols="6"'
     ) in text
+
+
+def test_ma2_widget_with_nonzero_x_is_focusable_for_native_placement(tmp_path) -> None:
+    from xml.etree import ElementTree as ET
+
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Song", ma="Song", button_names=[])]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    layout = [
+        {"type": "sequence", "mode": "perSong", "x": 11, "y": 1, "w": 5, "h": 1, "start": 201, "stride": 20},
+        {"type": "matricks", "mode": "fixed", "x": 12, "y": 0, "w": 4, "h": 1, "start": 1, "stride": 1},
+    ]
+    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
+    root = ET.parse(paths["show:view_1"]).getroot()
+    namespace = "{http://schemas.malighting.de/grandma2/xml/MA}"
+    widgets = root.findall(f"{namespace}View/{namespace}Widget")
+    sequence = next(widget for widget in widgets if widget.get("type") == "53455155")
+    matricks = next(widget for widget in widgets if widget.get("type") == "4d415458")
+    assert sequence.get("x") == "11"
+    assert sequence.get("has_focus") == "true"
+    assert matricks.get("x") == "12"
+    assert matricks.get("has_focus") == "true"
 
 
 def test_ma2_song_view_exports_verified_poolall_widget_codes(tmp_path) -> None:

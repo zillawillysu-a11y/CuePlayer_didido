@@ -121,7 +121,7 @@ def test_view_allocation_controls_drive_shared_export_settings(
     assert len(page.view_stage.widgets) == before
 
 
-def test_timecode_pool_reserves_its_three_builtin_slots(
+def test_timecode_pool_uses_three_cells_including_its_title(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -130,11 +130,24 @@ def test_timecode_pool_reserves_its_three_builtin_slots(
     )
     page = ShowPatchPage()
     page.set_project(Project.create("Show"))
-    page.view_stage.widgets = [{"type": "timecode", "mode": "perSong", "x": 0, "y": 0, "w": 5, "h": 1, "start": 201, "stride": 1}]
+    page.view_stage.widgets = [{"type": "timecode", "mode": "perSong", "x": 0, "y": 0, "w": 3, "h": 1, "start": 201, "stride": 1}]
     page.view_stage.selected_index = 0
     page._load_view_inspector(0)
 
-    assert "3 built-in Timecode slots" in page.view_allocation_status.text()
+    assert "2 built-in Timecode slots" in page.view_allocation_status.text()
+
+
+def test_timecode_pool_layout_is_fixed_to_three_total_cells(app: QApplication) -> None:
+    from cueplayer.ui.ma2_view_layout import Ma2ViewLayoutStage
+
+    stage = Ma2ViewLayoutStage()
+    stage.set_layout(
+        [{"type": "timecode", "mode": "fixed", "x": 14, "y": 2, "w": 7, "h": 3, "start": 1, "stride": 1}]
+    )
+
+    assert stage.widgets[0]["w"] == 3
+    assert stage.widgets[0]["h"] == 1
+    assert stage.widgets[0]["x"] == 13
 
 
 def test_custom_unicode_folder_survives_detection(
