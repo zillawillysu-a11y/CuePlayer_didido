@@ -32,7 +32,10 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_include_song_views=False,
         ma2_view_pool_start=501,
         ma2_effect_pool_start=601,
+        ma2_effect_slots_per_song=137,
         ma2_sequence_slots_per_song=40,
+        ma2_target_version="3.9.63.6",
+        ma2_output_dir_follows_version=False,
     )
 
     loaded = dict_to_ma_export(ma_export_to_dict(settings))
@@ -48,11 +51,34 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_include_song_views is False
     assert loaded.ma2_view_pool_start == 501
     assert loaded.ma2_effect_pool_start == 601
+    assert loaded.ma2_effect_slots_per_song == 137
     assert loaded.ma2_sequence_slots_per_song == 40
+    assert loaded.ma2_target_version == "3.9.63.6"
+    assert loaded.ma2_output_dir_follows_version is False
 
 
 def test_legacy_ma2_macro_start_loads_as_fixed_macro_start() -> None:
     loaded = dict_to_ma_export({"ma2_macro_pool_start": 1701})
 
     assert loaded.ma2_fixed_macro_start == 1701
-    assert loaded.ma2_song_macro_start == 1009
+    assert loaded.ma2_song_macro_start == 201
+
+
+def test_legacy_default_allocations_migrate_to_current_safe_starts() -> None:
+    loaded = dict_to_ma_export(
+        {
+            "timecode_pool_start": 1,
+            "main_executor": "1.101",
+            "button_executor_start": "1.201",
+            "ma2_template_page": 100,
+            "ma2_fixed_macro_start": 1001,
+            "ma2_song_macro_start": 1009,
+        }
+    )
+
+    assert loaded.timecode_pool_start == 201
+    assert loaded.main_executor == "201.130"
+    assert loaded.button_executor_start == "201.101"
+    assert loaded.ma2_template_page == 200
+    assert loaded.ma2_fixed_macro_start == 101
+    assert loaded.ma2_song_macro_start == 201

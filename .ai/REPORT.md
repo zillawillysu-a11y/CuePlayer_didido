@@ -1,5 +1,14 @@
 # Latest AI task report
 
+## 2026-08-08 — MA2 allocation and View settings repair
+
+- Removed the hard-coded 80-slot Effect stride from MA2 View export; each song now advances by the persisted `MA2 Effect Slots Per Song` value (default 100).
+- Persisted the Effect reservation, target MA2 version, and output-folder follow mode.
+- Migrated untouched legacy allocation defaults to Timecode 201, Main Executor 201.130, Button Start 201.101, Template Page 200, Fixed Macro 101, and Song Macro 201.
+- Added usable English View Allocation controls for Sequence, Effect, fixed Macro, and View starts/reservations plus per-song View preview.
+- Focused persistence/exporter/UI suite: 19 passed. Python compile and `git diff --check`: passed. The full suite was stopped after it produced no progress/output for over a minute.
+- `startup_error.txt` remains untracked and untouched.
+
 **Date:** 2026-08-08
 **Branch:** `cursor/video-wave-import-artifact-028d`
 **Audience:** ChatGPT / future Cursor review

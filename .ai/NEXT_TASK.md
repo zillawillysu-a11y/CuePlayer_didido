@@ -1,5 +1,7 @@
 # Next task
 
+Allocation repair is complete: Effect stride is configurable (default 100), current defaults migrate safely, and the View page exposes working shared allocation controls. Remaining View work is drag/resize and Pool-type persistence.
+
 **Status:** Queued — awaiting human start
 **Type:** MA Export content selection and interactive View editor
 **Updated:** 2026-08-08

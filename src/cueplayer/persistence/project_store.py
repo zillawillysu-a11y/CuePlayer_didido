@@ -93,10 +93,15 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_include_song_views": bool(settings.ma2_include_song_views),
         "ma2_view_pool_start": int(settings.ma2_view_pool_start),
         "ma2_effect_pool_start": int(settings.ma2_effect_pool_start),
+        "ma2_effect_slots_per_song": int(settings.ma2_effect_slots_per_song),
         "ma2_sequence_slots_per_song": int(settings.ma2_sequence_slots_per_song),
         "export_song_ids": list(settings.export_song_ids),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
+        "ma2_target_version": settings.ma2_target_version,
+        "ma2_output_dir_follows_version": bool(
+            settings.ma2_output_dir_follows_version
+        ),
     }
 
 
@@ -109,13 +114,35 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
     mode = str(raw.get("export_mode") or "full")
     if mode not in ("full", "timecode_only"):
         mode = "full"
+    legacy_defaults = "ma2_target_version" not in raw
+    timecode_start = int(raw.get("timecode_pool_start", 201) or 201)
+    main_executor = str(raw.get("main_executor") or "201.130")
+    button_executor = str(raw.get("button_executor_start") or "201.101")
+    template_page = int(raw.get("ma2_template_page", 200) or 200)
+    fixed_macro_start = int(
+        raw.get("ma2_fixed_macro_start", raw.get("ma2_macro_pool_start", 101)) or 101
+    )
+    song_macro_start = int(raw.get("ma2_song_macro_start", 201) or 201)
+    if legacy_defaults:
+        if timecode_start == 1:
+            timecode_start = 201
+        if main_executor == "1.101":
+            main_executor = "201.130"
+        if button_executor == "1.201":
+            button_executor = "201.101"
+        if template_page == 100:
+            template_page = 200
+        if fixed_macro_start == 1001:
+            fixed_macro_start = 101
+        if song_macro_start == 1009:
+            song_macro_start = 201
     return MaExportSettings(
         console=console,
         export_mode=mode,
         sequence_pool_start=int(raw.get("sequence_pool_start", 1) or 1),
-        timecode_pool_start=int(raw.get("timecode_pool_start", 1) or 1),
-        main_executor=str(raw.get("main_executor") or "1.101"),
-        button_executor_start=str(raw.get("button_executor_start") or "1.201"),
+        timecode_pool_start=timecode_start,
+        main_executor=main_executor,
+        button_executor_start=button_executor,
         timecode_slot=int(raw.get("timecode_slot", 1) or 1),
         data_pool=str(raw.get("data_pool") or "Default"),
         latency_ms=float(raw.get("latency_ms", 0.0) or 0.0),
@@ -127,17 +154,17 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_include_fixed_macros=bool(raw.get("ma2_include_fixed_macros", True)),
         ma2_include_song_macros=bool(raw.get("ma2_include_song_macros", True)),
         ma2_include_song_list=bool(raw.get("ma2_include_song_list", True)),
-        ma2_template_page=int(raw.get("ma2_template_page", 100) or 100),
-        ma2_fixed_macro_start=int(
-            raw.get("ma2_fixed_macro_start", raw.get("ma2_macro_pool_start", 1001))
-            or 1001
-        ),
-        ma2_song_macro_start=int(raw.get("ma2_song_macro_start", 1009) or 1009),
+        ma2_template_page=template_page,
+        ma2_fixed_macro_start=fixed_macro_start,
+        ma2_song_macro_start=song_macro_start,
         ma2_add_main_preset_cue=bool(raw.get("ma2_add_main_preset_cue", False)),
         ma2_main_preset_cue_id=float(raw.get("ma2_main_preset_cue_id", 0.5) or 0.5),
         ma2_include_song_views=bool(raw.get("ma2_include_song_views", True)),
         ma2_view_pool_start=int(raw.get("ma2_view_pool_start", 201) or 201),
         ma2_effect_pool_start=int(raw.get("ma2_effect_pool_start", 201) or 201),
+        ma2_effect_slots_per_song=max(
+            1, int(raw.get("ma2_effect_slots_per_song", 100) or 100)
+        ),
         ma2_sequence_slots_per_song=max(
             1, int(raw.get("ma2_sequence_slots_per_song", 20) or 20)
         ),
@@ -146,6 +173,10 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ],
         output_dir_ma2=str(raw.get("output_dir_ma2") or ""),
         output_dir_ma3=str(raw.get("output_dir_ma3") or ""),
+        ma2_target_version=str(raw.get("ma2_target_version") or ""),
+        ma2_output_dir_follows_version=bool(
+            raw.get("ma2_output_dir_follows_version", True)
+        ),
     )
 
 

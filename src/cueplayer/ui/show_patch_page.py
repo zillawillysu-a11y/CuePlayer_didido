@@ -284,6 +284,9 @@ class ShowPatchPage(QWidget):
         self.ma2_effect_pool_start = NoWheelSpinBox()
         self.ma2_effect_pool_start.setRange(1, 9999)
         self.ma2_effect_pool_start.setValue(201)
+        self.ma2_effect_slots = NoWheelSpinBox()
+        self.ma2_effect_slots.setRange(1, 9999)
+        self.ma2_effect_slots.setValue(100)
         self.ma2_sequence_slots = NoWheelSpinBox()
         self.ma2_sequence_slots.setRange(1, 9999)
         self.ma2_sequence_slots.setValue(20)
@@ -304,6 +307,7 @@ class ShowPatchPage(QWidget):
         opt_form.addRow(self.ma2_song_views)
         opt_form.addRow("MA2 View Pool Start", self.ma2_view_pool_start)
         opt_form.addRow("MA2 Effect Pool Start", self.ma2_effect_pool_start)
+        opt_form.addRow("MA2 Effect Slots Per Song", self.ma2_effect_slots)
         opt_form.addRow("MA2 Sequence Slots Per Song", self.ma2_sequence_slots)
         opt_form.addRow(self.ma2_fixed_macros)
         opt_form.addRow(self.ma2_song_macros)
@@ -525,6 +529,32 @@ class ShowPatchPage(QWidget):
         view_intro.setWordWrap(True)
         view_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.view_page_layout.addWidget(view_intro)
+        view_allocation = QGroupBox("View Allocation")
+        view_allocation_form = QFormLayout(view_allocation)
+        self.view_preview_song = QComboBox()
+        self.view_sequence_start = NoWheelSpinBox()
+        self.view_sequence_start.setRange(1, 9999)
+        self.view_sequence_slots = NoWheelSpinBox()
+        self.view_sequence_slots.setRange(1, 9999)
+        self.view_effect_start = NoWheelSpinBox()
+        self.view_effect_start.setRange(1, 9999)
+        self.view_effect_slots = NoWheelSpinBox()
+        self.view_effect_slots.setRange(1, 9999)
+        self.view_fixed_macro_start = NoWheelSpinBox()
+        self.view_fixed_macro_start.setRange(1, 9999)
+        self.view_pool_start = NoWheelSpinBox()
+        self.view_pool_start.setRange(1, 9999)
+        view_allocation_form.addRow("Preview Song", self.view_preview_song)
+        view_allocation_form.addRow("Sequence Pool Start", self.view_sequence_start)
+        view_allocation_form.addRow("Sequence Slots Per Song", self.view_sequence_slots)
+        view_allocation_form.addRow("Effect Pool Start", self.view_effect_start)
+        view_allocation_form.addRow("Effect Slots Per Song", self.view_effect_slots)
+        view_allocation_form.addRow("Fixed Macro Start", self.view_fixed_macro_start)
+        view_allocation_form.addRow("View Pool Start", self.view_pool_start)
+        self.view_allocation_status = QLabel("")
+        self.view_allocation_status.setWordWrap(True)
+        view_allocation_form.addRow("Allocation", self.view_allocation_status)
+        self.view_page_layout.addWidget(view_allocation)
         self.view_grid = QTableWidget(8, 16)
         self.view_grid.setObjectName("ma2Screen3Grid")
         self.view_grid.horizontalHeader().setVisible(False)
@@ -614,6 +644,7 @@ class ShowPatchPage(QWidget):
             self.ma2_song_views,
             self.ma2_view_pool_start,
             self.ma2_effect_pool_start,
+            self.ma2_effect_slots,
             self.ma2_sequence_slots,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
@@ -627,6 +658,17 @@ class ShowPatchPage(QWidget):
                 widget.valueChanged.connect(self._on_settings_edited)
             elif isinstance(widget, QLineEdit):
                 widget.textChanged.connect(self._on_settings_edited)
+
+        self.view_preview_song.currentIndexChanged.connect(self._rebuild_view_grid)
+        for widget in (
+            self.view_sequence_start,
+            self.view_sequence_slots,
+            self.view_effect_start,
+            self.view_effect_slots,
+            self.view_fixed_macro_start,
+            self.view_pool_start,
+        ):
+            widget.valueChanged.connect(self._on_view_settings_edited)
 
         self.out_dir.textChanged.connect(self._on_out_dir_edited)
         self.playlist_table.itemChanged.connect(self._on_playlist_item_changed)
@@ -693,6 +735,7 @@ class ShowPatchPage(QWidget):
         }
         settings = self._project.ma_export
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
+        effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         self._playlist_refreshing = True
         self.playlist_table.setRowCount(len(self._project.songs))
         for row, song in enumerate(self._project.songs):
@@ -709,7 +752,7 @@ class ShowPatchPage(QWidget):
             export_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.playlist_table.setItem(row, 0, export_item)
             sequence_start = int(settings.sequence_pool_start) + row * seq_slots
-            effect_start = int(settings.ma2_effect_pool_start) + row * 100
+            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
             main_marks = sum(1 for mark in song.marks if mark.lane_index == 1)
             button_marks = sum(1 for mark in song.marks if mark.lane_index != 1)
             ma_name = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
@@ -718,7 +761,7 @@ class ShowPatchPage(QWidget):
                 song.name,
                 ma_name,
                 f"{sequence_start}–{sequence_start + seq_slots - 1}",
-                f"{effect_start}–{effect_start + 99}",
+                f"{effect_start}–{effect_start + effect_slots - 1}",
                 str(int(settings.timecode_pool_start) + row),
                 str(len(song.marks)),
                 f"Main + {button_marks} Button" if button_marks else f"Main · {main_marks} cues",
@@ -746,6 +789,7 @@ class ShowPatchPage(QWidget):
     def _rebuild_song_pick(self) -> None:
         if self._project is None:
             self.song_pick.clear()
+            self.view_preview_song.clear()
             return
         selected = set(self._project.ma_export.export_song_ids)
         # Empty list means "all songs" (default / first open).
@@ -763,6 +807,16 @@ class ShowPatchPage(QWidget):
             item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_pick.addItem(item)
         self.song_pick.blockSignals(False)
+        preview_index = max(0, self.view_preview_song.currentIndex())
+        self.view_preview_song.blockSignals(True)
+        self.view_preview_song.clear()
+        for position, song in enumerate(self._project.songs, start=1):
+            self.view_preview_song.addItem(f"{position}. {song.name}", song.id)
+        if self.view_preview_song.count():
+            self.view_preview_song.setCurrentIndex(
+                min(preview_index, self.view_preview_song.count() - 1)
+            )
+        self.view_preview_song.blockSignals(False)
 
     def _set_all_songs(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
@@ -926,7 +980,14 @@ class ShowPatchPage(QWidget):
         self.ma2_song_views.setChecked(bool(s.ma2_include_song_views))
         self.ma2_view_pool_start.setValue(int(s.ma2_view_pool_start or 201))
         self.ma2_effect_pool_start.setValue(int(s.ma2_effect_pool_start or 201))
+        self.ma2_effect_slots.setValue(int(s.ma2_effect_slots_per_song or 100))
         self.ma2_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
+        self.view_sequence_start.setValue(int(s.sequence_pool_start))
+        self.view_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
+        self.view_effect_start.setValue(int(s.ma2_effect_pool_start or 201))
+        self.view_effect_slots.setValue(int(s.ma2_effect_slots_per_song or 100))
+        self.view_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 101))
+        self.view_pool_start.setValue(int(s.ma2_view_pool_start or 201))
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
         self.ma2_song_macros.setChecked(bool(s.ma2_include_song_macros))
         self.ma2_song_list.setChecked(bool(s.ma2_include_song_list))
@@ -948,6 +1009,7 @@ class ShowPatchPage(QWidget):
             self.ma2_song_views,
             self.ma2_view_pool_start,
             self.ma2_effect_pool_start,
+            self.ma2_effect_slots,
             self.ma2_sequence_slots,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
@@ -982,6 +1044,7 @@ class ShowPatchPage(QWidget):
         s.ma2_include_song_views = self.ma2_song_views.isChecked()
         s.ma2_view_pool_start = int(self.ma2_view_pool_start.value())
         s.ma2_effect_pool_start = int(self.ma2_effect_pool_start.value())
+        s.ma2_effect_slots_per_song = int(self.ma2_effect_slots.value())
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
@@ -1004,6 +1067,21 @@ class ShowPatchPage(QWidget):
     def _on_settings_edited(self, *_args) -> None:
         if self._suppress or self._project is None:
             return
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _on_view_settings_edited(self, *_args) -> None:
+        """Apply View-page allocation controls to the shared export settings."""
+        if self._suppress or self._project is None:
+            return
+        self._suppress = True
+        self.seq_start.setValue(self.view_sequence_start.value())
+        self.ma2_sequence_slots.setValue(self.view_sequence_slots.value())
+        self.ma2_effect_pool_start.setValue(self.view_effect_start.value())
+        self.ma2_effect_slots.setValue(self.view_effect_slots.value())
+        self.ma2_fixed_macro_start.setValue(self.view_fixed_macro_start.value())
+        self.ma2_view_pool_start.setValue(self.view_pool_start.value())
+        self._suppress = False
         self.refresh()
         self.settings_changed.emit()
 
@@ -1048,6 +1126,7 @@ class ShowPatchPage(QWidget):
             self.ma2_song_views,
             self.ma2_view_pool_start,
             self.ma2_effect_pool_start,
+            self.ma2_effect_slots,
             self.ma2_sequence_slots,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
@@ -1107,7 +1186,7 @@ class ShowPatchPage(QWidget):
             return
         settings = self._project.ma_export
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
-        effect_slots = 100
+        effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         self.registry_table.setRowCount(len(self._slots))
         self.review_table.setRowCount(len(self._slots))
         for row, slot in enumerate(self._slots):
@@ -1172,13 +1251,43 @@ class ShowPatchPage(QWidget):
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
             f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}"
         )
+        preview_id = self.view_preview_song.currentData()
+        self.view_preview_song.blockSignals(True)
+        self.view_preview_song.clear()
+        for row, slot in enumerate(self._slots, start=1):
+            self.view_preview_song.addItem(f"{row}. {slot.display_name}", slot.song.id)
+        preview_row = self.view_preview_song.findData(preview_id)
+        if self.view_preview_song.count():
+            self.view_preview_song.setCurrentIndex(max(0, preview_row))
+        self.view_preview_song.blockSignals(False)
         self._rebuild_view_grid()
 
     def _rebuild_view_grid(self) -> None:
         settings = self._project.ma_export if self._project else MaExportSettings()
-        sequence_start = int(self._slots[0].main_sequence) if self._slots else int(settings.sequence_pool_start)
-        effect_start = int(settings.ma2_effect_pool_start)
+        song_index = max(0, self.view_preview_song.currentIndex())
+        sequence_slots = max(1, int(settings.ma2_sequence_slots_per_song))
+        effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        sequence_start = int(settings.sequence_pool_start) + song_index * sequence_slots
+        effect_start = int(settings.ma2_effect_pool_start) + song_index * effect_slots
         fixed_effect_start = 1
+        view_number = int(settings.ma2_view_pool_start) + song_index
+        self.view_allocation_status.setText(
+            f"View {view_number} · Sequence {sequence_start}–{sequence_start + sequence_slots - 1} "
+            f"· Effects {effect_start}–{effect_start + effect_slots - 1} "
+            f"(79 visible, {effect_slots} reserved)"
+        )
+        mirror_values = (
+            (self.view_sequence_start, settings.sequence_pool_start),
+            (self.view_sequence_slots, sequence_slots),
+            (self.view_effect_start, settings.ma2_effect_pool_start),
+            (self.view_effect_slots, effect_slots),
+            (self.view_fixed_macro_start, settings.ma2_fixed_macro_start),
+            (self.view_pool_start, settings.ma2_view_pool_start),
+        )
+        for widget, value in mirror_values:
+            widget.blockSignals(True)
+            widget.setValue(int(value))
+            widget.blockSignals(False)
         for row in range(8):
             for column in range(16):
                 item = QTableWidgetItem("")
@@ -1441,6 +1550,7 @@ class ShowPatchPage(QWidget):
                     include_song_views=self._project.ma_export.ma2_include_song_views,
                     view_pool_start=self._project.ma_export.ma2_view_pool_start,
                     effect_pool_start=self._project.ma_export.ma2_effect_pool_start,
+                    effect_slots_per_song=self._project.ma_export.ma2_effect_slots_per_song,
                     sequence_slots_per_song=self._project.ma_export.ma2_sequence_slots_per_song,
                 )
         except Exception as exc:  # noqa: BLE001

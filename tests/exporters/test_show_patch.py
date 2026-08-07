@@ -201,17 +201,17 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     assert "ButtonPage 1" in lua and "ButtonPage 2" in lua
     assert "FaderPage 1" in lua
     assert (
-        'Import "Show_Install_Fixed_Macros" At Macro 1001 /path="macros"'
+        'Import "Show_Install_Fixed_Macros" At Macro 101 /path="macros"'
         in lua
     )
     assert (
-        'Import "Show_Install_Song_Macros" At Macro 1009 /path="macros"'
+        'Import "Show_Install_Song_Macros" At Macro 201 /path="macros"'
         in lua
     )
     assert 'Import "Show_Install_Song_List" At Sequence 41' in lua
-    assert 'Label Page 100 "CuePlayer Template Page"' in lua
-    assert 'Assign Sequence 41 At Page 1.100.130' in lua
-    assert 'Label Executor 100.130 "CuePlayer Song List"' in lua
+    assert 'Label Page 200 "CuePlayer Template Page"' in lua
+    assert 'Assign Sequence 41 At Page 1.200.130' in lua
+    assert 'Label Executor 200.130 "CuePlayer Song List"' in lua
     assert 'Import "Show_Install_View_1" At View 201' in lua
     assert 'Label View 201 "SongA"' in lua
     assert 'Import "Show_Install_View_2" At View 202' in lua
@@ -273,7 +273,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     view_2 = view_2_root.find("ma:View", ns)
     assert view_2 is not None
     view_2_widgets = view_2.findall("ma:Widget", ns)
-    assert view_2_widgets[1].get("scroll_offset") == "200"  # Next 80 slots.
+    assert view_2_widgets[1].get("scroll_offset") == "220"  # Next 100 slots.
     assert view_2_widgets[2].get("scroll_offset") == "20"  # Sequence 21 first.
     assert view_2_widgets[2].get("scroll_index") == "20"
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
@@ -402,7 +402,12 @@ def test_ma2_song_views_put_each_sequence_block_in_first_cell(tmp_path) -> None:
     ]
     settings = MaExportSettings(console="ma2", sequence_pool_start=1)
     plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
-    paths = Ma2Exporter().export_show_to_directory(plans, tmp_path)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        effect_pool_start=201,
+        effect_slots_per_song=100,
+    )
     ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
 
     assert [plan.profile.sequence_pool_start for plan in plans] == [1, 21, 41]
@@ -411,3 +416,4 @@ def test_ma2_song_views_put_each_sequence_block_in_first_cell(tmp_path) -> None:
         widgets = root.findall("ma:View/ma:Widget", ns)
         assert widgets[2].get("scroll_offset") == str(expected_scroll)
         assert widgets[2].get("scroll_index") == str(expected_scroll)
+        assert widgets[1].get("scroll_offset") == str(120 + (index - 1) * 100)

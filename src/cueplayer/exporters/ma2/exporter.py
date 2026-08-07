@@ -174,14 +174,15 @@ class Ma2Exporter:
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
         include_song_list: bool = True,
-        template_page: int = 100,
-        fixed_macro_start: int = 1001,
-        song_macro_start: int = 1009,
+        template_page: int = 200,
+        fixed_macro_start: int = 101,
+        song_macro_start: int = 201,
         add_main_preset_cue: bool = False,
         main_preset_cue_id: float = 0.5,
         include_song_views: bool = True,
         view_pool_start: int = 201,
         effect_pool_start: int = 201,
+        effect_slots_per_song: int = 100,
         sequence_slots_per_song: int = 20,
     ) -> dict[str, Path]:
         """
@@ -255,7 +256,10 @@ class Ma2Exporter:
                         plan,
                         directory,
                         view_pool=int(view_pool_start) + index,
-                        effect_pool_start=int(effect_pool_start) + index * 80,
+                        effect_pool_start=(
+                            int(effect_pool_start)
+                            + index * max(1, int(effect_slots_per_song))
+                        ),
                         basename=f"{show_install_name}_View_{index + 1}",
                     )
         return all_paths
