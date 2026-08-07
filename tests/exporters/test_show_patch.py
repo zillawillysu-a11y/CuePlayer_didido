@@ -264,7 +264,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
         "53455155",
         "4d414352",
     ]
-    assert widgets[1].get("scroll_offset") == "120"  # Effect starts at 201.
+    assert widgets[1].get("scroll_offset") == "200"  # Effect starts at 201.
     assert widgets[1].get("anz_rows") == "5"
     assert widgets[1].get("anz_cols") == "16"
     assert widgets[2].get("scroll_index") == "0"
@@ -273,7 +273,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     view_2 = view_2_root.find("ma:View", ns)
     assert view_2 is not None
     view_2_widgets = view_2.findall("ma:Widget", ns)
-    assert view_2_widgets[1].get("scroll_offset") == "220"  # Next 100 slots.
+    assert view_2_widgets[1].get("scroll_offset") == "300"  # Next 100 slots.
     assert view_2_widgets[2].get("scroll_offset") == "20"  # Sequence 21 first.
     assert view_2_widgets[2].get("scroll_index") == "20"
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
@@ -382,7 +382,7 @@ def test_ma2_song_view_matches_s1_pool_scrolls(tmp_path) -> None:
     root = ET.parse(paths["show:view_1"]).getroot()
     ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
     widgets = root.findall("ma:View/ma:Widget", ns)
-    assert widgets[1].get("scroll_offset") == "224"
+    assert widgets[1].get("scroll_offset") == "304"
     assert widgets[2].get("scroll_offset") == "243"
     lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
     assert 'Import "CuePlayer_Show_Install_View_1" At View 200' in lua
@@ -416,7 +416,7 @@ def test_ma2_song_views_put_each_sequence_block_in_first_cell(tmp_path) -> None:
         widgets = root.findall("ma:View/ma:Widget", ns)
         assert widgets[2].get("scroll_offset") == str(expected_scroll)
         assert widgets[2].get("scroll_index") == str(expected_scroll)
-        assert widgets[1].get("scroll_offset") == str(120 + (index - 1) * 100)
+        assert widgets[1].get("scroll_offset") == str(200 + (index - 1) * 100)
 
 
 def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
@@ -439,7 +439,7 @@ def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
     assert widget.get("y") == "3"
     assert widget.get("anz_cols") == "12"
     assert widget.get("anz_rows") == "4"
-    assert widget.get("scroll_offset") == "320"  # Effect Start 401 is 401 - 81.
+    assert widget.get("scroll_offset") == "400"  # MA2 displays scroll offset + 1.
 
 
 def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> None:
@@ -462,7 +462,7 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
     widgets = root.findall(f"{namespace}View/{namespace}Widget")
     macro = next(widget for widget in widgets if widget.get("type") == "4d414352")
     assert macro.get("x") == "10"
-    assert macro.get("y") == "0"
+    assert macro.get("y") is None
     assert macro.get("has_focus") == "true"
     assert macro.get("has_scrollfocus") == "true"
     assert macro.get("scroll_offset") is None

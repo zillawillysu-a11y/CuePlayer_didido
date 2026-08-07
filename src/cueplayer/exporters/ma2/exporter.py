@@ -486,19 +486,25 @@ class Ma2Exporter:
                 start = max(1, int(spec.get("start", 1)))
                 if spec.get("mode") == "perSong":
                     start += song_index * max(1, int(spec.get("stride", 1)))
+                x = max(0, int(spec.get("x", 0)))
+                y = max(0, int(spec.get("y", 0)))
                 attrs = {
-                    "x": str(max(0, int(spec.get("x", 0)))),
-                    "y": str(max(0, int(spec.get("y", 0)))),
                     "anz_rows": str(rows),
                     "anz_cols": str(columns),
                 }
+                # MA2 treats explicit zero co-ordinates differently from omitted
+                # defaults (see the successful S1View fixture).  Omit zeroes.
+                if x:
+                    attrs["x"] = str(x)
+                if y:
+                    attrs["y"] = str(y)
                 if widget_type == "4d414352":
                     attrs.update(has_focus="true", has_scrollfocus="true")
                 else:
                     scroll = (
-                        # MA2 Effect pool scroll is based on its fixed 80-slot
-                        # pool page, not the View widget's current dimensions.
-                        max(0, start - 81)
+                        # MA2 displays Effect Pool item scroll_offset + 1.
+                        # This is independent of the View widget's dimensions.
+                        max(0, start - 1)
                         if spec.get("type") == "effects"
                         else max(0, start - 1)
                     )
@@ -511,7 +517,8 @@ class Ma2Exporter:
         # Template Effect page (1...) and Macro row are fixed for every song.
         add_widget(0, "454e4749", y="6", anz_rows="2", anz_cols="16")
         # Song Effect page: the reference layout shows 5 x 16 = 80 pool slots.
-        effect_scroll = max(0, int(effect_pool_start) - 81)
+        # MA2 renders Effect Pool item scroll_offset + 1.
+        effect_scroll = max(0, int(effect_pool_start) - 1)
         add_widget(
             1,
             "454e4749",
