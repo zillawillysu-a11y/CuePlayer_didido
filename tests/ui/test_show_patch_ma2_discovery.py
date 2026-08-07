@@ -43,6 +43,35 @@ def test_detected_running_version_drives_default_folder(
     assert project.ma_export.ma2_output_dir_follows_version
 
 
+def test_five_page_playlist_workflow_and_screen3_grid(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+
+    assert page.workflow_tabs.count() == 5
+    assert [page.workflow_tabs.tabText(i) for i in range(5)] == [
+        "1  Songs & Pools",
+        "2  Export Registry",
+        "3  Console Setup",
+        "4  View Layout",
+        "5  Review & Export",
+    ]
+    assert page.view_grid.rowCount() == 8
+    assert page.view_grid.columnCount() == 16
+    assert page.view_grid.item(0, 0).text() == "Sequence"
+    assert page.view_grid.item(0, 10).text() == "Macros"
+    assert page.view_grid.item(1, 0).text() == "Effects"
+    assert page.registry_table.rowCount() == 1
+    assert page.review_table.rowCount() == 1
+    page.workflow_tabs.setCurrentIndex(4)
+    assert page.workflow_tabs.currentWidget() is page.review_page
+
+
 def test_custom_unicode_folder_survives_detection(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

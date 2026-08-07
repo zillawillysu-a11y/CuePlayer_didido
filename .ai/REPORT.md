@@ -6,54 +6,48 @@
 
 ## Task objective
 
-Implement production grandMA2 version/output-folder discovery and a validated Registry-to-Console-Setup synchronization seam in the existing PySide6 export page.
+Replace the single legacy MA ShowPatchPage layout with a visible five-page playlist workflow in the production PySide6 application while preserving existing export behavior.
 
 ## What was implemented
 
-- Added read-only discovery of installed `gma2_V_*` folders.
-- Added running grandMA2 onPC full-build discovery through a hidden, time-limited PowerShell/CIM query.
-- Added supported-version comparison with minimum 3.3.4.3 and mapping from full build to the matching `importexport` folder.
-- Added editable Target Version, Detect MA2, running/installed status, native Browse, and Use Version Default controls to the production ShowPatchPage.
-- Added persisted Target Version and output-folder follow/custom mode.
-- Added export blocking for unsupported versions and Target Version/output-folder family mismatches.
-- Added `apply_registry_scan_result` as the validated production seam for future Telnet scanner results; it updates Sequence, Effects, Timecode, Song Macro, and View while preserving Fixed Macro, Template Page, and executors.
-- Updated approved production defaults: Timecode 201, Main Executor 201.130, Button Start 201.101, Template Page 200, Fixed Macro 101, Song Macro 201.
+- Added production tabs: Songs & Pools, Export Registry, Console Setup, View Layout, and Review & Export.
+- Moved the existing song checklist, patch table, settings, version discovery, Output Folder, and export action into their corresponding workflow pages.
+- Added a Registry table showing planned Sequence, Effects, Timecode, Song Macro, and View allocations plus next-safe starts.
+- Added a Review table and summary showing target, selected-song count, output folder, Pool ranges, Timecode, and mark counts.
+- Added a fixed Screen 3 16×8 View preview with Sequence, Fixed Macros, Per Song Effects, and Fixed Effects; Pool titles consume the first cell and allocation colors distinguish Fixed/Per Song.
+- Registry, Review, and View pages rebuild from current selected songs and MA settings.
+- Preserved production MA2 discovery, custom/version-following Output Folder behavior, Registry synchronization seam, and existing exporters.
 
 ## Files changed
 
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/exporters/ma_default_dirs.py`
 - `src/cueplayer/ui/show_patch_page.py`
-- `tests/exporters/test_ma_default_dirs.py`
-- `tests/exporters/test_show_patch.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
 - `.ai/REPORT.md`
 - `.ai/NEXT_TASK.md`
-- `.ai/handoffs/2026-08-08_ProductionMa2DiscoveryAndSetupSync.md`
+- `.ai/handoffs/2026-08-08_MaExportFivePagePySideLayout.md`
 
 ## Architecture decisions
 
-- Reused the existing MA default-directory adapter rather than creating a duplicate Windows discovery path.
-- Discovery is read-only, bounded by a three-second timeout, and does not modify MA files.
-- Registry application is an explicit validated method; Telnet transport is intentionally absent.
-- Custom output paths remain user-owned; version-following paths are changed only while follow mode is active.
-- The approved playlist mockup has not yet been visually migrated into PySide6; this task only adds production behavior to the existing page.
+- This is a layout composition change inside the existing UI module; exporter/domain behavior was not rewritten.
+- Registry and Review are derived views of current production settings, avoiding a second allocation engine.
+- Screen 3 is represented as exactly 16 columns × 8 rows.
+- The first production View page is a read-only allocation preview; interactive drag/resize and persisted custom geometry remain a separate focused slice.
 
 ## Tests performed
 
-- MA directory/discovery, exporter patch, production UI, persistence schema, and Unicode path tests: 29 passed.
-- Python `compileall` for changed modules/tests: passed.
-- Real offscreen ShowPatchPage smoke test on this computer: passed; detected `gma2_V_3.9.63/importexport`.
+- Focused PySide6 UI, MA discovery, and show-patch exporter tests: 24 passed.
+- Broader run including persistence schema and Unicode paths before final layout-only adjustment: 30 passed.
+- Python compile checks: passed.
+- Offscreen Qt renders inspected for Songs, Registry, Setup, View, and Review pages.
 - `git diff --check`: passed.
-- Ruff was unavailable in the project virtual environment.
 
 ## Remaining issues
 
-- The production ShowPatchPage still uses the legacy visual layout; the approved five-page playlist mockup is design-only.
-- Telnet scanning is not implemented, so `apply_registry_scan_result` has no live transport caller yet.
-- MA2 XML compatibility fixtures remain required before claiming verified 3.3.4.3–3.9.63.6 output compatibility.
+- View Layout does not yet support dragging/resizing Pool windows or persisting custom geometry.
+- Song rows still select whole songs; individual Main/Button content selection is not yet wired into production exporter plans.
+- Registry displays planned project allocations; real MA show occupancy still awaits Telnet scanner transport.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Replace the legacy ShowPatchPage layout with the approved five-page PySide6 playlist workflow (Songs & Pools, Export Registry, Console Setup, View Layout, Review & Export) while reusing the production discovery, settings, export, and Registry synchronization behavior completed here.
+Add production per-song Main/Button content selection and an interactive persisted 16×8 View Layout editor (drag, whole-cell resize, Fixed/Per Song mode, Pool type/start/reserved slots) without implementing Telnet.

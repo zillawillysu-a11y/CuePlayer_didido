@@ -1,33 +1,30 @@
 # Next task
 
 **Status:** Queued — awaiting human start
-**Type:** MA Export PySide6 interface redesign
+**Type:** MA Export content selection and interactive View editor
 **Updated:** 2026-08-08
 **Workflow:** `READ → PLAN → IMPLEMENT → REPORT + HANDOFF → STOP`
 
 ## Current task
 
-Replace the legacy ShowPatchPage visual layout with the approved playlist-style PySide6 workflow represented by `design/ma_export_playlist_mockup.html`.
-
-## Required pages
-
-1. Songs & Pools
-2. Export Registry
-3. Console Setup
-4. View Layout
-5. Review & Export
+Finish the approved production MA Export interaction model by adding per-song Main/Button content selection and an interactive persisted Screen 3 View Layout editor.
 
 ## Requirements
 
-- Reuse existing export logic; do not rewrite the MA2/MA3 exporters.
-- Reuse production MA2 version detection, output-folder follow/custom mode, and `apply_registry_scan_result`.
-- Keep all interface chrome in English and preserve Unicode song display.
-- Preserve per-song Main/Button content selection and explicit Song Order.
-- Preserve approved defaults and Fixed/Per Song View allocation behavior.
-- Keep Screen 3 fixed at 16 × 8 and Pool titles consuming one cell.
-- Do not implement Telnet transport in the visual-redesign task.
+- Expand each song to select Main and individual Button content.
+- Reflect selections in Registry, Review, generated Sequences, and Timecode.
+- Keep explicit Song Order and Unicode display names.
+- Keep Screen 3 permanently fixed at 16 × 8.
+- Allow Pool windows to be selected, dragged, and resized by whole cells.
+- Pool titles consume one cell and never overflow.
+- Support the approved MA2 Pool type list.
+- Allow Fixed or Per Song allocation per Pool with Pool Start and Reserved Slots Per Song.
+- Default Per Song Effects reservation to 100, minimum 1.
+- Persist the shared layout with the project and validate overlaps/bounds.
+- Reuse existing exporters and production Registry/Console synchronization.
+- Do not implement Telnet in this task.
 - Do not touch `startup_error.txt`.
 
 ## Done when
 
-The running PySide6 application visibly follows the approved five-page mockup, existing export behavior remains green, and focused UI tests cover page navigation, readable fields, Registry/Setup synchronization, View grid invariants, and export review.
+Focused UI/domain/persistence/exporter tests prove content filtering, drag/resize grid invariants, fixed/per-song allocation, Unicode round-trip, and export review consistency.

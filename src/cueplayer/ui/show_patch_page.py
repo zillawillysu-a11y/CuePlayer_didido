@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -128,13 +129,32 @@ class ShowPatchPage(QWidget):
         root.addWidget(title)
         root.addWidget(hint)
 
+        self.workflow_tabs = QTabWidget()
+        self.workflow_tabs.setObjectName("maExportWorkflowTabs")
+        self.songs_page = QWidget()
+        self.registry_page = QWidget()
+        self.setup_page = QWidget()
+        self.view_page = QWidget()
+        self.review_page = QWidget()
+        self.songs_page_layout = QVBoxLayout(self.songs_page)
+        self.registry_page_layout = QVBoxLayout(self.registry_page)
+        self.setup_page_layout = QVBoxLayout(self.setup_page)
+        self.view_page_layout = QVBoxLayout(self.view_page)
+        self.review_page_layout = QVBoxLayout(self.review_page)
+        self.workflow_tabs.addTab(self.songs_page, "1  Songs & Pools")
+        self.workflow_tabs.addTab(self.registry_page, "2  Export Registry")
+        self.workflow_tabs.addTab(self.setup_page, "3  Console Setup")
+        self.workflow_tabs.addTab(self.view_page, "4  View Layout")
+        self.workflow_tabs.addTab(self.review_page, "5  Review & Export")
+        root.addWidget(self.workflow_tabs, stretch=1)
+
         self.chain_label = QLabel("")
         self.chain_label.setWordWrap(True)
         self.chain_label.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 8px;"
             "padding: 10px 12px; color: #a1a1aa; font-family: Consolas, 'Courier New', monospace;"
         )
-        root.addWidget(self.chain_label)
+        self.songs_page_layout.addWidget(self.chain_label)
 
         settings_row = QHBoxLayout()
         console_box = QGroupBox("Console")
@@ -186,7 +206,7 @@ class ShowPatchPage(QWidget):
         fader_form.addRow("Button Start", self.button_fader)
         fader_form.addRow(self.page_per_song)
         settings_row.addWidget(fader_box, stretch=1)
-        root.addLayout(settings_row)
+        self.setup_page_layout.addLayout(settings_row)
 
         opt_row = QHBoxLayout()
         opt_box = QGroupBox("Export Options")
@@ -275,7 +295,8 @@ class ShowPatchPage(QWidget):
         self.out_hint.setStyleSheet("color: #8b949e;")
         out_layout.addWidget(self.out_hint)
         opt_row.addWidget(out_box, stretch=1)
-        root.addLayout(opt_row)
+        self.setup_page_layout.addLayout(opt_row)
+        self.setup_page_layout.addStretch(1)
 
         song_box = QGroupBox("Songs to Export")
         song_layout = QVBoxLayout(song_box)
@@ -291,7 +312,7 @@ class ShowPatchPage(QWidget):
         pick_btns.addWidget(self.song_none_btn)
         pick_btns.addStretch(1)
         song_layout.addLayout(pick_btns)
-        root.addWidget(song_box)
+        self.songs_page_layout.addWidget(song_box)
 
         self.table = QTableWidget(0, 7)
         self.table.setObjectName("exportPatchTable")
@@ -332,7 +353,69 @@ class ShowPatchPage(QWidget):
         self.table.setColumnWidth(_COL_FADER, 90)
         self.table.setColumnWidth(_COL_TC, 120)
         self.table.setColumnWidth(_COL_MARKS, 100)
-        root.addWidget(self.table, stretch=1)
+        self.songs_page_layout.addWidget(self.table, stretch=1)
+
+        registry_intro = QLabel(
+            "Existing allocations stay stable. Live MA2 scanning will feed this page through "
+            "the validated Registry synchronization interface."
+        )
+        registry_intro.setWordWrap(True)
+        registry_intro.setStyleSheet("color: #8b949e; padding: 4px;")
+        self.registry_page_layout.addWidget(registry_intro)
+        self.registry_status = QLabel("Registry preview · based on the current export selection")
+        self.registry_status.setStyleSheet(
+            "background: #111113; border: 1px solid #27272a; border-radius: 6px; "
+            "padding: 10px; color: #a1a1aa;"
+        )
+        self.registry_page_layout.addWidget(self.registry_status)
+        self.registry_table = QTableWidget(0, 7)
+        self.registry_table.setHorizontalHeaderLabels(
+            ["Song", "Status", "Sequence", "Effects", "Timecode", "Song Macro", "View"]
+        )
+        self.registry_table.verticalHeader().setVisible(False)
+        self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.registry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.registry_page_layout.addWidget(self.registry_table, stretch=1)
+
+        view_intro = QLabel(
+            "Screen 3 is fixed at 16 × 8. Each cell represents one MA Pool slot, and every "
+            "Pool title consumes the first cell of its window."
+        )
+        view_intro.setWordWrap(True)
+        view_intro.setStyleSheet("color: #8b949e; padding: 4px;")
+        self.view_page_layout.addWidget(view_intro)
+        self.view_grid = QTableWidget(8, 16)
+        self.view_grid.setObjectName("ma2Screen3Grid")
+        self.view_grid.horizontalHeader().setVisible(False)
+        self.view_grid.verticalHeader().setVisible(False)
+        self.view_grid.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.view_grid.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.view_grid.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.view_grid.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.view_page_layout.addWidget(self.view_grid, stretch=1)
+
+        review_intro = QLabel(
+            "Review the selected songs, Pool allocation, Console target, and output folder "
+            "before generating the MA files."
+        )
+        review_intro.setWordWrap(True)
+        review_intro.setStyleSheet("color: #8b949e; padding: 4px;")
+        self.review_page_layout.addWidget(review_intro)
+        self.review_summary = QLabel("")
+        self.review_summary.setWordWrap(True)
+        self.review_summary.setStyleSheet(
+            "background: #111113; border: 1px solid #27272a; border-radius: 8px; "
+            "padding: 12px; color: #e5e7eb;"
+        )
+        self.review_page_layout.addWidget(self.review_summary)
+        self.review_table = QTableWidget(0, 6)
+        self.review_table.setHorizontalHeaderLabels(
+            ["Order", "Song", "Sequence", "Effects", "Timecode", "Marks"]
+        )
+        self.review_table.verticalHeader().setVisible(False)
+        self.review_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.review_page_layout.addWidget(self.review_table, stretch=1)
 
         action_row = QHBoxLayout()
         self.refresh_btn = QPushButton("Refresh Patch")
@@ -346,7 +429,7 @@ class ShowPatchPage(QWidget):
         action_row.addWidget(self.refresh_btn)
         action_row.addStretch(1)
         action_row.addWidget(self.export_btn)
-        root.addLayout(action_row)
+        self.review_page_layout.addLayout(action_row)
 
         for widget in (
             self.seq_start,
@@ -415,6 +498,7 @@ class ShowPatchPage(QWidget):
         self._slots = build_show_patch(songs, self._project.ma_export)
         self._rebuild_table()
         self._rebuild_chain()
+        self._rebuild_workflow_pages()
 
     def _checked_songs(self):
         if self._project is None:
@@ -783,6 +867,100 @@ class ShowPatchPage(QWidget):
             QMessageBox.information(self, "No Default Found", "No grandMA install path was detected on this computer.")
             return
         self.out_dir.setText(path)
+
+    def _rebuild_workflow_pages(self) -> None:
+        if self._project is None:
+            return
+        settings = self._project.ma_export
+        slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
+        effect_slots = 100
+        self.registry_table.setRowCount(len(self._slots))
+        self.review_table.setRowCount(len(self._slots))
+        for row, slot in enumerate(self._slots):
+            seq_start = int(slot.main_sequence)
+            seq_end = seq_start + slots_per_song - 1
+            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
+            effect_end = effect_start + effect_slots - 1
+            macro = int(settings.ma2_song_macro_start) + row
+            view = int(settings.ma2_view_pool_start) + row
+            registry_values = (
+                slot.display_name,
+                "Planned",
+                f"{seq_start}–{seq_end}",
+                f"{effect_start}–{effect_end}",
+                str(slot.timecode_pool),
+                str(macro),
+                str(view),
+            )
+            for column, value in enumerate(registry_values):
+                self.registry_table.setItem(row, column, QTableWidgetItem(value))
+            review_values = (
+                str(row + 1),
+                slot.display_name,
+                f"{seq_start}–{seq_end}",
+                f"{effect_start}–{effect_end}",
+                str(slot.timecode_pool),
+                f"{slot.main_cue_count} Main · {slot.button_mark_count} Button",
+            )
+            for column, value in enumerate(review_values):
+                self.review_table.setItem(row, column, QTableWidgetItem(value))
+        if self._slots:
+            last_row = len(self._slots) - 1
+            next_sequence = int(self._slots[last_row].main_sequence) + slots_per_song
+            next_effect = int(settings.ma2_effect_pool_start) + len(self._slots) * effect_slots
+            next_timecode = int(self._slots[last_row].timecode_pool) + 1
+            self.registry_status.setText(
+                f"{len(self._slots)} planned song(s) · Next safe starts: Sequence {next_sequence}, "
+                f"Effects {next_effect}, Timecode {next_timecode}, "
+                f"Song Macro {int(settings.ma2_song_macro_start) + len(self._slots)}, "
+                f"View {int(settings.ma2_view_pool_start) + len(self._slots)}"
+            )
+        else:
+            self.registry_status.setText("No songs selected · no Registry allocation proposed")
+        target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
+        self.review_summary.setText(
+            f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
+            f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}"
+        )
+        self._rebuild_view_grid()
+
+    def _rebuild_view_grid(self) -> None:
+        settings = self._project.ma_export if self._project else MaExportSettings()
+        sequence_start = int(self._slots[0].main_sequence) if self._slots else int(settings.sequence_pool_start)
+        effect_start = int(settings.ma2_effect_pool_start)
+        fixed_effect_start = 1
+        for row in range(8):
+            for column in range(16):
+                item = QTableWidgetItem("")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if row == 0 and column == 0:
+                    item.setText("Sequence")
+                    item.setBackground(QBrush(QColor("#1e3a8a")))
+                elif row == 0 and column < 10:
+                    item.setText(str(sequence_start + column - 1))
+                    item.setBackground(QBrush(QColor("#172554")))
+                elif row == 0 and column == 10:
+                    item.setText("Macros")
+                    item.setBackground(QBrush(QColor("#6b214d")))
+                elif row == 0:
+                    item.setText(str(int(settings.ma2_fixed_macro_start) + column - 11))
+                    item.setBackground(QBrush(QColor("#4a1635")))
+                elif row == 1 and column == 0:
+                    item.setText("Effects")
+                    item.setBackground(QBrush(QColor("#1e3a8a")))
+                elif 1 <= row <= 5:
+                    offset = (row - 1) * 16 + column - 1
+                    item.setText(str(effect_start + offset))
+                    item.setBackground(QBrush(QColor("#172554")))
+                elif row == 6 and column == 0:
+                    item.setText("Effects")
+                    item.setBackground(QBrush(QColor("#6b214d")))
+                else:
+                    offset = (row - 6) * 16 + column - 1
+                    item.setText(str(fixed_effect_start + offset))
+                    item.setBackground(QBrush(QColor("#4a1635")))
+                item.setForeground(QBrush(QColor("#f8fafc")))
+                self.view_grid.setItem(row, column, item)
 
     def _rebuild_chain(self) -> None:
         if not self._slots:
