@@ -504,6 +504,7 @@ class Ma2Exporter:
                 x = max(0, int(spec.get("x", 0)))
                 y = max(0, int(spec.get("y", 0)))
                 pool_type = str(spec.get("type", ""))
+                needs_scroll = spec.get("mode") == "perSong" or start != 1
                 # Keep the attribute order emitted by MA2's own View export.
                 # Its View importer is not reliably order-independent: in
                 # particular a Macro widget's x position is ignored when x is
@@ -531,13 +532,12 @@ class Ma2Exporter:
                     if y:
                         attrs["y"] = str(y)
                     attrs.update(anz_rows=str(rows), anz_cols=str(columns))
-                    # Fixed auxiliary Pools match the native View with no
-                    # scroll fields.  A Per Song Pool must carry its own
-                    # scroll position, otherwise MA2 always shows Pool 1 and
-                    # loses the per-song allocation.
-                    if spec.get("mode") == "perSong":
-                        scroll = max(0, start - 1)
-                        attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
+                # Per Song windows require a song-specific scroll range.
+                # Fixed only means shared between songs: a fixed Pool Start
+                # such as Macro 191 must still scroll to 191 in MA2.
+                if needs_scroll:
+                    scroll = max(0, start - 1)
+                    attrs.update(scroll_offset=str(scroll), scroll_index=str(scroll))
                 ma2_index = (
                     0
                     if pool_type == "effects" and spec.get("mode") == "fixed"

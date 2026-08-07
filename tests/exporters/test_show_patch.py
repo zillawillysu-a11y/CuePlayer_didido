@@ -442,7 +442,7 @@ def test_ma2_song_view_uses_custom_screen3_geometry(tmp_path) -> None:
     assert widget.get("scroll_offset") == "400"  # MA2 displays scroll offset + 1.
 
 
-def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> None:
+def test_ma2_macro_widget_keeps_its_screen_position_with_fixed_start_scroll(tmp_path) -> None:
     from xml.etree import ElementTree as ET
 
     from cueplayer.exporters.ma2 import Ma2Exporter
@@ -469,14 +469,15 @@ def test_ma2_macro_widget_keeps_its_screen_position_without_scroll(tmp_path) -> 
     assert macro.get("y") is None
     assert macro.get("has_focus") == "true"
     assert macro.get("has_scrollfocus") == "true"
-    assert macro.get("scroll_offset") is None
-    assert macro.get("scroll_index") is None
+    assert macro.get("scroll_offset") == "190"
+    assert macro.get("scroll_index") == "190"
     # MA2's importer requires the native-export attribute order.  In
     # particular, x must precede the widget size for Macro placement to apply.
     text = paths["show:view_1"].read_text(encoding="utf-8")
     assert (
         'type="4d414352" display_nr="2" has_focus="true" '
-        'has_scrollfocus="true" x="10" anz_rows="1" anz_cols="6"'
+        'has_scrollfocus="true" x="10" anz_rows="1" anz_cols="6" '
+        'scroll_offset="190" scroll_index="190"'
     ) in text
 
 
@@ -551,7 +552,8 @@ def test_ma2_per_song_auxiliary_pool_keeps_its_song_scroll_range(tmp_path) -> No
     plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
     layout = [
         {"type": "camera", "mode": "perSong", "x": 3, "y": 0, "w": 2, "h": 1, "start": 1, "stride": 10},
-        {"type": "groups", "mode": "fixed", "x": 6, "y": 0, "w": 2, "h": 1, "start": 1, "stride": 1},
+        {"type": "groups", "mode": "fixed", "x": 6, "y": 0, "w": 2, "h": 1, "start": 41, "stride": 1},
+        {"type": "macros", "mode": "fixed", "x": 10, "y": 0, "w": 2, "h": 1, "start": 191, "stride": 1},
     ]
     paths = Ma2Exporter().export_show_to_directory(plans, tmp_path, view_layout=layout)
     root = ET.parse(paths["show:view_2"]).getroot()
@@ -559,7 +561,10 @@ def test_ma2_per_song_auxiliary_pool_keeps_its_song_scroll_range(tmp_path) -> No
     widgets = root.findall(f"{namespace}View/{namespace}Widget")
     camera = next(widget for widget in widgets if widget.get("type") == "43414d50")
     groups = next(widget for widget in widgets if widget.get("type") == "47524f55")
+    macros = next(widget for widget in widgets if widget.get("type") == "4d414352")
     assert camera.get("scroll_offset") == "10"
     assert camera.get("scroll_index") == "10"
-    assert groups.get("scroll_offset") is None
-    assert groups.get("scroll_index") is None
+    assert groups.get("scroll_offset") == "40"
+    assert groups.get("scroll_index") == "40"
+    assert macros.get("scroll_offset") == "190"
+    assert macros.get("scroll_index") == "190"
