@@ -68,6 +68,11 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.view_grid.item(1, 0).text() == "Effects"
     assert page.registry_table.rowCount() == 1
     assert page.review_table.rowCount() == 1
+    assert page.playlist_table.rowCount() == 1
+    assert page.playlist_table.columnCount() == 9
+    assert page.registry_command_port.value() == 30000
+    assert page.registry_monitor_port.value() == 30001
+    assert page.registry_version.text() == "3.9.63.6"
     page.workflow_tabs.setCurrentIndex(4)
     assert page.workflow_tabs.currentWidget() is page.review_page
 

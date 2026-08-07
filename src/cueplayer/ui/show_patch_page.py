@@ -111,21 +111,20 @@ class ShowPatchPage(QWidget):
         self._project: Project | None = None
         self._slots: list[SongPatchSlot] = []
         self._suppress = False
+        self._playlist_refreshing = False
         self._ma2_discovery = Ma2Discovery((), None)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(10)
 
-        title = QLabel("Export · Sequence / Fader")
-        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #e6edf3;")
+        title = QLabel("Export · MA Playlist")
+        title.setObjectName("maExportTitle")
         hint = QLabel(
-            "Check the songs to export. MA2 Main: Song; MA3 Main: Song_Main; "
-            "Button Sequence: Song_Hit (Mark name). "
-            "Each song has one Timecode containing the Main Go+ and all Button Tops."
+            "Choose songs and Pool ranges, configure the console, then review and export."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e;")
+        hint.setObjectName("maExportHint")
         root.addWidget(title)
         root.addWidget(hint)
 
@@ -141,12 +140,44 @@ class ShowPatchPage(QWidget):
         self.setup_page_layout = QVBoxLayout(self.setup_page)
         self.view_page_layout = QVBoxLayout(self.view_page)
         self.review_page_layout = QVBoxLayout(self.review_page)
+        for layout in (
+            self.songs_page_layout,
+            self.registry_page_layout,
+            self.setup_page_layout,
+            self.view_page_layout,
+            self.review_page_layout,
+        ):
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(14)
         self.workflow_tabs.addTab(self.songs_page, "1  Songs & Pools")
         self.workflow_tabs.addTab(self.registry_page, "2  Export Registry")
         self.workflow_tabs.addTab(self.setup_page, "3  Console Setup")
         self.workflow_tabs.addTab(self.view_page, "4  View Layout")
         self.workflow_tabs.addTab(self.review_page, "5  Review & Export")
         root.addWidget(self.workflow_tabs, stretch=1)
+        self.setStyleSheet(
+            "ShowPatchPage { background: #0d0f12; color: #eef2f7; }"
+            "#maExportTitle { font-size: 22px; font-weight: 700; color: #eef2f7; }"
+            "#maExportHint { color: #99a3b1; }"
+            "QTabWidget::pane { border: 1px solid #2b313a; background: #15181d; top: -1px; }"
+            "QTabBar::tab { background: #0d0f12; color: #99a3b1; border: 1px solid transparent; "
+            "padding: 9px 16px; min-width: 130px; }"
+            "QTabBar::tab:selected { background: #15181d; color: #eef2f7; border-color: #2b313a; "
+            "border-bottom-color: #15181d; }"
+            "QGroupBox { background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
+            "margin-top: 10px; padding: 14px 10px 10px; color: #eef2f7; font-weight: 600; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }"
+            "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #101318; color: #eef2f7; "
+            "border: 1px solid #38414d; border-radius: 6px; min-height: 32px; padding: 2px 8px; }"
+            "QPushButton { background: #1b1f25; color: #eef2f7; border: 1px solid #2b313a; "
+            "border-radius: 7px; min-height: 32px; padding: 0 13px; }"
+            "QPushButton:hover { border-color: #4a5565; }"
+            "QTableWidget, QListWidget { background: #15181d; alternate-background-color: #191d23; "
+            "color: #eef2f7; border: 1px solid #2b313a; border-radius: 7px; gridline-color: #2b313a; }"
+            "QHeaderView::section { background: #1b1f25; color: #99a3b1; border: none; "
+            "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
+            "QLabel { color: #eef2f7; }"
+        )
 
         self.chain_label = QLabel("")
         self.chain_label.setWordWrap(True)
@@ -295,6 +326,7 @@ class ShowPatchPage(QWidget):
         self.out_hint.setStyleSheet("color: #8b949e;")
         out_layout.addWidget(self.out_hint)
         opt_row.addWidget(out_box, stretch=1)
+        opt_row.setAlignment(out_box, Qt.AlignmentFlag.AlignTop)
         self.setup_page_layout.addLayout(opt_row)
         self.setup_page_layout.addStretch(1)
 
@@ -313,6 +345,28 @@ class ShowPatchPage(QWidget):
         pick_btns.addStretch(1)
         song_layout.addLayout(pick_btns)
         self.songs_page_layout.addWidget(song_box)
+        song_box.hide()
+
+        self.playlist_table = QTableWidget(0, 9)
+        self.playlist_table.setObjectName("maExportPlaylistTable")
+        self.playlist_table.setHorizontalHeaderLabels(
+            ["Export", "Song Order", "Song", "MA Export Name", "Sequence", "Effects", "Timecode", "Marks", "Content"]
+        )
+        self.playlist_table.verticalHeader().setVisible(False)
+        self.playlist_table.setAlternatingRowColors(True)
+        self.playlist_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.playlist_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.playlist_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.playlist_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.playlist_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.playlist_table.setColumnWidth(0, 58)
+        self.playlist_table.setColumnWidth(1, 88)
+        self.playlist_table.setColumnWidth(4, 105)
+        self.playlist_table.setColumnWidth(5, 115)
+        self.playlist_table.setColumnWidth(6, 82)
+        self.playlist_table.setColumnWidth(7, 82)
+        self.playlist_table.setColumnWidth(8, 130)
+        self.songs_page_layout.addWidget(self.playlist_table, stretch=1)
 
         self.table = QTableWidget(0, 7)
         self.table.setObjectName("exportPatchTable")
@@ -353,7 +407,15 @@ class ShowPatchPage(QWidget):
         self.table.setColumnWidth(_COL_FADER, 90)
         self.table.setColumnWidth(_COL_TC, 120)
         self.table.setColumnWidth(_COL_MARKS, 100)
-        self.songs_page_layout.addWidget(self.table, stretch=1)
+        self.table.hide()
+        songs_nav = QHBoxLayout()
+        songs_nav.addWidget(self.song_all_btn)
+        songs_nav.addWidget(self.song_none_btn)
+        songs_nav.addStretch(1)
+        songs_next = QPushButton("Export Registry  →")
+        songs_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(1))
+        songs_nav.addWidget(songs_next)
+        self.songs_page_layout.addLayout(songs_nav)
 
         registry_intro = QLabel(
             "Existing allocations stay stable. Live MA2 scanning will feed this page through "
@@ -362,6 +424,76 @@ class ShowPatchPage(QWidget):
         registry_intro.setWordWrap(True)
         registry_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.registry_page_layout.addWidget(registry_intro)
+        live_scan_box = QGroupBox("MA2 Live Pool Scan")
+        live_scan_layout = QVBoxLayout(live_scan_box)
+        live_scan_fields = QHBoxLayout()
+        self.registry_host = QLineEdit("127.0.0.1")
+        self.registry_version = QLineEdit(MA2_MINIMUM_VERSION)
+        self.registry_version.setReadOnly(True)
+        self.registry_command_port = NoWheelSpinBox()
+        self.registry_command_port.setRange(1, 65535)
+        self.registry_command_port.setValue(30000)
+        self.registry_monitor_port = NoWheelSpinBox()
+        self.registry_monitor_port.setRange(1, 65535)
+        self.registry_monitor_port.setValue(30001)
+        self.registry_user = QLineEdit("CuePlayerScan")
+        self.registry_password = QLineEdit()
+        self.registry_password.setEchoMode(QLineEdit.EchoMode.Password)
+        for label_text, widget in (
+            ("MA2 Host", self.registry_host),
+            ("Target Version", self.registry_version),
+            ("Command", self.registry_command_port),
+            ("Monitor", self.registry_monitor_port),
+            ("User", self.registry_user),
+            ("Password", self.registry_password),
+        ):
+            field = QVBoxLayout()
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+            field.addWidget(label)
+            field.addWidget(widget)
+            live_scan_fields.addLayout(
+                field,
+                stretch=2 if label_text in ("MA2 Host", "User", "Password") else 1,
+            )
+        live_scan_layout.addLayout(live_scan_fields)
+        live_scan_actions = QHBoxLayout()
+        self.registry_scan_status = QLabel(
+            "Not connected · Telnet integration is not enabled yet"
+        )
+        self.registry_scan_status.setStyleSheet(
+            "background: #101318; color: #99a3b1; border-radius: 6px; padding: 9px;"
+        )
+        test_connection = QPushButton("Test Connection")
+        scan_show = QPushButton("Scan Current Show")
+        for button in (test_connection, scan_show):
+            button.setEnabled(False)
+            button.setToolTip(
+                "Telnet transport is planned after the interface workflow is approved"
+            )
+        live_scan_actions.addWidget(self.registry_scan_status, stretch=1)
+        live_scan_actions.addWidget(test_connection)
+        live_scan_actions.addWidget(scan_show)
+        live_scan_layout.addLayout(live_scan_actions)
+        self.registry_page_layout.addWidget(live_scan_box)
+
+        registry_summary_layout = QHBoxLayout()
+        self.registry_summary_labels: list[QLabel] = []
+        for text in (
+            "Registered Songs\n0",
+            "Next Sequence\n1",
+            "Next Effects\n201",
+            "Next IDs\n201",
+        ):
+            label = QLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet(
+                "background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
+                "padding: 10px; font-weight: 600;"
+            )
+            self.registry_summary_labels.append(label)
+            registry_summary_layout.addWidget(label)
+        self.registry_page_layout.addLayout(registry_summary_layout)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 6px; "
@@ -376,6 +508,15 @@ class ShowPatchPage(QWidget):
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.registry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.registry_page_layout.addWidget(self.registry_table, stretch=1)
+        registry_nav = QHBoxLayout()
+        registry_back = QPushButton("←  Songs & Pools")
+        registry_next = QPushButton("Console Setup  →")
+        registry_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(0))
+        registry_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(2))
+        registry_nav.addWidget(registry_back)
+        registry_nav.addStretch(1)
+        registry_nav.addWidget(registry_next)
+        self.registry_page_layout.addLayout(registry_nav)
 
         view_intro = QLabel(
             "Screen 3 is fixed at 16 × 8. Each cell represents one MA Pool slot, and every "
@@ -417,15 +558,38 @@ class ShowPatchPage(QWidget):
         self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.review_page_layout.addWidget(self.review_table, stretch=1)
 
+        setup_nav = QHBoxLayout()
+        setup_back = QPushButton("←  Export Registry")
+        setup_next = QPushButton("View Layout  →")
+        setup_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(1))
+        setup_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(3))
+        setup_nav.addWidget(setup_back)
+        setup_nav.addStretch(1)
+        setup_nav.addWidget(setup_next)
+        self.setup_page_layout.addLayout(setup_nav)
+
+        view_nav = QHBoxLayout()
+        view_back = QPushButton("←  Console Setup")
+        view_next = QPushButton("Review & Export  →")
+        view_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(2))
+        view_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(4))
+        view_nav.addWidget(view_back)
+        view_nav.addStretch(1)
+        view_nav.addWidget(view_next)
+        self.view_page_layout.addLayout(view_nav)
+
         action_row = QHBoxLayout()
+        review_back = QPushButton("←  View Layout")
         self.refresh_btn = QPushButton("Refresh Patch")
         self.export_btn = QPushButton("Export Checked Songs…")
         self.export_btn.setStyleSheet(
-            "QPushButton { height: 34px; padding: 0 16px; font-weight: 600;"
-            " background: transparent; border: none; color: #ededed; }"
-            "QPushButton:hover { background: #222222; }"
-            "QPushButton:pressed { background: #2a2a2a; }"
+            "QPushButton { height: 34px; padding: 0 16px; font-weight: 650;"
+            " background: #3b82f6; border: 1px solid #3b82f6; border-radius: 7px; color: white; }"
+            "QPushButton:hover { background: #2563eb; }"
+            "QPushButton:pressed { background: #1d4ed8; }"
         )
+        review_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(3))
+        action_row.addWidget(review_back)
         action_row.addWidget(self.refresh_btn)
         action_row.addStretch(1)
         action_row.addWidget(self.export_btn)
@@ -465,6 +629,7 @@ class ShowPatchPage(QWidget):
                 widget.textChanged.connect(self._on_settings_edited)
 
         self.out_dir.textChanged.connect(self._on_out_dir_edited)
+        self.playlist_table.itemChanged.connect(self._on_playlist_item_changed)
         self.ma2_version.currentTextChanged.connect(self._on_ma2_version_changed)
         self.ma2_detect_btn.clicked.connect(self._detect_ma2_versions)
         self.ma2_radio.toggled.connect(self._on_console_toggled)
@@ -496,6 +661,7 @@ class ShowPatchPage(QWidget):
         self._write_ui_to_settings()
         songs = self._checked_songs()
         self._slots = build_show_patch(songs, self._project.ma_export)
+        self._rebuild_playlist_table()
         self._rebuild_table()
         self._rebuild_chain()
         self._rebuild_workflow_pages()
@@ -514,6 +680,68 @@ class ShowPatchPage(QWidget):
             if song is not None:
                 out.append(song)
         return out
+
+    def _rebuild_playlist_table(self) -> None:
+        if self._project is None:
+            self.playlist_table.setRowCount(0)
+            return
+        checked_ids = {
+            str(self.song_pick.item(row).data(Qt.ItemDataRole.UserRole) or "")
+            for row in range(self.song_pick.count())
+            if self.song_pick.item(row) is not None
+            and self.song_pick.item(row).checkState() == Qt.CheckState.Checked
+        }
+        settings = self._project.ma_export
+        seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
+        self._playlist_refreshing = True
+        self.playlist_table.setRowCount(len(self._project.songs))
+        for row, song in enumerate(self._project.songs):
+            export_item = QTableWidgetItem()
+            export_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            export_item.setCheckState(
+                Qt.CheckState.Checked if song.id in checked_ids else Qt.CheckState.Unchecked
+            )
+            export_item.setData(Qt.ItemDataRole.UserRole, song.id)
+            export_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.playlist_table.setItem(row, 0, export_item)
+            sequence_start = int(settings.sequence_pool_start) + row * seq_slots
+            effect_start = int(settings.ma2_effect_pool_start) + row * 100
+            main_marks = sum(1 for mark in song.marks if mark.lane_index == 1)
+            button_marks = sum(1 for mark in song.marks if mark.lane_index != 1)
+            ma_name = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
+            values = (
+                str(row + 1),
+                song.name,
+                ma_name,
+                f"{sequence_start}–{sequence_start + seq_slots - 1}",
+                f"{effect_start}–{effect_start + 99}",
+                str(int(settings.timecode_pool_start) + row),
+                str(len(song.marks)),
+                f"Main + {button_marks} Button" if button_marks else f"Main · {main_marks} cues",
+            )
+            for column, value in enumerate(values, start=1):
+                item = QTableWidgetItem(value)
+                if column in (1, 4, 5, 6, 7):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if column == 2:
+                    item.setToolTip(song.name)
+                self.playlist_table.setItem(row, column, item)
+            self.playlist_table.setRowHeight(row, 54)
+        self._playlist_refreshing = False
+
+    def _on_playlist_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._playlist_refreshing or self._suppress or item.column() != 0:
+            return
+        song_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        for row in range(self.song_pick.count()):
+            source = self.song_pick.item(row)
+            if source is not None and str(source.data(Qt.ItemDataRole.UserRole) or "") == song_id:
+                source.setCheckState(item.checkState())
+                break
 
     def _rebuild_song_pick(self) -> None:
         if self._project is None:
@@ -581,6 +809,7 @@ class ShowPatchPage(QWidget):
         )
         self.ma2_version.setCurrentText(selected)
         self.ma2_version.blockSignals(False)
+        self.registry_version.setText(selected)
         installed = ", ".join(item.version for item in self._ma2_discovery.installations) or "none"
         running = self._ma2_discovery.running_version or "not running"
         self.ma2_detect_status.setText(f"Running {running} · Installed {installed}")
@@ -620,6 +849,7 @@ class ShowPatchPage(QWidget):
             return
         version = version.strip()
         self._project.ma_export.ma2_target_version = version
+        self.registry_version.setText(version)
         if not ma2_version_supported(version):
             self.ma2_detect_status.setText(
                 f"Unsupported {version} · minimum {MA2_MINIMUM_VERSION}"
@@ -659,6 +889,10 @@ class ShowPatchPage(QWidget):
         self._write_ui_to_settings()
         self.ma2_detect_status.setText(
             f"Registry synchronized from {host} · MA2 {remote_version}"
+        )
+        self.registry_version.setText(remote_version)
+        self.registry_scan_status.setText(
+            f"Registry synchronized · {host} · Remote MA2 {remote_version}"
         )
         self.refresh()
         self.settings_changed.emit()
@@ -915,8 +1149,24 @@ class ShowPatchPage(QWidget):
                 f"Song Macro {int(settings.ma2_song_macro_start) + len(self._slots)}, "
                 f"View {int(settings.ma2_view_pool_start) + len(self._slots)}"
             )
+            self.registry_summary_labels[0].setText(
+                f"Registered Songs\n{len(self._slots)}"
+            )
+            self.registry_summary_labels[1].setText(f"Next Sequence\n{next_sequence}")
+            self.registry_summary_labels[2].setText(f"Next Effects\n{next_effect}")
+            self.registry_summary_labels[3].setText(f"Next IDs\n{next_timecode}")
         else:
             self.registry_status.setText("No songs selected · no Registry allocation proposed")
+            self.registry_summary_labels[0].setText("Registered Songs\n0")
+            self.registry_summary_labels[1].setText(
+                f"Next Sequence\n{int(settings.sequence_pool_start)}"
+            )
+            self.registry_summary_labels[2].setText(
+                f"Next Effects\n{int(settings.ma2_effect_pool_start)}"
+            )
+            self.registry_summary_labels[3].setText(
+                f"Next IDs\n{int(settings.timecode_pool_start)}"
+            )
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
         self.review_summary.setText(
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"

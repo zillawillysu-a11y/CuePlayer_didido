@@ -6,48 +6,47 @@
 
 ## Task objective
 
-Replace the single legacy MA ShowPatchPage layout with a visible five-page playlist workflow in the production PySide6 application while preserving existing export behavior.
+Correct the first five-tab migration so the production PySide6 MA Exporter visually and structurally resembles the approved HTML playlist mockup instead of the legacy form split across tabs.
 
 ## What was implemented
 
-- Added production tabs: Songs & Pools, Export Registry, Console Setup, View Layout, and Review & Export.
-- Moved the existing song checklist, patch table, settings, version discovery, Output Folder, and export action into their corresponding workflow pages.
-- Added a Registry table showing planned Sequence, Effects, Timecode, Song Macro, and View allocations plus next-safe starts.
-- Added a Review table and summary showing target, selected-song count, output folder, Pool ranges, Timecode, and mark counts.
-- Added a fixed Screen 3 16×8 View preview with Sequence, Fixed Macros, Per Song Effects, and Fixed Effects; Pool titles consume the first cell and allocation colors distinguish Fixed/Per Song.
-- Registry, Review, and View pages rebuild from current selected songs and MA settings.
-- Preserved production MA2 discovery, custom/version-following Output Folder behavior, Registry synchronization seam, and existing exporters.
+- Added a page-local dark visual system matching the mockup palette, cards, tabs, inputs, tables, and buttons.
+- Replaced the visible legacy song checklist/sequence table with a nine-column Show Playlist table: Export, Song Order, Song, MA Export Name, Sequence, Effects, Timecode, Marks, and Content.
+- Kept the original checklist hidden as the compatibility state source so existing export selection logic remains unchanged.
+- Added Back/Next workflow navigation to all five pages.
+- Added the MA2 Live Pool Scan card to Registry with Host, Target Version, command port 30000, monitor port 30001, User, Password, and explicitly disabled Test/Scan buttons until Telnet exists.
+- Added four Registry summary cards and synchronized them with selected songs and next-safe allocation values.
+- Improved Console Setup card sizing and changed the main Export action to the mockup's blue primary style.
+- Kept Registry, Review, and the fixed 16×8 Screen 3 preview synchronized with current settings.
 
 ## Files changed
 
 - `src/cueplayer/ui/show_patch_page.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
 - `.ai/REPORT.md`
-- `.ai/NEXT_TASK.md`
-- `.ai/handoffs/2026-08-08_MaExportFivePagePySideLayout.md`
+- `.ai/handoffs/2026-08-08_MaExportHtmlStyleProductionUi.md`
 
 ## Architecture decisions
 
-- This is a layout composition change inside the existing UI module; exporter/domain behavior was not rewritten.
-- Registry and Review are derived views of current production settings, avoiding a second allocation engine.
-- Screen 3 is represented as exactly 16 columns × 8 rows.
-- The first production View page is a read-only allocation preview; interactive drag/resize and persisted custom geometry remain a separate focused slice.
+- Existing exporter behavior remains behind the redesigned presentation.
+- The hidden legacy checklist is temporarily retained as a compatibility model; the new playlist table mirrors and edits its selection state.
+- Telnet controls are visible for workflow review but disabled, preventing fake connection/scan claims.
+- View Layout remains a faithful fixed-grid preview in this slice; the editor is the next task.
 
 ## Tests performed
 
-- Focused PySide6 UI, MA discovery, and show-patch exporter tests: 24 passed.
-- Broader run including persistence schema and Unicode paths before final layout-only adjustment: 30 passed.
-- Python compile checks: passed.
-- Offscreen Qt renders inspected for Songs, Registry, Setup, View, and Review pages.
+- Focused UI, MA directory discovery, exporter patch, persistence schema, and Unicode tests: 30 passed.
+- Python compile check: passed.
+- Offscreen Qt renders for all five pages were generated and inspected against the HTML layout.
 - `git diff --check`: passed.
 
 ## Remaining issues
 
-- View Layout does not yet support dragging/resizing Pool windows or persisting custom geometry.
-- Song rows still select whole songs; individual Main/Button content selection is not yet wired into production exporter plans.
-- Registry displays planned project allocations; real MA show occupancy still awaits Telnet scanner transport.
+- Per-song Main/Button content selection is summarized but not expandable/editable yet.
+- View Pool windows are not yet draggable/resizable or persisted.
+- Registry Live Scan requires future Telnet transport and is intentionally disabled.
 - `startup_error.txt` remains untracked and untouched.
 
 ## Suggested next task
 
-Add production per-song Main/Button content selection and an interactive persisted 16×8 View Layout editor (drag, whole-cell resize, Fixed/Per Song mode, Pool type/start/reserved slots) without implementing Telnet.
+Implement expandable per-song Main/Button selection and the persisted interactive 16×8 View editor while preserving the HTML-aligned production styling; do not add Telnet in that slice.
