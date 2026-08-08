@@ -346,7 +346,9 @@ class ShowPatchPage(QWidget):
         self.ma2_detect_status.setWordWrap(True)
         self.ma2_detect_status.setMaximumWidth(300)
         self.ma2_detect_status.setMinimumHeight(40)
-        self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+        # Text-only status must inherit the surrounding Console panel instead
+        # of painting a mismatched rectangular background.
+        self.ma2_detect_status.setStyleSheet("color: #8b949e; background: transparent;")
         console_layout.addWidget(self.ma2_version)
         console_layout.addWidget(self.ma2_detect_btn)
         console_layout.addWidget(self.ma2_detect_status)
@@ -1627,10 +1629,10 @@ class ShowPatchPage(QWidget):
             self.ma2_detect_status.setText(
                 f"Unsupported {selected} · minimum {MA2_MINIMUM_VERSION}"
             )
-            self.ma2_detect_status.setStyleSheet("color: #f87171;")
+            self.ma2_detect_status.setStyleSheet("color: #f87171; background: transparent;")
         else:
             self.ma2_detect_status.setText("")
-            self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+            self.ma2_detect_status.setStyleSheet("color: #8b949e; background: transparent;")
         if self._project:
             self._project.ma_export.ma2_target_version = selected
             if self._project.ma_export.ma2_output_dir_follows_version:
@@ -1665,9 +1667,9 @@ class ShowPatchPage(QWidget):
             self.ma2_detect_status.setText(
                 f"Unsupported {version} · minimum {MA2_MINIMUM_VERSION}"
             )
-            self.ma2_detect_status.setStyleSheet("color: #f87171;")
+            self.ma2_detect_status.setStyleSheet("color: #f87171; background: transparent;")
             return
-        self.ma2_detect_status.setStyleSheet("color: #8b949e;")
+        self.ma2_detect_status.setStyleSheet("color: #8b949e; background: transparent;")
         if self._project.ma_export.ma2_output_dir_follows_version:
             self._apply_version_default_dir(version, quiet=True)
         self.settings_changed.emit()
@@ -1973,8 +1975,7 @@ class ShowPatchPage(QWidget):
         path = resolve_export_dir(s.console if s.console in ("ma2", "ma3") else "ma2", remembered or None)
         self.out_dir.setText(path)
         self.data_pool.setEnabled(s.console == "ma3")
-        self.ma2_version.setEnabled(s.console != "ma3")
-        self.ma2_detect_btn.setEnabled(s.console != "ma3")
+        self._sync_console_specific_controls(s.console)
         self.show_macro_name.setEnabled(True)
         # Template Page / Fixed Macro Start / Song Macro Start / Song
         # Views / View Pool Start / ViewButton are shared with MA3's own
@@ -2249,8 +2250,7 @@ class ShowPatchPage(QWidget):
         saved_layout = s.ma3_view_layout if new_console == "ma3" else s.ma2_view_layout
         self.view_stage.set_layout(saved_layout or self._default_view_layout_for_settings())
         self.data_pool.setEnabled(new_console == "ma3")
-        self.ma2_version.setEnabled(new_console != "ma3")
-        self.ma2_detect_btn.setEnabled(new_console != "ma3")
+        self._sync_console_specific_controls(new_console)
         self.show_macro_name.setEnabled(True)
         for widget in (
             self.ma2_template_page,
@@ -2528,6 +2528,17 @@ class ShowPatchPage(QWidget):
         layout[0].update(start=int(settings.sequence_pool_start), stride=int(settings.ma2_sequence_slots_per_song))
         layout[2].update(start=int(settings.ma2_effect_pool_start), stride=int(settings.ma2_effect_slots_per_song))
         return layout
+
+    def _sync_console_specific_controls(self, console: str) -> None:
+        """Show MA2 detection controls only when grandMA2 is selected."""
+        show_ma2_controls = console != "ma3"
+        for widget in (
+            self.ma2_version,
+            self.ma2_detect_btn,
+            self.ma2_detect_status,
+        ):
+            widget.setVisible(show_ma2_controls)
+            widget.setEnabled(show_ma2_controls)
 
     def _rebuild_view_pool_types(self, console: str) -> None:
         """Expose only Pool types valid for the selected console."""

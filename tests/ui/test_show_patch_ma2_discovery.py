@@ -44,9 +44,15 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     ma2_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
     assert "effects" in ma2_types
     assert "all1" not in ma2_types
+    assert page.ma2_version.isVisibleTo(page)
+    assert page.ma2_detect_btn.isVisibleTo(page)
+    assert page.ma2_detect_status.isVisibleTo(page)
 
     page.ma3_radio.setChecked(True)
     app.processEvents()
+    assert not page.ma2_version.isVisibleTo(page)
+    assert not page.ma2_detect_btn.isVisibleTo(page)
+    assert not page.ma2_detect_status.isVisibleTo(page)
     ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
     assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
     assert [(w["type"], w["x"], w["y"], w["w"], w["h"]) for w in page.view_stage.widgets] == [
@@ -60,6 +66,9 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     page._on_view_layout_changed()
     page.ma2_radio.setChecked(True)
     app.processEvents()
+    assert page.ma2_version.isVisibleTo(page)
+    assert page.ma2_detect_btn.isVisibleTo(page)
+    assert page.ma2_detect_status.isVisibleTo(page)
     assert page.view_stage.widgets[0]["x"] == 0
     page.ma3_radio.setChecked(True)
     app.processEvents()
