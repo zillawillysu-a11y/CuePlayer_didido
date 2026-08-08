@@ -600,7 +600,7 @@ class ShowPatchPage(QWidget):
         view_stage_layout.addLayout(view_toolbar)
         self.view_stage = Ma2ViewLayoutStage()
         view_stage_layout.addWidget(self.view_stage, stretch=1)
-        legend = QLabel("Fixed Pool range     ·     Per Song unique Pool range     ·     One shared layout for every song")
+        legend = QLabel("Fixed Pool range   |   Per Song unique Pool range   |   One shared layout for every song")
         legend.setStyleSheet("color: #99a3b1; padding: 5px;")
         view_stage_layout.addWidget(legend)
         view_content.addWidget(view_stage_card, stretch=1)
@@ -649,10 +649,8 @@ class ShowPatchPage(QWidget):
         inspector_form.addRow("Pool Allocation", self.view_pool_mode)
         inspector_form.addRow("Pool Start", self.view_pool_number_start)
         inspector_form.addRow("Reserved Slots Per Song", self.view_pool_stride)
-        inspector_form.addRow("Column", self.view_pool_x)
-        inspector_form.addRow("Row", self.view_pool_y)
-        inspector_form.addRow("Width", self.view_pool_width)
-        inspector_form.addRow("Height", self.view_pool_height)
+        # Screen 3 geometry is edited directly by dragging/resizing the Pool
+        # window on the 16 x 8 stage; keep these values out of the inspector.
         self.view_allocation_status = QLabel("")
         self.view_allocation_status.setWordWrap(True)
         inspector_form.addRow("Status", self.view_allocation_status)
@@ -1692,7 +1690,8 @@ class ShowPatchPage(QWidget):
                 f"{len(self._slots)} planned song(s) · Next safe starts: Sequence {next_sequence}, "
                 f"Effects {next_effect}, Timecode {next_timecode}, "
                 f"Song Macro {int(settings.ma2_song_macro_start) + len(self._slots)}, "
-                f"View {int(settings.ma2_view_pool_start) + len(self._slots)}"
+                f"View {int(settings.ma2_view_pool_start) + len(self._slots)}, "
+                f"Groups reserve {group_slots}/song"
             )
             self.registry_summary_labels[0].setText(
                 f"Registered Songs\n{len(self._slots)}"
@@ -1715,7 +1714,8 @@ class ShowPatchPage(QWidget):
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
         self.review_summary.setText(
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
-            f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}"
+            f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}\n"
+            f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}"
         )
         values = (
             settings.ma2_include_fixed_macros,

@@ -6,7 +6,8 @@
 ## Task objective
 
 Add configurable Group reservation, restore separate Console Setup and Review
-& Export pages, mirror export checks in Review, and confirm before Export.
+& Export pages, mirror export checks in Review, confirm before Export, and
+clean up View Layout presentation.
 
 ## What was implemented
 
@@ -15,6 +16,9 @@ Add configurable Group reservation, restore separate Console Setup and Review
 - Added a synchronized read-only Export Content Check in Review.
 - Added an Export confirmation dialog listing enabled content.
 - Scanner Plugin emits Pool IDs in chunks and parses Group IDs.
+- View Layout Legend now uses plain ASCII separators and geometry controls are
+  removed from the inspector; drag/resize on the stage remains available.
+- Review summaries include the Group reservation per song.
 
 ## Files changed
 
