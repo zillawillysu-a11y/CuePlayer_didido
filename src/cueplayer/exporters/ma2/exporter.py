@@ -71,6 +71,25 @@ def _ma2_store_cue_label(cue: ExportCue) -> str:
     return cue.cue_name_for_export() or ""
 
 
+def _song_macro_positions(
+    plans: list[SongExportPlan],
+    song_macro_start: int,
+    pool_overrides: dict[str, dict[str, int]],
+) -> tuple[list[SongExportPlan], list[int]]:
+    """Actual per-song Macro pool positions (full-mode plans only, plan order)."""
+    full_plans = [p for p in plans if p.profile.export_mode == "full"]
+    positions = []
+    for index, plan in enumerate(full_plans):
+        override = (pool_overrides.get(plan.song_id) or {}).get("song_macro")
+        positions.append(int(override) if override is not None else int(song_macro_start) + index)
+    return full_plans, positions
+
+
+def _song_macro_positions_are_contiguous(positions: list[int], song_macro_start: int) -> bool:
+    """True when every override (if any) still lands on the default block."""
+    return positions == [int(song_macro_start) + i for i in range(len(positions))]
+
+
 def _rel_event_frames(plan: SongExportPlan, mark_time: float) -> int:
     """
     Timecode timeline event time in frames at the profile FPS (song-relative).
@@ -208,13 +227,21 @@ class Ma2Exporter:
         effect_slots_per_song: int = 100,
         sequence_slots_per_song: int = 20,
         view_layout: list[dict[str, object]] | None = None,
+        pool_overrides: dict[str, dict[str, int]] | None = None,
     ) -> dict[str, Path]:
         """
         Export Seq/TC files + CuePoints-style show Plugin.
 
         Plugin Stores all cues on the console, then writes one Timecode XML
         per song into importexport at runtime and Imports each (CuePoints flow).
+
+        ``pool_overrides``: optional ``{song_id: {pool_type: start}}`` manual
+        overrides (pool_type in "effects"/"view"/"song_macro" here — Sequence
+        and Timecode overrides are already baked into each plan's ``profile``
+        upstream). Absent/unknown entries fall back to the normal formula, so
+        this is purely additive and never changes output when empty.
         """
+        pool_overrides = pool_overrides or {}
         if not plans:
             return {}
         directory = Path(directory)
@@ -245,6 +272,7 @@ class Ma2Exporter:
                 include_song_views=include_song_views,
                 view_pool_start=view_pool_start,
                 sequence_slots_per_song=sequence_slots_per_song,
+                pool_overrides=pool_overrides,
             )
             all_paths["show:plugin_xml"] = plugin_paths["plugin_xml"]
             all_paths["show:plugin_lua"] = plugin_paths["plugin_lua"]
@@ -267,24 +295,50 @@ class Ma2Exporter:
                     include_songs=False,
                 )
             if include_song_macros:
-                all_paths["show:song_macros"] = self.write_song_change_macros(
-                    plans,
-                    directory,
-                    basename=f"{show_install_name}_Song_Macros",
-                    song_viewbutton=song_viewbutton,
-                    include_fixed=False,
-                    include_songs=True,
+                macro_plans, macro_positions = _song_macro_positions(
+                    plans, song_macro_start, pool_overrides
                 )
+                if _song_macro_positions_are_contiguous(macro_positions, song_macro_start):
+                    all_paths["show:song_macros"] = self.write_song_change_macros(
+                        plans,
+                        directory,
+                        basename=f"{show_install_name}_Song_Macros",
+                        song_viewbutton=song_viewbutton,
+                        include_fixed=False,
+                        include_songs=True,
+                    )
+                else:
+                    # A manual override broke the contiguous block — one
+                    # macro file + Import per song so each lands exactly on
+                    # its own (possibly non-contiguous) Macro pool number.
+                    for index, macro_plan in enumerate(macro_plans):
+                        all_paths[f"show:song_macro_{index + 1}"] = self.write_song_change_macros(
+                            [macro_plan],
+                            directory,
+                            basename=f"{show_install_name}_Song_Macro_{index + 1}",
+                            song_viewbutton=song_viewbutton,
+                            include_fixed=False,
+                            include_songs=True,
+                        )
             if include_song_views:
                 for index, plan in enumerate(plans):
+                    song_override = pool_overrides.get(plan.song_id) or {}
+                    view_pool = (
+                        int(song_override["view"])
+                        if "view" in song_override
+                        else int(view_pool_start) + index
+                    )
+                    plan_effect_start = (
+                        int(song_override["effects"])
+                        if "effects" in song_override
+                        else int(effect_pool_start)
+                        + index * max(1, int(effect_slots_per_song))
+                    )
                     all_paths[f"show:view_{index + 1}"] = self.write_song_view(
                         plan,
                         directory,
-                        view_pool=int(view_pool_start) + index,
-                        effect_pool_start=(
-                            int(effect_pool_start)
-                            + index * max(1, int(effect_slots_per_song))
-                        ),
+                        view_pool=view_pool,
+                        effect_pool_start=plan_effect_start,
                         basename=f"{show_install_name}_View_{index + 1}",
                         layout=view_layout,
                         song_index=index,
@@ -1120,11 +1174,13 @@ class Ma2Exporter:
         include_song_views: bool = True,
         view_pool_start: int = 201,
         sequence_slots_per_song: int = 20,
+        pool_overrides: dict[str, dict[str, int]] | None = None,
     ) -> dict[str, Path]:
         """
         CuePoints-style show Plugin: Store/Assign everything, then write+Import
         one Timecode XML per song (separate TC pools) and Assign /Offset.
         """
+        pool_overrides = pool_overrides or {}
         cmd_lines: list[str] = []
         tc_jobs: list[tuple[str, int, str, str, float, float, int, int, int, int, float]] = []
         for plan in plans:
@@ -1177,10 +1233,20 @@ class Ma2Exporter:
                 '/path="macros"'
             )
         if include_song_macros:
-            extra_imports.append(
-                f'Import "{safe_name}_Song_Macros" At Macro {int(song_macro_start)} '
-                '/path="macros"'
+            macro_plans, macro_positions = _song_macro_positions(
+                plans, song_macro_start, pool_overrides
             )
+            if _song_macro_positions_are_contiguous(macro_positions, song_macro_start):
+                extra_imports.append(
+                    f'Import "{safe_name}_Song_Macros" At Macro {int(song_macro_start)} '
+                    '/path="macros"'
+                )
+            else:
+                for index, macro_plan in enumerate(macro_plans):
+                    extra_imports.append(
+                        f'Import "{safe_name}_Song_Macro_{index + 1}" '
+                        f'At Macro {macro_positions[index]} /path="macros"'
+                    )
         if include_song_list:
             sequence_pools = [int(p.profile.sequence_pool_start) for p in plans]
             sequence_pools.extend(
@@ -1211,7 +1277,12 @@ class Ma2Exporter:
             )
         if include_song_views:
             for index, plan in enumerate(plans):
-                view_pool = int(view_pool_start) + index
+                song_override = pool_overrides.get(plan.song_id) or {}
+                view_pool = (
+                    int(song_override["view"])
+                    if "view" in song_override
+                    else int(view_pool_start) + index
+                )
                 view_name = sanitize_ma_name(
                     plan.song_name, fallback=f"Song{index + 1}"
                 )

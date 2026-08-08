@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cueplayer.domain.models import Mark, MaExportSettings, Project, Song
-from cueplayer.exporters.show_patch import build_show_patch, sequence_chain_labels
+from cueplayer.exporters.show_patch import build_show_patch, pool_collisions, sequence_chain_labels
 
 
 def _song_with_buttons(name: str, *, ma: str, button_names: list[str]) -> Song:
@@ -635,3 +635,196 @@ def test_ma2_per_song_auxiliary_pool_keeps_its_song_scroll_range(tmp_path) -> No
     assert groups.get("scroll_index") == "40"
     assert macros.get("scroll_offset") == "190"
     assert macros.get("scroll_index") == "190"
+
+
+def test_manual_pool_override_pins_one_song_without_shifting_others() -> None:
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons(f"Song{i}", ma=f"Song{i}", button_names=[]) for i in range(1, 4)
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=1,
+        timecode_pool_start=201,
+        ma2_effect_pool_start=201,
+        ma2_effect_slots_per_song=100,
+        ma2_group_pool_start=1,
+        ma2_group_slots_per_song=20,
+        ma2_view_pool_start=201,
+        ma2_song_macro_start=201,
+        ma2_pool_overrides={
+            project.songs[1].id: {
+                "sequence": 900,
+                "effects": 950,
+                "groups": 30,
+                "timecode": 500,
+                "view": 600,
+                "song_macro": 700,
+            }
+        },
+    )
+    slots = build_show_patch(project.songs, settings)
+
+    # Song 2 (overridden) uses the manual numbers.
+    assert slots[1].main_sequence == 900
+    assert slots[1].effect_start == 950
+    assert slots[1].group_start == 30
+    assert slots[1].timecode_pool == 500
+    assert slots[1].view_pool == 600
+    assert slots[1].song_macro_pool == 700
+
+    # Song 1 and Song 3 land exactly where they would if Song 2 had never
+    # been overridden — the counter advances by each song's *default*
+    # width regardless of any override, so overriding one song never
+    # reshuffles anyone else's numbers.
+    assert slots[0].main_sequence == 1
+    assert slots[2].main_sequence == 41  # 1 + Song1's 20 + Song2's default 20
+    assert slots[0].timecode_pool == 201
+    assert slots[2].timecode_pool == 203  # 201, 202 (Song2 default), 203
+    assert slots[0].effect_start == 201
+    assert slots[2].effect_start == 401  # row-index formula: 201 + 2*100
+    assert slots[0].view_pool == 201
+    assert slots[2].view_pool == 203  # row-index formula: 201 + 2
+    assert slots[0].song_macro_pool == 201
+    assert slots[2].song_macro_pool == 203  # row-index formula: 201 + 2
+
+
+def test_manual_sequence_override_carries_its_buttons_along() -> None:
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("Song", ma="Song", button_names=["Hit", "Crash"])]
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=1,
+        ma2_pool_overrides={project.songs[0].id: {"sequence": 500}},
+    )
+    slots = build_show_patch(project.songs, settings)
+    assert slots[0].main_sequence == 500
+    # Buttons stay relative to the overridden Main, not the raw counter.
+    assert [b.sequence for b in slots[0].buttons] == [501, 502]
+
+
+def test_pool_collisions_flags_overlapping_songs() -> None:
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+        _song_with_buttons("SongC", ma="SongC", button_names=[]),
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=1,
+        ma2_sequence_slots_per_song=20,
+        ma2_pool_overrides={
+            # Song B's Sequence override lands inside Song C's default range.
+            project.songs[1].id: {"sequence": 41},
+        },
+    )
+    slots = build_show_patch(project.songs, settings)
+    collisions = pool_collisions(slots, settings)
+
+    assert collisions["sequence"] == {project.songs[1].id, project.songs[2].id}
+    assert collisions["timecode"] == set()
+    assert collisions["effects"] == set()
+
+
+def test_pool_collisions_empty_when_no_overlap() -> None:
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(console="ma2")
+    slots = build_show_patch(project.songs, settings)
+    collisions = pool_collisions(slots, settings)
+    assert all(not ids for ids in collisions.values())
+
+
+def test_ma2_view_and_effects_pool_overrides_change_real_export(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+    from xml.etree import ElementTree as ET
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        ma2_pool_overrides={project.songs[1].id: {"view": 900, "effects": 950}},
+    )
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        view_pool_start=201,
+        effect_pool_start=201,
+        effect_slots_per_song=100,
+        pool_overrides=settings.ma2_pool_overrides,
+    )
+
+    lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    assert "At View 900" in lua
+    assert 'Label View 900 "SongB"' in lua
+    assert "At View 202" not in lua  # the un-overridden default for song 2
+
+    root = ET.parse(paths["show:view_2"]).getroot()
+    ns = {"ma": "http://schemas.malighting.de/grandma2/xml/MA"}
+    effects_widget = root.findall("ma:View/ma:Widget", ns)[1]
+    assert effects_widget.get("scroll_offset") == "949"  # 950 - 1
+
+
+def test_ma2_song_macro_override_splits_into_per_song_imports(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+        _song_with_buttons("SongC", ma="SongC", button_names=[]),
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        ma2_pool_overrides={project.songs[1].id: {"song_macro": 700}},
+    )
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans,
+        tmp_path,
+        song_macro_start=201,
+        pool_overrides=settings.ma2_pool_overrides,
+    )
+
+    assert "show:song_macros" not in paths  # split path, not the combined file
+    assert paths["show:song_macro_1"].name == "CuePlayer_Show_Install_Song_Macro_1.xml"
+    assert paths["show:song_macro_2"].name == "CuePlayer_Show_Install_Song_Macro_2.xml"
+    assert paths["show:song_macro_3"].name == "CuePlayer_Show_Install_Song_Macro_3.xml"
+
+    lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    assert 'Import "CuePlayer_Show_Install_Song_Macro_1" At Macro 201 /path="macros"' in lua
+    assert 'Import "CuePlayer_Show_Install_Song_Macro_2" At Macro 700 /path="macros"' in lua
+    assert 'Import "CuePlayer_Show_Install_Song_Macro_3" At Macro 203 /path="macros"' in lua
+    assert 'At Macro 202 /path="macros"' not in lua  # song 3's un-overridden default
+
+
+def test_ma2_song_macro_without_overrides_keeps_the_combined_import(tmp_path) -> None:
+    """Backward compatibility: no override at all must still be one Import."""
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(console="ma2")
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    paths = Ma2Exporter().export_show_to_directory(
+        plans, tmp_path, song_macro_start=201, pool_overrides={}
+    )
+
+    assert "show:song_macros" in paths
+    assert "show:song_macro_1" not in paths
+    lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
+    assert 'Import "CuePlayer_Show_Install_Song_Macros" At Macro 201 /path="macros"' in lua

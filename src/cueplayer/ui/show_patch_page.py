@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -51,6 +52,7 @@ from cueplayer.exporters.show_patch import (
     SongPatchSlot,
     build_show_patch,
     plans_from_show_patch,
+    pool_collisions,
 )
 from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
@@ -76,6 +78,17 @@ _EXPORT_SONG_IDS_MIME = EXPORT_SONG_IDS_MIME
 # View Layout Pool Types with a matching per-song Pool Start in Console
 # Setup — only these can "Follow Console Setup's per-song Pool Start".
 _FOLLOWABLE_POOL_TYPES = {"sequence", "effects", "groups", "timecode", "macros"}
+
+# Display labels for the manual per-song Pool override keys used in
+# MaExportSettings.ma2_pool_overrides / SongPatchSlot / pool_collisions().
+POOL_COLLISION_LABELS = {
+    "sequence": "Sequence",
+    "effects": "Effects",
+    "groups": "Groups",
+    "timecode": "Timecode",
+    "view": "View",
+    "song_macro": "Song Macro",
+}
 
 
 class ExportQueueList(QListWidget):
@@ -155,6 +168,7 @@ class ShowPatchPage(QWidget):
         self._slots: list[SongPatchSlot] = []
         self._suppress = False
         self._playlist_refreshing = False
+        self._review_table_refreshing = False
         self._expanded_content_song_ids: set[str] = set()
         self._ma2_discovery = Ma2Discovery((), None)
 
@@ -762,8 +776,15 @@ class ShowPatchPage(QWidget):
 
         manual_box = QGroupBox("Manual Pool Starts")
         manual_layout = QVBoxLayout(manual_box)
-        self.review_manual_pool_starts = QCheckBox("Enable manual starts")
-        manual_layout.addWidget(self.review_manual_pool_starts)
+        manual_hint = QLabel(
+            "Double-click any Sequence/Effects/Groups/Timecode/View/Song Macro "
+            "cell below to pin that song's own starting number — collisions with "
+            "another song are highlighted. Or seed starting numbers here and "
+            "click Auto-Fill to sequence every song in the queue at once."
+        )
+        manual_hint.setWordWrap(True)
+        manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
+        manual_layout.addWidget(manual_hint)
         manual_fields_grid = QGridLayout()
         self.review_pool_start_fields = {}
         for index, (label, attr, minimum) in enumerate((
@@ -776,8 +797,7 @@ class ShowPatchPage(QWidget):
         )):
             field = NoWheelSpinBox()
             field.setRange(minimum, 9999)
-            field.setToolTip(f"Manual {label} Pool start for this export")
-            field.valueChanged.connect(self._on_review_pool_start_edited)
+            field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
             self.review_pool_start_fields[attr] = field
             field_column = QVBoxLayout()
             field_label = QLabel(label)
@@ -787,7 +807,20 @@ class ShowPatchPage(QWidget):
             row, col = divmod(index, 2)
             manual_fields_grid.addLayout(field_column, row, col)
         manual_layout.addLayout(manual_fields_grid)
-        self.review_manual_pool_starts.toggled.connect(self._on_review_manual_toggled)
+        autofill_row = QHBoxLayout()
+        self.review_autofill_btn = QPushButton("Auto-Fill && Sequence")
+        self.review_autofill_btn.setToolTip(
+            "Write a per-song override for every song in the queue, starting "
+            "from the numbers above and advancing by each Pool's configured "
+            "slots/song (Timecode, View, and Song Macro advance by 1)."
+        )
+        self.review_clear_overrides_btn = QPushButton("Clear All Overrides")
+        autofill_row.addWidget(self.review_autofill_btn)
+        autofill_row.addWidget(self.review_clear_overrides_btn)
+        autofill_row.addStretch(1)
+        manual_layout.addLayout(autofill_row)
+        self.review_autofill_btn.clicked.connect(self._auto_fill_pool_overrides)
+        self.review_clear_overrides_btn.clicked.connect(self._clear_pool_overrides)
         review_left_column.addWidget(manual_box)
 
         self.review_summary = QLabel("")
@@ -805,8 +838,13 @@ class ShowPatchPage(QWidget):
             ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
-        self.review_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Order/Song/Marks stay read-only; the six Pool columns (2-7) accept a
+        # manual per-song start via double-click — see _on_review_table_item_edited.
+        self.review_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
         self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.review_table.itemChanged.connect(self._on_review_table_item_edited)
         review_content_row.addWidget(self.review_table, stretch=2)
         self.review_page_layout.addLayout(review_content_row, stretch=1)
 
@@ -969,6 +1007,9 @@ class ShowPatchPage(QWidget):
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        # self._slots was just (re)built from this same queued_songs list in
+        # refresh() — reuse it so overrides are reflected everywhere at once.
+        slots_by_song_id = {slot.song.id: slot for slot in self._slots}
         self._playlist_refreshing = True
         self.playlist_table.setRowCount(len(queued_songs) * 2)
         for row, song in enumerate(queued_songs):
@@ -986,9 +1027,17 @@ class ShowPatchPage(QWidget):
             export_item.setData(Qt.ItemDataRole.UserRole, song.id)
             export_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.playlist_table.setItem(main_row, 0, export_item)
-            sequence_start = int(settings.sequence_pool_start) + row * seq_slots
-            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
-            group_start = int(settings.ma2_group_pool_start) + row * group_slots
+            slot = slots_by_song_id.get(song.id)
+            if slot is not None:
+                sequence_start = int(slot.main_sequence)
+                effect_start = int(slot.effect_start)
+                group_start = int(slot.group_start)
+                timecode_start = int(slot.timecode_pool)
+            else:
+                sequence_start = int(settings.sequence_pool_start) + row * seq_slots
+                effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
+                group_start = int(settings.ma2_group_pool_start) + row * group_slots
+                timecode_start = int(settings.timecode_pool_start) + row
             ma_name = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
             values = (
                 str(row + 1),
@@ -997,7 +1046,7 @@ class ShowPatchPage(QWidget):
                 f"{sequence_start}–{sequence_start + seq_slots - 1}",
                 f"{effect_start}–{effect_start + effect_slots - 1}",
                 f"{group_start}–{group_start + group_slots - 1}",
-                str(int(settings.timecode_pool_start) + row),
+                str(timecode_start),
                 str(len(song.marks)),
                 self._content_summary(song),
             )
@@ -1711,11 +1760,62 @@ class ShowPatchPage(QWidget):
         self.refresh()
         self.settings_changed.emit()
 
-    def _on_review_manual_toggled(self, enabled: bool) -> None:
-        for field in self.review_pool_start_fields.values():
-            field.setEnabled(enabled)
-        if enabled:
-            self._on_review_pool_start_edited()
+    def _auto_fill_pool_overrides(self) -> None:
+        """Seed every song in the queue from the Manual Pool Starts fields."""
+        if self._project is None or not self._slots:
+            return
+        settings = self._project.ma_export
+        seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
+        effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        seeds = {
+            "sequence": (self.review_pool_start_fields["seq_start"].value(), seq_slots),
+            "effects": (self.review_pool_start_fields["effect_start"].value(), effect_slots),
+            "groups": (self.review_pool_start_fields["group_start"].value(), group_slots),
+            "timecode": (self.review_pool_start_fields["timecode_start"].value(), 1),
+            "view": (self.review_pool_start_fields["view_start"].value(), 1),
+            "song_macro": (self.review_pool_start_fields["macro_start"].value(), 1),
+        }
+        for row, slot in enumerate(self._slots):
+            overrides = settings.ma2_pool_overrides.setdefault(slot.song.id, {})
+            for pool, (start, stride) in seeds.items():
+                overrides[pool] = int(start) + row * stride
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _clear_pool_overrides(self) -> None:
+        if self._project is None:
+            return
+        self._project.ma_export.ma2_pool_overrides = {}
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _on_review_table_item_edited(self, item: QTableWidgetItem) -> None:
+        if self._review_table_refreshing or self._suppress or self._project is None:
+            return
+        pool_by_column = {
+            2: "sequence",
+            3: "effects",
+            4: "groups",
+            5: "timecode",
+            6: "view",
+            7: "song_macro",
+        }
+        pool = pool_by_column.get(item.column())
+        row = item.row()
+        if pool is None or not (0 <= row < len(self._slots)):
+            return
+        song_id = self._slots[row].song.id
+        settings = self._project.ma_export
+        match = re.search(r"\d+", item.text())
+        if match:
+            value = max(1, int(match.group()))
+            settings.ma2_pool_overrides.setdefault(song_id, {})[pool] = value
+        else:
+            # Blanked the cell — drop back to the computed default.
+            settings.ma2_pool_overrides.get(song_id, {}).pop(pool, None)
+        self.refresh()
+        self.settings_changed.emit()
 
     def _on_review_export_option_toggled(self, index: int, checked: bool) -> None:
         """Keep Review & Export's final checks bidirectionally synced with setup."""
@@ -1729,19 +1829,6 @@ class ShowPatchPage(QWidget):
         source = console_checks[index]
         if source.isChecked() != checked:
             source.setChecked(checked)
-
-    def _on_review_pool_start_edited(self, *_args) -> None:
-        if self._suppress or self._project is None or not self.review_manual_pool_starts.isChecked():
-            return
-        self.seq_start.setValue(self.review_pool_start_fields["seq_start"].value())
-        self.ma2_effect_pool_start.setValue(self.review_pool_start_fields["effect_start"].value())
-        self.tc_start.setValue(self.review_pool_start_fields["timecode_start"].value())
-        self.ma2_group_pool_start.setValue(self.review_pool_start_fields["group_start"].value())
-        self.ma2_song_macro_start.setValue(self.review_pool_start_fields["macro_start"].value())
-        self.ma2_view_pool_start.setValue(self.review_pool_start_fields["view_start"].value())
-        self._write_ui_to_settings()
-        self.refresh()
-        self.settings_changed.emit()
 
     def _on_out_dir_edited(self, *_args) -> None:
         if self._suppress or self._project is None:
@@ -1858,17 +1945,28 @@ class ShowPatchPage(QWidget):
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        collisions = pool_collisions(self._slots, settings)
+        pool_by_review_column = {
+            2: "sequence",
+            3: "effects",
+            4: "groups",
+            5: "timecode",
+            6: "view",
+            7: "song_macro",
+        }
+        collision_brush = QBrush(QColor("#7f1d1d"))
         self.registry_table.setRowCount(len(self._slots))
         self.review_table.setRowCount(len(self._slots))
+        self._review_table_refreshing = True
         for row, slot in enumerate(self._slots):
             seq_start = int(slot.main_sequence)
             seq_end = seq_start + slots_per_song - 1
-            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
+            effect_start = int(slot.effect_start)
             effect_end = effect_start + effect_slots - 1
-            group_start = int(settings.ma2_group_pool_start) + row * group_slots
+            group_start = int(slot.group_start)
             group_end = group_start + group_slots - 1
-            macro = int(settings.ma2_song_macro_start) + row
-            view = int(settings.ma2_view_pool_start) + row
+            macro = int(slot.song_macro_pool)
+            view = int(slot.view_pool)
             registry_values = (
                 slot.display_name,
                 "Planned",
@@ -1903,7 +2001,18 @@ class ShowPatchPage(QWidget):
                 f"{slot.main_cue_count} Main · {slot.button_mark_count} Button",
             )
             for column, value in enumerate(review_values):
-                self.review_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                pool = pool_by_review_column.get(column)
+                if pool is None:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                elif slot.song.id in collisions.get(pool, ()):
+                    item.setBackground(collision_brush)
+                    item.setToolTip(
+                        f"{POOL_COLLISION_LABELS.get(pool, pool)} Pool overlaps another "
+                        "song — pick a different start."
+                    )
+                self.review_table.setItem(row, column, item)
+        self._review_table_refreshing = False
         if self._slots:
             last_row = len(self._slots) - 1
             next_sequence = int(self._slots[last_row].main_sequence) + slots_per_song
@@ -2391,6 +2500,7 @@ class ShowPatchPage(QWidget):
                     effect_slots_per_song=self._project.ma_export.ma2_effect_slots_per_song,
                     sequence_slots_per_song=self._project.ma_export.ma2_sequence_slots_per_song,
                     view_layout=self._project.ma_export.ma2_view_layout or self._default_view_layout_for_settings(),
+                    pool_overrides=self._project.ma_export.ma2_pool_overrides,
                 )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Export Failed", str(exc))
@@ -2449,10 +2559,9 @@ class ShowPatchPage(QWidget):
         columns = ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
         rows: list[dict[str, str]] = []
         for order, slot in enumerate(self._slots, start=1):
-            row = order - 1
             seq_start = int(slot.main_sequence)
-            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
-            group_start = int(settings.ma2_group_pool_start) + row * group_slots
+            effect_start = int(slot.effect_start)
+            group_start = int(slot.group_start)
             rows.append({
                 "Order": str(order),
                 "Song": slot.display_name,
@@ -2460,8 +2569,8 @@ class ShowPatchPage(QWidget):
                 "Effects": f"{effect_start}–{effect_start + effect_slots - 1}",
                 "Groups": f"{group_start}–{group_start + group_slots - 1}",
                 "Timecode": str(slot.timecode_pool),
-                "View": str(int(settings.ma2_view_pool_start) + row),
-                "Song Macro": str(int(settings.ma2_song_macro_start) + row),
+                "View": str(int(slot.view_pool)),
+                "Song Macro": str(int(slot.song_macro_pool)),
             })
         stem = sanitize_ma_name(settings.ma2_show_name or "CuePlayer", fallback="CuePlayer")
         csv_path = directory / f"{stem}_Export_Allocation.csv"

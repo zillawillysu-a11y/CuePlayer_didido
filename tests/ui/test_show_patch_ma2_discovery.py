@@ -602,3 +602,133 @@ def test_reordering_export_queue_updates_order_everywhere(
     paths = page._write_export_allocation_report(tmp_path)
     csv_text = paths["show:allocation_csv"].read_text(encoding="utf-8-sig")
     assert csv_text.index("Second") < csv_text.index("First")
+
+
+def test_editing_a_review_table_pool_cell_stores_a_manual_override(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+    song_id = project.songs[0].id
+
+    # Timecode column (5) currently shows the computed default.
+    timecode_item = page.review_table.item(0, 5)
+    assert timecode_item.text() == str(page._slots[0].timecode_pool)
+
+    # setText() triggers the connected itemChanged signal synchronously,
+    # which is what a real double-click edit in the app does too.
+    timecode_item.setText("777")
+
+    assert project.ma_export.ma2_pool_overrides[song_id]["timecode"] == 777
+    assert page._slots[0].timecode_pool == 777
+    assert page.review_table.item(0, 5).text() == "777"
+
+    # Blanking the cell clears the override and falls back to the default.
+    default_before_override = int(page._project.ma_export.timecode_pool_start)
+    page.review_table.item(0, 5).setText("")
+    assert "timecode" not in project.ma_export.ma2_pool_overrides.get(song_id, {})
+    assert page._slots[0].timecode_pool == default_before_override
+
+
+def test_review_table_highlights_colliding_pool_cells(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("First", "Second"):
+        project.songs.append(Song.create(name))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    from PySide6.QtGui import QColor
+
+    default_bg = page.review_table.item(0, 5).background().color()
+
+    # Force both songs' Timecode onto the same number.
+    target = str(page._slots[0].timecode_pool)
+    page.review_table.item(1, 5).setText(target)
+
+    first_bg = page.review_table.item(0, 5).background().color()
+    second_bg = page.review_table.item(1, 5).background().color()
+    assert first_bg == QColor("#7f1d1d")
+    assert second_bg == QColor("#7f1d1d")
+    assert first_bg != default_bg
+    assert page.review_table.item(0, 5).toolTip()
+
+
+def test_auto_fill_sequences_every_song_from_the_seed_fields(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("First", "Second", "Third"):
+        project.songs.append(Song.create(name))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    page.review_pool_start_fields["timecode_start"].setValue(500)
+    page.review_pool_start_fields["view_start"].setValue(600)
+    page._auto_fill_pool_overrides()
+
+    assert [slot.timecode_pool for slot in page._slots] == [500, 501, 502]
+    assert [slot.view_pool for slot in page._slots] == [600, 601, 602]
+    for song in project.songs:
+        assert project.ma_export.ma2_pool_overrides[song.id]["timecode"]
+        assert project.ma_export.ma2_pool_overrides[song.id]["view"]
+
+
+def test_clear_all_overrides_button_removes_every_override(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+    page._auto_fill_pool_overrides()
+    assert project.ma_export.ma2_pool_overrides
+
+    page._clear_pool_overrides()
+
+    assert project.ma_export.ma2_pool_overrides == {}
+
+
+def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The override must show up everywhere, not just the Review table —
+    Songs & Pools' playlist_table and Export Registry's registry_table both
+    read from the same SongPatchSlot fields."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+    song_id = project.songs[0].id
+
+    project.ma_export.ma2_pool_overrides[song_id] = {"effects": 999}
+    page.refresh()
+
+    assert page.playlist_table.item(0, 5).text().startswith("999")
+    assert page.registry_table.item(0, 3).text().startswith("999")
+    assert page.review_table.item(0, 3).text().startswith("999")

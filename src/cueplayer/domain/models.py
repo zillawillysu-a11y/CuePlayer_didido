@@ -1070,6 +1070,10 @@ class MaExportSettings:
     export_song_ids: list[str] = field(default_factory=list)
     # Optional per-song Main/Button selection. Missing entries mean all.
     export_content_by_song: dict[str, dict[str, object]] = field(default_factory=dict)
+    # Manual per-song Pool Start overrides: song_id -> {pool_type: start}.
+    # pool_type in {"sequence","effects","groups","timecode","view","song_macro"}.
+    # Missing song/pool_type entries fall back to the normal computed start.
+    ma2_pool_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     output_dir_ma2: str = ""
     output_dir_ma3: str = ""
     ma2_target_version: str = ""

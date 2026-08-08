@@ -450,3 +450,6 @@ class SongExportPlan:
     # Song media length — Timecode Length uses max(media, last_event + tail).
     duration_seconds: float = 0.0
     song_bpm: float = 120.0
+    # Domain Song.id — lets show-wide export steps (View/Macro Pool
+    # assignment) key manual per-song Pool overrides back to a song.
+    song_id: str = ""

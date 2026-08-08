@@ -34,6 +34,12 @@ class SongPatchSlot:
     main_executor: str
     main_cue_count: int
     include_main: bool = True
+    # Single source of truth for the remaining four Pool types (used by every
+    # UI table, the CSV/TXT report, and — for View/Effects — the exporter).
+    effect_start: int = 1
+    group_start: int = 1
+    view_pool: int = 1
+    song_macro_pool: int = 1
 
     @property
     def button_lane_count(self) -> int:
@@ -100,6 +106,13 @@ def build_show_patch(
     """
     seq = max(1, int(settings.sequence_pool_start))
     tc = max(1, int(settings.timecode_pool_start))
+    effect_start_base = max(1, int(settings.ma2_effect_pool_start))
+    effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+    group_start_base = max(1, int(settings.ma2_group_pool_start))
+    group_slots = max(1, int(settings.ma2_group_slots_per_song))
+    view_start_base = max(1, int(settings.ma2_view_pool_start))
+    macro_start_base = max(1, int(settings.ma2_song_macro_start))
+    overrides = settings.ma2_pool_overrides or {}
     main_page0, main_exec = parse_page_executor(settings.main_executor or "1.101")
     _btn_page0, btn_exec = parse_page_executor(settings.button_executor_start or "1.201")
     page_per_song = bool(getattr(settings, "page_per_song", True))
@@ -113,6 +126,33 @@ def build_show_patch(
         raw_buttons = selection.get("buttons")
         selected_buttons = {int(value) for value in raw_buttons} if isinstance(raw_buttons, list) else None
         lane_rows = _button_lanes_with_marks(song, selected_buttons)
+        song_overrides = overrides.get(song.id) or {}
+        # A manual override "pins" this song's own number without disturbing
+        # where the running counter puts the *next* (non-overridden) song.
+        main_sequence = (
+            int(song_overrides["sequence"]) if "sequence" in song_overrides else seq
+        )
+        timecode_pool = (
+            int(song_overrides["timecode"]) if "timecode" in song_overrides else tc
+        )
+        effect_start = (
+            int(song_overrides["effects"])
+            if "effects" in song_overrides
+            else effect_start_base + i * effect_slots
+        )
+        group_start = (
+            int(song_overrides["groups"])
+            if "groups" in song_overrides
+            else group_start_base + i * group_slots
+        )
+        view_pool = (
+            int(song_overrides["view"]) if "view" in song_overrides else view_start_base + i
+        )
+        song_macro_pool = (
+            int(song_overrides["song_macro"])
+            if "song_macro" in song_overrides
+            else macro_start_base + i
+        )
         buttons: list[ButtonPatch] = []
         for offset, (lane_index, name, mark_count) in enumerate(lane_rows):
             mark_slug = sanitize_ma_name(name, fallback=f"Button{lane_index}")
@@ -120,7 +160,9 @@ def build_show_patch(
                 ButtonPatch(
                     lane_index=lane_index,
                     name=name,
-                    sequence=seq + int(include_main) + offset,
+                    # Buttons stay relative to Main so an overridden Main
+                    # sequence keeps its Buttons in the same block.
+                    sequence=main_sequence + int(include_main) + offset,
                     executor=format_executor(page, btn_exec + offset),
                     mark_count=mark_count,
                     sequence_name=mark_slug,
@@ -132,13 +174,17 @@ def build_show_patch(
                 song=song,
                 ma_base=base,
                 page=page,
-                main_sequence=seq,
+                main_sequence=main_sequence,
                 main_sequence_name=(base if settings.console == "ma2" else f"{base}_Main"),
                 buttons=tuple(buttons),
-                timecode_pool=tc,
+                timecode_pool=timecode_pool,
                 main_executor=format_executor(page, main_exec),
                 main_cue_count=_main_cue_count(song, include_main),
                 include_main=include_main,
+                effect_start=effect_start,
+                group_start=group_start,
+                view_pool=view_pool,
+                song_macro_pool=song_macro_pool,
             )
         )
         used_slots = int(include_main) + len(buttons)
@@ -148,6 +194,54 @@ def build_show_patch(
             seq += used_slots
         tc += 1
     return slots
+
+
+# One (start-getter, span-getter) pair per manually-overridable Pool column.
+_POOL_RANGE_GETTERS: dict[str, tuple] = {
+    "sequence": (
+        lambda slot: slot.main_sequence,
+        lambda slot, settings: max(
+            int(settings.ma2_sequence_slots_per_song or 20),
+            int(slot.include_main) + len(slot.buttons),
+        ),
+    ),
+    "effects": (
+        lambda slot: slot.effect_start,
+        lambda slot, settings: max(1, int(settings.ma2_effect_slots_per_song)),
+    ),
+    "groups": (
+        lambda slot: slot.group_start,
+        lambda slot, settings: max(1, int(settings.ma2_group_slots_per_song)),
+    ),
+    "timecode": (lambda slot: slot.timecode_pool, lambda slot, settings: 1),
+    "view": (lambda slot: slot.view_pool, lambda slot, settings: 1),
+    "song_macro": (lambda slot: slot.song_macro_pool, lambda slot, settings: 1),
+}
+
+
+def pool_collisions(
+    slots: list[SongPatchSlot], settings: MaExportSettings
+) -> dict[str, set[str]]:
+    """Song ids whose allocated range overlaps another song's, per Pool type.
+
+    Any two songs sharing numbers in the same Pool type would corrupt each
+    other's objects on the console, so this flags it regardless of whether
+    the collision came from a manual override or a too-small slots-per-song.
+    """
+    collisions: dict[str, set[str]] = {pool: set() for pool in _POOL_RANGE_GETTERS}
+    for pool, (start_of, span_of) in _POOL_RANGE_GETTERS.items():
+        ranges = [
+            (start_of(slot), start_of(slot) + span_of(slot, settings) - 1, slot.song.id)
+            for slot in slots
+        ]
+        for a in range(len(ranges)):
+            a_start, a_end, a_id = ranges[a]
+            for b in range(a + 1, len(ranges)):
+                b_start, b_end, b_id = ranges[b]
+                if a_start <= b_end and b_start <= a_end:
+                    collisions[pool].add(a_id)
+                    collisions[pool].add(b_id)
+    return collisions
 
 
 def sequence_chain_labels(slots: list[SongPatchSlot]) -> list[str]:
