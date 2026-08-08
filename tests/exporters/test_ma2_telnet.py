@@ -54,6 +54,41 @@ def test_parse_scan_frame_ignores_monitor_noise() -> None:
     assert snapshot.group == frozenset({1, 2703})
 
 
+def test_parse_scan_frame_reads_page_pool() -> None:
+    snapshot = parse_scan_frame(
+        f"{FRAME_BEGIN}\r\n"
+        "CUEPLAYER_SCAN_VERSION=3.9.63.6\r\n"
+        "CUEPLAYER_SCAN_SEQUENCE=1\r\n"
+        "CUEPLAYER_SCAN_EFFECT=1\r\n"
+        "CUEPLAYER_SCAN_GROUP=1\r\n"
+        "CUEPLAYER_SCAN_TIMECODE=1\r\n"
+        "CUEPLAYER_SCAN_MACRO=1\r\n"
+        "CUEPLAYER_SCAN_VIEW=1\r\n"
+        "CUEPLAYER_SCAN_PAGE=1,2,12\r\n"
+        f"{FRAME_END}\r\n"
+    )
+    assert snapshot.page == frozenset({1, 2, 12})
+    assert snapshot.next_free("page") == 13
+
+
+def test_parse_scan_frame_defaults_page_when_plugin_predates_it() -> None:
+    """An already-installed scanner Plugin from before Page scanning existed
+    emits no CUEPLAYER_SCAN_PAGE line; that must not be an error."""
+    snapshot = parse_scan_frame(
+        f"{FRAME_BEGIN}\r\n"
+        "CUEPLAYER_SCAN_VERSION=3.9.60\r\n"
+        "CUEPLAYER_SCAN_SEQUENCE=1\r\n"
+        "CUEPLAYER_SCAN_EFFECT=1\r\n"
+        "CUEPLAYER_SCAN_GROUP=1\r\n"
+        "CUEPLAYER_SCAN_TIMECODE=1\r\n"
+        "CUEPLAYER_SCAN_MACRO=1\r\n"
+        "CUEPLAYER_SCAN_VIEW=1\r\n"
+        f"{FRAME_END}\r\n"
+    )
+    assert snapshot.page == frozenset()
+    assert snapshot.next_free("page") == 1
+
+
 def test_parse_scan_frame_merges_chunked_pool_lines() -> None:
     snapshot = parse_scan_frame(
         f"{FRAME_BEGIN}\n"

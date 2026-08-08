@@ -129,18 +129,24 @@ def build_show_patch(
     overrides = settings.ma2_pool_overrides or {}
     main_page0, main_exec = parse_page_executor(settings.main_executor or "1.101")
     _btn_page0, btn_exec = parse_page_executor(settings.button_executor_start or "1.201")
+    # Page is a full allocation Pool too: "Start after scanned Pools" must
+    # keep a new export's Pages off any Page the console already has.
+    main_page0 = _base(main_page0, "page")
     page_per_song = bool(getattr(settings, "page_per_song", True))
 
     slots: list[SongPatchSlot] = []
     for i, song in enumerate(songs):
-        page = (main_page0 + i) if page_per_song else main_page0
+        song_overrides = overrides.get(song.id) or {}
+        page = (
+            int(song_overrides["page"]) if "page" in song_overrides
+            else ((main_page0 + i) if page_per_song else main_page0)
+        )
         base = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
         selection = settings.export_content_by_song.get(song.id, {})
         include_main = bool(selection.get("main", True))
         raw_buttons = selection.get("buttons")
         selected_buttons = {int(value) for value in raw_buttons} if isinstance(raw_buttons, list) else None
         lane_rows = _button_lanes_with_marks(song, selected_buttons)
-        song_overrides = overrides.get(song.id) or {}
         # A manual override "pins" this song's own number without disturbing
         # where the running counter puts the *next* (non-overridden) song.
         main_sequence = (
@@ -255,6 +261,20 @@ def pool_collisions(
                 if a_start <= b_end and b_start <= a_end:
                     collisions[pool].add(a_id)
                     collisions[pool].add(b_id)
+    # Page is only meaningfully "collided" when each song is supposed to get
+    # its own Page ("Next Page per song" on) — with it off, every song
+    # deliberately shares one Page, and flagging that as a collision would
+    # just be noise.
+    collisions["page"] = set()
+    if bool(getattr(settings, "page_per_song", True)):
+        page_ranges = [(slot.page, slot.page, slot.song.id) for slot in slots]
+        for a in range(len(page_ranges)):
+            a_start, a_end, a_id = page_ranges[a]
+            for b in range(a + 1, len(page_ranges)):
+                b_start, b_end, b_id = page_ranges[b]
+                if a_start <= b_end and b_start <= a_end:
+                    collisions["page"].add(a_id)
+                    collisions["page"].add(b_id)
     return collisions
 
 

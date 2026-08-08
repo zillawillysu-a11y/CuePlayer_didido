@@ -1282,6 +1282,7 @@ class MainWindow(QMainWindow):
 
         self.show_patch_page = ShowPatchPage()
         self.show_patch_page.set_project(self.project)
+        self.show_patch_page.project_file_path_provider = lambda: self._project_path
         self.setlist_sheet_page = SetlistSheetPage()
         self.setlist_sheet_page.set_project(self.project)
         self.view_stack = QStackedWidget()

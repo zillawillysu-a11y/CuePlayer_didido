@@ -17,7 +17,7 @@ import time
 FRAME_BEGIN = "CUEPLAYER_SCAN_BEGIN"
 FRAME_END = "CUEPLAYER_SCAN_END"
 PLUGIN_NAME = "CuePlayer Live Scan"
-POOL_KINDS = ("sequence", "effect", "timecode", "macro", "view", "group")
+POOL_KINDS = ("sequence", "effect", "timecode", "macro", "view", "group", "page")
 _IAC = 255
 _DO = 253
 _DONT = 254
@@ -38,6 +38,7 @@ class Ma2PoolSnapshot:
     macro: frozenset[int]
     view: frozenset[int]
     group: frozenset[int] = frozenset()
+    page: frozenset[int] = frozenset()
 
     def next_free(self, kind: str) -> int:
         values = getattr(self, kind)
@@ -299,6 +300,7 @@ local function Start()
   emit('Macro')
   emit('View')
   emit('Group')
+  emit('Page')
   gma.echo('CUEPLAYER_SCAN_END')
 end
 return Start

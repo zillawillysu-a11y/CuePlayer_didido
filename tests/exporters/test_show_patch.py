@@ -930,3 +930,89 @@ def test_start_after_scanned_is_inert_without_scan_data() -> None:
         console="ma2", sequence_pool_start=201, ma2_start_after_scanned=True
     )
     assert build_show_patch(project.songs, settings)[0].main_sequence == 201
+
+
+def test_start_after_scanned_also_moves_page() -> None:
+    """Page is a Pool too: the toggle must keep new Pages off ones MA2
+    already has, just like Sequence/Effects/Groups/Timecode/View/Macro."""
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons(f"S{i}", ma=f"S{i}", button_names=[]) for i in range(1, 3)
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        main_executor="1.101",
+        ma2_scanned_pool_max=_scanned(page=12),
+        ma2_start_after_scanned=True,
+    )
+    slots = build_show_patch(project.songs, settings)
+    assert slots[0].page == 13
+    assert slots[1].page == 14
+
+
+def test_page_override_pins_one_song_page() -> None:
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        main_executor="1.101",
+        ma2_pool_overrides={project.songs[0].id: {"page": 50}},
+    )
+    slots = build_show_patch(project.songs, settings)
+    assert slots[0].page == 50
+    # The other song's Page is untouched by the override.
+    assert slots[1].page == 2
+
+
+def test_page_override_flows_into_the_real_export_plan() -> None:
+    """The exported plan.profile.page must match the overridden slot.page
+    exactly, since button_executor_start embeds the Page number."""
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("SongA", ma="SongA", button_names=["Hit"])]
+    settings = MaExportSettings(
+        console="ma2",
+        main_executor="1.101",
+        button_executor_start="1.201",
+        ma2_pool_overrides={project.songs[0].id: {"page": 77}},
+    )
+    slots = build_show_patch(project.songs, settings)
+    plans = plans_from_show_patch(slots, settings)
+    assert slots[0].page == 77
+    assert plans[0].profile.page == 77
+
+
+def test_pool_collisions_flags_overlapping_page_when_page_per_song() -> None:
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(
+        console="ma2",
+        main_executor="1.101",
+        page_per_song=True,
+        ma2_pool_overrides={project.songs[1].id: {"page": 1}},
+    )
+    slots = build_show_patch(project.songs, settings)
+    collisions = pool_collisions(slots, settings)
+    assert collisions["page"] == {project.songs[0].id, project.songs[1].id}
+
+
+def test_pool_collisions_page_empty_when_sharing_one_page_by_design() -> None:
+    """page_per_song=False means every song is meant to share one Page —
+    that is not a collision."""
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("SongA", ma="SongA", button_names=[]),
+        _song_with_buttons("SongB", ma="SongB", button_names=[]),
+    ]
+    settings = MaExportSettings(console="ma2", main_executor="1.101", page_per_song=False)
+    slots = build_show_patch(project.songs, settings)
+    assert slots[0].page == slots[1].page
+    collisions = pool_collisions(slots, settings)
+    assert collisions["page"] == set()

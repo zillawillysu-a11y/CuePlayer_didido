@@ -5,8 +5,9 @@ from __future__ import annotations
 import csv
 import re
 from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QStandardPaths, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -90,6 +91,7 @@ POOL_COLLISION_LABELS = {
     "groups": "Groups",
     "timecode": "Timecode",
     "view": "View",
+    "page": "Page",
     "song_macro": "Song Macro",
 }
 
@@ -174,6 +176,10 @@ class ShowPatchPage(QWidget):
         self._review_table_refreshing = False
         self._expanded_content_song_ids: set[str] = set()
         self._ma2_discovery = Ma2Discovery((), None)
+        # Set by MainWindow so the CSV Save As dialog can default to the
+        # folder holding the current CuePlayer Project file. None (unsaved
+        # project) falls back to a Documents-style location.
+        self.project_file_path_provider: Callable[[], Path | None] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 8, 12, 8)
@@ -214,9 +220,17 @@ class ShowPatchPage(QWidget):
             """Tab content that scrolls instead of clipping.
 
             Console Setup and View Layout are naturally wider than a small
-            laptop window. Without this the overflowing controls (the Pool
-            Start fields, Group included) were simply unreachable — no
-            scrollbar, just cut off.
+            laptop window and have no internal auto-scrolling widget of their
+            own, so without this their overflowing controls (the Pool Start
+            fields, Group included) were simply unreachable — no scrollbar,
+            just cut off.
+
+            Songs & Pools / Export Registry / Review & Export are deliberately
+            NOT wrapped this way: each already has its own large QTableWidget,
+            which is itself a scrolling widget. Wrapping the whole page would
+            let that table's layout claim unlimited height instead of the
+            tab's actual viewport height, so the *entire page* scrolled
+            instead of just the table — exactly the behaviour this must avoid.
             """
             area = QScrollArea()
             area.setWidget(page)
@@ -224,11 +238,11 @@ class ShowPatchPage(QWidget):
             area.setFrameShape(QFrame.Shape.NoFrame)
             return area
 
-        self.workflow_tabs.addTab(_scrollable(self.songs_page), "1  Songs & Pools")
-        self.workflow_tabs.addTab(_scrollable(self.registry_page), "2  Export Registry")
+        self.workflow_tabs.addTab(self.songs_page, "1  Songs & Pools")
+        self.workflow_tabs.addTab(self.registry_page, "2  Export Registry")
         self.workflow_tabs.addTab(_scrollable(self.setup_page), "3  Console Setup")
         self.workflow_tabs.addTab(_scrollable(self.view_page), "4  View Layout")
-        self.workflow_tabs.addTab(_scrollable(self.review_page), "5  Review & Export")
+        self.workflow_tabs.addTab(self.review_page, "5  Review & Export")
         root.addWidget(self.workflow_tabs, stretch=1)
         self.setStyleSheet(
             "ShowPatchPage { background: #0d0f12; color: #eef2f7; }"
@@ -252,6 +266,7 @@ class ShowPatchPage(QWidget):
             "QHeaderView::section { background: #1b1f25; color: #99a3b1; border: none; "
             "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
             "QLabel { color: #eef2f7; background: transparent; border: none; }"
+            "QCheckBox { background: transparent; }"
             "#maExportOptions QCheckBox { background: transparent; }"
             "#reviewExportContent QCheckBox { background: transparent; padding: 3px 6px; }"
             "#reviewExportContent { background: #15181d; border: 1px solid #2b313a; border-radius: 6px; }"
@@ -482,10 +497,10 @@ class ShowPatchPage(QWidget):
         song_layout.addLayout(pick_btns)
         songs_content_row.addWidget(song_box)
 
-        self.playlist_table = QTableWidget(0, 10)
+        self.playlist_table = QTableWidget(0, 11)
         self.playlist_table.setObjectName("maExportPlaylistTable")
         self.playlist_table.setHorizontalHeaderLabels(
-            ["Export", "Song Order", "Song", "MA Export Name", "Sequence", "Effects", "Groups", "Timecode", "Marks", "Content"]
+            ["Export", "Song Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "Page", "Marks", "Content"]
         )
         self.playlist_table.verticalHeader().setVisible(False)
         self.playlist_table.setAlternatingRowColors(True)
@@ -500,8 +515,9 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setColumnWidth(5, 115)
         self.playlist_table.setColumnWidth(6, 105)
         self.playlist_table.setColumnWidth(7, 82)
-        self.playlist_table.setColumnWidth(8, 82)
-        self.playlist_table.setColumnWidth(9, 130)
+        self.playlist_table.setColumnWidth(8, 70)
+        self.playlist_table.setColumnWidth(9, 82)
+        self.playlist_table.setColumnWidth(10, 130)
         songs_content_row.addWidget(self.playlist_table, stretch=1)
         self.songs_page_layout.addLayout(songs_content_row, stretch=1)
 
@@ -562,9 +578,12 @@ class ShowPatchPage(QWidget):
         registry_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.registry_page_layout.addWidget(registry_intro)
         live_scan_box = QGroupBox("MA2 Live Pool Scan")
-        live_scan_box.setMaximumWidth(360)
+        # registry_left_widget already caps this column's width below — this
+        # box just fills it, matching every other box in that column instead
+        # of double-constraining its own width.
         live_scan_layout = QVBoxLayout(live_scan_box)
         live_scan_fields = QGridLayout()
+        live_scan_fields.setContentsMargins(0, 0, 0, 0)
         live_scan_fields.setHorizontalSpacing(12)
         live_scan_fields.setVerticalSpacing(6)
         self.registry_host = QLineEdit("127.0.0.1")
@@ -606,6 +625,7 @@ class ShowPatchPage(QWidget):
             live_scan_fields.addWidget(field_widget, row, col)
         live_scan_layout.addLayout(live_scan_fields)
         plugin_path_row = QHBoxLayout()
+        plugin_path_row.setContentsMargins(0, 0, 0, 0)
         plugin_path_label = QLabel("MA2 Plugin Import Path (optional)")
         plugin_path_label.setStyleSheet("color: #99a3b1; font-size: 11px;")
         self.registry_plugin_import_path.setPlaceholderText(
@@ -648,6 +668,7 @@ class ShowPatchPage(QWidget):
         # 2x2 grid instead of one packed row — the narrower Telnet box no
         # longer has room to show all four button labels on one line.
         live_scan_actions = QGridLayout()
+        live_scan_actions.setContentsMargins(0, 0, 0, 0)
         live_scan_actions.setHorizontalSpacing(8)
         live_scan_actions.setVerticalSpacing(6)
         for index, button in enumerate((
@@ -710,9 +731,9 @@ class ShowPatchPage(QWidget):
         registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
-        self.registry_table = QTableWidget(0, 10)
+        self.registry_table = QTableWidget(0, 11)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
+            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Page", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -882,6 +903,10 @@ class ShowPatchPage(QWidget):
         manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
         manual_layout.addWidget(manual_hint)
         manual_fields_form = QFormLayout()
+        # Standalone sub-layouts pick up a non-zero default margin from the
+        # Qt style, which desynced these field rows from the checkbox/hint
+        # above them (both added directly to manual_layout, no such margin).
+        manual_fields_form.setContentsMargins(0, 0, 0, 0)
         manual_fields_form.setVerticalSpacing(8)
         self.review_pool_start_fields = {}
         for label, attr in (
@@ -891,6 +916,7 @@ class ShowPatchPage(QWidget):
             ("Group", "group_start"),
             ("Macro", "macro_start"),
             ("View", "view_start"),
+            ("Page", "page_start"),
         ):
             field = NoWheelSpinBox()
             # 0 renders blank (Qt shows specialValueText at the minimum) and
@@ -908,6 +934,7 @@ class ShowPatchPage(QWidget):
             manual_fields_form.addRow(label, field)
         manual_layout.addLayout(manual_fields_form)
         autofill_row = QHBoxLayout()
+        autofill_row.setContentsMargins(0, 0, 0, 0)
         self.review_autofill_btn = QPushButton("Auto-Fill && Sequence")
         self.review_autofill_btn.setToolTip(
             "Write a per-song override for every song in the queue, starting "
@@ -923,22 +950,24 @@ class ShowPatchPage(QWidget):
         self.review_clear_overrides_btn.clicked.connect(self._clear_pool_overrides)
         review_left_column.addWidget(manual_box)
 
+        # One compact line — Console/song count/Output Folder only. The
+        # longer detail (Groups reserved, Show scan max IDs, manual-override
+        # pin count) that used to fill this box as several paragraphs is now
+        # a tooltip on this same label, so the left column stays short enough
+        # to fit a normal window without needing the whole page to scroll.
         self.review_summary = QLabel("")
         self.review_summary.setWordWrap(True)
-        # Wrapped labels under-report their height (see manual_box above) —
-        # give this one a floor so it can't squeeze its siblings either.
-        self.review_summary.setMinimumHeight(110)
         self.review_summary.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 8px; "
-            "padding: 12px; color: #e5e7eb;"
+            "padding: 8px 12px; color: #e5e7eb;"
         )
         review_left_column.addWidget(self.review_summary)
         review_left_column.addStretch(1)
         review_content_row.addWidget(review_left_widget)
 
-        self.review_table = QTableWidget(0, 10)
+        self.review_table = QTableWidget(0, 11)
         self.review_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
+            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "View", "Page", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.setColumnWidth(0, 56)
@@ -979,6 +1008,7 @@ class ShowPatchPage(QWidget):
         action_row = QHBoxLayout()
         review_back = QPushButton("←  View Layout")
         self.refresh_btn = QPushButton("Refresh Patch")
+        self.export_csv_btn = QPushButton("Export Allocation Report (CSV)…")
         self.export_btn = QPushButton("Export Checked Songs…")
         self.export_btn.setStyleSheet(
             "QPushButton { height: 34px; padding: 0 16px; font-weight: 650;"
@@ -989,6 +1019,7 @@ class ShowPatchPage(QWidget):
         review_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(3))
         action_row.addWidget(review_back)
         action_row.addWidget(self.refresh_btn)
+        action_row.addWidget(self.export_csv_btn)
         action_row.addStretch(1)
         action_row.addWidget(self.export_btn)
         self.review_page_layout.addLayout(action_row)
@@ -1064,6 +1095,7 @@ class ShowPatchPage(QWidget):
         self.song_all_btn.clicked.connect(lambda: self._set_all_songs(True))
         self.song_none_btn.clicked.connect(lambda: self._set_all_songs(False))
         self.refresh_btn.clicked.connect(self.refresh)
+        self.export_csv_btn.clicked.connect(self._export_allocation_report_csv)
         self.export_btn.clicked.connect(self._export)
 
     def set_project(self, project: Project) -> None:
@@ -1148,11 +1180,14 @@ class ShowPatchPage(QWidget):
                 effect_start = int(slot.effect_start)
                 group_start = int(slot.group_start)
                 timecode_start = int(slot.timecode_pool)
+                page = int(slot.page)
             else:
                 sequence_start = int(settings.sequence_pool_start) + row * seq_slots
                 effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
                 group_start = int(settings.ma2_group_pool_start) + row * group_slots
                 timecode_start = int(settings.timecode_pool_start) + row
+                fallback_page0, _fallback_exec = parse_page_executor(settings.main_executor or "1.101")
+                page = fallback_page0 + row if bool(settings.page_per_song) else fallback_page0
             ma_name = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
             values = (
                 str(row + 1),
@@ -1162,11 +1197,12 @@ class ShowPatchPage(QWidget):
                 f"{effect_start}–{effect_start + effect_slots - 1}",
                 f"{group_start}–{group_start + group_slots - 1}",
                 str(timecode_start),
+                str(page),
                 str(len(song.marks)),
                 self._content_summary(song),
             )
             for column, value in enumerate(values, start=1):
-                if column == 9:
+                if column == 10:
                     button = QPushButton(value)
                     button.setObjectName("maExportContentButton")
                     button.setToolTip("Show or hide Main and Button export options")
@@ -1177,13 +1213,13 @@ class ShowPatchPage(QWidget):
                     self.playlist_table.setCellWidget(main_row, column, button)
                     continue
                 item = QTableWidgetItem(value)
-                if column in (1, 4, 5, 6, 7, 8):
+                if column in (1, 4, 5, 6, 7, 8, 9):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == 2:
                     item.setToolTip(song.name)
                 self.playlist_table.setItem(main_row, column, item)
             self.playlist_table.setRowHeight(main_row, 38)
-            self.playlist_table.setSpan(content_row, 0, 1, 10)
+            self.playlist_table.setSpan(content_row, 0, 1, 11)
             self.playlist_table.setCellWidget(
                 content_row, 0, self._build_content_detail(song)
             )
@@ -1511,6 +1547,7 @@ class ShowPatchPage(QWidget):
         song_macro_start: int,
         view_start: int,
         group_start: int | None = None,
+        page_start: int | None = None,
         host: str = "MA2",
     ) -> bool:
         """Apply a validated scanner allocation without changing fixed controls."""
@@ -1527,6 +1564,8 @@ class ShowPatchPage(QWidget):
         # the Group Pool pointing at numbers the console was already using.
         if group_start is not None:
             self.ma2_group_pool_start.setValue(max(1, group_start))
+        if page_start is not None:
+            self.executor_page.setValue(max(1, page_start))
         self._suppress = False
         self._project.ma_export.ma2_target_version = remote_version
         if self._project.ma_export.ma2_output_dir_follows_version:
@@ -1626,6 +1665,7 @@ class ShowPatchPage(QWidget):
             song_macro_start=snapshot.next_free("macro"),
             view_start=snapshot.next_free("view"),
             group_start=snapshot.next_free("group"),
+            page_start=snapshot.next_free("page"),
             host=self.registry_host.text().strip(),
         )
         if not applied:
@@ -1641,6 +1681,7 @@ class ShowPatchPage(QWidget):
             "macro": max(snapshot.macro, default=0),
             "view": max(snapshot.view, default=0),
             "group": max(snapshot.group, default=0),
+            "page": max(snapshot.page, default=0),
         }
         self.refresh()
         self.settings_changed.emit()
@@ -1700,6 +1741,7 @@ class ShowPatchPage(QWidget):
             song_macro_start=snapshot.next_free("macro"),
             view_start=snapshot.next_free("view"),
             group_start=snapshot.next_free("group"),
+            page_start=snapshot.next_free("page"),
             host=self.registry_host.text().strip(),
         )
         if not applied:
@@ -1715,6 +1757,7 @@ class ShowPatchPage(QWidget):
             "macro": max(snapshot.macro, default=0),
             "view": max(snapshot.view, default=0),
             "group": max(snapshot.group, default=0),
+            "page": max(snapshot.page, default=0),
         }
         self.refresh()
         self.settings_changed.emit()
@@ -1905,6 +1948,7 @@ class ShowPatchPage(QWidget):
             "timecode": (self.review_pool_start_fields["timecode_start"].value(), 1),
             "view": (self.review_pool_start_fields["view_start"].value(), 1),
             "song_macro": (self.review_pool_start_fields["macro_start"].value(), 1),
+            "page": (self.review_pool_start_fields["page_start"].value(), 1),
         }
         seeds = {pool: value for pool, value in seeds.items() if value[0] > 0}
         if not seeds:
@@ -1946,7 +1990,8 @@ class ShowPatchPage(QWidget):
             5: "groups",
             6: "timecode",
             7: "view",
-            8: "song_macro",
+            8: "page",
+            9: "song_macro",
         }
         pool = pool_by_column.get(item.column())
         row = item.row()
@@ -2119,10 +2164,14 @@ class ShowPatchPage(QWidget):
             f"TC {scanned.get('timecode', '—')} / "
             f"Group {scanned.get('group', '—')} / "
             f"Macro {scanned.get('macro', '—')} / "
-            f"View {scanned.get('view', '—')}"
+            f"View {scanned.get('view', '—')} / "
+            f"Page {scanned.get('page', '—')}"
         )
         if settings.ma2_start_after_scanned:
-            text += " · Starting after these (manual overrides ignored)"
+            # Manual pins always win over this toggle (see build_show_patch) —
+            # it only clears pre-existing ones once, at the moment it's
+            # ticked, so any pinned afterwards stay put.
+            text += " · Starting after these where not manually pinned"
         elif settings.ma2_pool_overrides:
             # Overrides outrank the scanned starts, which is exactly why
             # numbers can look "stuck" after a scan — say so explicitly.
@@ -2152,7 +2201,8 @@ class ShowPatchPage(QWidget):
             5: "groups",
             6: "timecode",
             7: "view",
-            8: "song_macro",
+            8: "page",
+            9: "song_macro",
         }
         collision_brush = QBrush(QColor("#7f1d1d"))
         self.registry_table.setRowCount(len(self._slots))
@@ -2183,6 +2233,7 @@ class ShowPatchPage(QWidget):
                 f"{group_start}–{group_end}",
                 str(slot.timecode_pool),
                 str(view),
+                str(slot.page),
                 str(macro),
             )
             for column, value in enumerate(registry_values):
@@ -2206,6 +2257,7 @@ class ShowPatchPage(QWidget):
                 f"{group_start}–{group_end}",
                 str(slot.timecode_pool),
                 str(view),
+                str(slot.page),
                 str(macro),
                 f"{slot.main_cue_count} Main · {slot.button_mark_count} Button",
             )
@@ -2256,9 +2308,11 @@ class ShowPatchPage(QWidget):
             )
             self.registry_summary_labels[3].setText(f"Next Groups\n{int(settings.ma2_group_pool_start)}")
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
+        out_folder = self.out_dir.text().strip() or "(not selected)"
         self.review_summary.setText(
-            f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
-            f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}\n"
+            f"{target}  ·  {len(self._slots)} song(s)  ·  Output: {out_folder}"
+        )
+        self.review_summary.setToolTip(
             f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}\n"
             f"{self._scanned_max_text(settings)}"
         )
@@ -2773,15 +2827,23 @@ class ShowPatchPage(QWidget):
         )
         self.export_finished.emit(all_paths)
 
-    def _write_export_allocation_report(self, directory: Path) -> dict[str, Path]:
-        """Write CSV (Excel-ready) and TXT records of this export's pool allocation."""
+    def _allocation_report_columns_and_rows(self) -> tuple[list[str], list[dict[str, str]]]:
+        """Build the Order/Song/.../Song Macro rows shared by the TXT summary
+        written alongside every MA export and the standalone CSV report.
+        This is the single source for that table — every column value comes
+        straight from ``self._slots``, the same allocation the real export
+        uses, so the report can never drift from what MA2 actually receives.
+        """
         if self._project is None:
-            return {}
+            return [], []
         settings = self._project.ma_export
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
-        columns = ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
+        columns = [
+            "Order", "Song", "Export Name", "Sequence", "Effects", "Groups",
+            "Timecode", "View", "Page", "Song Macro",
+        ]
         rows: list[dict[str, str]] = []
         for order, slot in enumerate(self._slots, start=1):
             seq_start = int(slot.main_sequence)
@@ -2789,22 +2851,72 @@ class ShowPatchPage(QWidget):
             group_start = int(slot.group_start)
             rows.append({
                 "Order": str(order),
-                "Song": slot.display_name,
+                "Song": slot.song.name,
+                "Export Name": slot.display_name,
                 "Sequence": f"{seq_start}–{seq_start + seq_slots - 1}",
                 "Effects": f"{effect_start}–{effect_start + effect_slots - 1}",
                 "Groups": f"{group_start}–{group_start + group_slots - 1}",
                 "Timecode": str(slot.timecode_pool),
                 "View": str(int(slot.view_pool)),
+                "Page": str(int(slot.page)),
                 "Song Macro": str(int(slot.song_macro_pool)),
             })
+        return columns, rows
+
+    def _write_export_allocation_report(self, directory: Path) -> dict[str, Path]:
+        """Write a TXT record of this export's Pool allocation alongside the
+        MA files. The CSV report is a separate, user-directed Save As action
+        (see ``_export_allocation_report_csv``) — it is not written here so
+        it never lands in the MA2 import/export folder without being asked.
+        """
+        if self._project is None:
+            return {}
+        settings = self._project.ma_export
+        columns, rows = self._allocation_report_columns_and_rows()
         stem = sanitize_ma_name(settings.ma2_show_name or "CuePlayer", fallback="CuePlayer")
-        csv_path = directory / f"{stem}_Export_Allocation.csv"
         text_path = directory / f"{stem}_Export_Allocation.txt"
-        with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns)
-            writer.writeheader()
-            writer.writerows(rows)
         lines = [f"Show Name: {settings.ma2_show_name or 'CuePlayer'}", "", " | ".join(columns)]
         lines.extend(" | ".join(row[column] for column in columns) for row in rows)
         text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return {"show:allocation_csv": csv_path, "show:allocation_txt": text_path}
+        return {"show:allocation_txt": text_path}
+
+    def _default_allocation_report_directory(self) -> Path:
+        """Where the CSV Save As dialog opens: the current Project file's
+        folder, or a Documents-style fallback when the project has never
+        been saved. Deliberately not the MA2 output folder."""
+        provider = self.project_file_path_provider
+        project_path = provider() if provider is not None else None
+        if project_path is not None:
+            return Path(project_path).parent
+        documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        return Path(documents) if documents else Path.home()
+
+    def _export_allocation_report_csv(self, _checked: bool = False) -> None:
+        if self._project is None or not self._slots:
+            QMessageBox.information(
+                self, "Nothing to Export", "Add songs to the Export Queue first."
+            )
+            return
+        settings = self._project.ma_export
+        columns, rows = self._allocation_report_columns_and_rows()
+        stem = sanitize_ma_name(settings.ma2_show_name or "CuePlayer", fallback="CuePlayer")
+        default_path = self._default_allocation_report_directory() / f"{stem}_Export_Allocation.csv"
+        chosen, _filter = QFileDialog.getSaveFileName(
+            self, "Save Allocation Report", str(default_path), "CSV Files (*.csv)"
+        )
+        if not chosen:
+            return
+        csv_path = Path(chosen)
+        if csv_path.suffix.lower() != ".csv":
+            csv_path = csv_path.with_suffix(".csv")
+        try:
+            with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export Report Not Written", f"Could not write CSV: {exc}")
+            return
+        QMessageBox.information(
+            self, "Allocation Report Saved", f"Allocation Report saved to:\n{csv_path}"
+        )

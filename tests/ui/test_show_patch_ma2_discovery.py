@@ -73,7 +73,7 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 2
-    assert page.playlist_table.columnCount() == 10
+    assert page.playlist_table.columnCount() == 11
     assert page.playlist_table.horizontalHeaderItem(6).text() == "Groups"
     assert page.registry_table.horizontalHeaderItem(6).text() == "Groups"
     assert page.review_table.horizontalHeaderItem(5).text() == "Groups"
@@ -81,9 +81,7 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.registry_monitor_port.value() == 30001
     assert page.registry_version.text() == "3.9.63.6"
     page.workflow_tabs.setCurrentIndex(4)
-    # Each tab hosts its page inside a QScrollArea so an oversized page
-    # scrolls rather than clipping controls out of reach.
-    assert page.workflow_tabs.currentWidget().widget() is page.review_page
+    assert page.workflow_tabs.currentWidget() is page.review_page
 
 
 def test_view_pool_start_is_independent_of_console_setup_unless_following(
@@ -408,7 +406,7 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "main": False,
         "buttons": [3],
     }
-    content = page.playlist_table.cellWidget(0, 9)
+    content = page.playlist_table.cellWidget(0, 10)
     assert content is not None
     assert content.text() == "1/3 selected"
     page._toggle_content_details(song.id)
@@ -424,13 +422,13 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "buttons": [],
     }
     assert page.playlist_table.item(0, 0).checkState().value == 2
-    assert page.playlist_table.cellWidget(0, 9).text() == "0/3 selected"
+    assert page.playlist_table.cellWidget(0, 10).text() == "0/3 selected"
     page._select_all_content(song.id)
     assert project.ma_export.export_content_by_song[song.id] == {
         "main": True,
         "buttons": [2, 3],
     }
-    assert page.playlist_table.cellWidget(0, 9).text() == "3/3 selected"
+    assert page.playlist_table.cellWidget(0, 10).text() == "3/3 selected"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
@@ -476,9 +474,110 @@ def test_review_checks_sync_groups_and_export_allocation_report(
     assert page.review_table.item(0, 5).text() == "1–20"
 
     paths = page._write_export_allocation_report(tmp_path)
-    assert paths["show:allocation_csv"].exists()
+    # The CSV report is no longer auto-written alongside the MA files — it is
+    # now a standalone Save As action (_export_allocation_report_csv) so it
+    # never lands in the MA2 import/export folder unasked. The TXT summary
+    # still writes here for a quick alongside-the-export record.
+    assert "show:allocation_csv" not in paths
     assert paths["show:allocation_txt"].exists()
-    assert "Groups" in paths["show:allocation_csv"].read_text(encoding="utf-8-sig")
+    assert "Groups" in paths["show:allocation_txt"].read_text(encoding="utf-8")
+
+
+def test_allocation_report_columns_include_export_name_and_page(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    project.songs[0].name = "第一首"
+    project.songs[0].ma_export_name = "FirstSong"
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    columns, rows = page._allocation_report_columns_and_rows()
+    assert columns == [
+        "Order", "Song", "Export Name", "Sequence", "Effects", "Groups",
+        "Timecode", "View", "Page", "Song Macro",
+    ]
+    assert rows[0]["Song"] == "第一首"
+    assert rows[0]["Export Name"] == "FirstSong"
+    assert rows[0]["Page"] == str(page._slots[0].page)
+
+
+def test_csv_report_default_directory_follows_project_file_then_falls_back(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    # No provider / unsaved project: falls back to a Documents-style path,
+    # never the MA2 output folder.
+    fallback = page._default_allocation_report_directory()
+    assert str(fallback) != str(page.out_dir.text())
+
+    project_dir = tmp_path / "MyShows"
+    project_dir.mkdir()
+    project_file = project_dir / "MyShow.cueproj"
+    page.project_file_path_provider = lambda: project_file
+    assert page._default_allocation_report_directory() == project_dir
+
+
+def test_export_csv_button_opens_save_dialog_and_writes_chosen_path(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    chosen = tmp_path / "custom name.csv"
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(chosen), "CSV Files (*.csv)"),
+    )
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.QMessageBox.information",
+        lambda *args, **kwargs: None,
+    )
+
+    page._export_allocation_report_csv()
+
+    assert chosen.exists()
+    text = chosen.read_text(encoding="utf-8-sig")
+    assert "Export Name" in text and "Page" in text
+
+
+def test_export_csv_button_does_nothing_when_dialog_is_cancelled(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: ("", ""),
+    )
+    before = list(tmp_path.iterdir())
+    page._export_allocation_report_csv()
+    assert list(tmp_path.iterdir()) == before
 
 
 def test_clear_queue_button_empties_queue_and_settings(
@@ -602,8 +701,8 @@ def test_reordering_export_queue_updates_order_everywhere(
     assert [slot.display_name for slot in page._slots] == ["Second", "First"]
 
     paths = page._write_export_allocation_report(tmp_path)
-    csv_text = paths["show:allocation_csv"].read_text(encoding="utf-8-sig")
-    assert csv_text.index("Second") < csv_text.index("First")
+    txt_text = paths["show:allocation_txt"].read_text(encoding="utf-8")
+    assert txt_text.index("Second") < txt_text.index("First")
 
 
 def test_editing_a_review_table_pool_cell_stores_a_manual_override(
@@ -933,6 +1032,36 @@ def test_scan_result_also_moves_the_group_pool(
     assert page.ma2_group_pool_start.value() == 403
     assert project.ma_export.ma2_group_pool_start == 403
     assert page._slots[0].group_start == 403
+
+
+def test_scan_result_also_moves_the_page_pool(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Page is a full allocation Pool too: a scan must move the Console
+    Setup Page Executor field past whatever the console already has."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    assert page.apply_registry_scan_result(
+        remote_version="3.9.63.6",
+        sequence_start=509,
+        effect_start=7999,
+        timecode_start=38,
+        song_macro_start=362,
+        view_start=250,
+        group_start=403,
+        page_start=13,
+    )
+
+    assert page.executor_page.value() == 13
+    assert project.ma_export.main_executor.startswith("13.")
+    assert page._slots[0].page == 13
 
 
 def test_start_after_scanned_toggle_moves_every_pool_and_reverts(
