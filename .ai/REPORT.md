@@ -5,19 +5,16 @@
 
 ## Task objective
 
-Integrate Console Setup and Review & Export into one top-level workflow stage,
-prevent high-numbered MA2 Pool IDs from being truncated during Live Scan, and
-include Group Pool detection.
+Add configurable Group reservation, restore separate Console Setup and Review
+& Export pages, mirror export checks in Review, and confirm before Export.
 
 ## What was implemented
 
-- Added `Console Setup & Review Export` as the third top-level workflow tab.
-- Added nested `Console Setup` and `Review & Export` tabs inside it.
-- Updated View Layout navigation to open the Review & Export nested tab.
-- Scanner Plugin now emits Pool IDs in chunks of 100 per line.
-- Frame parser merges repeated Pool lines, so IDs such as Effect 2703 survive.
-- Scanner now emits and parses Group Pool IDs; successful scans report the
-  detected Group count in Registry status.
+- Added persisted `Groups Per Song`, default 20, to Console Setup settings.
+- Restored separate top-level Console Setup and Review & Export tabs.
+- Added a synchronized read-only Export Content Check in Review.
+- Added an Export confirmation dialog listing enabled content.
+- Scanner Plugin emits Pool IDs in chunks and parses Group IDs.
 
 ## Files changed
 
@@ -34,14 +31,13 @@ navigation changed.
 ## Tests performed
 
 - Module import passed.
-- MA2 Telnet tests: **13 passed**.
+- MA2 Telnet and persistence tests: **18 passed**.
 - UI test collection was blocked by an existing Windows Temp permission error
   under `pytest-of-WillySu`.
 
 ## Remaining issues
 
-- Verify the combined tab visually and re-run Live Scan with known Effect and
-  Group IDs above 600.
+- Verify Group reservation, Review checks, and Export confirmation visually.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task

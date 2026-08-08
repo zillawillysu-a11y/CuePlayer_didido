@@ -53,12 +53,13 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     page = ShowPatchPage()
     page.set_project(Project.create("Show"))
 
-    assert page.workflow_tabs.count() == 4
-    assert [page.workflow_tabs.tabText(i) for i in range(4)] == [
+    assert page.workflow_tabs.count() == 5
+    assert [page.workflow_tabs.tabText(i) for i in range(5)] == [
         "1  Songs & Pools",
         "2  Export Registry",
-        "3  Console Setup & Review Export",
+        "3  Console Setup",
         "4  View Layout",
+        "5  Review & Export",
     ]
     assert page.view_stage.widgets[0]["type"] == "sequence"
     assert page.view_stage.widgets[0]["w"] == 10
@@ -74,9 +75,8 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.registry_command_port.value() == 30000
     assert page.registry_monitor_port.value() == 30001
     assert page.registry_version.text() == "3.9.63.6"
-    page.workflow_tabs.setCurrentIndex(2)
-    page.console_review_tabs.setCurrentIndex(1)
-    assert page.console_review_tabs.currentWidget() is page.review_page
+    page.workflow_tabs.setCurrentIndex(4)
+    assert page.workflow_tabs.currentWidget() is page.review_page
 
 
 def test_view_allocation_controls_drive_shared_export_settings(

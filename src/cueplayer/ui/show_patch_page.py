@@ -143,11 +143,6 @@ class ShowPatchPage(QWidget):
         self.setup_page = QWidget()
         self.view_page = QWidget()
         self.review_page = QWidget()
-        self.console_review_page = QWidget()
-        self.console_review_layout = QVBoxLayout(self.console_review_page)
-        self.console_review_tabs = QTabWidget()
-        self.console_review_tabs.setObjectName("consoleReviewTabs")
-        self.console_review_layout.addWidget(self.console_review_tabs)
         self.songs_page_layout = QVBoxLayout(self.songs_page)
         self.registry_page_layout = QVBoxLayout(self.registry_page)
         self.setup_page_layout = QVBoxLayout(self.setup_page)
@@ -164,10 +159,9 @@ class ShowPatchPage(QWidget):
             layout.setSpacing(14)
         self.workflow_tabs.addTab(self.songs_page, "1  Songs & Pools")
         self.workflow_tabs.addTab(self.registry_page, "2  Export Registry")
-        self.console_review_tabs.addTab(self.setup_page, "Console Setup")
-        self.console_review_tabs.addTab(self.review_page, "Review & Export")
-        self.workflow_tabs.addTab(self.console_review_page, "3  Console Setup & Review Export")
+        self.workflow_tabs.addTab(self.setup_page, "3  Console Setup")
         self.workflow_tabs.addTab(self.view_page, "4  View Layout")
+        self.workflow_tabs.addTab(self.review_page, "5  Review & Export")
         root.addWidget(self.workflow_tabs, stretch=1)
         self.setStyleSheet(
             "ShowPatchPage { background: #0d0f12; color: #eef2f7; }"
@@ -313,13 +307,16 @@ class ShowPatchPage(QWidget):
         self.ma2_sequence_slots = NoWheelSpinBox()
         self.ma2_sequence_slots.setRange(1, 9999)
         self.ma2_sequence_slots.setValue(20)
+        self.ma2_group_slots = NoWheelSpinBox()
+        self.ma2_group_slots.setRange(1, 9999)
+        self.ma2_group_slots.setValue(20)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
         )
         option_fields = (
             ("Mode", self.mode_combo), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
-            ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Effect Pool Start", self.ma2_effect_pool_start), ("Effect Slots Per Song", self.ma2_effect_slots),
+            ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Pool Start", self.ma2_effect_pool_start), ("Effect Slots Per Song", self.ma2_effect_slots),
             ("View Pool Start", self.ma2_view_pool_start), ("Fixed Macro Start", self.ma2_fixed_macro_start), ("Song Macro Start", self.ma2_song_macro_start),
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
@@ -670,6 +667,15 @@ class ShowPatchPage(QWidget):
         review_intro.setWordWrap(True)
         review_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.review_page_layout.addWidget(review_intro)
+        macro_review_box = QGroupBox("Export Content Check")
+        macro_review_layout = QHBoxLayout(macro_review_box)
+        self.review_macro_checks = []
+        for label in ("Fixed control Macros", "Song Macros", "Song List Sequence", "Song Views (Screen 3)", "Add Main Cue named Preset"):
+            check = QCheckBox(label)
+            check.setEnabled(False)
+            self.review_macro_checks.append(check)
+            macro_review_layout.addWidget(check)
+        self.review_page_layout.addWidget(macro_review_box)
         self.review_summary = QLabel("")
         self.review_summary.setWordWrap(True)
         self.review_summary.setStyleSheet(
@@ -700,8 +706,7 @@ class ShowPatchPage(QWidget):
         view_back = QPushButton("←  Console Setup")
         view_next = QPushButton("Review & Export  →")
         view_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(2))
-        view_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(2))
-        view_next.clicked.connect(lambda: self.console_review_tabs.setCurrentIndex(1))
+        view_next.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(4))
         view_nav.addWidget(view_back)
         view_nav.addStretch(1)
         view_nav.addWidget(view_next)
@@ -717,8 +722,7 @@ class ShowPatchPage(QWidget):
             "QPushButton:hover { background: #2563eb; }"
             "QPushButton:pressed { background: #1d4ed8; }"
         )
-        review_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(2))
-        review_back.clicked.connect(lambda: self.console_review_tabs.setCurrentIndex(0))
+        review_back.clicked.connect(lambda: self.workflow_tabs.setCurrentIndex(3))
         action_row.addWidget(review_back)
         action_row.addWidget(self.refresh_btn)
         action_row.addStretch(1)
@@ -747,6 +751,7 @@ class ShowPatchPage(QWidget):
             self.ma2_effect_pool_start,
             self.ma2_effect_slots,
             self.ma2_sequence_slots,
+            self.ma2_group_slots,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -1426,6 +1431,7 @@ class ShowPatchPage(QWidget):
         self.ma2_effect_pool_start.setValue(int(s.ma2_effect_pool_start or 201))
         self.ma2_effect_slots.setValue(int(s.ma2_effect_slots_per_song or 100))
         self.ma2_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
+        self.ma2_group_slots.setValue(int(s.ma2_group_slots_per_song or 20))
         self.registry_host.setText(s.ma2_telnet_host or "127.0.0.1")
         self.registry_command_port.setValue(int(s.ma2_telnet_command_port or 30000))
         self.registry_monitor_port.setValue(int(s.ma2_telnet_monitor_port or 30001))
@@ -1457,6 +1463,7 @@ class ShowPatchPage(QWidget):
             self.ma2_effect_pool_start,
             self.ma2_effect_slots,
             self.ma2_sequence_slots,
+            self.ma2_group_slots,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -1499,6 +1506,7 @@ class ShowPatchPage(QWidget):
         s.ma2_effect_pool_start = int(self.ma2_effect_pool_start.value())
         s.ma2_effect_slots_per_song = int(self.ma2_effect_slots.value())
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
+        s.ma2_group_slots_per_song = int(self.ma2_group_slots.value())
         s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
@@ -1631,6 +1639,7 @@ class ShowPatchPage(QWidget):
             return
         settings = self._project.ma_export
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
+        group_slots = max(1, int(settings.ma2_group_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         self.registry_table.setRowCount(len(self._slots))
         self.review_table.setRowCount(len(self._slots))
@@ -1639,6 +1648,8 @@ class ShowPatchPage(QWidget):
             seq_end = seq_start + slots_per_song - 1
             effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
             effect_end = effect_start + effect_slots - 1
+            group_start = 1 + row * group_slots
+            group_end = group_start + group_slots - 1
             macro = int(settings.ma2_song_macro_start) + row
             view = int(settings.ma2_view_pool_start) + row
             registry_values = (
@@ -1706,6 +1717,15 @@ class ShowPatchPage(QWidget):
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
             f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}"
         )
+        values = (
+            settings.ma2_include_fixed_macros,
+            settings.ma2_include_song_macros,
+            settings.ma2_include_song_list,
+            settings.ma2_include_song_views,
+            settings.ma2_add_main_preset_cue,
+        )
+        for check, value in zip(self.review_macro_checks, values):
+            check.setChecked(bool(value))
         preview_id = self.view_preview_song.currentData()
         self.view_preview_song.blockSignals(True)
         self.view_preview_song.clear()
@@ -1963,6 +1983,24 @@ class ShowPatchPage(QWidget):
         out = self.out_dir.text().strip()
         if not out:
             QMessageBox.warning(self, "Missing Folder", "Choose an output folder first.")
+            return
+        macro_flags = ", ".join(
+            name for name, enabled in (
+                ("Fixed control Macros", self.ma2_fixed_macros.isChecked()),
+                ("Song Macros", self.ma2_song_macros.isChecked()),
+                ("Song List Sequence", self.ma2_song_list.isChecked()),
+                ("Song Views", self.ma2_song_views.isChecked()),
+                ("Preset Cue", self.ma2_add_preset_cue.isChecked()),
+            ) if enabled
+        ) or "None"
+        answer = QMessageBox.question(
+            self,
+            "Confirm Export",
+            f"Export {len(self._slots)} song(s) to:\n{out}\n\nEnabled content: {macro_flags}\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
         if self._console() == "ma2":
             target_version = self.ma2_version.currentText().strip()

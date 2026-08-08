@@ -95,6 +95,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_effect_pool_start": int(settings.ma2_effect_pool_start),
         "ma2_effect_slots_per_song": int(settings.ma2_effect_slots_per_song),
         "ma2_sequence_slots_per_song": int(settings.ma2_sequence_slots_per_song),
+        "ma2_group_slots_per_song": int(settings.ma2_group_slots_per_song),
         "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
         "ma2_telnet_host": settings.ma2_telnet_host,
         "ma2_telnet_command_port": int(settings.ma2_telnet_command_port),
@@ -179,6 +180,9 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ),
         ma2_sequence_slots_per_song=max(
             1, int(raw.get("ma2_sequence_slots_per_song", 20) or 20)
+        ),
+        ma2_group_slots_per_song=max(
+            1, int(raw.get("ma2_group_slots_per_song", 20) or 20)
         ),
         ma2_view_layout=[
             dict(widget)
