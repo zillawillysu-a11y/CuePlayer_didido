@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QCheckBox
 
 from cueplayer.domain.models import Project, Song
@@ -412,3 +413,118 @@ def test_review_checks_sync_groups_and_export_allocation_report(
     assert paths["show:allocation_csv"].exists()
     assert paths["show:allocation_txt"].exists()
     assert "Groups" in paths["show:allocation_csv"].read_text(encoding="utf-8-sig")
+
+
+def test_clear_queue_button_empties_queue_and_settings(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    project.songs.append(Song.create("Second Song"))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    assert page.song_pick.count() == 2
+
+    page.song_none_btn.click()
+
+    assert page.song_pick.count() == 0
+    assert project.ma_export.export_song_ids == []
+    assert page._slots == []
+    # A subsequent refresh (e.g. a settings edit) must not resurrect the
+    # cleared queue from stale checkbox state.
+    page.refresh()
+    assert project.ma_export.export_song_ids == []
+
+
+def test_folder_drag_selects_all_songs_in_category_in_order(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from cueplayer.domain.models import SetlistCategory
+
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    category = SetlistCategory.create("Act 1")
+    project.setlist_categories.append(category)
+    for name in ("Opener", "Second", "Third"):
+        song = Song.create(name)
+        song.category_id = category.id
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    folder_item = page.setlist_export_source.topLevelItem(0)
+    assert folder_item is not None
+    page.setlist_export_source.setCurrentItem(folder_item)
+    folder_item.setSelected(True)
+    dragged_ids = page.setlist_export_source.selected_song_ids()
+    assert dragged_ids == [song.id for song in project.songs]
+
+    page._add_songs_to_export_queue(dragged_ids)
+
+    assert [
+        page.song_pick.item(row).data(Qt.ItemDataRole.UserRole)
+        for row in range(page.song_pick.count())
+    ] == [song.id for song in project.songs]
+
+
+def test_multi_select_drag_appends_without_duplicating_existing_queue(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B", "C"):
+        project.songs.append(Song.create(name))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    # Multi-select B and C (and re-drag A, already queued) in one gesture.
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    queue_ids = [
+        page.song_pick.item(row).data(Qt.ItemDataRole.UserRole)
+        for row in range(page.song_pick.count())
+    ]
+    assert queue_ids == [song.id for song in project.songs]
+    assert len(queue_ids) == len(set(queue_ids))
+
+
+def test_reordering_export_queue_updates_order_everywhere(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("First", "Second"):
+        project.songs.append(Song.create(name))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    assert [slot.display_name for slot in page._slots] == ["First", "Second"]
+
+    # Simulate a drag reorder within the Export Queue: move row 1 above row 0.
+    moved = page.song_pick.takeItem(1)
+    page.song_pick.insertItem(0, moved)
+    page._on_song_pick_changed()
+
+    assert project.ma_export.export_song_ids == [
+        project.songs[1].id,
+        project.songs[0].id,
+    ]
+    assert [slot.display_name for slot in page._slots] == ["Second", "First"]
+
+    paths = page._write_export_allocation_report(tmp_path)
+    csv_text = paths["show:allocation_csv"].read_text(encoding="utf-8-sig")
+    assert csv_text.index("Second") < csv_text.index("First")

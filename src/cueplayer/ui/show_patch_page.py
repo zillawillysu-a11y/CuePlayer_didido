@@ -1257,6 +1257,11 @@ class ShowPatchPage(QWidget):
         if not checked:
             if self._project is not None:
                 self._project.ma_export.export_song_ids = []
+                # Rebuild the queue widget itself (empty), not just the setting —
+                # otherwise the still-checked items survive and
+                # _write_ui_to_settings() re-derives export_song_ids from them
+                # on the very next refresh(), silently undoing the clear.
+                self._rebuild_song_pick()
                 self.refresh()
                 self.settings_changed.emit()
             return
