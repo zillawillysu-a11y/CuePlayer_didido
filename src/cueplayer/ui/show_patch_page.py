@@ -658,13 +658,15 @@ class ShowPatchPage(QWidget):
         registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
-        self.registry_table = QTableWidget(0, 8)
+        self.registry_table = QTableWidget(0, 10)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Song", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
+            ["Order", "Chinese", "Song", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.registry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.registry_table.setColumnWidth(0, 56)
+        self.registry_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.registry_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         # Left/middle are capped by setMaximumWidth above — the Song List
         # (registry_table) absorbs all remaining width so it's fully visible.
         registry_content_row.addWidget(self.registry_table, stretch=1)
@@ -809,37 +811,27 @@ class ShowPatchPage(QWidget):
         manual_hint.setWordWrap(True)
         manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
         manual_layout.addWidget(manual_hint)
-        manual_fields_grid = QGridLayout()
-        manual_fields_grid.setHorizontalSpacing(12)
-        manual_fields_grid.setVerticalSpacing(10)
+        # Plain QFormLayout — the same proven label:field row pattern already
+        # used bug-free by Console Setup's own Pool Start box, instead of the
+        # hand-rolled grid that kept miscalculating row height.
+        manual_fields_form = QFormLayout()
+        manual_fields_form.setVerticalSpacing(8)
         self.review_pool_start_fields = {}
-        for index, (label, attr, minimum) in enumerate((
+        for label, attr, minimum in (
             ("Sequence", "seq_start", 1),
             ("Effect", "effect_start", 1),
             ("Timecode", "timecode_start", 1),
             ("Group", "group_start", 1),
             ("Macro", "macro_start", 1),
             ("View", "view_start", 1),
-        )):
+        ):
             field = NoWheelSpinBox()
             field.setRange(minimum, 9999)
             field.setMaximumWidth(90)
             field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
             self.review_pool_start_fields[attr] = field
-            # A real QWidget (not a bare layout) in the grid cell — nested
-            # layouts without one can miscalculate row height in QGridLayout
-            # and overlap the row below, which is what happened here.
-            field_widget = QWidget()
-            field_column = QVBoxLayout(field_widget)
-            field_column.setContentsMargins(0, 0, 0, 0)
-            field_column.setSpacing(2)
-            field_label = QLabel(label)
-            field_label.setStyleSheet("background: transparent; color: #aab4c3;")
-            field_column.addWidget(field_label)
-            field_column.addWidget(field)
-            row, col = divmod(index, 2)
-            manual_fields_grid.addWidget(field_widget, row, col)
-        manual_layout.addLayout(manual_fields_grid)
+            manual_fields_form.addRow(label, field)
+        manual_layout.addLayout(manual_fields_form)
         autofill_row = QHBoxLayout()
         self.review_autofill_btn = QPushButton("Auto-Fill && Sequence")
         self.review_autofill_btn.setToolTip(
@@ -866,17 +858,20 @@ class ShowPatchPage(QWidget):
         review_left_column.addStretch(1)
         review_content_row.addWidget(review_left_widget)
 
-        self.review_table = QTableWidget(0, 9)
+        self.review_table = QTableWidget(0, 10)
         self.review_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
+            ["Order", "Chinese", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
-        # Order/Song/Marks stay read-only; the six Pool columns (2-7) accept a
-        # manual per-song start via double-click — see _on_review_table_item_edited.
+        self.review_table.setColumnWidth(0, 56)
+        # Order/Chinese/Song/Marks stay read-only; the six Pool columns (3-8)
+        # accept a manual per-song start via double-click — see
+        # _on_review_table_item_edited.
         self.review_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
         )
         self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.review_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.review_table.itemChanged.connect(self._on_review_table_item_edited)
         # review_left_widget is capped by setMaximumWidth above — the table
         # absorbs all remaining width so it's fully visible.
@@ -1829,12 +1824,12 @@ class ShowPatchPage(QWidget):
         if self._review_table_refreshing or self._suppress or self._project is None:
             return
         pool_by_column = {
-            2: "sequence",
-            3: "effects",
-            4: "groups",
-            5: "timecode",
-            6: "view",
-            7: "song_macro",
+            3: "sequence",
+            4: "effects",
+            5: "groups",
+            6: "timecode",
+            7: "view",
+            8: "song_macro",
         }
         pool = pool_by_column.get(item.column())
         row = item.row()
@@ -1961,6 +1956,23 @@ class ShowPatchPage(QWidget):
             return
         self.out_dir.setText(path)
 
+    @staticmethod
+    def _scanned_max_text(settings: MaExportSettings) -> str:
+        """Highest Pool number actually found by the last Live Scan (Test
+        Connection / Scan Current Show) — distinct from "Next safe start",
+        which is only what CuePlayer itself plans to use next."""
+        scanned = settings.ma2_scanned_pool_max
+        if not scanned:
+            return "Show scan max IDs: not scanned yet — run Scan Current Show"
+        return (
+            f"Show scan max IDs: Seq {scanned.get('sequence', '—')} / "
+            f"Effect {scanned.get('effect', '—')} / "
+            f"TC {scanned.get('timecode', '—')} / "
+            f"Group {scanned.get('group', '—')} / "
+            f"Macro {scanned.get('macro', '—')} / "
+            f"View {scanned.get('view', '—')}"
+        )
+
     def _rebuild_workflow_pages(self) -> None:
         if self._project is None:
             return
@@ -1982,12 +1994,12 @@ class ShowPatchPage(QWidget):
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         collisions = pool_collisions(self._slots, settings)
         pool_by_review_column = {
-            2: "sequence",
-            3: "effects",
-            4: "groups",
-            5: "timecode",
-            6: "view",
-            7: "song_macro",
+            3: "sequence",
+            4: "effects",
+            5: "groups",
+            6: "timecode",
+            7: "view",
+            8: "song_macro",
         }
         collision_brush = QBrush(QColor("#7f1d1d"))
         self.registry_table.setRowCount(len(self._slots))
@@ -2003,18 +2015,13 @@ class ShowPatchPage(QWidget):
             macro = int(slot.song_macro_pool)
             view = int(slot.view_pool)
             song = slot.song
-            registry_song_label = (
-                slot.display_name
-                if not song.name or song.name == slot.display_name
-                else f"{song.setlist_number:g}. {song.name}  ·  {slot.display_name}"
-            )
-            review_song_label = (
-                slot.display_name
-                if not song.name or song.name == slot.display_name
-                else f"{song.name}  ·  {slot.display_name}"
-            )
+            # Chinese is its own column now (not exported — display-only,
+            # so the operator can cross-check against the Setlist).
+            chinese_name = "" if not song.name or song.name == slot.display_name else song.name
             registry_values = (
-                registry_song_label,
+                f"{song.setlist_number:g}",
+                chinese_name,
+                slot.display_name,
                 "Planned",
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
@@ -2024,7 +2031,7 @@ class ShowPatchPage(QWidget):
                 str(macro),
             )
             for column, value in enumerate(registry_values):
-                if column == 1:
+                if column == 3:
                     status = QLabel("●  Planned")
                     status.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     status.setToolTip("Planned allocation — not yet verified by an MA2 show scan")
@@ -2037,7 +2044,8 @@ class ShowPatchPage(QWidget):
                     self.registry_table.setItem(row, column, QTableWidgetItem(value))
             review_values = (
                 str(row + 1),
-                review_song_label,
+                chinese_name,
+                slot.display_name,
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
                 f"{group_start}–{group_end}",
@@ -2070,7 +2078,8 @@ class ShowPatchPage(QWidget):
                 f"Effects {next_effect}, Groups {next_group}, Timecode {next_timecode}, "
                 f"Song Macro {int(settings.ma2_song_macro_start) + len(self._slots)}, "
                 f"View {int(settings.ma2_view_pool_start) + len(self._slots)}, "
-                f"Groups reserve {group_slots}/song"
+                f"Groups reserve {group_slots}/song\n"
+                f"{self._scanned_max_text(settings)}"
             )
             self.registry_summary_labels[0].setText(
                 f"Registered Songs\n{len(self._slots)}"
@@ -2079,7 +2088,10 @@ class ShowPatchPage(QWidget):
             self.registry_summary_labels[2].setText(f"Next Effects\n{next_effect}")
             self.registry_summary_labels[3].setText(f"Next Groups\n{next_group}")
         else:
-            self.registry_status.setText("No songs selected · no Registry allocation proposed")
+            self.registry_status.setText(
+                f"No songs selected · no Registry allocation proposed\n"
+                f"{self._scanned_max_text(settings)}"
+            )
             self.registry_summary_labels[0].setText("Registered Songs\n0")
             self.registry_summary_labels[1].setText(
                 f"Next Sequence\n{int(settings.sequence_pool_start)}"
@@ -2093,12 +2105,7 @@ class ShowPatchPage(QWidget):
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
             f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}\n"
             f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}\n"
-            f"Current Show max IDs: Seq {settings.ma2_scanned_pool_max.get('sequence', '—')} / "
-            f"Effect {settings.ma2_scanned_pool_max.get('effect', '—')} / "
-            f"TC {settings.ma2_scanned_pool_max.get('timecode', '—')} / "
-            f"Group {settings.ma2_scanned_pool_max.get('group', '—')} / "
-            f"Macro {settings.ma2_scanned_pool_max.get('macro', '—')} / "
-            f"View {settings.ma2_scanned_pool_max.get('view', '—')}"
+            f"{self._scanned_max_text(settings)}"
         )
         values = (
             settings.ma2_include_fixed_macros,

@@ -68,15 +68,15 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.view_stage.widgets[2]["type"] == "effects"
     assert page.view_stage.widgets[2]["stride"] == 100
     assert page.registry_table.rowCount() == 1
-    status_light = page.registry_table.cellWidget(0, 1)
+    status_light = page.registry_table.cellWidget(0, 3)
     assert status_light is not None
     assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 2
     assert page.playlist_table.columnCount() == 10
     assert page.playlist_table.horizontalHeaderItem(6).text() == "Groups"
-    assert page.registry_table.horizontalHeaderItem(4).text() == "Groups"
-    assert page.review_table.horizontalHeaderItem(4).text() == "Groups"
+    assert page.registry_table.horizontalHeaderItem(6).text() == "Groups"
+    assert page.review_table.horizontalHeaderItem(5).text() == "Groups"
     assert page.registry_command_port.value() == 30000
     assert page.registry_monitor_port.value() == 30001
     assert page.registry_version.text() == "3.9.63.6"
@@ -471,7 +471,7 @@ def test_review_checks_sync_groups_and_export_allocation_report(
     page.ma2_song_macros.setChecked(True)
     assert page.review_macro_checks[1].isChecked()
     assert page.review_pool_start_fields["view_start"].toolTip()
-    assert page.review_table.item(0, 4).text() == "1–20"
+    assert page.review_table.item(0, 5).text() == "1–20"
 
     paths = page._write_export_allocation_report(tmp_path)
     assert paths["show:allocation_csv"].exists()
@@ -617,8 +617,8 @@ def test_editing_a_review_table_pool_cell_stores_a_manual_override(
     page._add_songs_to_export_queue([project.songs[0].id])
     song_id = project.songs[0].id
 
-    # Timecode column (5) currently shows the computed default.
-    timecode_item = page.review_table.item(0, 5)
+    # Timecode column (6) currently shows the computed default.
+    timecode_item = page.review_table.item(0, 6)
     assert timecode_item.text() == str(page._slots[0].timecode_pool)
 
     # setText() triggers the connected itemChanged signal synchronously,
@@ -627,11 +627,11 @@ def test_editing_a_review_table_pool_cell_stores_a_manual_override(
 
     assert project.ma_export.ma2_pool_overrides[song_id]["timecode"] == 777
     assert page._slots[0].timecode_pool == 777
-    assert page.review_table.item(0, 5).text() == "777"
+    assert page.review_table.item(0, 6).text() == "777"
 
     # Blanking the cell clears the override and falls back to the default.
     default_before_override = int(page._project.ma_export.timecode_pool_start)
-    page.review_table.item(0, 5).setText("")
+    page.review_table.item(0, 6).setText("")
     assert "timecode" not in project.ma_export.ma2_pool_overrides.get(song_id, {})
     assert page._slots[0].timecode_pool == default_before_override
 
@@ -652,18 +652,18 @@ def test_review_table_highlights_colliding_pool_cells(
 
     from PySide6.QtGui import QColor
 
-    default_bg = page.review_table.item(0, 5).background().color()
+    default_bg = page.review_table.item(0, 6).background().color()
 
     # Force both songs' Timecode onto the same number.
     target = str(page._slots[0].timecode_pool)
-    page.review_table.item(1, 5).setText(target)
+    page.review_table.item(1, 6).setText(target)
 
-    first_bg = page.review_table.item(0, 5).background().color()
-    second_bg = page.review_table.item(1, 5).background().color()
+    first_bg = page.review_table.item(0, 6).background().color()
+    second_bg = page.review_table.item(1, 6).background().color()
     assert first_bg == QColor("#7f1d1d")
     assert second_bg == QColor("#7f1d1d")
     assert first_bg != default_bg
-    assert page.review_table.item(0, 5).toolTip()
+    assert page.review_table.item(0, 6).toolTip()
 
 
 def test_auto_fill_sequences_every_song_from_the_seed_fields(
@@ -730,11 +730,11 @@ def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
     page.refresh()
 
     assert page.playlist_table.item(0, 5).text().startswith("999")
-    assert page.registry_table.item(0, 3).text().startswith("999")
-    assert page.review_table.item(0, 3).text().startswith("999")
+    assert page.registry_table.item(0, 5).text().startswith("999")
+    assert page.review_table.item(0, 4).text().startswith("999")
 
 
-def test_registry_and_review_song_column_show_chinese_name_too(
+def test_registry_and_review_have_separate_order_chinese_and_song_columns(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -750,7 +750,13 @@ def test_registry_and_review_song_column_show_chinese_name_too(
     page.set_project(project)
     page._add_songs_to_export_queue([song.id])
 
-    # Export Registry has no separate Order column, so it also carries the
-    # setlist number; Review already has its own Order column (column 0).
-    assert page.registry_table.item(0, 0).text() == "1. 真罕得想起來  ·  Rarely_Think_of_It"
-    assert page.review_table.item(0, 1).text() == "真罕得想起來  ·  Rarely_Think_of_It"
+    # Export Registry: Order / Chinese / Song are three separate columns —
+    # it has no other Order column, so it carries the setlist number.
+    assert page.registry_table.item(0, 0).text() == "1"
+    assert page.registry_table.item(0, 1).text() == "真罕得想起來"
+    assert page.registry_table.item(0, 2).text() == "Rarely_Think_of_It"
+    # Review & Export already has its own Order column (export queue
+    # position, column 0) — Chinese is a new column 1, Song stays column 2.
+    assert page.review_table.item(0, 0).text() == "1"
+    assert page.review_table.item(0, 1).text() == "真罕得想起來"
+    assert page.review_table.item(0, 2).text() == "Rarely_Think_of_It"

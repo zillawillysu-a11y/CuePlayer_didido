@@ -5,49 +5,67 @@
 
 ## Task objective
 
-User tested the previous layout-width fix and reported two more concrete
-problems from screenshots:
+Follow-up on the previous two rounds of layout fixes. User reported:
 
-1. Export Registry: the four Telnet action buttons (Write Scan Plugin /
-   Import Plugin & Scan / Test Connection / Scan Current Show) had their
-   labels clipped after the Telnet box was narrowed. User also wants the
-   Song List's leftmost column to show setlist order + Chinese name, not
-   just the English MA name.
-2. Review & Export: Manual Pool Starts' field labels were **still**
-   overlapping their spinboxes despite the earlier spacing fix. User also
-   wants the review table's Song column to show Chinese too.
+1. Chinese name should be its **own separate column** (not combined into
+   one cell with the English name) in Export Registry and Review & Export —
+   easier to check, even though it's display-only and never exported. Order
+   number should also be its own separate column.
+2. Manual Pool Starts fields were **still** not fully displayed and had an
+   inconsistent background — the previous session's "wrap in a QWidget"
+   attempt didn't fully fix it either.
+3. Export Registry's stat tiles show "Next Sequence/Effects/Groups" (what
+   CuePlayer itself plans to use next) — user wants that kept, but also
+   wants to see the **actual highest number found by the Live Scan** of the
+   real MA2 show file, which is a different, already-existing but
+   under-surfaced piece of data.
 
 ## What was implemented
 
-### Export Registry — button clipping
+### Manual Pool Starts — switched to `QFormLayout`
 
-- Split the previous one-row `QHBoxLayout` (status label + 4 buttons) into:
-  the status label on its own full-width row, then the 4 buttons in a 2×2
-  `QGridLayout` below. At the box's ~360px cap, a packed 5-item row genuinely
-  didn't have room for full button text; 2 per row does.
+Two consecutive attempts at a hand-rolled `QGridLayout` (stacking a label
+above a field per cell) both had subtle Qt row-height/rendering issues.
+Replaced entirely with a plain single-column `QFormLayout` — the exact same
+proven pattern Console Setup's own "Pool Start" box already uses without
+any reported problems. Simpler, and reuses working code instead of a third
+attempt at the same custom grid shape.
 
-### Manual Pool Starts — the *real* fix for the overlap
+### Order / Chinese / Song as three separate columns
 
-The previous session's fix (adding `QGridLayout.setVerticalSpacing`) didn't
-actually solve it, because it wasn't a spacing problem — it's a known Qt
-quirk: adding a bare `QLayout` (not a `QWidget`) directly into a
-`QGridLayout` cell via `addLayout()` can make Qt miscalculate that row's
-height, since `QGridLayout` row-height computation is more reliable when
-every cell holds an actual `QWidget`. Both places in this file that stacked
-a label above a field via `addLayout(nested_vbox, row, col)` had this
-latent bug — Manual Pool Starts *and* (proactively fixed before it could be
-reported) the Telnet fields grid changed in the previous session. Fixed by
-wrapping each label+field pair in a real `QWidget` and using
-`addWidget(field_widget, row, col)` instead.
+- `registry_table`: 8 → 10 columns. New layout:
+  `Order, Chinese, Song, Status, Sequence, Effects, Groups, Timecode, View, Song Macro`.
+  Order shows the song's setlist number (`song.setlist_number`), since this
+  table has no other order column.
+- `review_table`: 9 → 10 columns. New layout:
+  `Order, Chinese, Song, Sequence, Effects, Groups, Timecode, View, Song Macro, Marks`.
+  Order keeps its existing meaning (export queue position); Chinese is the
+  new column.
+- Chinese column is blank when the song has no Chinese name or it's
+  identical to the English one (same convention as the Export Queue
+  labels). Not written to any exported file — display-only, exactly as
+  requested.
+- Updated `_on_review_table_item_edited`'s column→pool-type map and every
+  test that referenced the old column indices (six existing/recent tests
+  needed index updates; one rewritten to check the three columns
+  separately instead of one combined string).
 
-### Chinese names in Registry / Review Song columns
+### Export Registry — surfaced the Live Scan's actual max IDs
 
-- `_rebuild_workflow_pages()` now builds a combined song label per row:
-  - Export Registry (no separate Order column): `"{setlist_number:g}. {Chinese name}  ·  {English name}"`.
-  - Review & Export (already has its own Order column): `"{Chinese name}  ·  {English name}"`, no redundant number.
-  - Falls back to the English name alone when the song has no Chinese name
-    or the two are identical (matches the pattern already used for the
-    Export Queue).
+`MaExportSettings.ma2_scanned_pool_max` already existed and was already
+populated by "Test Connection"/"Scan Current Show", but was only ever
+displayed on the Review & Export page — not on Export Registry itself,
+where the Live Scan controls actually live. Factored a new
+`_scanned_max_text(settings)` helper (used by both pages now) and appended
+it as a second line under Export Registry's own "Next safe starts..."
+status line, so both numbers — CuePlayer's own plan vs. what's actually on
+the console — are visible together where the scan happens. Shows "not
+scanned yet" before the first scan.
+
+### Telnet action buttons
+
+(Carried over context: already fixed to a 2×2 grid in the previous commit
+this session continues from — no further change needed here.)
 
 ## Files changed
 
@@ -56,31 +74,29 @@ wrapping each label+field pair in a real `QWidget` and using
 
 ## Architecture decisions
 
-The "wrap in a real QWidget before adding to a QGridLayout cell" fix is now
-applied everywhere a label sits above a field in this file's several
-compact-grid patterns (Manual Pool Starts, Telnet fields) — worth
-remembering as the standard fix if this shape of grid appears again
-elsewhere in the app.
+When a hand-rolled layout pattern fails twice for the same reason, stop
+iterating on it and switch to an already-proven pattern elsewhere in the
+same file rather than attempting a third variant of the same shape.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe -m pytest tests/ui/test_show_patch_ma2_discovery.py tests/ui/test_setlist_folder_drag.py tests/exporters tests/persistence -q`: **194 passed** (193 + 1 new test locking in the Chinese-name Song-column format).
+- `QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe -m pytest tests/ui/test_show_patch_ma2_discovery.py tests/ui/test_setlist_folder_drag.py tests/exporters tests/persistence -q`: **194 passed**.
 - `compileall`: passed.
-- No desktop GUI automation available this session — the button-grid
-  reflow and the overlap fix are standard Qt layout mechanisms, but the
-  actual pixel result still needs the user's own eyes, same as every prior
-  layout change this week.
+- No desktop GUI automation available this session — needs the user's own
+  eyes, same as every prior layout change this week. Given the Manual Pool
+  Starts overlap has now failed to be fixed twice by inference alone,
+  treat this one especially carefully in manual verification.
 
 ## Remaining issues
 
 Same outstanding manual-verification checklist as prior 2026-08-08
-handoffs (`.ai/NEXT_TASK.md`) — this session adds: confirm the Telnet
-button labels are no longer clipped, confirm Manual Pool Starts truly
-doesn't overlap anymore, confirm Registry/Review Song columns show Chinese.
+handoffs (`.ai/NEXT_TASK.md`), now also covering: Order/Chinese/Song as
+separate columns, Manual Pool Starts' `QFormLayout` rendering correctly,
+and the new "Show scan max IDs" line on Export Registry.
 
 ## Suggested next task
 
-User visually confirms this round of fixes in the running desktop app,
-then works through the rest of the manual-verification checklist already
-queued in `.ai/NEXT_TASK.md` (per-song Pool overrides, View Layout Follow
-checkbox, Setlist drag into Export Queue, a real MA2 export).
+User visually confirms this round in the running desktop app — Manual Pool
+Starts in particular, since it's the third attempt at the same fix. Then
+work through the rest of the manual-verification checklist already queued
+in `.ai/NEXT_TASK.md`.

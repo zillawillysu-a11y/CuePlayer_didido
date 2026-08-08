@@ -30,16 +30,21 @@ the 2026-08-08 sessions (see the day's handoffs in `.ai/handoffs/`):
 2. **Page layout reflow** (`.ai/handoffs/2026-08-08_ConsoleSetupUiFixesAndPageLayoutReflow.md`,
    width fix in `.ai/handoffs/2026-08-08_RegistryAndReviewLayoutWidthFix.md`,
    button-clip/overlap/Chinese-name fix in
-   `.ai/handoffs/2026-08-08_ButtonClippingOverlapAndChineseSongColumn.md`):
+   `.ai/handoffs/2026-08-08_ButtonClippingOverlapAndChineseSongColumn.md`,
+   final columns/QFormLayout/scan-max fix in
+   `.ai/handoffs/2026-08-08_SeparateColumnsFormLayoutAndScanMax.md`):
    Songs & Pools (Export Queue left / playlist right), Export Registry
    (Telnet controls left, capped ~360px, buttons in a 2x2 grid / stat tiles
-   middle, capped ~200px / song list right, fully visible, Song column now
-   shows "N. 中文名 · English"), Review & Export (checks + manual starts
-   left, capped ~340px / review table right, Song column now shows
-   "中文名 · English") — confirm the Telnet button labels are no longer
-   clipped, the Manual Pool Starts fields truly no longer overlap (this was
-   attempted once already and didn't fully work — re-check carefully), and
-   Chinese names show up in both Song columns.
+   middle, capped ~200px / song list right, fully visible, now with
+   separate Order/Chinese/Song columns and a "Show scan max IDs" line under
+   the status text), Review & Export (checks + manual starts left, capped
+   ~340px, Manual Pool Starts rebuilt as a plain QFormLayout / review table
+   right, also with separate Order/Chinese/Song columns) — confirm the
+   Telnet button labels are no longer clipped, **Manual Pool Starts truly
+   renders correctly now (this is the third fix attempt — check very
+   carefully)**, Chinese names show in their own column in both tables, and
+   the Live Scan's actual max IDs appear on Export Registry after running
+   Scan Current Show.
 
 3. **View Layout "Follow Console Setup" checkbox** — confirm checking it
    syncs Pool Start live from Console Setup and updates when switching
