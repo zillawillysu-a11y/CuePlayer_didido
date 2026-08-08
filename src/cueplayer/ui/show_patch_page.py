@@ -1983,7 +1983,11 @@ class ShowPatchPage(QWidget):
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
         self.show_name.setText(s.ma2_show_name or "CuePlayer")
-        self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
+        self.song_viewbutton.setText(
+            (s.ma3_song_viewbutton or "2.10")
+            if s.console == "ma3"
+            else (s.ma2_song_viewbutton or "1.20")
+        )
         self.ma2_template_page.setValue(int(s.ma2_template_page or 200))
         self.ma2_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 101))
         self.ma2_song_macro_start.setValue(int(s.ma2_song_macro_start or 201))
@@ -2078,7 +2082,10 @@ class ShowPatchPage(QWidget):
             self.show_macro_name.text()
         )
         s.ma2_show_name = self.show_name.text().strip() or "CuePlayer"
-        s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
+        if s.console == "ma3":
+            s.ma3_song_viewbutton = self.song_viewbutton.text().strip() or "2.10"
+        else:
+            s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
         s.ma2_template_page = int(self.ma2_template_page.value())
         s.ma2_fixed_macro_start = int(self.ma2_fixed_macro_start.value())
         s.ma2_song_macro_start = int(self.ma2_song_macro_start.value())
@@ -2282,11 +2289,20 @@ class ShowPatchPage(QWidget):
         else:
             s.output_dir_ma2 = current_out
         s.console = new_console
+        if old_console == "ma3":
+            s.ma3_song_viewbutton = self.song_viewbutton.text().strip() or "2.10"
+        else:
+            s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
 
         remembered = s.output_dir_ma3 if new_console == "ma3" else s.output_dir_ma2
         path = resolve_export_dir(new_console, remembered or None)
         self._suppress = True
         self.out_dir.setText(path)
+        self.song_viewbutton.setText(
+            (s.ma3_song_viewbutton or "2.10")
+            if new_console == "ma3"
+            else (s.ma2_song_viewbutton or "1.20")
+        )
         self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(new_console, (16, 8)))
         self.view_grid_label.setText(
             "Required 18 × 10 grid" if new_console == "ma3" else "Required 16 × 8 grid"
@@ -3018,7 +3034,7 @@ class ShowPatchPage(QWidget):
                     # mirrors MA2's already-working equivalent settings.
                     include_song_views=self._project.ma_export.ma2_include_song_views,
                     view_pool_start=self._project.ma_export.ma2_view_pool_start,
-                    song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
+                    song_viewbutton=self._project.ma_export.ma3_song_viewbutton,
                     view_layout=self._project.ma_export.ma3_view_layout
                     or self._default_view_layout_for_settings(),
                 )

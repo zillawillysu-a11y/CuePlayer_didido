@@ -24,6 +24,7 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_include_fixed_macros=False,
         ma2_include_song_macros=True,
         ma2_include_song_list=False,
+        ma3_song_viewbutton="2.10",
         song_list_sequence_pool=777,
         ma2_template_page=88,
         ma2_fixed_macro_start=2201,
@@ -55,6 +56,7 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_include_fixed_macros is False
     assert loaded.ma2_include_song_macros is True
     assert loaded.ma2_include_song_list is False
+    assert loaded.ma3_song_viewbutton == "2.10"
     assert loaded.song_list_sequence_pool == 777
     assert loaded.ma2_template_page == 88
     assert loaded.ma2_fixed_macro_start == 2201

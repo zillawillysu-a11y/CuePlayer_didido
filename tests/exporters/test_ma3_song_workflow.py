@@ -118,7 +118,7 @@ def test_song_change_macros_fixed_definitions_match_reference(tmp_path: Path) ->
         ('Go+ Timecode $"song"', True),
     ]
     assert _macro_lines(macros["Set Songviewbutton"]) == [
-        ('SetGlobalVariable "songviewbutton" "1.20"', True),
+        ('SetGlobalVariable "songviewbutton" "2.10"', True),
     ]
 
 

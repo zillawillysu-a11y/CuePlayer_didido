@@ -1044,6 +1044,8 @@ class MaExportSettings:
     ma2_show_name: str = "CuePlayer"
     # MA2 Page Change assigns the current song View to this ViewButton.
     ma2_song_viewbutton: str = "1.20"
+    # MA3 uses its own ViewButton address and command syntax.
+    ma3_song_viewbutton: str = "2.10"
     ma2_include_fixed_macros: bool = True
     ma2_include_song_macros: bool = True
     ma2_include_song_list: bool = True

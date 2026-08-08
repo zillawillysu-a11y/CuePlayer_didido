@@ -331,7 +331,7 @@ class Ma3Exporter:
         # switch), reused here rather than inventing separate MA3 settings.
         include_song_views: bool = True,
         view_pool_start: int = 201,
-        song_viewbutton: str = "1.20",
+        song_viewbutton: str = "2.10",
         # Same list of dicts MA2's export call site already passes
         # (project.ma_export.ma2_view_layout) — write_song_view maps each
         # entry's "type" to an MA3 <ViewWidget> shape where one exists.
@@ -694,7 +694,7 @@ class Ma3Exporter:
     # exporter's equivalent macros already rely on); everything else here
     # is deliberately static text, not reinterpreted logic.
     def _fixed_song_change_macro_definitions(
-        self, song_list_name: str, viewbutton: str = "1.20"
+        self, song_list_name: str, viewbutton: str = "2.10"
     ) -> list[tuple[str, list[tuple[str, bool]]]]:
         return [
             (
@@ -738,7 +738,7 @@ class Ma3Exporter:
         song_list_name: str = "CuePlayer_Song_List",
         include_fixed: bool = True,
         include_songs: bool = True,
-        viewbutton: str = "1.20",
+        viewbutton: str = "2.10",
     ) -> None:
         """Write the fixed control macros plus one macro per song.
 
