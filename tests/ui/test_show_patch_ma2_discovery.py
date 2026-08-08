@@ -84,9 +84,11 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.workflow_tabs.currentWidget() is page.review_page
 
 
-def test_view_allocation_controls_drive_shared_export_settings(
+def test_view_pool_start_is_independent_of_console_setup_unless_following(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Without "Follow", View Layout Pool Start/Stride are their own numbers —
+    editing them must not silently rewrite Console Setup's Pool Start fields."""
     monkeypatch.setattr(
         "cueplayer.ui.show_patch_page.discover_ma2_environment",
         lambda: _discovery(tmp_path),
@@ -94,6 +96,8 @@ def test_view_allocation_controls_drive_shared_export_settings(
     project = Project.create("Show")
     page = ShowPatchPage()
     page.set_project(project)
+    original_seq_start = page.seq_start.value()
+    original_effect_slots = page.ma2_effect_slots.value()
 
     page.view_stage.selected_index = 0
     page._load_view_inspector(0)
@@ -107,13 +111,11 @@ def test_view_allocation_controls_drive_shared_export_settings(
     page.view_pool_width.setValue(12)
     page.ma2_view_pool_start.setValue(401)
 
-    assert project.ma_export.sequence_pool_start == 301
-    assert project.ma_export.ma2_sequence_slots_per_song == 30
-    assert project.ma_export.ma2_effect_pool_start == 501
-    assert project.ma_export.ma2_effect_slots_per_song == 125
+    assert project.ma_export.sequence_pool_start == original_seq_start
+    assert project.ma_export.ma2_effect_slots_per_song == original_effect_slots
     assert project.ma_export.ma2_view_pool_start == 401
-    assert page.seq_start.value() == 301
-    assert page.ma2_effect_slots.value() == 125
+    assert page.seq_start.value() == original_seq_start
+    assert page.ma2_effect_slots.value() == original_effect_slots
     assert project.ma_export.ma2_view_layout[2]["start"] == 501
     assert project.ma_export.ma2_view_layout[2]["stride"] == 125
     assert project.ma_export.ma2_view_layout[2]["x"] == 2
@@ -124,6 +126,68 @@ def test_view_allocation_controls_drive_shared_export_settings(
     assert len(page.view_stage.widgets) == before + 1
     page._delete_view_pool()
     assert len(page.view_stage.widgets) == before
+
+
+def test_follow_checkbox_mirrors_console_setup_pool_start(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    page.seq_start.setValue(777)
+    page.ma2_sequence_slots.setValue(15)
+    page.view_stage.selected_index = 0  # DEFAULT_VIEW_LAYOUT[0] is a "sequence" Pool
+    page._load_view_inspector(0)
+    assert page.view_pool_follow.isEnabled()
+
+    page.view_pool_follow.setChecked(True)
+
+    widget = page.view_stage.widgets[0]
+    assert widget["follow"] is True
+    assert widget["mode"] == "perSong"
+    assert widget["start"] == 777
+    assert widget["stride"] == 15
+    assert page.view_pool_number_start.isEnabled() is False
+
+    # Changing Console Setup afterwards must keep the following Pool in sync.
+    page.seq_start.setValue(888)
+    page.refresh()
+    assert page.view_stage.widgets[0]["start"] == 888
+
+    # Unchecking releases it back to an independently editable number.
+    page.view_pool_follow.setChecked(False)
+    assert page.view_stage.widgets[0]["follow"] is False
+    assert page.view_pool_number_start.isEnabled() is True
+    page.view_pool_number_start.setValue(42)
+    assert page.view_stage.widgets[0]["start"] == 42
+    page.seq_start.setValue(999)
+    page.refresh()
+    assert page.view_stage.widgets[0]["start"] == 42
+
+
+def test_follow_checkbox_only_available_for_console_pool_types(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+
+    page.view_stage.widgets.append(
+        {"type": "camera", "mode": "fixed", "x": 0, "y": 7, "w": 4, "h": 1, "start": 1, "stride": 1}
+    )
+    page.view_stage.selected_index = len(page.view_stage.widgets) - 1
+    page._load_view_inspector(page.view_stage.selected_index)
+
+    assert page.view_pool_follow.isEnabled() is False
+    assert page.view_pool_follow.isChecked() is False
 
 
 def test_fixed_macro_export_start_is_independent_of_view_macro_pool(

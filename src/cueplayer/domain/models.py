@@ -1063,7 +1063,7 @@ class MaExportSettings:
     ma2_telnet_host: str = "127.0.0.1"
     ma2_telnet_command_port: int = 30000
     ma2_telnet_monitor_port: int = 30001
-    ma2_telnet_user: str = "CuePlayerScan"
+    ma2_telnet_user: str = "administrator"
     ma2_telnet_plugin_pool: int = 9999
     ma2_telnet_plugin_import_path: str = ""
     # Song ids selected for export; empty = all songs.

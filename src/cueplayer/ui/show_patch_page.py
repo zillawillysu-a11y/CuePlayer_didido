@@ -73,6 +73,10 @@ _COL_MARKS = 6
 _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
 _EXPORT_SONG_IDS_MIME = EXPORT_SONG_IDS_MIME
 
+# View Layout Pool Types with a matching per-song Pool Start in Console
+# Setup — only these can "Follow Console Setup's per-song Pool Start".
+_FOLLOWABLE_POOL_TYPES = {"sequence", "effects", "groups", "timecode", "macros"}
+
 
 class ExportQueueList(QListWidget):
     """Drop target for Set List songs; the queue order is the export order."""
@@ -245,16 +249,49 @@ class ShowPatchPage(QWidget):
         settings_row.addWidget(console_box)
 
         pool_box = QGroupBox("Pool Start")
-        pool_form = QFormLayout(pool_box)
+        pool_form = QGridLayout(pool_box)
+        pool_form.setHorizontalSpacing(14)
+        pool_form.setVerticalSpacing(6)
         self.seq_start = NoWheelSpinBox()
         self.seq_start.setRange(1, 9999)
         self.seq_start.setValue(1)
         self.tc_start = NoWheelSpinBox()
         self.tc_start.setRange(1, 9999)
         self.tc_start.setValue(201)
-        pool_form.addRow("Sequence", self.seq_start)
-        pool_form.addRow("Timecode", self.tc_start)
-        settings_row.addWidget(pool_box)
+        self.ma2_effect_pool_start = NoWheelSpinBox()
+        self.ma2_effect_pool_start.setRange(1, 9999)
+        self.ma2_effect_pool_start.setValue(201)
+        self.ma2_group_pool_start = NoWheelSpinBox()
+        self.ma2_group_pool_start.setRange(1, 9999)
+        self.ma2_group_pool_start.setValue(1)
+        self.ma2_view_pool_start = NoWheelSpinBox()
+        self.ma2_view_pool_start.setRange(1, 9999)
+        self.ma2_view_pool_start.setValue(201)
+        self.ma2_song_macro_start = NoWheelSpinBox()
+        self.ma2_song_macro_start.setRange(1, 9999)
+        self.ma2_song_macro_start.setValue(201)
+        self.ma2_fixed_macro_start = NoWheelSpinBox()
+        self.ma2_fixed_macro_start.setRange(1, 9999)
+        self.ma2_fixed_macro_start.setValue(101)
+        # Every "first Pool number for X" field lives here, not scattered
+        # into Export Options — matches the Sequence/Effects/Groups/
+        # Timecode/View/Song Macro ordering used throughout the app.
+        pool_start_fields = (
+            ("Sequence", self.seq_start),
+            ("Effect", self.ma2_effect_pool_start),
+            ("Group", self.ma2_group_pool_start),
+            ("Timecode", self.tc_start),
+            ("View", self.ma2_view_pool_start),
+            ("Song Macro", self.ma2_song_macro_start),
+            ("Fixed Macro", self.ma2_fixed_macro_start),
+        )
+        for index, (label_text, widget) in enumerate(pool_start_fields):
+            row, col = divmod(index, 2)
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+            pool_form.addWidget(label, row, col * 2)
+            pool_form.addWidget(widget, row, col * 2 + 1)
+        settings_row.addWidget(pool_box, stretch=2)
 
         fader_box = QGroupBox("Fader (Executor)")
         fader_form = QFormLayout(fader_box)
@@ -310,12 +347,6 @@ class ShowPatchPage(QWidget):
         self.ma2_template_page = NoWheelSpinBox()
         self.ma2_template_page.setRange(1, 9999)
         self.ma2_template_page.setValue(200)
-        self.ma2_fixed_macro_start = NoWheelSpinBox()
-        self.ma2_fixed_macro_start.setRange(1, 9999)
-        self.ma2_fixed_macro_start.setValue(101)
-        self.ma2_song_macro_start = NoWheelSpinBox()
-        self.ma2_song_macro_start.setRange(1, 9999)
-        self.ma2_song_macro_start.setValue(201)
         self.ma2_add_preset_cue = QCheckBox("Add Main Cue named Preset")
         self.ma2_preset_cue_id = NoWheelDoubleSpinBox()
         self.ma2_preset_cue_id.setRange(0.001, 9999.999)
@@ -323,12 +354,6 @@ class ShowPatchPage(QWidget):
         self.ma2_preset_cue_id.setValue(0.5)
         self.ma2_song_views = QCheckBox("Song Views (Screen 3)")
         self.ma2_song_views.setChecked(True)
-        self.ma2_view_pool_start = NoWheelSpinBox()
-        self.ma2_view_pool_start.setRange(1, 9999)
-        self.ma2_view_pool_start.setValue(201)
-        self.ma2_effect_pool_start = NoWheelSpinBox()
-        self.ma2_effect_pool_start.setRange(1, 9999)
-        self.ma2_effect_pool_start.setValue(201)
         self.ma2_effect_slots = NoWheelSpinBox()
         self.ma2_effect_slots.setRange(1, 9999)
         self.ma2_effect_slots.setValue(100)
@@ -338,18 +363,13 @@ class ShowPatchPage(QWidget):
         self.ma2_group_slots = NoWheelSpinBox()
         self.ma2_group_slots.setRange(1, 9999)
         self.ma2_group_slots.setValue(20)
-        self.ma2_group_pool_start = NoWheelSpinBox()
-        self.ma2_group_pool_start.setRange(1, 9999)
-        self.ma2_group_pool_start.setValue(1)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
         )
         option_fields = (
             ("Mode", self.mode_combo), ("Show Name", self.show_name), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
-            ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Pool Start", self.ma2_effect_pool_start), ("Effect Slots Per Song", self.ma2_effect_slots),
-            ("Group Pool Start", self.ma2_group_pool_start),
-            ("View Pool Start", self.ma2_view_pool_start), ("Fixed Macro Start", self.ma2_fixed_macro_start), ("Song Macro Start", self.ma2_song_macro_start),
+            ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Slots Per Song", self.ma2_effect_slots),
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
         )
@@ -386,27 +406,27 @@ class ShowPatchPage(QWidget):
         self.setup_page_layout.addLayout(opt_row)
         self.setup_page_layout.addStretch(1)
 
+        songs_content_row = QHBoxLayout()
+
         song_box = QGroupBox("Export Queue")
-        song_layout = QHBoxLayout(song_box)
-        queue_column = QVBoxLayout()
-        queue_column.addWidget(
+        song_box.setMaximumWidth(340)
+        song_layout = QVBoxLayout(song_box)
+        song_layout.addWidget(
             QLabel("Drag songs — or a whole folder — from the Setlist panel; drop order = export order")
         )
         self.song_pick = ExportQueueList()
         self.song_pick.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.song_pick.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.song_pick.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.song_pick.setMaximumHeight(190)
         self.song_pick.setItemDelegate(RowColorDelegate(self.song_pick))
-        queue_column.addWidget(self.song_pick)
+        song_layout.addWidget(self.song_pick, stretch=1)
         pick_btns = QHBoxLayout()
         self.song_all_btn = QPushButton("Check All")
         self.song_none_btn = QPushButton("Clear Queue")
         pick_btns.addWidget(self.song_all_btn)
         pick_btns.addWidget(self.song_none_btn)
-        queue_column.addLayout(pick_btns)
-        song_layout.addLayout(queue_column, stretch=1)
-        self.songs_page_layout.addWidget(song_box)
+        song_layout.addLayout(pick_btns)
+        songs_content_row.addWidget(song_box)
 
         self.playlist_table = QTableWidget(0, 10)
         self.playlist_table.setObjectName("maExportPlaylistTable")
@@ -428,7 +448,8 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setColumnWidth(7, 82)
         self.playlist_table.setColumnWidth(8, 82)
         self.playlist_table.setColumnWidth(9, 130)
-        self.songs_page_layout.addWidget(self.playlist_table, stretch=1)
+        songs_content_row.addWidget(self.playlist_table, stretch=1)
+        self.songs_page_layout.addLayout(songs_content_row, stretch=1)
 
         self.table = QTableWidget(0, 7)
         self.table.setObjectName("exportPatchTable")
@@ -498,8 +519,10 @@ class ShowPatchPage(QWidget):
         self.registry_monitor_port = NoWheelSpinBox()
         self.registry_monitor_port.setRange(1, 65535)
         self.registry_monitor_port.setValue(30001)
-        self.registry_user = QLineEdit("CuePlayerScan")
-        self.registry_password = QLineEdit()
+        self.registry_user = QLineEdit("administrator")
+        # grandMA2's own stock login default — a convenience starting point,
+        # not persisted (see MaExportSettings.ma2_telnet_user docstring).
+        self.registry_password = QLineEdit("admin")
         self.registry_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.registry_plugin_pool = NoWheelSpinBox()
         self.registry_plugin_pool.setRange(2, 9999)
@@ -569,9 +592,14 @@ class ShowPatchPage(QWidget):
         live_scan_actions.addWidget(self.registry_test_connection)
         live_scan_actions.addWidget(self.registry_scan_show)
         live_scan_layout.addLayout(live_scan_actions)
-        self.registry_page_layout.addWidget(live_scan_box)
 
-        registry_summary_layout = QHBoxLayout()
+        registry_content_row = QHBoxLayout()
+        registry_left_column = QVBoxLayout()
+        registry_left_column.addWidget(live_scan_box)
+        registry_left_column.addStretch(1)
+        registry_content_row.addLayout(registry_left_column, stretch=2)
+
+        registry_middle_column = QVBoxLayout()
         self.registry_summary_labels: list[QLabel] = []
         for text in (
             "Registered Songs\n0",
@@ -586,14 +614,17 @@ class ShowPatchPage(QWidget):
                 "padding: 10px; font-weight: 600;"
             )
             self.registry_summary_labels.append(label)
-            registry_summary_layout.addWidget(label)
-        self.registry_page_layout.addLayout(registry_summary_layout)
+            registry_middle_column.addWidget(label)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
+        self.registry_status.setWordWrap(True)
         self.registry_status.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 6px; "
             "padding: 10px; color: #a1a1aa;"
         )
-        self.registry_page_layout.addWidget(self.registry_status)
+        registry_middle_column.addWidget(self.registry_status)
+        registry_middle_column.addStretch(1)
+        registry_content_row.addLayout(registry_middle_column, stretch=1)
+
         self.registry_table = QTableWidget(0, 8)
         self.registry_table.setHorizontalHeaderLabels(
             ["Song", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
@@ -601,7 +632,9 @@ class ShowPatchPage(QWidget):
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.registry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.registry_page_layout.addWidget(self.registry_table, stretch=1)
+        registry_content_row.addWidget(self.registry_table, stretch=2)
+        self.registry_page_layout.addLayout(registry_content_row, stretch=1)
+
         registry_nav = QHBoxLayout()
         registry_back = QPushButton("←  Songs & Pools")
         registry_next = QPushButton("Console Setup  →")
@@ -672,6 +705,11 @@ class ShowPatchPage(QWidget):
         self.view_pool_mode = QComboBox()
         self.view_pool_mode.addItem("Fixed · same numbers", "fixed")
         self.view_pool_mode.addItem("Per Song · unique numbers", "perSong")
+        self.view_pool_follow = QCheckBox("Follow Console Setup's per-song Pool Start")
+        self.view_pool_follow.setToolTip(
+            "Pool Start / Reserved Slots Per Song mirror Console Setup's Pool "
+            "Start for this Pool Type, and update live as you switch Preview Song."
+        )
         self.view_pool_number_start = NoWheelSpinBox()
         self.view_pool_stride = NoWheelSpinBox()
         self.view_pool_x = NoWheelSpinBox()
@@ -686,6 +724,7 @@ class ShowPatchPage(QWidget):
         self.view_pool_height.setRange(1, 8)
         inspector_form.addRow("Pool Type", self.view_pool_type)
         inspector_form.addRow("Pool Allocation", self.view_pool_mode)
+        inspector_form.addRow(self.view_pool_follow)
         inspector_form.addRow("Pool Start", self.view_pool_number_start)
         inspector_form.addRow("Reserved Slots Per Song", self.view_pool_stride)
         # Screen 3 geometry is edited directly by dragging/resizing the Pool
@@ -704,9 +743,13 @@ class ShowPatchPage(QWidget):
         review_intro.setWordWrap(True)
         review_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.review_page_layout.addWidget(review_intro)
+
+        review_content_row = QHBoxLayout()
+        review_left_column = QVBoxLayout()
+
         macro_review_box = QGroupBox("Export Content Check")
         macro_review_box.setObjectName("reviewExportContent")
-        macro_review_layout = QHBoxLayout(macro_review_box)
+        macro_review_layout = QVBoxLayout(macro_review_box)
         self.review_macro_checks = []
         for index, label in enumerate(("Fixed control Macros", "Song Macros", "Song List Sequence", "Song Views (Screen 3)", "Add Main Cue named Preset")):
             check = QCheckBox(label)
@@ -715,23 +758,24 @@ class ShowPatchPage(QWidget):
             )
             self.review_macro_checks.append(check)
             macro_review_layout.addWidget(check)
-        self.review_page_layout.addWidget(macro_review_box)
+        review_left_column.addWidget(macro_review_box)
+
         manual_box = QGroupBox("Manual Pool Starts")
-        manual_layout = QHBoxLayout(manual_box)
+        manual_layout = QVBoxLayout(manual_box)
         self.review_manual_pool_starts = QCheckBox("Enable manual starts")
         manual_layout.addWidget(self.review_manual_pool_starts)
+        manual_fields_grid = QGridLayout()
         self.review_pool_start_fields = {}
-        for label, attr, minimum in (
+        for index, (label, attr, minimum) in enumerate((
             ("Sequence", "seq_start", 1),
             ("Effect", "effect_start", 1),
             ("Timecode", "timecode_start", 1),
             ("Group", "group_start", 1),
             ("Macro", "macro_start", 1),
             ("View", "view_start", 1),
-        ):
+        )):
             field = NoWheelSpinBox()
             field.setRange(minimum, 9999)
-            field.setFixedWidth(82)
             field.setToolTip(f"Manual {label} Pool start for this export")
             field.valueChanged.connect(self._on_review_pool_start_edited)
             self.review_pool_start_fields[attr] = field
@@ -740,17 +784,22 @@ class ShowPatchPage(QWidget):
             field_label.setStyleSheet("background: transparent; color: #aab4c3;")
             field_column.addWidget(field_label)
             field_column.addWidget(field)
-            manual_layout.addLayout(field_column)
-        manual_layout.addStretch(1)
+            row, col = divmod(index, 2)
+            manual_fields_grid.addLayout(field_column, row, col)
+        manual_layout.addLayout(manual_fields_grid)
         self.review_manual_pool_starts.toggled.connect(self._on_review_manual_toggled)
-        self.review_page_layout.addWidget(manual_box)
+        review_left_column.addWidget(manual_box)
+
         self.review_summary = QLabel("")
         self.review_summary.setWordWrap(True)
         self.review_summary.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 8px; "
             "padding: 12px; color: #e5e7eb;"
         )
-        self.review_page_layout.addWidget(self.review_summary)
+        review_left_column.addWidget(self.review_summary)
+        review_left_column.addStretch(1)
+        review_content_row.addLayout(review_left_column, stretch=1)
+
         self.review_table = QTableWidget(0, 9)
         self.review_table.setHorizontalHeaderLabels(
             ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
@@ -758,7 +807,8 @@ class ShowPatchPage(QWidget):
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.review_page_layout.addWidget(self.review_table, stretch=1)
+        review_content_row.addWidget(self.review_table, stretch=2)
+        self.review_page_layout.addLayout(review_content_row, stretch=1)
 
         setup_nav = QHBoxLayout()
         setup_back = QPushButton("←  Export Registry")
@@ -845,6 +895,7 @@ class ShowPatchPage(QWidget):
         self.view_lock_layout.toggled.connect(self._set_view_layout_locked)
         for widget in (self.view_pool_type, self.view_pool_mode):
             widget.currentIndexChanged.connect(self._update_selected_view_pool)
+        self.view_pool_follow.toggled.connect(self._update_selected_view_pool)
         for widget in (
             self.view_pool_number_start,
             self.view_pool_stride,
@@ -1142,7 +1193,7 @@ class ShowPatchPage(QWidget):
         for song_id in selected_ids:
             song = songs_by_id[song_id]
             en = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
-            label = en if not song.name or song.name == en else f"{en}  ·  {song.name}"
+            label = en if not song.name or song.name == en else f"{song.name}  ·  {en}"
             item = QListWidgetItem(label)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
@@ -1553,7 +1604,7 @@ class ShowPatchPage(QWidget):
         self.registry_host.setText(s.ma2_telnet_host or "127.0.0.1")
         self.registry_command_port.setValue(int(s.ma2_telnet_command_port or 30000))
         self.registry_monitor_port.setValue(int(s.ma2_telnet_monitor_port or 30001))
-        self.registry_user.setText(s.ma2_telnet_user or "CuePlayerScan")
+        self.registry_user.setText(s.ma2_telnet_user or "administrator")
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
         self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
@@ -1628,6 +1679,7 @@ class ShowPatchPage(QWidget):
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
         s.ma2_group_slots_per_song = int(self.ma2_group_slots.value())
         s.ma2_group_pool_start = int(self.ma2_group_pool_start.value())
+        self._sync_following_view_pools()
         s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
@@ -1635,7 +1687,7 @@ class ShowPatchPage(QWidget):
         s.ma2_telnet_host = self.registry_host.text().strip() or "127.0.0.1"
         s.ma2_telnet_command_port = int(self.registry_command_port.value())
         s.ma2_telnet_monitor_port = int(self.registry_monitor_port.value())
-        s.ma2_telnet_user = self.registry_user.text().strip() or "CuePlayerScan"
+        s.ma2_telnet_user = self.registry_user.text().strip() or "administrator"
         s.ma2_telnet_plugin_pool = int(self.registry_plugin_pool.value())
         s.ma2_telnet_plugin_import_path = self.registry_plugin_import_path.text().strip()
         s.ma2_target_version = self.ma2_version.currentText().strip()
@@ -1941,18 +1993,26 @@ class ShowPatchPage(QWidget):
             self.view_allocation_status.setText("Select or add a Pool window.")
             return
         widget = self.view_stage.widgets[index]
-        controls = (self.view_pool_type, self.view_pool_mode, self.view_pool_number_start, self.view_pool_stride, self.view_pool_x, self.view_pool_y, self.view_pool_width, self.view_pool_height)
+        controls = (self.view_pool_type, self.view_pool_mode, self.view_pool_follow, self.view_pool_number_start, self.view_pool_stride, self.view_pool_x, self.view_pool_y, self.view_pool_width, self.view_pool_height)
         for control in controls:
             control.blockSignals(True)
         self.view_pool_type.setCurrentIndex(max(0, self.view_pool_type.findData(widget.get("type"))))
         self.view_pool_mode.setCurrentIndex(max(0, self.view_pool_mode.findData(widget.get("mode"))))
+        followable = str(widget.get("type")) in _FOLLOWABLE_POOL_TYPES
+        follow = followable and bool(widget.get("follow"))
+        self.view_pool_follow.setChecked(follow)
+        self.view_pool_follow.setEnabled(followable)
         self.view_pool_number_start.setValue(int(widget.get("start", 1)))
         self.view_pool_stride.setValue(int(widget.get("stride", 1)))
         self.view_pool_x.setValue(int(widget.get("x", 0)))
         self.view_pool_y.setValue(int(widget.get("y", 0)))
         self.view_pool_width.setValue(int(widget.get("w", 1)))
         self.view_pool_height.setValue(int(widget.get("h", 1)))
-        self.view_pool_stride.setEnabled(widget.get("mode") == "perSong")
+        # Following derives Pool Start/Stride/Allocation from Console Setup —
+        # editing them here directly would just be overwritten on the next sync.
+        self.view_pool_mode.setEnabled(not follow)
+        self.view_pool_number_start.setEnabled(not follow)
+        self.view_pool_stride.setEnabled(not follow and widget.get("mode") == "perSong")
         for control in controls:
             control.blockSignals(False)
         start = int(widget.get("start", 1)) + (self.view_stage.song_index * int(widget.get("stride", 1)) if widget.get("mode") == "perSong" else 0)
@@ -1979,6 +2039,47 @@ class ShowPatchPage(QWidget):
             self.view_allocation_status.setText(f"Screen 3 · {visible - builtin_slots} numbered Pool slots · starts at {start}{timecode_note}")
             self.view_allocation_status.setStyleSheet("color: #99a3b1;")
 
+    def _console_pool_start_stride(self, pool_type: str) -> tuple[int, int] | None:
+        """Console Setup's own (start, stride) for a followable Pool Type, or None."""
+        mapping: dict[str, tuple[object, object]] = {
+            "sequence": (self.seq_start, self.ma2_sequence_slots),
+            "effects": (self.ma2_effect_pool_start, self.ma2_effect_slots),
+            "groups": (self.ma2_group_pool_start, self.ma2_group_slots),
+            "timecode": (self.tc_start, None),
+            "macros": (self.ma2_song_macro_start, None),
+        }
+        entry = mapping.get(pool_type)
+        if entry is None:
+            return None
+        start_widget, stride_widget = entry
+        start = int(start_widget.value())
+        stride = int(stride_widget.value()) if stride_widget is not None else 1
+        return start, stride
+
+    def _sync_following_view_pools(self) -> None:
+        """Keep every "follow"-checked View Layout Pool in step with Console Setup."""
+        changed = False
+        for widget in self.view_stage.widgets:
+            if not widget.get("follow"):
+                continue
+            values = self._console_pool_start_stride(str(widget.get("type")))
+            if values is None:
+                continue
+            start, stride = values
+            if (
+                int(widget.get("start", 0)) != start
+                or int(widget.get("stride", 0)) != stride
+                or widget.get("mode") != "perSong"
+            ):
+                widget["start"] = start
+                widget["stride"] = stride
+                widget["mode"] = "perSong"
+                changed = True
+        if changed:
+            self.view_stage.update()
+            if self.view_stage.selected_index >= 0:
+                self._load_view_inspector(self.view_stage.selected_index)
+
     def _update_selected_view_pool(self, *_args) -> None:
         if self._suppress or not (0 <= self.view_stage.selected_index < len(self.view_stage.widgets)):
             return
@@ -1988,15 +2089,18 @@ class ShowPatchPage(QWidget):
         minimum_width = TIMECODE_POOL_TOTAL_CELLS if is_timecode else 1
         width = max(minimum_width, min(self.view_pool_width.value(), 16 - self.view_pool_x.value()))
         height = min(self.view_pool_height.value(), 8 - self.view_pool_y.value())
-        widget.update(type=pool_type, mode=self.view_pool_mode.currentData(), start=self.view_pool_number_start.value(), stride=self.view_pool_stride.value(), x=min(self.view_pool_x.value(), 16 - width), y=self.view_pool_y.value(), w=width, h=height)
+        follow = self.view_pool_follow.isChecked() and pool_type in _FOLLOWABLE_POOL_TYPES
+        if follow:
+            start, stride = self._console_pool_start_stride(pool_type) or (
+                self.view_pool_number_start.value(), self.view_pool_stride.value()
+            )
+            mode = "perSong"
+        else:
+            start, stride = self.view_pool_number_start.value(), self.view_pool_stride.value()
+            mode = self.view_pool_mode.currentData()
+        widget.update(type=pool_type, mode=mode, follow=follow, start=start, stride=stride, x=min(self.view_pool_x.value(), 16 - width), y=self.view_pool_y.value(), w=width, h=height)
         if is_timecode:
             self.view_pool_width.setValue(width)
-        if widget["type"] == "sequence" and widget["mode"] == "perSong":
-            self.seq_start.setValue(int(widget["start"]))
-            self.ma2_sequence_slots.setValue(int(widget["stride"]))
-        elif widget["type"] == "effects" and widget["mode"] == "perSong":
-            self.ma2_effect_pool_start.setValue(int(widget["start"]))
-            self.ma2_effect_slots.setValue(int(widget["stride"]))
         self.view_stage.update()
         self._on_view_layout_changed()
 
@@ -2155,7 +2259,7 @@ class ShowPatchPage(QWidget):
         if not out:
             QMessageBox.warning(self, "Missing Folder", "Choose an output folder first.")
             return
-        macro_flags = ", ".join(
+        enabled_content = [
             name for name, enabled in (
                 ("Fixed control Macros", self.ma2_fixed_macros.isChecked()),
                 ("Song Macros", self.ma2_song_macros.isChecked()),
@@ -2163,11 +2267,13 @@ class ShowPatchPage(QWidget):
                 ("Song Views", self.ma2_song_views.isChecked()),
                 ("Preset Cue", self.ma2_add_preset_cue.isChecked()),
             ) if enabled
-        ) or "None"
+        ]
+        # One item per line so the confirm dialog is easy to check at a glance.
+        macro_flags = "\n".join(f"• {name}" for name in enabled_content) if enabled_content else "None"
         answer = QMessageBox.question(
             self,
             "Confirm Export",
-            f"Export {len(self._slots)} song(s) to:\n{out}\n\nEnabled content: {macro_flags}\n\nContinue?",
+            f"Export {len(self._slots)} song(s) to:\n{out}\n\nEnabled content:\n{macro_flags}\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -2269,6 +2375,7 @@ class ShowPatchPage(QWidget):
                     plans,
                     directory,
                     show_install_name=show_macro_basename,
+                    show_name=self._project.ma_export.ma2_show_name,
                     song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
                     include_fixed_macros=self._project.ma_export.ma2_include_fixed_macros,
                     include_song_macros=self._project.ma_export.ma2_include_song_macros,

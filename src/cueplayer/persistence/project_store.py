@@ -205,7 +205,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_telnet_monitor_port=max(
             1, int(raw.get("ma2_telnet_monitor_port", 30001) or 30001)
         ),
-        ma2_telnet_user=str(raw.get("ma2_telnet_user") or "CuePlayerScan"),
+        ma2_telnet_user=str(raw.get("ma2_telnet_user") or "administrator"),
         ma2_telnet_plugin_pool=max(
             2, int(raw.get("ma2_telnet_plugin_pool", 9999) or 9999)
         ),
