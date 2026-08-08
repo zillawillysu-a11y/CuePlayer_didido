@@ -192,6 +192,7 @@ class Ma2Exporter:
         directory: Path,
         *,
         show_install_name: str = "CuePlayer_Show_Install",
+        show_name: str = "CuePlayer",
         song_viewbutton: str = "1.20",
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
@@ -232,6 +233,7 @@ class Ma2Exporter:
                 plans,
                 directory,
                 name=show_install_name,
+                show_name=show_name,
                 include_fixed_macros=include_fixed_macros,
                 include_song_macros=include_song_macros,
                 include_song_list=include_song_list,
@@ -252,7 +254,7 @@ class Ma2Exporter:
                 all_paths["show:song_list"] = self.write_song_list_sequence(
                     plans,
                     directory,
-                    name="CuePlayer Song List",
+                    name=f"{show_name.strip() or 'CuePlayer'} Song List",
                     basename=f"{show_install_name}_Song_List",
                 )
             if include_fixed_macros:
@@ -1106,6 +1108,7 @@ class Ma2Exporter:
         directory: Path,
         *,
         name: str = "CuePlayer_Show_Install",
+        show_name: str = "CuePlayer",
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
         include_song_list: bool = True,
@@ -1198,12 +1201,12 @@ class Ma2Exporter:
             extra_imports.extend(
                 [
                     f'Store Page {page}',
-                    f'Label Page {page} "CuePlayer Template Page"',
+                    f'Label Page {page} "{show_name.strip() or "CuePlayer"} Template Page"',
                     f'Import "{safe_name}_Song_List" At Sequence {song_list_pool}',
-                    f'Label Sequence {song_list_pool} "CuePlayer Song List"',
+                    f'Label Sequence {song_list_pool} "{show_name.strip() or "CuePlayer"} Song List"',
                     f'Assign Sequence {song_list_pool} At Page 1.{page}.130',
                     f'Page {page}',
-                    f'Label Executor {page}.130 "CuePlayer Song List"',
+                    f'Label Executor {page}.130 "{show_name.strip() or "CuePlayer"} Song List"',
                 ]
             )
         if include_song_views:

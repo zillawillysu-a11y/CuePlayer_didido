@@ -81,6 +81,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "latency_ms": float(settings.latency_ms),
         "page_per_song": bool(settings.page_per_song),
         "show_install_macro_name": settings.show_install_macro_name,
+        "ma2_show_name": settings.ma2_show_name,
         "ma2_song_viewbutton": settings.ma2_song_viewbutton,
         "ma2_include_fixed_macros": bool(settings.ma2_include_fixed_macros),
         "ma2_include_song_macros": bool(settings.ma2_include_song_macros),
@@ -165,6 +166,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         show_install_macro_name=str(
             raw.get("show_install_macro_name") or "CuePlayer_Show_Install"
         ),
+        ma2_show_name=str(raw.get("ma2_show_name") or "CuePlayer"),
         ma2_song_viewbutton=str(raw.get("ma2_song_viewbutton") or "1.20"),
         ma2_include_fixed_macros=bool(raw.get("ma2_include_fixed_macros", True)),
         ma2_include_song_macros=bool(raw.get("ma2_include_song_macros", True)),

@@ -268,6 +268,8 @@ class ShowPatchPage(QWidget):
         self.latency_ms.setSuffix(" ms")
         self.data_pool = QLineEdit("Default")
         self.show_macro_name = QLineEdit(_DEFAULT_SHOW_MACRO)
+        self.show_name = QLineEdit("CuePlayer")
+        self.show_name.setPlaceholderText("CuePlayer")
         self.song_viewbutton = QLineEdit("1.20")
         self.song_viewbutton.setPlaceholderText("1.20")
         self.ma2_fixed_macros = QCheckBox("Fixed control Macros")
@@ -318,7 +320,7 @@ class ShowPatchPage(QWidget):
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
         )
         option_fields = (
-            ("Mode", self.mode_combo), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
+            ("Mode", self.mode_combo), ("Show Name", self.show_name), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
             ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Pool Start", self.ma2_effect_pool_start), ("Effect Slots Per Song", self.ma2_effect_slots),
             ("Group Pool Start", self.ma2_group_pool_start),
             ("View Pool Start", self.ma2_view_pool_start), ("Fixed Macro Start", self.ma2_fixed_macro_start), ("Song Macro Start", self.ma2_song_macro_start),
@@ -765,6 +767,7 @@ class ShowPatchPage(QWidget):
             self.latency_ms,
             self.data_pool,
             self.show_macro_name,
+            self.show_name,
             self.song_viewbutton,
             self.ma2_template_page,
             self.ma2_fixed_macro_start,
@@ -1462,6 +1465,7 @@ class ShowPatchPage(QWidget):
         self.show_macro_name.setText(
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
+        self.show_name.setText(s.ma2_show_name or "CuePlayer")
         self.song_viewbutton.setText(s.ma2_song_viewbutton or "1.20")
         self.ma2_template_page.setValue(int(s.ma2_template_page or 200))
         self.ma2_fixed_macro_start.setValue(int(s.ma2_fixed_macro_start or 101))
@@ -1539,6 +1543,7 @@ class ShowPatchPage(QWidget):
         s.show_install_macro_name = normalize_show_macro_basename(
             self.show_macro_name.text()
         )
+        s.ma2_show_name = self.show_name.text().strip() or "CuePlayer"
         s.ma2_song_viewbutton = self.song_viewbutton.text().strip() or "1.20"
         s.ma2_template_page = int(self.ma2_template_page.value())
         s.ma2_fixed_macro_start = int(self.ma2_fixed_macro_start.value())
@@ -1702,6 +1707,18 @@ class ShowPatchPage(QWidget):
         if self._project is None:
             return
         settings = self._project.ma_export
+        manual_values = {
+            "seq_start": settings.sequence_pool_start,
+            "effect_start": settings.ma2_effect_pool_start,
+            "timecode_start": settings.timecode_pool_start,
+            "group_start": settings.ma2_group_pool_start,
+            "macro_start": settings.ma2_song_macro_start,
+            "view_start": settings.ma2_view_pool_start,
+        }
+        for key, value in manual_values.items():
+            self.review_pool_start_fields[key].blockSignals(True)
+            self.review_pool_start_fields[key].setValue(max(1, int(value)))
+            self.review_pool_start_fields[key].blockSignals(False)
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
@@ -2163,6 +2180,7 @@ class ShowPatchPage(QWidget):
                     plans,
                     directory,
                     show_macro_name=show_macro_basename,
+                    show_name=self._project.ma_export.ma2_show_name,
                 )
             else:
                 all_paths = Ma2Exporter().export_show_to_directory(
