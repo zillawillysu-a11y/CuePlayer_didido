@@ -155,7 +155,7 @@ def test_export_show_to_directory_accepts_show_name_and_writes_song_workflow(
     plans = [_plan("Rarely Think of It"), _plan("Remains in Our Blood")]
 
     paths = Ma3Exporter().export_show_to_directory(
-        plans, tmp_path, show_name="CuePlayer"
+        plans, tmp_path, show_name="CuePlayer", song_list_sequence_pool=888
     )
 
     assert "show:macro" in paths
@@ -203,6 +203,8 @@ def test_export_show_to_directory_accepts_show_name_and_writes_song_workflow(
     assert any(
         c.startswith("Assign Sequence") and "At Page 200.130" in c for c in commands
     )
+    assert any(c.endswith("At Sequence 888") for c in commands)
+    assert "Assign Sequence 888 At Page 200.130" in commands
     assert not any(c.startswith("Label Executor") for c in commands)
     assert not any(c.startswith("Label Sequence") and "Song_List" in c for c in commands)
 

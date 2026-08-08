@@ -310,6 +310,7 @@ class Ma3Exporter:
         show_macro_name: str = "CuePlayer_Show_Install",
         show_name: str = "CuePlayer",
         include_song_list: bool = True,
+        song_list_sequence_pool: int | None = None,
         # Matches MaExportSettings.ma2_fixed_macro_start / ma2_song_macro_start's
         # existing defaults — two independent macro pool starting positions
         # (fixed control macros vs. one-per-song macros), same as MA2's own
@@ -396,7 +397,11 @@ class Ma3Exporter:
                     for lane in p.button_lanes
                     if lane.sequence_pool
                 )
-                song_list_pool = max(used_sequence_pools, default=0) + 1
+                song_list_pool = (
+                    max(1, int(song_list_sequence_pool))
+                    if song_list_sequence_pool is not None
+                    else max(used_sequence_pools, default=0) + 1
+                )
                 extra_commands.append(
                     f'Import Sequence Library "{song_list_filename}" At Sequence {song_list_pool}'
                 )

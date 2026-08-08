@@ -216,6 +216,7 @@ class Ma2Exporter:
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
         include_song_list: bool = True,
+        song_list_sequence_pool: int | None = None,
         template_page: int = 200,
         fixed_macro_start: int = 101,
         song_macro_start: int = 201,
@@ -264,6 +265,7 @@ class Ma2Exporter:
                 include_fixed_macros=include_fixed_macros,
                 include_song_macros=include_song_macros,
                 include_song_list=include_song_list,
+                song_list_sequence_pool=song_list_sequence_pool,
                 template_page=template_page,
                 fixed_macro_start=fixed_macro_start,
                 song_macro_start=song_macro_start,
@@ -1166,6 +1168,7 @@ class Ma2Exporter:
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
         include_song_list: bool = True,
+        song_list_sequence_pool: int | None = None,
         template_page: int = 100,
         fixed_macro_start: int = 1001,
         song_macro_start: int = 1009,
@@ -1262,7 +1265,11 @@ class Ma2Exporter:
                 for plan in plans
             ]
             sequence_pools.extend(reserved_ends)
-            song_list_pool = max(sequence_pools, default=0) + 1
+            song_list_pool = (
+                max(1, int(song_list_sequence_pool))
+                if song_list_sequence_pool is not None
+                else max(sequence_pools, default=0) + 1
+            )
             page = max(1, int(template_page))
             extra_imports.extend(
                 [

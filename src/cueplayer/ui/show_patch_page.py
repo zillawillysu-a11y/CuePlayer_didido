@@ -389,6 +389,12 @@ class ShowPatchPage(QWidget):
         self.seq_start = NoWheelSpinBox()
         self.seq_start.setRange(1, 9999)
         self.seq_start.setValue(1)
+        self.song_list_sequence_pool = NoWheelSpinBox()
+        self.song_list_sequence_pool.setRange(1, 9999)
+        self.song_list_sequence_pool.setValue(1)
+        self.song_list_sequence_pool.setToolTip(
+            "Sequence Pool number where the show-wide Song List is imported."
+        )
         self.tc_start = NoWheelSpinBox()
         self.tc_start.setRange(1, 9999)
         self.tc_start.setValue(201)
@@ -412,6 +418,7 @@ class ShowPatchPage(QWidget):
         # Timecode/View/Song Macro ordering used throughout the app.
         pool_start_fields = (
             ("Sequence", self.seq_start),
+            ("Song List Sequence", self.song_list_sequence_pool),
             ("Effect", self.ma2_effect_pool_start),
             ("Group", self.ma2_group_pool_start),
             ("Timecode", self.tc_start),
@@ -1163,6 +1170,7 @@ class ShowPatchPage(QWidget):
 
         for widget in (
             self.seq_start,
+            self.song_list_sequence_pool,
             self.tc_start,
             self.executor_page,
             self.main_executor_number,
@@ -1951,6 +1959,7 @@ class ShowPatchPage(QWidget):
         self.ma3_radio.setChecked(s.console == "ma3")
         self.ma2_radio.setChecked(s.console != "ma3")
         self.seq_start.setValue(int(s.sequence_pool_start))
+        self.song_list_sequence_pool.setValue(int(s.song_list_sequence_pool or 1))
         self.tc_start.setValue(int(s.timecode_pool_start))
         try:
             page, main_executor = parse_page_executor(s.main_executor or "201.130")
@@ -2057,6 +2066,7 @@ class ShowPatchPage(QWidget):
         s.console = self._console()
         s.export_mode = str(self.mode_combo.currentData() or "full")
         s.sequence_pool_start = int(self.seq_start.value())
+        s.song_list_sequence_pool = int(self.song_list_sequence_pool.value())
         s.timecode_pool_start = int(self.tc_start.value())
         page = int(self.executor_page.value())
         s.main_executor = f"{page}.{int(self.main_executor_number.value())}"
@@ -2996,6 +3006,8 @@ class ShowPatchPage(QWidget):
                     directory,
                     show_macro_name=show_macro_basename,
                     show_name=self._project.ma_export.ma2_show_name,
+                    include_song_list=self._project.ma_export.ma2_include_song_list,
+                    song_list_sequence_pool=self._project.ma_export.song_list_sequence_pool,
                     # Reuses the same Console Setup fields MA2 already has
                     # (Fixed Macro Start / Song Macro Start / Template
                     # Page) rather than inventing MA3-only settings.
@@ -3020,6 +3032,7 @@ class ShowPatchPage(QWidget):
                     include_fixed_macros=self._project.ma_export.ma2_include_fixed_macros,
                     include_song_macros=self._project.ma_export.ma2_include_song_macros,
                     include_song_list=self._project.ma_export.ma2_include_song_list,
+                    song_list_sequence_pool=self._project.ma_export.song_list_sequence_pool,
                     template_page=self._project.ma_export.ma2_template_page,
                     fixed_macro_start=self._project.ma_export.ma2_fixed_macro_start,
                     song_macro_start=self._project.ma_export.ma2_song_macro_start,

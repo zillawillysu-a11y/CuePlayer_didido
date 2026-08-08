@@ -73,6 +73,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "console": settings.console,
         "export_mode": settings.export_mode,
         "sequence_pool_start": int(settings.sequence_pool_start),
+        "song_list_sequence_pool": int(settings.song_list_sequence_pool),
         "timecode_pool_start": int(settings.timecode_pool_start),
         "main_executor": settings.main_executor,
         "button_executor_start": settings.button_executor_start,
@@ -163,6 +164,9 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         console=console,
         export_mode=mode,
         sequence_pool_start=int(raw.get("sequence_pool_start", 1) or 1),
+        song_list_sequence_pool=max(
+            1, int(raw.get("song_list_sequence_pool", 1) or 1)
+        ),
         timecode_pool_start=timecode_start,
         main_executor=main_executor,
         button_executor_start=button_executor,

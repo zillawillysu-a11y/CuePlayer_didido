@@ -248,6 +248,7 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
         plans,
         tmp_path,
         show_install_name="Show_Install",
+        song_list_sequence_pool=777,
         add_main_preset_cue=True,
         main_preset_cue_id=0.5,
     )
@@ -336,9 +337,9 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
         'Import "Show_Install_Song_Macros" At Macro 201 /path="macros"'
         in lua
     )
-    assert 'Import "Show_Install_Song_List" At Sequence 41' in lua
+    assert 'Import "Show_Install_Song_List" At Sequence 777' in lua
     assert 'Label Page 200 "CuePlayer Template Page"' in lua
-    assert 'Assign Sequence 41 At Page 1.200.130' in lua
+    assert 'Assign Sequence 777 At Page 1.200.130' in lua
     assert 'Label Executor 200.130 "CuePlayer Song List"' in lua
     assert 'Import "Show_Install_View_1" At View 201' in lua
     assert 'Label View 201 "SongA"' in lua
