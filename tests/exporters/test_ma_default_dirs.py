@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cueplayer.exporters import ma_default_dirs
 from cueplayer.exporters.ma_default_dirs import (
     Ma2Installation,
     discover_ma2_environment,
@@ -15,6 +16,12 @@ from cueplayer.exporters.ma_default_dirs import (
     ma2_version_supported,
     merge_installed_ma2_versions,
     resolve_export_dir,
+)
+from cueplayer.exporters.ma_default_dirs import (
+    _is_ma2_version_number,
+    _looks_like_grandma2_identity,
+    _registry_ma2_versions_windows,
+    _shortcut_ma2_versions_windows,
 )
 
 
@@ -124,6 +131,55 @@ def test_discover_ma2_environment_combines_registry_and_shortcut_sources(
     )
     assert discovery.installed_versions == ("3.7.0", "3.9.60.91", "3.9.61.5", "3.9.63.6")
     assert discovery.recommended_version == "3.9.63.6"
+
+
+def test_is_ma2_version_number_requires_major_version_3() -> None:
+    assert _is_ma2_version_number("3.9.60.91")
+    assert _is_ma2_version_number("3.3.4.3")
+    # 10.0.26100.8875 is Windows' own OS build numbering (e.g. msiexec.exe's
+    # FileVersion), not a grandMA2 onPC version.
+    assert not _is_ma2_version_number("10.0.26100.8875")
+    assert not _is_ma2_version_number("")
+
+
+def test_looks_like_grandma2_identity_requires_a_real_signal() -> None:
+    assert _looks_like_grandma2_identity("MA Lighting Technologies GmbH", "", "", "")
+    assert _looks_like_grandma2_identity("", "grandMA2 onPC", "", "")
+    assert _looks_like_grandma2_identity("", "", "", r"C:\Program Files (x86)\MA Lighting Technologies\grandMA2 onPC 3.9.60")
+    # A valid FileVersion with no matching identity field anywhere (the
+    # msiexec.exe case: CompanyName "Microsoft Corporation", ProductName
+    # "Windows(R) Operating System") must not pass.
+    assert not _looks_like_grandma2_identity(
+        "Microsoft Corporation", "Windows(R) Operating System", "Windows Installer", r"C:\Windows\System32\msiexec.exe"
+    )
+    assert not _looks_like_grandma2_identity("", "", "", "")
+
+
+def test_registry_scan_rejects_msiexec_style_false_positive(monkeypatch) -> None:
+    """Simulates the reported bug: an "Uninstall grandMA2 onPC 3.9.60"
+    registry entry whose InstallLocation lookup found no real onPC
+    executable, so the raw registry DisplayVersion/Publisher — or a
+    generic Windows tool's own FileVersion — must be rejected unless it
+    actually identifies as MA Lighting / grandMA2."""
+    fake_output = (
+        # A real entry: exe found, real identity.
+        "3.9.60|C:\\MA2\\real|MA Lighting Technologies GmbH|3.9.60.91|MA Lighting Technologies GmbH|grandMA2 onPC|grandMA2 onPC\n"
+        # A false positive: DisplayName matched loosely, but nothing here
+        # identifies as MA2 — must be dropped even though the version
+        # number alone (10.0.26100.8875) looks well-formed.
+        "|C:\\Windows\\System32|Microsoft Corporation|10.0.26100.8875|Microsoft Corporation|Windows(R) Operating System|Windows Installer\n"
+    )
+    monkeypatch.setattr(ma_default_dirs, "_run_powershell", lambda *_a, **_k: fake_output)
+    assert _registry_ma2_versions_windows() == ("3.9.60.91",)
+
+
+def test_shortcut_scan_excludes_uninstall_shortcuts_and_validates_identity(monkeypatch) -> None:
+    fake_output = (
+        "3.9.63.6|MA Lighting Technologies GmbH|grandMA2 onPC|grandMA2 onPC|C:\\MA2\\grandMA2 onPC.exe\n"
+        "10.0.26100.8875|Microsoft Corporation|Windows(R) Operating System|Windows Installer|C:\\Windows\\System32\\msiexec.exe\n"
+    )
+    monkeypatch.setattr(ma_default_dirs, "_run_powershell", lambda *_a, **_k: fake_output)
+    assert _shortcut_ma2_versions_windows() == ("3.9.63.6",)
 
 
 def test_full_build_maps_to_matching_importexport(tmp_path: Path) -> None:

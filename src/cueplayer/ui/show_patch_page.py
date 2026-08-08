@@ -1609,15 +1609,17 @@ class ShowPatchPage(QWidget):
         self.ma2_version.setCurrentText(selected)
         self.ma2_version.blockSignals(False)
         self.registry_version.setText(selected)
-        installed = ", ".join(self._ma2_discovery.installed_versions) or "none"
-        running = self._ma2_discovery.running_version or "not running"
-        self.ma2_detect_status.setText(f"Running {running} · Installed {installed}")
+        # The "Running X · Installed Y, Z, ..." summary was removed here —
+        # this label is still used for the unsupported-version warning
+        # below (and by _on_ma2_version_changed / apply_registry_scan_result
+        # for their own status messages), just not for a version-list dump.
         if not ma2_version_supported(selected):
             self.ma2_detect_status.setText(
                 f"Unsupported {selected} · minimum {MA2_MINIMUM_VERSION}"
             )
             self.ma2_detect_status.setStyleSheet("color: #f87171;")
         else:
+            self.ma2_detect_status.setText("")
             self.ma2_detect_status.setStyleSheet("color: #8b949e;")
         if self._project:
             self._project.ma_export.ma2_target_version = selected

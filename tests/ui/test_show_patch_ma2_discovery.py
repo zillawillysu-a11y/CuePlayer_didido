@@ -108,7 +108,33 @@ def test_target_version_dropdown_lists_every_real_installed_patch_full_precision
     assert "3.9.63" not in items
     # Highest supported real version wins as the recommendation.
     assert page.ma2_version.currentText() == "3.9.63.6"
-    assert "3.9.60.91" in page.ma2_detect_status.text()
+    # The right-side "Running X · Installed Y, Z, ..." summary was removed
+    # (a supported version leaves the status label blank).
+    assert page.ma2_detect_status.text() == ""
+
+
+def test_detect_ma2_summary_removed_but_controls_and_warning_kept(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Detect MA2 right-side "Running X · Installed Y, Z, ..." summary
+    is gone, but the console radios, Target Version dropdown, Detect MA2
+    button, and the unsupported-version warning all remain."""
+    discovery = Ma2Discovery(installations=(), running_version=None, installed_versions=())
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment", lambda: discovery
+    )
+    project = Project.create("Show")
+    project.ma_export.ma2_target_version = "2.9.99.9"
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    assert page.ma2_radio is not None
+    assert page.ma3_radio is not None
+    assert page.ma2_version.count() > 0
+    assert page.ma2_detect_btn is not None
+    # An unsupported version still produces a warning — only the
+    # always-shown "Running/Installed" dump was removed, not this label.
+    assert "Unsupported" in page.ma2_detect_status.text()
 
 
 def test_five_page_playlist_workflow_and_screen3_grid(

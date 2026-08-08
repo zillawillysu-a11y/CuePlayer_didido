@@ -92,37 +92,48 @@ def _running_ma2_version_windows() -> str | None:
     return max(versions, key=_version_key) if versions else None
 
 
-def _file_version_windows(exe_path: Path) -> str | None:
-    """Read one arbitrary .exe's FileVersion through PowerShell — the same
-    technique _running_ma2_version_windows() uses for a running process,
-    generalized to any path (a registry InstallLocation's exe, or a
-    Start Menu/Desktop shortcut's resolved target)."""
-    safe_path = str(exe_path).replace("'", "''")
-    command = f"(Get-Item -LiteralPath '{safe_path}').VersionInfo.FileVersion"
+def _looks_like_grandma2_identity(*fields: str) -> bool:
+    """Identity check for a discovery candidate: at least one of its
+    metadata fields (registry Publisher, the resolved executable's
+    CompanyName/ProductName/FileDescription, or its install/target path)
+    must plausibly name MA Lighting / grandMA2 onPC.
+
+    A file having a well-formed x.x.x.x FileVersion is NOT sufficient on
+    its own — msiexec.exe (Windows' own installer engine, which many
+    "Uninstall <product>" shortcuts point their TargetPath at) has a
+    perfectly valid FileVersion that simply tracks the Windows OS build
+    (10.0.26100.xxxx-style), which is exactly the shape of the false
+    positive this identity check exists to reject.
+    """
+    haystack = " ".join(field for field in fields if field).lower()
+    if "ma lighting" in haystack:
+        return True
+    if re.search(r"grand\s*ma\s*2", haystack):
+        return True
+    return False
+
+
+def _is_ma2_version_number(version: str) -> bool:
+    """Every grandMA2 onPC release has been a 3.x build. Defense-in-depth
+    only — never the sole reason a candidate is accepted or rejected; see
+    _looks_like_grandma2_identity, which is the real identity gate."""
+    key = _version_key(version)
+    return bool(key) and key[0] == 3
+
+
+def _run_powershell(command: str, *, timeout: float) -> str:
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
             check=False,
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    match = re.search(r"\d+(?:\.\d+){2,3}", result.stdout or "")
-    return match.group(0) if match else None
-
-
-def _find_ma2_executable(install_dir: Path) -> Path | None:
-    """Locate the grandMA2 onPC executable inside a registry InstallLocation."""
-    if not install_dir.is_dir():
-        return None
-    for pattern in ("grandma2*.exe", "gma2*.exe"):
-        matches = sorted(install_dir.glob(pattern))
-        if matches:
-            return matches[0]
-    return None
+        return ""
+    return result.stdout or ""
 
 
 def _registry_ma2_versions_windows() -> tuple[str, ...]:
@@ -132,8 +143,10 @@ def _registry_ma2_versions_windows() -> tuple[str, ...]:
     HKCU (a per-user install), for any DisplayName matching grandMA2 onPC.
     DisplayVersion there can itself be an installer-authored 3-segment
     string, so when InstallLocation is present this cross-checks the real
-    onPC executable's FileVersion for the untruncated 4-segment number,
-    falling back to the registry's own DisplayVersion otherwise.
+    onPC executable's FileVersion (and reads its CompanyName/ProductName/
+    FileDescription for identity validation) in the same PowerShell call,
+    falling back to the registry's own DisplayVersion/Publisher when no
+    matching executable is found.
     """
     command = (
         "$paths = @("
@@ -143,42 +156,47 @@ def _registry_ma2_versions_windows() -> tuple[str, ...]:
         "); "
         "Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue | "
         "Where-Object { $_.DisplayName -match 'grandMA2.*onPC' } | "
-        "ForEach-Object { \"$($_.DisplayVersion)|$($_.InstallLocation)\" }"
+        "ForEach-Object { "
+        "$loc = $_.InstallLocation; "
+        "$exeVer=''; $exeCompany=''; $exeProduct=''; $exeDesc=''; "
+        "if ($loc -and (Test-Path -LiteralPath $loc)) { "
+        "$exe = Get-ChildItem -LiteralPath $loc -Filter 'grandma2*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "if (-not $exe) { $exe = Get-ChildItem -LiteralPath $loc -Filter 'gma2*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 }; "
+        "if ($exe) { "
+        "$vi = $exe.VersionInfo; "
+        "$exeVer=$vi.FileVersion; $exeCompany=$vi.CompanyName; $exeProduct=$vi.ProductName; $exeDesc=$vi.FileDescription "
+        "} "
+        "}; "
+        "\"$($_.DisplayVersion)|$loc|$($_.Publisher)|$exeVer|$exeCompany|$exeProduct|$exeDesc\" "
+        "}"
     )
-    try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ()
     versions: list[str] = []
-    for line in (result.stdout or "").splitlines():
-        if "|" not in line:
+    for line in _run_powershell(command, timeout=5).splitlines():
+        parts = line.split("|", 6)
+        if len(parts) < 7:
             continue
-        display_version, _, install_location = line.partition("|")
-        display_version = display_version.strip()
-        install_location = install_location.strip()
-        resolved = None
-        if install_location:
-            exe = _find_ma2_executable(Path(install_location))
-            if exe is not None:
-                resolved = _file_version_windows(exe)
-        version = resolved or display_version
-        if version:
-            versions.append(version)
+        display_version, install_location, publisher, exe_version, exe_company, exe_product, exe_desc = (
+            part.strip() for part in parts
+        )
+        version = exe_version or display_version
+        if not version or not _is_ma2_version_number(version):
+            continue
+        if not _looks_like_grandma2_identity(
+            publisher, exe_company, exe_product, exe_desc, install_location
+        ):
+            continue
+        versions.append(version)
     return tuple(versions)
 
 
 def _shortcut_ma2_versions_windows() -> tuple[str, ...]:
     """Full installed versions resolved from Start Menu / Desktop .lnk
-    shortcuts whose name matches grandMA2 onPC: each shortcut's target
-    executable is resolved via the WScript.Shell COM object, then its
-    FileVersion is read the same way as a running process's."""
+    shortcuts whose name matches grandMA2 onPC (excluding "Uninstall ..."
+    shortcuts, which point at a generic uninstall helper — often
+    msiexec.exe — rather than the real onPC executable): each shortcut's
+    target executable is resolved via the WScript.Shell COM object, then
+    its FileVersion and CompanyName/ProductName/FileDescription are read
+    for identity validation the same way as the registry scan."""
     command = (
         "$shell = New-Object -ComObject WScript.Shell; "
         "$dirs = @("
@@ -188,24 +206,25 @@ def _shortcut_ma2_versions_windows() -> tuple[str, ...]:
         "\"$env:USERPROFILE\\Desktop\""
         "); "
         "Get-ChildItem -Path $dirs -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.Name -match 'grandMA2.*onPC' } | "
+        "Where-Object { $_.Name -match 'grandMA2.*onPC' -and $_.Name -notmatch 'uninstall' } | "
         "ForEach-Object { "
         "$t = $shell.CreateShortcut($_.FullName).TargetPath; "
         "if ($t -and (Test-Path -LiteralPath $t)) { "
-        "(Get-Item -LiteralPath $t).VersionInfo.FileVersion } }"
+        "$vi = (Get-Item -LiteralPath $t).VersionInfo; "
+        "\"$($vi.FileVersion)|$($vi.CompanyName)|$($vi.ProductName)|$($vi.FileDescription)|$t\" "
+        "} }"
     )
-    try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ()
-    versions = re.findall(r"\d+(?:\.\d+){2,3}", result.stdout or "")
+    versions: list[str] = []
+    for line in _run_powershell(command, timeout=8).splitlines():
+        parts = line.split("|", 4)
+        if len(parts) < 5:
+            continue
+        version, company, product, description, target_path = (part.strip() for part in parts)
+        if not version or not _is_ma2_version_number(version):
+            continue
+        if not _looks_like_grandma2_identity(company, product, description, target_path):
+            continue
+        versions.append(version)
     return tuple(versions)
 
 
