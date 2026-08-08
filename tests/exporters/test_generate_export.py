@@ -177,17 +177,24 @@ def test_ma3_exporter_writes_expected_semantics(tmp_path: Path) -> None:
     assert any("Import Sequence" in cmd for cmd in commands)
     assert any(cmd == 'Label Page 1 "CuePlayer"' for cmd in commands)
     assert any(cmd == "Store Page 1" for cmd in commands)
-    # Cue names live in Sequence XML (pinyin) — not per-cue Label lines (keeps macro short).
+    # Cue names come from the exported Sequence XML alone (Cue/@Name +
+    # Part/@Name, asserted below) — real hardware feedback showed a prior
+    # Label-Sequence-Cue-after-Import macro command was unreliable, so no
+    # per-cue Label command should be emitted at all.
     assert not any("Label Sequence 1 Cue " in cmd for cmd in commands)
     assert any(cmd.startswith("Assign Sequence") and "At Page" in cmd for cmd in commands)
     assert any(cmd.startswith("Assign Go+") for cmd in commands)
     assert any(cmd.startswith("Assign Top") for cmd in commands)
     assert any("Import Timecode" in cmd for cmd in commands)
-    assert any('Property "OffsetTCSlot"' in cmd for cmd in commands)
-    assert any('Property "FrameReadout" "Seconds"' in cmd for cmd in commands)
-    assert any('Property "AutoStart" "Yes"' in cmd for cmd in commands)
-    assert any('Property "AutoStop" "Yes"' in cmd for cmd in commands)
-    assert any('Property "Playback and Record" "Manual Events"' in cmd for cmd in commands)
+    # Sequence/Timecode Name and every Timecode playback/display setting
+    # are already baked as attributes on their own XML element (write_main_
+    # sequence / write_timecode) — re-asserting them via "Label"/"Set
+    # Property" commands was pure duplication (and "Goto"/"Playback and
+    # Record" were guessed tokens real hardware rejected outright), so none
+    # of that is emitted anymore.
+    assert not any(cmd.startswith("Label Sequence") and "Cue" not in cmd for cmd in commands)
+    assert not any(cmd.startswith("Label Timecode") for cmd in commands)
+    assert not any("Property" in cmd for cmd in commands)
 
     # Named cues in XML (Name before No).
     assert numbered[0].get("Name") == "Verse"

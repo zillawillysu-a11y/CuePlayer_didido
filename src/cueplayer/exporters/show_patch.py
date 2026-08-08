@@ -195,7 +195,12 @@ def build_show_patch(
                 ma_base=base,
                 page=page,
                 main_sequence=main_sequence,
-                main_sequence_name=(base if settings.console == "ma2" else f"{base}_Main"),
+                # Bare song name for both consoles: MA3's Song Change
+                # workflow (Page Change macro) selects the Main Sequence by
+                # exact name match against the $song global variable
+                # ("Select Sequence $"song".") — a "_Main" suffix here would
+                # make that lookup never match anything on import.
+                main_sequence_name=base,
                 buttons=tuple(buttons),
                 timecode_pool=timecode_pool,
                 main_executor=format_executor(page, main_exec),
@@ -208,10 +213,10 @@ def build_show_patch(
             )
         )
         used_slots = int(include_main) + len(buttons)
-        if settings.console == "ma2":
-            seq += max(used_slots, int(settings.ma2_sequence_slots_per_song or 20))
-        else:
-            seq += used_slots
+        # Both consoles reserve a fixed per-song block (same as Effect/
+        # Group pools below) rather than packing tightly — leaves room to
+        # add marks/buttons later without renumbering every song after it.
+        seq += max(used_slots, int(settings.ma2_sequence_slots_per_song or 20))
         tc += 1
     return slots
 
@@ -330,7 +335,11 @@ def plans_from_show_patch(
                 include_main=slot.include_main,
                 included_button_lane_indices={button.lane_index for button in slot.buttons},
                 main_sequence_name=slot.main_sequence_name,
-                timecode_name=(slot.ma_base if console == "ma2" else None),
+                # Bare name (no "_TC" suffix) on both consoles — Page
+                # Change's "Select Timecode $"song"." needs an exact match
+                # against the $song global variable, same reason
+                # main_sequence_name dropped its "_Main" suffix above.
+                timecode_name=slot.ma_base,
             )
         )
     return plans

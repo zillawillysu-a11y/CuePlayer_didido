@@ -233,36 +233,6 @@ def ma_import_filename(stem: str, *, suffix: str = ".xml") -> str:
     return f"{safe}{suffix}"
 
 
-def ma3_timecode_set_property_commands(plan_profile: MaExportProfile) -> list[str]:
-    """
-    MA3 Timecode settings from the user's preferred editor layout.
-
-    Offset → property OffsetTCSlot («Offset TC Slot» in UI).
-    Playback: Auto Start/Stop On, Loop Off, Keep Playbacks, Assert No, Restart Continue;
-    Record Manual Events / as Go; Display 10d11h23m45 + Seconds.
-    """
-    tc = plan_profile.timecode_pool
-    slot = int(plan_profile.timecode_slot)
-    # -1 = none/internal in older XML; positive = TCSlot N (user screenshot uses 1).
-    tc_slot_value = str(slot) if slot >= 0 else "-1"
-    offset = format_ma3_offset_seconds(plan_profile.start_offset_seconds)
-    return [
-        f'Set Timecode {tc} Property "TCSlot" "{tc_slot_value}"',
-        # Official property name (forum / Lua): OffsetTCSlot — NOT "Offset".
-        f'Set Timecode {tc} Property "OffsetTCSlot" "{offset}"',
-        f'Set Timecode {tc} Property "AutoStart" "Yes"',
-        f'Set Timecode {tc} Property "AutoStop" "Yes"',
-        f'Set Timecode {tc} Property "LoopMode" "Off"',
-        f'Set Timecode {tc} Property "SwitchOff" "Keep Playbacks"',
-        f'Set Timecode {tc} Property "AssertPrevEvents" "No"',
-        f'Set Timecode {tc} Property "RestartOption" "Continue"',
-        f'Set Timecode {tc} Property "Goto" "as Go"',
-        f'Set Timecode {tc} Property "Playback and Record" "Manual Events"',
-        f'Set Timecode {tc} Property "TimeDisplayFormat" "10d11h23m45"',
-        f'Set Timecode {tc} Property "FrameReadout" "Seconds"',
-    ]
-
-
 def format_ma_cue_number(cue_number: float) -> str:
     """Command-line / display cue id (4, 4.1, 4.01) without trailing zeros."""
     from decimal import Decimal

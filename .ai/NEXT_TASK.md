@@ -1,48 +1,57 @@
 # Next task
 
-**Status:** Queued - awaiting real-Windows verification
-**Type:** Performance fix (Exporter view-switch latency)
-**Updated:** 2026-08-08
+**Status:** Blocked — awaiting reference files from Willy, then real-hardware verification
+**Type:** Feature (MA3 exporter — Song View / View Layout editor)
+**Updated:** 2026-08-09
 
-## Newest item (2026-08-08, do this first)
+## Newest item (2026-08-09, do this first)
 
-Verify the Exporter switch latency fix — see
-`.ai/handoffs/2026-08-08_ExporterViewSwitchLatencyFix.md`:
+See `.ai/handoffs/2026-08-09_MA3SongViewAndViewLayoutEditor.md` for full
+detail. Short version:
 
-1. Click Timeline → Exporter (MA Playlist). Should now feel instant — no
-   stutter, no delay. Measured offscreen: 2870ms → 1.7ms.
-2. Click back to Timeline, then Exporter again. Should also be instant
-   (was 2548ms, now 1.6ms) — confirms it's not just a "first time" fluke.
-3. Click **Detect MA2**. This should still visibly take ~3 seconds (that's
-   expected/by design — it always does a real rediscovery) and the Target
-   Version dropdown should still show your full real installed-version
-   list afterward.
-4. Open a different project (or restore the last session on a fresh
-   launch) — this is the one case still allowed to take ~3s per the
-   approved plan, since it's a genuine project load, not a view switch.
+1. **Blocked on Willy:** get two real onPC View exports (same method as
+   the earlier `SONGVIEW.xml`) — one containing his real **Effects/"All"
+   Pool** widget, one containing a **Macros Pool** widget (only if he
+   actually places one in his View). Add their shapes to
+   `_MA3_POOL_WIDGET_SHAPES` in `src/cueplayer/exporters/ma3/exporter.py`
+   — follow the exact pattern already used there for `sequence`/`groups`.
+2. **Real-hardware verification round** (nothing from this session has
+   been tested on his console yet except the `userprofiles/views` path
+   fix and the cue-naming non-bug):
+   - Export a show with a Sequence+Groups View Layout via the editor;
+     confirm the widgets land at the right position/size on his 18×10
+     screen (grid math: MA3 raw X/Y/W/H = grid units × 2, derived from
+     `SONGVIEW.xml`, not yet re-confirmed through the editor path).
+   - Confirm the trimmed install macro (redundant Label/Set-Property
+     commands removed) still does everything the old one did — no
+     regressions from the cleanup.
+   - Confirm Sequence Pool now reserves a fixed per-song block (matches
+     MA2) instead of packing tightly.
+   - Confirm Effect/Group Pool Start + Slots Per Song fields are now
+     editable for MA3 and actually affect the exported pool numbers.
+   - Confirm ViewButton actually switches the View when Page Change runs.
+3. Once (1) and (2) both check out: **commit + push this round's work**
+   (everything is still uncommitted working-tree changes — see git
+   status) with an updated report, and consider the MA3 Song Change
+   Workflow feature (Song List + macros + View/ViewButton) fully closed
+   out end-to-end.
 
 ## Also pending (not blocking)
 
-The pre-existing full `tests/ui` pytest suite crashes with `Windows fatal
-exception: stack overflow` partway through when run all together in one
-process (confirmed unrelated to this repo's recent changes via `git stash`
-bisection on multiple occasions). Run narrower/targeted pytest paths
-instead of the full `tests/ui` directory.
-
-`tests/ui/test_transport_main_window_center.py::test_main_window_transport_centered_under_timeline`
-and `tests/ui/test_ma_preflight_export_integration.py` /
-`tests/ui/test_row_color_export.py` have pre-existing failures unrelated to
-this repo's recent rounds (confirmed via `git stash`) — not investigated
-further here.
-
-Startup itself still runs MA2 discovery twice (~3s each, serially) — not
-addressed this round (in scope only if it becomes its own complaint; see
-handoff "Remaining issues"). No async/QThread work has been started —
-explicitly deferred until asked for.
+- `.codex-test-tmp/`, `.tt-p1/`, `.tt-p2/`, `startup_error.txt` are
+  untracked scratch files from manual verification during this session —
+  safe to delete, not part of the feature, not committed.
+- The pre-existing full `tests/ui` pytest suite crashes with `Windows
+  fatal exception: stack overflow` partway through when run all together
+  in one process (confirmed unrelated to recent changes). Run narrower
+  paths: `tests/exporters tests/ui/test_show_patch_ma2_discovery.py`.
+- `tests/ui/test_ma_preflight_export_integration.py` has 3 pre-existing
+  failures unrelated to this round (confirmed via `git stash` — same 3
+  failures with or without this session's changes).
 
 ## Explicitly not touched this round (per instruction)
 
-- MA2 export semantics, Page/Groups allocation, CSV — untouched.
+- MA2 export semantics — untouched except reusing already-existing MA2
+  settings fields for MA3 (the established pattern for this whole
+  feature).
 - video-waveform code — out of scope, not touched.
-- No QThread/QtConcurrent introduced — this round used lifecycle +
-  caching only, per instruction.

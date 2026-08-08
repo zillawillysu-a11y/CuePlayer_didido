@@ -57,6 +57,32 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert abs(plans[0].profile.start_offset_seconds - 3600.0) < 1e-6
 
 
+def test_ma3_sequence_pools_reserve_a_fixed_block_per_song() -> None:
+    """Real-hardware feedback: MA3's Sequence pools used to pack tightly
+    (no reserved gap between songs), unlike MA2 and unlike Effect/Group
+    pools which already reserved a fixed per-song block on both consoles —
+    Willy asked for MA3 to match that pattern too, so later manual edits
+    (adding marks/buttons) don't require renumbering every song after it."""
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons("第一首", ma="SongA", button_names=["Hit", "Crash"]),
+        _song_with_buttons("第二首", ma="SongB", button_names=["Hit", "Crash"]),
+    ]
+    settings = MaExportSettings(
+        console="ma3",
+        sequence_pool_start=1,
+        main_executor="1.101",
+        button_executor_start="1.201",
+        page_per_song=True,
+        ma2_sequence_slots_per_song=20,
+    )
+    slots = build_show_patch(project.songs, settings)
+    # SongA uses 3 slots (Main + 2 buttons) but reserves the full 20-slot
+    # block, same as MA2 — SongB starts at 1 + 20 = 21, not 1 + 3 = 4.
+    assert slots[0].main_sequence == 1
+    assert slots[1].main_sequence == 21
+
+
 def test_show_patch_can_export_only_selected_button_content(tmp_path) -> None:
     from cueplayer.exporters.ma2 import Ma2Exporter
     from cueplayer.exporters.xml_inspect import load_xml_root, xml_tag_local
@@ -147,10 +173,53 @@ def test_ma3_show_export_one_macro(tmp_path) -> None:
         for line in root.iter()
         if xml_tag_local(line.tag) == "MacroLine"
     ]
-    assert any("SongA_Main" in c for c in commands)
-    assert any("SongB_Main" in c for c in commands)
-    assert any('Property "OffsetTCSlot" "1h00m00.00"' in c for c in commands)
+    # Real grandMA3 Import syntax is "Import <Type> Library "<file>" At
+    # <Type> <Pool>" — confirmed against MA Lighting's own documentation
+    # (help.malighting.com/grandMA3 Import keyword page); the older
+    # "Import Sequence <Pool> "<file>"" shape (no Library/At) silently
+    # failed to land sequences at their intended pool on real hardware.
+    assert any(c.startswith("Import Sequence Library") and "At Sequence" in c for c in commands)
+    assert any(c.startswith("Import Timecode Library") and "At Timecode" in c for c in commands)
     assert sum(1 for c in commands if "Import Timecode" in c) == 2
+    # Sequence/Timecode Name and every Timecode setting are already baked
+    # as attributes on their own XML element — no "Label"/"Set Property"
+    # command re-asserts them anymore (pure duplication, and it bloated a
+    # many-song show's install macro).
+    assert not any(cmd.startswith("Label Sequence") and "Cue" not in cmd for cmd in commands)
+    assert not any(cmd.startswith("Label Timecode") for cmd in commands)
+    assert not any("Property" in cmd for cmd in commands)
+
+    # Main Sequence/Timecode use the bare song name (no "_Main"/"_TC"
+    # suffix): the Song Change workflow's Page Change macro selects them by
+    # exact name match against the $song global variable ("Select Sequence
+    # $"song".", "Select Timecode $"song"."); a suffix here would make that
+    # lookup never match on import. Baked straight into each XML file.
+    main_seq_a = load_xml_root(paths["SongA:main_sequence"])
+    seq_a = next(el for el in main_seq_a.iter() if xml_tag_local(el.tag) == "Sequence")
+    assert seq_a.get("Name") == "SongA"
+    tc_a = load_xml_root(paths["SongA:timecode"])
+    tc_a_el = next(el for el in tc_a.iter() if xml_tag_local(el.tag) == "Timecode")
+    assert tc_a_el.get("Name") == "SongA"
+    assert tc_a_el.get("OffsetTCSlot") == "1h00m00.00"
+
+    # The Song List Sequence and Song Change Macros files are Imported by
+    # this same show install macro — writing them to disk isn't enough on
+    # its own, MA3 only reads an explicit Import command.
+    assert "show:song_list" in paths
+    assert "show:fixed_macros" in paths
+    assert "show:song_macros" in paths
+    assert any(
+        c.startswith("Import Sequence Library") and "CuePlayer_Song_List" in c
+        for c in commands
+    )
+    assert any(
+        c.startswith("Import Macro Library") and "CuePlayer_Fixed_Macros" in c
+        for c in commands
+    )
+    assert any(
+        c.startswith("Import Macro Library") and "CuePlayer_Song_Macros" in c
+        for c in commands
+    )
 
 
 def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:

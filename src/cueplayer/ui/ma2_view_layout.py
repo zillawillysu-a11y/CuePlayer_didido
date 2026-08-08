@@ -1,4 +1,7 @@
-"""Interactive fixed 16 x 8 grandMA2 Screen 3 layout editor."""
+"""Interactive Screen 3 layout editor — MA2 uses a fixed 16 x 8 grid,
+MA3 an 18 x 10 grid (confirmed against a real onPC View export: widget
+X/Y/W/H there are exactly 2x the grid-cell coordinates edited here, so a
+36-wide/20-tall MA3 canvas is an 18x10 grid)."""
 
 from __future__ import annotations
 
@@ -17,6 +20,14 @@ DEFAULT_VIEW_LAYOUT: list[dict[str, object]] = [
 ]
 
 TIMECODE_POOL_TOTAL_CELLS = 3
+
+# (grid_w, grid_h) per console — MA2's Screen 3 is a fixed 16x8 grid; MA3's
+# is 18x10 (real hardware: SONGVIEW.xml's raw X/Y/W/H are exactly 2x these
+# grid-cell coordinates).
+GRID_SIZE_BY_CONSOLE: dict[str, tuple[int, int]] = {
+    "ma2": (16, 8),
+    "ma3": (18, 10),
+}
 
 POOL_LABELS = {
     "camera": "Camera Pool",
@@ -46,13 +57,16 @@ def default_view_layout() -> list[dict[str, object]]:
 
 
 class Ma2ViewLayoutStage(QWidget):
-    """Paint and directly drag/resize Pool windows on the permanent 16 x 8 grid."""
+    """Paint and directly drag/resize Pool windows on a fixed grid whose
+    size depends on the target console (see ``GRID_SIZE_BY_CONSOLE``)."""
 
     selection_changed = Signal(int)
     layout_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.grid_w = 16
+        self.grid_h = 8
         self.widgets: list[dict[str, object]] = default_view_layout()
         self.selected_index = 0
         self.song_index = 0
@@ -63,19 +77,29 @@ class Ma2ViewLayoutStage(QWidget):
         self.setMinimumSize(720, 360)
         self.setMouseTracking(True)
 
+    def set_grid_size(self, grid_w: int, grid_h: int) -> None:
+        if (grid_w, grid_h) == (self.grid_w, self.grid_h):
+            return
+        self.grid_w = int(grid_w)
+        self.grid_h = int(grid_h)
+        for widget in self.widgets:
+            widget["x"] = max(0, min(self.grid_w - int(widget.get("w", 1)), int(widget.get("x", 0))))
+            widget["y"] = max(0, min(self.grid_h - int(widget.get("h", 1)), int(widget.get("y", 0))))
+        self.update()
+
     def set_layout(self, widgets: list[dict[str, object]]) -> None:
         self.widgets = deepcopy(widgets or DEFAULT_VIEW_LAYOUT)
         for widget in self.widgets:
             if widget.get("type") == "timecode":
                 # Three cells is the Timecode Pool's minimum native footprint
                 # (title + two built-ins); the user may extend it rightward.
-                widget["w"] = min(16, max(TIMECODE_POOL_TOTAL_CELLS, int(widget.get("w", 1))))
-                widget["x"] = min(int(widget.get("x", 0)), 16 - int(widget["w"]))
+                widget["w"] = min(self.grid_w, max(TIMECODE_POOL_TOTAL_CELLS, int(widget.get("w", 1))))
+                widget["x"] = min(int(widget.get("x", 0)), self.grid_w - int(widget["w"]))
         self.selected_index = min(self.selected_index, len(self.widgets) - 1)
         self.update()
 
     def _cell_size(self) -> tuple[float, float]:
-        return self.width() / 16.0, self.height() / 8.0
+        return self.width() / float(self.grid_w), self.height() / float(self.grid_h)
 
     def _rect(self, widget: dict[str, object]) -> QRectF:
         cw, ch = self._cell_size()
@@ -86,9 +110,9 @@ class Ma2ViewLayoutStage(QWidget):
         painter.fillRect(self.rect(), QColor("#11151a"))
         cw, ch = self._cell_size()
         painter.setPen(QPen(QColor("#2a3038"), 1))
-        for column in range(17):
+        for column in range(self.grid_w + 1):
             painter.drawLine(int(column * cw), 0, int(column * cw), self.height())
-        for row in range(9):
+        for row in range(self.grid_h + 1):
             painter.drawLine(0, int(row * ch), self.width(), int(row * ch))
         for index, widget in enumerate(self.widgets):
             rect = self._rect(widget).adjusted(1, 1, -1, -1)
@@ -153,12 +177,12 @@ class Ma2ViewLayoutStage(QWidget):
         widget = self.widgets[self.selected_index]
         source = self._drag_snapshot
         if self._drag_mode == "move":
-            widget["x"] = max(0, min(16 - int(source["w"]), int(source["x"]) + dx))
-            widget["y"] = max(0, min(8 - int(source["h"]), int(source["y"]) + dy))
+            widget["x"] = max(0, min(self.grid_w - int(source["w"]), int(source["x"]) + dx))
+            widget["y"] = max(0, min(self.grid_h - int(source["h"]), int(source["y"]) + dy))
         else:
             minimum_width = TIMECODE_POOL_TOTAL_CELLS if widget.get("type") == "timecode" else 1
-            widget["w"] = max(minimum_width, min(16 - int(source["x"]), int(source["w"]) + dx))
-            widget["h"] = max(1, min(8 - int(source["y"]), int(source["h"]) + dy))
+            widget["w"] = max(minimum_width, min(self.grid_w - int(source["x"]), int(source["w"]) + dx))
+            widget["h"] = max(1, min(self.grid_h - int(source["y"]), int(source["h"]) + dy))
         self.update()
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:  # noqa: N802

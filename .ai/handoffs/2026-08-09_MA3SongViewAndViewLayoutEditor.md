@@ -1,4 +1,4 @@
-# Latest AI task report
+# MA3 Song View + View Layout editor integration
 
 **Date:** 2026-08-09
 **Branch:** `cursor/video-wave-import-artifact-028d`

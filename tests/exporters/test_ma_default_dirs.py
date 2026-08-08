@@ -257,17 +257,21 @@ def test_resolve_ma3_datapool_dirs(tmp_path: Path) -> None:
 
     library = tmp_path / "gma3_library"
     library.mkdir()
-    seq, tc, macros = resolve_ma3_datapool_dirs(library)
+    seq, tc, macros, views = resolve_ma3_datapool_dirs(library)
     assert seq == library / "datapools" / "sequences"
     assert tc == library / "datapools" / "timecodes"
     assert macros == library / "datapools" / "macros"
+    # Views are a different library category — real hardware confirmed
+    # they live under userprofiles/views, not datapools/views.
+    assert views == library / "userprofiles" / "views"
 
     datapools = library / "datapools"
     datapools.mkdir()
-    seq2, tc2, macros2 = resolve_ma3_datapool_dirs(datapools)
+    seq2, tc2, macros2, views2 = resolve_ma3_datapool_dirs(datapools)
     assert seq2 == datapools / "sequences"
     assert tc2 == datapools / "timecodes"
     assert macros2 == datapools / "macros"
+    assert views2 == library / "userprofiles" / "views"
 
 
 def test_resolve_ma2_pool_dirs(tmp_path: Path) -> None:

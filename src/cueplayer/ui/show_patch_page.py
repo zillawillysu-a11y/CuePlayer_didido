@@ -61,6 +61,7 @@ from cueplayer.exporters.show_patch import (
 from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.ma2_view_layout import (
+    GRID_SIZE_BY_CONSOLE,
     TIMECODE_POOL_TOTAL_CELLS,
     Ma2ViewLayoutStage,
     default_view_layout,
@@ -899,10 +900,12 @@ class ShowPatchPage(QWidget):
         self.view_pool_height = NoWheelSpinBox()
         for spin in (self.view_pool_number_start, self.view_pool_stride):
             spin.setRange(1, 9999)
-        self.view_pool_x.setRange(0, 15)
-        self.view_pool_y.setRange(0, 7)
-        self.view_pool_width.setRange(1, 16)
-        self.view_pool_height.setRange(1, 8)
+        # Widest of MA2's 16x8 grid and MA3's 18x10 grid — the stage itself
+        # (Ma2ViewLayoutStage.set_grid_size) clamps to whichever is active.
+        self.view_pool_x.setRange(0, 17)
+        self.view_pool_y.setRange(0, 9)
+        self.view_pool_width.setRange(1, 18)
+        self.view_pool_height.setRange(1, 10)
         inspector_form.addRow("Pool Type", self.view_pool_type)
         inspector_form.addRow("Pool Allocation", self.view_pool_mode)
         inspector_form.addRow(self.view_pool_follow)
@@ -1965,6 +1968,7 @@ class ShowPatchPage(QWidget):
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
         self._sync_start_after_scanned_checkboxes(bool(s.ma2_start_after_scanned))
+        self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(s.console, (16, 8)))
         self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
         self._load_view_inspector(self.view_stage.selected_index)
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
@@ -1978,20 +1982,30 @@ class ShowPatchPage(QWidget):
         self.ma2_version.setEnabled(s.console != "ma3")
         self.ma2_detect_btn.setEnabled(s.console != "ma3")
         self.show_macro_name.setEnabled(True)
-        self.song_viewbutton.setEnabled(s.console != "ma3")
+        # Template Page / Fixed Macro Start / Song Macro Start / Song
+        # Views / View Pool Start / ViewButton are shared with MA3's own
+        # Song Change workflow now — stay enabled for both consoles,
+        # unlike the rest of this MA2-only block.
         for widget in (
             self.ma2_template_page,
             self.ma2_fixed_macro_start,
             self.ma2_song_macro_start,
-            self.ma2_add_preset_cue,
-            self.ma2_preset_cue_id,
             self.ma2_song_views,
             self.ma2_view_pool_start,
+            self.song_viewbutton,
+            # Sequence/Effect/Group pool start + slots-per-song all drive
+            # build_show_patch's pool math regardless of console — stay
+            # enabled for both consoles like the rest of this group.
+            self.ma2_sequence_slots,
             self.ma2_effect_pool_start,
             self.ma2_effect_slots,
-            self.ma2_sequence_slots,
-            self.ma2_group_slots,
             self.ma2_group_pool_start,
+            self.ma2_group_slots,
+        ):
+            widget.setEnabled(True)
+        for widget in (
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -2225,22 +2239,28 @@ class ShowPatchPage(QWidget):
         path = resolve_export_dir(new_console, remembered or None)
         self._suppress = True
         self.out_dir.setText(path)
+        self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(new_console, (16, 8)))
         self.data_pool.setEnabled(new_console == "ma3")
         self.ma2_version.setEnabled(new_console != "ma3")
         self.ma2_detect_btn.setEnabled(new_console != "ma3")
         self.show_macro_name.setEnabled(True)
-        self.song_viewbutton.setEnabled(new_console != "ma3")
         for widget in (
             self.ma2_template_page,
             self.ma2_fixed_macro_start,
             self.ma2_song_macro_start,
-            self.ma2_add_preset_cue,
-            self.ma2_preset_cue_id,
             self.ma2_song_views,
             self.ma2_view_pool_start,
+            self.song_viewbutton,
+            self.ma2_sequence_slots,
             self.ma2_effect_pool_start,
             self.ma2_effect_slots,
-            self.ma2_sequence_slots,
+            self.ma2_group_pool_start,
+            self.ma2_group_slots,
+        ):
+            widget.setEnabled(True)
+        for widget in (
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -2620,8 +2640,9 @@ class ShowPatchPage(QWidget):
         pool_type = self.view_pool_type.currentData()
         is_timecode = pool_type == "timecode"
         minimum_width = TIMECODE_POOL_TOTAL_CELLS if is_timecode else 1
-        width = max(minimum_width, min(self.view_pool_width.value(), 16 - self.view_pool_x.value()))
-        height = min(self.view_pool_height.value(), 8 - self.view_pool_y.value())
+        grid_w, grid_h = self.view_stage.grid_w, self.view_stage.grid_h
+        width = max(minimum_width, min(self.view_pool_width.value(), grid_w - self.view_pool_x.value()))
+        height = min(self.view_pool_height.value(), grid_h - self.view_pool_y.value())
         follow = self.view_pool_follow.isChecked() and pool_type in _FOLLOWABLE_POOL_TYPES
         if follow:
             start, stride = self._console_pool_start_stride(pool_type) or (
@@ -2631,7 +2652,7 @@ class ShowPatchPage(QWidget):
         else:
             start, stride = self.view_pool_number_start.value(), self.view_pool_stride.value()
             mode = self.view_pool_mode.currentData()
-        widget.update(type=pool_type, mode=mode, follow=follow, start=start, stride=stride, x=min(self.view_pool_x.value(), 16 - width), y=self.view_pool_y.value(), w=width, h=height)
+        widget.update(type=pool_type, mode=mode, follow=follow, start=start, stride=stride, x=min(self.view_pool_x.value(), grid_w - width), y=self.view_pool_y.value(), w=width, h=height)
         if is_timecode:
             self.view_pool_width.setValue(width)
         self.view_stage.update()
@@ -2654,8 +2675,8 @@ class ShowPatchPage(QWidget):
         if not self.view_stage.widgets:
             return
         widget = dict(self.view_stage.widgets[self.view_stage.selected_index])
-        widget["x"] = min(16 - int(widget["w"]), int(widget["x"]) + 1)
-        widget["y"] = min(8 - int(widget["h"]), int(widget["y"]) + 1)
+        widget["x"] = min(self.view_stage.grid_w - int(widget["w"]), int(widget["x"]) + 1)
+        widget["y"] = min(self.view_stage.grid_h - int(widget["h"]), int(widget["y"]) + 1)
         self.view_stage.widgets.append(widget)
         self.view_stage.selected_index = len(self.view_stage.widgets) - 1
         self._on_view_layout_changed()
@@ -2902,6 +2923,19 @@ class ShowPatchPage(QWidget):
                     directory,
                     show_macro_name=show_macro_basename,
                     show_name=self._project.ma_export.ma2_show_name,
+                    # Reuses the same Console Setup fields MA2 already has
+                    # (Fixed Macro Start / Song Macro Start / Template
+                    # Page) rather than inventing MA3-only settings.
+                    fixed_macro_start=self._project.ma_export.ma2_fixed_macro_start,
+                    song_macro_start=self._project.ma_export.ma2_song_macro_start,
+                    template_page=self._project.ma_export.ma2_template_page,
+                    # Same reuse pattern for MA3's Song View/ViewButton —
+                    # mirrors MA2's already-working equivalent settings.
+                    include_song_views=self._project.ma_export.ma2_include_song_views,
+                    view_pool_start=self._project.ma_export.ma2_view_pool_start,
+                    song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
+                    view_layout=self._project.ma_export.ma2_view_layout
+                    or self._default_view_layout_for_settings(),
                 )
             else:
                 all_paths = Ma2Exporter().export_show_to_directory(
