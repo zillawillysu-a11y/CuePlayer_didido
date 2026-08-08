@@ -718,7 +718,7 @@ class Ma3Exporter:
                     ("<<< Timecode 1 Thru", True),
                     ('Select Sequence $"song".', True),
                     ("Goto Cue 0.5", True),
-                    ('Assign View $"song" At ViewButton $"songviewbutton"', True),
+                    ('Assign View $"song" At ViewButton $songviewbutton', True),
                     ("Master 3.1 At BPM $songbpm", True),
                     ('Select Timecode $"song"', True),
                     ('Go+ Timecode $"song"', True),
@@ -748,7 +748,7 @@ class Ma3Exporter:
         rather than duplicating page-change logic per song.
 
         The fixed "Page Change" macro reads the View to assign from the
-        ``songviewbutton`` global variable (``$"songviewbutton"``), set by
+        ``songviewbutton`` global variable (``$songviewbutton``), set by
         the "Set Songviewbutton" fixed macro below — matches Willy's
         VIEWBUTTON.xml reference and MA2's already-proven equivalent
         (``$songviewbutton``, unquoted there since MA2's variable-read

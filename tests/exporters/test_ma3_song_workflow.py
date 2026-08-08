@@ -112,7 +112,7 @@ def test_song_change_macros_fixed_definitions_match_reference(tmp_path: Path) ->
         ("<<< Timecode 1 Thru", True),
         ('Select Sequence $"song".', True),
         ("Goto Cue 0.5", True),
-        ('Assign View $"song" At ViewButton $"songviewbutton"', True),
+        ('Assign View $"song" At ViewButton $songviewbutton', True),
         ("Master 3.1 At BPM $songbpm", True),
         ('Select Timecode $"song"', True),
         ('Go+ Timecode $"song"', True),
@@ -489,7 +489,7 @@ def test_page_change_reads_songviewbutton_variable(tmp_path: Path) -> None:
         for line in root.iter()
         if xml_tag_local(line.tag) == "MacroLine"
     ]
-    assert 'Assign View $"song" At ViewButton $"songviewbutton"' in commands
+    assert 'Assign View $"song" At ViewButton $songviewbutton' in commands
     assert not any("ViewButton 2.10" in c for c in commands)
     assert 'SetGlobalVariable "songviewbutton" "2.10"' in commands
 
