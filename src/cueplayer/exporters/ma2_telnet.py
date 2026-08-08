@@ -52,11 +52,11 @@ def parse_scan_frame(text: str) -> Ma2PoolSnapshot:
     frame = text[begin : end + len(FRAME_END)]
     values: dict[str, frozenset[int]] = {}
     for kind in POOL_KINDS:
-        match = re.search(rf"CUEPLAYER_SCAN_{kind.upper()}=([^\r\n]*)", frame)
-        numbers = (
-            frozenset(int(value) for value in re.findall(r"\d+", match.group(1)))
-            if match
-            else frozenset()
+        matches = re.finditer(rf"CUEPLAYER_SCAN_{kind.upper()}=([^\r\n]*)", frame)
+        numbers = frozenset(
+            int(value)
+            for match in matches
+            for value in re.findall(r"\d+", match.group(1))
         )
         values[kind] = numbers
     version_match = re.search(r"CUEPLAYER_SCAN_VERSION=([0-9.]+)", frame)
@@ -272,23 +272,31 @@ class Ma2TelnetScanner:
 def live_scan_plugin_lua() -> str:
     """Lua payload for the MA2 Plugin that emits only read-only Pool metadata."""
     return """-- CuePlayer Live Scan (read-only)
-local function collect(kind)
+local function emit(kind)
   local out = {}
+  local chunk = {}
   for n = 1, 9999 do
     if gma.show.getobj.handle(kind .. ' ' .. n) then
-      table.insert(out, tostring(n))
+      table.insert(chunk, tostring(n))
+      if #chunk >= 100 then
+        table.insert(out, table.concat(chunk, ','))
+        chunk = {}
+      end
     end
   end
-  return table.concat(out, ',')
+  if #chunk > 0 then table.insert(out, table.concat(chunk, ',')) end
+  for _, part in ipairs(out) do
+    gma.echo('CUEPLAYER_SCAN_' .. string.upper(kind) .. '=' .. part)
+  end
 end
 local function Start()
   gma.echo('CUEPLAYER_SCAN_BEGIN')
   gma.echo('CUEPLAYER_SCAN_VERSION=' .. (gma.show.getvar('VERSION') or '0.0.0.0'))
-  gma.echo('CUEPLAYER_SCAN_SEQUENCE=' .. collect('Sequence'))
-  gma.echo('CUEPLAYER_SCAN_EFFECT=' .. collect('Effect'))
-  gma.echo('CUEPLAYER_SCAN_TIMECODE=' .. collect('Timecode'))
-  gma.echo('CUEPLAYER_SCAN_MACRO=' .. collect('Macro'))
-  gma.echo('CUEPLAYER_SCAN_VIEW=' .. collect('View'))
+  emit('Sequence')
+  emit('Effect')
+  emit('Timecode')
+  emit('Macro')
+  emit('View')
   gma.echo('CUEPLAYER_SCAN_END')
 end
 return Start

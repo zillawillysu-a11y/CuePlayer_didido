@@ -5,37 +5,42 @@
 
 ## Task objective
 
-Close MA2 Command Telnet sessions with the documented `Exit` keyword instead
-of abruptly closing sockets that MA2 reports as `Send`/`Recv` exceptions.
+Integrate Console Setup and Review & Export into one top-level workflow stage,
+and prevent high-numbered MA2 Pool IDs from being truncated during Live Scan.
 
 ## What was implemented
 
-- Test Connection, Plugin Import, and Scan now send `Exit` before closing their
-  Command Telnet socket.
-- Import still drains feedback for up to 1.5 seconds before `Exit`.
-- Login pacing and the 15-second scanner timeout remain.
+- Added `Console Setup & Review Export` as the third top-level workflow tab.
+- Added nested `Console Setup` and `Review & Export` tabs inside it.
+- Updated View Layout navigation to open the Review & Export nested tab.
+- Scanner Plugin now emits Pool IDs in chunks of 100 per line.
+- Frame parser merges repeated Pool lines, so IDs such as Effect 2703 survive.
 
 ## Files changed
 
+- `src/cueplayer/ui/show_patch_page.py`
+- `tests/ui/test_show_patch_ma2_discovery.py`
 - `src/cueplayer/exporters/ma2_telnet.py`
-- `src/cueplayer/exporters/ma2_telnet.py`
+- `tests/exporters/test_ma2_telnet.py`
 
 ## Architecture decisions
 
-- The scanner remains read-only and closes sockets only after the extended
-  bounded wait; command and monitor ports are still separate.
+Existing setup and review widgets remain intact; only their container and
+navigation changed.
 
 ## Tests performed
 
-- `.venv\\Scripts\\python.exe -m pytest tests/exporters/test_ma2_telnet.py -q`
-- Result: **12 passed**.
+- Module import passed.
+- MA2 Telnet tests: **13 passed**.
+- UI test collection was blocked by an existing Windows Temp permission error
+  under `pytest-of-WillySu`.
 
 ## Remaining issues
 
-- Real MA2 must confirm clean `Exit` closure and a populated scanner Plugin.
+- Verify the combined tab visually and re-run Live Scan with a known Effect
+  above 600.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Retest Import Plugin & Scan at Plugin Pool 6. Confirm MA2 logs `Exit` rather
-than a new `Send`/`Recv` exception and the Plugin is populated.
+Open Show Patch and verify both nested tabs and View Layout → Review & Export.

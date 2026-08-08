@@ -52,6 +52,17 @@ def test_parse_scan_frame_ignores_monitor_noise() -> None:
     assert snapshot.next_free("effect") == 203
 
 
+def test_parse_scan_frame_merges_chunked_pool_lines() -> None:
+    snapshot = parse_scan_frame(
+        f"{FRAME_BEGIN}\n"
+        "CUEPLAYER_SCAN_VERSION=3.9.60\n"
+        "CUEPLAYER_SCAN_EFFECT=601,602\n"
+        "CUEPLAYER_SCAN_EFFECT=2703\n"
+        f"{FRAME_END}\n"
+    )
+    assert snapshot.effect == frozenset({601, 602, 2703})
+
+
 def test_scan_logs_in_triggers_plugin_pool_and_reads_fragmented_monitor_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

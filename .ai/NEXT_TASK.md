@@ -1,19 +1,17 @@
 # Next task
 
-**Status:** Queued - awaiting real local Telnet verification after graceful Exit
-**Type:** MA2 Telnet validation
+**Status:** Queued - awaiting UI and high-number Pool scan verification
+**Type:** MA export workflow UI
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify graceful Exit, Import completion, Plugin execution, and scanner output.
+Verify the combined stage, nested tabs, navigation, and that Live Scan reports
+high-numbered Effects such as 2703.
 
 ## Requirements
 
-- Retest Test Connection and verify MA2 logs Login only after its greeting.
-- Leave optional Import Path blank.
-- Use Import Plugin & Scan at an empty Plugin Pool, such as 5.
-- Verify MA2 logs `Import "CuePlayer_Live_Scan" At Plugin 5`, then `Plugin 5`.
-- Confirm all three Telnet status lights become green after scanner output.
-- If no frame arrives, copy the new diagnostic status and System Monitor lines.
+- Confirm Console Setup controls remain usable.
+- Confirm Review & Export table and Export button remain usable.
+- Confirm View Layout navigation opens Review & Export.
 - Do not touch `startup_error.txt`.
