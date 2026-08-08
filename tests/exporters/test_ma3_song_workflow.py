@@ -394,15 +394,50 @@ def test_write_song_view_converts_grid_units_and_maps_pool_types(tmp_path: Path)
     assert len({w.get("Guid") for w in widgets}) == 2
 
 
+def test_write_song_view_maps_confirmed_effect_and_macro_shapes(tmp_path: Path) -> None:
+    """Shapes and pool scrolling match Willy's real MA3 2.3.2
+    SONGVIEW.xml and SONGEXPORT0625.xml exports."""
+    plan = _plan("Rarely Think of It")
+    path = tmp_path / "view.xml"
+    layout = [
+        {"type": "effects", "mode": "fixed", "x": 10, "y": 2, "w": 8, "h": 2, "start": 1},
+        {
+            "type": "effects", "mode": "perSong", "x": 0, "y": 4, "w": 8, "h": 3,
+            "start": 3061, "stride": 100,
+        },
+        {"type": "macros", "mode": "fixed", "x": 3, "y": 9, "w": 11, "h": 1, "start": 51},
+    ]
+
+    Ma3Exporter().write_song_view(plan, path, layout=layout, song_index=1)
+
+    root = load_xml_root(path)
+    widgets = [el for el in root.iter() if xml_tag_local(el.tag) == "ViewWidget"]
+    assert [w.get("Name") for w in widgets] == [
+        "WindowPresetPool", "WindowPresetPool", "WindowMacroPool"
+    ]
+    assert [w.get("PresetPoolType") for w in widgets] == ["22", "24", "0"]
+    settings = [next(iter(w)) for w in widgets]
+    assert [xml_tag_local(el.tag) for el in settings] == [
+        "PresetAllPoolSettings", "PresetAllPoolSettings", "MacroPoolSettings"
+    ]
+    assert settings[0].get("Action") == "SelFix/At"
+    assert settings[2].get("Action") == "Call"
+    scrolls = [
+        next(el for el in w if xml_tag_local(el.tag) == "WindowScrollPositions")
+        for w in widgets
+    ]
+    assert [el.get("ScrollV") for el in scrolls] == ["0,0", "3160,3160", "50,50"]
+
+
 def test_write_song_view_skips_unmapped_pool_types(tmp_path: Path) -> None:
     """Pool types with no confirmed MA3 <ViewWidget> shape yet (e.g.
-    "camera", "effects") are skipped rather than guessed at."""
+    "camera") are skipped rather than guessed at."""
     plan = _plan("Rarely Think of It")
     path = tmp_path / "view.xml"
     layout = [
         {"type": "sequence", "x": 0, "y": 0, "w": 18, "h": 1},
         {"type": "camera", "x": 0, "y": 1, "w": 18, "h": 1},
-        {"type": "effects", "x": 0, "y": 2, "w": 18, "h": 1},
+        {"type": "effects", "mode": "unknown", "x": 0, "y": 2, "w": 18, "h": 1},
     ]
 
     Ma3Exporter().write_song_view(plan, path, layout=layout)

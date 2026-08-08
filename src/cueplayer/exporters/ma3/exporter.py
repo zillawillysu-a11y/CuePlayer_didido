@@ -57,12 +57,11 @@ _SEQUENCE_ATTRS = {
 # exactly 2x an 18x10 grid — so grid units convert with a flat *2.
 MA3_VIEW_GRID_UNIT = 2
 
-# Per-song-view Pool Type → MA3 <ViewWidget> shape. Keyed by the same
-# ``type`` strings CuePlayer's View Layout editor already uses
-# (ui/ma2_view_layout.py POOL_LABELS) so one shared layout list drives both
-# consoles' exporters. Only pool types Willy has given a real onPC
-# reference for are populated — write_song_view skips any layout entry
-# whose type isn't here yet rather than guess at an unverified XML shape.
+# Per-song-view Pool Type → MA3 <ViewWidget> shape. Keys normally use the
+# same ``type`` strings CuePlayer's View Layout editor already uses. Effects
+# additionally use ``type:mode`` because real onPC exports show fixed Template
+# EFX and per-song Song EFX are different PresetAll pools. Only confirmed
+# shapes are populated; write_song_view skips anything else rather than guess.
 _MA3_POOL_WIDGET_SHAPES: dict[str, dict[str, object]] = {
     "sequence": {
         "widget_name": "WindowSequencePool",
@@ -101,6 +100,68 @@ _MA3_POOL_WIDGET_SHAPES: dict[str, dict[str, object]] = {
             "ExecutorStyle": "No",
         },
         "window_color": "75656E63",
+    },
+    "effects:fixed": {
+        "widget_name": "WindowPresetPool",
+        "pool_type": 22,
+        "settings_tag": "PresetAllPoolSettings",
+        "settings_attrs": {
+            "FontSize": "Default",
+            "RequestDefaultTitlebuttons": "No",
+            "ShowEmpty": "Yes",
+            "PoolColor": "008080FF",
+            "EmptyColor": "7A7A7DA0",
+            "ForNoneColor": "67676EFF",
+            "ForSomeColor": "FFD700FF",
+            "ForAllColor": "00FF00FF",
+            "RightClickToEdit": "Yes",
+            "PoolType": "None",
+            "ExecutorStyle": "No",
+            "DisplayMode": "Text and\rSymbol",
+            "Action": "SelFix/At",
+        },
+        "window_color": "75656E63",
+    },
+    "effects:perSong": {
+        "widget_name": "WindowPresetPool",
+        "pool_type": 24,
+        "settings_tag": "PresetAllPoolSettings",
+        "settings_attrs": {
+            "FontSize": "Default",
+            "RequestDefaultTitlebuttons": "No",
+            "ShowEmpty": "Yes",
+            "PoolColor": "008080FF",
+            "EmptyColor": "7A7A7DA0",
+            "ForNoneColor": "67676EFF",
+            "ForSomeColor": "FFD700FF",
+            "ForAllColor": "00FF00FF",
+            "RightClickToEdit": "Yes",
+            "PoolType": "None",
+            "ExecutorStyle": "No",
+            "DisplayMode": "Text and\rSymbol",
+            "Action": "SelFix/At",
+        },
+        "window_color": "91BD34A4",
+    },
+    "macros": {
+        "widget_name": "WindowMacroPool",
+        "pool_type": 0,
+        "settings_tag": "MacroPoolSettings",
+        "settings_attrs": {
+            "FontSize": "Default",
+            "RequestDefaultTitlebuttons": "No",
+            "ShowEmpty": "Yes",
+            "PoolColor": "800000FF",
+            "EmptyColor": "7A7A7DA0",
+            "ForNoneColor": "FFFFFFA0",
+            "ForSomeColor": "FFD700FF",
+            "ForAllColor": "00FF00FF",
+            "RightClickToEdit": "Yes",
+            "PoolType": "None",
+            "ExecutorStyle": "No",
+            "Action": "Call",
+        },
+        "window_color": "91BD4E4C",
     },
 }
 
@@ -541,10 +602,11 @@ class Ma3Exporter:
 
         Each entry's ``type`` is looked up in ``_MA3_POOL_WIDGET_SHAPES``;
         entries whose type has no confirmed MA3 shape yet are skipped
-        rather than guessed. ``song_index`` is accepted for parity with
-        ``Ma2Exporter.write_song_view`` but unused for now — MA3's View
-        widgets don't encode a pool number range the way MA2's do, only
-        Import/Assign commands do that.
+        rather than guessed. As in ``Ma2Exporter.write_song_view``,
+        ``song_index`` advances per-song pools by their configured stride.
+        MA3 View widgets use ``WindowScrollPositions.ScrollV`` to select their visible
+        pool-number range. Real onPC exports encode this as first pool number
+        minus one (for example pool 1409 uses ``1408,1408``).
         """
         root = self._root()
         view_name = sanitize_ma_name(plan.song_name, fallback="Song")
@@ -561,7 +623,11 @@ class Ma3Exporter:
         )
 
         for entry in layout or []:
-            spec = _MA3_POOL_WIDGET_SHAPES.get(str(entry.get("type", "")))
+            pool_type = str(entry.get("type", ""))
+            mode = str(entry.get("mode", ""))
+            spec = _MA3_POOL_WIDGET_SHAPES.get(f"{pool_type}:{mode}")
+            if spec is None:
+                spec = _MA3_POOL_WIDGET_SHAPES.get(pool_type)
             if spec is None:
                 continue
             x = int(entry.get("x", 0)) * MA3_VIEW_GRID_UNIT
@@ -586,7 +652,15 @@ class Ma3Exporter:
             settings_attrs = dict(spec["settings_attrs"])  # type: ignore[arg-type]
             ET.SubElement(el, str(spec["settings_tag"]), {"Guid": ma3_guid(), **settings_attrs})
             ET.SubElement(el, "WindowAppearance", {"WindowColor": str(spec["window_color"])})
-            ET.SubElement(el, "WindowScrollPositions", {"ScrollH": "0,0", "ScrollV": "0,0"})
+            first_pool = int(entry.get("start", 1))
+            if mode == "perSong":
+                first_pool += int(song_index) * int(entry.get("stride", 1))
+            scroll_v = max(0, first_pool - 1)
+            ET.SubElement(
+                el,
+                "WindowScrollPositions",
+                {"ScrollH": "0,0", "ScrollV": f"{scroll_v},{scroll_v}"},
+            )
 
         write_xml(root, path)
 

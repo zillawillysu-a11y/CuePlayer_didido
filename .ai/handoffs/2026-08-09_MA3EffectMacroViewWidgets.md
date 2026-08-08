@@ -1,4 +1,4 @@
-# Latest AI task report
+# MA3 Effects and Macro ViewWidget mappings
 
 **Date:** 2026-08-09
 **Branch:** `cursor/video-wave-import-artifact-028d`
