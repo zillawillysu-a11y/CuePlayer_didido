@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QFrame,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -207,11 +210,25 @@ class ShowPatchPage(QWidget):
         ):
             layout.setContentsMargins(16, 16, 16, 16)
             layout.setSpacing(14)
-        self.workflow_tabs.addTab(self.songs_page, "1  Songs & Pools")
-        self.workflow_tabs.addTab(self.registry_page, "2  Export Registry")
-        self.workflow_tabs.addTab(self.setup_page, "3  Console Setup")
-        self.workflow_tabs.addTab(self.view_page, "4  View Layout")
-        self.workflow_tabs.addTab(self.review_page, "5  Review & Export")
+        def _scrollable(page: QWidget) -> QScrollArea:
+            """Tab content that scrolls instead of clipping.
+
+            Console Setup and View Layout are naturally wider than a small
+            laptop window. Without this the overflowing controls (the Pool
+            Start fields, Group included) were simply unreachable — no
+            scrollbar, just cut off.
+            """
+            area = QScrollArea()
+            area.setWidget(page)
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            return area
+
+        self.workflow_tabs.addTab(_scrollable(self.songs_page), "1  Songs & Pools")
+        self.workflow_tabs.addTab(_scrollable(self.registry_page), "2  Export Registry")
+        self.workflow_tabs.addTab(_scrollable(self.setup_page), "3  Console Setup")
+        self.workflow_tabs.addTab(_scrollable(self.view_page), "4  View Layout")
+        self.workflow_tabs.addTab(_scrollable(self.review_page), "5  Review & Export")
         root.addWidget(self.workflow_tabs, stretch=1)
         self.setStyleSheet(
             "ShowPatchPage { background: #0d0f12; color: #eef2f7; }"
@@ -254,8 +271,19 @@ class ShowPatchPage(QWidget):
         self.ma2_version = QComboBox()
         self.ma2_version.setEditable(True)
         self.ma2_version.addItems([MA2_MINIMUM_VERSION, "3.9.60", "3.9.61", "3.9.63.6"])
+        # Holds a short version string like "3.9.63.6" — no need for the
+        # ~348px its longest item would otherwise reserve.
+        self.ma2_version.setMaximumWidth(150)
         self.ma2_detect_btn = QPushButton("Detect MA2")
         self.ma2_detect_status = QLabel("Not detected")
+        # This label holds a long line ("Running … · Installed 3.1.2, 3.3.4,
+        # 3.9.60, …"). Unconstrained it demanded ~816px, which alone forced
+        # the Console box to 1400px and the whole page to a 2824px minimum
+        # width — so the Pool Start fields (Group included) ended up outside
+        # a normal window and could not be clicked at all.
+        self.ma2_detect_status.setWordWrap(True)
+        self.ma2_detect_status.setMaximumWidth(300)
+        self.ma2_detect_status.setMinimumHeight(40)
         self.ma2_detect_status.setStyleSheet("color: #8b949e;")
         console_layout.addWidget(self.ma2_version)
         console_layout.addWidget(self.ma2_detect_btn)
@@ -303,8 +331,15 @@ class ShowPatchPage(QWidget):
             row, col = divmod(index, 2)
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+            # These only ever hold a 1-9999 Pool number. Left free to expand
+            # they grew to ~270px each, which pushed the right-hand column
+            # (Effect/Timecode/Song Macro, and Group's row) off the visible
+            # area so those fields could not be clicked at all.
+            widget.setMaximumWidth(110)
             pool_form.addWidget(label, row, col * 2)
             pool_form.addWidget(widget, row, col * 2 + 1)
+        pool_form.setColumnStretch(1, 1)
+        pool_form.setColumnStretch(3, 1)
         settings_row.addWidget(pool_box, stretch=2)
 
         fader_box = QGroupBox("Fader (Executor)")
@@ -413,6 +448,11 @@ class ShowPatchPage(QWidget):
         out_row.addWidget(restore)
         out_layout.addLayout(out_row)
         self.out_hint = QLabel("")
+        # Long single-line hint: unconstrained it demanded ~1620px, which
+        # forced Console Setup (and therefore the whole page) to a ~2800px
+        # minimum width, pushing the Pool Start fields off any normal window.
+        self.out_hint.setWordWrap(True)
+        self.out_hint.setMinimumHeight(36)
         self.out_hint.setStyleSheet("color: #8b949e;")
         out_layout.addWidget(self.out_hint)
         opt_row.addWidget(out_box, stretch=2)
@@ -722,6 +762,7 @@ class ShowPatchPage(QWidget):
         self.view_stage = Ma2ViewLayoutStage()
         view_stage_layout.addWidget(self.view_stage, stretch=1)
         legend = QLabel("Fixed Pool range   |   Per Song unique Pool range   |   One shared layout for every song")
+        legend.setWordWrap(True)
         legend.setStyleSheet("color: #99a3b1; padding: 5px;")
         view_stage_layout.addWidget(legend)
         view_content.addWidget(view_stage_card, stretch=1)
@@ -814,35 +855,55 @@ class ShowPatchPage(QWidget):
 
         manual_box = QGroupBox("Manual Pool Starts")
         # The explanation lives in a tooltip, NOT a word-wrapped QLabel above
-        # the fields. A wrapped QLabel under-reports its sizeHint height, so
-        # the parent under-allocates and the rows below get crushed — that
-        # was the real cause of the field/label overlap here, not the field
-        # layout itself (which is why three layout rewrites never fixed it).
+        # the fields: a wrapped QLabel under-reports its sizeHint height, so
+        # the parent under-allocates and the rows below get crushed.
         manual_box.setToolTip(
-            "Double-click any Sequence/Effects/Groups/Timecode/View/Song Macro "
-            "cell in the table to pin that song's own starting number — "
-            "collisions with another song are highlighted. Or seed starting "
-            "numbers here and click Auto-Fill to sequence every song at once."
+            "Leave a field blank to leave that Pool alone. Fill only Timecode, "
+            "for example, and Auto-Fill renumbers just the Timecode column.\n"
+            "Or double-click any cell in the table to pin one song's own "
+            "starting number; collisions with another song are highlighted."
         )
+        # Fixed vertical policy: this box always gets exactly its sizeHint, so
+        # a sibling that grows (the wrapped summary label below it gets longer
+        # after Auto-Fill) can never squeeze these rows into each other again.
+        manual_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         manual_layout = QVBoxLayout(manual_box)
+        # Same setting as the Export Registry copy, mirrored here so it can be
+        # reached without leaving the page you actually export from.
+        self.review_start_after_scanned = QCheckBox("Start after scanned Pools")
+        self.review_start_after_scanned.setToolTip(
+            "Push every Pool start past the highest number the last scan found "
+            "on the console. Ticking it clears existing per-song pins so the "
+            "numbers can move; anything you pin or Auto-Fill afterwards wins."
+        )
+        self.review_start_after_scanned.toggled.connect(self._on_start_after_scanned_toggled)
+        manual_layout.addWidget(self.review_start_after_scanned)
+        manual_hint = QLabel("Blank = leave that Pool unchanged")
+        manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
+        manual_layout.addWidget(manual_hint)
         manual_fields_form = QFormLayout()
         manual_fields_form.setVerticalSpacing(8)
         self.review_pool_start_fields = {}
-        for label, attr, minimum in (
-            ("Sequence", "seq_start", 1),
-            ("Effect", "effect_start", 1),
-            ("Timecode", "timecode_start", 1),
-            ("Group", "group_start", 1),
-            ("Macro", "macro_start", 1),
-            ("View", "view_start", 1),
+        for label, attr in (
+            ("Sequence", "seq_start"),
+            ("Effect", "effect_start"),
+            ("Timecode", "timecode_start"),
+            ("Group", "group_start"),
+            ("Macro", "macro_start"),
+            ("View", "view_start"),
         ):
             field = NoWheelSpinBox()
-            field.setRange(minimum, 9999)
+            # 0 renders blank (Qt shows specialValueText at the minimum) and
+            # means "don't touch this Pool" — see _auto_fill_pool_overrides.
+            field.setRange(0, 9999)
+            field.setSpecialValueText(" ")
+            field.setValue(0)
             field.setFixedWidth(90)
-            # Belt-and-suspenders: an explicit floor means nothing can crush
-            # these rows again even if a sibling misreports its height.
-            field.setMinimumHeight(30)
-            field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
+            field.setFixedHeight(30)
+            field.setToolTip(
+                f"Auto-Fill start for the {label} column. Leave blank to leave "
+                f"{label} untouched."
+            )
             self.review_pool_start_fields[attr] = field
             manual_fields_form.addRow(label, field)
         manual_layout.addLayout(manual_fields_form)
@@ -1710,7 +1771,7 @@ class ShowPatchPage(QWidget):
         self.registry_user.setText(s.ma2_telnet_user or "administrator")
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
-        self.registry_start_after_scanned.setChecked(bool(s.ma2_start_after_scanned))
+        self._sync_start_after_scanned_checkboxes(bool(s.ma2_start_after_scanned))
         self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
         self._load_view_inspector(self.view_stage.selected_index)
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
@@ -1817,7 +1878,12 @@ class ShowPatchPage(QWidget):
         self.settings_changed.emit()
 
     def _auto_fill_pool_overrides(self) -> None:
-        """Seed every song in the queue from the Manual Pool Starts fields."""
+        """Renumber the queue from the Manual Pool Starts seeds.
+
+        Only Pools with a value are touched — a blank field (0, shown empty)
+        leaves that whole column exactly as it is, so filling just Timecode
+        renumbers only the Timecode column.
+        """
         if self._project is None or not self._slots:
             return
         settings = self._project.ma_export
@@ -1832,10 +1898,27 @@ class ShowPatchPage(QWidget):
             "view": (self.review_pool_start_fields["view_start"].value(), 1),
             "song_macro": (self.review_pool_start_fields["macro_start"].value(), 1),
         }
+        seeds = {pool: value for pool, value in seeds.items() if value[0] > 0}
+        if not seeds:
+            self.registry_scan_status.setText(
+                "Auto-Fill did nothing — every Manual Pool Start is blank. "
+                "Fill the Pools you want renumbered."
+            )
+            return
         for row, slot in enumerate(self._slots):
             overrides = settings.ma2_pool_overrides.setdefault(slot.song.id, {})
             for pool, (start, stride) in seeds.items():
                 overrides[pool] = int(start) + row * stride
+        # Auto-Fill is an explicit instruction, so it wins: switch off
+        # "Start after scanned Pools" rather than leaving two bulk rules
+        # fighting over the same numbers.
+        if settings.ma2_start_after_scanned:
+            settings.ma2_start_after_scanned = False
+            self._sync_start_after_scanned_checkboxes(False)
+            self.registry_scan_status.setText(
+                "Auto-Fill applied · Start after scanned Pools switched off so "
+                "these numbers are used exactly as entered."
+            )
         self.refresh()
         self.settings_changed.emit()
 
@@ -1873,15 +1956,35 @@ class ShowPatchPage(QWidget):
         self.refresh()
         self.settings_changed.emit()
 
+    def _sync_start_after_scanned_checkboxes(self, checked: bool) -> None:
+        """Keep the Export Registry and Review & Export copies in step."""
+        for box in (self.registry_start_after_scanned, self.review_start_after_scanned):
+            box.blockSignals(True)
+            box.setChecked(bool(checked))
+            box.blockSignals(False)
+
     def _on_start_after_scanned_toggled(self, checked: bool) -> None:
         if self._suppress or self._project is None:
             return
-        self._project.ma_export.ma2_start_after_scanned = bool(checked)
-        if checked and not self._project.ma_export.ma2_scanned_pool_max:
-            self.registry_scan_status.setText(
-                "Start after scanned Pools is on, but nothing has been scanned "
-                "yet — run Scan Current Show to detect the Pools already in use."
-            )
+        self._sync_start_after_scanned_checkboxes(checked)
+        settings = self._project.ma_export
+        settings.ma2_start_after_scanned = bool(checked)
+        if checked:
+            if not settings.ma2_scanned_pool_max:
+                self.registry_scan_status.setText(
+                    "Start after scanned Pools is on, but nothing has been scanned "
+                    "yet — run Scan Current Show to detect the Pools already in use."
+                )
+            elif settings.ma2_pool_overrides:
+                # Existing pins would hold songs behind the scanned range and
+                # make the toggle look broken, so this bulk action clears them.
+                # Say so plainly rather than dropping the numbers silently.
+                cleared = len(settings.ma2_pool_overrides)
+                settings.ma2_pool_overrides = {}
+                self.registry_scan_status.setText(
+                    f"Start after scanned Pools is on · cleared {cleared} pinned "
+                    "song(s) so every Pool could move past the scanned range."
+                )
         self.refresh()
         self.settings_changed.emit()
 
@@ -2027,18 +2130,10 @@ class ShowPatchPage(QWidget):
         if self._project is None:
             return
         settings = self._project.ma_export
-        manual_values = {
-            "seq_start": settings.sequence_pool_start,
-            "effect_start": settings.ma2_effect_pool_start,
-            "timecode_start": settings.timecode_pool_start,
-            "group_start": settings.ma2_group_pool_start,
-            "macro_start": settings.ma2_song_macro_start,
-            "view_start": settings.ma2_view_pool_start,
-        }
-        for key, value in manual_values.items():
-            self.review_pool_start_fields[key].blockSignals(True)
-            self.review_pool_start_fields[key].setValue(max(1, int(value)))
-            self.review_pool_start_fields[key].blockSignals(False)
+        # The Auto-Fill seeds are deliberately NOT mirrored from Console Setup
+        # on every refresh: they are the user's own input, and rewriting them
+        # here made a deliberately blank ("leave this Pool alone") field
+        # impossible to keep.
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))

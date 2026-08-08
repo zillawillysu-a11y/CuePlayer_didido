@@ -81,7 +81,9 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.registry_monitor_port.value() == 30001
     assert page.registry_version.text() == "3.9.63.6"
     page.workflow_tabs.setCurrentIndex(4)
-    assert page.workflow_tabs.currentWidget() is page.review_page
+    # Each tab hosts its page inside a QScrollArea so an oversized page
+    # scrolls rather than clipping controls out of reach.
+    assert page.workflow_tabs.currentWidget().widget() is page.review_page
 
 
 def test_view_pool_start_is_independent_of_console_setup_unless_following(
@@ -702,12 +704,69 @@ def test_clear_all_overrides_button_removes_every_override(
     page = ShowPatchPage()
     page.set_project(project)
     page._add_songs_to_export_queue([project.songs[0].id])
+    page.review_pool_start_fields["seq_start"].setValue(301)
     page._auto_fill_pool_overrides()
     assert project.ma_export.ma2_pool_overrides
 
     page._clear_pool_overrides()
 
     assert project.ma_export.ma2_pool_overrides == {}
+
+
+def test_manual_pool_start_seeds_start_blank_and_blank_pools_are_untouched(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A blank seed means "leave this Pool alone", so filling only Timecode
+    renumbers just the Timecode column."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("First", "Second", "Third"):
+        project.songs.append(Song.create(name))
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    # Seeds start blank (0) and must stay blank across a refresh.
+    assert all(field.value() == 0 for field in page.review_pool_start_fields.values())
+    page.refresh()
+    assert all(field.value() == 0 for field in page.review_pool_start_fields.values())
+
+    before = [
+        (s.main_sequence, s.effect_start, s.group_start, s.view_pool, s.song_macro_pool)
+        for s in page._slots
+    ]
+    page.review_pool_start_fields["timecode_start"].setValue(500)
+    page._auto_fill_pool_overrides()
+
+    assert [slot.timecode_pool for slot in page._slots] == [500, 501, 502]
+    after = [
+        (s.main_sequence, s.effect_start, s.group_start, s.view_pool, s.song_macro_pool)
+        for s in page._slots
+    ]
+    assert after == before, "blank Pools must not be renumbered"
+    for song in project.songs:
+        assert set(project.ma_export.ma2_pool_overrides[song.id]) == {"timecode"}
+
+
+def test_auto_fill_with_every_seed_blank_changes_nothing(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    page._auto_fill_pool_overrides()
+
+    assert project.ma_export.ma2_pool_overrides == {}
+    assert "every Manual Pool Start is blank" in page.registry_scan_status.text()
 
 
 def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
@@ -921,4 +980,123 @@ def test_start_after_scanned_toggle_moves_every_pool_and_reverts(
 
     page.registry_start_after_scanned.setChecked(False)
     assert project.ma_export.ma2_start_after_scanned is False
+    # Ticking the toggle cleared the stale pins (that is what let every Pool
+    # move), so switching it off returns to the configured starts rather than
+    # to the old 201 pins.
+    assert page._slots[0].main_sequence == int(project.ma_export.sequence_pool_start)
+
+
+def _scanned_page(page, project):
+    project.ma_export.ma2_scanned_pool_max = {
+        "sequence": 508, "effect": 7998, "timecode": 37,
+        "macro": 361, "view": 249, "group": 402,
+    }
+    page.refresh()
+
+
+def test_start_after_scanned_checkbox_mirrored_on_both_pages(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+    _scanned_page(page, project)
+
+    page.registry_start_after_scanned.setChecked(True)
+    assert page.review_start_after_scanned.isChecked() is True
+    assert project.ma_export.ma2_start_after_scanned is True
+
+    # Toggling the Review & Export copy drives the Export Registry one.
+    page.review_start_after_scanned.setChecked(False)
+    assert page.registry_start_after_scanned.isChecked() is False
+    assert project.ma_export.ma2_start_after_scanned is False
+
+
+def test_manual_edit_made_while_start_after_scanned_survives_switching_it_off(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The user's manual number must not snap back when the toggle goes off."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B", "C"):
+        song = Song.create(name)
+        song.ma_export_name = name
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    _scanned_page(page, project)
+
+    page.registry_start_after_scanned.setChecked(True)
+    assert page._slots[0].main_sequence == 509  # scanned max + 1
+
+    page.review_table.item(1, 3).setText("700")  # pin song B's Sequence
+    assert page._slots[1].main_sequence == 700
+
+    page.review_start_after_scanned.setChecked(False)
+
+    assert page._slots[1].main_sequence == 700, "manual edit bounced back"
+
+
+def test_auto_fill_wins_over_start_after_scanned_and_switches_it_off(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B", "C"):
+        song = Song.create(name)
+        song.ma_export_name = name
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    _scanned_page(page, project)
+
+    page.registry_start_after_scanned.setChecked(True)
+    assert page._slots[0].main_sequence == 509
+
+    page.review_pool_start_fields["seq_start"].setValue(100)
+    page._auto_fill_pool_overrides()
+
+    assert [slot.main_sequence for slot in page._slots] == [100, 120, 140]
+    assert project.ma_export.ma2_start_after_scanned is False
+    assert page.registry_start_after_scanned.isChecked() is False
+    assert page.review_start_after_scanned.isChecked() is False
+
+
+def test_ticking_start_after_scanned_clears_stale_pins_so_it_can_move(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B"):
+        song = Song.create(name)
+        song.ma_export_name = name
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    page.review_pool_start_fields["seq_start"].setValue(201)
+    page._auto_fill_pool_overrides()
     assert page._slots[0].main_sequence == 201
+    _scanned_page(page, project)
+
+    page.registry_start_after_scanned.setChecked(True)
+
+    assert project.ma_export.ma2_pool_overrides == {}
+    assert page._slots[0].main_sequence == 509
+    assert "cleared" in page.registry_scan_status.text()

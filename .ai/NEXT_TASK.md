@@ -6,6 +6,22 @@
 
 ## Newest item (2026-08-08, do this first)
 
+Verify the width/precedence round — see
+`.ai/handoffs/2026-08-08_PageWidthOverflowAndBlankPoolSeeds.md`:
+
+- Console Setup's Group fields accept input again (they were off-screen: the
+  page had a 2824px minimum width; now 464px and every tab scrolls).
+- Manual Pool Starts renders cleanly in all states (initial, after Clear All
+  Overrides, after Auto-Fill, after a scan).
+- Seeds start blank; filling only Timecode renumbers only that column.
+- **Start after scanned Pools** now appears on Export Registry *and*
+  Review & Export, kept in sync.
+- Ticking it clears existing pins (it says how many) so every Pool moves.
+- A number typed into the Export table while it is on must NOT snap back
+  when it is switched off.
+- Auto-Fill switches it off so Auto-Fill's numbers are used as typed.
+
+
 Verify **Start after scanned Pools** — see
 `.ai/handoffs/2026-08-08_StartAfterScannedPoolsAndGroupScanFix.md`:
 

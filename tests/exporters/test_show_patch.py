@@ -888,26 +888,26 @@ def test_start_after_scanned_off_is_a_plain_export() -> None:
     assert off[0].group_start == never_scanned[0].group_start == 201
 
 
-def test_start_after_scanned_overrides_stale_manual_pins() -> None:
-    """A stale Auto-Fill pin must not hold a song behind the scanned range —
-    that silently defeated the whole point of scanning."""
+def test_manual_pin_wins_in_both_start_after_scanned_states() -> None:
+    """A pin is a deliberate manual choice, so it must survive switching the
+    toggle off rather than snapping back to the configured start. (Ticking
+    the toggle clears pre-existing pins — that happens in the UI, see
+    ShowPatchPage._on_start_after_scanned_toggled.)"""
     project = Project.create("Show")
     project.songs = [_song_with_buttons("S", ma="S", button_names=[])]
-    scanned = _scanned()
     settings = MaExportSettings(
         console="ma2",
         sequence_pool_start=201,
-        ma2_scanned_pool_max=scanned,
+        ma2_scanned_pool_max=_scanned(),
         ma2_start_after_scanned=True,
-        ma2_pool_overrides={project.songs[0].id: {"sequence": 201, "groups": 201}},
+        ma2_pool_overrides={project.songs[0].id: {"sequence": 700, "groups": 800}},
     )
-    slots = build_show_patch(project.songs, settings)
-    assert slots[0].main_sequence == scanned["sequence"] + 1
-    assert slots[0].group_start == scanned["group"] + 1
+    assert build_show_patch(project.songs, settings)[0].main_sequence == 700
+    assert build_show_patch(project.songs, settings)[0].group_start == 800
 
-    # ...but the pins come back the moment the toggle is off again.
     settings.ma2_start_after_scanned = False
-    assert build_show_patch(project.songs, settings)[0].main_sequence == 201
+    assert build_show_patch(project.songs, settings)[0].main_sequence == 700
+    assert build_show_patch(project.songs, settings)[0].group_start == 800
 
 
 def test_start_after_scanned_never_lowers_a_configured_start() -> None:

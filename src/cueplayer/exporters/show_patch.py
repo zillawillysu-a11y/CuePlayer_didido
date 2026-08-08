@@ -121,9 +121,12 @@ def build_show_patch(
     group_slots = max(1, int(settings.ma2_group_slots_per_song))
     view_start_base = _base(settings.ma2_view_pool_start, "view")
     macro_start_base = _base(settings.ma2_song_macro_start, "macro")
-    # While the toggle is on it must actually move things, so stale per-song
-    # pins (e.g. an earlier Auto-Fill) cannot silently hold songs behind.
-    overrides = {} if scanned else (settings.ma2_pool_overrides or {})
+    # Per-song pins always win, in either state. That is what lets a manual
+    # edit made while "Start after scanned" is on survive switching it off
+    # instead of snapping back. Ticking the toggle clears the pins once (see
+    # ShowPatchPage._on_start_after_scanned_toggled) so it still repositions
+    # everything; anything pinned afterwards is a deliberate manual choice.
+    overrides = settings.ma2_pool_overrides or {}
     main_page0, main_exec = parse_page_executor(settings.main_executor or "1.101")
     _btn_page0, btn_exec = parse_page_executor(settings.button_executor_start or "1.201")
     page_per_song = bool(getattr(settings, "page_per_song", True))
