@@ -7,7 +7,8 @@
 
 Make MA Export review allocations clearer and editable, add Groups throughout
 the export workflow, provide a drag-and-drop export queue, and save a durable
-record of each export's Pool allocation.
+record of each export's Pool allocation. Follow-up: simplify the Songs & Pools
+screen by removing the redundant sequence-chain banner and tightening rows.
 
 ## What was implemented
 
@@ -24,6 +25,8 @@ record of each export's Pool allocation.
   beside the MA output, including all assigned ranges.
 - Kept the configurable Show Name field in Console Setup and made the options
   grid two pairs wide so labels are legible.
+- Removed the redundant Sequence chain banner from Songs & Pools and reduced
+  main song rows to 38px.
 
 ## Files changed
 
@@ -50,5 +53,5 @@ without an extra spreadsheet dependency.
 
 ## Suggested next task
 
-Visually test the Set List → Export Queue drag/drop workflow, then perform one
-real MA2 export and check the generated CSV/TXT allocation report.
+Visually test the compact Songs & Pools layout and the Set List → Export Queue
+drag/drop workflow, then perform one real MA2 export and check the report.

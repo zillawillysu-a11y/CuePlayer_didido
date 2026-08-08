@@ -6,8 +6,8 @@
 
 ## Current task
 
-Visually test Set List → Export Queue drag/drop and validate the allocation
-reports from a real MA2 export.
+Visually test the compact Songs & Pools layout, Set List → Export Queue
+drag/drop, and allocation reports from a real MA2 export.
 
 ## Requirements
 

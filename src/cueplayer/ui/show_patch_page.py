@@ -53,7 +53,6 @@ from cueplayer.exporters.show_patch import (
     SongPatchSlot,
     build_show_patch,
     plans_from_show_patch,
-    sequence_chain_labels,
 )
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.ma2_view_layout import (
@@ -247,14 +246,6 @@ class ShowPatchPage(QWidget):
             "#reviewExportContent QCheckBox { background: transparent; padding: 3px 6px; }"
             "#reviewExportContent { background: #15181d; border: 1px solid #2b313a; border-radius: 6px; }"
         )
-
-        self.chain_label = QLabel("")
-        self.chain_label.setWordWrap(True)
-        self.chain_label.setStyleSheet(
-            "background: #111113; border: 1px solid #27272a; border-radius: 8px;"
-            "padding: 10px 12px; color: #a1a1aa; font-family: Consolas, 'Courier New', monospace;"
-        )
-        self.songs_page_layout.addWidget(self.chain_label)
 
         settings_row = QHBoxLayout()
         console_box = QGroupBox("Console")
@@ -929,14 +920,12 @@ class ShowPatchPage(QWidget):
         if self._project is None:
             self._slots = []
             self.table.setRowCount(0)
-            self.chain_label.setText("(No project)")
             return
         self._write_ui_to_settings()
         songs = self._checked_songs()
         self._slots = build_show_patch(songs, self._project.ma_export)
         self._rebuild_playlist_table()
         self._rebuild_table()
-        self._rebuild_chain()
         self._rebuild_workflow_pages()
 
     def _checked_songs(self):
@@ -1013,7 +1002,7 @@ class ShowPatchPage(QWidget):
                 if column == 2:
                     item.setToolTip(song.name)
                 self.playlist_table.setItem(main_row, column, item)
-            self.playlist_table.setRowHeight(main_row, 54)
+            self.playlist_table.setRowHeight(main_row, 38)
             self.playlist_table.setSpan(content_row, 0, 1, 10)
             self.playlist_table.setCellWidget(
                 content_row, 0, self._build_content_detail(song)
@@ -2120,13 +2109,6 @@ class ShowPatchPage(QWidget):
     def _set_view_layout_locked(self, locked: bool) -> None:
         self.view_stage.locked = locked
         self.view_stage.update()
-
-    def _rebuild_chain(self) -> None:
-        if not self._slots:
-            self.chain_label.setText("(Setlist has no songs)")
-            return
-        labels = sequence_chain_labels(self._slots)
-        self.chain_label.setText("  →  ".join(labels))
 
     def _rebuild_table(self) -> None:
         # ord, en, seq_name, pool, fader, tc, marks, is_main, tc_tip, color, row_color

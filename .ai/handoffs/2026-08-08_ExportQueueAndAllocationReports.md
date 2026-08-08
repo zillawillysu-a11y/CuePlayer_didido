@@ -16,6 +16,7 @@ allocation report after every export.
 - Added the Set List source tree and drag/drop Export Queue, including whole
   folder and multi-song selection.
 - Added Excel-ready CSV and TXT allocation reports after a successful export.
+- Removed the redundant Sequence chain banner and compacted Songs & Pools rows.
 
 ## Files changed
 
