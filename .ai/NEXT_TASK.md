@@ -1,17 +1,18 @@
 # Next task
 
-**Status:** Queued - awaiting UI verification of Group reservation and export checks
+**Status:** Queued - awaiting manual UI and MA2 export verification
 **Type:** MA export workflow UI
 **Updated:** 2026-08-08
 
 ## Current task
 
-Verify Group reservation, separate Console/Review pages, synchronized checks,
-and the Export confirmation dialog.
+Visually test Set List → Export Queue drag/drop and validate the allocation
+reports from a real MA2 export.
 
 ## Requirements
 
-- Confirm Console Setup controls remain usable.
-- Confirm Review & Export table and Export button remain usable.
-- Confirm View Layout navigation opens Review & Export.
+- Drag one song, a multi-selection, and a Set List folder into Export Queue.
+- Confirm queue order is the order shown in Review & Export and in the report.
+- Export once and compare `ShowName_Export_Allocation.csv` and `.txt` with the
+  actual Sequence, Effect, Group, Timecode, View, and Song Macro Pools.
 - Do not touch `startup_error.txt`.

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QMimeData, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -28,6 +29,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +73,61 @@ _COL_TC = 5
 _COL_MARKS = 6
 
 _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
+_EXPORT_SONG_IDS_MIME = "application/x-cueplayer-export-song-ids"
+
+
+class SetlistExportTree(QTreeWidget):
+    """Set List source that drags one, many, or a whole folder into Export Queue."""
+
+    def mimeTypes(self) -> list[str]:
+        return [_EXPORT_SONG_IDS_MIME]
+
+    def mimeData(self, items):  # noqa: ANN001
+        song_ids: list[str] = []
+        for item in items:
+            ids = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(ids, str):
+                ids = [ids]
+            for song_id in ids or []:
+                if song_id and song_id not in song_ids:
+                    song_ids.append(song_id)
+        data = QMimeData()
+        data.setData(_EXPORT_SONG_IDS_MIME, "\n".join(song_ids).encode("utf-8"))
+        return data
+
+    def selected_song_ids(self) -> list[str]:
+        mime = self.mimeData(self.selectedItems())
+        return bytes(mime.data(_EXPORT_SONG_IDS_MIME)).decode("utf-8").splitlines()
+
+
+class ExportQueueList(QListWidget):
+    """Drop target for Set List songs; the queue order is the export order."""
+
+    song_ids_dropped = Signal(list)
+
+    def __init__(self, parent=None) -> None:  # noqa: ANN001
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+        if event.mimeData().hasFormat(_EXPORT_SONG_IDS_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: ANN001
+        if event.mimeData().hasFormat(_EXPORT_SONG_IDS_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001
+        if event.mimeData().hasFormat(_EXPORT_SONG_IDS_MIME):
+            payload = bytes(event.mimeData().data(_EXPORT_SONG_IDS_MIME)).decode("utf-8")
+            self.song_ids_dropped.emit([song_id for song_id in payload.splitlines() if song_id])
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
 
 def _lane_color_for_main(song) -> str:  # noqa: ANN001
@@ -185,7 +243,9 @@ class ShowPatchPage(QWidget):
             "QHeaderView::section { background: #1b1f25; color: #99a3b1; border: none; "
             "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
             "QLabel { color: #eef2f7; background: transparent; border: none; }"
-            "#maExportOptions QCheckBox { background: #15181d; }"
+            "#maExportOptions QCheckBox { background: transparent; }"
+            "#reviewExportContent QCheckBox { background: transparent; padding: 3px 6px; }"
+            "#reviewExportContent { background: #15181d; border: 1px solid #2b313a; border-radius: 6px; }"
         )
 
         self.chain_label = QLabel("")
@@ -327,16 +387,17 @@ class ShowPatchPage(QWidget):
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
         )
+        # Two field pairs per row keep labels and values readable at normal desktop widths.
         for index, (label_text, widget) in enumerate(option_fields):
-            group_column = (index % 3) * 2
-            group_row = index // 3
+            group_column = (index % 2) * 2
+            group_row = index // 2
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             opt_form.addWidget(label, group_row, group_column)
             opt_form.addWidget(widget, group_row, group_column + 1)
-        checks_row = (len(option_fields) + 2) // 3
+        checks_row = (len(option_fields) + 1) // 2
         for column, checkbox in enumerate((self.ma2_fixed_macros, self.ma2_song_macros, self.ma2_song_list, self.ma2_song_views, self.ma2_add_preset_cue)):
-            opt_form.addWidget(checkbox, checks_row + column // 3, (column % 3) * 2, 1, 2)
+            opt_form.addWidget(checkbox, checks_row + column // 2, (column % 2) * 2, 1, 2)
         opt_row.addWidget(opt_box, stretch=3)
 
         out_box = QGroupBox("Output Folder")
@@ -359,27 +420,42 @@ class ShowPatchPage(QWidget):
         self.setup_page_layout.addLayout(opt_row)
         self.setup_page_layout.addStretch(1)
 
-        song_box = QGroupBox("Songs to Export")
-        song_layout = QVBoxLayout(song_box)
-        self.song_pick = QListWidget()
-        self.song_pick.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.song_pick.setMaximumHeight(140)
+        song_box = QGroupBox("Set List → Export Queue")
+        song_layout = QHBoxLayout(song_box)
+        source_column = QVBoxLayout()
+        source_column.addWidget(QLabel("Set List (drag songs or a folder)"))
+        self.setlist_export_source = SetlistExportTree()
+        self.setlist_export_source.setHeaderHidden(True)
+        self.setlist_export_source.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setlist_export_source.setDragEnabled(True)
+        source_column.addWidget(self.setlist_export_source)
+        add_source = QPushButton("Add Selected →")
+        add_source.clicked.connect(self._add_selected_setlist_songs)
+        source_column.addWidget(add_source)
+        song_layout.addLayout(source_column, stretch=1)
+
+        queue_column = QVBoxLayout()
+        queue_column.addWidget(QLabel("Export Queue (drop here; order = export order)"))
+        self.song_pick = ExportQueueList()
+        self.song_pick.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.song_pick.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.song_pick.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.song_pick.setMaximumHeight(190)
         self.song_pick.setItemDelegate(RowColorDelegate(self.song_pick))
-        song_layout.addWidget(self.song_pick)
+        queue_column.addWidget(self.song_pick)
         pick_btns = QHBoxLayout()
-        self.song_all_btn = QPushButton("Select All")
-        self.song_none_btn = QPushButton("Select None")
+        self.song_all_btn = QPushButton("Check All")
+        self.song_none_btn = QPushButton("Clear Queue")
         pick_btns.addWidget(self.song_all_btn)
         pick_btns.addWidget(self.song_none_btn)
-        pick_btns.addStretch(1)
-        song_layout.addLayout(pick_btns)
+        queue_column.addLayout(pick_btns)
+        song_layout.addLayout(queue_column, stretch=1)
         self.songs_page_layout.addWidget(song_box)
-        song_box.hide()
 
-        self.playlist_table = QTableWidget(0, 9)
+        self.playlist_table = QTableWidget(0, 10)
         self.playlist_table.setObjectName("maExportPlaylistTable")
         self.playlist_table.setHorizontalHeaderLabels(
-            ["Export", "Song Order", "Song", "MA Export Name", "Sequence", "Effects", "Timecode", "Marks", "Content"]
+            ["Export", "Song Order", "Song", "MA Export Name", "Sequence", "Effects", "Groups", "Timecode", "Marks", "Content"]
         )
         self.playlist_table.verticalHeader().setVisible(False)
         self.playlist_table.setAlternatingRowColors(True)
@@ -392,9 +468,10 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setColumnWidth(1, 88)
         self.playlist_table.setColumnWidth(4, 105)
         self.playlist_table.setColumnWidth(5, 115)
-        self.playlist_table.setColumnWidth(6, 82)
+        self.playlist_table.setColumnWidth(6, 105)
         self.playlist_table.setColumnWidth(7, 82)
-        self.playlist_table.setColumnWidth(8, 130)
+        self.playlist_table.setColumnWidth(8, 82)
+        self.playlist_table.setColumnWidth(9, 130)
         self.songs_page_layout.addWidget(self.playlist_table, stretch=1)
 
         self.table = QTableWidget(0, 7)
@@ -561,9 +638,9 @@ class ShowPatchPage(QWidget):
             "padding: 10px; color: #a1a1aa;"
         )
         self.registry_page_layout.addWidget(self.registry_status)
-        self.registry_table = QTableWidget(0, 7)
+        self.registry_table = QTableWidget(0, 8)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Song", "Status", "Sequence", "Effects", "Timecode", "Song Macro", "View"]
+            ["Song", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -672,11 +749,14 @@ class ShowPatchPage(QWidget):
         review_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.review_page_layout.addWidget(review_intro)
         macro_review_box = QGroupBox("Export Content Check")
+        macro_review_box.setObjectName("reviewExportContent")
         macro_review_layout = QHBoxLayout(macro_review_box)
         self.review_macro_checks = []
-        for label in ("Fixed control Macros", "Song Macros", "Song List Sequence", "Song Views (Screen 3)", "Add Main Cue named Preset"):
+        for index, label in enumerate(("Fixed control Macros", "Song Macros", "Song List Sequence", "Song Views (Screen 3)", "Add Main Cue named Preset")):
             check = QCheckBox(label)
-            check.setEnabled(False)
+            check.toggled.connect(
+                lambda checked, check_index=index: self._on_review_export_option_toggled(check_index, checked)
+            )
             self.review_macro_checks.append(check)
             macro_review_layout.addWidget(check)
         self.review_page_layout.addWidget(macro_review_box)
@@ -699,8 +779,13 @@ class ShowPatchPage(QWidget):
             field.setToolTip(f"Manual {label} Pool start for this export")
             field.valueChanged.connect(self._on_review_pool_start_edited)
             self.review_pool_start_fields[attr] = field
-            manual_layout.addWidget(QLabel(label))
-            manual_layout.addWidget(field)
+            field_column = QVBoxLayout()
+            field_label = QLabel(label)
+            field_label.setStyleSheet("background: transparent; color: #aab4c3;")
+            field_column.addWidget(field_label)
+            field_column.addWidget(field)
+            manual_layout.addLayout(field_column)
+        manual_layout.addStretch(1)
         self.review_manual_pool_starts.toggled.connect(self._on_review_manual_toggled)
         self.review_page_layout.addWidget(manual_box)
         self.review_summary = QLabel("")
@@ -710,9 +795,9 @@ class ShowPatchPage(QWidget):
             "padding: 12px; color: #e5e7eb;"
         )
         self.review_page_layout.addWidget(self.review_summary)
-        self.review_table = QTableWidget(0, 6)
+        self.review_table = QTableWidget(0, 9)
         self.review_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Sequence", "Effects", "Timecode", "Marks"]
+            ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -816,6 +901,8 @@ class ShowPatchPage(QWidget):
 
         self.out_dir.textChanged.connect(self._on_out_dir_edited)
         self.playlist_table.itemChanged.connect(self._on_playlist_item_changed)
+        self.song_pick.song_ids_dropped.connect(self._add_songs_to_export_queue)
+        self.song_pick.model().rowsMoved.connect(lambda *_args: self._on_song_pick_changed())
         self.ma2_version.currentTextChanged.connect(self._on_ma2_version_changed)
         self.ma2_detect_btn.clicked.connect(self._detect_ma2_versions)
         self.ma2_radio.toggled.connect(self._on_console_toggled)
@@ -871,18 +958,15 @@ class ShowPatchPage(QWidget):
         if self._project is None:
             self.playlist_table.setRowCount(0)
             return
-        checked_ids = {
-            str(self.song_pick.item(row).data(Qt.ItemDataRole.UserRole) or "")
-            for row in range(self.song_pick.count())
-            if self.song_pick.item(row) is not None
-            and self.song_pick.item(row).checkState() == Qt.CheckState.Checked
-        }
+        queued_songs = self._checked_songs()
+        checked_ids = {song.id for song in queued_songs}
         settings = self._project.ma_export
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        group_slots = max(1, int(settings.ma2_group_slots_per_song))
         self._playlist_refreshing = True
-        self.playlist_table.setRowCount(len(self._project.songs) * 2)
-        for row, song in enumerate(self._project.songs):
+        self.playlist_table.setRowCount(len(queued_songs) * 2)
+        for row, song in enumerate(queued_songs):
             main_row = row * 2
             content_row = main_row + 1
             export_item = QTableWidgetItem()
@@ -899,8 +983,7 @@ class ShowPatchPage(QWidget):
             self.playlist_table.setItem(main_row, 0, export_item)
             sequence_start = int(settings.sequence_pool_start) + row * seq_slots
             effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
-            main_marks = sum(1 for mark in song.marks if mark.lane_index == 1)
-            button_marks = sum(1 for mark in song.marks if mark.lane_index != 1)
+            group_start = int(settings.ma2_group_pool_start) + row * group_slots
             ma_name = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
             values = (
                 str(row + 1),
@@ -908,13 +991,13 @@ class ShowPatchPage(QWidget):
                 ma_name,
                 f"{sequence_start}–{sequence_start + seq_slots - 1}",
                 f"{effect_start}–{effect_start + effect_slots - 1}",
+                f"{group_start}–{group_start + group_slots - 1}",
                 str(int(settings.timecode_pool_start) + row),
                 str(len(song.marks)),
-                f"Main + {button_marks} Button" if button_marks else f"Main · {main_marks} cues",
+                self._content_summary(song),
             )
-            values = (*values[:7], self._content_summary(song))
             for column, value in enumerate(values, start=1):
-                if column == 8:
+                if column == 9:
                     button = QPushButton(value)
                     button.setObjectName("maExportContentButton")
                     button.setToolTip("Show or hide Main and Button export options")
@@ -925,13 +1008,13 @@ class ShowPatchPage(QWidget):
                     self.playlist_table.setCellWidget(main_row, column, button)
                     continue
                 item = QTableWidgetItem(value)
-                if column in (1, 4, 5, 6, 7):
+                if column in (1, 4, 5, 6, 7, 8):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == 2:
                     item.setToolTip(song.name)
                 self.playlist_table.setItem(main_row, column, item)
             self.playlist_table.setRowHeight(main_row, 54)
-            self.playlist_table.setSpan(content_row, 0, 1, 9)
+            self.playlist_table.setSpan(content_row, 0, 1, 10)
             self.playlist_table.setCellWidget(
                 content_row, 0, self._build_content_detail(song)
             )
@@ -1093,24 +1176,28 @@ class ShowPatchPage(QWidget):
     def _rebuild_song_pick(self) -> None:
         if self._project is None:
             self.song_pick.clear()
+            self.setlist_export_source.clear()
             self.view_preview_song.clear()
             return
-        selected = set(self._project.ma_export.export_song_ids)
-        # Empty list means "all songs" (default / first open).
-        default_all = not selected
+        selected_ids = [
+            song_id for song_id in self._project.ma_export.export_song_ids
+            if any(song.id == song_id for song in self._project.songs)
+        ]
+        songs_by_id = {song.id: song for song in self._project.songs}
         self.song_pick.blockSignals(True)
         self.song_pick.clear()
-        for song in self._project.songs:
+        for song_id in selected_ids:
+            song = songs_by_id[song_id]
             en = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
             label = en if not song.name or song.name == en else f"{en}  ·  {song.name}"
             item = QListWidgetItem(label)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            checked = default_all or song.id in selected
-            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, song.id)
             item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_pick.addItem(item)
         self.song_pick.blockSignals(False)
+        self._rebuild_setlist_export_source()
         preview_index = max(0, self.view_preview_song.currentIndex())
         self.view_preview_song.blockSignals(True)
         self.view_preview_song.clear()
@@ -1122,7 +1209,68 @@ class ShowPatchPage(QWidget):
             )
         self.view_preview_song.blockSignals(False)
 
+    def _rebuild_setlist_export_source(self) -> None:
+        """Render the project Set List by folder without duplicating export state."""
+        if self._project is None:
+            return
+        self.setlist_export_source.clear()
+        categorized = {category.id: [] for category in self._project.setlist_categories}
+        uncategorized = []
+        for song in self._project.songs:
+            (categorized.get(song.category_id, uncategorized)).append(song)
+        for category in self._project.setlist_categories:
+            songs = categorized.get(category.id, [])
+            if not songs:
+                continue
+            parent = QTreeWidgetItem([f"▸ {category.name} ({len(songs)})"])
+            parent.setData(0, Qt.ItemDataRole.UserRole, [song.id for song in songs])
+            self.setlist_export_source.addTopLevelItem(parent)
+            for song in songs:
+                self._append_setlist_song_item(parent, song)
+            parent.setExpanded(True)
+        if uncategorized:
+            parent = QTreeWidgetItem([f"▸ Ungrouped ({len(uncategorized)})"])
+            parent.setData(0, Qt.ItemDataRole.UserRole, [song.id for song in uncategorized])
+            self.setlist_export_source.addTopLevelItem(parent)
+            for song in uncategorized:
+                self._append_setlist_song_item(parent, song)
+            parent.setExpanded(True)
+
+    @staticmethod
+    def _append_setlist_song_item(parent: QTreeWidgetItem, song) -> None:  # noqa: ANN001
+        en = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
+        label = en if song.name == en else f"{song.setlist_number:g}. {song.name}  ·  {en}"
+        child = QTreeWidgetItem([label])
+        child.setData(0, Qt.ItemDataRole.UserRole, song.id)
+        parent.addChild(child)
+
+    def _add_selected_setlist_songs(self) -> None:
+        self._add_songs_to_export_queue(self.setlist_export_source.selected_song_ids())
+
+    def _add_songs_to_export_queue(self, song_ids: list[str]) -> None:
+        if self._project is None:
+            return
+        current = [
+            str(self.song_pick.item(row).data(Qt.ItemDataRole.UserRole) or "")
+            for row in range(self.song_pick.count())
+            if self.song_pick.item(row) is not None
+        ]
+        valid = {song.id for song in self._project.songs}
+        for song_id in song_ids:
+            if song_id in valid and song_id not in current:
+                current.append(song_id)
+        self._project.ma_export.export_song_ids = current
+        self._rebuild_song_pick()
+        self.refresh()
+        self.settings_changed.emit()
+
     def _set_all_songs(self, checked: bool) -> None:
+        if not checked:
+            if self._project is not None:
+                self._project.ma_export.export_song_ids = []
+                self.refresh()
+                self.settings_changed.emit()
+            return
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         self.song_pick.blockSignals(True)
         for row in range(self.song_pick.count()):
@@ -1354,6 +1502,8 @@ class ShowPatchPage(QWidget):
             "view": max(snapshot.view, default=0),
             "group": max(snapshot.group, default=0),
         }
+        self.refresh()
+        self.settings_changed.emit()
         self.registry_scan_status.setText(
             f"Scan completed: MA2 {snapshot.version}; "
             f"Groups detected: {len(snapshot.group)}."
@@ -1425,6 +1575,8 @@ class ShowPatchPage(QWidget):
             "view": max(snapshot.view, default=0),
             "group": max(snapshot.group, default=0),
         }
+        self.refresh()
+        self.settings_changed.emit()
         status_text = (
             f"Plugin {plugin_pool} installed and scan completed successfully. "
             f"Groups detected: {len(snapshot.group)}."
@@ -1594,6 +1746,19 @@ class ShowPatchPage(QWidget):
         if enabled:
             self._on_review_pool_start_edited()
 
+    def _on_review_export_option_toggled(self, index: int, checked: bool) -> None:
+        """Keep Review & Export's final checks bidirectionally synced with setup."""
+        console_checks = (
+            self.ma2_fixed_macros,
+            self.ma2_song_macros,
+            self.ma2_song_list,
+            self.ma2_song_views,
+            self.ma2_add_preset_cue,
+        )
+        source = console_checks[index]
+        if source.isChecked() != checked:
+            source.setChecked(checked)
+
     def _on_review_pool_start_edited(self, *_args) -> None:
         if self._suppress or self._project is None or not self.review_manual_pool_starts.isChecked():
             return
@@ -1729,7 +1894,7 @@ class ShowPatchPage(QWidget):
             seq_end = seq_start + slots_per_song - 1
             effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
             effect_end = effect_start + effect_slots - 1
-            group_start = 1 + row * group_slots
+            group_start = int(settings.ma2_group_pool_start) + row * group_slots
             group_end = group_start + group_slots - 1
             macro = int(settings.ma2_song_macro_start) + row
             view = int(settings.ma2_view_pool_start) + row
@@ -1738,9 +1903,10 @@ class ShowPatchPage(QWidget):
                 "Planned",
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
+                f"{group_start}–{group_end}",
                 str(slot.timecode_pool),
-                str(macro),
                 str(view),
+                str(macro),
             )
             for column, value in enumerate(registry_values):
                 if column == 1:
@@ -1759,7 +1925,10 @@ class ShowPatchPage(QWidget):
                 slot.display_name,
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
+                f"{group_start}–{group_end}",
                 str(slot.timecode_pool),
+                str(view),
+                str(macro),
                 f"{slot.main_cue_count} Main · {slot.button_mark_count} Button",
             )
             for column, value in enumerate(review_values):
@@ -1769,9 +1938,10 @@ class ShowPatchPage(QWidget):
             next_sequence = int(self._slots[last_row].main_sequence) + slots_per_song
             next_effect = int(settings.ma2_effect_pool_start) + len(self._slots) * effect_slots
             next_timecode = int(self._slots[last_row].timecode_pool) + 1
+            next_group = int(settings.ma2_group_pool_start) + len(self._slots) * group_slots
             self.registry_status.setText(
                 f"{len(self._slots)} planned song(s) · Next safe starts: Sequence {next_sequence}, "
-                f"Effects {next_effect}, Timecode {next_timecode}, "
+                f"Effects {next_effect}, Groups {next_group}, Timecode {next_timecode}, "
                 f"Song Macro {int(settings.ma2_song_macro_start) + len(self._slots)}, "
                 f"View {int(settings.ma2_view_pool_start) + len(self._slots)}, "
                 f"Groups reserve {group_slots}/song"
@@ -1781,7 +1951,7 @@ class ShowPatchPage(QWidget):
             )
             self.registry_summary_labels[1].setText(f"Next Sequence\n{next_sequence}")
             self.registry_summary_labels[2].setText(f"Next Effects\n{next_effect}")
-            self.registry_summary_labels[3].setText(f"Next IDs\n{next_timecode}")
+            self.registry_summary_labels[3].setText(f"Next Groups\n{next_group}")
         else:
             self.registry_status.setText("No songs selected · no Registry allocation proposed")
             self.registry_summary_labels[0].setText("Registered Songs\n0")
@@ -1791,9 +1961,7 @@ class ShowPatchPage(QWidget):
             self.registry_summary_labels[2].setText(
                 f"Next Effects\n{int(settings.ma2_effect_pool_start)}"
             )
-            self.registry_summary_labels[3].setText(
-                f"Next IDs\n{int(settings.timecode_pool_start)}"
-            )
+            self.registry_summary_labels[3].setText(f"Next Groups\n{int(settings.ma2_group_pool_start)}")
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
         self.review_summary.setText(
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
@@ -1814,7 +1982,9 @@ class ShowPatchPage(QWidget):
             settings.ma2_add_main_preset_cue,
         )
         for check, value in zip(self.review_macro_checks, values):
+            check.blockSignals(True)
             check.setChecked(bool(value))
+            check.blockSignals(False)
         preview_id = self.view_preview_song.currentData()
         self.view_preview_song.blockSignals(True)
         self.view_preview_song.clear()
@@ -2207,6 +2377,15 @@ class ShowPatchPage(QWidget):
             QMessageBox.warning(self, "Export Failed", str(exc))
             return
 
+        try:
+            all_paths.update(self._write_export_allocation_report(directory))
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Export Report Not Written",
+                f"MA files were created, but the allocation report could not be written:\n{exc}",
+            )
+
         names = "\n".join(f"· {p.name}" for p in list(all_paths.values())[:24])
         if len(all_paths) > 24:
             names += f"\n…{len(all_paths)} files total"
@@ -2239,3 +2418,40 @@ class ShowPatchPage(QWidget):
             f"{directory}\n\n{names}{macro_hint}",
         )
         self.export_finished.emit(all_paths)
+
+    def _write_export_allocation_report(self, directory: Path) -> dict[str, Path]:
+        """Write CSV (Excel-ready) and TXT records of this export's pool allocation."""
+        if self._project is None:
+            return {}
+        settings = self._project.ma_export
+        seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
+        effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        columns = ["Order", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
+        rows: list[dict[str, str]] = []
+        for order, slot in enumerate(self._slots, start=1):
+            row = order - 1
+            seq_start = int(slot.main_sequence)
+            effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
+            group_start = int(settings.ma2_group_pool_start) + row * group_slots
+            rows.append({
+                "Order": str(order),
+                "Song": slot.display_name,
+                "Sequence": f"{seq_start}–{seq_start + seq_slots - 1}",
+                "Effects": f"{effect_start}–{effect_start + effect_slots - 1}",
+                "Groups": f"{group_start}–{group_start + group_slots - 1}",
+                "Timecode": str(slot.timecode_pool),
+                "View": str(int(settings.ma2_view_pool_start) + row),
+                "Song Macro": str(int(settings.ma2_song_macro_start) + row),
+            })
+        stem = sanitize_ma_name(settings.ma2_show_name or "CuePlayer", fallback="CuePlayer")
+        csv_path = directory / f"{stem}_Export_Allocation.csv"
+        text_path = directory / f"{stem}_Export_Allocation.txt"
+        with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+        lines = [f"Show Name: {settings.ma2_show_name or 'CuePlayer'}", "", " | ".join(columns)]
+        lines.extend(" | ".join(row[column] for column in columns) for row in rows)
+        text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return {"show:allocation_csv": csv_path, "show:allocation_txt": text_path}

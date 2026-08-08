@@ -52,6 +52,7 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     )
     page = ShowPatchPage()
     page.set_project(Project.create("Show"))
+    page._add_songs_to_export_queue([page._project.songs[0].id])
 
     assert page.workflow_tabs.count() == 5
     assert [page.workflow_tabs.tabText(i) for i in range(5)] == [
@@ -71,7 +72,10 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 2
-    assert page.playlist_table.columnCount() == 9
+    assert page.playlist_table.columnCount() == 10
+    assert page.playlist_table.horizontalHeaderItem(6).text() == "Groups"
+    assert page.registry_table.horizontalHeaderItem(4).text() == "Groups"
+    assert page.review_table.horizontalHeaderItem(4).text() == "Groups"
     assert page.registry_command_port.value() == 30000
     assert page.registry_monitor_port.value() == 30001
     assert page.registry_version.text() == "3.9.63.6"
@@ -155,7 +159,8 @@ def test_export_option_checkboxes_use_the_panel_background(
     page = ShowPatchPage()
     page.set_project(Project.create("Show"))
 
-    assert "#maExportOptions QCheckBox { background: #15181d; }" in page.styleSheet()
+    assert "#maExportOptions QCheckBox { background: transparent; }" in page.styleSheet()
+    assert "#reviewExportContent QCheckBox { background: transparent;" in page.styleSheet()
     assert page.ma2_fixed_macros.parent().objectName() == "maExportOptions"
 
 
@@ -327,6 +332,7 @@ def test_playlist_content_selection_persists_and_updates_summary(
     project.songs = [song]
     page = ShowPatchPage()
     page.set_project(project)
+    page._add_songs_to_export_queue([song.id])
 
     page._set_content_main(song.id, False)
     page._set_content_button(song.id, 2, False)
@@ -335,7 +341,7 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "main": False,
         "buttons": [3],
     }
-    content = page.playlist_table.cellWidget(0, 8)
+    content = page.playlist_table.cellWidget(0, 9)
     assert content is not None
     assert content.text() == "1/3 selected"
     page._toggle_content_details(song.id)
@@ -351,13 +357,13 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "buttons": [],
     }
     assert page.playlist_table.item(0, 0).checkState().value == 2
-    assert page.playlist_table.cellWidget(0, 8).text() == "0/3 selected"
+    assert page.playlist_table.cellWidget(0, 9).text() == "0/3 selected"
     page._select_all_content(song.id)
     assert project.ma_export.export_content_by_song[song.id] == {
         "main": True,
         "buttons": [2, 3],
     }
-    assert page.playlist_table.cellWidget(0, 8).text() == "3/3 selected"
+    assert page.playlist_table.cellWidget(0, 9).text() == "3/3 selected"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
@@ -381,3 +387,28 @@ def test_registry_sync_rejects_unsupported_remote_version(
         view_start=999,
     )
     assert page.seq_start.value() == before
+
+
+def test_review_checks_sync_groups_and_export_allocation_report(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    page.review_macro_checks[0].setChecked(True)
+    assert page.ma2_fixed_macros.isChecked()
+    page.ma2_song_macros.setChecked(True)
+    assert page.review_macro_checks[1].isChecked()
+    assert page.review_pool_start_fields["view_start"].toolTip()
+    assert page.review_table.item(0, 4).text() == "1–20"
+
+    paths = page._write_export_allocation_report(tmp_path)
+    assert paths["show:allocation_csv"].exists()
+    assert paths["show:allocation_txt"].exists()
+    assert "Groups" in paths["show:allocation_csv"].read_text(encoding="utf-8-sig")

@@ -5,48 +5,50 @@
 
 ## Task objective
 
-Add configurable Group reservation, restore separate Console Setup and Review
-& Export pages, mirror export checks in Review, confirm before Export, clean up
-View Layout presentation, and expose per-Pool manual starts plus scanned maxima.
+Make MA Export review allocations clearer and editable, add Groups throughout
+the export workflow, provide a drag-and-drop export queue, and save a durable
+record of each export's Pool allocation.
 
 ## What was implemented
 
-- Added persisted `Groups Per Song`, default 20, to Console Setup settings.
-- Restored separate top-level Console Setup and Review & Export tabs.
-- Added a synchronized read-only Export Content Check in Review.
-- Added an Export confirmation dialog listing enabled content.
-- Scanner Plugin emits Pool IDs in chunks and parses Group IDs.
-- View Layout Legend now uses plain ASCII separators and geometry controls are
-  removed from the inspector; drag/resize on the stage remains available.
-- Review summaries include the Group reservation per song.
-- Review provides an optional Manual Pool Starts editor for Sequence, Effect,
-  Timecode, Group, Macro, and View.
-- The last Live Scan maxima are persisted and shown in Review for comparison.
+- Review & Export's five content checks are now interactive and synchronize
+  bidirectionally with Console Setup.
+- Unified the check-row backgrounds and reworked Manual Pool Starts so every
+  numeric field has its own visible label.
+- Added Groups allocation to Songs & Pools, Export Registry, and Review &
+  Export in the order Sequence, Effects, Groups, Timecode, View, Song Macro.
+- Fixed Group start calculations to respect the configured Group Pool Start.
+- Added a Set List source tree and Export Queue. Drag individual songs,
+  multi-select songs, or drag a folder; queue order is export order.
+- Export now writes `ShowName_Export_Allocation.csv` (Excel-ready) and `.txt`
+  beside the MA output, including all assigned ranges.
+- Kept the configurable Show Name field in Console Setup and made the options
+  grid two pairs wide so labels are legible.
 
 ## Files changed
 
 - `src/cueplayer/ui/show_patch_page.py`
 - `tests/ui/test_show_patch_ma2_discovery.py`
-- `src/cueplayer/exporters/ma2_telnet.py`
-- `tests/exporters/test_ma2_telnet.py`
 
 ## Architecture decisions
 
-Existing setup and review widgets remain intact; only their container and
-navigation changed.
+The Export Queue reuses persisted `export_song_ids`; it changes neither Song
+membership nor Set List folders. CSV uses UTF-8 BOM for direct Excel opening
+without an extra spreadsheet dependency.
 
 ## Tests performed
 
-- Module import passed.
-- MA2 Telnet and persistence tests: **18 passed**.
-- UI test collection was blocked by an existing Windows Temp permission error
-  under `pytest-of-WillySu`.
+- `QT_QPA_PLATFORM=offscreen python -m pytest tests/ui/test_show_patch_ma2_discovery.py -q --basetemp .test-tmp-current-ui-4`: **14 passed**.
+- `python -m compileall -q src/cueplayer/ui/show_patch_page.py`: passed.
+- `ruff` is not installed in this virtual environment.
 
 ## Remaining issues
 
-- Verify Group reservation, Review checks, and Export confirmation visually.
+- User should visually validate live drag gestures in the desktop build and
+  verify that the allocation reports match an actual MA export.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
 
-Open Show Patch and verify both nested tabs and View Layout → Review & Export.
+Visually test the Set List → Export Queue drag/drop workflow, then perform one
+real MA2 export and check the generated CSV/TXT allocation report.
