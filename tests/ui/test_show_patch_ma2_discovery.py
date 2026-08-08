@@ -845,3 +845,80 @@ def test_manual_pool_start_rows_never_overlap(
             )
     finally:
         page.close()
+
+
+def test_scan_result_also_moves_the_group_pool(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Groups was omitted from apply_registry_scan_result, so a scan left the
+    Group Pool pointing at numbers the console was already using."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([project.songs[0].id])
+
+    assert page.apply_registry_scan_result(
+        remote_version="3.9.63.6",
+        sequence_start=509,
+        effect_start=7999,
+        timecode_start=38,
+        song_macro_start=362,
+        view_start=250,
+        group_start=403,
+    )
+
+    assert page.ma2_group_pool_start.value() == 403
+    assert project.ma_export.ma2_group_pool_start == 403
+    assert page._slots[0].group_start == 403
+
+
+def test_start_after_scanned_toggle_moves_every_pool_and_reverts(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B"):
+        song = Song.create(name)
+        song.ma_export_name = name
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    # Pin everything low, exactly as a stale Auto-Fill would.
+    for field in page.review_pool_start_fields.values():
+        field.setValue(201)
+    page._auto_fill_pool_overrides()
+    assert page._slots[0].main_sequence == 201
+
+    scanned = {
+        "sequence": 508, "effect": 7998, "timecode": 37,
+        "macro": 361, "view": 249, "group": 402,
+    }
+    project.ma_export.ma2_scanned_pool_max = dict(scanned)
+    page.refresh()
+    # Pins still win while the toggle is off — and the UI must say so.
+    assert page._slots[0].main_sequence == 201
+    assert "pinned by manual overrides" in page.registry_status.text()
+
+    page.registry_start_after_scanned.setChecked(True)
+
+    assert project.ma_export.ma2_start_after_scanned is True
+    for slot in page._slots:
+        assert slot.main_sequence > scanned["sequence"]
+        assert slot.effect_start > scanned["effect"]
+        assert slot.group_start > scanned["group"]
+        assert slot.timecode_pool > scanned["timecode"]
+        assert slot.view_pool > scanned["view"]
+        assert slot.song_macro_pool > scanned["macro"]
+
+    page.registry_start_after_scanned.setChecked(False)
+    assert project.ma_export.ma2_start_after_scanned is False
+    assert page._slots[0].main_sequence == 201

@@ -620,6 +620,18 @@ class ShowPatchPage(QWidget):
             live_scan_actions.addWidget(button, row, col)
         live_scan_layout.addLayout(live_scan_actions)
 
+        self.registry_start_after_scanned = QCheckBox("Start after scanned Pools")
+        self.registry_start_after_scanned.setToolTip(
+            "Push every Pool start (Sequence, Effects, Groups, Timecode, View, "
+            "Song Macro) past the highest number the last scan found on the "
+            "console, so this export cannot overwrite existing show objects.\n"
+            "While this is on, manual per-song Pool overrides are ignored so "
+            "the numbers can actually move. Turn it off for a normal export "
+            "from the configured starts."
+        )
+        self.registry_start_after_scanned.toggled.connect(self._on_start_after_scanned_toggled)
+        live_scan_layout.addWidget(self.registry_start_after_scanned)
+
         registry_content_row = QHBoxLayout()
         registry_left_widget = QWidget()
         registry_left_widget.setMaximumWidth(360)
@@ -1430,6 +1442,7 @@ class ShowPatchPage(QWidget):
         timecode_start: int,
         song_macro_start: int,
         view_start: int,
+        group_start: int | None = None,
         host: str = "MA2",
     ) -> bool:
         """Apply a validated scanner allocation without changing fixed controls."""
@@ -1442,6 +1455,10 @@ class ShowPatchPage(QWidget):
         self.tc_start.setValue(max(1, timecode_start))
         self.ma2_song_macro_start.setValue(max(1, song_macro_start))
         self.ma2_view_pool_start.setValue(max(1, view_start))
+        # Groups was previously left out entirely, so a scan silently left
+        # the Group Pool pointing at numbers the console was already using.
+        if group_start is not None:
+            self.ma2_group_pool_start.setValue(max(1, group_start))
         self._suppress = False
         self._project.ma_export.ma2_target_version = remote_version
         if self._project.ma_export.ma2_output_dir_follows_version:
@@ -1540,6 +1557,7 @@ class ShowPatchPage(QWidget):
             timecode_start=snapshot.next_free("timecode"),
             song_macro_start=snapshot.next_free("macro"),
             view_start=snapshot.next_free("view"),
+            group_start=snapshot.next_free("group"),
             host=self.registry_host.text().strip(),
         )
         if not applied:
@@ -1613,6 +1631,7 @@ class ShowPatchPage(QWidget):
             timecode_start=snapshot.next_free("timecode"),
             song_macro_start=snapshot.next_free("macro"),
             view_start=snapshot.next_free("view"),
+            group_start=snapshot.next_free("group"),
             host=self.registry_host.text().strip(),
         )
         if not applied:
@@ -1691,6 +1710,7 @@ class ShowPatchPage(QWidget):
         self.registry_user.setText(s.ma2_telnet_user or "administrator")
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
+        self.registry_start_after_scanned.setChecked(bool(s.ma2_start_after_scanned))
         self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
         self._load_view_inspector(self.view_stage.selected_index)
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
@@ -1774,6 +1794,7 @@ class ShowPatchPage(QWidget):
         s.ma2_telnet_user = self.registry_user.text().strip() or "administrator"
         s.ma2_telnet_plugin_pool = int(self.registry_plugin_pool.value())
         s.ma2_telnet_plugin_import_path = self.registry_plugin_import_path.text().strip()
+        s.ma2_start_after_scanned = self.registry_start_after_scanned.isChecked()
         s.ma2_target_version = self.ma2_version.currentText().strip()
         # Keep export_song_ids in sync with checklist.
         ids = []
@@ -1849,6 +1870,18 @@ class ShowPatchPage(QWidget):
         else:
             # Blanked the cell — drop back to the computed default.
             settings.ma2_pool_overrides.get(song_id, {}).pop(pool, None)
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _on_start_after_scanned_toggled(self, checked: bool) -> None:
+        if self._suppress or self._project is None:
+            return
+        self._project.ma_export.ma2_start_after_scanned = bool(checked)
+        if checked and not self._project.ma_export.ma2_scanned_pool_max:
+            self.registry_scan_status.setText(
+                "Start after scanned Pools is on, but nothing has been scanned "
+                "yet — run Scan Current Show to detect the Pools already in use."
+            )
         self.refresh()
         self.settings_changed.emit()
 
@@ -1969,7 +2002,7 @@ class ShowPatchPage(QWidget):
         scanned = settings.ma2_scanned_pool_max
         if not scanned:
             return "Show scan max IDs: not scanned yet — run Scan Current Show"
-        return (
+        text = (
             f"Show scan max IDs: Seq {scanned.get('sequence', '—')} / "
             f"Effect {scanned.get('effect', '—')} / "
             f"TC {scanned.get('timecode', '—')} / "
@@ -1977,6 +2010,18 @@ class ShowPatchPage(QWidget):
             f"Macro {scanned.get('macro', '—')} / "
             f"View {scanned.get('view', '—')}"
         )
+        if settings.ma2_start_after_scanned:
+            text += " · Starting after these (manual overrides ignored)"
+        elif settings.ma2_pool_overrides:
+            # Overrides outrank the scanned starts, which is exactly why
+            # numbers can look "stuck" after a scan — say so explicitly.
+            pinned = len(settings.ma2_pool_overrides)
+            text += (
+                f" · {pinned} song(s) pinned by manual overrides — these ignore "
+                "the scan until you enable Start after scanned Pools or use "
+                "Clear All Overrides"
+            )
+        return text
 
     def _rebuild_workflow_pages(self) -> None:
         if self._project is None:

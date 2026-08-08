@@ -104,15 +104,26 @@ def build_show_patch(
     By default each song uses its own Page (1.201, 2.201, …), labeled with the
     song English name. Main Sequence: MA2={EN}, MA3={EN}_Main.
     """
-    seq = max(1, int(settings.sequence_pool_start))
-    tc = max(1, int(settings.timecode_pool_start))
-    effect_start_base = max(1, int(settings.ma2_effect_pool_start))
+    # "Start after scanned Pools": push every base start past the highest
+    # number the last Live Scan found, so a new export cannot land on
+    # existing show objects. Off = plain export from the configured starts.
+    scanned = settings.ma2_scanned_pool_max if settings.ma2_start_after_scanned else {}
+
+    def _base(configured: int, scanned_key: str) -> int:
+        floor = int(scanned.get(scanned_key, 0)) + 1 if scanned.get(scanned_key) else 1
+        return max(1, int(configured), floor)
+
+    seq = _base(settings.sequence_pool_start, "sequence")
+    tc = _base(settings.timecode_pool_start, "timecode")
+    effect_start_base = _base(settings.ma2_effect_pool_start, "effect")
     effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
-    group_start_base = max(1, int(settings.ma2_group_pool_start))
+    group_start_base = _base(settings.ma2_group_pool_start, "group")
     group_slots = max(1, int(settings.ma2_group_slots_per_song))
-    view_start_base = max(1, int(settings.ma2_view_pool_start))
-    macro_start_base = max(1, int(settings.ma2_song_macro_start))
-    overrides = settings.ma2_pool_overrides or {}
+    view_start_base = _base(settings.ma2_view_pool_start, "view")
+    macro_start_base = _base(settings.ma2_song_macro_start, "macro")
+    # While the toggle is on it must actually move things, so stale per-song
+    # pins (e.g. an earlier Auto-Fill) cannot silently hold songs behind.
+    overrides = {} if scanned else (settings.ma2_pool_overrides or {})
     main_page0, main_exec = parse_page_executor(settings.main_executor or "1.101")
     _btn_page0, btn_exec = parse_page_executor(settings.button_executor_start or "1.201")
     page_per_song = bool(getattr(settings, "page_per_song", True))

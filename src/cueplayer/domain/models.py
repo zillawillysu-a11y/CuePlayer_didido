@@ -1074,6 +1074,11 @@ class MaExportSettings:
     # pool_type in {"sequence","effects","groups","timecode","view","song_macro"}.
     # Missing song/pool_type entries fall back to the normal computed start.
     ma2_pool_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    # When set, every Pool base start is pushed past the highest number the
+    # last Live Scan found on the console, so a new export cannot land on
+    # existing show objects. Turn off for a normal export from the configured
+    # starts. Only takes effect once ma2_scanned_pool_max has been populated.
+    ma2_start_after_scanned: bool = False
     output_dir_ma2: str = ""
     output_dir_ma3: str = ""
     ma2_target_version: str = ""

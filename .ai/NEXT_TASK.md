@@ -4,6 +4,24 @@
 **Type:** MA export workflow UI
 **Updated:** 2026-08-08
 
+## Newest item (2026-08-08, do this first)
+
+Verify **Start after scanned Pools** — see
+`.ai/handoffs/2026-08-08_StartAfterScannedPoolsAndGroupScanFix.md`:
+
+1. Run Scan Current Show, then tick the new **Start after scanned Pools**
+   checkbox in Export Registry. Every column (Sequence, Effects, Groups,
+   Timecode, View, Song Macro) must jump past the "Show scan max IDs" line.
+2. Untick it — the numbers must return to the configured/pinned values
+   (that is a plain export).
+3. Note the scan now also moves the **Group** Pool, which it previously
+   never did.
+4. If numbers ever look "stuck" after a scan, read the status line: it now
+   reports how many songs are pinned by manual overrides, which ignore the
+   scan until the toggle is on or Clear All Overrides is used.
+5. Then do one real MA2 export with the toggle on and confirm on the
+   console that nothing lands on existing show objects.
+
 ## Current task
 
 Manually verify, in the running desktop app, everything implemented across

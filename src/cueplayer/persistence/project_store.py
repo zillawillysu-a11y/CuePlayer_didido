@@ -117,6 +117,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
             for song_id, pools in settings.ma2_pool_overrides.items()
             if isinstance(pools, dict)
         },
+        "ma2_start_after_scanned": bool(settings.ma2_start_after_scanned),
         "output_dir_ma2": settings.output_dir_ma2,
         "output_dir_ma3": settings.output_dir_ma3,
         "ma2_target_version": settings.ma2_target_version,
@@ -232,6 +233,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
             for song_id, pools in (raw.get("ma2_pool_overrides") or {}).items()
             if isinstance(pools, dict)
         },
+        ma2_start_after_scanned=bool(raw.get("ma2_start_after_scanned", False)),
         output_dir_ma2=str(raw.get("output_dir_ma2") or ""),
         output_dir_ma3=str(raw.get("output_dir_ma3") or ""),
         ma2_target_version=str(raw.get("ma2_target_version") or ""),

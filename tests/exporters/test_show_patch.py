@@ -828,3 +828,105 @@ def test_ma2_song_macro_without_overrides_keeps_the_combined_import(tmp_path) ->
     assert "show:song_macro_1" not in paths
     lua = paths["show:plugin_lua"].read_text(encoding="utf-8")
     assert 'Import "CuePlayer_Show_Install_Song_Macros" At Macro 201 /path="macros"' in lua
+
+
+def _scanned(**kw) -> dict[str, int]:
+    base = {"sequence": 508, "effect": 7998, "timecode": 37,
+            "macro": 361, "view": 249, "group": 402}
+    base.update(kw)
+    return base
+
+
+def test_start_after_scanned_clears_every_scanned_pool_maximum() -> None:
+    """With the toggle on, no song may land on a number the console already
+    uses — for any of the six Pool types."""
+    project = Project.create("Show")
+    project.songs = [
+        _song_with_buttons(f"S{i}", ma=f"S{i}", button_names=[]) for i in range(1, 4)
+    ]
+    scanned = _scanned()
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=201,
+        timecode_pool_start=201,
+        ma2_effect_pool_start=201,
+        ma2_group_pool_start=201,
+        ma2_view_pool_start=201,
+        ma2_song_macro_start=201,
+        ma2_scanned_pool_max=scanned,
+        ma2_start_after_scanned=True,
+    )
+    slots = build_show_patch(project.songs, settings)
+
+    assert all(slot.main_sequence > scanned["sequence"] for slot in slots)
+    assert all(slot.effect_start > scanned["effect"] for slot in slots)
+    assert all(slot.group_start > scanned["group"] for slot in slots)
+    assert all(slot.timecode_pool > scanned["timecode"] for slot in slots)
+    assert all(slot.view_pool > scanned["view"] for slot in slots)
+    assert all(slot.song_macro_pool > scanned["macro"] for slot in slots)
+    # First song starts exactly one past the scanned maximum.
+    assert slots[0].main_sequence == scanned["sequence"] + 1
+    assert slots[0].group_start == scanned["group"] + 1
+
+
+def test_start_after_scanned_off_is_a_plain_export() -> None:
+    """Toggle off must behave exactly as if no scan had ever happened."""
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("S", ma="S", button_names=[])]
+    common = dict(
+        console="ma2",
+        sequence_pool_start=201,
+        ma2_group_pool_start=201,
+        ma2_scanned_pool_max=_scanned(),
+    )
+    off = build_show_patch(project.songs, MaExportSettings(**common, ma2_start_after_scanned=False))
+    never_scanned = build_show_patch(
+        project.songs,
+        MaExportSettings(console="ma2", sequence_pool_start=201, ma2_group_pool_start=201),
+    )
+    assert off[0].main_sequence == never_scanned[0].main_sequence == 201
+    assert off[0].group_start == never_scanned[0].group_start == 201
+
+
+def test_start_after_scanned_overrides_stale_manual_pins() -> None:
+    """A stale Auto-Fill pin must not hold a song behind the scanned range —
+    that silently defeated the whole point of scanning."""
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("S", ma="S", button_names=[])]
+    scanned = _scanned()
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=201,
+        ma2_scanned_pool_max=scanned,
+        ma2_start_after_scanned=True,
+        ma2_pool_overrides={project.songs[0].id: {"sequence": 201, "groups": 201}},
+    )
+    slots = build_show_patch(project.songs, settings)
+    assert slots[0].main_sequence == scanned["sequence"] + 1
+    assert slots[0].group_start == scanned["group"] + 1
+
+    # ...but the pins come back the moment the toggle is off again.
+    settings.ma2_start_after_scanned = False
+    assert build_show_patch(project.songs, settings)[0].main_sequence == 201
+
+
+def test_start_after_scanned_never_lowers_a_configured_start() -> None:
+    """A configured start already past the scan must not be dragged back."""
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("S", ma="S", button_names=[])]
+    settings = MaExportSettings(
+        console="ma2",
+        sequence_pool_start=9000,
+        ma2_scanned_pool_max=_scanned(),
+        ma2_start_after_scanned=True,
+    )
+    assert build_show_patch(project.songs, settings)[0].main_sequence == 9000
+
+
+def test_start_after_scanned_is_inert_without_scan_data() -> None:
+    project = Project.create("Show")
+    project.songs = [_song_with_buttons("S", ma="S", button_names=[])]
+    settings = MaExportSettings(
+        console="ma2", sequence_pool_start=201, ma2_start_after_scanned=True
+    )
+    assert build_show_patch(project.songs, settings)[0].main_sequence == 201
