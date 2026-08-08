@@ -1100,3 +1100,56 @@ def test_ticking_start_after_scanned_clears_stale_pins_so_it_can_move(
     assert project.ma_export.ma2_pool_overrides == {}
     assert page._slots[0].main_sequence == 509
     assert "cleared" in page.registry_scan_status.text()
+
+
+def test_following_view_pool_tracks_the_live_allocation_not_just_console_setup(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """"Follow Console Setup" must also track whatever changes the numbers
+    downstream of Console Setup: Start after scanned Pools, Auto-Fill, and a
+    manual per-song edit in Review & Export."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("A", "B", "C"):
+        song = Song.create(name)
+        song.ma_export_name = name
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+
+    page.view_stage.selected_index = 0  # DEFAULT_VIEW_LAYOUT[0] is "sequence"
+    page._load_view_inspector(0)
+    page.view_pool_follow.setChecked(True)
+
+    def view_start() -> int:
+        return int(page.view_stage.widgets[0]["start"])
+
+    # 1) Start after scanned Pools
+    project.ma_export.ma2_scanned_pool_max = {
+        "sequence": 508, "effect": 7998, "timecode": 37,
+        "macro": 361, "view": 249, "group": 402,
+    }
+    page.refresh()
+    page.registry_start_after_scanned.setChecked(True)
+    assert view_start() == page._slots[0].main_sequence == 509
+
+    # 2) Auto-Fill
+    page.review_pool_start_fields["seq_start"].setValue(100)
+    page._auto_fill_pool_overrides()
+    assert view_start() == page._slots[0].main_sequence == 100
+
+    # 3) Manual per-song edit
+    page.review_table.item(0, 3).setText("640")
+    assert view_start() == page._slots[0].main_sequence == 640
+
+    # 4) Unticking Follow releases it again — later changes must not move it.
+    page.view_stage.selected_index = 0
+    page._load_view_inspector(0)
+    page.view_pool_follow.setChecked(False)
+    page.view_pool_number_start.setValue(42)
+    page.review_table.item(0, 3).setText("900")
+    assert view_start() == 42

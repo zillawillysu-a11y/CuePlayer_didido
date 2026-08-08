@@ -20,6 +20,10 @@ Verify the width/precedence round — see
 - A number typed into the Export table while it is on must NOT snap back
   when it is switched off.
 - Auto-Fill switches it off so Auto-Fill's numbers are used as typed.
+- View Layout Pools with **Follow Console Setup** ticked now track the live
+  allocation, so they move with a manual per-song edit, Auto-Fill, or Start
+  after scanned Pools — see
+  `.ai/handoffs/2026-08-08_FollowViewPoolsTrackLiveAllocation.md`.
 
 
 Verify **Start after scanned Pools** — see

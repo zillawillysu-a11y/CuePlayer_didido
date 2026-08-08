@@ -1086,6 +1086,13 @@ class ShowPatchPage(QWidget):
         self._write_ui_to_settings()
         songs = self._checked_songs()
         self._slots = build_show_patch(songs, self._project.ma_export)
+        # Now that the real allocation exists, pull any "Follow Console Setup"
+        # View Layout Pool onto it — that is what makes the View track a
+        # manual per-song edit, Auto-Fill, or Start after scanned Pools.
+        if self._sync_following_view_pools():
+            self._project.ma_export.ma2_view_layout = [
+                dict(widget) for widget in self.view_stage.widgets
+            ]
         self._rebuild_playlist_table()
         self._rebuild_table()
         self._rebuild_workflow_pages()
@@ -1844,7 +1851,8 @@ class ShowPatchPage(QWidget):
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
         s.ma2_group_slots_per_song = int(self.ma2_group_slots.value())
         s.ma2_group_pool_start = int(self.ma2_group_pool_start.value())
-        self._sync_following_view_pools()
+        # Following View Layout Pools are synced in refresh(), after the
+        # allocation exists — doing it here would read last cycle's slots.
         s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
@@ -2349,24 +2357,40 @@ class ShowPatchPage(QWidget):
             self.view_allocation_status.setStyleSheet("color: #99a3b1;")
 
     def _console_pool_start_stride(self, pool_type: str) -> tuple[int, int] | None:
-        """Console Setup's own (start, stride) for a followable Pool Type, or None."""
-        mapping: dict[str, tuple[object, object]] = {
-            "sequence": (self.seq_start, self.ma2_sequence_slots),
-            "effects": (self.ma2_effect_pool_start, self.ma2_effect_slots),
-            "groups": (self.ma2_group_pool_start, self.ma2_group_slots),
-            "timecode": (self.tc_start, None),
-            "macros": (self.ma2_song_macro_start, None),
+        """Effective (start, stride) a following View Layout Pool should show.
+
+        Derived from the built allocation (``self._slots``) rather than the
+        raw Console Setup spinbox, so the View Layout also tracks anything
+        that changes the numbers downstream of it — a manual per-song edit in
+        Review & Export, Auto-Fill, or Start after scanned Pools. Falls back
+        to the Console Setup fields when no songs are queued yet.
+        """
+        mapping: dict[str, tuple[object, object, str]] = {
+            "sequence": (self.seq_start, self.ma2_sequence_slots, "main_sequence"),
+            "effects": (self.ma2_effect_pool_start, self.ma2_effect_slots, "effect_start"),
+            "groups": (self.ma2_group_pool_start, self.ma2_group_slots, "group_start"),
+            "timecode": (self.tc_start, None, "timecode_pool"),
+            "macros": (self.ma2_song_macro_start, None, "song_macro_pool"),
         }
         entry = mapping.get(pool_type)
         if entry is None:
             return None
-        start_widget, stride_widget = entry
+        start_widget, stride_widget, slot_attr = entry
         start = int(start_widget.value())
         stride = int(stride_widget.value()) if stride_widget is not None else 1
-        return start, stride
+        if self._slots:
+            start = int(getattr(self._slots[0], slot_attr))
+            if len(self._slots) >= 2:
+                # Use the real gap between the first two songs so an
+                # Auto-Fill with its own spacing is reflected exactly.
+                actual = int(getattr(self._slots[1], slot_attr)) - start
+                if actual > 0:
+                    stride = actual
+        return start, max(1, stride)
 
-    def _sync_following_view_pools(self) -> None:
-        """Keep every "follow"-checked View Layout Pool in step with Console Setup."""
+    def _sync_following_view_pools(self) -> bool:
+        """Pull every "follow"-checked View Layout Pool onto the live
+        allocation. Returns True when a widget actually moved."""
         changed = False
         for widget in self.view_stage.widgets:
             if not widget.get("follow"):
@@ -2388,6 +2412,7 @@ class ShowPatchPage(QWidget):
             self.view_stage.update()
             if self.view_stage.selected_index >= 0:
                 self._load_view_inspector(self.view_stage.selected_index)
+        return changed
 
     def _update_selected_view_pool(self, *_args) -> None:
         if self._suppress or not (0 <= self.view_stage.selected_index < len(self.view_stage.widgets)):

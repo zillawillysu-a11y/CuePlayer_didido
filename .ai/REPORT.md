@@ -5,7 +5,8 @@
 
 ## Task objective
 
-User reported three problems, then added three follow-up requirements:
+User reported three problems, then added three follow-up requirements, then
+one final one:
 
 1. Every Group-related field in Console Setup had become impossible to fill.
 2. Manual Pool Starts still rendered wrong (tall with overlapping rows after
@@ -15,6 +16,8 @@ User reported three problems, then added three follow-up requirements:
 4. Auto-Fill must outrank "Start after scanned Pools" and switch it off.
 5. That toggle must also be on the Export page.
 6. A manually typed number must not snap back when the toggle is switched off.
+7. With "Follow Console Setup" ticked, the View Layout numbers did not move
+   when any of those Export-page changes were made.
 
 ## What was implemented
 
@@ -64,6 +67,21 @@ Made the precedence explicit:
 - The checkbox is mirrored on Review & Export, both copies kept in sync by
   `_sync_start_after_scanned_checkboxes`.
 
+### View Layout "Follow" tracked the wrong thing, at the wrong time
+
+Two causes, both found by reading the call order first.
+`_console_pool_start_stride()` read the Console Setup spinboxes, but manual
+edits / Auto-Fill / Start-after-scanned change the *allocated* numbers in
+`self._slots`, not those spinboxes. And `_sync_following_view_pools()` ran
+from `_write_ui_to_settings()` at the top of `refresh()` — before
+`build_show_patch()` rebuilt the slots — so even a corrected source would
+have read the previous cycle.
+
+Now the sync derives `start` from the first song's real value and `stride`
+from the actual gap between the first two songs (so an Auto-Fill with its own
+spacing is exact), and runs after `build_show_patch()`, persisting the layout
+only when something moved. Unticking Follow still releases the Pool.
+
 ## Files changed
 
 - `src/cueplayer/ui/show_patch_page.py`
@@ -81,9 +99,10 @@ silently masking the other.
 
 ## Tests performed
 
-- Targeted suites: **129 passed**. New tests cover blank-seed behaviour, the
+- Targeted suites: **130 passed**. New tests cover blank-seed behaviour, the
   mirrored checkbox, manual-edit survival across the toggle, Auto-Fill
-  winning, and pin clearing. Three existing tests were updated for the
+  winning, pin clearing, and a following View Pool tracking all three
+  Export-page changes. Three existing tests were updated for the
   intended contract changes (seeds start blank, tabs host a `QScrollArea`,
   ticking the toggle clears pins).
 - Geometry measured directly: page min width 2824 → 464; all Pool Start
@@ -101,6 +120,10 @@ silently masking the other.
   clipping. Reflowing that row into two rows would remove the scrollbar on
   small screens but was out of scope.
 - Groups overrides remain planning/report-only in the exporter (unchanged).
+- The exported Song View computes each song's number as
+  `start + song_index * stride`, so a following View is exact for regular
+  allocations (Auto-Fill, Start-after-scanned, plain) and exact for the first
+  song then evenly spaced under an irregular set of manual pins.
 
 ## Suggested next task
 
