@@ -100,6 +100,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_group_pool_start": int(settings.ma2_group_pool_start),
         "ma2_scanned_pool_max": dict(settings.ma2_scanned_pool_max),
         "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
+        "ma3_view_layout": [dict(widget) for widget in settings.ma3_view_layout],
         "ma2_telnet_host": settings.ma2_telnet_host,
         "ma2_telnet_command_port": int(settings.ma2_telnet_command_port),
         "ma2_telnet_monitor_port": int(settings.ma2_telnet_monitor_port),
@@ -202,6 +203,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_view_layout=[
             dict(widget)
             for widget in raw.get("ma2_view_layout", [])
+            if isinstance(widget, dict)
+        ],
+        ma3_view_layout=[
+            dict(widget)
+            for widget in raw.get("ma3_view_layout", [])
             if isinstance(widget, dict)
         ],
         ma2_telnet_host=str(raw.get("ma2_telnet_host") or "127.0.0.1"),

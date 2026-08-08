@@ -165,6 +165,25 @@ _MA3_POOL_WIDGET_SHAPES: dict[str, dict[str, object]] = {
     },
 }
 
+# grandMA3's five All pools are separate PresetAll pool types. These values
+# and colors come from Willy's SONGEXPORT0625.xml / ALL4.xml onPC exports.
+for _all_key, _preset_type, _window_color in (
+    ("all1", 20, "20202020"),
+    ("all2", 21, "45464155"),
+    ("all3", 22, "75656E63"),
+    ("all4", 23, "B06E7031"),
+    ("all5", 24, "91BD34A4"),
+):
+    _MA3_POOL_WIDGET_SHAPES[_all_key] = {
+        "widget_name": "WindowPresetPool",
+        "pool_type": _preset_type,
+        "settings_tag": "PresetAllPoolSettings",
+        "settings_attrs": dict(
+            _MA3_POOL_WIDGET_SHAPES["effects:fixed"]["settings_attrs"]  # type: ignore[arg-type]
+        ),
+        "window_color": _window_color,
+    }
+
 
 def resolve_ma3_datapool_dirs(directory: Path) -> tuple[Path, Path, Path, Path]:
     """

@@ -1059,6 +1059,8 @@ class MaExportSettings:
     ma2_group_pool_start: int = 1
     ma2_scanned_pool_max: dict[str, int] = field(default_factory=dict)
     ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
+    # MA3 has different Pool types, grid dimensions, and reset defaults.
+    ma3_view_layout: list[dict[str, object]] = field(default_factory=list)
     # Live MA2 scanner connection settings. Password intentionally is not stored.
     ma2_telnet_host: str = "127.0.0.1"
     ma2_telnet_command_port: int = 30000

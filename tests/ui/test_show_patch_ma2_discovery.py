@@ -28,6 +28,48 @@ def _discovery(root: Path) -> Ma2Discovery:
     )
 
 
+def test_console_specific_view_layout_defaults_and_pool_types(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+
+    # Console selector is global chrome above the workflow tabs.
+    assert page.layout().indexOf(page.console_box) < page.layout().indexOf(page.workflow_tabs)
+    ma2_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
+    assert "effects" in ma2_types
+    assert "all1" not in ma2_types
+
+    page.ma3_radio.setChecked(True)
+    app.processEvents()
+    ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
+    assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
+    assert [(w["type"], w["x"], w["y"], w["w"], w["h"]) for w in page.view_stage.widgets] == [
+        ("sequence", 0, 0, 18, 1),
+        ("groups", 0, 1, 18, 1),
+        ("all3", 0, 2, 18, 3),
+        ("all5", 0, 5, 18, 5),
+    ]
+
+    page.view_stage.widgets[0]["x"] = 4
+    page._on_view_layout_changed()
+    page.ma2_radio.setChecked(True)
+    app.processEvents()
+    assert page.view_stage.widgets[0]["x"] == 0
+    page.ma3_radio.setChecked(True)
+    app.processEvents()
+    assert page.view_stage.widgets[0]["x"] == 4
+
+    page._reset_view_layout()
+    assert page.view_stage.widgets[0]["x"] == 0
+    assert page.view_stage.widgets[-1]["type"] == "all5"
+
+
 def test_console_setup_fits_a_maximized_1920x1080_window_without_page_scroll(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

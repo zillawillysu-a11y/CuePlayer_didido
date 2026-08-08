@@ -62,8 +62,11 @@ from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.ma2_view_layout import (
     GRID_SIZE_BY_CONSOLE,
+    MA3_POOL_LABELS,
+    POOL_LABELS,
     TIMECODE_POOL_TOTAL_CELLS,
     Ma2ViewLayoutStage,
+    default_ma3_view_layout,
     default_view_layout,
 )
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
@@ -313,6 +316,7 @@ class ShowPatchPage(QWidget):
 
         settings_row = QHBoxLayout()
         console_box = QGroupBox("Console")
+        self.console_box = console_box
         console_layout = QHBoxLayout(console_box)
         self.ma2_radio = QRadioButton("grandMA2")
         self.ma3_radio = QRadioButton("grandMA3")
@@ -346,7 +350,9 @@ class ShowPatchPage(QWidget):
         console_layout.addWidget(self.ma2_version)
         console_layout.addWidget(self.ma2_detect_btn)
         console_layout.addWidget(self.ma2_detect_status)
-        settings_row.addWidget(console_box)
+        # Console target applies to the entire export workflow, not only the
+        # Console Setup tab. Keep it visible above all five workflow tabs.
+        root.insertWidget(2, console_box)
 
         pool_box = QGroupBox("Pool Start")
         pool_form = QGridLayout(pool_box)
@@ -847,7 +853,8 @@ class ShowPatchPage(QWidget):
         for widget in (self.view_preview_song, self.view_add_pool, self.view_duplicate_pool, self.view_delete_pool):
             view_toolbar.addWidget(widget)
         view_toolbar.addStretch(1)
-        view_toolbar.addWidget(QLabel("Required 16 × 8 grid"))
+        self.view_grid_label = QLabel("Required 16 × 8 grid")
+        view_toolbar.addWidget(self.view_grid_label)
         view_toolbar.addWidget(self.view_lock_layout)
         view_toolbar.addWidget(self.view_reset_layout)
         view_stage_layout.addLayout(view_toolbar)
@@ -862,27 +869,7 @@ class ShowPatchPage(QWidget):
         view_inspector = QGroupBox("Pool Inspector")
         inspector_form = QFormLayout(view_inspector)
         self.view_pool_type = QComboBox()
-        for key, label in (
-            ("camera", "Camera Pool"),
-            ("effects", "Effects"),
-            ("filters", "Filters"),
-            ("forms", "Forms"),
-            ("groups", "Groups"),
-            ("images", "Images"),
-            ("layout", "Layout Pool"),
-            ("macros", "Macros"),
-            ("masks", "Masks"),
-            ("matricks", "MAtricks"),
-            ("pagesChannel", "Pages Channel"),
-            ("pagesExec", "Pages Exec"),
-            ("sequence", "Sequence"),
-            ("timecode", "Timecode Pool"),
-            ("timecodeSlots", "Timecode Slots Pool"),
-            ("timer", "Timer"),
-            ("views", "Views"),
-            ("universes", "Universes"),
-            ("worlds", "Worlds"),
-        ):
+        for key, label in POOL_LABELS.items():
             self.view_pool_type.addItem(label, key)
         self.view_pool_mode = QComboBox()
         self.view_pool_mode.addItem("Fixed · same numbers", "fixed")
@@ -1253,9 +1240,11 @@ class ShowPatchPage(QWidget):
         # View Layout Pool onto it — that is what makes the View track a
         # manual per-song edit, Auto-Fill, or Start after scanned Pools.
         if self._sync_following_view_pools():
-            self._project.ma_export.ma2_view_layout = [
-                dict(widget) for widget in self.view_stage.widgets
-            ]
+            layout = [dict(widget) for widget in self.view_stage.widgets]
+            if self._console() == "ma3":
+                self._project.ma_export.ma3_view_layout = layout
+            else:
+                self._project.ma_export.ma2_view_layout = layout
         self._rebuild_playlist_table()
         self._rebuild_table()
         self._rebuild_workflow_pages()
@@ -1969,7 +1958,12 @@ class ShowPatchPage(QWidget):
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
         self._sync_start_after_scanned_checkboxes(bool(s.ma2_start_after_scanned))
         self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(s.console, (16, 8)))
-        self.view_stage.set_layout(s.ma2_view_layout or self._default_view_layout_for_settings())
+        self.view_grid_label.setText(
+            "Required 18 × 10 grid" if s.console == "ma3" else "Required 16 × 8 grid"
+        )
+        self._rebuild_view_pool_types(s.console)
+        saved_layout = s.ma3_view_layout if s.console == "ma3" else s.ma2_view_layout
+        self.view_stage.set_layout(saved_layout or self._default_view_layout_for_settings())
         self._load_view_inspector(self.view_stage.selected_index)
         self.ma2_fixed_macros.setChecked(bool(s.ma2_include_fixed_macros))
         self.ma2_song_macros.setChecked(bool(s.ma2_include_song_macros))
@@ -2053,7 +2047,10 @@ class ShowPatchPage(QWidget):
         s.ma2_group_pool_start = int(self.ma2_group_pool_start.value())
         # Following View Layout Pools are synced in refresh(), after the
         # allocation exists — doing it here would read last cycle's slots.
-        s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
+        if s.console == "ma3":
+            s.ma3_view_layout = [dict(widget) for widget in self.view_stage.widgets]
+        else:
+            s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
         s.ma2_include_song_list = self.ma2_song_list.isChecked()
@@ -2227,6 +2224,11 @@ class ShowPatchPage(QWidget):
         s = self._project.ma_export
         new_console = self._console()
         old_console = "ma2" if new_console == "ma3" else "ma3"
+        current_layout = [dict(widget) for widget in self.view_stage.widgets]
+        if old_console == "ma3":
+            s.ma3_view_layout = current_layout
+        else:
+            s.ma2_view_layout = current_layout
         # Keep the folder currently in the box for the console we're leaving.
         current_out = self.out_dir.text().strip()
         if old_console == "ma3":
@@ -2240,6 +2242,12 @@ class ShowPatchPage(QWidget):
         self._suppress = True
         self.out_dir.setText(path)
         self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(new_console, (16, 8)))
+        self.view_grid_label.setText(
+            "Required 18 × 10 grid" if new_console == "ma3" else "Required 16 × 8 grid"
+        )
+        self._rebuild_view_pool_types(new_console)
+        saved_layout = s.ma3_view_layout if new_console == "ma3" else s.ma2_view_layout
+        self.view_stage.set_layout(saved_layout or self._default_view_layout_for_settings())
         self.data_pool.setEnabled(new_console == "ma3")
         self.ma2_version.setEnabled(new_console != "ma3")
         self.ma2_detect_btn.setEnabled(new_console != "ma3")
@@ -2511,6 +2519,8 @@ class ShowPatchPage(QWidget):
         self._load_view_inspector(self.view_stage.selected_index)
 
     def _default_view_layout_for_settings(self) -> list[dict[str, object]]:
+        if self._console() == "ma3":
+            return default_ma3_view_layout()
         layout = default_view_layout()
         if self._project is None:
             return layout
@@ -2518,6 +2528,18 @@ class ShowPatchPage(QWidget):
         layout[0].update(start=int(settings.sequence_pool_start), stride=int(settings.ma2_sequence_slots_per_song))
         layout[2].update(start=int(settings.ma2_effect_pool_start), stride=int(settings.ma2_effect_slots_per_song))
         return layout
+
+    def _rebuild_view_pool_types(self, console: str) -> None:
+        """Expose only Pool types valid for the selected console."""
+        current = self.view_pool_type.currentData()
+        labels = MA3_POOL_LABELS if console == "ma3" else POOL_LABELS
+        self.view_pool_type.blockSignals(True)
+        self.view_pool_type.clear()
+        for key, label in labels.items():
+            self.view_pool_type.addItem(label, key)
+        index = self.view_pool_type.findData(current)
+        self.view_pool_type.setCurrentIndex(index if index >= 0 else 0)
+        self.view_pool_type.blockSignals(False)
 
     def _on_view_song_changed(self, index: int) -> None:
         self.view_stage.song_index = max(0, index)
@@ -2661,12 +2683,16 @@ class ShowPatchPage(QWidget):
     def _on_view_layout_changed(self) -> None:
         if self._project is None:
             return
-        self._project.ma_export.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
+        if self._console() == "ma3":
+            self._project.ma_export.ma3_view_layout = [dict(widget) for widget in self.view_stage.widgets]
+        else:
+            self._project.ma_export.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         self._load_view_inspector(self.view_stage.selected_index)
         self.settings_changed.emit()
 
     def _add_view_pool(self) -> None:
-        self.view_stage.widgets.append({"type": "effects", "mode": "fixed", "x": 0, "y": 0, "w": 4, "h": 2, "start": 1, "stride": 1})
+        pool_type = "all5" if self._console() == "ma3" else "effects"
+        self.view_stage.widgets.append({"type": pool_type, "mode": "fixed", "x": 0, "y": 0, "w": 4, "h": 2, "start": 1, "stride": 1})
         self.view_stage.selected_index = len(self.view_stage.widgets) - 1
         self._on_view_layout_changed()
         self.view_stage.update()
@@ -2934,7 +2960,7 @@ class ShowPatchPage(QWidget):
                     include_song_views=self._project.ma_export.ma2_include_song_views,
                     view_pool_start=self._project.ma_export.ma2_view_pool_start,
                     song_viewbutton=self._project.ma_export.ma2_song_viewbutton,
-                    view_layout=self._project.ma_export.ma2_view_layout
+                    view_layout=self._project.ma_export.ma3_view_layout
                     or self._default_view_layout_for_settings(),
                 )
             else:

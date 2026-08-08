@@ -429,6 +429,28 @@ def test_write_song_view_maps_confirmed_effect_and_macro_shapes(tmp_path: Path) 
     assert [el.get("ScrollV") for el in scrolls] == ["0,0", "3160,3160", "50,50"]
 
 
+def test_write_song_view_maps_all_five_confirmed_ma3_all_pools(tmp_path: Path) -> None:
+    plan = _plan("Rarely Think of It")
+    path = tmp_path / "all_pools.xml"
+    layout = [
+        {"type": f"all{index}", "mode": "fixed", "x": 0, "y": index - 1, "w": 4, "h": 1}
+        for index in range(1, 6)
+    ]
+
+    Ma3Exporter().write_song_view(plan, path, layout=layout)
+
+    root = load_xml_root(path)
+    widgets = [el for el in root.iter() if xml_tag_local(el.tag) == "ViewWidget"]
+    assert [w.get("PresetPoolType") for w in widgets] == ["20", "21", "22", "23", "24"]
+    appearances = [
+        next(el for el in w if xml_tag_local(el.tag) == "WindowAppearance")
+        for w in widgets
+    ]
+    assert [el.get("WindowColor") for el in appearances] == [
+        "20202020", "45464155", "75656E63", "B06E7031", "91BD34A4"
+    ]
+
+
 def test_write_song_view_skips_unmapped_pool_types(tmp_path: Path) -> None:
     """Pool types with no confirmed MA3 <ViewWidget> shape yet (e.g.
     "camera") are skipped rather than guessed at."""

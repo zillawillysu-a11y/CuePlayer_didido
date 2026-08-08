@@ -19,6 +19,15 @@ DEFAULT_VIEW_LAYOUT: list[dict[str, object]] = [
     {"type": "effects", "mode": "fixed", "x": 0, "y": 6, "w": 16, "h": 2, "start": 1, "stride": 1},
 ]
 
+# Exact Screen 3 geometry and visible pool starts from Willy's real
+# grandMA3 2.3.2 SONGVIEW.xml export. MA2 keeps its established default above.
+DEFAULT_MA3_VIEW_LAYOUT: list[dict[str, object]] = [
+    {"type": "sequence", "mode": "perSong", "x": 0, "y": 0, "w": 18, "h": 1, "start": 1018, "stride": 20},
+    {"type": "groups", "mode": "perSong", "x": 0, "y": 1, "w": 18, "h": 1, "start": 1018, "stride": 20},
+    {"type": "all3", "mode": "fixed", "x": 0, "y": 2, "w": 18, "h": 3, "start": 1, "stride": 1},
+    {"type": "all5", "mode": "perSong", "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100},
+]
+
 TIMECODE_POOL_TOTAL_CELLS = 3
 
 # (grid_w, grid_h) per console — MA2's Screen 3 is a fixed 16x8 grid; MA3's
@@ -51,9 +60,24 @@ POOL_LABELS = {
     "worlds": "Worlds",
 }
 
+MA3_POOL_LABELS = {
+    "sequence": "Sequence",
+    "groups": "Groups",
+    "macros": "Macros",
+    "all1": "All 1",
+    "all2": "All 2",
+    "all3": "All 3 / Template EFX",
+    "all4": "All 4",
+    "all5": "All 5 / Song EFX",
+}
+
 
 def default_view_layout() -> list[dict[str, object]]:
     return deepcopy(DEFAULT_VIEW_LAYOUT)
+
+
+def default_ma3_view_layout() -> list[dict[str, object]]:
+    return deepcopy(DEFAULT_MA3_VIEW_LAYOUT)
 
 
 class Ma2ViewLayoutStage(QWidget):
@@ -125,7 +149,8 @@ class Ma2ViewLayoutStage(QWidget):
             title = QRectF(rect.left(), rect.top(), cw, ch).adjusted(2, 2, -2, -2)
             painter.fillRect(title, fill)
             painter.setPen(QColor("#f8fafc"))
-            painter.drawText(title, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, POOL_LABELS.get(str(widget.get("type")), str(widget.get("type", "Pool"))))
+            labels = MA3_POOL_LABELS if (self.grid_w, self.grid_h) == GRID_SIZE_BY_CONSOLE["ma3"] else POOL_LABELS
+            painter.drawText(title, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, labels.get(str(widget.get("type")), str(widget.get("type", "Pool"))))
             start = int(widget.get("start", 1))
             if widget.get("mode") == "perSong":
                 start += self.song_index * int(widget.get("stride", 1))
