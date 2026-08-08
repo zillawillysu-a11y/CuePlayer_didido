@@ -5,87 +5,82 @@
 
 ## Task objective
 
-User tested the previous layout reflow and reported two concrete problems
-from screenshots:
+User tested the previous layout-width fix and reported two more concrete
+problems from screenshots:
 
-1. Export Registry: the "MA2 Live Pool Scan" (Telnet) box + stat tiles took
-   up too much width, squeezing the Song List (`registry_table`) so it was
-   cut off / not fully visible.
-2. Review & Export: the whole left column (checks + Manual Pool Starts) was
-   wider than needed, and — a real bug — the Manual Pool Starts field
-   labels were visually overlapping their spinboxes ("Timecode"/"Group"
-   text rendering on top of the "201" spinbox above them). The seed input
-   boxes also didn't need to be as wide as a full spinbox.
+1. Export Registry: the four Telnet action buttons (Write Scan Plugin /
+   Import Plugin & Scan / Test Connection / Scan Current Show) had their
+   labels clipped after the Telnet box was narrowed. User also wants the
+   Song List's leftmost column to show setlist order + Chinese name, not
+   just the English MA name.
+2. Review & Export: Manual Pool Starts' field labels were **still**
+   overlapping their spinboxes despite the earlier spacing fix. User also
+   wants the review table's Song column to show Chinese too.
 
 ## What was implemented
 
-### Export Registry page
+### Export Registry — button clipping
 
-- `live_scan_box` (the Telnet controls) changed from one 7-field-wide
-  `QHBoxLayout` row to a compact 2-column `QGridLayout` (4 rows), and
-  capped at `setMaximumWidth(360)`.
-- The left column (Telnet box) and middle column (4 stat tiles + status)
-  are now each wrapped in a container `QWidget` with `setMaximumWidth`
-  (360px / 200px) instead of being bare layouts — a bare `QVBoxLayout`
-  can't have a max width, only a widget can, so this was necessary to
-  actually cap them rather than just changing stretch ratios.
-- `registry_table` (the Song List) now gets `stretch=1` as the *only*
-  stretch-consuming item in the row, so it absorbs all remaining width
-  once the other two are capped — it's now the largest, fully visible
-  region as requested.
+- Split the previous one-row `QHBoxLayout` (status label + 4 buttons) into:
+  the status label on its own full-width row, then the 4 buttons in a 2×2
+  `QGridLayout` below. At the box's ~360px cap, a packed 5-item row genuinely
+  didn't have room for full button text; 2 per row does.
 
-### Review & Export page
+### Manual Pool Starts — the *real* fix for the overlap
 
-- `review_left_column` (Export Content Check + Manual Pool Starts +
-  summary) wrapped in a container `QWidget` with `setMaximumWidth(340)`,
-  same technique as above.
-- Fixed the overlap bug: `manual_fields_grid` had no explicit spacing at
-  all, so adjacent grid rows' label/spinbox pairs could render on top of
-  each other in a cramped column. Added `setHorizontalSpacing(12)` /
-  `setVerticalSpacing(10)`, plus `field_column.setSpacing(2)` for the
-  label-above-spinbox pairing itself.
-- Each seed spinbox capped at `setMaximumWidth(90)` — they only ever hold
-  a Pool number (1–9999), no need for a full-width spinbox.
-- `review_table` stretch simplified to `stretch=1` as the only
-  stretch-consuming item, same reasoning as Export Registry.
+The previous session's fix (adding `QGridLayout.setVerticalSpacing`) didn't
+actually solve it, because it wasn't a spacing problem — it's a known Qt
+quirk: adding a bare `QLayout` (not a `QWidget`) directly into a
+`QGridLayout` cell via `addLayout()` can make Qt miscalculate that row's
+height, since `QGridLayout` row-height computation is more reliable when
+every cell holds an actual `QWidget`. Both places in this file that stacked
+a label above a field via `addLayout(nested_vbox, row, col)` had this
+latent bug — Manual Pool Starts *and* (proactively fixed before it could be
+reported) the Telnet fields grid changed in the previous session. Fixed by
+wrapping each label+field pair in a real `QWidget` and using
+`addWidget(field_widget, row, col)` instead.
+
+### Chinese names in Registry / Review Song columns
+
+- `_rebuild_workflow_pages()` now builds a combined song label per row:
+  - Export Registry (no separate Order column): `"{setlist_number:g}. {Chinese name}  ·  {English name}"`.
+  - Review & Export (already has its own Order column): `"{Chinese name}  ·  {English name}"`, no redundant number.
+  - Falls back to the English name alone when the song has no Chinese name
+    or the two are identical (matches the pattern already used for the
+    Export Queue).
 
 ## Files changed
 
 - `src/cueplayer/ui/show_patch_page.py`
+- `tests/ui/test_show_patch_ma2_discovery.py`
 
 ## Architecture decisions
 
-Switched from "wide bare layout + stretch ratio tuning" to "narrow
-container widget with `setMaximumWidth` + stretch=1 on the table" for both
-pages. Stretch ratios alone couldn't guarantee a hard cap on the control
-panels in a wide window (a 1:2 ratio still gives the panel a lot of room on
-a large monitor); an explicit max-width on a container widget does.
+The "wrap in a real QWidget before adding to a QGridLayout cell" fix is now
+applied everywhere a label sits above a field in this file's several
+compact-grid patterns (Manual Pool Starts, Telnet fields) — worth
+remembering as the standard fix if this shape of grid appears again
+elsewhere in the app.
 
 ## Tests performed
 
-- `QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe -m pytest tests/ui/test_show_patch_ma2_discovery.py tests/ui/test_setlist_folder_drag.py -q`: **32 passed** (no behavior changed, only layout/widget structure — same tests as before this task).
+- `QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe -m pytest tests/ui/test_show_patch_ma2_discovery.py tests/ui/test_setlist_folder_drag.py tests/exporters tests/persistence -q`: **194 passed** (193 + 1 new test locking in the Chinese-name Song-column format).
 - `compileall`: passed.
-- No way to visually confirm the fix in the real desktop app from this
-  session — the overlap bug and width caps are standard, well-tested Qt
-  layout mechanisms (`QGridLayout` spacing, `QWidget.setMaximumWidth`), but
-  pixel-level confirmation needs the user's own eyes.
+- No desktop GUI automation available this session — the button-grid
+  reflow and the overlap fix are standard Qt layout mechanisms, but the
+  actual pixel result still needs the user's own eyes, same as every prior
+  layout change this week.
 
 ## Remaining issues
 
-- Same outstanding manual-verification items as previous sessions (see
-  `.ai/NEXT_TASK.md`): per-song Pool override editing/collision UI, the
-  View Layout "Follow" checkbox, Setlist drag into Export Queue — plus now
-  this layout-width fix — all need the user to actually look at the running
-  app.
-- Pre-existing full `tests/ui` suite stack-overflow crash, unrelated to any
-  of this work, still unresolved.
-- `startup_error.txt` and `.codex-test-tmp/` left untouched.
+Same outstanding manual-verification checklist as prior 2026-08-08
+handoffs (`.ai/NEXT_TASK.md`) — this session adds: confirm the Telnet
+button labels are no longer clipped, confirm Manual Pool Starts truly
+doesn't overlap anymore, confirm Registry/Review Song columns show Chinese.
 
 ## Suggested next task
 
-User confirms in the running desktop app: Export Registry's Song List is
-now fully visible without being cut off, the Telnet box is noticeably
-narrower; Review & Export's Manual Pool Starts fields no longer overlap and
-the left column is narrower with `review_table` taking the rest. Then work
-through the rest of the outstanding manual-verification checklist in
-`.ai/NEXT_TASK.md`.
+User visually confirms this round of fixes in the running desktop app,
+then works through the rest of the manual-verification checklist already
+queued in `.ai/NEXT_TASK.md` (per-song Pool overrides, View Layout Follow
+checkbox, Setlist drag into Export Queue, a real MA2 export).

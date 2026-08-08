@@ -732,3 +732,25 @@ def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
     assert page.playlist_table.item(0, 5).text().startswith("999")
     assert page.registry_table.item(0, 3).text().startswith("999")
     assert page.review_table.item(0, 3).text().startswith("999")
+
+
+def test_registry_and_review_song_column_show_chinese_name_too(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    song = Song.create("真罕得想起來")
+    song.ma_export_name = "Rarely_Think_of_It"
+    song.setlist_number = 1.0
+    project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id])
+
+    # Export Registry has no separate Order column, so it also carries the
+    # setlist number; Review already has its own Order column (column 0).
+    assert page.registry_table.item(0, 0).text() == "1. 真罕得想起來  ·  Rarely_Think_of_It"
+    assert page.review_table.item(0, 1).text() == "真罕得想起來  ·  Rarely_Think_of_It"

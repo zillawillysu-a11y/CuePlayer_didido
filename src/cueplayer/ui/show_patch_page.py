@@ -554,13 +554,16 @@ class ShowPatchPage(QWidget):
             ("Password", self.registry_password),
             ("Plugin Pool", self.registry_plugin_pool),
         )):
-            field = QVBoxLayout()
+            field_widget = QWidget()
+            field = QVBoxLayout(field_widget)
+            field.setContentsMargins(0, 0, 0, 0)
+            field.setSpacing(2)
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             field.addWidget(label)
             field.addWidget(widget)
             row, col = divmod(index, 2)
-            live_scan_fields.addLayout(field, row, col)
+            live_scan_fields.addWidget(field_widget, row, col)
         live_scan_layout.addLayout(live_scan_fields)
         plugin_path_row = QHBoxLayout()
         plugin_path_label = QLabel("MA2 Plugin Import Path (optional)")
@@ -574,13 +577,14 @@ class ShowPatchPage(QWidget):
         self.registry_telnet_lights = QLabel()
         self._set_telnet_status("idle")
         live_scan_layout.addWidget(self.registry_telnet_lights)
-        live_scan_actions = QHBoxLayout()
         self.registry_scan_status = QLabel(
             "Ready · write and import the read-only scanner Plugin before scanning"
         )
+        self.registry_scan_status.setWordWrap(True)
         self.registry_scan_status.setStyleSheet(
             "background: #101318; color: #99a3b1; border-radius: 6px; padding: 9px;"
         )
+        live_scan_layout.addWidget(self.registry_scan_status)
         self.registry_write_scan_plugin = QPushButton("Write Scan Plugin")
         self.registry_import_and_scan = QPushButton("Import Plugin & Scan")
         self.registry_test_connection = QPushButton("Test Connection")
@@ -601,11 +605,19 @@ class ShowPatchPage(QWidget):
         self.registry_import_and_scan.clicked.connect(self._import_scan_plugin_and_scan)
         self.registry_test_connection.clicked.connect(self._test_ma2_telnet_connection)
         self.registry_scan_show.clicked.connect(self._scan_ma2_show)
-        live_scan_actions.addWidget(self.registry_scan_status, stretch=1)
-        live_scan_actions.addWidget(self.registry_write_scan_plugin)
-        live_scan_actions.addWidget(self.registry_import_and_scan)
-        live_scan_actions.addWidget(self.registry_test_connection)
-        live_scan_actions.addWidget(self.registry_scan_show)
+        # 2x2 grid instead of one packed row — the narrower Telnet box no
+        # longer has room to show all four button labels on one line.
+        live_scan_actions = QGridLayout()
+        live_scan_actions.setHorizontalSpacing(8)
+        live_scan_actions.setVerticalSpacing(6)
+        for index, button in enumerate((
+            self.registry_write_scan_plugin,
+            self.registry_import_and_scan,
+            self.registry_test_connection,
+            self.registry_scan_show,
+        )):
+            row, col = divmod(index, 2)
+            live_scan_actions.addWidget(button, row, col)
         live_scan_layout.addLayout(live_scan_actions)
 
         registry_content_row = QHBoxLayout()
@@ -814,14 +826,19 @@ class ShowPatchPage(QWidget):
             field.setMaximumWidth(90)
             field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
             self.review_pool_start_fields[attr] = field
-            field_column = QVBoxLayout()
+            # A real QWidget (not a bare layout) in the grid cell — nested
+            # layouts without one can miscalculate row height in QGridLayout
+            # and overlap the row below, which is what happened here.
+            field_widget = QWidget()
+            field_column = QVBoxLayout(field_widget)
+            field_column.setContentsMargins(0, 0, 0, 0)
             field_column.setSpacing(2)
             field_label = QLabel(label)
             field_label.setStyleSheet("background: transparent; color: #aab4c3;")
             field_column.addWidget(field_label)
             field_column.addWidget(field)
             row, col = divmod(index, 2)
-            manual_fields_grid.addLayout(field_column, row, col)
+            manual_fields_grid.addWidget(field_widget, row, col)
         manual_layout.addLayout(manual_fields_grid)
         autofill_row = QHBoxLayout()
         self.review_autofill_btn = QPushButton("Auto-Fill && Sequence")
@@ -1985,8 +2002,19 @@ class ShowPatchPage(QWidget):
             group_end = group_start + group_slots - 1
             macro = int(slot.song_macro_pool)
             view = int(slot.view_pool)
+            song = slot.song
+            registry_song_label = (
+                slot.display_name
+                if not song.name or song.name == slot.display_name
+                else f"{song.setlist_number:g}. {song.name}  ·  {slot.display_name}"
+            )
+            review_song_label = (
+                slot.display_name
+                if not song.name or song.name == slot.display_name
+                else f"{song.name}  ·  {slot.display_name}"
+            )
             registry_values = (
-                slot.display_name,
+                registry_song_label,
                 "Planned",
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
@@ -2009,7 +2037,7 @@ class ShowPatchPage(QWidget):
                     self.registry_table.setItem(row, column, QTableWidgetItem(value))
             review_values = (
                 str(row + 1),
-                slot.display_name,
+                review_song_label,
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
                 f"{group_start}–{group_end}",
