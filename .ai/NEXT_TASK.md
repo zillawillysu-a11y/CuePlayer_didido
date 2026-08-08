@@ -1,43 +1,25 @@
 # Next task
 
 **Status:** Queued - awaiting real-Windows verification
-**Type:** MA2 installed-version discovery
+**Type:** Performance fix (Exporter view-switch latency)
 **Updated:** 2026-08-08
 
 ## Newest item (2026-08-08, do this first)
 
-Verify this round's fix — see
-`.ai/handoffs/2026-08-08_Ma2DiscoveryFixedFromRealMachineData.md`. This is
-a direct correction of the previous round, built from Willy's own real
-diagnostic PowerShell output (not guessed):
+Verify the Exporter switch latency fix — see
+`.ai/handoffs/2026-08-08_ExporterViewSwitchLatencyFix.md`:
 
-1. Click **Detect MA2** and confirm the Target Version dropdown lists all
-   twelve real versions with full precision: 3.1.2.5, 3.3.4.3, 3.7.0.1,
-   3.7.0.5, 3.8.0.0, 3.9.0.3, 3.9.60.18, 3.9.60.74, 3.9.60.89, 3.9.60.91,
-   3.9.61.5, 3.9.63.6.
-2. Confirm **no** `3.9.60`/`3.9.61`/`3.9.63` truncated duplicates and
-   **no** `10.0.26100.8875`.
-3. If anything is still wrong: the fastest path to a fix is running the
-   same diagnostic PowerShell script from the previous round again (or
-   just its registry/shortcut sections) and pasting the raw output back —
-   that is exactly what unblocked this round, versus guessing at what
-   grandMA2 onPC's file metadata should look like.
-
-### What was actually wrong last round (for context)
-
-The previous identity check required a registry Publisher or an
-executable's CompanyName/ProductName to mention "MA Lighting"/"grandMA2".
-Willy's real machine data showed: registry DisplayVersion/Publisher/
-InstallLocation are all blank (only DisplayName carries the version), and
-`gma2onpc.exe` embeds no VersionInfo at all — so that check rejected every
-real install, silently falling back to the old truncated 3-segment
-ProgramData-folder-only behavior. Rebuilt to parse the version from
-DisplayName/shortcut-filename text (confirmed reliable) and validate
-identity via the shortcut's target executable *filename*
-(`gma2onpc*.exe`/`grandma2*.exe`) instead of file metadata — which is also
-what correctly rejects MA Lighting's own "Open Show Folder grandMA2 onPC
-X.X.X" shortcut (targets `C:\Windows\explorer.exe`, the confirmed source
-of the `10.0.26100.8875` false positive).
+1. Click Timeline → Exporter (MA Playlist). Should now feel instant — no
+   stutter, no delay. Measured offscreen: 2870ms → 1.7ms.
+2. Click back to Timeline, then Exporter again. Should also be instant
+   (was 2548ms, now 1.6ms) — confirms it's not just a "first time" fluke.
+3. Click **Detect MA2**. This should still visibly take ~3 seconds (that's
+   expected/by design — it always does a real rediscovery) and the Target
+   Version dropdown should still show your full real installed-version
+   list afterward.
+4. Open a different project (or restore the last session on a fresh
+   launch) — this is the one case still allowed to take ~3s per the
+   approved plan, since it's a genuine project load, not a view switch.
 
 ## Also pending (not blocking)
 
@@ -53,10 +35,14 @@ and `tests/ui/test_ma_preflight_export_integration.py` /
 this repo's recent rounds (confirmed via `git stash`) — not investigated
 further here.
 
+Startup itself still runs MA2 discovery twice (~3s each, serially) — not
+addressed this round (in scope only if it becomes its own complaint; see
+handoff "Remaining issues"). No async/QThread work has been started —
+explicitly deferred until asked for.
+
 ## Explicitly not touched this round (per instruction)
 
-- MA2 Page allocation / scan logic, Groups, CSV Allocation Report, Export
-  object logic — all untouched.
-- grandMA3 discovery — confirmed independent, shares no code with anything
-  changed in MA2 version discovery.
+- MA2 export semantics, Page/Groups allocation, CSV — untouched.
 - video-waveform code — out of scope, not touched.
+- No QThread/QtConcurrent introduced — this round used lifecycle +
+  caching only, per instruction.

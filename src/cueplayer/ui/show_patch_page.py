@@ -1209,9 +1209,27 @@ class ShowPatchPage(QWidget):
         self.export_btn.clicked.connect(self._export)
 
     def set_project(self, project: Project) -> None:
+        """Bind (or re-sync to) a project.
+
+        MA2 installed-version discovery (discover_ma2_environment) shells
+        out to three sequential PowerShell subprocesses and costs ~2.5-2.9s
+        measured on real hardware — it must only run when this is a
+        genuinely new/reloaded project, not on every call. Every workflow
+        tab switch to Exporter re-calls set_project() with the *same*
+        project object (see MainWindow._set_view_mode), so identity is the
+        signal: the same object means "still the same project, just sync
+        whatever changed elsewhere (e.g. Setlist) and redraw" — cheap
+        (<2ms measured) — while a different object means a real load/new
+        project, which still gets exactly one discovery call, same as
+        before this fast path existed. Detect MA2 (_detect_ma2_versions,
+        wired directly to its own button) is untouched by this and always
+        re-runs a full discovery on demand.
+        """
+        already_bound = project is self._project
         self._project = project
         self._load_settings_into_ui()
-        self._detect_ma2_versions(quiet=True)
+        if not already_bound:
+            self._detect_ma2_versions(quiet=True)
         self._rebuild_song_pick()
         self.refresh()
 

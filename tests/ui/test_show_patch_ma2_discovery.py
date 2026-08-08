@@ -137,6 +137,95 @@ def test_detect_ma2_summary_removed_but_controls_and_warning_kept(
     assert "Unsupported" in page.ma2_detect_status.text()
 
 
+def test_set_project_with_same_object_does_not_rediscover_ma2(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression test for the Exporter view-switch latency bug: repeated
+    set_project() calls with the *same* project object (exactly what
+    MainWindow._set_view_mode does on every Timeline<->Exporter switch)
+    must not re-run discover_ma2_environment() — that call shells out to
+    three sequential PowerShell subprocesses and measured ~2.5-2.9s on
+    real hardware. Only a genuinely different project object should."""
+    calls = []
+    discovery_result = _discovery(tmp_path)
+
+    def fake_discover():
+        calls.append(1)
+        return discovery_result
+
+    monkeypatch.setattr("cueplayer.ui.show_patch_page.discover_ma2_environment", fake_discover)
+    page = ShowPatchPage()
+    project = Project.create("Show")
+
+    page.set_project(project)
+    assert len(calls) == 1, "first bind must discover once"
+
+    # Simulate several Exporter view-switches with the identical project.
+    page.set_project(project)
+    page.set_project(project)
+    page.set_project(project)
+    assert len(calls) == 1, "same project object must not re-trigger discovery"
+
+    # A genuinely new/reloaded project must discover again exactly once.
+    other_project = Project.create("Show 2")
+    page.set_project(other_project)
+    assert len(calls) == 2, "a different project object must re-discover"
+
+    page.set_project(other_project)
+    assert len(calls) == 2, "still cached for the new project's repeat calls"
+
+
+def test_set_project_same_object_still_refreshes_data(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The fast (no-discovery) path must still pick up project changes made
+    elsewhere while Exporter was hidden — e.g. a setting edited on another
+    page, or a song added to the Export Queue."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    project = Project.create("Show")
+    page.set_project(project)
+    assert page.show_name.text() == "CuePlayer"
+    assert page.song_pick.count() == 0
+
+    project.ma_export.ma2_show_name = "Changed Elsewhere"
+    project.ma_export.export_song_ids = [project.songs[0].id]
+    page.set_project(project)  # same object, second call — no discovery, but must resync
+
+    assert page.show_name.text() == "Changed Elsewhere"
+    assert page.song_pick.count() == 1
+
+
+def test_detect_ma2_button_always_forces_fresh_discovery(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Detect MA2 must always re-run a full discovery, even right after a
+    same-object set_project() call skipped it — it must never return stale
+    cache silently."""
+    calls = []
+
+    def fake_discover():
+        calls.append(1)
+        return _discovery(tmp_path)
+
+    monkeypatch.setattr("cueplayer.ui.show_patch_page.discover_ma2_environment", fake_discover)
+    page = ShowPatchPage()
+    project = Project.create("Show")
+    page.set_project(project)
+    page.set_project(project)
+    page.set_project(project)
+    assert len(calls) == 1
+
+    page.ma2_detect_btn.click()
+    assert len(calls) == 2, "Detect MA2 must force a fresh discovery regardless of caching"
+
+    page.ma2_detect_btn.click()
+    assert len(calls) == 3, "Detect MA2 must re-discover every time it's pressed"
+
+
 def test_five_page_playlist_workflow_and_screen3_grid(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
