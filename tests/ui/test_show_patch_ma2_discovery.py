@@ -734,7 +734,7 @@ def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
     assert page.review_table.item(0, 4).text().startswith("999")
 
 
-def test_registry_and_review_have_separate_order_chinese_and_song_columns(
+def test_registry_and_review_have_separate_order_song_and_export_name_columns(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -750,13 +750,98 @@ def test_registry_and_review_have_separate_order_chinese_and_song_columns(
     page.set_project(project)
     page._add_songs_to_export_queue([song.id])
 
-    # Export Registry: Order / Chinese / Song are three separate columns —
-    # it has no other Order column, so it carries the setlist number.
+    assert [
+        page.registry_table.horizontalHeaderItem(i).text() for i in range(3)
+    ] == ["Order", "Song", "Export Name"]
+    assert [
+        page.review_table.horizontalHeaderItem(i).text() for i in range(3)
+    ] == ["Order", "Song", "Export Name"]
+
+    # Export Registry has no other order column, so Order carries the
+    # setlist number; Review's Order is the export queue position.
     assert page.registry_table.item(0, 0).text() == "1"
     assert page.registry_table.item(0, 1).text() == "真罕得想起來"
     assert page.registry_table.item(0, 2).text() == "Rarely_Think_of_It"
-    # Review & Export already has its own Order column (export queue
-    # position, column 0) — Chinese is a new column 1, Song stays column 2.
     assert page.review_table.item(0, 0).text() == "1"
     assert page.review_table.item(0, 1).text() == "真罕得想起來"
     assert page.review_table.item(0, 2).text() == "Rarely_Think_of_It"
+
+
+def test_song_column_falls_back_to_the_english_name_when_there_is_no_chinese(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A song named only in English (e.g. 88Bars) must still show its name in
+    the Song column — never a blank cell."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    song = Song.create("88Bars")
+    song.ma_export_name = "88Bars"
+    project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id])
+
+    assert page.registry_table.item(0, 1).text() == "88Bars"
+    assert page.registry_table.item(0, 2).text() == "88Bars"
+    assert page.review_table.item(0, 1).text() == "88Bars"
+    assert page.review_table.item(0, 2).text() == "88Bars"
+
+
+@pytest.mark.parametrize("window_height", [900, 700, 560, 440])
+def test_manual_pool_start_rows_never_overlap(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    window_height: int,
+) -> None:
+    """Geometry regression guard for the Manual Pool Starts overlap.
+
+    This bug survived three separate layout rewrites because it was only ever
+    checked by eye. Root cause (confirmed by controlled experiment): a
+    word-wrapped QLabel above the fields under-reports its height-for-width,
+    so the parent under-allocates and QFormLayout compresses the row pitch
+    (25px) below the height each spinbox actually paints at (38px) — 13px of
+    overlap per row. Assert real rendered geometry so it cannot silently
+    return; keep wrapped labels out of that column.
+    """
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show", with_song=False)
+    for name in ("真罕得想起來", "88Bars"):
+        song = Song.create(name)
+        song.ma_export_name = "Song_" + str(len(project.songs))
+        project.songs.append(song)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page._add_songs_to_export_queue([song.id for song in project.songs])
+    page.workflow_tabs.setCurrentIndex(4)  # Review & Export
+    page.resize(1600, window_height)
+    page.show()
+    try:
+        for _ in range(3):
+            app.processEvents()
+
+        rows = []
+        for attr in (
+            "seq_start", "effect_start", "timecode_start",
+            "group_start", "macro_start", "view_start",
+        ):
+            field = page.review_pool_start_fields[attr]
+            top = field.mapToGlobal(field.rect().topLeft()).y()
+            rows.append((attr, top, field.height()))
+        rows.sort(key=lambda row: row[1])
+
+        for name, _top, height in rows:
+            assert height >= 20, f"{name} spinbox crushed to {height}px"
+        for (upper, upper_top, upper_height), (lower, lower_top, _h) in zip(rows, rows[1:]):
+            assert lower_top >= upper_top + upper_height, (
+                f"{upper} overlaps {lower} by "
+                f"{upper_top + upper_height - lower_top}px at window height {window_height}"
+            )
+    finally:
+        page.close()

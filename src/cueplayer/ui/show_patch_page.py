@@ -660,7 +660,7 @@ class ShowPatchPage(QWidget):
 
         self.registry_table = QTableWidget(0, 10)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Order", "Chinese", "Song", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
+            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -801,19 +801,18 @@ class ShowPatchPage(QWidget):
         review_left_column.addWidget(macro_review_box)
 
         manual_box = QGroupBox("Manual Pool Starts")
-        manual_layout = QVBoxLayout(manual_box)
-        manual_hint = QLabel(
+        # The explanation lives in a tooltip, NOT a word-wrapped QLabel above
+        # the fields. A wrapped QLabel under-reports its sizeHint height, so
+        # the parent under-allocates and the rows below get crushed — that
+        # was the real cause of the field/label overlap here, not the field
+        # layout itself (which is why three layout rewrites never fixed it).
+        manual_box.setToolTip(
             "Double-click any Sequence/Effects/Groups/Timecode/View/Song Macro "
-            "cell below to pin that song's own starting number — collisions with "
-            "another song are highlighted. Or seed starting numbers here and "
-            "click Auto-Fill to sequence every song in the queue at once."
+            "cell in the table to pin that song's own starting number — "
+            "collisions with another song are highlighted. Or seed starting "
+            "numbers here and click Auto-Fill to sequence every song at once."
         )
-        manual_hint.setWordWrap(True)
-        manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
-        manual_layout.addWidget(manual_hint)
-        # Plain QFormLayout — the same proven label:field row pattern already
-        # used bug-free by Console Setup's own Pool Start box, instead of the
-        # hand-rolled grid that kept miscalculating row height.
+        manual_layout = QVBoxLayout(manual_box)
         manual_fields_form = QFormLayout()
         manual_fields_form.setVerticalSpacing(8)
         self.review_pool_start_fields = {}
@@ -827,7 +826,10 @@ class ShowPatchPage(QWidget):
         ):
             field = NoWheelSpinBox()
             field.setRange(minimum, 9999)
-            field.setMaximumWidth(90)
+            field.setFixedWidth(90)
+            # Belt-and-suspenders: an explicit floor means nothing can crush
+            # these rows again even if a sibling misreports its height.
+            field.setMinimumHeight(30)
             field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
             self.review_pool_start_fields[attr] = field
             manual_fields_form.addRow(label, field)
@@ -850,6 +852,9 @@ class ShowPatchPage(QWidget):
 
         self.review_summary = QLabel("")
         self.review_summary.setWordWrap(True)
+        # Wrapped labels under-report their height (see manual_box above) —
+        # give this one a floor so it can't squeeze its siblings either.
+        self.review_summary.setMinimumHeight(110)
         self.review_summary.setStyleSheet(
             "background: #111113; border: 1px solid #27272a; border-radius: 8px; "
             "padding: 12px; color: #e5e7eb;"
@@ -860,7 +865,7 @@ class ShowPatchPage(QWidget):
 
         self.review_table = QTableWidget(0, 10)
         self.review_table.setHorizontalHeaderLabels(
-            ["Order", "Chinese", "Song", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
+            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "View", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.setColumnWidth(0, 56)
@@ -2015,12 +2020,14 @@ class ShowPatchPage(QWidget):
             macro = int(slot.song_macro_pool)
             view = int(slot.view_pool)
             song = slot.song
-            # Chinese is its own column now (not exported — display-only,
-            # so the operator can cross-check against the Setlist).
-            chinese_name = "" if not song.name or song.name == slot.display_name else song.name
+            # "Song" shows the Setlist name as-is (Chinese or otherwise) so it
+            # can be cross-checked against the Setlist panel; never blank —
+            # songs named only in English (88Bars) still show their name here.
+            # Display-only: the exporter always uses Export Name.
+            song_name = song.name or slot.display_name
             registry_values = (
                 f"{song.setlist_number:g}",
-                chinese_name,
+                song_name,
                 slot.display_name,
                 "Planned",
                 f"{seq_start}–{seq_end}",
@@ -2044,7 +2051,7 @@ class ShowPatchPage(QWidget):
                     self.registry_table.setItem(row, column, QTableWidgetItem(value))
             review_values = (
                 str(row + 1),
-                chinese_name,
+                song_name,
                 slot.display_name,
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",

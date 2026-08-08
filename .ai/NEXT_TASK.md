@@ -31,20 +31,27 @@ the 2026-08-08 sessions (see the day's handoffs in `.ai/handoffs/`):
    width fix in `.ai/handoffs/2026-08-08_RegistryAndReviewLayoutWidthFix.md`,
    button-clip/overlap/Chinese-name fix in
    `.ai/handoffs/2026-08-08_ButtonClippingOverlapAndChineseSongColumn.md`,
-   final columns/QFormLayout/scan-max fix in
-   `.ai/handoffs/2026-08-08_SeparateColumnsFormLayoutAndScanMax.md`):
+   columns/QFormLayout/scan-max fix in
+   `.ai/handoffs/2026-08-08_SeparateColumnsFormLayoutAndScanMax.md`,
+   **proven** Manual Pool Starts root cause + column rename in
+   `.ai/handoffs/2026-08-08_ManualPoolStartsRootCauseAndColumnRename.md`):
    Songs & Pools (Export Queue left / playlist right), Export Registry
    (Telnet controls left, capped ~360px, buttons in a 2x2 grid / stat tiles
    middle, capped ~200px / song list right, fully visible, now with
-   separate Order/Chinese/Song columns and a "Show scan max IDs" line under
-   the status text), Review & Export (checks + manual starts left, capped
-   ~340px, Manual Pool Starts rebuilt as a plain QFormLayout / review table
-   right, also with separate Order/Chinese/Song columns) — confirm the
-   Telnet button labels are no longer clipped, **Manual Pool Starts truly
-   renders correctly now (this is the third fix attempt — check very
-   carefully)**, Chinese names show in their own column in both tables, and
-   the Live Scan's actual max IDs appear on Export Registry after running
-   Scan Current Show.
+   separate Order/Song/Export Name columns and a "Show scan max IDs" line
+   under the status text), Review & Export (checks + manual starts left,
+   capped ~340px / review table right, also Order/Song/Export Name) —
+   confirm the Telnet button labels are no longer clipped, Song/Export Name
+   columns read correctly (English-only songs like 88Bars must show their
+   name, not a blank cell), and the Live Scan's actual max IDs appear on
+   Export Registry after running Scan Current Show.
+
+   **Manual Pool Starts overlap:** root cause was found and proven by
+   measurement (a word-wrapped QLabel above the fields; see that handoff)
+   and is now covered by an automated geometry regression test at four
+   window heights, negative-tested to confirm it catches the bug. A visual
+   confirmation is still worth one look since offscreen font metrics can
+   differ from a real display — but this is no longer eye-only.
 
 3. **View Layout "Follow Console Setup" checkbox** — confirm checking it
    syncs Pool Start live from Console Setup and updates when switching
