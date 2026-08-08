@@ -79,6 +79,32 @@ _COL_MARKS = 6
 _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
 _EXPORT_SONG_IDS_MIME = EXPORT_SONG_IDS_MIME
 
+# Fixed order/labels for the "Export Content Check" checkbox set, shared by
+# Console Setup's Export Options (the real, functional checkboxes), Review &
+# Export's read/write mirror (self.review_macro_checks, synced by index —
+# see _on_review_export_option_toggled), and the Export confirm dialog.
+# Keep all three in this exact order if it ever changes.
+_EXPORT_CONTENT_CHECK_LABELS = (
+    "Song List Sequence",
+    "Fixed control Macros",
+    "Song Macro",
+    "Song View",
+    "Add Main Cue named Preset",
+)
+
+# Manual Pool Starts (Review & Export): every one of the 7 Pool Start
+# spinboxes ends up this tall — the shared QSS rule for QSpinBox
+# ("min-height: 32px; padding: 2px 8px; border: 1px solid ...") computes
+# 32 + 4 (padding) + 2 (border) = 38px, and that CSS-driven minimum wins
+# over any smaller setFixedHeight()/setMaximumHeight() call in code, so
+# fighting it produces exactly the unstable squeeze this page used to have.
+_MANUAL_POOL_FIELD_HEIGHT = 38
+# Each grid row reserves the field height plus this gap, as ONE combined
+# hard-floor row minimum (see the QGridLayout comment below for why the
+# gap is folded in rather than left as separate, squeezable spacing).
+_MANUAL_POOL_ROW_SPACING = 8
+_MANUAL_POOL_ROW_HEIGHT = _MANUAL_POOL_FIELD_HEIGHT + _MANUAL_POOL_ROW_SPACING
+
 # View Layout Pool Types with a matching per-song Pool Start in Console
 # Setup — only these can "Follow Console Setup's per-song Pool Start".
 _FOLLOWABLE_POOL_TYPES = {"sequence", "effects", "groups", "timecode", "macros"}
@@ -216,6 +242,12 @@ class ShowPatchPage(QWidget):
         ):
             layout.setContentsMargins(16, 16, 16, 16)
             layout.setSpacing(14)
+        # Console Setup only: a few px back from margins/gaps between its
+        # 3 stacked sections (settings_row / opt_row / setup_nav) — every
+        # px here is one this page doesn't need a whole-page scroll for at
+        # a maximized 1920x1080. Other tabs keep the shared 16/14 above.
+        self.setup_page_layout.setContentsMargins(16, 10, 16, 10)
+        self.setup_page_layout.setSpacing(8)
         def _scrollable(page: QWidget) -> QScrollArea:
             """Tab content that scrolls instead of clipping.
 
@@ -255,7 +287,13 @@ class ShowPatchPage(QWidget):
             "border-bottom-color: #15181d; }"
             "QGroupBox { background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
             "margin-top: 10px; padding: 14px 10px 10px; color: #eef2f7; font-weight: 600; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }"
+            # Windows' native groupbox chrome paints the title sub-control
+            # with an opaque theme background unless a stylesheet says
+            # otherwise — without this, group titles like "MA2 Live Pool
+            # Scan" show a dark rectangle that doesn't match the panel
+            # behind them.
+            "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; "
+            "background: transparent; }"
             "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #101318; color: #eef2f7; "
             "border: 1px solid #38414d; border-radius: 6px; min-height: 32px; padding: 2px 8px; }"
             "QPushButton { background: #1b1f25; color: #eef2f7; border: 1px solid #2b313a; "
@@ -285,7 +323,11 @@ class ShowPatchPage(QWidget):
         console_layout.addWidget(self.ma3_radio)
         self.ma2_version = QComboBox()
         self.ma2_version.setEditable(True)
-        self.ma2_version.addItems([MA2_MINIMUM_VERSION, "3.9.60", "3.9.61", "3.9.63.6"])
+        # Placeholder only — set_project() -> _detect_ma2_versions() clears
+        # and repopulates this from the real detected installations before
+        # the page is ever shown to a user. Never mix a real detected
+        # version with a made-up generic one in the same list.
+        self.ma2_version.addItem(MA2_MINIMUM_VERSION)
         # Holds a short version string like "3.9.63.6" — no need for the
         # ~348px its longest item would otherwise reserve.
         self.ma2_version.setMaximumWidth(150)
@@ -342,23 +384,32 @@ class ShowPatchPage(QWidget):
             ("Song Macro", self.ma2_song_macro_start),
             ("Fixed Macro", self.ma2_fixed_macro_start),
         )
+        # 4 label/value pairs per row (was 2): at a maximized desktop width
+        # this box has plenty of horizontal room, and halving the row count
+        # (4 rows -> 2) is real, measurable vertical space back for Console
+        # Setup to fit at 1920x1080 without the whole page needing to
+        # scroll — see the _scrollable() note near workflow_tabs.addTab.
+        _POOL_START_COLS = 4
         for index, (label_text, widget) in enumerate(pool_start_fields):
-            row, col = divmod(index, 2)
+            row, col = divmod(index, _POOL_START_COLS)
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             # These only ever hold a 1-9999 Pool number. Left free to expand
-            # they grew to ~270px each, which pushed the right-hand column
-            # (Effect/Timecode/Song Macro, and Group's row) off the visible
-            # area so those fields could not be clicked at all.
+            # they grew to ~270px each, which pushed later columns off the
+            # visible area so those fields could not be clicked at all.
             widget.setMaximumWidth(110)
             pool_form.addWidget(label, row, col * 2)
             pool_form.addWidget(widget, row, col * 2 + 1)
-        pool_form.setColumnStretch(1, 1)
-        pool_form.setColumnStretch(3, 1)
+        for col in range(_POOL_START_COLS):
+            pool_form.setColumnStretch(col * 2 + 1, 1)
         settings_row.addWidget(pool_box, stretch=2)
 
         fader_box = QGroupBox("Fader (Executor)")
-        fader_form = QFormLayout(fader_box)
+        # 2 label/value pairs per row (was QFormLayout's 1 per row) — same
+        # row-count reduction as Pool Start above, same reason.
+        fader_form = QGridLayout(fader_box)
+        fader_form.setHorizontalSpacing(14)
+        fader_form.setVerticalSpacing(6)
         self.executor_page = NoWheelSpinBox()
         self.executor_page.setRange(1, 9999)
         self.executor_page.setValue(201)
@@ -373,10 +424,20 @@ class ShowPatchPage(QWidget):
         self.page_per_song.setToolTip(
             "Each song advances to the next Page. Main stays at .130 and Buttons start at .101."
         )
-        fader_form.addRow("Page", self.executor_page)
-        fader_form.addRow("Main", self.main_executor_number)
-        fader_form.addRow("Button Start", self.button_executor_number)
-        fader_form.addRow(self.page_per_song)
+        for index, (label_text, widget) in enumerate((
+            ("Page", self.executor_page),
+            ("Main", self.main_executor_number),
+            ("Button Start", self.button_executor_number),
+        )):
+            row, col = divmod(index, 2)
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+            widget.setMaximumWidth(110)
+            fader_form.addWidget(label, row, col * 2)
+            fader_form.addWidget(widget, row, col * 2 + 1)
+        fader_form.addWidget(self.page_per_song, 2, 0, 1, 4)
+        fader_form.setColumnStretch(1, 1)
+        fader_form.setColumnStretch(3, 1)
         settings_row.addWidget(fader_box, stretch=1)
         self.setup_page_layout.addLayout(settings_row)
 
@@ -400,7 +461,7 @@ class ShowPatchPage(QWidget):
         self.song_viewbutton = QLineEdit("1.20")
         self.song_viewbutton.setPlaceholderText("1.20")
         self.ma2_fixed_macros = QCheckBox("Fixed control Macros")
-        self.ma2_song_macros = QCheckBox("Song Macros")
+        self.ma2_song_macros = QCheckBox("Song Macro")
         self.ma2_song_list = QCheckBox("Song List Sequence")
         for checkbox in (
             self.ma2_fixed_macros,
@@ -416,7 +477,7 @@ class ShowPatchPage(QWidget):
         self.ma2_preset_cue_id.setRange(0.001, 9999.999)
         self.ma2_preset_cue_id.setDecimals(3)
         self.ma2_preset_cue_id.setValue(0.5)
-        self.ma2_song_views = QCheckBox("Song Views (Screen 3)")
+        self.ma2_song_views = QCheckBox("Song View")
         self.ma2_song_views.setChecked(True)
         self.ma2_effect_slots = NoWheelSpinBox()
         self.ma2_effect_slots.setRange(1, 9999)
@@ -437,17 +498,25 @@ class ShowPatchPage(QWidget):
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
         )
-        # Two field pairs per row keep labels and values readable at normal desktop widths.
+        # 3 field pairs per row (was 2): this box gets generous width at a
+        # maximized desktop (stretch=3 of opt_row's 5), and cutting the row
+        # count (11 fields: 6 rows -> 4; 5 checkboxes: 3 rows -> 2) is real
+        # vertical space back for Console Setup to fit at 1920x1080 without
+        # the whole page needing to scroll.
+        _OPTION_COLS = 3
         for index, (label_text, widget) in enumerate(option_fields):
-            group_column = (index % 2) * 2
-            group_row = index // 2
+            group_column = (index % _OPTION_COLS) * 2
+            group_row = index // _OPTION_COLS
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             opt_form.addWidget(label, group_row, group_column)
             opt_form.addWidget(widget, group_row, group_column + 1)
-        checks_row = (len(option_fields) + 1) // 2
-        for column, checkbox in enumerate((self.ma2_fixed_macros, self.ma2_song_macros, self.ma2_song_list, self.ma2_song_views, self.ma2_add_preset_cue)):
-            opt_form.addWidget(checkbox, checks_row + column // 2, (column % 2) * 2, 1, 2)
+        checks_row = (len(option_fields) + _OPTION_COLS - 1) // _OPTION_COLS
+        # Fixed order/labels shared with Review & Export's "Export Content
+        # Check" mirror (see _EXPORT_CONTENT_CHECK_LABELS) and the Export
+        # confirm dialog — keep all three in sync if this ever changes.
+        for column, checkbox in enumerate((self.ma2_song_list, self.ma2_fixed_macros, self.ma2_song_macros, self.ma2_song_views, self.ma2_add_preset_cue)):
+            opt_form.addWidget(checkbox, checks_row + column // _OPTION_COLS, (column % _OPTION_COLS) * 2, 1, 2)
         opt_row.addWidget(opt_box, stretch=3)
 
         out_box = QGroupBox("Output Folder")
@@ -614,11 +683,12 @@ class ShowPatchPage(QWidget):
             ("Plugin Pool", self.registry_plugin_pool),
         )):
             field_widget = QWidget()
+            field_widget.setObjectName("maLiveScanField")
             field = QVBoxLayout(field_widget)
             field.setContentsMargins(0, 0, 0, 0)
             field.setSpacing(2)
             label = QLabel(label_text)
-            label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+            label.setStyleSheet("color: #99a3b1; font-size: 11px; background: transparent;")
             field.addWidget(label)
             field.addWidget(widget)
             row, col = divmod(index, 2)
@@ -865,7 +935,7 @@ class ShowPatchPage(QWidget):
         macro_review_box.setObjectName("reviewExportContent")
         macro_review_layout = QVBoxLayout(macro_review_box)
         self.review_macro_checks = []
-        for index, label in enumerate(("Fixed control Macros", "Song Macros", "Song List Sequence", "Song Views (Screen 3)", "Add Main Cue named Preset")):
+        for index, label in enumerate(_EXPORT_CONTENT_CHECK_LABELS):
             check = QCheckBox(label)
             check.toggled.connect(
                 lambda checked, check_index=index: self._on_review_export_option_toggled(check_index, checked)
@@ -884,9 +954,17 @@ class ShowPatchPage(QWidget):
             "Or double-click any cell in the table to pin one song's own "
             "starting number; collisions with another song are highlighted."
         )
-        # Fixed vertical policy: this box always gets exactly its sizeHint, so
-        # a sibling that grows (the wrapped summary label below it gets longer
-        # after Auto-Fill) can never squeeze these rows into each other again.
+        # Fixed vertical policy: this box always requests exactly its
+        # sizeHint, so a sibling that grows (the wrapped summary label below
+        # it gets longer after Auto-Fill) can never squeeze these rows into
+        # each other. In a window too short for every widget's preferred
+        # size, Qt's shrink pass can still take a few px back from this box
+        # (there is no scroll fallback on this tab — see the QScrollArea
+        # note near workflow_tabs.addTab), which shows up as slightly
+        # tighter row spacing (never overlap: setRowMinimumHeight below is
+        # a genuine floor for each row's field, confirmed by measurement
+        # down to a 1280x700 window). Every field's own fixed size is what
+        # is actually unbreakable; see the geometry regression test.
         manual_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         manual_layout = QVBoxLayout(manual_box)
         # Same setting as the Export Registry copy, mirrored here so it can be
@@ -902,14 +980,30 @@ class ShowPatchPage(QWidget):
         manual_hint = QLabel("Blank = leave that Pool unchanged")
         manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
         manual_layout.addWidget(manual_hint)
-        manual_fields_form = QFormLayout()
-        # Standalone sub-layouts pick up a non-zero default margin from the
-        # Qt style, which desynced these field rows from the checkbox/hint
-        # above them (both added directly to manual_layout, no such margin).
+        # A QGridLayout with an explicit per-row minimum height, not
+        # QFormLayout: QFormLayout sizes each row from the label/field
+        # sizeHint, which is a heuristic that can under-report by a few
+        # pixels per row on real Windows font metrics — with 7 rows that
+        # heuristic error accumulates into visible squeeze/overlap even
+        # though every field already has a fixed size.
+        #
+        # The inter-row gap is folded into each row's own minimum height
+        # (_MANUAL_POOL_ROW_HEIGHT already includes it) instead of using
+        # QGridLayout's separate setVerticalSpacing(): a row's minimum
+        # height is a genuine hard floor Qt's layout engine will not shrink
+        # below even when this box is squeezed for space in a short window,
+        # but *inter-row spacing* set via setVerticalSpacing is only a
+        # preference and gets squeezed first — which produced inconsistent
+        # row pitch (46px at a tall window, 42-43px at a short one) even
+        # though no row ever actually overlapped. Zero explicit spacing +
+        # every row already tall enough to include its own gap makes the
+        # pitch between rows exactly _MANUAL_POOL_ROW_HEIGHT, always.
+        manual_fields_form = QGridLayout()
         manual_fields_form.setContentsMargins(0, 0, 0, 0)
-        manual_fields_form.setVerticalSpacing(8)
+        manual_fields_form.setHorizontalSpacing(12)
+        manual_fields_form.setVerticalSpacing(0)
         self.review_pool_start_fields = {}
-        for label, attr in (
+        for row, (label_text, attr) in enumerate((
             ("Sequence", "seq_start"),
             ("Effect", "effect_start"),
             ("Timecode", "timecode_start"),
@@ -917,22 +1011,38 @@ class ShowPatchPage(QWidget):
             ("Macro", "macro_start"),
             ("View", "view_start"),
             ("Page", "page_start"),
-        ):
+        )):
             field = NoWheelSpinBox()
             # 0 renders blank (Qt shows specialValueText at the minimum) and
             # means "don't touch this Pool" — see _auto_fill_pool_overrides.
             field.setRange(0, 9999)
             field.setSpecialValueText(" ")
             field.setValue(0)
-            field.setFixedWidth(90)
-            field.setFixedHeight(30)
+            # Width is only ever set here (QSS has no min-width rule for
+            # QSpinBox), but height matches _MANUAL_POOL_FIELD_HEIGHT — the
+            # actual height the shared QSS min-height/padding/border already
+            # forces, so this doesn't fight the stylesheet, just pins width
+            # too and blocks the grid from ever stretching either dimension.
+            field.setFixedSize(90, _MANUAL_POOL_FIELD_HEIGHT)
+            field.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             field.setToolTip(
-                f"Auto-Fill start for the {label} column. Leave blank to leave "
-                f"{label} untouched."
+                f"Auto-Fill start for the {label_text} column. Leave blank to "
+                f"leave {label_text} untouched."
             )
             self.review_pool_start_fields[attr] = field
-            manual_fields_form.addRow(label, field)
+            manual_fields_form.setRowMinimumHeight(row, _MANUAL_POOL_ROW_HEIGHT)
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #99a3b1; background: transparent;")
+            manual_fields_form.addWidget(
+                label, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            manual_fields_form.addWidget(
+                field, row, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
         manual_layout.addLayout(manual_fields_form)
+        # A guaranteed gap between the Page row and the buttons below, so the
+        # last field row can never read as touching/overlapping them.
+        manual_layout.addSpacing(10)
         autofill_row = QHBoxLayout()
         autofill_row.setContentsMargins(0, 0, 0, 0)
         self.review_autofill_btn = QPushButton("Auto-Fill && Sequence")
@@ -1467,26 +1577,39 @@ class ShowPatchPage(QWidget):
 
     def _detect_ma2_versions(self, _checked: bool = False, *, quiet: bool = False) -> None:
         self._ma2_discovery = discover_ma2_environment()
-        versions = {item.version for item in self._ma2_discovery.installations}
+        # installed_versions already IS the full, deduplicated, real-machine
+        # list (Windows uninstall registry + Start Menu/Desktop shortcut
+        # targets, each read via the actual .exe's FileVersion so multi-
+        # segment builds like 3.9.60.91 survive; the ProgramData library
+        # folder scan is only folded in as a per-family fallback there — see
+        # merge_installed_ma2_versions). Nothing here re-adds a hardcoded
+        # generic/truncated placeholder (that mixing — e.g. a fake "3.9.60"
+        # sitting next to the real "3.9.60.91" — was the original bug).
+        versions = set(self._ma2_discovery.installed_versions)
         if self._ma2_discovery.running_version:
             versions.add(self._ma2_discovery.running_version)
         if self._project and self._project.ma_export.ma2_target_version:
             versions.add(self._project.ma_export.ma2_target_version)
-        versions.update({MA2_MINIMUM_VERSION, "3.9.60", "3.9.61", "3.9.63.6"})
+        if not versions:
+            # Nothing detected at all (no MA2 on this machine, or running
+            # off-Windows) — a single, clearly-generic fallback so the
+            # dropdown isn't empty, never mixed in alongside real versions.
+            versions.add(MA2_MINIMUM_VERSION)
         selected = (
             self._project.ma_export.ma2_target_version
             if self._project and self._project.ma_export.ma2_target_version
             else self._ma2_discovery.recommended_version or MA2_MINIMUM_VERSION
         )
+        versions.add(selected)
         self.ma2_version.blockSignals(True)
         self.ma2_version.clear()
         self.ma2_version.addItems(
-            sorted(versions, key=lambda value: tuple(int(n) for n in value.split(".")))
+            sorted(versions, key=lambda value: tuple(int(n) for n in re.findall(r"\d+", value)))
         )
         self.ma2_version.setCurrentText(selected)
         self.ma2_version.blockSignals(False)
         self.registry_version.setText(selected)
-        installed = ", ".join(item.version for item in self._ma2_discovery.installations) or "none"
+        installed = ", ".join(self._ma2_discovery.installed_versions) or "none"
         running = self._ma2_discovery.running_version or "not running"
         self.ma2_detect_status.setText(f"Running {running} · Installed {installed}")
         if not ma2_version_supported(selected):
@@ -2043,10 +2166,11 @@ class ShowPatchPage(QWidget):
 
     def _on_review_export_option_toggled(self, index: int, checked: bool) -> None:
         """Keep Review & Export's final checks bidirectionally synced with setup."""
+        # Order must match _EXPORT_CONTENT_CHECK_LABELS / self.review_macro_checks.
         console_checks = (
+            self.ma2_song_list,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
-            self.ma2_song_list,
             self.ma2_song_views,
             self.ma2_add_preset_cue,
         )
@@ -2316,10 +2440,11 @@ class ShowPatchPage(QWidget):
             f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}\n"
             f"{self._scanned_max_text(settings)}"
         )
+        # Order must match _EXPORT_CONTENT_CHECK_LABELS / self.review_macro_checks.
         values = (
+            settings.ma2_include_song_list,
             settings.ma2_include_fixed_macros,
             settings.ma2_include_song_macros,
-            settings.ma2_include_song_list,
             settings.ma2_include_song_views,
             settings.ma2_add_main_preset_cue,
         )
@@ -2649,11 +2774,11 @@ class ShowPatchPage(QWidget):
             return
         enabled_content = [
             name for name, enabled in (
-                ("Fixed control Macros", self.ma2_fixed_macros.isChecked()),
-                ("Song Macros", self.ma2_song_macros.isChecked()),
                 ("Song List Sequence", self.ma2_song_list.isChecked()),
-                ("Song Views", self.ma2_song_views.isChecked()),
-                ("Preset Cue", self.ma2_add_preset_cue.isChecked()),
+                ("Fixed control Macros", self.ma2_fixed_macros.isChecked()),
+                ("Song Macro", self.ma2_song_macros.isChecked()),
+                ("Song View", self.ma2_song_views.isChecked()),
+                ("Add Main Cue named Preset", self.ma2_add_preset_cue.isChecked()),
             ) if enabled
         ]
         # One item per line so the confirm dialog is easy to check at a glance.

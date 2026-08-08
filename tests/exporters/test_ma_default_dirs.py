@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cueplayer.exporters.ma_default_dirs import (
+    Ma2Installation,
     discover_ma2_environment,
     discover_ma2_installations,
     default_ma2_export_dir,
@@ -12,6 +13,7 @@ from cueplayer.exporters.ma_default_dirs import (
     ma2_export_dir_for_version,
     ma2_version_from_path,
     ma2_version_supported,
+    merge_installed_ma2_versions,
     resolve_export_dir,
 )
 
@@ -56,7 +58,9 @@ def test_discover_ma2_installations_sorts_and_ignores_noise(tmp_path: Path) -> N
 
 def test_discovery_prefers_supported_running_full_build(tmp_path: Path) -> None:
     (tmp_path / "gma2_V_3.9.60" / "importexport").mkdir(parents=True)
-    discovery = discover_ma2_environment(tmp_path, lambda: "3.9.63.6")
+    # Registry/shortcut readers stubbed to () — this is a determinism test,
+    # not a test of the real host machine's actual MA2 installs.
+    discovery = discover_ma2_environment(tmp_path, lambda: "3.9.63.6", lambda: (), lambda: ())
     assert discovery.running_version == "3.9.63.6"
     assert discovery.recommended_version == "3.9.63.6"
 
@@ -64,10 +68,62 @@ def test_discovery_prefers_supported_running_full_build(tmp_path: Path) -> None:
 def test_discovery_falls_back_to_newest_supported_install(tmp_path: Path) -> None:
     for name in ("gma2_V_3.2.2", "gma2_V_3.3.4", "gma2_V_3.9.60"):
         (tmp_path / name / "importexport").mkdir(parents=True)
-    discovery = discover_ma2_environment(tmp_path, lambda: None)
+    discovery = discover_ma2_environment(tmp_path, lambda: None, lambda: (), lambda: ())
     assert discovery.recommended_version == "3.9.60"
     assert not ma2_version_supported("3.3.4.2")
     assert ma2_version_supported("3.3.4.3")
+
+
+def test_merge_keeps_every_distinct_patch_sharing_one_family(tmp_path: Path) -> None:
+    """Willy's real machine has 3.9.60.18 / .74 / .89 / .91 installed at
+    once — all four must survive, none collapsed into a generic "3.9.60"."""
+    registry_versions = ("3.9.60.18", "3.9.60.74", "3.9.60.89", "3.9.60.91")
+    merged = merge_installed_ma2_versions((), registry_versions, ())
+    assert merged == ("3.9.60.18", "3.9.60.74", "3.9.60.89", "3.9.60.91")
+
+
+def test_merge_prefers_precise_version_over_folder_derived_generic() -> None:
+    """A ProgramData library folder only ever yields a 3-segment name
+    ("3.9.63") — when the registry/shortcut scan found the real 4-segment
+    build for that same X.Y.Z family, the generic 3-segment one must not
+    also appear (that mixing is exactly what looked like a bug)."""
+    installations = (Ma2Installation("3.9.63", Path("lib"), Path("ie")),)
+    merged = merge_installed_ma2_versions(installations, ("3.9.63.6",), ())
+    assert merged == ("3.9.63.6",)
+
+
+def test_merge_falls_back_to_folder_derived_when_nothing_precise_found() -> None:
+    """A family with no registry/shortcut match at all still shows up,
+    using whatever the folder scan found, rather than being dropped."""
+    installations = (Ma2Installation("3.7.0", Path("lib"), Path("ie")),)
+    merged = merge_installed_ma2_versions(installations, (), ())
+    assert merged == ("3.7.0",)
+
+
+def test_merge_deduplicates_identical_versions_from_multiple_sources() -> None:
+    merged = merge_installed_ma2_versions((), ("3.9.63.6",), ("3.9.63.6",))
+    assert merged == ("3.9.63.6",)
+
+
+def test_merge_sorts_numerically_not_lexically() -> None:
+    """Lexical order would put "3.9.60.91" before "3.9.9.1" (since '6' <
+    '9'), which is numerically backwards."""
+    merged = merge_installed_ma2_versions((), ("3.9.60.91", "3.9.9.1"), ())
+    assert merged == ("3.9.9.1", "3.9.60.91")
+
+
+def test_discover_ma2_environment_combines_registry_and_shortcut_sources(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gma2_V_3.7.0" / "importexport").mkdir(parents=True)
+    discovery = discover_ma2_environment(
+        tmp_path,
+        lambda: None,
+        lambda: ("3.9.60.91", "3.9.61.5"),
+        lambda: ("3.9.63.6",),
+    )
+    assert discovery.installed_versions == ("3.7.0", "3.9.60.91", "3.9.61.5", "3.9.63.6")
+    assert discovery.recommended_version == "3.9.63.6"
 
 
 def test_full_build_maps_to_matching_importexport(tmp_path: Path) -> None:

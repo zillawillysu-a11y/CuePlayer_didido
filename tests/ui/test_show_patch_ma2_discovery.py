@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QCheckBox
 
 from cueplayer.domain.models import Project, Song
@@ -28,6 +28,39 @@ def _discovery(root: Path) -> Ma2Discovery:
     )
 
 
+def test_console_setup_fits_a_maximized_1920x1080_window_without_page_scroll(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Console Setup is hosted in a QScrollArea (fallback for genuinely
+    small windows), but at a normal maximized desktop size it must not
+    need to actually scroll — regression test for the reflow that cut its
+    natural height from 739px to ~524px (4/2-column grids instead of
+    1/2-column QFormLayout/QGridLayout rows). 524 leaves real headroom
+    below any plausible viewport at 1920x1080 after toolbar/transport/tab
+    chrome, even allowing for real Windows font metrics being taller than
+    this environment's offscreen fallback font."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page.resize(1920, 1040)
+    page.show()
+    page.workflow_tabs.setCurrentIndex(2)
+    app.processEvents()
+    app.processEvents()
+
+    setup_area = page.workflow_tabs.widget(2)
+    assert page.setup_page.sizeHint().height() < 650
+    # The fallback QScrollArea itself must still be there for small windows.
+    from PySide6.QtWidgets import QScrollArea
+
+    assert isinstance(setup_area, QScrollArea)
+    page.close()
+
+
 def test_detected_running_version_drives_default_folder(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -42,6 +75,40 @@ def test_detected_running_version_drives_default_folder(
     assert page.ma2_version.currentText() == "3.9.63.6"
     assert page.out_dir.text() == str(discovery.installations[0].importexport_dir)
     assert project.ma_export.ma2_output_dir_follows_version
+
+
+def test_target_version_dropdown_lists_every_real_installed_patch_full_precision(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression test for the bug report: multiple grandMA2 onPC point
+    releases installed at once (3.9.60.18/.74/.89/.91) must all appear in
+    the Target Version dropdown with their full 4-segment number — and no
+    generic/truncated "3.9.60" entry may appear alongside them."""
+    discovery = Ma2Discovery(
+        installations=(),
+        running_version=None,
+        installed_versions=(
+            "3.1.2.5", "3.3.4.3", "3.7.0.1", "3.7.0.5", "3.8.0.0", "3.9.0.3",
+            "3.9.60.18", "3.9.60.74", "3.9.60.89", "3.9.60.91", "3.9.61.5", "3.9.63.6",
+        ),
+    )
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment", lambda: discovery
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+
+    items = [page.ma2_version.itemText(i) for i in range(page.ma2_version.count())]
+    for expected in discovery.installed_versions:
+        assert expected in items, f"{expected} missing from dropdown: {items}"
+    # No collapsed/generic 3-segment duplicate for a family that has a real
+    # 4-segment version present.
+    assert "3.9.60" not in items
+    assert "3.9.61" not in items
+    assert "3.9.63" not in items
+    # Highest supported real version wins as the recommendation.
+    assert page.ma2_version.currentText() == "3.9.63.6"
+    assert "3.9.60.91" in page.ma2_detect_status.text()
 
 
 def test_five_page_playlist_workflow_and_screen3_grid(
@@ -227,6 +294,40 @@ def test_export_option_checkboxes_use_the_panel_background(
     assert "#maExportOptions QCheckBox { background: transparent; }" in page.styleSheet()
     assert "#reviewExportContent QCheckBox { background: transparent;" in page.styleSheet()
     assert page.ma2_fixed_macros.parent().objectName() == "maExportOptions"
+
+
+def test_live_scan_section_text_has_no_stray_dark_background(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MA2 Live Pool Scan's title and field labels ("MA2 Host", "Target
+    Version", "Command", "Monitor", "MA2 Show User", "Password", "Plugin
+    Pool", "MA2 Plugin Import Path") must render on the panel background,
+    not an extra dark rectangle. QGroupBox::title needs an explicit
+    "background: transparent" — Windows' native groupbox chrome paints an
+    opaque theme background behind the title sub-control otherwise, even
+    though the rest of the box already uses a custom stylesheet."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+
+    assert "QGroupBox::title" in page.styleSheet()
+    title_rule = page.styleSheet().split("QGroupBox::title", 1)[1].split("}", 1)[0]
+    assert "background: transparent" in title_rule
+
+    for widget in (
+        page.registry_host,
+        page.registry_version,
+        page.registry_command_port,
+        page.registry_monitor_port,
+        page.registry_user,
+        page.registry_password,
+        page.registry_plugin_pool,
+    ):
+        field_widget = widget.parentWidget()
+        assert field_widget.objectName() == "maLiveScanField"
 
 
 def test_timecode_pool_uses_three_cells_including_its_title(
@@ -466,10 +567,12 @@ def test_review_checks_sync_groups_and_export_allocation_report(
     page.set_project(project)
     page._add_songs_to_export_queue([project.songs[0].id])
 
-    page.review_macro_checks[0].setChecked(True)
+    # review_macro_checks follows _EXPORT_CONTENT_CHECK_LABELS order:
+    # Song List Sequence, Fixed control Macros, Song Macro, Song View, Preset.
+    page.review_macro_checks[1].setChecked(True)
     assert page.ma2_fixed_macros.isChecked()
     page.ma2_song_macros.setChecked(True)
-    assert page.review_macro_checks[1].isChecked()
+    assert page.review_macro_checks[2].isChecked()
     assert page.review_pool_start_fields["view_start"].toolTip()
     assert page.review_table.item(0, 5).text() == "1–20"
 
@@ -1282,3 +1385,60 @@ def test_following_view_pool_tracks_the_live_allocation_not_just_console_setup(
     page.view_pool_number_start.setValue(42)
     page.review_table.item(0, 3).setText("900")
     assert view_start() == 42
+
+
+@pytest.mark.parametrize("width,height", [(1920, 1040), (1600, 900), (1280, 700)])
+def test_manual_pool_starts_fields_never_overlap(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, width: int, height: int
+) -> None:
+    """The 7 Pool Start spinboxes (Sequence/Effect/Timecode/Group/Macro/View/
+    Page) must form a stable two-column grid: same x, same width, same
+    height, and no pair may ever overlap — regression test for the
+    QFormLayout squeeze bug where real Windows font metrics compressed rows
+    into each other. Covers a maximized-1920x1080-ish window down to a
+    short ~700px one, since the fields must never overlap regardless of
+    window height."""
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    page = ShowPatchPage()
+    page.set_project(project)
+    page.resize(width, height)
+    page.show()
+    page.workflow_tabs.setCurrentIndex(4)
+    app.processEvents()
+    app.processEvents()
+
+    order = [
+        "seq_start", "effect_start", "timecode_start",
+        "group_start", "macro_start", "view_start", "page_start",
+    ]
+    fields = [page.review_pool_start_fields[name] for name in order]
+    tops = [f.mapTo(page, QPoint(0, 0)).y() for f in fields]
+    xs = {f.mapTo(page, QPoint(0, 0)).x() for f in fields}
+    widths = {f.width() for f in fields}
+    heights = {f.height() for f in fields}
+
+    assert len(xs) == 1, f"Pool Start fields must share one x, got {xs}"
+    assert len(widths) == 1, f"Pool Start fields must share one width, got {widths}"
+    assert len(heights) == 1, f"Pool Start fields must share one height, got {heights}"
+    field_height = heights.pop()
+
+    for name, top, next_name, next_top in zip(order, tops, order[1:], tops[1:]):
+        bottom = top + field_height
+        assert bottom < next_top, (
+            f"{name} (bottom={bottom}) overlaps {next_name} (top={next_top}) "
+            f"at {width}x{height}"
+        )
+
+    # Page (the last row) must never touch Auto-Fill & Sequence / Clear All
+    # Overrides below it.
+    page_bottom = tops[-1] + field_height
+    autofill_top = page.review_autofill_btn.mapTo(page, QPoint(0, 0)).y()
+    assert page_bottom < autofill_top, (
+        f"Page row (bottom={page_bottom}) overlaps the button row "
+        f"(top={autofill_top}) at {width}x{height}"
+    )
+    page.close()
