@@ -18,8 +18,8 @@ from cueplayer.exporters.ma_default_dirs import (
     resolve_export_dir,
 )
 from cueplayer.exporters.ma_default_dirs import (
+    _is_ma2_executable_filename,
     _is_ma2_version_number,
-    _looks_like_grandma2_identity,
     _registry_ma2_versions_windows,
     _shortcut_ma2_versions_windows,
 )
@@ -133,53 +133,101 @@ def test_discover_ma2_environment_combines_registry_and_shortcut_sources(
     assert discovery.recommended_version == "3.9.63.6"
 
 
+_WILLY_REAL_VERSIONS = (
+    "3.1.2.5", "3.3.4.3", "3.7.0.1", "3.7.0.5", "3.8.0.0", "3.9.0.3",
+    "3.9.60.18", "3.9.60.74", "3.9.60.89", "3.9.60.91", "3.9.61.5", "3.9.63.6",
+)
+
+
+def test_end_to_end_matches_real_machine_registry_and_shortcut_output(monkeypatch) -> None:
+    """End-to-end regression test built directly from Willy's real
+    diagnostic PowerShell output: registry DisplayVersion/Publisher/
+    InstallLocation all blank (only DisplayName usable), and every real
+    install also has an "Open Show Folder grandMA2 onPC X.X.X.X" shortcut
+    targeting C:\\Windows\\explorer.exe alongside its two real launch
+    shortcuts. The merged result must be exactly the 12 real versions,
+    full precision, no explorer.exe-sourced 10.0.26100.8875."""
+    registry_output = "".join(f"grandMA2 onPC {v}|\n" for v in _WILLY_REAL_VERSIONS)
+
+    shortcut_lines = []
+    for v in _WILLY_REAL_VERSIONS:
+        real_exe = f"C:\\Program Files\\MA Lighting Technologies\\grandma\\grandMA2 onPC {v}\\gma2onpc.exe"
+        shortcut_lines.append(f"grandMA2 onPC {v}.lnk|{real_exe}")
+        shortcut_lines.append(f"grandMA2 onPC {v} CleanStart.lnk|{real_exe}")
+        shortcut_lines.append(f"Open Show Folder grandMA2 onPC {v}.lnk|C:\\Windows\\explorer.exe")
+    shortcut_output = "".join(line + "\n" for line in shortcut_lines)
+
+    def fake_run_powershell(command: str, *, timeout: float) -> str:
+        # Distinguish which script ran the same way discover_ma2_environment
+        # calls each reader — by which command text is being executed.
+        if "WScript.Shell" in command:
+            return shortcut_output
+        return registry_output
+
+    monkeypatch.setattr(ma_default_dirs, "_run_powershell", fake_run_powershell)
+
+    discovery = discover_ma2_environment(
+        Path("/nonexistent"), lambda: None,
+        ma_default_dirs._registry_ma2_versions_windows,
+        ma_default_dirs._shortcut_ma2_versions_windows,
+    )
+    assert discovery.installed_versions == _WILLY_REAL_VERSIONS
+    assert "10.0.26100.8875" not in discovery.installed_versions
+    assert discovery.recommended_version == "3.9.63.6"
+
+
 def test_is_ma2_version_number_requires_major_version_3() -> None:
     assert _is_ma2_version_number("3.9.60.91")
     assert _is_ma2_version_number("3.3.4.3")
-    # 10.0.26100.8875 is Windows' own OS build numbering (e.g. msiexec.exe's
+    # 10.0.26100.8875 is Windows' own OS build numbering (explorer.exe's
     # FileVersion), not a grandMA2 onPC version.
     assert not _is_ma2_version_number("10.0.26100.8875")
     assert not _is_ma2_version_number("")
 
 
-def test_looks_like_grandma2_identity_requires_a_real_signal() -> None:
-    assert _looks_like_grandma2_identity("MA Lighting Technologies GmbH", "", "", "")
-    assert _looks_like_grandma2_identity("", "grandMA2 onPC", "", "")
-    assert _looks_like_grandma2_identity("", "", "", r"C:\Program Files (x86)\MA Lighting Technologies\grandMA2 onPC 3.9.60")
-    # A valid FileVersion with no matching identity field anywhere (the
-    # msiexec.exe case: CompanyName "Microsoft Corporation", ProductName
-    # "Windows(R) Operating System") must not pass.
-    assert not _looks_like_grandma2_identity(
-        "Microsoft Corporation", "Windows(R) Operating System", "Windows Installer", r"C:\Windows\System32\msiexec.exe"
-    )
-    assert not _looks_like_grandma2_identity("", "", "", "")
+def test_is_ma2_executable_filename_matches_the_real_onpc_binary() -> None:
+    assert _is_ma2_executable_filename(r"C:\Program Files\MA Lighting Technologies\grandma\grandMA2 onPC 3.9.60.91\gma2onpc.exe")
+    assert _is_ma2_executable_filename(r"C:\somewhere\grandMA2onPC_x64.exe")
+    # Confirmed on a real machine: MA Lighting also ships an "Open Show
+    # Folder grandMA2 onPC X.X.X" shortcut whose name matches the
+    # grandMA2/onPC filter same as the real launch shortcuts, but whose
+    # target is Microsoft's own file explorer — this must be rejected.
+    assert not _is_ma2_executable_filename(r"C:\Windows\explorer.exe")
+    assert not _is_ma2_executable_filename(r"C:\Windows\System32\msiexec.exe")
+    assert not _is_ma2_executable_filename("")
 
 
-def test_registry_scan_rejects_msiexec_style_false_positive(monkeypatch) -> None:
-    """Simulates the reported bug: an "Uninstall grandMA2 onPC 3.9.60"
-    registry entry whose InstallLocation lookup found no real onPC
-    executable, so the raw registry DisplayVersion/Publisher — or a
-    generic Windows tool's own FileVersion — must be rejected unless it
-    actually identifies as MA Lighting / grandMA2."""
+def test_registry_scan_parses_version_from_display_name(monkeypatch) -> None:
+    """Confirmed on a real machine: DisplayVersion/Publisher/InstallLocation
+    can all be blank for a genuine grandMA2 onPC uninstall entry — only
+    DisplayName ("grandMA2 onPC 3.9.60.91") reliably carries the version,
+    and matching it via Where-Object is itself the identity signal."""
     fake_output = (
-        # A real entry: exe found, real identity.
-        "3.9.60|C:\\MA2\\real|MA Lighting Technologies GmbH|3.9.60.91|MA Lighting Technologies GmbH|grandMA2 onPC|grandMA2 onPC\n"
-        # A false positive: DisplayName matched loosely, but nothing here
-        # identifies as MA2 — must be dropped even though the version
-        # number alone (10.0.26100.8875) looks well-formed.
-        "|C:\\Windows\\System32|Microsoft Corporation|10.0.26100.8875|Microsoft Corporation|Windows(R) Operating System|Windows Installer\n"
+        "grandMA2 onPC 3.9.60.91|\n"
+        "grandMA2 onPC 3.9.63.6|\n"
     )
+    monkeypatch.setattr(ma_default_dirs, "_run_powershell", lambda *_a, **_k: fake_output)
+    assert _registry_ma2_versions_windows() == ("3.9.60.91", "3.9.63.6")
+
+
+def test_registry_scan_prefers_exe_version_when_present(monkeypatch) -> None:
+    fake_output = "grandMA2 onPC 3.9.60|3.9.60.91\n"
     monkeypatch.setattr(ma_default_dirs, "_run_powershell", lambda *_a, **_k: fake_output)
     assert _registry_ma2_versions_windows() == ("3.9.60.91",)
 
 
-def test_shortcut_scan_excludes_uninstall_shortcuts_and_validates_identity(monkeypatch) -> None:
+def test_shortcut_scan_rejects_open_show_folder_explorer_target(monkeypatch) -> None:
+    """Regression test for the exact false positive reported: an "Open Show
+    Folder grandMA2 onPC 3.9.60.91.lnk" shortcut (name matches the filter)
+    targeting C:\\Windows\\explorer.exe must not contribute a version,
+    while the real launch shortcut for the same install must."""
     fake_output = (
-        "3.9.63.6|MA Lighting Technologies GmbH|grandMA2 onPC|grandMA2 onPC|C:\\MA2\\grandMA2 onPC.exe\n"
-        "10.0.26100.8875|Microsoft Corporation|Windows(R) Operating System|Windows Installer|C:\\Windows\\System32\\msiexec.exe\n"
+        "grandMA2 onPC 3.9.60.91.lnk|C:\\Program Files\\MA Lighting Technologies\\grandma\\grandMA2 onPC 3.9.60.91\\gma2onpc.exe\n"
+        "grandMA2 onPC 3.9.60.91 CleanStart.lnk|C:\\Program Files\\MA Lighting Technologies\\grandma\\grandMA2 onPC 3.9.60.91\\gma2onpc.exe\n"
+        "Open Show Folder grandMA2 onPC 3.9.60.91.lnk|C:\\Windows\\explorer.exe\n"
     )
     monkeypatch.setattr(ma_default_dirs, "_run_powershell", lambda *_a, **_k: fake_output)
-    assert _shortcut_ma2_versions_windows() == ("3.9.63.6",)
+    assert _shortcut_ma2_versions_windows() == ("3.9.60.91", "3.9.60.91")
 
 
 def test_full_build_maps_to_matching_importexport(tmp_path: Path) -> None:

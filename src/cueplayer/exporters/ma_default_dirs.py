@@ -92,33 +92,34 @@ def _running_ma2_version_windows() -> str | None:
     return max(versions, key=_version_key) if versions else None
 
 
-def _looks_like_grandma2_identity(*fields: str) -> bool:
-    """Identity check for a discovery candidate: at least one of its
-    metadata fields (registry Publisher, the resolved executable's
-    CompanyName/ProductName/FileDescription, or its install/target path)
-    must plausibly name MA Lighting / grandMA2 onPC.
-
-    A file having a well-formed x.x.x.x FileVersion is NOT sufficient on
-    its own — msiexec.exe (Windows' own installer engine, which many
-    "Uninstall <product>" shortcuts point their TargetPath at) has a
-    perfectly valid FileVersion that simply tracks the Windows OS build
-    (10.0.26100.xxxx-style), which is exactly the shape of the false
-    positive this identity check exists to reject.
-    """
-    haystack = " ".join(field for field in fields if field).lower()
-    if "ma lighting" in haystack:
-        return True
-    if re.search(r"grand\s*ma\s*2", haystack):
-        return True
-    return False
-
-
 def _is_ma2_version_number(version: str) -> bool:
     """Every grandMA2 onPC release has been a 3.x build. Defense-in-depth
-    only — never the sole reason a candidate is accepted or rejected; see
-    _looks_like_grandma2_identity, which is the real identity gate."""
+    only — never the sole reason a candidate is accepted; see the
+    identity checks in each reader below."""
     key = _version_key(version)
     return bool(key) and key[0] == 3
+
+
+def _is_ma2_executable_filename(path: str) -> bool:
+    """Identity check for a shortcut TARGET: does it actually point at
+    grandMA2 onPC's own executable (gma2onpc*.exe / grandma2*.exe), not
+    some other program a shortcut with a matching *name* happens to
+    launch?
+
+    Confirmed on a real machine: MA Lighting's installer also creates an
+    "Open Show Folder grandMA2 onPC X.X.X.X" shortcut whose TargetPath is
+    literally C:\\Windows\\explorer.exe — its *name* matches
+    "grandMA2.*onPC" same as the real launch shortcuts, but its target is
+    Microsoft's own file explorer, whose FileVersion just tracks the
+    Windows OS build (10.0.26100.8875-style — the exact false positive
+    this exists to reject). gma2onpc.exe itself embeds no VersionInfo at
+    all (FileVersion/CompanyName/ProductName all empty), so identity has
+    to come from the target path's own filename, not its metadata.
+    """
+    if not path:
+        return False
+    name = Path(path).name.lower()
+    return bool(re.match(r"(gma2onpc|grandma2)[^\\/]*\.exe$", name))
 
 
 def _run_powershell(command: str, *, timeout: float) -> str:
@@ -140,13 +141,16 @@ def _registry_ma2_versions_windows() -> tuple[str, ...]:
     """Full installed versions from the Windows uninstall registry.
 
     Scans both the native and WOW6432Node uninstall keys under HKLM, and
-    HKCU (a per-user install), for any DisplayName matching grandMA2 onPC.
-    DisplayVersion there can itself be an installer-authored 3-segment
-    string, so when InstallLocation is present this cross-checks the real
-    onPC executable's FileVersion (and reads its CompanyName/ProductName/
-    FileDescription for identity validation) in the same PowerShell call,
-    falling back to the registry's own DisplayVersion/Publisher when no
-    matching executable is found.
+    HKCU (a per-user install), for any DisplayName matching grandMA2 onPC
+    — MA Lighting's installer names each entry literally
+    "grandMA2 onPC X.Y.Z.W", and confirmed on a real machine,
+    DisplayVersion/Publisher/InstallLocation can all be blank there, so
+    the version is parsed straight out of that DisplayName text (which is
+    also the identity signal: Windows' own curated per-product field
+    already matched grandMA2 onPC, same gate the pre-identity-validation
+    code effectively relied on). If InstallLocation *is* present and its
+    real onPC executable's own FileVersion is non-empty, that is used
+    instead since it can only be more precise, never less.
     """
     command = (
         "$paths = @("
@@ -158,32 +162,23 @@ def _registry_ma2_versions_windows() -> tuple[str, ...]:
         "Where-Object { $_.DisplayName -match 'grandMA2.*onPC' } | "
         "ForEach-Object { "
         "$loc = $_.InstallLocation; "
-        "$exeVer=''; $exeCompany=''; $exeProduct=''; $exeDesc=''; "
+        "$exeVer=''; "
         "if ($loc -and (Test-Path -LiteralPath $loc)) { "
-        "$exe = Get-ChildItem -LiteralPath $loc -Filter 'grandma2*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; "
-        "if (-not $exe) { $exe = Get-ChildItem -LiteralPath $loc -Filter 'gma2*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 }; "
-        "if ($exe) { "
-        "$vi = $exe.VersionInfo; "
-        "$exeVer=$vi.FileVersion; $exeCompany=$vi.CompanyName; $exeProduct=$vi.ProductName; $exeDesc=$vi.FileDescription "
-        "} "
+        "$exe = Get-ChildItem -LiteralPath $loc -Filter 'gma2onpc*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "if (-not $exe) { $exe = Get-ChildItem -LiteralPath $loc -Filter 'grandma2*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 }; "
+        "if ($exe) { $exeVer = $exe.VersionInfo.FileVersion } "
         "}; "
-        "\"$($_.DisplayVersion)|$loc|$($_.Publisher)|$exeVer|$exeCompany|$exeProduct|$exeDesc\" "
+        "\"$($_.DisplayName)|$exeVer\" "
         "}"
     )
     versions: list[str] = []
     for line in _run_powershell(command, timeout=5).splitlines():
-        parts = line.split("|", 6)
-        if len(parts) < 7:
-            continue
-        display_version, install_location, publisher, exe_version, exe_company, exe_product, exe_desc = (
-            part.strip() for part in parts
-        )
-        version = exe_version or display_version
+        display_name, _, exe_version = line.partition("|")
+        display_name = display_name.strip()
+        exe_version = exe_version.strip()
+        name_match = re.search(r"\d+(?:\.\d+){2,3}", display_name)
+        version = exe_version or (name_match.group(0) if name_match else "")
         if not version or not _is_ma2_version_number(version):
-            continue
-        if not _looks_like_grandma2_identity(
-            publisher, exe_company, exe_product, exe_desc, install_location
-        ):
             continue
         versions.append(version)
     return tuple(versions)
@@ -192,11 +187,14 @@ def _registry_ma2_versions_windows() -> tuple[str, ...]:
 def _shortcut_ma2_versions_windows() -> tuple[str, ...]:
     """Full installed versions resolved from Start Menu / Desktop .lnk
     shortcuts whose name matches grandMA2 onPC (excluding "Uninstall ..."
-    shortcuts, which point at a generic uninstall helper — often
-    msiexec.exe — rather than the real onPC executable): each shortcut's
-    target executable is resolved via the WScript.Shell COM object, then
-    its FileVersion and CompanyName/ProductName/FileDescription are read
-    for identity validation the same way as the registry scan."""
+    shortcuts): the version is parsed from the shortcut's own filename
+    (MA Lighting names them "grandMA2 onPC X.Y.Z.W[.lnk| CleanStart.lnk]"
+    — confirmed reliable on a real machine, unlike gma2onpc.exe's own
+    VersionInfo, which is entirely empty), and identity is validated by
+    requiring the shortcut's resolved TARGET executable to itself be
+    named like the real onPC binary — see _is_ma2_executable_filename for
+    why that, not FileVersion/CompanyName, is the actual identity gate
+    here."""
     command = (
         "$shell = New-Object -ComObject WScript.Shell; "
         "$dirs = @("
@@ -209,20 +207,21 @@ def _shortcut_ma2_versions_windows() -> tuple[str, ...]:
         "Where-Object { $_.Name -match 'grandMA2.*onPC' -and $_.Name -notmatch 'uninstall' } | "
         "ForEach-Object { "
         "$t = $shell.CreateShortcut($_.FullName).TargetPath; "
-        "if ($t -and (Test-Path -LiteralPath $t)) { "
-        "$vi = (Get-Item -LiteralPath $t).VersionInfo; "
-        "\"$($vi.FileVersion)|$($vi.CompanyName)|$($vi.ProductName)|$($vi.FileDescription)|$t\" "
-        "} }"
+        "\"$($_.Name)|$t\" "
+        "}"
     )
     versions: list[str] = []
     for line in _run_powershell(command, timeout=8).splitlines():
-        parts = line.split("|", 4)
-        if len(parts) < 5:
+        name, _, target = line.partition("|")
+        name = name.strip()
+        target = target.strip()
+        match = re.search(r"\d+(?:\.\d+){2,3}", name)
+        if match is None:
             continue
-        version, company, product, description, target_path = (part.strip() for part in parts)
-        if not version or not _is_ma2_version_number(version):
+        version = match.group(0)
+        if not _is_ma2_version_number(version):
             continue
-        if not _looks_like_grandma2_identity(company, product, description, target_path):
+        if not _is_ma2_executable_filename(target):
             continue
         versions.append(version)
     return tuple(versions)
