@@ -111,7 +111,16 @@ _MANUAL_POOL_ROW_HEIGHT = _MANUAL_POOL_FIELD_HEIGHT + _MANUAL_POOL_ROW_SPACING
 
 # View Layout Pool Types with a matching per-song Pool Start in Console
 # Setup — only these can "Follow Console Setup's per-song Pool Start".
-_FOLLOWABLE_POOL_TYPES = {"sequence", "effects", "groups", "timecode", "macros"}
+_FOLLOWABLE_POOL_TYPES = {
+    "sequence",
+    "effects",
+    "groups",
+    "timecode",
+    "macros",
+    # grandMA3 All 5 is the per-song Effects pool (Song EFX), so it follows
+    # the same Console Setup allocation as MA2's Effects pool.
+    "all5",
+}
 
 # Display labels for the manual per-song Pool override keys used in
 # MaExportSettings.ma2_pool_overrides / SongPatchSlot / pool_collisions().
@@ -2620,6 +2629,7 @@ class ShowPatchPage(QWidget):
         mapping: dict[str, tuple[object, object, str]] = {
             "sequence": (self.seq_start, self.ma2_sequence_slots, "main_sequence"),
             "effects": (self.ma2_effect_pool_start, self.ma2_effect_slots, "effect_start"),
+            "all5": (self.ma2_effect_pool_start, self.ma2_effect_slots, "effect_start"),
             "groups": (self.ma2_group_pool_start, self.ma2_group_slots, "group_start"),
             "timecode": (self.tc_start, None, "timecode_pool"),
             "macros": (self.ma2_song_macro_start, None, "song_macro_pool"),

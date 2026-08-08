@@ -78,6 +78,21 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.view_stage.widgets[0]["x"] == 0
     assert page.view_stage.widgets[-1]["type"] == "all5"
 
+    # MA3 All 5 is Song EFX and must follow the live per-song Effects
+    # allocation from Console Setup, including both start and stride.
+    page.view_stage.selected_index = len(page.view_stage.widgets) - 1
+    page._load_view_inspector(page.view_stage.selected_index)
+    assert page.view_pool_follow.isEnabled()
+    page.ma2_effect_pool_start.setValue(1201)
+    page.ma2_effect_slots.setValue(125)
+    page.view_pool_follow.setChecked(True)
+    app.processEvents()
+    song_efx = page.view_stage.widgets[-1]
+    assert song_efx["follow"] is True
+    assert song_efx["mode"] == "perSong"
+    assert song_efx["start"] == 1201
+    assert song_efx["stride"] == 125
+
 
 def test_console_setup_fits_a_maximized_1920x1080_window_without_page_scroll(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
