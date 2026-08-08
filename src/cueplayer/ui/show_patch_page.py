@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -29,8 +29,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +52,7 @@ from cueplayer.exporters.show_patch import (
     build_show_patch,
     plans_from_show_patch,
 )
+from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.ma2_view_layout import (
     TIMECODE_POOL_TOTAL_CELLS,
@@ -72,31 +71,7 @@ _COL_TC = 5
 _COL_MARKS = 6
 
 _DEFAULT_SHOW_MACRO = "CuePlayer_Show_Install"
-_EXPORT_SONG_IDS_MIME = "application/x-cueplayer-export-song-ids"
-
-
-class SetlistExportTree(QTreeWidget):
-    """Set List source that drags one, many, or a whole folder into Export Queue."""
-
-    def mimeTypes(self) -> list[str]:
-        return [_EXPORT_SONG_IDS_MIME]
-
-    def mimeData(self, items):  # noqa: ANN001
-        song_ids: list[str] = []
-        for item in items:
-            ids = item.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(ids, str):
-                ids = [ids]
-            for song_id in ids or []:
-                if song_id and song_id not in song_ids:
-                    song_ids.append(song_id)
-        data = QMimeData()
-        data.setData(_EXPORT_SONG_IDS_MIME, "\n".join(song_ids).encode("utf-8"))
-        return data
-
-    def selected_song_ids(self) -> list[str]:
-        mime = self.mimeData(self.selectedItems())
-        return bytes(mime.data(_EXPORT_SONG_IDS_MIME)).decode("utf-8").splitlines()
+_EXPORT_SONG_IDS_MIME = EXPORT_SONG_IDS_MIME
 
 
 class ExportQueueList(QListWidget):
@@ -411,22 +386,12 @@ class ShowPatchPage(QWidget):
         self.setup_page_layout.addLayout(opt_row)
         self.setup_page_layout.addStretch(1)
 
-        song_box = QGroupBox("Set List → Export Queue")
+        song_box = QGroupBox("Export Queue")
         song_layout = QHBoxLayout(song_box)
-        source_column = QVBoxLayout()
-        source_column.addWidget(QLabel("Set List (drag songs or a folder)"))
-        self.setlist_export_source = SetlistExportTree()
-        self.setlist_export_source.setHeaderHidden(True)
-        self.setlist_export_source.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setlist_export_source.setDragEnabled(True)
-        source_column.addWidget(self.setlist_export_source)
-        add_source = QPushButton("Add Selected →")
-        add_source.clicked.connect(self._add_selected_setlist_songs)
-        source_column.addWidget(add_source)
-        song_layout.addLayout(source_column, stretch=1)
-
         queue_column = QVBoxLayout()
-        queue_column.addWidget(QLabel("Export Queue (drop here; order = export order)"))
+        queue_column.addWidget(
+            QLabel("Drag songs — or a whole folder — from the Setlist panel; drop order = export order")
+        )
         self.song_pick = ExportQueueList()
         self.song_pick.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.song_pick.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
@@ -1165,7 +1130,6 @@ class ShowPatchPage(QWidget):
     def _rebuild_song_pick(self) -> None:
         if self._project is None:
             self.song_pick.clear()
-            self.setlist_export_source.clear()
             self.view_preview_song.clear()
             return
         selected_ids = [
@@ -1186,7 +1150,6 @@ class ShowPatchPage(QWidget):
             item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_pick.addItem(item)
         self.song_pick.blockSignals(False)
-        self._rebuild_setlist_export_source()
         preview_index = max(0, self.view_preview_song.currentIndex())
         self.view_preview_song.blockSignals(True)
         self.view_preview_song.clear()
@@ -1197,44 +1160,6 @@ class ShowPatchPage(QWidget):
                 min(preview_index, self.view_preview_song.count() - 1)
             )
         self.view_preview_song.blockSignals(False)
-
-    def _rebuild_setlist_export_source(self) -> None:
-        """Render the project Set List by folder without duplicating export state."""
-        if self._project is None:
-            return
-        self.setlist_export_source.clear()
-        categorized = {category.id: [] for category in self._project.setlist_categories}
-        uncategorized = []
-        for song in self._project.songs:
-            (categorized.get(song.category_id, uncategorized)).append(song)
-        for category in self._project.setlist_categories:
-            songs = categorized.get(category.id, [])
-            if not songs:
-                continue
-            parent = QTreeWidgetItem([f"▸ {category.name} ({len(songs)})"])
-            parent.setData(0, Qt.ItemDataRole.UserRole, [song.id for song in songs])
-            self.setlist_export_source.addTopLevelItem(parent)
-            for song in songs:
-                self._append_setlist_song_item(parent, song)
-            parent.setExpanded(True)
-        if uncategorized:
-            parent = QTreeWidgetItem([f"▸ Ungrouped ({len(uncategorized)})"])
-            parent.setData(0, Qt.ItemDataRole.UserRole, [song.id for song in uncategorized])
-            self.setlist_export_source.addTopLevelItem(parent)
-            for song in uncategorized:
-                self._append_setlist_song_item(parent, song)
-            parent.setExpanded(True)
-
-    @staticmethod
-    def _append_setlist_song_item(parent: QTreeWidgetItem, song) -> None:  # noqa: ANN001
-        en = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
-        label = en if song.name == en else f"{song.setlist_number:g}. {song.name}  ·  {en}"
-        child = QTreeWidgetItem([label])
-        child.setData(0, Qt.ItemDataRole.UserRole, song.id)
-        parent.addChild(child)
-
-    def _add_selected_setlist_songs(self) -> None:
-        self._add_songs_to_export_queue(self.setlist_export_source.selected_song_ids())
 
     def _add_songs_to_export_queue(self, song_ids: list[str]) -> None:
         if self._project is None:

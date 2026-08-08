@@ -440,33 +440,43 @@ def test_clear_queue_button_empties_queue_and_settings(
     assert project.ma_export.export_song_ids == []
 
 
-def test_folder_drag_selects_all_songs_in_category_in_order(
+def test_export_queue_accepts_a_song_ids_drop_from_the_setlist_panel(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from cueplayer.domain.models import SetlistCategory
+    """ExportQueueList must accept drops carrying EXPORT_SONG_IDS_MIME from any
+    source widget — the Songs & Pools tab no longer has its own duplicate Set
+    List tree; the real Setlist sidebar (SetlistWidget in main_window.py) is
+    the only drag source now. See test_setlist_export_drag.py for coverage
+    that SetlistWidget actually produces this payload for song and folder
+    drags."""
+    from PySide6.QtCore import QMimeData, QPointF
+    from PySide6.QtGui import QDropEvent
+
+    from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 
     monkeypatch.setattr(
         "cueplayer.ui.show_patch_page.discover_ma2_environment",
         lambda: _discovery(tmp_path),
     )
     project = Project.create("Show", with_song=False)
-    category = SetlistCategory.create("Act 1")
-    project.setlist_categories.append(category)
     for name in ("Opener", "Second", "Third"):
-        song = Song.create(name)
-        song.category_id = category.id
-        project.songs.append(song)
+        project.songs.append(Song.create(name))
     page = ShowPatchPage()
     page.set_project(project)
 
-    folder_item = page.setlist_export_source.topLevelItem(0)
-    assert folder_item is not None
-    page.setlist_export_source.setCurrentItem(folder_item)
-    folder_item.setSelected(True)
-    dragged_ids = page.setlist_export_source.selected_song_ids()
-    assert dragged_ids == [song.id for song in project.songs]
-
-    page._add_songs_to_export_queue(dragged_ids)
+    mime = QMimeData()
+    mime.setData(
+        EXPORT_SONG_IDS_MIME,
+        "\n".join(song.id for song in project.songs).encode("utf-8"),
+    )
+    event = QDropEvent(
+        QPointF(4, 4),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    page.song_pick.dropEvent(event)
 
     assert [
         page.song_pick.item(row).data(Qt.ItemDataRole.UserRole)

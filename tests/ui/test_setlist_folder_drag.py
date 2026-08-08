@@ -16,6 +16,7 @@ from PySide6.QtGui import QDrag, QMouseEvent
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from cueplayer.domain.models import Project, SetlistCategory
+from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.main_window import MainWindow, SetlistWidget
 
 
@@ -196,6 +197,63 @@ def test_start_folder_drag_ignores_selected_songs(app: QApplication) -> None:
     assert widget._drag_song_ids == []
     assert widget._drag_category_id is None
     assert widget._press_category_id is None
+
+
+def test_song_row_drag_mime_data_carries_export_song_ids(app: QApplication) -> None:
+    """Dragging selected song rows out of the Setlist must expose the same
+    EXPORT_SONG_IDS_MIME payload the MA Export Queue drop target accepts —
+    this is what lets a user drag straight from the Setlist sidebar into
+    Songs & Pools' Export Queue without a duplicate source list there."""
+    widget = SetlistWidget()
+    widget.setRowCount(3)
+    _song(widget, 0, "s0")
+    _song(widget, 1, "s1")
+    _song(widget, 2, "s2")
+    widget.item(0, SetlistWidget.COL_NUM).setSelected(True)
+    widget.item(2, SetlistWidget.COL_NUM).setSelected(True)
+    # What startDrag() computes from the current selection before handing
+    # off to Qt's drag loop; set directly here to isolate mimeData().
+    widget._drag_song_ids = ["s0", "s2"]
+
+    mime = widget.mimeData(widget.selectedItems())
+
+    assert mime.hasFormat(EXPORT_SONG_IDS_MIME)
+    payload = bytes(mime.data(EXPORT_SONG_IDS_MIME)).decode("utf-8").splitlines()
+    assert payload == ["s0", "s2"]
+
+
+def test_folder_drag_mime_data_carries_all_song_ids_in_folder(
+    app: QApplication,
+) -> None:
+    """A whole-folder drag must carry every song id under that folder header,
+    in on-screen order, so dropping a folder onto the Export Queue queues
+    every song in it (not just the folder header itself)."""
+    widget = SetlistWidget()
+    widget.setRowCount(5)
+    _cat(widget, 0, "a")
+    _song(widget, 1, "s1")
+    _song(widget, 2, "s2")
+    _song(widget, 3, "s3")
+    _cat(widget, 4, "b")
+    widget._press_category_id = "a"
+
+    captured: dict[str, object] = {}
+
+    def _fake_exec(self, *_args, **_kwargs):  # noqa: ANN001
+        captured["mime"] = self.mimeData()
+        return Qt.DropAction.IgnoreAction
+
+    original = QDrag.exec
+    QDrag.exec = _fake_exec  # type: ignore[method-assign]
+    try:
+        widget._start_folder_drag()
+    finally:
+        QDrag.exec = original  # type: ignore[method-assign]
+
+    mime = captured["mime"]
+    assert mime.hasFormat(EXPORT_SONG_IDS_MIME)
+    ids = bytes(mime.data(EXPORT_SONG_IDS_MIME)).decode("utf-8").splitlines()
+    assert ids == ["s1", "s2", "s3"]
 
 
 def test_reorder_folders_keeps_song_membership(

@@ -124,6 +124,7 @@ from cueplayer.persistence.media_layout import (
 from cueplayer.persistence.project_bundle import BundleResult, collect_project_bundle
 from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
+from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
 from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
 from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
@@ -572,6 +573,31 @@ class SetlistWidget(QTableWidget):
         self._drag_song_ids = ids
         super().startDrag(supportedActions)
 
+    def mimeData(self, items):  # noqa: N802, ANN001
+        # Carries the same song-id payload the MA Export Queue accepts, so a
+        # song-row drag out of the Setlist can be dropped straight into it —
+        # dropEvent below still drives internal reorder from
+        # self._drag_song_ids, not from this MIME data, so that path is
+        # unaffected by adding this format.
+        mime = super().mimeData(items)
+        if self._drag_song_ids:
+            mime.setData(
+                EXPORT_SONG_IDS_MIME, "\n".join(self._drag_song_ids).encode("utf-8")
+            )
+        return mime
+
+    def _song_ids_under_folder(self, folder_row: int) -> list[str]:
+        """Song ids in this folder's block, in on-screen order."""
+        ids: list[str] = []
+        row = folder_row + 1
+        while row < self.rowCount() and self.row_kind(row) == "song":
+            item = self.item(row, self.COL_NUM)
+            song_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            if song_id:
+                ids.append(str(song_id))
+            row += 1
+        return ids
+
     def _start_folder_drag(self) -> None:
         """Drag only this folder (+ songs stay in it); ignore other song selection."""
         cat_id = self._press_category_id
@@ -599,6 +625,12 @@ class SetlistWidget(QTableWidget):
 
         mime = QMimeData()
         mime.setData(self._MIME_FOLDER, QByteArray(cat_id.encode("utf-8")))
+        folder_song_ids = self._song_ids_under_folder(folder_row) if folder_row is not None else []
+        if folder_song_ids:
+            # Lets an external drop target (e.g. the MA Export Queue) accept
+            # a whole-folder drag as "all songs in this folder", same as it
+            # would a multi-song selection drag.
+            mime.setData(EXPORT_SONG_IDS_MIME, "\n".join(folder_song_ids).encode("utf-8"))
         drag = QDrag(self)
         drag.setMimeData(mime)
         if folder_row is not None:
