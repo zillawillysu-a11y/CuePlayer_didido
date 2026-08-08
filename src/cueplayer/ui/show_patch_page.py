@@ -47,6 +47,7 @@ from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
     Ma2Discovery,
     discover_ma2_environment,
+    export_path_matches_console,
     ma2_export_dir_for_version,
     ma2_version_from_path,
     ma2_version_supported,
@@ -2022,6 +2023,10 @@ class ShowPatchPage(QWidget):
         remembered = s.output_dir_ma3 if s.console == "ma3" else s.output_dir_ma2
         path = resolve_export_dir(s.console if s.console in ("ma2", "ma3") else "ma2", remembered or None)
         self.out_dir.setText(path)
+        if s.console == "ma3":
+            s.output_dir_ma3 = path
+        else:
+            s.output_dir_ma2 = path
         self.data_pool.setEnabled(s.console == "ma3")
         self._sync_console_specific_controls(s.console)
         self.show_macro_name.setEnabled(True)
@@ -2908,9 +2913,23 @@ class ShowPatchPage(QWidget):
             QMessageBox.warning(self, "No Songs Selected", "Check at least one song to export.")
             return
         self._write_ui_to_settings()
+        console = self._console()
         out = self.out_dir.text().strip()
+        if out and not export_path_matches_console(out, console):
+            out = resolve_export_dir(console, remembered=None)
+            self._suppress = True
+            self.out_dir.setText(out)
+            self._suppress = False
+            if console == "ma3":
+                self._project.ma_export.output_dir_ma3 = out
+            else:
+                self._project.ma_export.output_dir_ma2 = out
         if not out:
-            QMessageBox.warning(self, "Missing Folder", "Choose an output folder first.")
+            QMessageBox.warning(
+                self,
+                "Missing or Mismatched Folder",
+                f"Choose an output folder for {console.upper()}; the saved path belongs to the other console.",
+            )
             return
         enabled_content = [
             name for name, enabled in (

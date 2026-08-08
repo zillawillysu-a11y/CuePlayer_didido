@@ -374,3 +374,8 @@ def _path_matches_console(path: Path, console: str) -> bool:
     if path.name.lower() == "importexport":
         return False
     return True
+
+
+def export_path_matches_console(path: str | Path, console: str) -> bool:
+    """Public guard used before saving/exporting a console-specific path."""
+    return _path_matches_console(Path(path), console)

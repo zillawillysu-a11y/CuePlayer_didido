@@ -205,6 +205,9 @@ def test_export_show_to_directory_accepts_show_name_and_writes_song_workflow(
     )
     assert any(c.endswith("At Sequence 888") for c in commands)
     assert "Assign Sequence 888 At Page 200.130" in commands
+    assert commands[-1] == 'Macro "Set Songviewbutton"'
+    fixed_import_index = commands.index(fixed_import)
+    assert commands.index('Macro "Set Songviewbutton"') > fixed_import_index
     assert not any(c.startswith("Label Executor") for c in commands)
     assert not any(c.startswith("Label Sequence") and "Song_List" in c for c in commands)
 

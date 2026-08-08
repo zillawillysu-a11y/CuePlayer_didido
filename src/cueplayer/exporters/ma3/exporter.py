@@ -466,6 +466,12 @@ class Ma3Exporter:
                             ]
                         )
 
+                # Initialize the global ViewButton variable immediately
+                # after importing the fixed macros. Without this, Page Change
+                # has no destination until the operator manually runs the
+                # Set Songviewbutton macro once.
+                extra_commands.append('Macro "Set Songviewbutton"')
+
             macro_path = macro_dir / f"{show_macro_name}.xml"
             self.write_show_install_macro(
                 plans,

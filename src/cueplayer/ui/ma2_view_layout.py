@@ -66,9 +66,9 @@ MA3_POOL_LABELS = {
     "macros": "Macros",
     "all1": "All 1",
     "all2": "All 2",
-    "all3": "All 3 / Template EFX",
+    "all3": "All 3\nTemplate EFX",
     "all4": "All 4",
-    "all5": "All 5 / Song EFX",
+    "all5": "All 5\nSong EFX",
 }
 
 
@@ -150,7 +150,22 @@ class Ma2ViewLayoutStage(QWidget):
             painter.fillRect(title, fill)
             painter.setPen(QColor("#f8fafc"))
             labels = MA3_POOL_LABELS if (self.grid_w, self.grid_h) == GRID_SIZE_BY_CONSOLE["ma3"] else POOL_LABELS
-            painter.drawText(title, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, labels.get(str(widget.get("type")), str(widget.get("type", "Pool"))))
+            title_text = labels.get(str(widget.get("type")), str(widget.get("type", "Pool")))
+            title_flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
+            painter.save()
+            if labels is MA3_POOL_LABELS:
+                # MA3's title cell is only 1/18 of the screen width. Keep the
+                # two-line EFX labels inside that cell on real Windows font
+                # metrics instead of clipping the second line at the bottom.
+                title_font = painter.font()
+                for pixel_size in range(12, 6, -1):
+                    title_font.setPixelSize(pixel_size)
+                    painter.setFont(title_font)
+                    bounds = painter.boundingRect(title, title_flags, title_text)
+                    if bounds.width() <= title.width() and bounds.height() <= title.height():
+                        break
+            painter.drawText(title, title_flags, title_text)
+            painter.restore()
             start = int(widget.get("start", 1))
             if widget.get("mode") == "perSong":
                 start += self.song_index * int(widget.get("stride", 1))

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox
 
 from cueplayer.domain.models import Project, Song
 from cueplayer.exporters.ma_default_dirs import Ma2Discovery, Ma2Installation
+from cueplayer.ui.ma2_view_layout import MA3_POOL_LABELS
 from cueplayer.ui.show_patch_page import ShowPatchPage
 
 
@@ -56,6 +57,8 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert not page.ma2_detect_status.isVisibleTo(page)
     ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
     assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
+    assert MA3_POOL_LABELS["all3"] == "All 3\nTemplate EFX"
+    assert MA3_POOL_LABELS["all5"] == "All 5\nSong EFX"
     assert [(w["type"], w["x"], w["y"], w["w"], w["h"]) for w in page.view_stage.widgets] == [
         ("sequence", 0, 0, 18, 1),
         ("groups", 0, 1, 18, 1),
