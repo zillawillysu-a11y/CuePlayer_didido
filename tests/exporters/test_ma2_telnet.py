@@ -41,6 +41,7 @@ def test_parse_scan_frame_ignores_monitor_noise() -> None:
         "CUEPLAYER_SCAN_VERSION=3.9.63.6\r\n"
         "CUEPLAYER_SCAN_SEQUENCE=1,20,21\r\n"
         "CUEPLAYER_SCAN_EFFECT=201,202\r\n"
+        "CUEPLAYER_SCAN_GROUP=1,2703\r\n"
         "CUEPLAYER_SCAN_TIMECODE=201\r\n"
         "CUEPLAYER_SCAN_MACRO=101,201\r\n"
         "CUEPLAYER_SCAN_VIEW=201,202\r\n"
@@ -50,6 +51,7 @@ def test_parse_scan_frame_ignores_monitor_noise() -> None:
     assert snapshot.sequence == frozenset({1, 20, 21})
     assert snapshot.next_free("sequence") == 22
     assert snapshot.next_free("effect") == 203
+    assert snapshot.group == frozenset({1, 2703})
 
 
 def test_parse_scan_frame_merges_chunked_pool_lines() -> None:

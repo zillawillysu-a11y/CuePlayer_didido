@@ -1,13 +1,13 @@
 # Next task
 
-**Status:** Queued - awaiting UI and high-number Pool scan verification
+**Status:** Queued - awaiting UI and high-number Pool/Group scan verification
 **Type:** MA export workflow UI
 **Updated:** 2026-08-08
 
 ## Current task
 
 Verify the combined stage, nested tabs, navigation, and that Live Scan reports
-high-numbered Effects such as 2703.
+high-numbered Effects/Groups such as 2703.
 
 ## Requirements
 

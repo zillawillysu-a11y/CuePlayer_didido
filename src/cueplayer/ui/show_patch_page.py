@@ -1312,6 +1312,10 @@ class ShowPatchPage(QWidget):
             )
             self._set_telnet_status("error")
             return
+        self.registry_scan_status.setText(
+            f"Scan completed: MA2 {snapshot.version}; "
+            f"Groups detected: {len(snapshot.group)}."
+        )
         self._set_telnet_status("ready")
 
     def _import_scan_plugin_and_scan(self, _checked: bool = False) -> None:
@@ -1371,7 +1375,10 @@ class ShowPatchPage(QWidget):
             )
             self._set_telnet_status("error")
             return
-        status_text = f"Plugin {plugin_pool} installed and scan completed successfully."
+        status_text = (
+            f"Plugin {plugin_pool} installed and scan completed successfully. "
+            f"Groups detected: {len(snapshot.group)}."
+        )
         if import_feedback.strip():
             compact_import_feedback = " ".join(import_feedback.split())[:120]
             status_text += f" MA2: {compact_import_feedback}"

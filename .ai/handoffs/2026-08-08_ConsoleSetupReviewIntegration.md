@@ -3,7 +3,7 @@
 ## Task objective
 
 Integrate Console Setup and Review & Export into one top-level workflow stage,
-and preserve high-numbered Pool IDs during Live Scan.
+preserve high-numbered Pool IDs during Live Scan, and include Group Pool data.
 
 ## What was implemented
 
@@ -11,6 +11,7 @@ and preserve high-numbered Pool IDs during Live Scan.
 - Stage 3 contains nested `Console Setup` and `Review & Export` tabs.
 - View Layout navigation opens the Review & Export nested tab.
 - Scanner output is chunked and parser aggregation supports repeated Pool lines.
+- Group Pool IDs are scanned and their count is shown after a valid scan.
 
 ## Files changed
 
@@ -31,7 +32,8 @@ by Windows Temp permissions.
 
 ## Remaining issues
 
-Verify the combined UI manually and scan a show containing Effect 2703.
+Verify the combined UI manually and scan a show containing Effect/Group IDs
+above 600.
 
 ## Suggested next task
 

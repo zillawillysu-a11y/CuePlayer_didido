@@ -6,7 +6,8 @@
 ## Task objective
 
 Integrate Console Setup and Review & Export into one top-level workflow stage,
-and prevent high-numbered MA2 Pool IDs from being truncated during Live Scan.
+prevent high-numbered MA2 Pool IDs from being truncated during Live Scan, and
+include Group Pool detection.
 
 ## What was implemented
 
@@ -15,6 +16,8 @@ and prevent high-numbered MA2 Pool IDs from being truncated during Live Scan.
 - Updated View Layout navigation to open the Review & Export nested tab.
 - Scanner Plugin now emits Pool IDs in chunks of 100 per line.
 - Frame parser merges repeated Pool lines, so IDs such as Effect 2703 survive.
+- Scanner now emits and parses Group Pool IDs; successful scans report the
+  detected Group count in Registry status.
 
 ## Files changed
 
@@ -37,8 +40,8 @@ navigation changed.
 
 ## Remaining issues
 
-- Verify the combined tab visually and re-run Live Scan with a known Effect
-  above 600.
+- Verify the combined tab visually and re-run Live Scan with known Effect and
+  Group IDs above 600.
 - `startup_error.txt` remains untouched.
 
 ## Suggested next task
