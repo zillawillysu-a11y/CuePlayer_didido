@@ -522,8 +522,11 @@ class ShowPatchPage(QWidget):
         registry_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.registry_page_layout.addWidget(registry_intro)
         live_scan_box = QGroupBox("MA2 Live Pool Scan")
+        live_scan_box.setMaximumWidth(360)
         live_scan_layout = QVBoxLayout(live_scan_box)
-        live_scan_fields = QHBoxLayout()
+        live_scan_fields = QGridLayout()
+        live_scan_fields.setHorizontalSpacing(12)
+        live_scan_fields.setVerticalSpacing(6)
         self.registry_host = QLineEdit("127.0.0.1")
         self.registry_version = QLineEdit(MA2_MINIMUM_VERSION)
         self.registry_version.setReadOnly(True)
@@ -542,7 +545,7 @@ class ShowPatchPage(QWidget):
         self.registry_plugin_pool.setRange(2, 9999)
         self.registry_plugin_pool.setValue(9999)
         self.registry_plugin_import_path = QLineEdit()
-        for label_text, widget in (
+        for index, (label_text, widget) in enumerate((
             ("MA2 Host", self.registry_host),
             ("Target Version", self.registry_version),
             ("Command", self.registry_command_port),
@@ -550,16 +553,14 @@ class ShowPatchPage(QWidget):
             ("MA2 Show User", self.registry_user),
             ("Password", self.registry_password),
             ("Plugin Pool", self.registry_plugin_pool),
-        ):
+        )):
             field = QVBoxLayout()
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             field.addWidget(label)
             field.addWidget(widget)
-            live_scan_fields.addLayout(
-                field,
-                stretch=2 if label_text in ("MA2 Host", "User", "Password") else 1,
-            )
+            row, col = divmod(index, 2)
+            live_scan_fields.addLayout(field, row, col)
         live_scan_layout.addLayout(live_scan_fields)
         plugin_path_row = QHBoxLayout()
         plugin_path_label = QLabel("MA2 Plugin Import Path (optional)")
@@ -608,12 +609,18 @@ class ShowPatchPage(QWidget):
         live_scan_layout.addLayout(live_scan_actions)
 
         registry_content_row = QHBoxLayout()
-        registry_left_column = QVBoxLayout()
+        registry_left_widget = QWidget()
+        registry_left_widget.setMaximumWidth(360)
+        registry_left_column = QVBoxLayout(registry_left_widget)
+        registry_left_column.setContentsMargins(0, 0, 0, 0)
         registry_left_column.addWidget(live_scan_box)
         registry_left_column.addStretch(1)
-        registry_content_row.addLayout(registry_left_column, stretch=2)
+        registry_content_row.addWidget(registry_left_widget)
 
-        registry_middle_column = QVBoxLayout()
+        registry_middle_widget = QWidget()
+        registry_middle_widget.setMaximumWidth(200)
+        registry_middle_column = QVBoxLayout(registry_middle_widget)
+        registry_middle_column.setContentsMargins(0, 0, 0, 0)
         self.registry_summary_labels: list[QLabel] = []
         for text in (
             "Registered Songs\n0",
@@ -637,7 +644,7 @@ class ShowPatchPage(QWidget):
         )
         registry_middle_column.addWidget(self.registry_status)
         registry_middle_column.addStretch(1)
-        registry_content_row.addLayout(registry_middle_column, stretch=1)
+        registry_content_row.addWidget(registry_middle_widget)
 
         self.registry_table = QTableWidget(0, 8)
         self.registry_table.setHorizontalHeaderLabels(
@@ -646,7 +653,9 @@ class ShowPatchPage(QWidget):
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.registry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        registry_content_row.addWidget(self.registry_table, stretch=2)
+        # Left/middle are capped by setMaximumWidth above — the Song List
+        # (registry_table) absorbs all remaining width so it's fully visible.
+        registry_content_row.addWidget(self.registry_table, stretch=1)
         self.registry_page_layout.addLayout(registry_content_row, stretch=1)
 
         registry_nav = QHBoxLayout()
@@ -759,7 +768,10 @@ class ShowPatchPage(QWidget):
         self.review_page_layout.addWidget(review_intro)
 
         review_content_row = QHBoxLayout()
-        review_left_column = QVBoxLayout()
+        review_left_widget = QWidget()
+        review_left_widget.setMaximumWidth(340)
+        review_left_column = QVBoxLayout(review_left_widget)
+        review_left_column.setContentsMargins(0, 0, 0, 0)
 
         macro_review_box = QGroupBox("Export Content Check")
         macro_review_box.setObjectName("reviewExportContent")
@@ -786,6 +798,8 @@ class ShowPatchPage(QWidget):
         manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
         manual_layout.addWidget(manual_hint)
         manual_fields_grid = QGridLayout()
+        manual_fields_grid.setHorizontalSpacing(12)
+        manual_fields_grid.setVerticalSpacing(10)
         self.review_pool_start_fields = {}
         for index, (label, attr, minimum) in enumerate((
             ("Sequence", "seq_start", 1),
@@ -797,9 +811,11 @@ class ShowPatchPage(QWidget):
         )):
             field = NoWheelSpinBox()
             field.setRange(minimum, 9999)
+            field.setMaximumWidth(90)
             field.setToolTip(f"Seed {label} Pool start for Auto-Fill")
             self.review_pool_start_fields[attr] = field
             field_column = QVBoxLayout()
+            field_column.setSpacing(2)
             field_label = QLabel(label)
             field_label.setStyleSheet("background: transparent; color: #aab4c3;")
             field_column.addWidget(field_label)
@@ -831,7 +847,7 @@ class ShowPatchPage(QWidget):
         )
         review_left_column.addWidget(self.review_summary)
         review_left_column.addStretch(1)
-        review_content_row.addLayout(review_left_column, stretch=1)
+        review_content_row.addWidget(review_left_widget)
 
         self.review_table = QTableWidget(0, 9)
         self.review_table.setHorizontalHeaderLabels(
@@ -845,7 +861,9 @@ class ShowPatchPage(QWidget):
         )
         self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.review_table.itemChanged.connect(self._on_review_table_item_edited)
-        review_content_row.addWidget(self.review_table, stretch=2)
+        # review_left_widget is capped by setMaximumWidth above — the table
+        # absorbs all remaining width so it's fully visible.
+        review_content_row.addWidget(self.review_table, stretch=1)
         self.review_page_layout.addLayout(review_content_row, stretch=1)
 
         setup_nav = QHBoxLayout()

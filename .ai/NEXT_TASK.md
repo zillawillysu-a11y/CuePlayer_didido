@@ -27,11 +27,14 @@ the 2026-08-08 sessions (see the day's handoffs in `.ai/handoffs/`):
      has no real Group Pool object-creation path yet, so don't expect the
      console to actually have Groups created there.
 
-2. **Page layout reflow** (`.ai/handoffs/2026-08-08_ConsoleSetupUiFixesAndPageLayoutReflow.md`):
+2. **Page layout reflow** (`.ai/handoffs/2026-08-08_ConsoleSetupUiFixesAndPageLayoutReflow.md`,
+   width fix in `.ai/handoffs/2026-08-08_RegistryAndReviewLayoutWidthFix.md`):
    Songs & Pools (Export Queue left / playlist right), Export Registry
-   (Telnet controls left / stat tiles middle / song list right), Review &
-   Export (checks + manual starts left / review table right) — confirm
-   these read well and show more rows without scrolling as intended.
+   (Telnet controls left, capped ~360px / stat tiles middle, capped ~200px /
+   song list right, fully visible), Review & Export (checks + manual starts
+   left, capped ~340px / review table right) — confirm the Song List and
+   review table are now fully visible (not cut off) and the Manual Pool
+   Starts fields no longer overlap their labels.
 
 3. **View Layout "Follow Console Setup" checkbox** — confirm checking it
    syncs Pool Start live from Console Setup and updates when switching
