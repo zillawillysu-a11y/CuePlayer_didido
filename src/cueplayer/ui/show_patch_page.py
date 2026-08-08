@@ -310,6 +310,9 @@ class ShowPatchPage(QWidget):
         self.ma2_group_slots = NoWheelSpinBox()
         self.ma2_group_slots.setRange(1, 9999)
         self.ma2_group_slots.setValue(20)
+        self.ma2_group_pool_start = NoWheelSpinBox()
+        self.ma2_group_pool_start.setRange(1, 9999)
+        self.ma2_group_pool_start.setValue(1)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
@@ -317,6 +320,7 @@ class ShowPatchPage(QWidget):
         option_fields = (
             ("Mode", self.mode_combo), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
             ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Pool Start", self.ma2_effect_pool_start), ("Effect Slots Per Song", self.ma2_effect_slots),
+            ("Group Pool Start", self.ma2_group_pool_start),
             ("View Pool Start", self.ma2_view_pool_start), ("Fixed Macro Start", self.ma2_fixed_macro_start), ("Song Macro Start", self.ma2_song_macro_start),
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
@@ -674,6 +678,29 @@ class ShowPatchPage(QWidget):
             self.review_macro_checks.append(check)
             macro_review_layout.addWidget(check)
         self.review_page_layout.addWidget(macro_review_box)
+        manual_box = QGroupBox("Manual Pool Starts")
+        manual_layout = QHBoxLayout(manual_box)
+        self.review_manual_pool_starts = QCheckBox("Enable manual starts")
+        manual_layout.addWidget(self.review_manual_pool_starts)
+        self.review_pool_start_fields = {}
+        for label, attr, minimum in (
+            ("Sequence", "seq_start", 1),
+            ("Effect", "effect_start", 1),
+            ("Timecode", "timecode_start", 1),
+            ("Group", "group_start", 1),
+            ("Macro", "macro_start", 1),
+            ("View", "view_start", 1),
+        ):
+            field = NoWheelSpinBox()
+            field.setRange(minimum, 9999)
+            field.setFixedWidth(82)
+            field.setToolTip(f"Manual {label} Pool start for this export")
+            field.valueChanged.connect(self._on_review_pool_start_edited)
+            self.review_pool_start_fields[attr] = field
+            manual_layout.addWidget(QLabel(label))
+            manual_layout.addWidget(field)
+        self.review_manual_pool_starts.toggled.connect(self._on_review_manual_toggled)
+        self.review_page_layout.addWidget(manual_box)
         self.review_summary = QLabel("")
         self.review_summary.setWordWrap(True)
         self.review_summary.setStyleSheet(
@@ -750,6 +777,7 @@ class ShowPatchPage(QWidget):
             self.ma2_effect_slots,
             self.ma2_sequence_slots,
             self.ma2_group_slots,
+            self.ma2_group_pool_start,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -1315,6 +1343,14 @@ class ShowPatchPage(QWidget):
             )
             self._set_telnet_status("error")
             return
+        self._project.ma_export.ma2_scanned_pool_max = {
+            "sequence": max(snapshot.sequence, default=0),
+            "effect": max(snapshot.effect, default=0),
+            "timecode": max(snapshot.timecode, default=0),
+            "macro": max(snapshot.macro, default=0),
+            "view": max(snapshot.view, default=0),
+            "group": max(snapshot.group, default=0),
+        }
         self.registry_scan_status.setText(
             f"Scan completed: MA2 {snapshot.version}; "
             f"Groups detected: {len(snapshot.group)}."
@@ -1378,6 +1414,14 @@ class ShowPatchPage(QWidget):
             )
             self._set_telnet_status("error")
             return
+        self._project.ma_export.ma2_scanned_pool_max = {
+            "sequence": max(snapshot.sequence, default=0),
+            "effect": max(snapshot.effect, default=0),
+            "timecode": max(snapshot.timecode, default=0),
+            "macro": max(snapshot.macro, default=0),
+            "view": max(snapshot.view, default=0),
+            "group": max(snapshot.group, default=0),
+        }
         status_text = (
             f"Plugin {plugin_pool} installed and scan completed successfully. "
             f"Groups detected: {len(snapshot.group)}."
@@ -1430,6 +1474,7 @@ class ShowPatchPage(QWidget):
         self.ma2_effect_slots.setValue(int(s.ma2_effect_slots_per_song or 100))
         self.ma2_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
         self.ma2_group_slots.setValue(int(s.ma2_group_slots_per_song or 20))
+        self.ma2_group_pool_start.setValue(int(s.ma2_group_pool_start or 1))
         self.registry_host.setText(s.ma2_telnet_host or "127.0.0.1")
         self.registry_command_port.setValue(int(s.ma2_telnet_command_port or 30000))
         self.registry_monitor_port.setValue(int(s.ma2_telnet_monitor_port or 30001))
@@ -1462,6 +1507,7 @@ class ShowPatchPage(QWidget):
             self.ma2_effect_slots,
             self.ma2_sequence_slots,
             self.ma2_group_slots,
+            self.ma2_group_pool_start,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -1505,6 +1551,7 @@ class ShowPatchPage(QWidget):
         s.ma2_effect_slots_per_song = int(self.ma2_effect_slots.value())
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
         s.ma2_group_slots_per_song = int(self.ma2_group_slots.value())
+        s.ma2_group_pool_start = int(self.ma2_group_pool_start.value())
         s.ma2_view_layout = [dict(widget) for widget in self.view_stage.widgets]
         s.ma2_include_fixed_macros = self.ma2_fixed_macros.isChecked()
         s.ma2_include_song_macros = self.ma2_song_macros.isChecked()
@@ -1533,6 +1580,25 @@ class ShowPatchPage(QWidget):
     def _on_settings_edited(self, *_args) -> None:
         if self._suppress or self._project is None:
             return
+        self.refresh()
+        self.settings_changed.emit()
+
+    def _on_review_manual_toggled(self, enabled: bool) -> None:
+        for field in self.review_pool_start_fields.values():
+            field.setEnabled(enabled)
+        if enabled:
+            self._on_review_pool_start_edited()
+
+    def _on_review_pool_start_edited(self, *_args) -> None:
+        if self._suppress or self._project is None or not self.review_manual_pool_starts.isChecked():
+            return
+        self.seq_start.setValue(self.review_pool_start_fields["seq_start"].value())
+        self.ma2_effect_pool_start.setValue(self.review_pool_start_fields["effect_start"].value())
+        self.tc_start.setValue(self.review_pool_start_fields["timecode_start"].value())
+        self.ma2_group_pool_start.setValue(self.review_pool_start_fields["group_start"].value())
+        self.ma2_song_macro_start.setValue(self.review_pool_start_fields["macro_start"].value())
+        self.ma2_view_pool_start.setValue(self.review_pool_start_fields["view_start"].value())
+        self._write_ui_to_settings()
         self.refresh()
         self.settings_changed.emit()
 
@@ -1715,7 +1781,13 @@ class ShowPatchPage(QWidget):
         self.review_summary.setText(
             f"Console: {target}    ·    Selected songs: {len(self._slots)}\n"
             f"Output Folder: {self.out_dir.text().strip() or '(not selected)'}\n"
-            f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}"
+            f"Groups reserved per song: {int(settings.ma2_group_slots_per_song)}\n"
+            f"Current Show max IDs: Seq {settings.ma2_scanned_pool_max.get('sequence', '—')} / "
+            f"Effect {settings.ma2_scanned_pool_max.get('effect', '—')} / "
+            f"TC {settings.ma2_scanned_pool_max.get('timecode', '—')} / "
+            f"Group {settings.ma2_scanned_pool_max.get('group', '—')} / "
+            f"Macro {settings.ma2_scanned_pool_max.get('macro', '—')} / "
+            f"View {settings.ma2_scanned_pool_max.get('view', '—')}"
         )
         values = (
             settings.ma2_include_fixed_macros,

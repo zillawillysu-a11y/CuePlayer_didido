@@ -6,8 +6,8 @@
 ## Task objective
 
 Add configurable Group reservation, restore separate Console Setup and Review
-& Export pages, mirror export checks in Review, confirm before Export, and
-clean up View Layout presentation.
+& Export pages, mirror export checks in Review, confirm before Export, clean up
+View Layout presentation, and expose per-Pool manual starts plus scanned maxima.
 
 ## What was implemented
 
@@ -19,6 +19,9 @@ clean up View Layout presentation.
 - View Layout Legend now uses plain ASCII separators and geometry controls are
   removed from the inspector; drag/resize on the stage remains available.
 - Review summaries include the Group reservation per song.
+- Review provides an optional Manual Pool Starts editor for Sequence, Effect,
+  Timecode, Group, Macro, and View.
+- The last Live Scan maxima are persisted and shown in Review for comparison.
 
 ## Files changed
 

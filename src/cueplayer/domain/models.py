@@ -1055,6 +1055,8 @@ class MaExportSettings:
     ma2_effect_slots_per_song: int = 100
     ma2_sequence_slots_per_song: int = 20
     ma2_group_slots_per_song: int = 20
+    ma2_group_pool_start: int = 1
+    ma2_scanned_pool_max: dict[str, int] = field(default_factory=dict)
     ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
     # Live MA2 scanner connection settings. Password intentionally is not stored.
     ma2_telnet_host: str = "127.0.0.1"
