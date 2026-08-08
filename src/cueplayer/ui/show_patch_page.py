@@ -102,11 +102,11 @@ _EXPORT_CONTENT_CHECK_LABELS = (
 # 32 + 4 (padding) + 2 (border) = 38px, and that CSS-driven minimum wins
 # over any smaller setFixedHeight()/setMaximumHeight() call in code, so
 # fighting it produces exactly the unstable squeeze this page used to have.
-_MANUAL_POOL_FIELD_HEIGHT = 38
+_MANUAL_POOL_FIELD_HEIGHT = 26
 # Each grid row reserves the field height plus this gap, as ONE combined
 # hard-floor row minimum (see the QGridLayout comment below for why the
 # gap is folded in rather than left as separate, squeezable spacing).
-_MANUAL_POOL_ROW_SPACING = 8
+_MANUAL_POOL_ROW_SPACING = 4
 _MANUAL_POOL_ROW_HEIGHT = _MANUAL_POOL_FIELD_HEIGHT + _MANUAL_POOL_ROW_SPACING
 
 # View Layout Pool Types with a matching per-song Pool Start in Console
@@ -318,9 +318,13 @@ class ShowPatchPage(QWidget):
             "border-right: 1px solid #2b313a; border-bottom: 1px solid #2b313a; padding: 8px; }"
             "QLabel { color: #eef2f7; background: transparent; border: none; }"
             "QCheckBox { background: transparent; }"
+            "QRadioButton { background: transparent; }"
             "#maExportOptions QCheckBox { background: transparent; }"
             "#reviewExportContent QCheckBox { background: transparent; padding: 3px 6px; }"
             "#reviewExportContent { background: #15181d; border: 1px solid #2b313a; border-radius: 6px; }"
+            "#reviewManualPools QCheckBox { background: transparent; padding: 3px 6px; }"
+            "#reviewManualPools QLabel { background: transparent; }"
+            "#reviewManualPools QSpinBox { min-height: 20px; max-height: 20px; padding: 1px 6px; }"
         )
 
         settings_row = QHBoxLayout()
@@ -329,6 +333,10 @@ class ShowPatchPage(QWidget):
         console_layout = QHBoxLayout(console_box)
         self.ma2_radio = QRadioButton("grandMA2")
         self.ma3_radio = QRadioButton("grandMA3")
+        # Stable console columns: showing/hiding the MA2-only controls must
+        # never redistribute spare width and make the MA3 selector jump.
+        self.ma2_radio.setFixedWidth(280)
+        self.ma3_radio.setFixedWidth(280)
         self.ma2_radio.setChecked(True)
         group = QButtonGroup(self)
         group.addButton(self.ma2_radio)
@@ -344,8 +352,9 @@ class ShowPatchPage(QWidget):
         self.ma2_version.addItem(MA2_MINIMUM_VERSION)
         # Holds a short version string like "3.9.63.6" — no need for the
         # ~348px its longest item would otherwise reserve.
-        self.ma2_version.setMaximumWidth(150)
+        self.ma2_version.setFixedWidth(150)
         self.ma2_detect_btn = QPushButton("Detect MA2")
+        self.ma2_detect_btn.setFixedWidth(220)
         self.ma2_detect_status = QLabel("Not detected")
         # This label holds a long line ("Running … · Installed 3.1.2, 3.3.4,
         # 3.9.60, …"). Unconstrained it demanded ~816px, which alone forced
@@ -358,6 +367,14 @@ class ShowPatchPage(QWidget):
         # Text-only status must inherit the surrounding Console panel instead
         # of painting a mismatched rectangular background.
         self.ma2_detect_status.setStyleSheet("color: #8b949e; background: transparent;")
+        for ma2_only_widget in (
+            self.ma2_version,
+            self.ma2_detect_btn,
+            self.ma2_detect_status,
+        ):
+            policy = ma2_only_widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            ma2_only_widget.setSizePolicy(policy)
         console_layout.addWidget(self.ma2_version)
         console_layout.addWidget(self.ma2_detect_btn)
         console_layout.addWidget(self.ma2_detect_status)
@@ -928,7 +945,7 @@ class ShowPatchPage(QWidget):
 
         review_content_row = QHBoxLayout()
         review_left_widget = QWidget()
-        review_left_widget.setMaximumWidth(340)
+        review_left_widget.setMaximumWidth(380)
         review_left_column = QVBoxLayout(review_left_widget)
         review_left_column.setContentsMargins(0, 0, 0, 0)
 
@@ -946,6 +963,7 @@ class ShowPatchPage(QWidget):
         review_left_column.addWidget(macro_review_box)
 
         manual_box = QGroupBox("Manual Pool Starts")
+        manual_box.setObjectName("reviewManualPools")
         # The explanation lives in a tooltip, NOT a word-wrapped QLabel above
         # the fields: a wrapped QLabel under-reports its sizeHint height, so
         # the parent under-allocates and the rows below get crushed.
@@ -968,6 +986,7 @@ class ShowPatchPage(QWidget):
         # is actually unbreakable; see the geometry regression test.
         manual_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         manual_layout = QVBoxLayout(manual_box)
+        manual_layout.setSpacing(3)
         # Same setting as the Export Registry copy, mirrored here so it can be
         # reached without leaving the page you actually export from.
         self.review_start_after_scanned = QCheckBox("Start after scanned Pools")
@@ -977,10 +996,14 @@ class ShowPatchPage(QWidget):
             "numbers can move; anything you pin or Auto-Fill afterwards wins."
         )
         self.review_start_after_scanned.toggled.connect(self._on_start_after_scanned_toggled)
-        manual_layout.addWidget(self.review_start_after_scanned)
         manual_hint = QLabel("Blank = leave that Pool unchanged")
         manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
-        manual_layout.addWidget(manual_hint)
+        manual_header_row = QHBoxLayout()
+        manual_header_row.setContentsMargins(0, 0, 0, 0)
+        manual_header_row.addWidget(self.review_start_after_scanned)
+        manual_header_row.addStretch(1)
+        manual_header_row.addWidget(manual_hint)
+        manual_layout.addLayout(manual_header_row)
         # A QGridLayout with an explicit per-row minimum height, not
         # QFormLayout: QFormLayout sizes each row from the label/field
         # sizeHint, which is a heuristic that can under-report by a few
@@ -1004,7 +1027,7 @@ class ShowPatchPage(QWidget):
         manual_fields_form.setHorizontalSpacing(12)
         manual_fields_form.setVerticalSpacing(0)
         self.review_pool_start_fields = {}
-        for row, (label_text, attr) in enumerate((
+        for index, (label_text, attr) in enumerate((
             ("Sequence", "seq_start"),
             ("Effect", "effect_start"),
             ("Timecode", "timecode_start"),
@@ -1013,6 +1036,9 @@ class ShowPatchPage(QWidget):
             ("View", "view_start"),
             ("Page", "page_start"),
         )):
+            row, pair_column = divmod(index, 2)
+            label_column = pair_column * 2
+            field_column = label_column + 1
             field = NoWheelSpinBox()
             # 0 renders blank (Qt shows specialValueText at the minimum) and
             # means "don't touch this Pool" — see _auto_fill_pool_overrides.
@@ -1024,7 +1050,7 @@ class ShowPatchPage(QWidget):
             # actual height the shared QSS min-height/padding/border already
             # forces, so this doesn't fight the stylesheet, just pins width
             # too and blocks the grid from ever stretching either dimension.
-            field.setFixedSize(90, _MANUAL_POOL_FIELD_HEIGHT)
+            field.setFixedSize(78, _MANUAL_POOL_FIELD_HEIGHT)
             field.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             field.setToolTip(
                 f"Auto-Fill start for the {label_text} column. Leave blank to "
@@ -1035,10 +1061,10 @@ class ShowPatchPage(QWidget):
             label = QLabel(label_text)
             label.setStyleSheet("color: #99a3b1; background: transparent;")
             manual_fields_form.addWidget(
-                label, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                label, row, label_column, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
             manual_fields_form.addWidget(
-                field, row, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                field, row, field_column, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
         manual_layout.addLayout(manual_fields_form)
         # A guaranteed gap between the Page row and the buttons below, so the

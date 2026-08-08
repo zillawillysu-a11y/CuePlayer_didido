@@ -474,7 +474,60 @@ def test_export_option_checkboxes_use_the_panel_background(
 
     assert "#maExportOptions QCheckBox { background: transparent; }" in page.styleSheet()
     assert "#reviewExportContent QCheckBox { background: transparent;" in page.styleSheet()
+    assert "#reviewManualPools QCheckBox { background: transparent; padding: 3px 6px; }" in page.styleSheet()
+    assert "QRadioButton { background: transparent; }" in page.styleSheet()
     assert page.ma2_fixed_macros.parent().objectName() == "maExportOptions"
+
+
+def test_review_checkboxes_align_and_manual_pool_fields_fit_compact_height(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+    page.workflow_tabs.setCurrentIndex(4)
+    page.resize(1732, 768)
+    page.show()
+    app.processEvents()
+    app.processEvents()
+
+    export_x = page.review_macro_checks[0].mapTo(page, QPoint(0, 0)).x()
+    scanned_x = page.review_start_after_scanned.mapTo(page, QPoint(0, 0)).x()
+    assert scanned_x == export_x
+
+    fields = list(page.review_pool_start_fields.values())
+    assert all(field.height() <= 28 for field in fields)
+    rects = [field.geometry() for field in fields]
+    assert all(not left.intersects(right) for i, left in enumerate(rects) for right in rects[i + 1 :])
+    page.close()
+
+
+def test_ma3_radio_position_stays_fixed_when_ma2_controls_hide(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    page = ShowPatchPage()
+    page.set_project(Project.create("Show"))
+    page.resize(1732, 768)
+    page.show()
+    app.processEvents()
+    ma3_x_with_ma2_controls = page.ma3_radio.mapTo(page, QPoint(0, 0)).x()
+
+    page.ma3_radio.setChecked(True)
+    app.processEvents()
+    ma3_x_without_ma2_controls = page.ma3_radio.mapTo(page, QPoint(0, 0)).x()
+    assert ma3_x_without_ma2_controls == ma3_x_with_ma2_controls
+
+    page.ma2_radio.setChecked(True)
+    app.processEvents()
+    assert page.ma3_radio.mapTo(page, QPoint(0, 0)).x() == ma3_x_with_ma2_controls
+    page.close()
 
 
 def test_live_scan_section_text_has_no_stray_dark_background(
@@ -1268,23 +1321,21 @@ def test_manual_pool_start_rows_never_overlap(
         for _ in range(3):
             app.processEvents()
 
-        rows = []
+        fields = []
         for attr in (
             "seq_start", "effect_start", "timecode_start",
             "group_start", "macro_start", "view_start",
         ):
             field = page.review_pool_start_fields[attr]
-            top = field.mapToGlobal(field.rect().topLeft()).y()
-            rows.append((attr, top, field.height()))
-        rows.sort(key=lambda row: row[1])
+            fields.append((attr, field.geometry()))
 
-        for name, _top, height in rows:
-            assert height >= 20, f"{name} spinbox crushed to {height}px"
-        for (upper, upper_top, upper_height), (lower, lower_top, _h) in zip(rows, rows[1:]):
-            assert lower_top >= upper_top + upper_height, (
-                f"{upper} overlaps {lower} by "
-                f"{upper_top + upper_height - lower_top}px at window height {window_height}"
-            )
+        for name, rect in fields:
+            assert rect.height() >= 20, f"{name} spinbox crushed to {rect.height()}px"
+        for index, (left_name, left) in enumerate(fields):
+            for right_name, right in fields[index + 1 :]:
+                assert not left.intersects(right), (
+                    f"{left_name} overlaps {right_name} at window height {window_height}"
+                )
     finally:
         page.close()
 
@@ -1598,21 +1649,21 @@ def test_manual_pool_starts_fields_never_overlap(
     ]
     fields = [page.review_pool_start_fields[name] for name in order]
     tops = [f.mapTo(page, QPoint(0, 0)).y() for f in fields]
-    xs = {f.mapTo(page, QPoint(0, 0)).x() for f in fields}
     widths = {f.width() for f in fields}
     heights = {f.height() for f in fields}
 
-    assert len(xs) == 1, f"Pool Start fields must share one x, got {xs}"
+    xs = sorted({f.mapTo(page, QPoint(0, 0)).x() for f in fields})
+    assert len(xs) == 2, f"Pool Start fields must form two columns, got {xs}"
     assert len(widths) == 1, f"Pool Start fields must share one width, got {widths}"
     assert len(heights) == 1, f"Pool Start fields must share one height, got {heights}"
     field_height = heights.pop()
 
-    for name, top, next_name, next_top in zip(order, tops, order[1:], tops[1:]):
-        bottom = top + field_height
-        assert bottom < next_top, (
-            f"{name} (bottom={bottom}) overlaps {next_name} (top={next_top}) "
-            f"at {width}x{height}"
-        )
+    rects = [(name, field.geometry()) for name, field in zip(order, fields)]
+    for index, (left_name, left) in enumerate(rects):
+        for right_name, right in rects[index + 1 :]:
+            assert not left.intersects(right), (
+                f"{left_name} overlaps {right_name} at {width}x{height}"
+            )
 
     # Page (the last row) must never touch Auto-Fill & Sequence / Clear All
     # Overrides below it.
