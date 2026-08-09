@@ -49,6 +49,7 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma3_osc_listen_port=9001,
         ma3_osc_output_line=2,
         ma3_scan_lua_path="C:/gma3/CuePlayer_MA3_Live_Scan.lua",
+        ma3_scanned_pool_max={"sequence": 464, "view": 404},
         export_content_by_song={"song-id": {"main": False, "buttons": [2, 4]}},
         ma2_view_layout=[{"type": "effects", "mode": "perSong", "x": 2, "y": 1, "w": 12, "h": 4, "start": 601, "stride": 137}],
         ma3_view_layout=[{"type": "all5", "mode": "perSong", "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100}],
@@ -86,6 +87,7 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma3_osc_listen_port == 9001
     assert loaded.ma3_osc_output_line == 2
     assert loaded.ma3_scan_lua_path == "C:/gma3/CuePlayer_MA3_Live_Scan.lua"
+    assert loaded.ma3_scanned_pool_max == {"sequence": 464, "view": 404}
     assert loaded.ma2_view_layout[0]["w"] == 12
     assert loaded.ma2_view_layout[0]["stride"] == 137
     assert loaded.ma3_view_layout[0]["type"] == "all5"

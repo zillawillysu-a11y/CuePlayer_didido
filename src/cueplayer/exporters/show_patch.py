@@ -107,7 +107,14 @@ def build_show_patch(
     # "Start after scanned Pools": push every base start past the highest
     # number the last Live Scan found, so a new export cannot land on
     # existing show objects. Off = plain export from the configured starts.
-    scanned = settings.ma2_scanned_pool_max if settings.ma2_start_after_scanned else {}
+    if settings.ma2_start_after_scanned:
+        scanned = (
+            settings.ma3_scanned_pool_max
+            if settings.console == "ma3"
+            else settings.ma2_scanned_pool_max
+        )
+    else:
+        scanned = {}
 
     def _base(configured: int, scanned_key: str) -> int:
         floor = int(scanned.get(scanned_key, 0)) + 1 if scanned.get(scanned_key) else 1

@@ -101,6 +101,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_group_slots_per_song": int(settings.ma2_group_slots_per_song),
         "ma2_group_pool_start": int(settings.ma2_group_pool_start),
         "ma2_scanned_pool_max": dict(settings.ma2_scanned_pool_max),
+        "ma3_scanned_pool_max": dict(settings.ma3_scanned_pool_max),
         "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
         "ma3_view_layout": [dict(widget) for widget in settings.ma3_view_layout],
         "ma2_telnet_host": settings.ma2_telnet_host,
@@ -209,6 +210,10 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_group_pool_start=max(1, int(raw.get("ma2_group_pool_start", 1) or 1)),
         ma2_scanned_pool_max={
             str(key): int(value) for key, value in dict(raw.get("ma2_scanned_pool_max", {})).items()
+            if isinstance(value, (int, float, str)) and str(value).isdigit()
+        },
+        ma3_scanned_pool_max={
+            str(key): int(value) for key, value in dict(raw.get("ma3_scanned_pool_max", {})).items()
             if isinstance(value, (int, float, str)) and str(value).isdigit()
         },
         ma2_view_layout=[

@@ -1062,6 +1062,7 @@ class MaExportSettings:
     ma2_group_slots_per_song: int = 20
     ma2_group_pool_start: int = 1
     ma2_scanned_pool_max: dict[str, int] = field(default_factory=dict)
+    ma3_scanned_pool_max: dict[str, int] = field(default_factory=dict)
     ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
     # MA3 has different Pool types, grid dimensions, and reset defaults.
     ma3_view_layout: list[dict[str, object]] = field(default_factory=list)

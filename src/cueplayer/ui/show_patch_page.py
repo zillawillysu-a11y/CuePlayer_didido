@@ -921,6 +921,33 @@ class ShowPatchPage(QWidget):
             )
             self.registry_summary_labels.append(label)
             registry_middle_column.addWidget(label)
+        self.ma3_scan_cards = QWidget()
+        ma3_scan_cards_layout = QGridLayout(self.ma3_scan_cards)
+        ma3_scan_cards_layout.setContentsMargins(0, 0, 0, 0)
+        ma3_scan_cards_layout.setHorizontalSpacing(6)
+        ma3_scan_cards_layout.setVerticalSpacing(6)
+        self.ma3_scan_max_labels: dict[str, QLabel] = {}
+        for index, (pool_key, title) in enumerate((
+            ("sequence", "Sequence"),
+            ("effect", "Song EFX"),
+            ("group", "Groups"),
+            ("timecode", "Timecode"),
+            ("macro", "Macro"),
+            ("view", "View"),
+            ("page", "Page"),
+        )):
+            label = QLabel(f"Scanned {title}\n—")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setMinimumHeight(54)
+            label.setStyleSheet(
+                "background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
+                "padding: 8px; font-weight: 600;"
+            )
+            self.ma3_scan_max_labels[pool_key] = label
+            row, column = divmod(index, 2)
+            ma3_scan_cards_layout.addWidget(label, row, column)
+        self.ma3_scan_cards.hide()
+        registry_middle_column.addWidget(self.ma3_scan_cards)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setWordWrap(True)
         self.registry_status.setStyleSheet(
@@ -2139,7 +2166,7 @@ class ShowPatchPage(QWidget):
         if self._project is None:
             return
         maxima = {str(key): max(0, int(value)) for key, value in snapshot.maxima.items()}
-        self._project.ma_export.ma2_scanned_pool_max = maxima
+        self._project.ma_export.ma3_scanned_pool_max = maxima
         controls = {
             "sequence": self.seq_start,
             "effect": self.ma2_effect_pool_start,
@@ -2466,7 +2493,12 @@ class ShowPatchPage(QWidget):
         settings = self._project.ma_export
         settings.ma2_start_after_scanned = bool(checked)
         if checked:
-            if not settings.ma2_scanned_pool_max:
+            selected_scan = (
+                settings.ma3_scanned_pool_max
+                if settings.console == "ma3"
+                else settings.ma2_scanned_pool_max
+            )
+            if not selected_scan:
                 self.registry_scan_status.setText(
                     "Start after scanned Pools is on, but nothing has been scanned "
                     "yet — run Scan Current Show to detect the Pools already in use."
@@ -2624,7 +2656,11 @@ class ShowPatchPage(QWidget):
         """Highest Pool number actually found by the last Live Scan (Test
         Connection / Scan Current Show) — distinct from "Next safe start",
         which is only what CuePlayer itself plans to use next."""
-        scanned = settings.ma2_scanned_pool_max
+        scanned = (
+            settings.ma3_scanned_pool_max
+            if settings.console == "ma3"
+            else settings.ma2_scanned_pool_max
+        )
         if not scanned:
             return "Show scan max IDs: not scanned yet — run Scan Current Show"
         text = (
@@ -2776,6 +2812,24 @@ class ShowPatchPage(QWidget):
                 f"Next Effects\n{int(settings.ma2_effect_pool_start)}"
             )
             self.registry_summary_labels[3].setText(f"Next Groups\n{int(settings.ma2_group_pool_start)}")
+        is_ma3 = self._console() == "ma3"
+        for label in self.registry_summary_labels:
+            label.setVisible(not is_ma3)
+        self.ma3_scan_cards.setVisible(is_ma3)
+        if is_ma3:
+            scanned = settings.ma3_scanned_pool_max
+            titles = {
+                "sequence": "Sequence",
+                "effect": "Song EFX",
+                "group": "Groups",
+                "timecode": "Timecode",
+                "macro": "Macro",
+                "view": "View",
+                "page": "Page",
+            }
+            for pool_key, label in self.ma3_scan_max_labels.items():
+                value = scanned.get(pool_key, "—")
+                label.setText(f"Scanned {titles[pool_key]}\n{value}")
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
         out_folder = self.out_dir.text().strip() or "(not selected)"
         self.review_summary.setText(
