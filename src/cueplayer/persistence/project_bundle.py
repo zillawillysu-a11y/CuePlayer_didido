@@ -91,10 +91,8 @@ def collect_project_bundle(
         media_dir=media_dir,
     )
 
-    # Ensure every Setlist category has a folder on disk (even if empty).
-    for category in bundled.setlist_categories:
-        (media_dir / safe_folder_name(category.name)).mkdir(parents=True, exist_ok=True)
-    (media_dir / UNFILED_FOLDER).mkdir(parents=True, exist_ok=True)
+    # Category folders are created on demand by _place(). Empty Setlist
+    # folders do not need empty filesystem stubs in a portable Bundle.
 
     # source resolve key → destination path inside Media/
     source_map: dict[str, Path] = {}
@@ -212,10 +210,9 @@ def collect_project_bundle(
             ordered.append(name)
     result.folders_used = ordered
 
-    # Drop empty leftovers from Media-internal moves; keep declared Setlist stubs.
-    preserve = {safe_folder_name(c.name) for c in bundled.setlist_categories}
-    preserve.add(UNFILED_FOLDER)
-    prune_empty_dirs_under_media(media_dir, preserve_names=preserve)
+    # Drop empty leftovers from Media-internal moves. Any user file keeps its
+    # folder intact because prune_empty_dirs_under_media only removes empties.
+    prune_empty_dirs_under_media(media_dir)
 
     save_project(bundled, result.project_path)
     return result

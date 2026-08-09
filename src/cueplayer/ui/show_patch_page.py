@@ -54,6 +54,7 @@ from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
     Ma2Discovery,
     discover_ma2_environment,
+    discover_ma2_environment_fast,
     export_path_matches_console,
     ma2_export_dir_for_version,
     ma2_version_from_path,
@@ -204,6 +205,28 @@ def normalize_show_macro_basename(raw: str) -> str:
         text = text[:-4].strip()
     cleaned = sanitize_ma_name(text, fallback=_DEFAULT_SHOW_MACRO)
     return cleaned or _DEFAULT_SHOW_MACRO
+
+
+def _version_segments(value: str) -> tuple[int, ...]:
+    return tuple(int(n) for n in re.findall(r"\d+", value))
+
+
+def _drop_family_fallback_versions(versions: set[str]) -> set[str]:
+    """Drop a 3-segment X.Y.Z fallback when a precise 4-segment version for
+    the same family is also in the set (e.g. drop "3.9.63" once "3.9.63.6"
+    is present) — the fast filesystem-only scan can only ever recover the
+    3-segment folder name, so once a full discovery (registry/shortcut)
+    resolves the real build for that family, the coarse fallback is stale
+    and must not linger in the dropdown or as the selected/persisted value.
+    """
+    precise_families = {
+        _version_segments(v)[:3] for v in versions if len(_version_segments(v)) >= 4
+    }
+    return {
+        v
+        for v in versions
+        if len(_version_segments(v)) >= 4 or _version_segments(v)[:3] not in precise_families
+    }
 
 
 class ShowPatchPage(QWidget):
@@ -1480,7 +1503,7 @@ class ShowPatchPage(QWidget):
         self._project = project
         self._load_settings_into_ui()
         if not already_bound:
-            self._detect_ma2_versions(quiet=True)
+            self._detect_ma2_versions_fast(quiet=True)
         self._rebuild_song_pick()
         self.refresh()
 
@@ -1851,7 +1874,19 @@ class ShowPatchPage(QWidget):
         return "ma3" if self.ma3_radio.isChecked() else "ma2"
 
     def _detect_ma2_versions(self, _checked: bool = False, *, quiet: bool = False) -> None:
-        self._ma2_discovery = discover_ma2_environment()
+        self._apply_ma2_discovery(
+            discover_ma2_environment(), quiet=quiet, persist_target=True
+        )
+
+    def _detect_ma2_versions_fast(self, *, quiet: bool = True) -> None:
+        self._apply_ma2_discovery(
+            discover_ma2_environment_fast(), quiet=quiet, persist_target=False
+        )
+
+    def _apply_ma2_discovery(
+        self, discovery: Ma2Discovery, *, quiet: bool, persist_target: bool
+    ) -> None:
+        self._ma2_discovery = discovery
         # installed_versions already IS the full, deduplicated, real-machine
         # list (Windows uninstall registry + Start Menu/Desktop shortcut
         # targets, each read via the actual .exe's FileVersion so multi-
@@ -1876,6 +1911,15 @@ class ShowPatchPage(QWidget):
             else self._ma2_discovery.recommended_version or MA2_MINIMUM_VERSION
         )
         versions.add(selected)
+        versions = _drop_family_fallback_versions(versions)
+        if selected not in versions:
+            # `selected` was itself a stale 3-segment fallback superseded by
+            # a precise sibling above — reselect the precise build for its
+            # family instead of pointing at a version no longer offered.
+            family = _version_segments(selected)[:3]
+            precise = [v for v in versions if _version_segments(v)[:3] == family]
+            selected = max(precise, key=_version_segments) if precise else selected
+            versions.add(selected)
         self.ma2_version.blockSignals(True)
         self.ma2_version.clear()
         self.ma2_version.addItems(
@@ -1896,8 +1940,9 @@ class ShowPatchPage(QWidget):
         else:
             self.ma2_detect_status.setText("")
             self.ma2_detect_status.setStyleSheet("color: #8b949e; background: transparent;")
-        if self._project:
+        if self._project and persist_target:
             self._project.ma_export.ma2_target_version = selected
+        if self._project:
             if self._project.ma_export.ma2_output_dir_follows_version:
                 self._apply_version_default_dir(selected, quiet=quiet)
 

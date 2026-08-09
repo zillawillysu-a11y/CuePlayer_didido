@@ -49,7 +49,7 @@ def test_collect_bundle_layout_and_relative_paths(tmp_path: Path) -> None:
     assert result.media_dir == dest / "Media"
     assert (dest / "Media" / "第一幕" / "開場曲" / "主歌.wav").is_file()
     assert (dest / "Media" / "第一幕" / "開場曲" / "Loop.mp4").is_file()
-    assert (dest / "Media" / UNFILED_FOLDER).is_dir()
+    assert not (dest / "Media" / UNFILED_FOLDER).exists()
     assert result.folders_used == ["第一幕"]
     assert len(result.copied) == 2
     assert result.missing == []
@@ -333,6 +333,7 @@ def test_bundle_incremental_moves_within_media_on_folder_change(tmp_path: Path) 
     assert len(second.moved) == 1
     assert (second.media_dir / "B" / "Tune" / "x.wav").is_file()
     assert not (second.media_dir / "A" / "Tune" / "x.wav").exists()
+    assert not (second.media_dir / "A").exists()
 
 
 def test_sync_rename_setlist_media_folder(tmp_path: Path) -> None:

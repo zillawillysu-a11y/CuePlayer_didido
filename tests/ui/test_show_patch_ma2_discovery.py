@@ -210,6 +210,7 @@ def test_detected_running_version_drives_default_folder(
     project = Project.create("Show")
     page = ShowPatchPage()
     page.set_project(project)
+    page._detect_ma2_versions()
 
     assert page.ma2_version.currentText() == "3.9.63.6"
     assert page.out_dir.text() == str(discovery.installations[0].importexport_dir)
@@ -236,6 +237,9 @@ def test_target_version_dropdown_lists_every_real_installed_patch_full_precision
     )
     page = ShowPatchPage()
     page.set_project(Project.create("Show"))
+    # quiet=True: this fixture has no `installations`, so a non-quiet call
+    # would pop a real blocking "Version Folder Not Found" QMessageBox.
+    page._detect_ma2_versions(quiet=True)
 
     items = [page.ma2_version.itemText(i) for i in range(page.ma2_version.count())]
     for expected in discovery.installed_versions:
@@ -292,7 +296,7 @@ def test_set_project_with_same_object_does_not_rediscover_ma2(
         calls.append(1)
         return discovery_result
 
-    monkeypatch.setattr("cueplayer.ui.show_patch_page.discover_ma2_environment", fake_discover)
+    monkeypatch.setattr("cueplayer.ui.show_patch_page.discover_ma2_environment_fast", fake_discover)
     page = ShowPatchPage()
     project = Project.create("Show")
 
@@ -351,18 +355,22 @@ def test_detect_ma2_button_always_forces_fresh_discovery(
         return _discovery(tmp_path)
 
     monkeypatch.setattr("cueplayer.ui.show_patch_page.discover_ma2_environment", fake_discover)
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment_fast",
+        lambda: _discovery(tmp_path),
+    )
     page = ShowPatchPage()
     project = Project.create("Show")
     page.set_project(project)
     page.set_project(project)
     page.set_project(project)
-    assert len(calls) == 1
+    assert len(calls) == 0
 
     page.ma2_detect_btn.click()
-    assert len(calls) == 2, "Detect MA2 must force a fresh discovery regardless of caching"
+    assert len(calls) == 1, "Detect MA2 must force a fresh discovery regardless of caching"
 
     page.ma2_detect_btn.click()
-    assert len(calls) == 3, "Detect MA2 must re-discover every time it's pressed"
+    assert len(calls) == 2, "Detect MA2 must re-discover every time it's pressed"
 
 
 def test_five_page_playlist_workflow_and_screen3_grid(
@@ -370,6 +378,10 @@ def test_five_page_playlist_workflow_and_screen3_grid(
 ) -> None:
     monkeypatch.setattr(
         "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment_fast",
         lambda: _discovery(tmp_path),
     )
     page = ShowPatchPage()
@@ -560,6 +572,10 @@ def test_review_checkboxes_align_and_manual_pool_fields_fit_compact_height(
 ) -> None:
     monkeypatch.setattr(
         "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment_fast",
         lambda: _discovery(tmp_path),
     )
     page = ShowPatchPage()

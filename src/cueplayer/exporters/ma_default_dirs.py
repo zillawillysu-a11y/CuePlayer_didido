@@ -275,6 +275,16 @@ def discover_ma2_environment(
     return Ma2Discovery(installations, running_version_reader(), installed_versions)
 
 
+def discover_ma2_environment_fast(root: Path = _MA2_ROOT) -> Ma2Discovery:
+    """Filesystem-only discovery used while loading a project/UI."""
+    installations = discover_ma2_installations(root)
+    return Ma2Discovery(
+        installations=installations,
+        running_version=None,
+        installed_versions=tuple(item.version for item in installations),
+    )
+
+
 def ma2_export_dir_for_version(
     version: str, installations: tuple[Ma2Installation, ...]
 ) -> Path | None:
