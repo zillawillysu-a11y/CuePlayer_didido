@@ -1040,7 +1040,6 @@ class ShowPatchPage(QWidget):
         )
         registry_middle_column.addWidget(self.registry_status)
         self.registry_status.hide()
-        registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
         self.registry_table = QTableWidget(0, 11)
