@@ -968,7 +968,7 @@ class ShowPatchPage(QWidget):
         pool_cards_layout = QGridLayout(self.registry_pool_cards)
         pool_cards_layout.setContentsMargins(0, 0, 0, 0)
         pool_cards_layout.setHorizontalSpacing(8)
-        pool_cards_layout.setVerticalSpacing(6)
+        pool_cards_layout.setVerticalSpacing(4)
         for column, heading in enumerate(("Scanned Max", "Next Song")):
             heading_label = QLabel(heading)
             heading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -991,34 +991,16 @@ class ShowPatchPage(QWidget):
             for column, target in enumerate((self.registry_scanned_cards, self.registry_next_cards)):
                 label = QLabel(f"{title}\n—")
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                label.setMinimumSize(142, 50)
+                label.setMinimumWidth(142)
+                label.setFixedHeight(38)
                 label.setWordWrap(False)
                 label.setStyleSheet(
                     "background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
-                    "padding: 6px; font-size: 11px; font-weight: 600;"
+                    "padding: 3px; font-size: 10px; font-weight: 600;"
                 )
                 target[pool_key] = label
                 pool_cards_layout.addWidget(label, row, column)
-        # Keep every scan card at its readable height. On a short window the
-        # cards scroll inside this column instead of Qt squeezing/clipping
-        # the bottom rows into one another.
-        self.registry_pool_cards.setMinimumHeight(
-            pool_cards_layout.sizeHint().height()
-        )
-        self.registry_pool_cards.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
-        )
-        self.registry_pool_cards_scroll = QScrollArea()
-        self.registry_pool_cards_scroll.setWidget(self.registry_pool_cards)
-        self.registry_pool_cards_scroll.setWidgetResizable(True)
-        self.registry_pool_cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.registry_pool_cards_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.registry_pool_cards_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        registry_middle_column.addWidget(self.registry_pool_cards_scroll, stretch=1)
+        registry_middle_column.addWidget(self.registry_pool_cards)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setWordWrap(True)
         self.registry_status.setStyleSheet(
