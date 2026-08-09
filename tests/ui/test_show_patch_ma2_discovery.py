@@ -82,6 +82,9 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     app.processEvents()
     assert page.view_stage.widgets[0]["x"] == 4
 
+    page.seq_start.setValue(501)
+    page.ma2_group_pool_start.setValue(701)
+    page.ma2_effect_pool_start.setValue(901)
     page._reset_view_layout()
     assert page.view_stage.widgets[0]["x"] == 0
     assert page.view_stage.widgets[-1]["type"] == "all5"
@@ -92,6 +95,10 @@ def test_console_specific_view_layout_defaults_and_pool_types(
         "all3": False,
         "all5": True,
     }
+    starts = {str(w["type"]): int(w["start"]) for w in page.view_stage.widgets}
+    assert starts["sequence"] == 501
+    assert starts["groups"] == 701
+    assert starts["all5"] == 901
 
     # MA3 All 5 is Song EFX and must follow the live per-song Effects
     # allocation from Console Setup, including both start and stride.

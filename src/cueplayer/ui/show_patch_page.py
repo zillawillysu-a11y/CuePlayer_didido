@@ -2816,6 +2816,11 @@ class ShowPatchPage(QWidget):
 
     def _reset_view_layout(self) -> None:
         self.view_stage.set_layout(self._default_view_layout_for_settings())
+        # Reset restores the Follow flags, then immediately resolve their
+        # displayed start/stride from the live Console Setup allocation.
+        # Otherwise the boxes look checked while still showing the static
+        # reference values embedded in the default layout.
+        self._sync_following_view_pools()
         self._on_view_layout_changed()
 
     def _set_view_layout_locked(self, locked: bool) -> None:
