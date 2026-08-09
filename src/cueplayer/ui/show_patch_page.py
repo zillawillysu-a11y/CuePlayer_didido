@@ -392,7 +392,7 @@ class ShowPatchPage(QWidget):
         self.seq_start.setValue(1)
         self.song_list_sequence_pool = NoWheelSpinBox()
         self.song_list_sequence_pool.setRange(1, 9999)
-        self.song_list_sequence_pool.setValue(1)
+        self.song_list_sequence_pool.setValue(1001)
         self.song_list_sequence_pool.setToolTip(
             "Sequence Pool number where the show-wide Song List is imported."
         )
@@ -1960,7 +1960,7 @@ class ShowPatchPage(QWidget):
         self.ma3_radio.setChecked(s.console == "ma3")
         self.ma2_radio.setChecked(s.console != "ma3")
         self.seq_start.setValue(int(s.sequence_pool_start))
-        self.song_list_sequence_pool.setValue(int(s.song_list_sequence_pool or 1))
+        self.song_list_sequence_pool.setValue(int(s.song_list_sequence_pool or 1001))
         self.tc_start.setValue(int(s.timecode_pool_start))
         try:
             page, main_executor = parse_page_executor(s.main_executor or "201.130")
@@ -2054,9 +2054,6 @@ class ShowPatchPage(QWidget):
         for widget in (
             self.ma2_add_preset_cue,
             self.ma2_preset_cue_id,
-            self.ma2_fixed_macros,
-            self.ma2_song_macros,
-            self.ma2_song_list,
             self.registry_host,
             self.registry_command_port,
             self.registry_monitor_port,
@@ -2335,9 +2332,6 @@ class ShowPatchPage(QWidget):
         for widget in (
             self.ma2_add_preset_cue,
             self.ma2_preset_cue_id,
-            self.ma2_fixed_macros,
-            self.ma2_song_macros,
-            self.ma2_song_list,
         ):
             widget.setEnabled(new_console != "ma3")
         self._suppress = False
@@ -3042,6 +3036,8 @@ class ShowPatchPage(QWidget):
                     show_macro_name=show_macro_basename,
                     show_name=self._project.ma_export.ma2_show_name,
                     include_song_list=self._project.ma_export.ma2_include_song_list,
+                    include_fixed_macros=self._project.ma_export.ma2_include_fixed_macros,
+                    include_song_macros=self._project.ma_export.ma2_include_song_macros,
                     song_list_sequence_pool=self._project.ma_export.song_list_sequence_pool,
                     # Reuses the same Console Setup fields MA2 already has
                     # (Fixed Macro Start / Song Macro Start / Template

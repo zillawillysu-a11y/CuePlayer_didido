@@ -89,6 +89,7 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_start_after_scanned is True
     # Absent in an older project file = off, i.e. a plain export.
     assert dict_to_ma_export({}).ma2_start_after_scanned is False
+    assert dict_to_ma_export({}).song_list_sequence_pool == 1001
 
 
 def test_legacy_ma2_macro_start_loads_as_fixed_macro_start() -> None:

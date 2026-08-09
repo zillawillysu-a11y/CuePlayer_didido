@@ -52,6 +52,9 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     page.ma3_radio.setChecked(True)
     app.processEvents()
     assert page.song_viewbutton.text() == "2.10"
+    assert page.ma2_fixed_macros.isEnabled()
+    assert page.ma2_song_macros.isEnabled()
+    assert page.ma2_song_list.isEnabled()
     assert not page.ma2_version.isVisibleTo(page)
     assert not page.ma2_detect_btn.isVisibleTo(page)
     assert not page.ma2_detect_status.isVisibleTo(page)

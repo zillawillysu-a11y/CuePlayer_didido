@@ -310,6 +310,8 @@ class Ma3Exporter:
         show_macro_name: str = "CuePlayer_Show_Install",
         show_name: str = "CuePlayer",
         include_song_list: bool = True,
+        include_fixed_macros: bool = True,
+        include_song_macros: bool = True,
         song_list_sequence_pool: int | None = None,
         # Matches MaExportSettings.ma2_fixed_macro_start / ma2_song_macro_start's
         # existing defaults — two independent macro pool starting positions
@@ -352,6 +354,20 @@ class Ma3Exporter:
         """
         if not plans:
             return {}
+        if include_song_list and song_list_sequence_pool is not None:
+            requested_pool = max(1, int(song_list_sequence_pool))
+            used_pools = {
+                int(plan.profile.sequence_pool_start) for plan in plans
+            } | {
+                int(lane.sequence_pool)
+                for plan in plans
+                for lane in plan.button_lanes
+                if lane.sequence_pool
+            }
+            if requested_pool in used_pools:
+                raise ValueError(
+                    f"Song List Sequence {requested_pool} conflicts with a song Main/Button Sequence."
+                )
         seq_dir, _tc_dir, macro_dir, view_dir = resolve_ma3_datapool_dirs(directory)
         all_paths: dict[str, Path] = {}
         for plan in plans:
@@ -371,6 +387,9 @@ class Ma3Exporter:
 
         if any(p.profile.export_mode == "full" for p in plans):
             extra_commands: list[str] = []
+            song_list_name = sanitize_ma_name(
+                f"{show_name}_Song_List", fallback="CuePlayer_Song_List"
+            )
 
             if include_song_list:
                 extra_commands.extend(
@@ -378,9 +397,6 @@ class Ma3Exporter:
                         f"Store Page {int(template_page)}",
                         f'Label Page {int(template_page)} "Template Page"',
                     ]
-                )
-                song_list_name = sanitize_ma_name(
-                    f"{show_name}_Song_List", fallback="CuePlayer_Song_List"
                 )
                 song_list_filename = f"{song_list_name}.xml"
                 song_list_path = seq_dir / song_list_filename
@@ -416,6 +432,7 @@ class Ma3Exporter:
                     f"{int(template_page)}.{int(song_list_executor)}"
                 )
 
+            if include_fixed_macros:
                 fixed_name = sanitize_ma_name(
                     f"{show_name}_Fixed_Macros", fallback="CuePlayer_Fixed_Macros"
                 )
@@ -433,6 +450,7 @@ class Ma3Exporter:
                     f'Import Macro Library "{fixed_filename}" At Macro {int(fixed_macro_start)}'
                 )
 
+            if include_song_macros:
                 song_change_name = sanitize_ma_name(
                     f"{show_name}_Song_Macros", fallback="CuePlayer_Song_Macros"
                 )
@@ -446,26 +464,27 @@ class Ma3Exporter:
                     f'Import Macro Library "{song_change_filename}" At Macro {int(song_macro_start)}'
                 )
 
-                if include_song_views:
-                    view_dir.mkdir(parents=True, exist_ok=True)
-                    for index, plan in enumerate(plans):
-                        view_pool = int(view_pool_start) + index
-                        view_name = sanitize_ma_name(
-                            plan.song_name, fallback=f"Song{index + 1}"
-                        )
-                        view_filename = f"{view_name}_view.xml"
-                        view_path = view_dir / view_filename
-                        self.write_song_view(
-                            plan, view_path, layout=view_layout, song_index=index
-                        )
-                        all_paths[f"{plan.song_name}:view"] = view_path
-                        extra_commands.extend(
-                            [
-                                f'Import View Library "{view_filename}" At View {view_pool}',
-                                f'Label View {view_pool} "{view_name}"',
-                            ]
-                        )
+            if include_song_views:
+                view_dir.mkdir(parents=True, exist_ok=True)
+                for index, plan in enumerate(plans):
+                    view_pool = int(view_pool_start) + index
+                    view_name = sanitize_ma_name(
+                        plan.song_name, fallback=f"Song{index + 1}"
+                    )
+                    view_filename = f"{view_name}_view.xml"
+                    view_path = view_dir / view_filename
+                    self.write_song_view(
+                        plan, view_path, layout=view_layout, song_index=index
+                    )
+                    all_paths[f"{plan.song_name}:view"] = view_path
+                    extra_commands.extend(
+                        [
+                            f'Import View Library "{view_filename}" At View {view_pool}',
+                            f'Label View {view_pool} "{view_name}"',
+                        ]
+                    )
 
+            if include_fixed_macros:
                 # Initialize the global ViewButton variable immediately
                 # after importing the fixed macros. Without this, Page Change
                 # has no destination until the operator manually runs the

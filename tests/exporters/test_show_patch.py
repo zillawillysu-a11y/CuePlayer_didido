@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from cueplayer.domain.models import Mark, MaExportSettings, Project, Song
 from cueplayer.exporters.show_patch import build_show_patch, pool_collisions, sequence_chain_labels
 
@@ -408,6 +410,19 @@ def test_ma2_show_export_cuepoints_plugin(tmp_path) -> None:
     plugin_xml = paths["show:plugin_xml"].read_text(encoding="utf-8")
     assert 'luafile="Show_Install_export.lua"' in plugin_xml
     assert 'name="Show_Install"' in plugin_xml
+
+
+def test_ma2_rejects_song_list_sequence_collision(tmp_path) -> None:
+    from cueplayer.exporters.ma2 import Ma2Exporter
+    from cueplayer.exporters.show_patch import build_show_patch, plans_from_show_patch
+
+    project = Project.create("Show")
+    settings = MaExportSettings(sequence_pool_start=1)
+    plans = plans_from_show_patch(build_show_patch(project.songs, settings), settings)
+    with pytest.raises(ValueError, match="Song List Sequence 1 conflicts"):
+        Ma2Exporter().export_show_to_directory(
+            plans, tmp_path, song_list_sequence_pool=1
+        )
 
 
 def test_ma2_export_matches_selected_3960_library(tmp_path) -> None:

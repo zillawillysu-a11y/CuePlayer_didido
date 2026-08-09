@@ -245,6 +245,20 @@ class Ma2Exporter:
         pool_overrides = pool_overrides or {}
         if not plans:
             return {}
+        if include_song_list and song_list_sequence_pool is not None:
+            requested_pool = max(1, int(song_list_sequence_pool))
+            used_pools = {
+                int(plan.profile.sequence_pool_start) for plan in plans
+            } | {
+                int(lane.sequence_pool)
+                for plan in plans
+                for lane in plan.button_lanes
+                if lane.sequence_pool
+            }
+            if requested_pool in used_pools:
+                raise ValueError(
+                    f"Song List Sequence {requested_pool} conflicts with a song Main/Button Sequence."
+                )
         directory = Path(directory)
         self._configure_target_from_path(directory)
         import_dir, _plugins_dir, _macros_dir = resolve_ma2_pool_dirs(directory)

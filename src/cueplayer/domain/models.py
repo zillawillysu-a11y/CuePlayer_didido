@@ -1030,7 +1030,7 @@ class MaExportSettings:
     export_mode: str = "full"  # full | timecode_only
     sequence_pool_start: int = 1
     # Show-wide Song List Sequence pool number, shared by MA2 and MA3.
-    song_list_sequence_pool: int = 1
+    song_list_sequence_pool: int = 1001
     timecode_pool_start: int = 201
     main_executor: str = "201.130"
     button_executor_start: str = "201.101"

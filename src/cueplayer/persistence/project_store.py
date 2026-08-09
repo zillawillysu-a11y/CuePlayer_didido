@@ -166,7 +166,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         export_mode=mode,
         sequence_pool_start=int(raw.get("sequence_pool_start", 1) or 1),
         song_list_sequence_pool=max(
-            1, int(raw.get("song_list_sequence_pool", 1) or 1)
+            1, int(raw.get("song_list_sequence_pool", 1001) or 1001)
         ),
         timecode_pool_start=timecode_start,
         main_executor=main_executor,

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cueplayer.exporters.common import ExportCue, MaExportProfile, SongExportPlan
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.xml_inspect import load_xml_root, xml_tag_local
@@ -359,13 +361,54 @@ def test_export_show_to_directory_can_skip_song_workflow(tmp_path: Path) -> None
     plans = [_plan("Rarely Think of It")]
 
     paths = Ma3Exporter().export_show_to_directory(
-        plans, tmp_path, show_name="CuePlayer", include_song_list=False
+        plans,
+        tmp_path,
+        show_name="CuePlayer",
+        include_song_list=False,
+        include_fixed_macros=False,
+        include_song_macros=False,
     )
 
     assert "show:macro" in paths
     assert "show:song_list" not in paths
     assert "show:fixed_macros" not in paths
     assert "show:song_macros" not in paths
+
+
+def test_ma3_song_workflow_options_are_independent(tmp_path: Path) -> None:
+    plans = [_plan("Rarely Think of It")]
+
+    fixed_only = Ma3Exporter().export_show_to_directory(
+        plans,
+        tmp_path / "fixed",
+        include_song_list=False,
+        include_fixed_macros=True,
+        include_song_macros=False,
+        include_song_views=False,
+    )
+    assert "show:song_list" not in fixed_only
+    assert "show:fixed_macros" in fixed_only
+    assert "show:song_macros" not in fixed_only
+
+    songs_only = Ma3Exporter().export_show_to_directory(
+        plans,
+        tmp_path / "songs",
+        include_song_list=False,
+        include_fixed_macros=False,
+        include_song_macros=True,
+        include_song_views=False,
+    )
+    assert "show:song_list" not in songs_only
+    assert "show:fixed_macros" not in songs_only
+    assert "show:song_macros" in songs_only
+
+
+def test_ma3_rejects_song_list_sequence_collision(tmp_path: Path) -> None:
+    plans = [_plan("Rarely Think of It")]
+    with pytest.raises(ValueError, match="Song List Sequence 1 conflicts"):
+        Ma3Exporter().export_show_to_directory(
+            plans, tmp_path, song_list_sequence_pool=1
+        )
 
 
 def test_write_song_view_converts_grid_units_and_maps_pool_types(tmp_path: Path) -> None:
