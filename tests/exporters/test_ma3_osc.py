@@ -22,6 +22,7 @@ def test_ma3_scanner_lua_is_read_only_and_reports_required_pools() -> None:
     assert "ObjectList(\"View 1 Thru 9999\")" in lua
     assert "SendOSC 2" in lua
     assert SCAN_ADDRESS in lua and DONE_ADDRESS in lua
+    assert "return function()" not in lua
     for destructive in ("Store ", "Delete ", "Assign "):
         assert destructive not in lua
 

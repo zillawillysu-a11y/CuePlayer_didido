@@ -60,8 +60,7 @@ def decode_osc_string(packet: bytes) -> tuple[str, str]:
 
 def live_scan_lua(*, osc_output_line: int = 1) -> str:
     line = max(1, int(osc_output_line))
-    return f'''-- CuePlayer grandMA3 Live Scan (read-only)
-return function()
+    return f'''-- CuePlayer grandMA3 Live Scan (read-only LuaFile)
   local scan = tostring(GetVar(GlobalVars(), "cueplayer_scan_id") or "unknown")
   local function send(address, value)
     Cmd('SendOSC {line} "' .. address .. ',s,' .. value .. '"')
@@ -92,7 +91,6 @@ return function()
   local views = ObjectList("View 1 Thru 9999")
   send("{SCAN_ADDRESS}", scan .. "|view|" .. maximum(views))
   send("{DONE_ADDRESS}", scan)
-end
 '''
 
 
