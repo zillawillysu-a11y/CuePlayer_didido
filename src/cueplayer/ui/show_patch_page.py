@@ -903,7 +903,8 @@ class ShowPatchPage(QWidget):
         registry_content_row.addWidget(registry_left_scroll)
 
         registry_middle_widget = QWidget()
-        registry_middle_widget.setMaximumWidth(200)
+        registry_middle_widget.setMinimumWidth(310)
+        registry_middle_widget.setMaximumWidth(350)
         registry_middle_column = QVBoxLayout(registry_middle_widget)
         registry_middle_column.setContentsMargins(0, 0, 0, 0)
         self.registry_summary_labels: list[QLabel] = []
@@ -948,6 +949,41 @@ class ShowPatchPage(QWidget):
             ma3_scan_cards_layout.addWidget(label, row, column)
         self.ma3_scan_cards.hide()
         registry_middle_column.addWidget(self.ma3_scan_cards)
+        self.registry_pool_cards = QWidget()
+        pool_cards_layout = QGridLayout(self.registry_pool_cards)
+        pool_cards_layout.setContentsMargins(0, 0, 0, 0)
+        pool_cards_layout.setHorizontalSpacing(8)
+        pool_cards_layout.setVerticalSpacing(6)
+        for column, heading in enumerate(("Scanned Max", "Next Song")):
+            heading_label = QLabel(heading)
+            heading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            heading_label.setStyleSheet(
+                "color: #99a3b1; background: transparent; font-weight: 650;"
+            )
+            pool_cards_layout.addWidget(heading_label, 0, column)
+        self.registry_scanned_cards: dict[str, QLabel] = {}
+        self.registry_next_cards: dict[str, QLabel] = {}
+        for row, (pool_key, title) in enumerate((
+            ("sequence", "Sequence"),
+            ("effect", "Song EFX"),
+            ("group", "Groups"),
+            ("timecode", "Timecode"),
+            ("macro", "Macro"),
+            ("view", "View"),
+            ("page", "Page"),
+        ), start=1):
+            for column, target in enumerate((self.registry_scanned_cards, self.registry_next_cards)):
+                label = QLabel(f"{title}\n—")
+                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                label.setMinimumSize(142, 50)
+                label.setWordWrap(False)
+                label.setStyleSheet(
+                    "background: #15181d; border: 1px solid #2b313a; border-radius: 8px; "
+                    "padding: 6px; font-size: 11px; font-weight: 600;"
+                )
+                target[pool_key] = label
+                pool_cards_layout.addWidget(label, row, column)
+        registry_middle_column.addWidget(self.registry_pool_cards)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setWordWrap(True)
         self.registry_status.setStyleSheet(
@@ -955,6 +991,7 @@ class ShowPatchPage(QWidget):
             "padding: 10px; color: #a1a1aa;"
         )
         registry_middle_column.addWidget(self.registry_status)
+        self.registry_status.hide()
         registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
@@ -2812,24 +2849,50 @@ class ShowPatchPage(QWidget):
                 f"Next Effects\n{int(settings.ma2_effect_pool_start)}"
             )
             self.registry_summary_labels[3].setText(f"Next Groups\n{int(settings.ma2_group_pool_start)}")
-        is_ma3 = self._console() == "ma3"
         for label in self.registry_summary_labels:
-            label.setVisible(not is_ma3)
-        self.ma3_scan_cards.setVisible(is_ma3)
-        if is_ma3:
-            scanned = settings.ma3_scanned_pool_max
-            titles = {
-                "sequence": "Sequence",
-                "effect": "Song EFX",
-                "group": "Groups",
-                "timecode": "Timecode",
-                "macro": "Macro",
-                "view": "View",
-                "page": "Page",
+            label.hide()
+        self.ma3_scan_cards.hide()
+        scanned = (
+            settings.ma3_scanned_pool_max
+            if self._console() == "ma3"
+            else settings.ma2_scanned_pool_max
+        )
+        if self._slots:
+            next_values = {
+                "sequence": next_sequence,
+                "effect": next_effect,
+                "group": next_group,
+                "timecode": next_timecode,
+                "macro": int(settings.ma2_song_macro_start) + len(self._slots),
+                "view": int(settings.ma2_view_pool_start) + len(self._slots),
+                "page": int(self._slots[-1].page) + 1,
             }
-            for pool_key, label in self.ma3_scan_max_labels.items():
-                value = scanned.get(pool_key, "—")
-                label.setText(f"Scanned {titles[pool_key]}\n{value}")
+        else:
+            next_values = {
+                "sequence": int(settings.sequence_pool_start),
+                "effect": int(settings.ma2_effect_pool_start),
+                "group": int(settings.ma2_group_pool_start),
+                "timecode": int(settings.timecode_pool_start),
+                "macro": int(settings.ma2_song_macro_start),
+                "view": int(settings.ma2_view_pool_start),
+                "page": int(self.executor_page.value()),
+            }
+        titles = {
+            "sequence": "Sequence",
+            "effect": "Song EFX",
+            "group": "Groups",
+            "timecode": "Timecode",
+            "macro": "Macro",
+            "view": "View",
+            "page": "Page",
+        }
+        for pool_key, title in titles.items():
+            self.registry_scanned_cards[pool_key].setText(
+                f"{title}\n{scanned.get(pool_key, '—')}"
+            )
+            self.registry_next_cards[pool_key].setText(
+                f"{title}\n{next_values[pool_key]}"
+            )
         target = self.ma2_version.currentText().strip() if self._console() == "ma2" else "grandMA3"
         out_folder = self.out_dir.text().strip() or "(not selected)"
         self.review_summary.setText(

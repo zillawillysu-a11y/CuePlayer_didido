@@ -64,9 +64,11 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.ma3_live_scan_box.isHidden() is False
     project.ma_export.ma3_scanned_pool_max = {"sequence": 464, "view": 404}
     page.refresh()
-    assert page.ma3_scan_cards.isHidden() is False
-    assert page.ma3_scan_max_labels["sequence"].text() == "Scanned Sequence\n464"
-    assert page.ma3_scan_max_labels["view"].text() == "Scanned View\n404"
+    assert page.registry_pool_cards.isHidden() is False
+    assert page.registry_scanned_cards["sequence"].text() == "Sequence\n464"
+    assert page.registry_scanned_cards["view"].text() == "View\n404"
+    assert page.registry_next_cards["sequence"].text().startswith("Sequence\n")
+    assert page.registry_status.isHidden() is True
     ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
     assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
     assert MA3_POOL_LABELS["all3"] == "All 3\nTemplate EFX"
