@@ -862,14 +862,17 @@ class ShowPatchPage(QWidget):
         ma3_scan_layout.addWidget(self.ma3_registry_status)
         ma3_actions = QGridLayout()
         self.ma3_write_scan_lua = QPushButton("Write Scan LuaFile")
+        self.ma3_choose_scan_lua = QPushButton("Choose Custom Folder")
         self.ma3_test_osc = QPushButton("Test OSC Round Trip")
         self.ma3_scan_show = QPushButton("Scan Current Data Pool")
         self.ma3_write_scan_lua.clicked.connect(self._write_ma3_scan_lua)
+        self.ma3_choose_scan_lua.clicked.connect(self._choose_ma3_scan_lua_folder)
         self.ma3_test_osc.clicked.connect(self._test_ma3_osc)
         self.ma3_scan_show.clicked.connect(self._scan_ma3_show)
         ma3_actions.addWidget(self.ma3_write_scan_lua, 0, 0)
-        ma3_actions.addWidget(self.ma3_test_osc, 0, 1)
-        ma3_actions.addWidget(self.ma3_scan_show, 1, 0, 1, 2)
+        ma3_actions.addWidget(self.ma3_choose_scan_lua, 0, 1)
+        ma3_actions.addWidget(self.ma3_test_osc, 1, 0)
+        ma3_actions.addWidget(self.ma3_scan_show, 1, 1)
         ma3_scan_layout.addLayout(ma3_actions)
         self.ma3_start_after_scanned = QCheckBox("Start after scanned Pools")
         self.ma3_start_after_scanned.toggled.connect(
@@ -2053,7 +2056,35 @@ class ShowPatchPage(QWidget):
         )
 
     def _write_ma3_scan_lua(self, _checked: bool = False) -> None:
-        initial = self.out_dir.text().strip() or QStandardPaths.writableLocation(
+        configured = self.ma3_scan_lua_path.text().strip()
+        if configured:
+            directory = Path(configured).parent
+        else:
+            raw_directory = self.out_dir.text().strip()
+            if not raw_directory:
+                self.ma3_registry_status.setText(
+                    "Choose or restore the grandMA3 Output Folder first."
+                )
+                return
+            directory = Path(raw_directory)
+        try:
+            path = write_ma3_live_scan_lua(
+                directory,
+                osc_output_line=int(self.ma3_registry_output_line.value()),
+            )
+        except OSError as exc:
+            self.ma3_registry_status.setText(f"Could not write MA3 scanner: {exc}")
+            return
+        self.ma3_scan_lua_path.setText(str(path))
+        self.ma3_registry_status.setText(f"Scanner written automatically: {path}")
+
+    def _choose_ma3_scan_lua_folder(self, _checked: bool = False) -> None:
+        configured = self.ma3_scan_lua_path.text().strip()
+        initial = (
+            str(Path(configured).parent)
+            if configured
+            else self.out_dir.text().strip()
+        ) or QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.DocumentsLocation
         )
         selected = QFileDialog.getExistingDirectory(
@@ -2061,17 +2092,10 @@ class ShowPatchPage(QWidget):
         )
         if not selected:
             return
-        try:
-            path = write_ma3_live_scan_lua(
-                Path(selected),
-                osc_output_line=int(self.ma3_registry_output_line.value()),
-            )
-        except OSError as exc:
-            self.ma3_registry_status.setText(f"Could not write MA3 scanner: {exc}")
-            return
+        path = Path(selected) / "CuePlayer_MA3_Live_Scan.lua"
         self.ma3_scan_lua_path.setText(str(path))
         self.ma3_registry_status.setText(
-            f"Scanner written: {path}. For a remote console, replace this with the absolute path visible on MA3."
+            f"Custom scanner location selected: {path}. Press Write Scan LuaFile to create it."
         )
 
     def _test_ma3_osc(self, _checked: bool = False) -> None:

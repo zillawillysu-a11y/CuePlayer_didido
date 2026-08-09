@@ -120,6 +120,27 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert song_efx["stride"] == 125
 
 
+def test_ma3_scan_luafile_writes_to_default_output_without_prompt(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.show_patch_page.discover_ma2_environment",
+        lambda: _discovery(tmp_path),
+    )
+    project = Project.create("Show")
+    project.ma_export.console = "ma3"
+    project.ma_export.output_dir_ma3 = str(tmp_path)
+    page = ShowPatchPage()
+    page.set_project(project)
+    page.out_dir.setText(str(tmp_path))
+
+    page._write_ma3_scan_lua()
+
+    expected = tmp_path / "CuePlayer_MA3_Live_Scan.lua"
+    assert expected.exists()
+    assert page.ma3_scan_lua_path.text() == str(expected)
+
+
 def test_console_setup_fits_a_maximized_1920x1080_window_without_page_scroll(
     app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
