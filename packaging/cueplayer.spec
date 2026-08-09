@@ -93,6 +93,41 @@ _QT_EXCLUDE_MARKERS = (
     "/plugins/texttospeech/",
     "/plugins/webview/",
     "/plugins/qmltooling/",
+    # --- Cleanup Phase 4A additions (PHASE3_DISTRIBUTION_AUDIT.md Rank 2/3/6/7) ---
+    # Qt SDK developer tools — confirmed by exhaustive grep that CuePlayer
+    # never subprocess-launches any of these; they exist only for a human
+    # developer working on Qt/QML content, never for a running frozen app.
+    # Listed by exact filename (not a glob) so nothing else can be caught.
+    "/qmlls.exe",
+    "/qmlformat.exe",
+    "/assistant.exe",
+    "/linguist.exe",
+    "/lupdate.exe",
+    "/lrelease.exe",
+    "/designer.exe",
+    "/uic.exe",
+    "/qmltyperegistrar.exe",
+    "/qmlimportscanner.exe",
+    "/rcc.exe",
+    "/balsamui.exe",
+    "/qmllint.exe",
+    "/qsb.exe",
+    "/qmlcachegen.exe",
+    "/balsam.exe",
+    "/svgtoqml.exe",
+    # QtOpenGL's *Python* binding only (QtOpenGL.pyd / .pyi). Deliberately
+    # narrow: "qtopengl.pyd"/"qtopengl.pyi" do NOT match "Qt6OpenGL.dll"
+    # (the native library, which stays — real dependency of the platform
+    # plugin's software-GL fallback, same as opengl32sw.dll, which this
+    # marker also cannot match). Nothing in src/ imports PySide6.QtOpenGL.
+    "qtopengl.pyd",
+    "qtopengl.pyi",
+    # Leftover QtWebEngine/V8 resource whose filename doesn't contain
+    # "webengine" so it slipped past the marker above in Phase 1.
+    "v8_context_snapshot",
+    # shiboken code-generation input — read only when compiling PySide6
+    # bindings from source, never at runtime by a frozen app.
+    "/typesystems/",
 )
 
 
@@ -139,7 +174,32 @@ _QT_HIDDENIMPORT_EXCLUDE_PREFIXES = (
     "PySide6.QtWebView",
     "PySide6.QtSerialBus",
     "PySide6.Qt3D",
+    "PySide6.QtOpenGL",  # Phase 4A: Python binding only — Qt6OpenGL.dll / opengl32sw.dll (native) stay, see _QT_EXCLUDE_MARKERS above
 )
+
+# cyndilib's wheel ships its own Cython-generated .cpp source and .pxd
+# declaration files as package data (PROJECT_SLIM_REPORT.md / PHASE3_
+# DISTRIBUTION_AUDIT.md Rank 5) — an upstream packaging quirk, not
+# something CuePlayer's build introduces. Neither extension is ever
+# compiled or read by a running frozen app; only the compiled .pyd
+# extensions and the DLLs under wrapper/bin/ matter at runtime.
+_CYNDILIB_SOURCE_SUFFIXES = (".cpp", ".pxd")
+
+
+def _filter_cyndilib_source(entries):
+    kept = []
+    dropped_size = 0
+    for entry in entries:
+        src = entry[0]
+        if src.lower().endswith(_CYNDILIB_SOURCE_SUFFIXES):
+            try:
+                dropped_size += Path(src).stat().st_size
+            except OSError:
+                pass
+            continue
+        kept.append(entry)
+    return kept, len(entries) - len(kept), dropped_size
+
 
 for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib", "aiortc", "aioice"):
     try:
@@ -156,6 +216,14 @@ for pkg in ("PySide6", "av", "soundfile", "certifi", "cyndilib", "aiortc", "aioi
                 f"Qt slim: dropped {n_datas_dropped} data + {n_bin_dropped} binary "
                 f"entries (~{(datas_bytes + bin_bytes) / 1_048_576:.1f} MB) from "
                 f"collect_all('PySide6') — see PROJECT_SLIM_REPORT.md",
+                file=sys.stderr,
+            )
+        elif pkg == "cyndilib":
+            pkg_datas, n_datas_dropped, datas_bytes = _filter_cyndilib_source(pkg_datas)
+            print(
+                f"cyndilib slim: dropped {n_datas_dropped} .cpp/.pxd source "
+                f"entries (~{datas_bytes / 1_048_576:.1f} MB) from "
+                f"collect_all('cyndilib') — see PHASE3_DISTRIBUTION_AUDIT.md",
                 file=sys.stderr,
             )
         datas += pkg_datas
@@ -195,6 +263,46 @@ for pkg in _OPTIONAL_BPM_PACKS:
         hiddenimports += pkg_hidden
     except Exception as exc:  # noqa: BLE001
         print(f"warning: collect_all({pkg!r}) failed: {exc}", file=sys.stderr)
+
+# --- Cleanup Phase 4A: distribution-wide dev-artifact strip -----------------
+# Applied once, after every collect_all() above, across every package —
+# not just PySide6/cyndilib. `.pyi` type stubs are never read by Python's
+# import machinery at runtime (they exist solely for static type checkers /
+# IDEs); `.lib`/`.a` are Windows import libraries / static archives, used
+# only by a linker at compile time, never loaded by a running frozen exe.
+# Suffix-only match (not a directory marker) is deliberate and safe here:
+# no runtime-loaded file of any package in this spec ends in these
+# extensions. See PHASE3_DISTRIBUTION_AUDIT.md Rank 4 / Rank 8.
+_DEV_ARTIFACT_SUFFIXES = (".pyi", ".lib", ".a")
+
+
+def _strip_dev_artifacts(entries):
+    kept = []
+    dropped_size = 0
+    for entry in entries:
+        src = entry[0]
+        if src.lower().endswith(_DEV_ARTIFACT_SUFFIXES):
+            try:
+                dropped_size += Path(src).stat().st_size
+            except OSError:
+                pass
+            continue
+        kept.append(entry)
+    return kept, len(entries) - len(kept), dropped_size
+
+
+_datas_before, _binaries_before = len(datas), len(binaries)
+datas, _n_datas_dropped, _datas_bytes = _strip_dev_artifacts(datas)
+# Defensive: collect_all() normally puts .pyi/.lib/.a in `datas`, not
+# `binaries`, but this covers it if any hook ever classifies one as a
+# loadable binary instead.
+binaries, _n_bin_dropped, _bin_bytes = _strip_dev_artifacts(binaries)
+print(
+    f"Dev-artifact slim: dropped {_n_datas_dropped + _n_bin_dropped} .pyi/.lib/.a "
+    f"entries (~{(_datas_bytes + _bin_bytes) / 1_048_576:.1f} MB) across all packages — "
+    f"see PHASE3_DISTRIBUTION_AUDIT.md",
+    file=sys.stderr,
+)
 
 # Runtime hook: disable Numba JIT before any worker imports librosa.
 _HOOKS = ROOT / "packaging" / "hooks"
@@ -255,11 +363,31 @@ a = Analysis(
         "PySide6.Qt3DLogic",
         "PySide6.Qt3DAnimation",
         "PySide6.Qt3DExtras",
+        # Cleanup Phase 4A — same belt-and-suspenders reasoning.
+        "PySide6.QtOpenGL",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
+)
+
+# Second pass of the Phase 4A dev-artifact strip, this time on Analysis()'s
+# *own* output. Measured by an actual build: PyInstaller's built-in hooks
+# for some packages (observed: pypinyin, scikit-learn, librosa) collect
+# their own .pyi/.lib/.a files independently of — and in addition to —
+# whatever this spec passed into Analysis(binaries=..., datas=...) above,
+# the same "a hook adds it back after the fact" pattern already documented
+# for QtQuick/QtQml in Cleanup Phase 1. Re-applying the filter here, after
+# Analysis() has run its own hooks, is what actually closes that gap.
+a.datas, _n_datas_dropped2, _datas_bytes2 = _strip_dev_artifacts(a.datas)
+a.binaries, _n_bin_dropped2, _bin_bytes2 = _strip_dev_artifacts(a.binaries)
+print(
+    f"Dev-artifact slim (post-Analysis pass): dropped "
+    f"{_n_datas_dropped2 + _n_bin_dropped2} more .pyi/.lib/.a entries "
+    f"(~{(_datas_bytes2 + _bin_bytes2) / 1_048_576:.1f} MB) added by "
+    f"Analysis()'s own hooks — see PHASE3_DISTRIBUTION_AUDIT.md",
+    file=sys.stderr,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
