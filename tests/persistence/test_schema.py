@@ -44,6 +44,11 @@ def test_ma2_full_export_options_round_trip() -> None:
         ma2_telnet_user="ScanUser",
         ma2_telnet_plugin_pool=999,
         ma2_telnet_plugin_import_path="/data/ma/actual/gma2/plugins",
+        ma3_osc_host="192.168.1.30",
+        ma3_osc_send_port=9000,
+        ma3_osc_listen_port=9001,
+        ma3_osc_output_line=2,
+        ma3_scan_lua_path="C:/gma3/CuePlayer_MA3_Live_Scan.lua",
         export_content_by_song={"song-id": {"main": False, "buttons": [2, 4]}},
         ma2_view_layout=[{"type": "effects", "mode": "perSong", "x": 2, "y": 1, "w": 12, "h": 4, "start": 601, "stride": 137}],
         ma3_view_layout=[{"type": "all5", "mode": "perSong", "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100}],
@@ -76,6 +81,11 @@ def test_ma2_full_export_options_round_trip() -> None:
     assert loaded.ma2_telnet_user == "ScanUser"
     assert loaded.ma2_telnet_plugin_pool == 999
     assert loaded.ma2_telnet_plugin_import_path == "/data/ma/actual/gma2/plugins"
+    assert loaded.ma3_osc_host == "192.168.1.30"
+    assert loaded.ma3_osc_send_port == 9000
+    assert loaded.ma3_osc_listen_port == 9001
+    assert loaded.ma3_osc_output_line == 2
+    assert loaded.ma3_scan_lua_path == "C:/gma3/CuePlayer_MA3_Live_Scan.lua"
     assert loaded.ma2_view_layout[0]["w"] == 12
     assert loaded.ma2_view_layout[0]["stride"] == 137
     assert loaded.ma3_view_layout[0]["type"] == "all5"

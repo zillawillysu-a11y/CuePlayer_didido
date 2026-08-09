@@ -1072,6 +1072,12 @@ class MaExportSettings:
     ma2_telnet_user: str = "administrator"
     ma2_telnet_plugin_pool: int = 9999
     ma2_telnet_plugin_import_path: str = ""
+    # grandMA3 Live Scan uses OSC command input + LuaFile OSC replies.
+    ma3_osc_host: str = "127.0.0.1"
+    ma3_osc_send_port: int = 8000
+    ma3_osc_listen_port: int = 8001
+    ma3_osc_output_line: int = 1
+    ma3_scan_lua_path: str = ""
     # Song ids selected for export; empty = all songs.
     export_song_ids: list[str] = field(default_factory=list)
     # Optional per-song Main/Button selection. Missing entries mean all.

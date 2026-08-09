@@ -48,6 +48,8 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.ma2_version.isVisibleTo(page)
     assert page.ma2_detect_btn.isVisibleTo(page)
     assert page.ma2_detect_status.isVisibleTo(page)
+    assert page.ma2_live_scan_box.isHidden() is False
+    assert page.ma3_live_scan_box.isHidden() is True
 
     page.ma3_radio.setChecked(True)
     app.processEvents()
@@ -58,6 +60,8 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert not page.ma2_version.isVisibleTo(page)
     assert not page.ma2_detect_btn.isVisibleTo(page)
     assert not page.ma2_detect_status.isVisibleTo(page)
+    assert page.ma2_live_scan_box.isHidden() is True
+    assert page.ma3_live_scan_box.isHidden() is False
     ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
     assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
     assert MA3_POOL_LABELS["all3"] == "All 3\nTemplate EFX"

@@ -109,6 +109,11 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_telnet_user": settings.ma2_telnet_user,
         "ma2_telnet_plugin_pool": int(settings.ma2_telnet_plugin_pool),
         "ma2_telnet_plugin_import_path": settings.ma2_telnet_plugin_import_path,
+        "ma3_osc_host": settings.ma3_osc_host,
+        "ma3_osc_send_port": int(settings.ma3_osc_send_port),
+        "ma3_osc_listen_port": int(settings.ma3_osc_listen_port),
+        "ma3_osc_output_line": int(settings.ma3_osc_output_line),
+        "ma3_scan_lua_path": settings.ma3_scan_lua_path,
         "export_song_ids": list(settings.export_song_ids),
         "export_content_by_song": {
             str(song_id): dict(content)
@@ -228,6 +233,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
             2, int(raw.get("ma2_telnet_plugin_pool", 9999) or 9999)
         ),
         ma2_telnet_plugin_import_path=str(raw.get("ma2_telnet_plugin_import_path") or ""),
+        ma3_osc_host=str(raw.get("ma3_osc_host") or "127.0.0.1"),
+        ma3_osc_send_port=max(1, int(raw.get("ma3_osc_send_port", 8000) or 8000)),
+        ma3_osc_listen_port=max(1, int(raw.get("ma3_osc_listen_port", 8001) or 8001)),
+        ma3_osc_output_line=max(1, int(raw.get("ma3_osc_output_line", 1) or 1)),
+        ma3_scan_lua_path=str(raw.get("ma3_scan_lua_path") or ""),
         export_song_ids=[
             str(x) for x in (raw.get("export_song_ids") or []) if str(x).strip()
         ],

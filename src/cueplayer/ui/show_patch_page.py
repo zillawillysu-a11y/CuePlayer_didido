@@ -42,6 +42,11 @@ from cueplayer.domain.models import MaExportSettings, Project
 from cueplayer.exporters.common import parse_page_executor, sanitize_ma_name
 from cueplayer.exporters.ma2 import Ma2Exporter
 from cueplayer.exporters.ma2_telnet import Ma2TelnetError, Ma2TelnetScanner
+from cueplayer.exporters.ma3_osc import (
+    Ma3OscError,
+    Ma3OscScanner,
+    write_live_scan_lua as write_ma3_live_scan_lua,
+)
 from cueplayer.exporters.ma3 import Ma3Exporter
 from cueplayer.exporters.ma_default_dirs import (
     MA2_MINIMUM_VERSION,
@@ -693,6 +698,7 @@ class ShowPatchPage(QWidget):
         registry_intro.setStyleSheet("color: #8b949e; padding: 4px;")
         self.registry_page_layout.addWidget(registry_intro)
         live_scan_box = QGroupBox("MA2 Live Pool Scan")
+        self.ma2_live_scan_box = live_scan_box
         # registry_left_widget already caps this column's width below — this
         # box just fills it, matching every other box in that column instead
         # of double-constraining its own width.
@@ -811,12 +817,74 @@ class ShowPatchPage(QWidget):
         self.registry_start_after_scanned.toggled.connect(self._on_start_after_scanned_toggled)
         live_scan_layout.addWidget(self.registry_start_after_scanned)
 
+        self.ma3_live_scan_box = QGroupBox("MA3 Live Pool Scan · OSC")
+        ma3_scan_layout = QVBoxLayout(self.ma3_live_scan_box)
+        ma3_fields = QGridLayout()
+        self.ma3_registry_host = QLineEdit("127.0.0.1")
+        self.ma3_registry_send_port = NoWheelSpinBox()
+        self.ma3_registry_send_port.setRange(1, 65535)
+        self.ma3_registry_send_port.setValue(8000)
+        self.ma3_registry_listen_port = NoWheelSpinBox()
+        self.ma3_registry_listen_port.setRange(1, 65535)
+        self.ma3_registry_listen_port.setValue(8001)
+        self.ma3_registry_output_line = NoWheelSpinBox()
+        self.ma3_registry_output_line.setRange(1, 99)
+        self.ma3_registry_output_line.setValue(1)
+        for index, (label_text, widget) in enumerate((
+            ("MA3 Host", self.ma3_registry_host),
+            ("Send Port", self.ma3_registry_send_port),
+            ("Listen Port", self.ma3_registry_listen_port),
+            ("OSC Output Line", self.ma3_registry_output_line),
+        )):
+            field_widget = QWidget()
+            field_widget.setObjectName("maLiveScanField")
+            field_layout = QVBoxLayout(field_widget)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(2)
+            field_layout.addWidget(QLabel(label_text))
+            field_layout.addWidget(widget)
+            row, column = divmod(index, 2)
+            ma3_fields.addWidget(field_widget, row, column)
+        ma3_scan_layout.addLayout(ma3_fields)
+        self.ma3_scan_lua_path = QLineEdit()
+        self.ma3_scan_lua_path.setPlaceholderText(
+            "Absolute LuaFile path visible to grandMA3"
+        )
+        ma3_scan_layout.addWidget(QLabel("MA3 LuaFile Path"))
+        ma3_scan_layout.addWidget(self.ma3_scan_lua_path)
+        self.ma3_registry_status = QLabel(
+            "Configure MA3 OSC Input /cmd and an OSC Output line back to this computer."
+        )
+        self.ma3_registry_status.setWordWrap(True)
+        self.ma3_registry_status.setStyleSheet(
+            "background: #101318; color: #99a3b1; border-radius: 6px; padding: 9px;"
+        )
+        ma3_scan_layout.addWidget(self.ma3_registry_status)
+        ma3_actions = QGridLayout()
+        self.ma3_write_scan_lua = QPushButton("Write Scan LuaFile")
+        self.ma3_test_osc = QPushButton("Test OSC Round Trip")
+        self.ma3_scan_show = QPushButton("Scan Current Data Pool")
+        self.ma3_write_scan_lua.clicked.connect(self._write_ma3_scan_lua)
+        self.ma3_test_osc.clicked.connect(self._test_ma3_osc)
+        self.ma3_scan_show.clicked.connect(self._scan_ma3_show)
+        ma3_actions.addWidget(self.ma3_write_scan_lua, 0, 0)
+        ma3_actions.addWidget(self.ma3_test_osc, 0, 1)
+        ma3_actions.addWidget(self.ma3_scan_show, 1, 0, 1, 2)
+        ma3_scan_layout.addLayout(ma3_actions)
+        self.ma3_start_after_scanned = QCheckBox("Start after scanned Pools")
+        self.ma3_start_after_scanned.toggled.connect(
+            self._on_start_after_scanned_toggled
+        )
+        ma3_scan_layout.addWidget(self.ma3_start_after_scanned)
+        self.ma3_live_scan_box.hide()
+
         registry_content_row = QHBoxLayout()
         registry_left_widget = QWidget()
         registry_left_widget.setMaximumWidth(360)
         registry_left_column = QVBoxLayout(registry_left_widget)
         registry_left_column.setContentsMargins(0, 0, 0, 0)
         registry_left_column.addWidget(live_scan_box)
+        registry_left_column.addWidget(self.ma3_live_scan_box)
         registry_left_column.addStretch(1)
         registry_left_widget.setMinimumHeight(registry_left_widget.sizeHint().height())
         registry_left_scroll = QScrollArea()
@@ -1218,6 +1286,11 @@ class ShowPatchPage(QWidget):
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
+            self.ma3_registry_host,
+            self.ma3_registry_send_port,
+            self.ma3_registry_listen_port,
+            self.ma3_registry_output_line,
+            self.ma3_scan_lua_path,
         ):
             if isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_settings_edited)
@@ -1972,6 +2045,83 @@ class ShowPatchPage(QWidget):
         self.registry_scan_status.setText(status_text)
         self._set_telnet_status("ready")
 
+    def _ma3_osc_scanner(self) -> Ma3OscScanner:
+        return Ma3OscScanner(
+            self.ma3_registry_host.text(),
+            send_port=int(self.ma3_registry_send_port.value()),
+            listen_port=int(self.ma3_registry_listen_port.value()),
+        )
+
+    def _write_ma3_scan_lua(self, _checked: bool = False) -> None:
+        initial = self.out_dir.text().strip() or QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation
+        )
+        selected = QFileDialog.getExistingDirectory(
+            self, "Choose a folder visible to grandMA3", initial
+        )
+        if not selected:
+            return
+        try:
+            path = write_ma3_live_scan_lua(
+                Path(selected),
+                osc_output_line=int(self.ma3_registry_output_line.value()),
+            )
+        except OSError as exc:
+            self.ma3_registry_status.setText(f"Could not write MA3 scanner: {exc}")
+            return
+        self.ma3_scan_lua_path.setText(str(path))
+        self.ma3_registry_status.setText(
+            f"Scanner written: {path}. For a remote console, replace this with the absolute path visible on MA3."
+        )
+
+    def _test_ma3_osc(self, _checked: bool = False) -> None:
+        try:
+            self._ma3_osc_scanner().test_connection(
+                osc_output_line=int(self.ma3_registry_output_line.value())
+            )
+        except (Ma3OscError, OSError) as exc:
+            self.ma3_registry_status.setText(str(exc))
+            return
+        self.ma3_registry_status.setText("MA3 OSC round trip succeeded.")
+
+    def _scan_ma3_show(self, _checked: bool = False) -> None:
+        lua_path = self.ma3_scan_lua_path.text().strip()
+        if not lua_path:
+            self.ma3_registry_status.setText(
+                "Write the scanner LuaFile, then enter its absolute path as seen by grandMA3."
+            )
+            return
+        try:
+            snapshot = self._ma3_osc_scanner().scan(lua_path)
+        except (Ma3OscError, OSError) as exc:
+            self.ma3_registry_status.setText(str(exc))
+            return
+        if self._project is None:
+            return
+        maxima = {str(key): max(0, int(value)) for key, value in snapshot.maxima.items()}
+        self._project.ma_export.ma2_scanned_pool_max = maxima
+        controls = {
+            "sequence": self.seq_start,
+            "effect": self.ma2_effect_pool_start,
+            "group": self.ma2_group_pool_start,
+            "timecode": self.tc_start,
+            "macro": self.ma2_song_macro_start,
+            "view": self.ma2_view_pool_start,
+            "page": self.executor_page,
+        }
+        self._suppress = True
+        for pool_name, control in controls.items():
+            if pool_name in maxima:
+                control.setValue(max(1, maxima[pool_name] + 1))
+        self._suppress = False
+        self._write_ui_to_settings()
+        self.refresh()
+        self.settings_changed.emit()
+        summary = ", ".join(
+            f"{name} {number}" for name, number in sorted(maxima.items())
+        )
+        self.ma3_registry_status.setText(f"MA3 scan completed: {summary}")
+
     def _load_settings_into_ui(self) -> None:
         if self._project is None:
             return
@@ -2027,6 +2177,11 @@ class ShowPatchPage(QWidget):
         self.registry_user.setText(s.ma2_telnet_user or "administrator")
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
+        self.ma3_registry_host.setText(s.ma3_osc_host or "127.0.0.1")
+        self.ma3_registry_send_port.setValue(int(s.ma3_osc_send_port or 8000))
+        self.ma3_registry_listen_port.setValue(int(s.ma3_osc_listen_port or 8001))
+        self.ma3_registry_output_line.setValue(int(s.ma3_osc_output_line or 1))
+        self.ma3_scan_lua_path.setText(s.ma3_scan_lua_path or "")
         self._sync_start_after_scanned_checkboxes(bool(s.ma2_start_after_scanned))
         self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(s.console, (16, 8)))
         self.view_grid_label.setText(
@@ -2048,6 +2203,8 @@ class ShowPatchPage(QWidget):
         else:
             s.output_dir_ma2 = path
         self.data_pool.setEnabled(s.console == "ma3")
+        self.ma2_live_scan_box.setVisible(s.console != "ma3")
+        self.ma3_live_scan_box.setVisible(s.console == "ma3")
         self._sync_console_specific_controls(s.console)
         self.show_macro_name.setEnabled(True)
         # Template Page / Fixed Macro Start / Song Macro Start / Song
@@ -2137,6 +2294,11 @@ class ShowPatchPage(QWidget):
         s.ma2_telnet_user = self.registry_user.text().strip() or "administrator"
         s.ma2_telnet_plugin_pool = int(self.registry_plugin_pool.value())
         s.ma2_telnet_plugin_import_path = self.registry_plugin_import_path.text().strip()
+        s.ma3_osc_host = self.ma3_registry_host.text().strip() or "127.0.0.1"
+        s.ma3_osc_send_port = int(self.ma3_registry_send_port.value())
+        s.ma3_osc_listen_port = int(self.ma3_registry_listen_port.value())
+        s.ma3_osc_output_line = int(self.ma3_registry_output_line.value())
+        s.ma3_scan_lua_path = self.ma3_scan_lua_path.text().strip()
         s.ma2_start_after_scanned = self.registry_start_after_scanned.isChecked()
         s.ma2_target_version = self.ma2_version.currentText().strip()
         # Keep export_song_ids in sync with checklist.
@@ -2242,7 +2404,11 @@ class ShowPatchPage(QWidget):
 
     def _sync_start_after_scanned_checkboxes(self, checked: bool) -> None:
         """Keep the Export Registry and Review & Export copies in step."""
-        for box in (self.registry_start_after_scanned, self.review_start_after_scanned):
+        for box in (
+            self.registry_start_after_scanned,
+            self.ma3_start_after_scanned,
+            self.review_start_after_scanned,
+        ):
             box.blockSignals(True)
             box.setChecked(bool(checked))
             box.blockSignals(False)
@@ -2339,6 +2505,8 @@ class ShowPatchPage(QWidget):
         saved_layout = s.ma3_view_layout if new_console == "ma3" else s.ma2_view_layout
         self.view_stage.set_layout(saved_layout or self._default_view_layout_for_settings())
         self.data_pool.setEnabled(new_console == "ma3")
+        self.ma2_live_scan_box.setVisible(new_console != "ma3")
+        self.ma3_live_scan_box.setVisible(new_console == "ma3")
         self._sync_console_specific_controls(new_console)
         self.show_macro_name.setEnabled(True)
         for widget in (
