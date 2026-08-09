@@ -50,6 +50,8 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.ma2_detect_status.isVisibleTo(page)
     assert page.ma2_live_scan_box.isHidden() is False
     assert page.ma3_live_scan_box.isHidden() is True
+    assert page.ma3_generator_pool_start.isHidden()
+    assert page.ma3_generator_slots.isHidden()
 
     page.ma3_radio.setChecked(True)
     app.processEvents()
@@ -63,6 +65,8 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert not page.ma2_detect_status.isVisibleTo(page)
     assert page.ma2_live_scan_box.isHidden() is True
     assert page.ma3_live_scan_box.isHidden() is False
+    assert not page.ma3_generator_pool_start.isHidden()
+    assert not page.ma3_generator_slots.isHidden()
     project.ma_export.ma3_scanned_pool_max = {"sequence": 464, "view": 404}
     page.refresh()
     assert page.registry_pool_cards.isHidden() is False

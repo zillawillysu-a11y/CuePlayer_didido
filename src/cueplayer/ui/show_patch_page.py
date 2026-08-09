@@ -452,6 +452,8 @@ class ShowPatchPage(QWidget):
         for index, (label_text, widget) in enumerate(pool_start_fields):
             row, col = divmod(index, _POOL_START_COLS)
             label = QLabel(label_text)
+            if widget is self.ma3_generator_pool_start:
+                self.ma3_generator_pool_start_label = label
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             # These only ever hold a 1-9999 Pool number. Left free to expand
             # they grew to ~270px each, which pushed later columns off the
@@ -571,6 +573,8 @@ class ShowPatchPage(QWidget):
             group_column = (index % _OPTION_COLS) * 2
             group_row = index // _OPTION_COLS
             label = QLabel(label_text)
+            if widget is self.ma3_generator_slots:
+                self.ma3_generator_slots_label = label
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             opt_form.addWidget(label, group_row, group_column)
             opt_form.addWidget(widget, group_row, group_column + 1)
@@ -2991,6 +2995,13 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setColumnHidden(7, console != "ma3")
         self.registry_table.setColumnHidden(7, console != "ma3")
         self.review_table.setColumnHidden(6, console != "ma3")
+        for widget in (
+            self.ma3_generator_pool_start_label,
+            self.ma3_generator_pool_start,
+            self.ma3_generator_slots_label,
+            self.ma3_generator_slots,
+        ):
+            widget.setVisible(console == "ma3")
 
     def _rebuild_view_pool_types(self, console: str) -> None:
         """Expose only Pool types valid for the selected console."""
