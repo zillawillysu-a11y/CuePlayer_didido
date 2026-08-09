@@ -326,18 +326,20 @@ def test_template_page_is_stored_and_labeled(tmp_path: Path) -> None:
     assert 'Label Page 200 "Template Page"' in commands
 
 
-def test_main_sequence_gets_a_preset_cue_at_0_5_when_song_list_is_on(
+def test_main_sequence_preset_cue_is_independent_of_song_list(
     tmp_path: Path,
 ) -> None:
-    """Real-hardware feedback: Page Change's unconditional "Goto Cue 0.5"
-    needs an actual Cue 0.5 to exist in every song's Main Sequence — it's
-    referenced by raw number, not a "Preset" label the way MA2 does it."""
+    """The Preset checkbox controls Cue 0.5 independently of Song List."""
     plans = [_plan("Rarely Think of It")]
 
-    with_song_list = Ma3Exporter().export_show_to_directory(
-        plans, tmp_path / "with", show_name="CuePlayer", include_song_list=True
+    with_preset = Ma3Exporter().export_show_to_directory(
+        plans,
+        tmp_path / "with",
+        show_name="CuePlayer",
+        include_song_list=False,
+        include_preset_cue=True,
     )
-    main_seq = load_xml_root(with_song_list["Rarely Think of It:main_sequence"])
+    main_seq = load_xml_root(with_preset["Rarely Think of It:main_sequence"])
     cue_nos = {
         cue.get("Name"): cue.get("No")
         for cue in main_seq.iter()
@@ -345,12 +347,14 @@ def test_main_sequence_gets_a_preset_cue_at_0_5_when_song_list_is_on(
     }
     assert cue_nos.get("Preset") == "0.500"
 
-    # Without the Song Change workflow, Page Change never runs, so the
-    # extra cue is not needed / not added.
-    without_song_list = Ma3Exporter().export_show_to_directory(
-        plans, tmp_path / "without", show_name="CuePlayer", include_song_list=False
+    without_preset = Ma3Exporter().export_show_to_directory(
+        plans,
+        tmp_path / "without",
+        show_name="CuePlayer",
+        include_song_list=True,
+        include_preset_cue=False,
     )
-    main_seq2 = load_xml_root(without_song_list["Rarely Think of It:main_sequence"])
+    main_seq2 = load_xml_root(without_preset["Rarely Think of It:main_sequence"])
     names = [
         cue.get("Name") for cue in main_seq2.iter() if xml_tag_local(cue.tag) == "Cue"
     ]

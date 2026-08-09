@@ -3038,6 +3038,8 @@ class ShowPatchPage(QWidget):
                     include_song_list=self._project.ma_export.ma2_include_song_list,
                     include_fixed_macros=self._project.ma_export.ma2_include_fixed_macros,
                     include_song_macros=self._project.ma_export.ma2_include_song_macros,
+                    include_preset_cue=self._project.ma_export.ma2_add_main_preset_cue,
+                    preset_cue_id=self._project.ma_export.ma2_main_preset_cue_id,
                     song_list_sequence_pool=self._project.ma_export.song_list_sequence_pool,
                     # Reuses the same Console Setup fields MA2 already has
                     # (Fixed Macro Start / Song Macro Start / Template

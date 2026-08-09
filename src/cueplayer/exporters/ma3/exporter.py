@@ -312,6 +312,8 @@ class Ma3Exporter:
         include_song_list: bool = True,
         include_fixed_macros: bool = True,
         include_song_macros: bool = True,
+        include_preset_cue: bool = False,
+        preset_cue_id: float = 0.5,
         song_list_sequence_pool: int | None = None,
         # Matches MaExportSettings.ma2_fixed_macro_start / ma2_song_macro_start's
         # existing defaults — two independent macro pool starting positions
@@ -372,14 +374,13 @@ class Ma3Exporter:
         all_paths: dict[str, Path] = {}
         for plan in plans:
             # Per-song macros skipped — one show macro at the end. The
-            # Preset Cue (0.5) is only meaningful when the Song Change
-            # workflow's Page Change macro is actually going to reference
-            # it, i.e. exactly when include_song_list is on.
+            # Preset Cue is controlled independently from the Song List.
             paths = self.export_to_directory(
                 plan,
                 directory,
                 include_macro=False,
-                include_preset_cue=include_song_list,
+                include_preset_cue=include_preset_cue,
+                preset_cue_id=preset_cue_id,
             )
             prefix = plan.song_name or "song"
             for key, path in paths.items():
