@@ -653,18 +653,11 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.playlist_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.playlist_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.playlist_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.playlist_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.playlist_table.setColumnWidth(0, 58)
-        self.playlist_table.setColumnWidth(1, 88)
-        self.playlist_table.setColumnWidth(4, 105)
-        self.playlist_table.setColumnWidth(5, 115)
-        self.playlist_table.setColumnWidth(6, 105)
-        self.playlist_table.setColumnWidth(7, 115)
-        self.playlist_table.setColumnWidth(8, 82)
-        self.playlist_table.setColumnWidth(9, 70)
-        self.playlist_table.setColumnWidth(10, 82)
-        self.playlist_table.setColumnWidth(11, 130)
+        self.playlist_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.playlist_table.horizontalHeader().setMinimumSectionSize(58)
+        for column, width in enumerate((58, 88, 180, 190, 105, 115, 105, 115, 90, 70, 82, 130)):
+            self.playlist_table.setColumnWidth(column, width)
+        self.playlist_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         songs_content_row.addWidget(self.playlist_table, stretch=1)
         self.songs_page_layout.addLayout(songs_content_row, stretch=1)
 
@@ -1024,9 +1017,11 @@ class ShowPatchPage(QWidget):
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.registry_table.setColumnWidth(0, 56)
-        self.registry_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.registry_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.registry_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.registry_table.horizontalHeader().setMinimumSectionSize(56)
+        for column, width in enumerate((60, 170, 190, 92, 105, 115, 105, 115, 90, 80, 80, 110)):
+            self.registry_table.setColumnWidth(column, width)
+        self.registry_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         # Left/middle are capped by setMaximumWidth above — the Song List
         # (registry_table) absorbs all remaining width so it's fully visible.
         registry_content_row.addWidget(self.registry_table, stretch=1)
@@ -1296,15 +1291,17 @@ class ShowPatchPage(QWidget):
             ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Generators", "Timecode", "View", "Page", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
-        self.review_table.setColumnWidth(0, 56)
+        self.review_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.review_table.horizontalHeader().setMinimumSectionSize(56)
+        for column, width in enumerate((60, 170, 190, 105, 115, 105, 115, 90, 80, 80, 110, 150)):
+            self.review_table.setColumnWidth(column, width)
+        self.review_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         # Order/Chinese/Song/Marks stay read-only; the six Pool columns (3-8)
         # accept a manual per-song start via double-click — see
         # _on_review_table_item_edited.
         self.review_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
         )
-        self.review_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.review_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.review_table.itemChanged.connect(self._on_review_table_item_edited)
         # review_left_widget is capped by setMaximumWidth above — the table
         # absorbs all remaining width so it's fully visible.
@@ -2830,7 +2827,10 @@ class ShowPatchPage(QWidget):
                     )
                     self.registry_table.setCellWidget(row, column, status)
                 else:
-                    self.registry_table.setItem(row, column, QTableWidgetItem(value))
+                    item = QTableWidgetItem(value)
+                    if column not in (1, 2):
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.registry_table.setItem(row, column, item)
             review_values = (
                 str(row + 1),
                 song_name,
@@ -2847,6 +2847,8 @@ class ShowPatchPage(QWidget):
             )
             for column, value in enumerate(review_values):
                 item = QTableWidgetItem(value)
+                if column not in (1, 2, 11):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 pool = pool_by_review_column.get(column)
                 if pool is None:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
