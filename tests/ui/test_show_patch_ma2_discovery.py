@@ -381,15 +381,17 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert page.view_stage.widgets[2]["type"] == "effects"
     assert page.view_stage.widgets[2]["stride"] == 100
     assert page.registry_table.rowCount() == 1
-    status_light = page.registry_table.cellWidget(0, 3)
-    assert status_light is not None
-    assert "●  Planned" in status_light.text()
+    assert page.registry_table.columnCount() == 11
+    assert all(
+        page.registry_table.horizontalHeaderItem(column).text() != "Status"
+        for column in range(page.registry_table.columnCount())
+    )
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 2
     assert page.playlist_table.columnCount() == 12
     assert page.playlist_table.isColumnHidden(7)
     assert page.playlist_table.horizontalHeaderItem(6).text() == "Groups"
-    assert page.registry_table.horizontalHeaderItem(6).text() == "Groups"
+    assert page.registry_table.horizontalHeaderItem(5).text() == "Groups"
     assert page.review_table.horizontalHeaderItem(5).text() == "Groups"
     assert page.registry_command_port.value() == 30000
     assert page.registry_monitor_port.value() == 30001
@@ -1295,7 +1297,7 @@ def test_manual_pool_override_reaches_playlist_and_registry_tables_too(
     page.refresh()
 
     assert page.playlist_table.item(0, 5).text().startswith("999")
-    assert page.registry_table.item(0, 5).text().startswith("999")
+    assert page.registry_table.item(0, 4).text().startswith("999")
     assert page.review_table.item(0, 4).text().startswith("999")
 
 

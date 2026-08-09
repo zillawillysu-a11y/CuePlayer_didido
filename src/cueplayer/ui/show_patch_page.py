@@ -917,8 +917,8 @@ class ShowPatchPage(QWidget):
         registry_content_row.addWidget(registry_left_scroll)
 
         registry_middle_widget = QWidget()
-        registry_middle_widget.setMinimumWidth(310)
-        registry_middle_widget.setMaximumWidth(350)
+        registry_middle_widget.setMinimumWidth(238)
+        registry_middle_widget.setMaximumWidth(270)
         registry_middle_column = QVBoxLayout(registry_middle_widget)
         registry_middle_column.setContentsMargins(0, 0, 0, 0)
         self.registry_summary_labels: list[QLabel] = []
@@ -991,7 +991,7 @@ class ShowPatchPage(QWidget):
             for column, target in enumerate((self.registry_scanned_cards, self.registry_next_cards)):
                 label = QLabel(f"{title}\n—")
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                label.setMinimumWidth(142)
+                label.setFixedWidth(112)
                 label.setFixedHeight(38)
                 label.setWordWrap(False)
                 label.setStyleSheet(
@@ -1012,15 +1012,15 @@ class ShowPatchPage(QWidget):
         registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
-        self.registry_table = QTableWidget(0, 12)
+        self.registry_table = QTableWidget(0, 11)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Generators", "Timecode", "View", "Page", "Song Macro"]
+            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Generators", "Timecode", "View", "Page", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.registry_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.registry_table.horizontalHeader().setMinimumSectionSize(56)
-        for column, width in enumerate((60, 170, 190, 92, 105, 115, 105, 115, 90, 80, 80, 110)):
+        for column, width in enumerate((56, 125, 155, 92, 98, 92, 100, 78, 68, 68, 92)):
             self.registry_table.setColumnWidth(column, width)
         self.registry_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         # Left/middle are capped by setMaximumWidth above — the Song List
@@ -2807,7 +2807,6 @@ class ShowPatchPage(QWidget):
                 f"{song.setlist_number:g}",
                 song_name,
                 slot.display_name,
-                "Planned",
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
                 f"{group_start}–{group_end}",
@@ -2818,20 +2817,10 @@ class ShowPatchPage(QWidget):
                 str(macro),
             )
             for column, value in enumerate(registry_values):
-                if column == 3:
-                    status = QLabel("●  Planned")
-                    status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    status.setToolTip("Planned allocation — not yet verified by an MA2 show scan")
-                    status.setStyleSheet(
-                        "color: #86efac; font-weight: 650; background: transparent; "
-                        "padding: 2px 8px;"
-                    )
-                    self.registry_table.setCellWidget(row, column, status)
-                else:
-                    item = QTableWidgetItem(value)
-                    if column not in (1, 2):
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.registry_table.setItem(row, column, item)
+                item = QTableWidgetItem(value)
+                if column not in (1, 2):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.registry_table.setItem(row, column, item)
             review_values = (
                 str(row + 1),
                 song_name,
@@ -3006,7 +2995,7 @@ class ShowPatchPage(QWidget):
         # shared table model, but do not add a meaningless visible column to
         # the MA2 workflow.
         self.playlist_table.setColumnHidden(7, console != "ma3")
-        self.registry_table.setColumnHidden(7, console != "ma3")
+        self.registry_table.setColumnHidden(6, console != "ma3")
         self.review_table.setColumnHidden(6, console != "ma3")
         for widget in (
             self.ma3_generator_pool_start_label,
