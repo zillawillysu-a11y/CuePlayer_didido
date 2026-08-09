@@ -22,10 +22,10 @@ DEFAULT_VIEW_LAYOUT: list[dict[str, object]] = [
 # Exact Screen 3 geometry and visible pool starts from Willy's real
 # grandMA3 2.3.2 SONGVIEW.xml export. MA2 keeps its established default above.
 DEFAULT_MA3_VIEW_LAYOUT: list[dict[str, object]] = [
-    {"type": "sequence", "mode": "perSong", "x": 0, "y": 0, "w": 18, "h": 1, "start": 1018, "stride": 20},
-    {"type": "groups", "mode": "perSong", "x": 0, "y": 1, "w": 18, "h": 1, "start": 1018, "stride": 20},
+    {"type": "sequence", "mode": "perSong", "follow": True, "x": 0, "y": 0, "w": 18, "h": 1, "start": 1018, "stride": 20},
+    {"type": "groups", "mode": "perSong", "follow": True, "x": 0, "y": 1, "w": 18, "h": 1, "start": 1018, "stride": 20},
     {"type": "all3", "mode": "fixed", "x": 0, "y": 2, "w": 18, "h": 3, "start": 1, "stride": 1},
-    {"type": "all5", "mode": "perSong", "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100},
+    {"type": "all5", "mode": "perSong", "follow": True, "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100},
 ]
 
 TIMECODE_POOL_TOTAL_CELLS = 3

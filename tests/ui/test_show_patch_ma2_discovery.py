@@ -85,6 +85,13 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     page._reset_view_layout()
     assert page.view_stage.widgets[0]["x"] == 0
     assert page.view_stage.widgets[-1]["type"] == "all5"
+    follows = {str(w["type"]): bool(w.get("follow")) for w in page.view_stage.widgets}
+    assert follows == {
+        "sequence": True,
+        "groups": True,
+        "all3": False,
+        "all5": True,
+    }
 
     # MA3 All 5 is Song EFX and must follow the live per-song Effects
     # allocation from Console Setup, including both start and stride.
