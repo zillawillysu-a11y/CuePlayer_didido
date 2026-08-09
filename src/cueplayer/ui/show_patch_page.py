@@ -831,7 +831,7 @@ class ShowPatchPage(QWidget):
         self.ma3_registry_listen_port.setValue(8001)
         self.ma3_registry_output_line = NoWheelSpinBox()
         self.ma3_registry_output_line.setRange(1, 99)
-        self.ma3_registry_output_line.setValue(1)
+        self.ma3_registry_output_line.setValue(2)
         for index, (label_text, widget) in enumerate((
             ("MA3 Host", self.ma3_registry_host),
             ("Send Port", self.ma3_registry_send_port),
@@ -2104,13 +2104,25 @@ class ShowPatchPage(QWidget):
 
     def _test_ma3_osc(self, _checked: bool = False) -> None:
         try:
-            self._ma3_osc_scanner().test_connection(
-                osc_output_line=int(self.ma3_registry_output_line.value())
-            )
+            detected_line = self._ma3_osc_scanner().detect_output_line()
         except (Ma3OscError, OSError) as exc:
             self.ma3_registry_status.setText(str(exc))
             return
-        self.ma3_registry_status.setText("MA3 OSC round trip succeeded.")
+        self.ma3_registry_output_line.setValue(detected_line)
+        lua_path = self.ma3_scan_lua_path.text().strip()
+        if lua_path and export_path_matches_console(Path(lua_path).parent, "ma3"):
+            try:
+                write_ma3_live_scan_lua(
+                    Path(lua_path).parent, osc_output_line=detected_line
+                )
+            except OSError as exc:
+                self.ma3_registry_status.setText(
+                    f"OSC Line {detected_line} replied, but LuaFile update failed: {exc}"
+                )
+                return
+        self.ma3_registry_status.setText(
+            f"MA3 OSC round trip succeeded · Output Line {detected_line} detected."
+        )
 
     def _scan_ma3_show(self, _checked: bool = False) -> None:
         lua_path = self.ma3_scan_lua_path.text().strip()
@@ -2208,7 +2220,7 @@ class ShowPatchPage(QWidget):
         self.ma3_registry_host.setText(s.ma3_osc_host or "127.0.0.1")
         self.ma3_registry_send_port.setValue(int(s.ma3_osc_send_port or 8000))
         self.ma3_registry_listen_port.setValue(int(s.ma3_osc_listen_port or 8001))
-        self.ma3_registry_output_line.setValue(int(s.ma3_osc_output_line or 1))
+        self.ma3_registry_output_line.setValue(int(s.ma3_osc_output_line or 2))
         saved_ma3_lua = s.ma3_scan_lua_path or ""
         if saved_ma3_lua and not export_path_matches_console(
             Path(saved_ma3_lua).parent, "ma3"

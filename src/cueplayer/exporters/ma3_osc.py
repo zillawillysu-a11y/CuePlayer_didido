@@ -150,6 +150,33 @@ class Ma3OscScanner:
             "No MA3 OSC reply. Check Receive Command, output destination, and both ports."
         )
 
+    def detect_output_line(self, *, first: int = 1, last: int = 8) -> int:
+        """Return the first configured MA3 OSC output line that replies."""
+        nonce = uuid.uuid4().hex[:12]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            receiver.bind(("", self.listen_port))
+            receiver.settimeout(0.25)
+            for line in range(max(1, first), max(first, last) + 1):
+                self._send_command(
+                    f'SendOSC {line} "{ACK_ADDRESS},s,{nonce}|{line}"'
+                )
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                try:
+                    packet, _peer = receiver.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                address, value = decode_osc_string(packet)
+                if address != ACK_ADDRESS:
+                    continue
+                parts = value.split("|")
+                if len(parts) == 2 and parts[0] == nonce and parts[1].isdigit():
+                    return int(parts[1])
+        raise Ma3OscError(
+            "No MA3 OSC output line replied (tested lines 1-8). Check Destination IP, Send, and ports."
+        )
+
     def scan(self, lua_path_on_ma3: str) -> Ma3PoolSnapshot:
         scan_id = uuid.uuid4().hex[:12]
         maxima: dict[str, int] = {}
