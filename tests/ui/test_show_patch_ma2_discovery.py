@@ -52,6 +52,13 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.ma3_live_scan_box.isHidden() is True
     assert page.ma3_generator_pool_start.isHidden()
     assert page.ma3_generator_slots.isHidden()
+    fixed_index = page.pool_start_form.indexOf(page.ma2_fixed_macro_start)
+    fixed_row, _fixed_column, _row_span, _column_span = page.pool_start_form.getItemPosition(fixed_index)
+    assert fixed_row == 1
+    song_view_index = page.option_fields_form.indexOf(page.song_viewbutton)
+    song_view_row, song_view_column, _row_span, _column_span = page.option_fields_form.getItemPosition(song_view_index)
+    assert (song_view_row, song_view_column) == (2, 3)
+    assert all(label.isHidden() for label in page.registry_card_rows["generator"])
 
     page.ma3_radio.setChecked(True)
     app.processEvents()
@@ -67,6 +74,7 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.ma3_live_scan_box.isHidden() is False
     assert not page.ma3_generator_pool_start.isHidden()
     assert not page.ma3_generator_slots.isHidden()
+    assert all(not label.isHidden() for label in page.registry_card_rows["generator"])
     project.ma_export.ma3_scanned_pool_max = {"sequence": 464, "view": 404}
     page.refresh()
     assert page.registry_pool_cards.isHidden() is False

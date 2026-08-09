@@ -449,11 +449,14 @@ class ShowPatchPage(QWidget):
         # Setup to fit at 1920x1080 without the whole page needing to
         # scroll — see the _scrollable() note near workflow_tabs.addTab.
         _POOL_START_COLS = 4
+        self.pool_start_form = pool_form
+        self.pool_start_field_rows: list[tuple[QLabel, QWidget]] = []
         for index, (label_text, widget) in enumerate(pool_start_fields):
             row, col = divmod(index, _POOL_START_COLS)
             label = QLabel(label_text)
             if widget is self.ma3_generator_pool_start:
                 self.ma3_generator_pool_start_label = label
+            self.pool_start_field_rows.append((label, widget))
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             # These only ever hold a 1-9999 Pool number. Left free to expand
             # they grew to ~270px each, which pushed later columns off the
@@ -579,12 +582,15 @@ class ShowPatchPage(QWidget):
         # vertical space back for Console Setup to fit at 1920x1080 without
         # the whole page needing to scroll.
         _OPTION_COLS = 3
+        self.option_fields_form = opt_form
+        self.option_field_rows: list[tuple[QLabel, QWidget]] = []
         for index, (label_text, widget) in enumerate(option_fields):
             group_column = (index % _OPTION_COLS) * 2
             group_row = index // _OPTION_COLS
             label = QLabel(label_text)
             if widget is self.ma3_generator_slots:
                 self.ma3_generator_slots_label = label
+            self.option_field_rows.append((label, widget))
             label.setStyleSheet("color: #99a3b1; font-size: 11px;")
             opt_form.addWidget(label, group_row, group_column)
             opt_form.addWidget(widget, group_row, group_column + 1)
@@ -978,6 +984,7 @@ class ShowPatchPage(QWidget):
             pool_cards_layout.addWidget(heading_label, 0, column)
         self.registry_scanned_cards: dict[str, QLabel] = {}
         self.registry_next_cards: dict[str, QLabel] = {}
+        self.registry_card_rows: dict[str, tuple[QLabel, QLabel]] = {}
         for row, (pool_key, title) in enumerate((
             ("sequence", "Sequence"),
             ("effect", "Song EFX"),
@@ -1000,6 +1007,10 @@ class ShowPatchPage(QWidget):
                 )
                 target[pool_key] = label
                 pool_cards_layout.addWidget(label, row, column)
+            self.registry_card_rows[pool_key] = (
+                self.registry_scanned_cards[pool_key],
+                self.registry_next_cards[pool_key],
+            )
         registry_middle_column.addWidget(self.registry_pool_cards)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setWordWrap(True)
@@ -3004,6 +3015,39 @@ class ShowPatchPage(QWidget):
             self.ma3_generator_slots,
         ):
             widget.setVisible(console == "ma3")
+        # Re-pack the Pool Start grid after removing MA3-only Generator.
+        # Merely hiding it leaves its grid cell empty and pushes Fixed Macro
+        # onto a lonely third row in MA2.
+        visible_pool_fields = [
+            pair for pair in self.pool_start_field_rows
+            if pair[1] is not self.ma3_generator_pool_start or console == "ma3"
+        ]
+        for label, field in self.pool_start_field_rows:
+            self.pool_start_form.removeWidget(label)
+            self.pool_start_form.removeWidget(field)
+        for index, (label, field) in enumerate(visible_pool_fields):
+            row, column = divmod(index, 4)
+            self.pool_start_form.addWidget(
+                label, row, column * 2,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            )
+            self.pool_start_form.addWidget(
+                field, row, column * 2 + 1,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
+        visible_option_fields = [
+            pair for pair in self.option_field_rows
+            if pair[1] is not self.ma3_generator_slots or console == "ma3"
+        ]
+        for label, field in self.option_field_rows:
+            self.option_fields_form.removeWidget(label)
+            self.option_fields_form.removeWidget(field)
+        for index, (label, field) in enumerate(visible_option_fields):
+            row, column = divmod(index, 3)
+            self.option_fields_form.addWidget(label, row, column * 2)
+            self.option_fields_form.addWidget(field, row, column * 2 + 1)
+        for label in self.registry_card_rows.get("generator", ()):
+            label.setVisible(console == "ma3")
 
     def _rebuild_view_pool_types(self, console: str) -> None:
         """Expose only Pool types valid for the selected console."""
