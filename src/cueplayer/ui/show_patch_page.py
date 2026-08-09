@@ -1011,7 +1011,27 @@ class ShowPatchPage(QWidget):
                 self.registry_scanned_cards[pool_key],
                 self.registry_next_cards[pool_key],
             )
-        registry_middle_column.addWidget(self.registry_pool_cards)
+        # The content height is explicit: QGridLayout.sizeHint() is not
+        # reliable until the widget has been shown and previously let Qt
+        # compress fixed-height cards into overlapping half-cards.
+        self.registry_pool_cards.setMinimumHeight(356)
+        self.registry_pool_cards.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.registry_pool_cards_scroll = QScrollArea()
+        self.registry_pool_cards_scroll.setWidget(self.registry_pool_cards)
+        self.registry_pool_cards_scroll.setWidgetResizable(True)
+        self.registry_pool_cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.registry_pool_cards_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.registry_pool_cards_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.registry_pool_cards_scroll.setStyleSheet(
+            "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }"
+        )
+        registry_middle_column.addWidget(self.registry_pool_cards_scroll, stretch=1)
         self.registry_status = QLabel("Registry preview · based on the current export selection")
         self.registry_status.setWordWrap(True)
         self.registry_status.setStyleSheet(
@@ -3048,6 +3068,13 @@ class ShowPatchPage(QWidget):
             self.option_fields_form.addWidget(field, row, column * 2 + 1)
         for label in self.registry_card_rows.get("generator", ()):
             label.setVisible(console == "ma3")
+        # Seven visible rows on MA2, eight on MA3. This minimum belongs to
+        # the scroll area's content widget, not its viewport, so short
+        # windows scroll instead of squeezing the cards.
+        visible_card_rows = 8 if console == "ma3" else 7
+        self.registry_pool_cards.setMinimumHeight(
+            20 + visible_card_rows * 38 + max(0, visible_card_rows - 1) * 4
+        )
 
     def _rebuild_view_pool_types(self, console: str) -> None:
         """Expose only Pool types valid for the selected console."""
