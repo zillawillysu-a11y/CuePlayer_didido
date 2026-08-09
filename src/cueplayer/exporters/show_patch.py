@@ -38,6 +38,7 @@ class SongPatchSlot:
     # UI table, the CSV/TXT report, and — for View/Effects — the exporter).
     effect_start: int = 1
     group_start: int = 1
+    generator_start: int = 1
     view_pool: int = 1
     song_macro_pool: int = 1
 
@@ -126,6 +127,8 @@ def build_show_patch(
     effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
     group_start_base = _base(settings.ma2_group_pool_start, "group")
     group_slots = max(1, int(settings.ma2_group_slots_per_song))
+    generator_start_base = _base(settings.ma3_generator_pool_start, "generator")
+    generator_slots = max(1, int(settings.ma3_generator_slots_per_song))
     view_start_base = _base(settings.ma2_view_pool_start, "view")
     macro_start_base = _base(settings.ma2_song_macro_start, "macro")
     # Per-song pins always win, in either state. That is what lets a manual
@@ -172,6 +175,11 @@ def build_show_patch(
             if "groups" in song_overrides
             else group_start_base + i * group_slots
         )
+        generator_start = (
+            int(song_overrides["generators"])
+            if "generators" in song_overrides
+            else generator_start_base + i * generator_slots
+        )
         view_pool = (
             int(song_overrides["view"]) if "view" in song_overrides else view_start_base + i
         )
@@ -215,6 +223,7 @@ def build_show_patch(
                 include_main=include_main,
                 effect_start=effect_start,
                 group_start=group_start,
+                generator_start=generator_start,
                 view_pool=view_pool,
                 song_macro_pool=song_macro_pool,
             )
@@ -244,6 +253,10 @@ _POOL_RANGE_GETTERS: dict[str, tuple] = {
     "groups": (
         lambda slot: slot.group_start,
         lambda slot, settings: max(1, int(settings.ma2_group_slots_per_song)),
+    ),
+    "generators": (
+        lambda slot: slot.generator_start,
+        lambda slot, settings: max(1, int(settings.ma3_generator_slots_per_song)),
     ),
     "timecode": (lambda slot: slot.timecode_pool, lambda slot, settings: 1),
     "view": (lambda slot: slot.view_pool, lambda slot, settings: 1),

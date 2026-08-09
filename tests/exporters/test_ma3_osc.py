@@ -20,7 +20,8 @@ def test_ma3_scanner_lua_is_read_only_and_reports_required_pools() -> None:
     lua = live_scan_lua(osc_output_line=2)
     assert "DataPool()" in lua
     assert "ObjectList(\"View 1 Thru 9999\")" in lua
-    assert "ObjectList(\"Preset 5.1 Thru 5.9999\")" in lua
+    assert "pool.PresetPools[24]" in lua
+    assert "ObjectList(\"Preset 24.1 Thru 24.9999\")" in lua
     assert "ObjectList(\"Generator 1 Thru 9999\")" in lua
     assert "SendOSC 2" in lua
     assert SCAN_ADDRESS in lua and DONE_ADDRESS in lua

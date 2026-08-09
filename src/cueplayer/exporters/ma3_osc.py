@@ -86,10 +86,14 @@ def live_scan_lua(*, osc_output_line: int = 1) -> str:
   for name, collection in pairs(scans) do
     send("{SCAN_ADDRESS}", scan .. "|" .. name .. "|" .. maximum(collection:Children()))
   end
-  -- All 5 is a Preset All pool, not the fifth entry of DataPool().PresetPools.
-  -- Address it exactly as the MA3 command line does so Song EFX scans the
-  -- same objects that WindowPresetPool/PresetPoolType 24 displays.
-  send("{SCAN_ADDRESS}", scan .. "|effect|" .. maximum(ObjectList("Preset 5.1 Thru 5.9999")))
+  -- PresetPoolType 24 is MA3's All 5 pool.  "Preset 5" addresses the fifth
+  -- feature-group preset pool instead, so it does not see the Song EFX shown
+  -- by the exported View widget.
+  local preset24 = pool.PresetPools and pool.PresetPools[24]
+  local song_efx_max = maximum(preset24 and preset24:Children() or nil)
+  local addressed_max = maximum(ObjectList("Preset 24.1 Thru 24.9999"))
+  if addressed_max > song_efx_max then song_efx_max = addressed_max end
+  send("{SCAN_ADDRESS}", scan .. "|effect|" .. song_efx_max)
   send("{SCAN_ADDRESS}", scan .. "|generator|" .. maximum(ObjectList("Generator 1 Thru 9999")))
   local views = ObjectList("View 1 Thru 9999")
   send("{SCAN_ADDRESS}", scan .. "|view|" .. maximum(views))

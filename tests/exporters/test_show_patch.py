@@ -1101,3 +1101,18 @@ def test_pool_collisions_page_empty_when_sharing_one_page_by_design() -> None:
     assert slots[0].page == slots[1].page
     collisions = pool_collisions(slots, settings)
     assert collisions["page"] == set()
+
+
+def test_ma3_generator_reserves_fifty_slots_per_song_after_scan() -> None:
+    project = Project.create("Show", with_song=False)
+    project.songs = [Song.create("One"), Song.create("Two")]
+    settings = project.ma_export
+    settings.console = "ma3"
+    settings.ma2_start_after_scanned = True
+    settings.ma3_scanned_pool_max = {"generator": 275}
+    settings.ma3_generator_pool_start = 1
+    settings.ma3_generator_slots_per_song = 50
+
+    slots = build_show_patch(project.songs, settings)
+
+    assert [slot.generator_start for slot in slots] == [276, 326]

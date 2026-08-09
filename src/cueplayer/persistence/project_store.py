@@ -100,6 +100,8 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "ma2_sequence_slots_per_song": int(settings.ma2_sequence_slots_per_song),
         "ma2_group_slots_per_song": int(settings.ma2_group_slots_per_song),
         "ma2_group_pool_start": int(settings.ma2_group_pool_start),
+        "ma3_generator_pool_start": int(settings.ma3_generator_pool_start),
+        "ma3_generator_slots_per_song": int(settings.ma3_generator_slots_per_song),
         "ma2_scanned_pool_max": dict(settings.ma2_scanned_pool_max),
         "ma3_scanned_pool_max": dict(settings.ma3_scanned_pool_max),
         "ma2_view_layout": [dict(widget) for widget in settings.ma2_view_layout],
@@ -208,6 +210,10 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
             1, int(raw.get("ma2_group_slots_per_song", 20) or 20)
         ),
         ma2_group_pool_start=max(1, int(raw.get("ma2_group_pool_start", 1) or 1)),
+        ma3_generator_pool_start=max(1, int(raw.get("ma3_generator_pool_start", 1) or 1)),
+        ma3_generator_slots_per_song=max(
+            1, int(raw.get("ma3_generator_slots_per_song", 50) or 50)
+        ),
         ma2_scanned_pool_max={
             str(key): int(value) for key, value in dict(raw.get("ma2_scanned_pool_max", {})).items()
             if isinstance(value, (int, float, str)) and str(value).isdigit()

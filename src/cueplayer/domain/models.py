@@ -1061,6 +1061,8 @@ class MaExportSettings:
     ma2_sequence_slots_per_song: int = 20
     ma2_group_slots_per_song: int = 20
     ma2_group_pool_start: int = 1
+    ma3_generator_pool_start: int = 1
+    ma3_generator_slots_per_song: int = 50
     ma2_scanned_pool_max: dict[str, int] = field(default_factory=dict)
     ma3_scanned_pool_max: dict[str, int] = field(default_factory=dict)
     ma2_view_layout: list[dict[str, object]] = field(default_factory=list)
@@ -1084,7 +1086,7 @@ class MaExportSettings:
     # Optional per-song Main/Button selection. Missing entries mean all.
     export_content_by_song: dict[str, dict[str, object]] = field(default_factory=dict)
     # Manual per-song Pool Start overrides: song_id -> {pool_type: start}.
-    # pool_type in {"sequence","effects","groups","timecode","view","song_macro"}.
+    # pool_type in {"sequence","effects","groups","generators","timecode","view","song_macro"}.
     # Missing song/pool_type entries fall back to the normal computed start.
     ma2_pool_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     # When set, every Pool base start is pushed past the highest number the

@@ -128,6 +128,7 @@ _FOLLOWABLE_POOL_TYPES = {
     # grandMA3 All 5 is the per-song Effects pool (Song EFX), so it follows
     # the same Console Setup allocation as MA2's Effects pool.
     "all5",
+    "generator",
 }
 
 # Display labels for the manual per-song Pool override keys used in
@@ -136,6 +137,7 @@ POOL_COLLISION_LABELS = {
     "sequence": "Sequence",
     "effects": "Effects",
     "groups": "Groups",
+    "generators": "Generators",
     "timecode": "Timecode",
     "view": "View",
     "page": "Page",
@@ -415,6 +417,9 @@ class ShowPatchPage(QWidget):
         self.ma2_group_pool_start = NoWheelSpinBox()
         self.ma2_group_pool_start.setRange(1, 9999)
         self.ma2_group_pool_start.setValue(1)
+        self.ma3_generator_pool_start = NoWheelSpinBox()
+        self.ma3_generator_pool_start.setRange(1, 9999)
+        self.ma3_generator_pool_start.setValue(1)
         self.ma2_view_pool_start = NoWheelSpinBox()
         self.ma2_view_pool_start.setRange(1, 9999)
         self.ma2_view_pool_start.setValue(201)
@@ -432,6 +437,7 @@ class ShowPatchPage(QWidget):
             ("Song List Sequence", self.song_list_sequence_pool),
             ("Effect", self.ma2_effect_pool_start),
             ("Group", self.ma2_group_pool_start),
+            ("Generator", self.ma3_generator_pool_start),
             ("Timecode", self.tc_start),
             ("View", self.ma2_view_pool_start),
             ("Song Macro", self.ma2_song_macro_start),
@@ -541,6 +547,9 @@ class ShowPatchPage(QWidget):
         self.ma2_group_slots = NoWheelSpinBox()
         self.ma2_group_slots.setRange(1, 9999)
         self.ma2_group_slots.setValue(20)
+        self.ma3_generator_slots = NoWheelSpinBox()
+        self.ma3_generator_slots.setRange(1, 9999)
+        self.ma3_generator_slots.setValue(50)
         self.show_macro_name.setPlaceholderText(_DEFAULT_SHOW_MACRO)
         self.show_macro_name.setToolTip(
             "Show-wide Install file name (MA3 = Macro; MA2 = Plugin primarily; .xml can be omitted)"
@@ -548,6 +557,7 @@ class ShowPatchPage(QWidget):
         option_fields = (
             ("Mode", self.mode_combo), ("Show Name", self.show_name), ("Install Name", self.show_macro_name), ("Template Page", self.ma2_template_page),
             ("Sequence Slots Per Song", self.ma2_sequence_slots), ("Group Slots Per Song", self.ma2_group_slots), ("Effect Slots Per Song", self.ma2_effect_slots),
+            ("Generator Slots Per Song", self.ma3_generator_slots),
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
         )
@@ -619,10 +629,10 @@ class ShowPatchPage(QWidget):
         song_layout.addLayout(pick_btns)
         songs_content_row.addWidget(song_box)
 
-        self.playlist_table = QTableWidget(0, 11)
+        self.playlist_table = QTableWidget(0, 12)
         self.playlist_table.setObjectName("maExportPlaylistTable")
         self.playlist_table.setHorizontalHeaderLabels(
-            ["Export", "Song Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "Page", "Marks", "Content"]
+            ["Export", "Song Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Generators", "Timecode", "Page", "Marks", "Content"]
         )
         self.playlist_table.verticalHeader().setVisible(False)
         self.playlist_table.setAlternatingRowColors(True)
@@ -636,10 +646,11 @@ class ShowPatchPage(QWidget):
         self.playlist_table.setColumnWidth(4, 105)
         self.playlist_table.setColumnWidth(5, 115)
         self.playlist_table.setColumnWidth(6, 105)
-        self.playlist_table.setColumnWidth(7, 82)
-        self.playlist_table.setColumnWidth(8, 70)
-        self.playlist_table.setColumnWidth(9, 82)
-        self.playlist_table.setColumnWidth(10, 130)
+        self.playlist_table.setColumnWidth(7, 115)
+        self.playlist_table.setColumnWidth(8, 82)
+        self.playlist_table.setColumnWidth(9, 70)
+        self.playlist_table.setColumnWidth(10, 82)
+        self.playlist_table.setColumnWidth(11, 130)
         songs_content_row.addWidget(self.playlist_table, stretch=1)
         self.songs_page_layout.addLayout(songs_content_row, stretch=1)
 
@@ -993,9 +1004,9 @@ class ShowPatchPage(QWidget):
         registry_middle_column.addStretch(1)
         registry_content_row.addWidget(registry_middle_widget)
 
-        self.registry_table = QTableWidget(0, 11)
+        self.registry_table = QTableWidget(0, 12)
         self.registry_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Timecode", "View", "Page", "Song Macro"]
+            ["Order", "Song", "Export Name", "Status", "Sequence", "Effects", "Groups", "Generators", "Timecode", "View", "Page", "Song Macro"]
         )
         self.registry_table.verticalHeader().setVisible(False)
         self.registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -1184,6 +1195,7 @@ class ShowPatchPage(QWidget):
         for index, (label_text, attr) in enumerate((
             ("Sequence", "seq_start"),
             ("Effect", "effect_start"),
+            ("Generators", "generator_start"),
             ("Timecode", "timecode_start"),
             ("Group", "group_start"),
             ("Macro", "macro_start"),
@@ -1265,9 +1277,9 @@ class ShowPatchPage(QWidget):
         review_left_scroll.setMaximumWidth(392)
         review_content_row.addWidget(review_left_scroll)
 
-        self.review_table = QTableWidget(0, 11)
+        self.review_table = QTableWidget(0, 12)
         self.review_table.setHorizontalHeaderLabels(
-            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Timecode", "View", "Page", "Song Macro", "Marks"]
+            ["Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Generators", "Timecode", "View", "Page", "Song Macro", "Marks"]
         )
         self.review_table.verticalHeader().setVisible(False)
         self.review_table.setColumnWidth(0, 56)
@@ -1350,6 +1362,8 @@ class ShowPatchPage(QWidget):
             self.ma2_sequence_slots,
             self.ma2_group_slots,
             self.ma2_group_pool_start,
+            self.ma3_generator_slots,
+            self.ma3_generator_pool_start,
             self.ma2_fixed_macros,
             self.ma2_song_macros,
             self.ma2_song_list,
@@ -1479,6 +1493,7 @@ class ShowPatchPage(QWidget):
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        generator_slots = max(1, int(settings.ma3_generator_slots_per_song))
         # self._slots was just (re)built from this same queued_songs list in
         # refresh() — reuse it so overrides are reflected everywhere at once.
         slots_by_song_id = {slot.song.id: slot for slot in self._slots}
@@ -1504,12 +1519,14 @@ class ShowPatchPage(QWidget):
                 sequence_start = int(slot.main_sequence)
                 effect_start = int(slot.effect_start)
                 group_start = int(slot.group_start)
+                generator_start = int(slot.generator_start)
                 timecode_start = int(slot.timecode_pool)
                 page = int(slot.page)
             else:
                 sequence_start = int(settings.sequence_pool_start) + row * seq_slots
                 effect_start = int(settings.ma2_effect_pool_start) + row * effect_slots
                 group_start = int(settings.ma2_group_pool_start) + row * group_slots
+                generator_start = int(settings.ma3_generator_pool_start) + row * generator_slots
                 timecode_start = int(settings.timecode_pool_start) + row
                 fallback_page0, _fallback_exec = parse_page_executor(settings.main_executor or "1.101")
                 page = fallback_page0 + row if bool(settings.page_per_song) else fallback_page0
@@ -1521,13 +1538,14 @@ class ShowPatchPage(QWidget):
                 f"{sequence_start}–{sequence_start + seq_slots - 1}",
                 f"{effect_start}–{effect_start + effect_slots - 1}",
                 f"{group_start}–{group_start + group_slots - 1}",
+                f"{generator_start}–{generator_start + generator_slots - 1}",
                 str(timecode_start),
                 str(page),
                 str(len(song.marks)),
                 self._content_summary(song),
             )
             for column, value in enumerate(values, start=1):
-                if column == 10:
+                if column == 11:
                     button = QPushButton(value)
                     button.setObjectName("maExportContentButton")
                     button.setToolTip("Show or hide Main and Button export options")
@@ -1538,7 +1556,7 @@ class ShowPatchPage(QWidget):
                     self.playlist_table.setCellWidget(main_row, column, button)
                     continue
                 item = QTableWidgetItem(value)
-                if column in (1, 4, 5, 6, 7, 8, 9):
+                if column in (1, 4, 5, 6, 7, 8, 9, 10):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == 2:
                     item.setToolTip(song.name)
@@ -2272,6 +2290,8 @@ class ShowPatchPage(QWidget):
         self.ma2_sequence_slots.setValue(int(s.ma2_sequence_slots_per_song or 20))
         self.ma2_group_slots.setValue(int(s.ma2_group_slots_per_song or 20))
         self.ma2_group_pool_start.setValue(int(s.ma2_group_pool_start or 1))
+        self.ma3_generator_pool_start.setValue(int(s.ma3_generator_pool_start or 1))
+        self.ma3_generator_slots.setValue(int(s.ma3_generator_slots_per_song or 50))
         self.registry_host.setText(s.ma2_telnet_host or "127.0.0.1")
         self.registry_command_port.setValue(int(s.ma2_telnet_command_port or 30000))
         self.registry_monitor_port.setValue(int(s.ma2_telnet_monitor_port or 30001))
@@ -2385,6 +2405,8 @@ class ShowPatchPage(QWidget):
         s.ma2_sequence_slots_per_song = int(self.ma2_sequence_slots.value())
         s.ma2_group_slots_per_song = int(self.ma2_group_slots.value())
         s.ma2_group_pool_start = int(self.ma2_group_pool_start.value())
+        s.ma3_generator_pool_start = int(self.ma3_generator_pool_start.value())
+        s.ma3_generator_slots_per_song = int(self.ma3_generator_slots.value())
         # Following View Layout Pools are synced in refresh(), after the
         # allocation exists — doing it here would read last cycle's slots.
         if s.console == "ma3":
@@ -2440,10 +2462,12 @@ class ShowPatchPage(QWidget):
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        generator_slots = max(1, int(settings.ma3_generator_slots_per_song))
         seeds = {
             "sequence": (self.review_pool_start_fields["seq_start"].value(), seq_slots),
             "effects": (self.review_pool_start_fields["effect_start"].value(), effect_slots),
             "groups": (self.review_pool_start_fields["group_start"].value(), group_slots),
+            "generators": (self.review_pool_start_fields["generator_start"].value(), generator_slots),
             "timecode": (self.review_pool_start_fields["timecode_start"].value(), 1),
             "view": (self.review_pool_start_fields["view_start"].value(), 1),
             "song_macro": (self.review_pool_start_fields["macro_start"].value(), 1),
@@ -2487,10 +2511,11 @@ class ShowPatchPage(QWidget):
             3: "sequence",
             4: "effects",
             5: "groups",
-            6: "timecode",
-            7: "view",
-            8: "page",
-            9: "song_macro",
+            6: "generators",
+            7: "timecode",
+            8: "view",
+            9: "page",
+            10: "song_macro",
         }
         pool = pool_by_column.get(item.column())
         row = item.row()
@@ -2703,7 +2728,8 @@ class ShowPatchPage(QWidget):
             f"Group {scanned.get('group', '—')} / "
             f"Macro {scanned.get('macro', '—')} / "
             f"View {scanned.get('view', '—')} / "
-            f"Page {scanned.get('page', '—')}"
+            f"Page {scanned.get('page', '—')} / "
+            f"Generator {scanned.get('generator', '—')}"
         )
         if settings.ma2_start_after_scanned:
             # Manual pins always win over this toggle (see build_show_patch) —
@@ -2732,15 +2758,17 @@ class ShowPatchPage(QWidget):
         slots_per_song = max(1, int(settings.ma2_sequence_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
+        generator_slots = max(1, int(settings.ma3_generator_slots_per_song))
         collisions = pool_collisions(self._slots, settings)
         pool_by_review_column = {
             3: "sequence",
             4: "effects",
             5: "groups",
-            6: "timecode",
-            7: "view",
-            8: "page",
-            9: "song_macro",
+            6: "generators",
+            7: "timecode",
+            8: "view",
+            9: "page",
+            10: "song_macro",
         }
         collision_brush = QBrush(QColor("#7f1d1d"))
         self.registry_table.setRowCount(len(self._slots))
@@ -2753,6 +2781,8 @@ class ShowPatchPage(QWidget):
             effect_end = effect_start + effect_slots - 1
             group_start = int(slot.group_start)
             group_end = group_start + group_slots - 1
+            generator_start = int(slot.generator_start)
+            generator_end = generator_start + generator_slots - 1
             macro = int(slot.song_macro_pool)
             view = int(slot.view_pool)
             song = slot.song
@@ -2769,6 +2799,7 @@ class ShowPatchPage(QWidget):
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
                 f"{group_start}–{group_end}",
+                f"{generator_start}–{generator_end}",
                 str(slot.timecode_pool),
                 str(view),
                 str(slot.page),
@@ -2793,6 +2824,7 @@ class ShowPatchPage(QWidget):
                 f"{seq_start}–{seq_end}",
                 f"{effect_start}–{effect_end}",
                 f"{group_start}–{group_end}",
+                f"{generator_start}–{generator_end}",
                 str(slot.timecode_pool),
                 str(view),
                 str(slot.page),
@@ -2818,6 +2850,7 @@ class ShowPatchPage(QWidget):
             next_effect = int(settings.ma2_effect_pool_start) + len(self._slots) * effect_slots
             next_timecode = int(self._slots[last_row].timecode_pool) + 1
             next_group = int(settings.ma2_group_pool_start) + len(self._slots) * group_slots
+            next_generator = int(self._slots[last_row].generator_start) + generator_slots
             self.registry_status.setText(
                 f"{len(self._slots)} planned song(s) · Next safe starts: Sequence {next_sequence}, "
                 f"Effects {next_effect}, Groups {next_group}, Timecode {next_timecode}, "
@@ -2862,7 +2895,7 @@ class ShowPatchPage(QWidget):
                 "macro": int(settings.ma2_song_macro_start) + len(self._slots),
                 "view": int(settings.ma2_view_pool_start) + len(self._slots),
                 "page": int(self._slots[-1].page) + 1,
-                "generator": int(scanned.get("generator", 0)) + 1,
+                "generator": next_generator,
             }
         else:
             next_values = {
@@ -2873,7 +2906,7 @@ class ShowPatchPage(QWidget):
                 "macro": int(settings.ma2_song_macro_start),
                 "view": int(settings.ma2_view_pool_start),
                 "page": int(self.executor_page.value()),
-                "generator": int(scanned.get("generator", 0)) + 1,
+                "generator": int(settings.ma3_generator_pool_start),
             }
         titles = {
             "sequence": "Sequence",
@@ -2952,6 +2985,12 @@ class ShowPatchPage(QWidget):
         ):
             widget.setVisible(show_ma2_controls)
             widget.setEnabled(show_ma2_controls)
+        # Generator allocation belongs to grandMA3. Keep its data in the
+        # shared table model, but do not add a meaningless visible column to
+        # the MA2 workflow.
+        self.playlist_table.setColumnHidden(7, console != "ma3")
+        self.registry_table.setColumnHidden(7, console != "ma3")
+        self.review_table.setColumnHidden(6, console != "ma3")
 
     def _rebuild_view_pool_types(self, console: str) -> None:
         """Expose only Pool types valid for the selected console."""
@@ -3034,6 +3073,7 @@ class ShowPatchPage(QWidget):
             "sequence": (self.seq_start, self.ma2_sequence_slots, "main_sequence"),
             "effects": (self.ma2_effect_pool_start, self.ma2_effect_slots, "effect_start"),
             "all5": (self.ma2_effect_pool_start, self.ma2_effect_slots, "effect_start"),
+            "generator": (self.ma3_generator_pool_start, self.ma3_generator_slots, "generator_start"),
             "groups": (self.ma2_group_pool_start, self.ma2_group_slots, "group_start"),
             "timecode": (self.tc_start, None, "timecode_pool"),
             "macros": (self.ma2_song_macro_start, None, "song_macro_pool"),
@@ -3496,8 +3536,9 @@ class ShowPatchPage(QWidget):
         seq_slots = max(1, int(settings.ma2_sequence_slots_per_song))
         effect_slots = max(1, int(settings.ma2_effect_slots_per_song))
         group_slots = max(1, int(settings.ma2_group_slots_per_song))
+        generator_slots = max(1, int(settings.ma3_generator_slots_per_song))
         columns = [
-            "Order", "Song", "Export Name", "Sequence", "Effects", "Groups",
+            "Order", "Song", "Export Name", "Sequence", "Effects", "Groups", "Generators",
             "Timecode", "View", "Page", "Song Macro",
         ]
         rows: list[dict[str, str]] = []
@@ -3505,6 +3546,7 @@ class ShowPatchPage(QWidget):
             seq_start = int(slot.main_sequence)
             effect_start = int(slot.effect_start)
             group_start = int(slot.group_start)
+            generator_start = int(slot.generator_start)
             rows.append({
                 "Order": str(order),
                 "Song": slot.song.name,
@@ -3512,6 +3554,7 @@ class ShowPatchPage(QWidget):
                 "Sequence": f"{seq_start}–{seq_start + seq_slots - 1}",
                 "Effects": f"{effect_start}–{effect_start + effect_slots - 1}",
                 "Groups": f"{group_start}–{group_start + group_slots - 1}",
+                "Generators": f"{generator_start}–{generator_start + generator_slots - 1}",
                 "Timecode": str(slot.timecode_pool),
                 "View": str(int(slot.view_pool)),
                 "Page": str(int(slot.page)),

@@ -53,6 +53,7 @@ def test_console_specific_view_layout_defaults_and_pool_types(
 
     page.ma3_radio.setChecked(True)
     app.processEvents()
+    assert not page.playlist_table.isColumnHidden(7)
     assert page.song_viewbutton.text() == "2.10"
     assert page.ma2_fixed_macros.isEnabled()
     assert page.ma2_song_macros.isEnabled()
@@ -106,12 +107,16 @@ def test_console_specific_view_layout_defaults_and_pool_types(
         "groups": True,
         "all3": False,
         "all5": True,
-        "generator": False,
+        "generator": True,
     }
     starts = {str(w["type"]): int(w["start"]) for w in page.view_stage.widgets}
     assert starts["sequence"] == 501
     assert starts["groups"] == 701
     assert starts["all5"] == 901
+    generator = page.view_stage.widgets[-1]
+    assert generator["follow"] is True
+    assert generator["start"] == page.ma3_generator_pool_start.value()
+    assert generator["stride"] == 50
 
     # MA3 All 5 is Song EFX and must follow the live per-song Effects
     # allocation from Console Setup, including both start and stride.
@@ -377,7 +382,8 @@ def test_five_page_playlist_workflow_and_screen3_grid(
     assert "●  Planned" in status_light.text()
     assert page.review_table.rowCount() == 1
     assert page.playlist_table.rowCount() == 2
-    assert page.playlist_table.columnCount() == 11
+    assert page.playlist_table.columnCount() == 12
+    assert page.playlist_table.isColumnHidden(7)
     assert page.playlist_table.horizontalHeaderItem(6).text() == "Groups"
     assert page.registry_table.horizontalHeaderItem(6).text() == "Groups"
     assert page.review_table.horizontalHeaderItem(5).text() == "Groups"
@@ -797,7 +803,7 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "main": False,
         "buttons": [3],
     }
-    content = page.playlist_table.cellWidget(0, 10)
+    content = page.playlist_table.cellWidget(0, 11)
     assert content is not None
     assert content.text() == "1/3 selected"
     page._toggle_content_details(song.id)
@@ -813,13 +819,13 @@ def test_playlist_content_selection_persists_and_updates_summary(
         "buttons": [],
     }
     assert page.playlist_table.item(0, 0).checkState().value == 2
-    assert page.playlist_table.cellWidget(0, 10).text() == "0/3 selected"
+    assert page.playlist_table.cellWidget(0, 11).text() == "0/3 selected"
     page._select_all_content(song.id)
     assert project.ma_export.export_content_by_song[song.id] == {
         "main": True,
         "buttons": [2, 3],
     }
-    assert page.playlist_table.cellWidget(0, 10).text() == "3/3 selected"
+    assert page.playlist_table.cellWidget(0, 11).text() == "3/3 selected"
 
 
 def test_registry_sync_rejects_unsupported_remote_version(
@@ -897,7 +903,7 @@ def test_allocation_report_columns_include_export_name_and_page(
     columns, rows = page._allocation_report_columns_and_rows()
     assert columns == [
         "Order", "Song", "Export Name", "Sequence", "Effects", "Groups",
-        "Timecode", "View", "Page", "Song Macro",
+        "Generators", "Timecode", "View", "Page", "Song Macro",
     ]
     assert rows[0]["Song"] == "第一首"
     assert rows[0]["Export Name"] == "FirstSong"
@@ -1115,8 +1121,8 @@ def test_editing_a_review_table_pool_cell_stores_a_manual_override(
     page._add_songs_to_export_queue([project.songs[0].id])
     song_id = project.songs[0].id
 
-    # Timecode column (6) currently shows the computed default.
-    timecode_item = page.review_table.item(0, 6)
+    # Timecode follows the MA3-only Generators column.
+    timecode_item = page.review_table.item(0, 7)
     assert timecode_item.text() == str(page._slots[0].timecode_pool)
 
     # setText() triggers the connected itemChanged signal synchronously,
@@ -1125,11 +1131,11 @@ def test_editing_a_review_table_pool_cell_stores_a_manual_override(
 
     assert project.ma_export.ma2_pool_overrides[song_id]["timecode"] == 777
     assert page._slots[0].timecode_pool == 777
-    assert page.review_table.item(0, 6).text() == "777"
+    assert page.review_table.item(0, 7).text() == "777"
 
     # Blanking the cell clears the override and falls back to the default.
     default_before_override = int(page._project.ma_export.timecode_pool_start)
-    page.review_table.item(0, 6).setText("")
+    page.review_table.item(0, 7).setText("")
     assert "timecode" not in project.ma_export.ma2_pool_overrides.get(song_id, {})
     assert page._slots[0].timecode_pool == default_before_override
 
@@ -1150,18 +1156,18 @@ def test_review_table_highlights_colliding_pool_cells(
 
     from PySide6.QtGui import QColor
 
-    default_bg = page.review_table.item(0, 6).background().color()
+    default_bg = page.review_table.item(0, 7).background().color()
 
     # Force both songs' Timecode onto the same number.
     target = str(page._slots[0].timecode_pool)
-    page.review_table.item(1, 6).setText(target)
+    page.review_table.item(1, 7).setText(target)
 
-    first_bg = page.review_table.item(0, 6).background().color()
-    second_bg = page.review_table.item(1, 6).background().color()
+    first_bg = page.review_table.item(0, 7).background().color()
+    second_bg = page.review_table.item(1, 7).background().color()
     assert first_bg == QColor("#7f1d1d")
     assert second_bg == QColor("#7f1d1d")
     assert first_bg != default_bg
-    assert page.review_table.item(0, 6).toolTip()
+    assert page.review_table.item(0, 7).toolTip()
 
 
 def test_auto_fill_sequences_every_song_from_the_seed_fields(
