@@ -103,6 +103,19 @@ def write_live_scan_lua(directory: Path, *, osc_output_line: int = 1) -> Path:
     return path
 
 
+def resolve_ma3_scan_lua_dir(export_root: Path) -> Path:
+    """Resolve any supported MA3 export location to datapools/plugins."""
+    root = Path(export_root)
+    name = root.name.lower()
+    if name == "plugins" and root.parent.name.lower() == "datapools":
+        return root
+    if name == "datapools":
+        return root / "plugins"
+    if name in {"sequences", "timecodes", "macros"} and root.parent.name.lower() == "datapools":
+        return root.parent / "plugins"
+    return root / "datapools" / "plugins"
+
+
 class Ma3OscScanner:
     def __init__(self, host: str, *, send_port: int = 8000, listen_port: int = 8001,
                  timeout: float = 4.0) -> None:

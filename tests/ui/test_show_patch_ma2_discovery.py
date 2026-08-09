@@ -136,7 +136,7 @@ def test_ma3_scan_luafile_writes_to_default_output_without_prompt(
 
     page._write_ma3_scan_lua()
 
-    expected = tmp_path / "CuePlayer_MA3_Live_Scan.lua"
+    expected = tmp_path / "datapools" / "plugins" / "CuePlayer_MA3_Live_Scan.lua"
     assert expected.exists()
     assert page.ma3_scan_lua_path.text() == str(expected)
 

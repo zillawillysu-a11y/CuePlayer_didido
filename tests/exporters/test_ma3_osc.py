@@ -6,6 +6,7 @@ from cueplayer.exporters.ma3_osc import (
     decode_osc_string,
     encode_osc_string,
     live_scan_lua,
+    resolve_ma3_scan_lua_dir,
     write_live_scan_lua,
 )
 
@@ -29,3 +30,12 @@ def test_write_live_scan_lua_utf8(tmp_path: Path) -> None:
     path = write_live_scan_lua(tmp_path, osc_output_line=3)
     assert path.name == "CuePlayer_MA3_Live_Scan.lua"
     assert "SendOSC 3" in path.read_text(encoding="utf-8")
+
+
+def test_resolve_scan_lua_dir_from_ma3_library_locations(tmp_path: Path) -> None:
+    library = tmp_path / "gma3_library"
+    plugins = library / "datapools" / "plugins"
+    assert resolve_ma3_scan_lua_dir(library) == plugins
+    assert resolve_ma3_scan_lua_dir(library / "datapools") == plugins
+    assert resolve_ma3_scan_lua_dir(library / "datapools" / "sequences") == plugins
+    assert resolve_ma3_scan_lua_dir(plugins) == plugins

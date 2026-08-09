@@ -45,6 +45,8 @@ from cueplayer.exporters.ma2_telnet import Ma2TelnetError, Ma2TelnetScanner
 from cueplayer.exporters.ma3_osc import (
     Ma3OscError,
     Ma3OscScanner,
+    LUA_FILENAME,
+    resolve_ma3_scan_lua_dir,
     write_live_scan_lua as write_ma3_live_scan_lua,
 )
 from cueplayer.exporters.ma3 import Ma3Exporter
@@ -2057,16 +2059,18 @@ class ShowPatchPage(QWidget):
 
     def _write_ma3_scan_lua(self, _checked: bool = False) -> None:
         configured = self.ma3_scan_lua_path.text().strip()
-        if configured:
+        if configured and export_path_matches_console(Path(configured).parent, "ma3"):
             directory = Path(configured).parent
         else:
             raw_directory = self.out_dir.text().strip()
+            if not raw_directory or not export_path_matches_console(raw_directory, "ma3"):
+                raw_directory = resolve_export_dir("ma3", remembered=None)
             if not raw_directory:
                 self.ma3_registry_status.setText(
-                    "Choose or restore the grandMA3 Output Folder first."
+                    "grandMA3 library was not found. Use Choose Custom Folder."
                 )
                 return
-            directory = Path(raw_directory)
+            directory = resolve_ma3_scan_lua_dir(Path(raw_directory))
         try:
             path = write_ma3_live_scan_lua(
                 directory,
@@ -2092,7 +2096,7 @@ class ShowPatchPage(QWidget):
         )
         if not selected:
             return
-        path = Path(selected) / "CuePlayer_MA3_Live_Scan.lua"
+        path = Path(selected) / LUA_FILENAME
         self.ma3_scan_lua_path.setText(str(path))
         self.ma3_registry_status.setText(
             f"Custom scanner location selected: {path}. Press Write Scan LuaFile to create it."
@@ -2205,7 +2209,13 @@ class ShowPatchPage(QWidget):
         self.ma3_registry_send_port.setValue(int(s.ma3_osc_send_port or 8000))
         self.ma3_registry_listen_port.setValue(int(s.ma3_osc_listen_port or 8001))
         self.ma3_registry_output_line.setValue(int(s.ma3_osc_output_line or 1))
-        self.ma3_scan_lua_path.setText(s.ma3_scan_lua_path or "")
+        saved_ma3_lua = s.ma3_scan_lua_path or ""
+        if saved_ma3_lua and not export_path_matches_console(
+            Path(saved_ma3_lua).parent, "ma3"
+        ):
+            saved_ma3_lua = ""
+            s.ma3_scan_lua_path = ""
+        self.ma3_scan_lua_path.setText(saved_ma3_lua)
         self._sync_start_after_scanned_checkboxes(bool(s.ma2_start_after_scanned))
         self.view_stage.set_grid_size(*GRID_SIZE_BY_CONSOLE.get(s.console, (16, 8)))
         self.view_grid_label.setText(
