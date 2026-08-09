@@ -320,6 +320,9 @@ class ShowPatchPage(QWidget):
             "QLabel { color: #eef2f7; background: transparent; border: none; }"
             "QCheckBox { background: transparent; }"
             "QRadioButton { background: transparent; }"
+            "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }"
+            "#maLiveScanField { background: transparent; }"
+            "#maLiveScanField QLabel { background: transparent; }"
             "#maExportOptions QCheckBox { background: transparent; }"
             "#reviewExportContent QCheckBox { background: transparent; padding: 3px 6px; }"
             "#reviewExportContent { background: #15181d; border: 1px solid #2b313a; border-radius: 6px; }"
@@ -740,7 +743,9 @@ class ShowPatchPage(QWidget):
         plugin_path_row = QHBoxLayout()
         plugin_path_row.setContentsMargins(0, 0, 0, 0)
         plugin_path_label = QLabel("MA2 Plugin Import Path (optional)")
-        plugin_path_label.setStyleSheet("color: #99a3b1; font-size: 11px;")
+        plugin_path_label.setStyleSheet(
+            "color: #99a3b1; font-size: 11px; background: transparent;"
+        )
         self.registry_plugin_import_path.setPlaceholderText(
             "Leave blank for local MA2 onPC; use only for a remote console"
         )
@@ -813,7 +818,16 @@ class ShowPatchPage(QWidget):
         registry_left_column.setContentsMargins(0, 0, 0, 0)
         registry_left_column.addWidget(live_scan_box)
         registry_left_column.addStretch(1)
-        registry_content_row.addWidget(registry_left_widget)
+        registry_left_widget.setMinimumHeight(registry_left_widget.sizeHint().height())
+        registry_left_scroll = QScrollArea()
+        registry_left_scroll.setWidget(registry_left_widget)
+        registry_left_scroll.setWidgetResizable(True)
+        registry_left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        registry_left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        registry_left_scroll.setMaximumWidth(372)
+        registry_content_row.addWidget(registry_left_scroll)
 
         registry_middle_widget = QWidget()
         registry_middle_widget.setMaximumWidth(200)
@@ -1108,7 +1122,16 @@ class ShowPatchPage(QWidget):
         )
         review_left_column.addWidget(self.review_summary)
         review_left_column.addStretch(1)
-        review_content_row.addWidget(review_left_widget)
+        review_left_widget.setMinimumHeight(review_left_widget.sizeHint().height())
+        review_left_scroll = QScrollArea()
+        review_left_scroll.setWidget(review_left_widget)
+        review_left_scroll.setWidgetResizable(True)
+        review_left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        review_left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        review_left_scroll.setMaximumWidth(392)
+        review_content_row.addWidget(review_left_scroll)
 
         self.review_table = QTableWidget(0, 11)
         self.review_table.setHorizontalHeaderLabels(
@@ -2041,6 +2064,10 @@ class ShowPatchPage(QWidget):
             self.ma2_song_views,
             self.ma2_view_pool_start,
             self.song_viewbutton,
+            # Despite the legacy ma2_ field names, MA3 exports the same
+            # optional Preset cue and Cue ID.
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             # Sequence/Effect/Group pool start + slots-per-song all drive
             # build_show_patch's pool math regardless of console — stay
             # enabled for both consoles like the rest of this group.
@@ -2052,8 +2079,6 @@ class ShowPatchPage(QWidget):
         ):
             widget.setEnabled(True)
         for widget in (
-            self.ma2_add_preset_cue,
-            self.ma2_preset_cue_id,
             self.registry_host,
             self.registry_command_port,
             self.registry_monitor_port,
@@ -2263,6 +2288,10 @@ class ShowPatchPage(QWidget):
         source = console_checks[index]
         if source.isChecked() != checked:
             source.setChecked(checked)
+        # Persist immediately as well as through source.toggled.  This keeps
+        # the Review page authoritative even if a platform suppresses a
+        # signal from a hidden/disabled mirror control.
+        self._write_ui_to_settings()
 
     def _on_out_dir_edited(self, *_args) -> None:
         if self._suppress or self._project is None:
@@ -2322,6 +2351,8 @@ class ShowPatchPage(QWidget):
             self.ma2_song_views,
             self.ma2_view_pool_start,
             self.song_viewbutton,
+            self.ma2_add_preset_cue,
+            self.ma2_preset_cue_id,
             self.ma2_sequence_slots,
             self.ma2_effect_pool_start,
             self.ma2_effect_slots,
@@ -2329,11 +2360,6 @@ class ShowPatchPage(QWidget):
             self.ma2_group_slots,
         ):
             widget.setEnabled(True)
-        for widget in (
-            self.ma2_add_preset_cue,
-            self.ma2_preset_cue_id,
-        ):
-            widget.setEnabled(new_console != "ma3")
         self._suppress = False
         if new_console == "ma3":
             s.output_dir_ma3 = path

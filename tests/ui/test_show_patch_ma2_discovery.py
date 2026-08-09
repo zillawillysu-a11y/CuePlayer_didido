@@ -815,6 +815,10 @@ def test_review_checks_sync_groups_and_export_allocation_report(
     assert page.ma2_fixed_macros.isChecked()
     page.ma2_song_macros.setChecked(True)
     assert page.review_macro_checks[2].isChecked()
+    page.ma3_radio.setChecked(True)
+    page.review_macro_checks[4].setChecked(True)
+    assert page.ma2_add_preset_cue.isEnabled()
+    assert project.ma_export.ma2_add_main_preset_cue is True
     assert page.review_pool_start_fields["view_start"].toolTip()
     assert page.review_table.item(0, 5).text() == "1–20"
 
