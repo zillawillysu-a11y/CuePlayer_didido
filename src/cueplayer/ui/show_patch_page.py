@@ -823,19 +823,15 @@ class ShowPatchPage(QWidget):
         ma3_scan_layout = QVBoxLayout(self.ma3_live_scan_box)
         ma3_fields = QGridLayout()
         self.ma3_registry_host = QLineEdit("127.0.0.1")
-        self.ma3_registry_send_port = NoWheelSpinBox()
-        self.ma3_registry_send_port.setRange(1, 65535)
-        self.ma3_registry_send_port.setValue(8000)
-        self.ma3_registry_listen_port = NoWheelSpinBox()
-        self.ma3_registry_listen_port.setRange(1, 65535)
-        self.ma3_registry_listen_port.setValue(8001)
+        self.ma3_registry_osc_port = NoWheelSpinBox()
+        self.ma3_registry_osc_port.setRange(1, 65535)
+        self.ma3_registry_osc_port.setValue(8000)
         self.ma3_registry_output_line = NoWheelSpinBox()
         self.ma3_registry_output_line.setRange(1, 99)
         self.ma3_registry_output_line.setValue(2)
         for index, (label_text, widget) in enumerate((
             ("MA3 Host", self.ma3_registry_host),
-            ("Send Port", self.ma3_registry_send_port),
-            ("Listen Port", self.ma3_registry_listen_port),
+            ("OSC Port", self.ma3_registry_osc_port),
             ("OSC Output Line", self.ma3_registry_output_line),
         )):
             field_widget = QWidget()
@@ -936,6 +932,7 @@ class ShowPatchPage(QWidget):
             ("macro", "Macro"),
             ("view", "View"),
             ("page", "Page"),
+            ("generator", "Generator"),
         )):
             label = QLabel(f"Scanned {title}\n—")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -971,6 +968,7 @@ class ShowPatchPage(QWidget):
             ("macro", "Macro"),
             ("view", "View"),
             ("page", "Page"),
+            ("generator", "Generator"),
         ), start=1):
             for column, target in enumerate((self.registry_scanned_cards, self.registry_next_cards)):
                 label = QLabel(f"{title}\n—")
@@ -1356,8 +1354,7 @@ class ShowPatchPage(QWidget):
             self.ma2_song_macros,
             self.ma2_song_list,
             self.ma3_registry_host,
-            self.ma3_registry_send_port,
-            self.ma3_registry_listen_port,
+            self.ma3_registry_osc_port,
             self.ma3_registry_output_line,
             self.ma3_scan_lua_path,
         ):
@@ -2117,8 +2114,8 @@ class ShowPatchPage(QWidget):
     def _ma3_osc_scanner(self) -> Ma3OscScanner:
         return Ma3OscScanner(
             self.ma3_registry_host.text(),
-            send_port=int(self.ma3_registry_send_port.value()),
-            listen_port=int(self.ma3_registry_listen_port.value()),
+            send_port=int(self.ma3_registry_osc_port.value()),
+            listen_port=int(self.ma3_registry_osc_port.value()),
         )
 
     def _write_ma3_scan_lua(self, _checked: bool = False) -> None:
@@ -2282,8 +2279,7 @@ class ShowPatchPage(QWidget):
         self.registry_plugin_pool.setValue(int(s.ma2_telnet_plugin_pool or 9999))
         self.registry_plugin_import_path.setText(s.ma2_telnet_plugin_import_path or "")
         self.ma3_registry_host.setText(s.ma3_osc_host or "127.0.0.1")
-        self.ma3_registry_send_port.setValue(int(s.ma3_osc_send_port or 8000))
-        self.ma3_registry_listen_port.setValue(int(s.ma3_osc_listen_port or 8001))
+        self.ma3_registry_osc_port.setValue(int(s.ma3_osc_send_port or s.ma3_osc_listen_port or 8000))
         self.ma3_registry_output_line.setValue(int(s.ma3_osc_output_line or 2))
         saved_ma3_lua = s.ma3_scan_lua_path or ""
         if saved_ma3_lua and not export_path_matches_console(
@@ -2405,8 +2401,8 @@ class ShowPatchPage(QWidget):
         s.ma2_telnet_plugin_pool = int(self.registry_plugin_pool.value())
         s.ma2_telnet_plugin_import_path = self.registry_plugin_import_path.text().strip()
         s.ma3_osc_host = self.ma3_registry_host.text().strip() or "127.0.0.1"
-        s.ma3_osc_send_port = int(self.ma3_registry_send_port.value())
-        s.ma3_osc_listen_port = int(self.ma3_registry_listen_port.value())
+        s.ma3_osc_send_port = int(self.ma3_registry_osc_port.value())
+        s.ma3_osc_listen_port = int(self.ma3_registry_osc_port.value())
         s.ma3_osc_output_line = int(self.ma3_registry_output_line.value())
         s.ma3_scan_lua_path = self.ma3_scan_lua_path.text().strip()
         s.ma2_start_after_scanned = self.registry_start_after_scanned.isChecked()
@@ -2866,6 +2862,7 @@ class ShowPatchPage(QWidget):
                 "macro": int(settings.ma2_song_macro_start) + len(self._slots),
                 "view": int(settings.ma2_view_pool_start) + len(self._slots),
                 "page": int(self._slots[-1].page) + 1,
+                "generator": int(scanned.get("generator", 0)) + 1,
             }
         else:
             next_values = {
@@ -2876,6 +2873,7 @@ class ShowPatchPage(QWidget):
                 "macro": int(settings.ma2_song_macro_start),
                 "view": int(settings.ma2_view_pool_start),
                 "page": int(self.executor_page.value()),
+                "generator": int(scanned.get("generator", 0)) + 1,
             }
         titles = {
             "sequence": "Sequence",
@@ -2885,6 +2883,7 @@ class ShowPatchPage(QWidget):
             "macro": "Macro",
             "view": "View",
             "page": "Page",
+            "generator": "Generator",
         }
         for pool_key, title in titles.items():
             self.registry_scanned_cards[pool_key].setText(

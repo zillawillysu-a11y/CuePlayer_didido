@@ -1076,7 +1076,7 @@ class MaExportSettings:
     # grandMA3 Live Scan uses OSC command input + LuaFile OSC replies.
     ma3_osc_host: str = "127.0.0.1"
     ma3_osc_send_port: int = 8000
-    ma3_osc_listen_port: int = 8001
+    ma3_osc_listen_port: int = 8000
     ma3_osc_output_line: int = 2
     ma3_scan_lua_path: str = ""
     # Song ids selected for export; empty = all songs.

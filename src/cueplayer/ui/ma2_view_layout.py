@@ -25,7 +25,8 @@ DEFAULT_MA3_VIEW_LAYOUT: list[dict[str, object]] = [
     {"type": "sequence", "mode": "perSong", "follow": True, "x": 0, "y": 0, "w": 18, "h": 1, "start": 1018, "stride": 20},
     {"type": "groups", "mode": "perSong", "follow": True, "x": 0, "y": 1, "w": 18, "h": 1, "start": 1018, "stride": 20},
     {"type": "all3", "mode": "fixed", "x": 0, "y": 2, "w": 18, "h": 3, "start": 1, "stride": 1},
-    {"type": "all5", "mode": "perSong", "follow": True, "x": 0, "y": 5, "w": 18, "h": 5, "start": 1091, "stride": 100},
+    {"type": "all5", "mode": "perSong", "follow": True, "x": 0, "y": 5, "w": 18, "h": 4, "start": 1091, "stride": 100},
+    {"type": "generator", "mode": "fixed", "follow": False, "x": 0, "y": 9, "w": 18, "h": 1, "start": 1, "stride": 1},
 ]
 
 TIMECODE_POOL_TOTAL_CELLS = 3
@@ -64,6 +65,7 @@ MA3_POOL_LABELS = {
     "sequence": "Sequence",
     "groups": "Groups",
     "macros": "Macros",
+    "generator": "Generator",
     "all1": "All 1",
     "all2": "All 2",
     "all3": "All 3\nTemplate EFX",

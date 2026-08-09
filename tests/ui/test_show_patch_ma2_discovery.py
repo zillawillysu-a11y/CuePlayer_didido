@@ -70,14 +70,15 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     assert page.registry_next_cards["sequence"].text().startswith("Sequence\n")
     assert page.registry_status.isHidden() is True
     ma3_types = {page.view_pool_type.itemData(i) for i in range(page.view_pool_type.count())}
-    assert ma3_types == {"sequence", "groups", "macros", "all1", "all2", "all3", "all4", "all5"}
+    assert ma3_types == {"sequence", "groups", "macros", "generator", "all1", "all2", "all3", "all4", "all5"}
     assert MA3_POOL_LABELS["all3"] == "All 3\nTemplate EFX"
     assert MA3_POOL_LABELS["all5"] == "All 5\nSong EFX"
     assert [(w["type"], w["x"], w["y"], w["w"], w["h"]) for w in page.view_stage.widgets] == [
         ("sequence", 0, 0, 18, 1),
         ("groups", 0, 1, 18, 1),
         ("all3", 0, 2, 18, 3),
-        ("all5", 0, 5, 18, 5),
+        ("all5", 0, 5, 18, 4),
+        ("generator", 0, 9, 18, 1),
     ]
 
     page.view_stage.widgets[0]["x"] = 4
@@ -98,13 +99,14 @@ def test_console_specific_view_layout_defaults_and_pool_types(
     page.ma2_effect_pool_start.setValue(901)
     page._reset_view_layout()
     assert page.view_stage.widgets[0]["x"] == 0
-    assert page.view_stage.widgets[-1]["type"] == "all5"
+    assert page.view_stage.widgets[-2]["type"] == "all5"
     follows = {str(w["type"]): bool(w.get("follow")) for w in page.view_stage.widgets}
     assert follows == {
         "sequence": True,
         "groups": True,
         "all3": False,
         "all5": True,
+        "generator": False,
     }
     starts = {str(w["type"]): int(w["start"]) for w in page.view_stage.widgets}
     assert starts["sequence"] == 501
@@ -113,14 +115,14 @@ def test_console_specific_view_layout_defaults_and_pool_types(
 
     # MA3 All 5 is Song EFX and must follow the live per-song Effects
     # allocation from Console Setup, including both start and stride.
-    page.view_stage.selected_index = len(page.view_stage.widgets) - 1
+    page.view_stage.selected_index = len(page.view_stage.widgets) - 2
     page._load_view_inspector(page.view_stage.selected_index)
     assert page.view_pool_follow.isEnabled()
     page.ma2_effect_pool_start.setValue(1201)
     page.ma2_effect_slots.setValue(125)
     page.view_pool_follow.setChecked(True)
     app.processEvents()
-    song_efx = page.view_stage.widgets[-1]
+    song_efx = page.view_stage.widgets[-2]
     assert song_efx["follow"] is True
     assert song_efx["mode"] == "perSong"
     assert song_efx["start"] == 1201

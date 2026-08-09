@@ -240,7 +240,7 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         ma2_telnet_plugin_import_path=str(raw.get("ma2_telnet_plugin_import_path") or ""),
         ma3_osc_host=str(raw.get("ma3_osc_host") or "127.0.0.1"),
         ma3_osc_send_port=max(1, int(raw.get("ma3_osc_send_port", 8000) or 8000)),
-        ma3_osc_listen_port=max(1, int(raw.get("ma3_osc_listen_port", 8001) or 8001)),
+        ma3_osc_listen_port=max(1, int(raw.get("ma3_osc_listen_port", raw.get("ma3_osc_send_port", 8000)) or 8000)),
         ma3_osc_output_line=max(1, int(raw.get("ma3_osc_output_line", 2) or 2)),
         ma3_scan_lua_path=str(raw.get("ma3_scan_lua_path") or ""),
         export_song_ids=[

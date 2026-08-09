@@ -163,6 +163,25 @@ _MA3_POOL_WIDGET_SHAPES: dict[str, dict[str, object]] = {
         },
         "window_color": "91BD4E4C",
     },
+    "generator": {
+        "widget_name": "WindowGeneratorRandomPool",
+        "pool_type": 0,
+        "settings_tag": "GeneratorPoolSettings",
+        "settings_attrs": {
+            "FontSize": "Default",
+            "RequestDefaultTitlebuttons": "No",
+            "ShowEmpty": "Yes",
+            "PoolColor": "557783FF",
+            "EmptyColor": "7A7A7DA0",
+            "ForNoneColor": "FFFFFFA0",
+            "ForSomeColor": "FFD700FF",
+            "ForAllColor": "00FF00FF",
+            "RightClickToEdit": "Yes",
+            "PoolType": "None",
+            "ExecutorStyle": "No",
+        },
+        "window_color": "45464155",
+    },
 }
 
 # grandMA3's five All pools are separate PresetAll pool types. These values

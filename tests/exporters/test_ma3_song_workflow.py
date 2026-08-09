@@ -503,6 +503,20 @@ def test_write_song_view_maps_all_five_confirmed_ma3_all_pools(tmp_path: Path) -
     ]
 
 
+def test_write_song_view_maps_generator_pool(tmp_path: Path) -> None:
+    plan = _plan("Generator Test")
+    path = tmp_path / "generator_view.xml"
+    layout = [
+        {"type": "generator", "mode": "fixed", "x": 0, "y": 9, "w": 18, "h": 1, "start": 1, "stride": 1},
+    ]
+    Ma3Exporter().write_song_view(plan, path, layout=layout)
+    root = load_xml_root(path)
+    widget = next(el for el in root.iter() if xml_tag_local(el.tag) == "ViewWidget")
+    assert widget is not None
+    assert widget.get("Name") == "WindowGeneratorRandomPool"
+    assert any(xml_tag_local(el.tag) == "GeneratorPoolSettings" for el in widget)
+
+
 def test_write_song_view_skips_unmapped_pool_types(tmp_path: Path) -> None:
     """Pool types with no confirmed MA3 <ViewWidget> shape yet (e.g.
     "camera") are skipped rather than guessed at."""

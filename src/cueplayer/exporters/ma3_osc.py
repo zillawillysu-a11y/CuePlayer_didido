@@ -86,8 +86,11 @@ def live_scan_lua(*, osc_output_line: int = 1) -> str:
   for name, collection in pairs(scans) do
     send("{SCAN_ADDRESS}", scan .. "|" .. name .. "|" .. maximum(collection:Children()))
   end
-  local preset5 = pool.PresetPools and pool.PresetPools[5]
-  send("{SCAN_ADDRESS}", scan .. "|effect|" .. maximum(preset5 and preset5:Children() or nil))
+  -- All 5 is a Preset All pool, not the fifth entry of DataPool().PresetPools.
+  -- Address it exactly as the MA3 command line does so Song EFX scans the
+  -- same objects that WindowPresetPool/PresetPoolType 24 displays.
+  send("{SCAN_ADDRESS}", scan .. "|effect|" .. maximum(ObjectList("Preset 5.1 Thru 5.9999")))
+  send("{SCAN_ADDRESS}", scan .. "|generator|" .. maximum(ObjectList("Generator 1 Thru 9999")))
   local views = ObjectList("View 1 Thru 9999")
   send("{SCAN_ADDRESS}", scan .. "|view|" .. maximum(views))
   send("{DONE_ADDRESS}", scan)
@@ -115,7 +118,7 @@ def resolve_ma3_scan_lua_dir(export_root: Path) -> Path:
 
 
 class Ma3OscScanner:
-    def __init__(self, host: str, *, send_port: int = 8000, listen_port: int = 8001,
+    def __init__(self, host: str, *, send_port: int = 8000, listen_port: int = 8000,
                  timeout: float = 4.0) -> None:
         self.host = host.strip()
         self.send_port = int(send_port)
