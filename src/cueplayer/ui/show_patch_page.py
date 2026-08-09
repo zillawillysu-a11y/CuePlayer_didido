@@ -397,7 +397,7 @@ class ShowPatchPage(QWidget):
 
         pool_box = QGroupBox("Pool Start")
         pool_form = QGridLayout(pool_box)
-        pool_form.setHorizontalSpacing(14)
+        pool_form.setHorizontalSpacing(6)
         pool_form.setVerticalSpacing(6)
         self.seq_start = NoWheelSpinBox()
         self.seq_start.setRange(1, 9999)
@@ -459,8 +459,18 @@ class ShowPatchPage(QWidget):
             # they grew to ~270px each, which pushed later columns off the
             # visible area so those fields could not be clicked at all.
             widget.setMaximumWidth(110)
-            pool_form.addWidget(label, row, col * 2)
-            pool_form.addWidget(widget, row, col * 2 + 1)
+            pool_form.addWidget(
+                label,
+                row,
+                col * 2,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            )
+            pool_form.addWidget(
+                widget,
+                row,
+                col * 2 + 1,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
         for col in range(_POOL_START_COLS):
             pool_form.setColumnStretch(col * 2 + 1, 1)
         settings_row.addWidget(pool_box, stretch=2)
