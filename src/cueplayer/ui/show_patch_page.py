@@ -1018,13 +1018,10 @@ class ShowPatchPage(QWidget):
             "numbers can move; anything you pin or Auto-Fill afterwards wins."
         )
         self.review_start_after_scanned.toggled.connect(self._on_start_after_scanned_toggled)
-        manual_hint = QLabel("Blank = leave that Pool unchanged")
-        manual_hint.setStyleSheet("background: transparent; color: #8b949e; font-size: 11px;")
         manual_header_row = QHBoxLayout()
         manual_header_row.setContentsMargins(0, 0, 0, 0)
         manual_header_row.addWidget(self.review_start_after_scanned)
         manual_header_row.addStretch(1)
-        manual_header_row.addWidget(manual_hint)
         manual_layout.addLayout(manual_header_row)
         # A QGridLayout with an explicit per-row minimum height, not
         # QFormLayout: QFormLayout sizes each row from the label/field
