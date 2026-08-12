@@ -1,22 +1,21 @@
 # Next task
 
 **Status:** Awaiting user validation and packaging
-**Type:** Feature validation / Release 1.1.3
+**Type:** Shortcut validation / Release 1.1.3
 **Updated:** 2026-08-12
 
 ## Do this first
 
-1. Right-click a Beat Grid and enable `BPM Grid Lock`.
-2. In Setup mode, confirm clicking still selects/seeks to the grid.
-3. Confirm normal drag and Ctrl-dragging either endpoint cannot modify it.
-4. Confirm Edit, Auto Add Marks, and Delete remain available.
-5. Undo/redo the Lock toggle, save/reopen, and confirm the state persists.
-6. Unlock it, confirm dragging returns, then rebuild CuePlayer 1.1.3.
+1. With Timeline focused, press S and confirm Mark movement mode and the S chip
+   both turn on; press S again and confirm both turn off.
+2. Edit a Cue List Note containing the letter S and confirm typing does not toggle
+   Setup mode.
+3. Confirm clicking the S chip and pressing S remain mutually synchronized.
+4. Rebuild and smoke-test CuePlayer 1.1.3.
 
 ## Relevant files
 
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/ui/timeline_widget.py`
 - `src/cueplayer/ui/main_window.py`
+- `src/cueplayer/ui/timeline_widget.py`
+- `tests/ui/test_setup_mode_shortcut.py`
+- `packaging/build_windows.ps1`

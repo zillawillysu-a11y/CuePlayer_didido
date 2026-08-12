@@ -532,6 +532,13 @@ class TimelineWidget(QWidget):
         self.setup_button.set_active(self._setup_mode)
         self.update()
 
+    def toggle_setup_mode(self) -> None:
+        """Toggle Mark movement mode and its overlay indicator together."""
+        self._toggle_setup_mode()
+
+    def setup_mode_enabled(self) -> bool:
+        return bool(self._setup_mode)
+
     def _toggle_box_select_mode(self) -> None:
         self._box_select_mode = not self._box_select_mode
         self.box_select_button.set_active(self._box_select_mode)

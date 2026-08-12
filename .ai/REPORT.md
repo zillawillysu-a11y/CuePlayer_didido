@@ -5,48 +5,43 @@
 
 ## Task objective
 
-Add a per-region BPM Grid Lock toggle that prevents drag/resize while preserving
-selection and all context-menu actions.
+Bind keyboard S to the Timeline Mark movement/Setup toggle and keep its overlay
+indicator synchronized.
 
 ## What was implemented
 
-- Added a checkable `BPM Grid Lock` action to the direct Beat Grid context menu
-  and the Beat Grid submenu shown at Mark/Grid overlaps.
-- Locked grids remain selectable and seekable, including in Setup mode.
-- Locked grids reject normal whole-region dragging and Ctrl endpoint resizing.
-- Lock state persists with the project and defaults to unlocked for old files.
-- Lock/unlock is recorded as an undoable Beat Grid edit.
+- Added a window-level `S` shortcut that toggles Timeline Setup mode.
+- Exposed a small Timeline toggle/query API so keyboard and button use the same
+  state transition and indicator update.
+- Suppressed the shortcut while a text or numeric editor owns keyboard focus,
+  preventing Note/Cue ID input from changing edit mode.
+- Added shortcut wiring, toggle, indicator, and typing-focus tests.
 
 ## Files changed
 
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/ui/timeline_widget.py`
 - `src/cueplayer/ui/main_window.py`
-- `tests/domain/test_beat_grid.py`
-- `tests/ui/test_beat_grid_selection.py`
+- `src/cueplayer/ui/timeline_widget.py`
+- `tests/ui/test_setup_mode_shortcut.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_BpmGridLock.md`
+- `.ai/handoffs/2026-08-12_SetupModeSShortcut.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Lock is song/domain data because it belongs to an individual Beat Grid and
-  must persist across sessions.
-- Selection/seek remains available; only mutation gestures are gated.
-- Reused full Beat Grid snapshots so lock toggles participate in Ctrl+Z/Ctrl+Y.
+- Timeline remains the single owner of Setup state; MainWindow only routes the
+  application shortcut.
+- No playback, persistence, Mark data, or version behavior changed.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
-  - 20 passed.
+- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_setup_mode_shortcut.py -x`
+  - 2 passed.
 
 ## Remaining issues
 
-- Validate the checked menu state and locked interaction in the Windows app.
+- Confirm physical S key behavior and overlay feedback in the Windows app.
 
 ## Suggested next task
 
-Lock a BPM Grid, confirm selection/Edit/Auto Add/Delete still work while both
-drag modes are blocked, then unlock and rebuild CuePlayer 1.1.3.
+Press S repeatedly in Timeline and while editing a Note to validate both toggle
+and typing protection, then rebuild CuePlayer 1.1.3.
