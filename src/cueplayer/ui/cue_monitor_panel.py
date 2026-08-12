@@ -347,6 +347,10 @@ class CueMonitorPanel(QWidget):
         self._updating_table = False
         self._syncing_selection = False
         self._preserve_multi_selection = False
+        # Arrow-key navigation briefly closes one cell editor before opening
+        # the adjacent one on the next event-loop turn. Keep playhead follow
+        # from claiming the table during that gap.
+        self._editor_navigation_pending = False
         self._secondary_hold_mark_id: str | None = None
         self._secondary_cleared = False
         self._secondary_clear_timer = QTimer(self)
@@ -2401,13 +2405,17 @@ class CueMonitorPanel(QWidget):
         item = self.cue_table.item(target, int(column))
         if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
             return
+        self._editor_navigation_pending = True
 
         def _open_adjacent() -> None:
-            self.cue_table.setCurrentCell(target, int(column))
-            self.cue_table.scrollToItem(
-                item, QAbstractItemView.ScrollHint.EnsureVisible
-            )
-            self.cue_table.editItem(item)
+            try:
+                self.cue_table.setCurrentCell(target, int(column))
+                self.cue_table.scrollToItem(
+                    item, QAbstractItemView.ScrollHint.EnsureVisible
+                )
+                self.cue_table.editItem(item)
+            finally:
+                self._editor_navigation_pending = False
 
         QTimer.singleShot(0, _open_adjacent)
 
@@ -2784,6 +2792,14 @@ class CueMonitorPanel(QWidget):
     def _follow_cue_list_to_playhead(self) -> None:
         """Scroll/select the cue row for the current playhead (independent of NOW hold)."""
         if self._song is None:
+            return
+        # Playback may continue updating NOW while the user edits Cue List.
+        # Never let its row-follow selection close an editor or interrupt the
+        # one-event-loop handoff to the next Note cell.
+        if (
+            self._editor_navigation_pending
+            or self.cue_table.state() == QAbstractItemView.State.EditingState
+        ):
             return
         # Only marks that actually appear in Cue List — otherwise select fails
         # and the list stays parked on an older Main/Top row.

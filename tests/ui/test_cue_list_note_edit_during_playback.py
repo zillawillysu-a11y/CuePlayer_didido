@@ -9,6 +9,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QAbstractItemDelegate
 
 from cueplayer.domain.models import Song
@@ -57,6 +59,55 @@ def test_crossing_next_cue_preserves_uncommitted_note_text(
     assert first.display_name == ""  # still intentionally uncommitted
     panel.cue_table.closeEditor(
         editor, QAbstractItemDelegate.EndEditHint.RevertModelCache
+    )
+    panel.close()
+    app.processEvents()
+
+
+def test_crossing_cue_does_not_interrupt_adjacent_note_editor(
+    app: QApplication,
+) -> None:
+    song = Song.create("Continuous Note edit")
+    song.duration_seconds = 10.0
+    first = song.add_mark(1, 1.0)
+    second = song.add_mark(1, 2.0)
+    third = song.add_mark(1, 3.0)
+    lane = song.lane_by_index(1)
+    assert lane is not None
+    lane.cue_list_enabled = True
+    lane.now_display = "primary"
+
+    panel = CueMonitorPanel()
+    panel.resize(700, 700)
+    panel.set_song(song)
+    panel.show()
+    panel.set_position(first.time_seconds + 0.01, song.duration_seconds)
+    app.processEvents()
+
+    note_col = panel._col_for_field("note")
+    first_row = panel._row_for_mark_id(first.id)
+    panel.cue_table.setCurrentCell(first_row, note_col)
+    panel.cue_table.editItem(panel.cue_table.item(first_row, note_col))
+    app.processEvents()
+    editor = app.focusWidget()
+    assert isinstance(editor, QLineEdit)
+    editor.setText("First note")
+    QTest.keyClick(editor, Qt.Key.Key_Down)
+    app.processEvents()
+
+    next_editor = app.focusWidget()
+    assert isinstance(next_editor, QLineEdit)
+    assert int(next_editor.property("cue_list_row")) == panel._row_for_mark_id(second.id)
+    next_editor.setText("Still entering second note")
+
+    panel.set_position(third.time_seconds + 0.01, song.duration_seconds)
+    app.processEvents()
+
+    assert app.focusWidget() is next_editor
+    assert next_editor.text() == "Still entering second note"
+    assert panel.cue_table.currentRow() == panel._row_for_mark_id(second.id)
+    panel.cue_table.closeEditor(
+        next_editor, QAbstractItemDelegate.EndEditHint.RevertModelCache
     )
     panel.close()
     app.processEvents()
