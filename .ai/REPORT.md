@@ -5,48 +5,47 @@
 
 ## Task objective
 
-Fix the remaining Cue List Note editor dismissal during playback and vertically
-align the inline editor inside its row.
+Make left-click Add Mark from Mark Track headers an opt-in safety switch,
+defaulting off and configurable from the header context menu.
 
 ## What was implemented
 
-- Found the root cause beyond playhead selection: committing Note/Cue ID called
-  `_refresh_marks_ui()`, whose delayed full Cue List rebuild destroyed the newly
-  opened adjacent editor.
-- Note and Cue ID commits now repaint Timeline/status without rebuilding Cue List;
-  the live table item is already authoritative and updated.
-- Structural Mark operations still use the existing full Cue List refresh.
-- Removed the editor stylesheet minimum height and explicitly inset its geometry
-  by two pixels so it stays centered and fully inside the row.
-- Retained the editor-session/playhead-follow protection from the prior fix.
+- Added project-global `mark_lane_header_add_enabled`, default `False`.
+- Left-clicking a Mark Track name emits Add Mark only when enabled.
+- Right-clicking any Mark Track name now shows a checkable
+  `Click Track Header to Add Mark` action.
+- Disabled mode no longer shows the pointing-hand add affordance over headers.
+- Toggle changes mark the project dirty, show status feedback, and persist in
+  project JSON.
+- Legacy projects without the field load safely with the feature off.
 
 ## Files changed
 
-- `src/cueplayer/ui/cue_monitor_panel.py`
+- `src/cueplayer/domain/models.py`
+- `src/cueplayer/persistence/project_store.py`
+- `src/cueplayer/ui/timeline_widget.py`
 - `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_cue_list_note_edit_during_playback.py`
-- `tests/ui/test_cue_list_note_no_rebuild.py`
+- `tests/ui/test_mark_lane_rename.py`
+- `tests/persistence/test_mark_lane_header_add.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_CueListInlineEditNoRebuild.md`
+- `.ai/handoffs/2026-08-12_MarkTrackHeaderAddSwitch.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Full list rebuild remains reserved for structural row/order changes.
-- Inline text edits update their existing item and only invalidate dependent
-  Timeline/status presentation.
-- Playback/audio clock and project schema are unchanged.
+- This is project/show behavior, not a machine preference or per-lane flag.
+- Mark creation remains routed through the existing `add_mark_requested` signal.
+- Playback clock and Mark undo behavior are unchanged.
 
 ## Tests performed
 
-- Note playback, keyboard navigation, editor geometry, and no-rebuild suites:
-  8 passed.
+- Header click behavior plus project persistence compatibility: 9 passed.
 
 ## Remaining issues
 
-- User should validate rapid Up/Down and mouse switching during real playback.
+- User should validate right-click toggle wording and behavior in the real UI.
 
 ## Suggested next task
 
-Stress-test Note and Cue ID editing throughout playback; if stable, package and
-smoke-test CuePlayer 1.1.3.
+Confirm header clicks do nothing by default, enable the right-click switch and
+confirm they add Marks, then package and smoke-test CuePlayer 1.1.3.

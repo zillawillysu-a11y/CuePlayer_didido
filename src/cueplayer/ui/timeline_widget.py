@@ -143,6 +143,7 @@ class TimelineWidget(QWidget):
     mark_manager_requested = Signal()
     mark_lane_height_changed = Signal(float)
     mark_track_colors_changed = Signal(bool)
+    mark_lane_header_add_changed = Signal(bool)
     add_mark_requested = Signal(int)  # lane_index at current playhead
     header_width_changed = Signal(int)  # Mark Type / lane label column width
     # Internal: video waveform decode progress/complete (may emit from worker).
@@ -231,6 +232,7 @@ class TimelineWidget(QWidget):
         self._video_lane_split_hover = False
         self._mark_lane_split_hover = False
         self._show_mark_lane_resize_bar = True
+        self._mark_lane_header_add_enabled = False
         self._show_wave_gain_line = False
         self._show_ltc_gain_line = False
         self._dragging_audio_gain = False
@@ -3982,7 +3984,8 @@ class TimelineWidget(QWidget):
                 self._apply_gain_at_y(y, gain_zone)
             elif (lane_index := self._hit_mark_lane_header(x, y)) is not None:
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                self.add_mark_requested.emit(lane_index)
+                if self._mark_lane_header_add_enabled:
+                    self.add_mark_requested.emit(lane_index)
                 return
             elif (loop_h := self._hit_loop_handle(x, y)) is not None:
                 # Click seeks to A/B; drag always moves the loop point.
@@ -4237,7 +4240,10 @@ class TimelineWidget(QWidget):
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif gain_zone is not None:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
-            elif self._hit_mark_lane_header(x, y) is not None:
+            elif (
+                self._mark_lane_header_add_enabled
+                and self._hit_mark_lane_header(x, y) is not None
+            ):
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
             elif loop_h is not None:
                 self.setCursor(self._cursor_for_loop_hover(x, y))
@@ -4560,6 +4566,10 @@ class TimelineWidget(QWidget):
         menu = QMenu(self)
         rename_act = menu.addAction("Rename…")
         menu.addSeparator()
+        header_add_act = menu.addAction("Click Track Header to Add Mark")
+        header_add_act.setCheckable(True)
+        header_add_act.setChecked(self._mark_lane_header_add_enabled)
+        menu.addSeparator()
         if self._show_mark_track_colors:
             color_act = menu.addAction("Hide track colors")
         else:
@@ -4570,10 +4580,25 @@ class TimelineWidget(QWidget):
             return
         if chosen is rename_act:
             self._rename_mark_lane_at(lane_index)
+        elif chosen is header_add_act:
+            self.set_mark_lane_header_add_enabled(header_add_act.isChecked())
         elif chosen is color_act:
             self._set_mark_track_colors(not self._show_mark_track_colors)
         elif chosen is manager_act:
             self.mark_manager_requested.emit()
+
+    def set_mark_lane_header_add_enabled(
+        self, enabled: bool, *, emit: bool = True
+    ) -> None:
+        enabled = bool(enabled)
+        if enabled == self._mark_lane_header_add_enabled:
+            return
+        self._mark_lane_header_add_enabled = enabled
+        self._hover_mark_lane_header = None
+        self.unsetCursor()
+        self.update()
+        if emit:
+            self.mark_lane_header_add_changed.emit(enabled)
 
     def _set_mark_track_colors(self, show: bool) -> None:
         show = bool(show)

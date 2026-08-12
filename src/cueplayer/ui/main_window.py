@@ -1448,6 +1448,9 @@ class MainWindow(QMainWindow):
         self.timeline.mark_manager_requested.connect(self._open_mark_manager)
         self.timeline.mark_lane_height_changed.connect(self._on_mark_lane_height_changed)
         self.timeline.mark_track_colors_changed.connect(self._on_mark_track_colors_changed)
+        self.timeline.mark_lane_header_add_changed.connect(
+            self._on_mark_lane_header_add_changed
+        )
         self.timeline.add_mark_requested.connect(self._add_mark)
         # Video decode must not run ahead of timeline paint, and must not pile
         # QueuedConnection backlog while the UI is busy. Single canonical path:
@@ -6107,6 +6110,9 @@ class MainWindow(QMainWindow):
         )
         self.timeline.apply_mark_lane_height(float(getattr(p, "mark_lane_height", 28.0)))
         self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))
+        self.timeline.set_mark_lane_header_add_enabled(
+            bool(getattr(p, "mark_lane_header_add_enabled", False)), emit=False
+        )
         self.timeline.set_show_wave_gain_line(bool(getattr(p, "show_wave_gain_line", False)), emit=False)
         self.timeline.set_show_ltc_gain_line(bool(getattr(p, "show_ltc_gain_line", False)), emit=False)
         action = getattr(self, "_show_beat_grid_action", None)
@@ -7877,6 +7883,12 @@ class MainWindow(QMainWindow):
     def _on_mark_track_colors_changed(self, show: bool) -> None:
         self.project.show_mark_track_colors = bool(show)
         self._mark_dirty()
+
+    def _on_mark_lane_header_add_changed(self, enabled: bool) -> None:
+        self.project.mark_lane_header_add_enabled = bool(enabled)
+        self._mark_dirty()
+        state = "enabled" if enabled else "disabled"
+        self.status.showMessage(f"Track-header Mark add {state}", 2500)
 
     def _on_mark_lane_renamed(self, lane_index: int, new_name: str) -> None:
         del lane_index, new_name

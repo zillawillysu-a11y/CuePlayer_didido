@@ -694,6 +694,7 @@ def project_to_dict(
         "playhead_color": project.playhead_color,
         "mark_lane_height": float(project.mark_lane_height),
         "show_mark_track_colors": bool(project.show_mark_track_colors),
+        "mark_lane_header_add_enabled": bool(project.mark_lane_header_add_enabled),
         "show_output_timecode_clock": bool(project.show_output_timecode_clock),
         "output_timecode_clock_color": project.output_timecode_clock_color,
         "show_output_quick_toggles": bool(project.show_output_quick_toggles),
@@ -1093,6 +1094,9 @@ def project_from_dict(
         playhead_color=playhead_color,
         mark_lane_height=mark_lane_height,
         show_mark_track_colors=show_mark_track_colors,
+        mark_lane_header_add_enabled=bool(
+            data.get("mark_lane_header_add_enabled", False)
+        ),
         show_output_timecode_clock=bool(data.get("show_output_timecode_clock", True)),
         output_timecode_clock_color=_coerce_waveform_color(
             data.get("output_timecode_clock_color"), default="#3dd68c"

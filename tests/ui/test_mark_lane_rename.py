@@ -37,20 +37,11 @@ def test_hit_mark_lane_header(app: QApplication) -> None:
     assert widget._hit_mark_lane_header(200, mid_y) is None
 
 
-def test_header_click_requests_add_mark(app: QApplication) -> None:
-    song = Song.create("Test")
-    widget = TimelineWidget()
-    widget.set_song(song)
-    lanes = widget._lane_rects()
-    assert lanes
-    lane_index, y0, y1 = lanes[1]
-    mid_y = (y0 + y1) / 2
-    fired: list[int] = []
-    widget.add_mark_requested.connect(fired.append)
+def _click_header(widget: TimelineWidget, x: float, y: float) -> None:
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
-    pos = QPointF(20, mid_y)
+    pos = QPointF(x, y)
     press = QMouseEvent(
         QMouseEvent.Type.MouseButtonPress,
         pos,
@@ -60,6 +51,34 @@ def test_header_click_requests_add_mark(app: QApplication) -> None:
         Qt.KeyboardModifier.NoModifier,
     )
     widget.mousePressEvent(press)
+
+
+def test_header_click_does_not_add_mark_by_default(app: QApplication) -> None:
+    song = Song.create("Test")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    lanes = widget._lane_rects()
+    assert lanes
+    lane_index, y0, y1 = lanes[1]
+    mid_y = (y0 + y1) / 2
+    fired: list[int] = []
+    widget.add_mark_requested.connect(fired.append)
+
+    _click_header(widget, 20, mid_y)
+    assert fired == []
+
+
+def test_header_click_requests_add_mark_when_enabled(app: QApplication) -> None:
+    song = Song.create("Test")
+    widget = TimelineWidget()
+    widget.set_song(song)
+    lanes = widget._lane_rects()
+    lane_index, y0, y1 = lanes[1]
+    fired: list[int] = []
+    widget.add_mark_requested.connect(fired.append)
+    widget.set_mark_lane_header_add_enabled(True)
+
+    _click_header(widget, 20, (y0 + y1) / 2)
     assert fired == [lane_index]
 
 

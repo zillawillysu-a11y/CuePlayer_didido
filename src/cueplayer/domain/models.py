@@ -1343,6 +1343,8 @@ class Project:
     mark_lane_height: float = 28.0
     # Tinted mark-track rows on the timeline (all lanes share one eye).
     show_mark_track_colors: bool = True
+    # Safety switch: left-clicking a Mark Track header adds at the playhead.
+    mark_lane_header_add_enabled: bool = False
     # Output timecode clock under the monitor seconds display.
     show_output_timecode_clock: bool = True
     output_timecode_clock_color: str = "#3dd68c"
