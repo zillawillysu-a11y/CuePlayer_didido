@@ -2525,6 +2525,12 @@ class CueMonitorPanel(QWidget):
                         c = QColor(lane.color)
                         bg = QColor(c.red(), c.green(), c.blue(), 40)
             for col in range(_COL_COUNT):
+                # Note uses a custom painter that does not render BackgroundRole.
+                # Updating that unused role while its QLineEdit is active makes
+                # Qt reload the editor from the still-uncommitted model value,
+                # erasing text exactly when playback crosses to the next Cue.
+                if col == self._col_for_field("note"):
+                    continue
                 item = self.cue_table.item(row, col)
                 if item is None:
                     continue

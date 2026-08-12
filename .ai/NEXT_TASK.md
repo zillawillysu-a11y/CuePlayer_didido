@@ -6,14 +6,20 @@
 
 ## Do this first
 
-1. Run CuePlayer from source and Rename a Mark Track from its timeline header.
-2. Confirm the new name appears immediately without switching songs.
-3. Rebuild CuePlayer 1.1.3 with `packaging/build_windows.ps1`.
-4. Launch the packaged executable and repeat the Rename smoke test.
+1. Play a song and begin typing in a blank Cue List Note.
+2. Keep the editor open while playback crosses one or more Cue boundaries.
+3. Confirm the uncommitted text remains visible, then press Enter and confirm it
+   is stored.
+4. Rebuild CuePlayer 1.1.3 and repeat the smoke test in the packaged executable.
+
+## Separate known test issue
+
+`tests/ui/test_cue_list_playhead_scroll.py::test_tiny_cue_list_keeps_playhead_row_visible`
+currently produces a Windows PySide6 C-level stack overflow and should be
+diagnosed as a separate task.
 
 ## Relevant files
 
-- `src/cueplayer/ui/timeline_widget.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_mark_lane_rename.py`
+- `src/cueplayer/ui/cue_monitor_panel.py`
+- `tests/ui/test_cue_list_note_edit_during_playback.py`
 - `packaging/build_windows.ps1`

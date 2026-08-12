@@ -5,43 +5,52 @@
 
 ## Task objective
 
-Make an inline Mark Track rename appear immediately without switching songs.
+Prevent an in-progress Cue List Note edit from being erased when playback crosses
+to the next Cue.
 
 ## What was implemented
 
-- Invalidated the retained Mark/timeline backdrop immediately after a lane name
-  changes.
-- Routed the main-window rename handler through the canonical Mark UI refresh,
-  keeping the timeline, Cue List/monitor, and status synchronized.
-- Added a regression assertion that Rename increments the Mark backdrop revision
-  and drops the stale scrub backdrop.
+- Stopped `_apply_now_highlight()` from writing the unused BackgroundRole to
+  Note cells.
+- This prevents Qt from reloading an active Note QLineEdit from the still-
+  uncommitted model value during NOW highlight changes.
+- Added a regression test that types an uncommitted Note, advances playback to
+  the next Cue, and confirms the editor text remains intact.
 
 ## Files changed
 
-- `src/cueplayer/ui/timeline_widget.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_mark_lane_rename.py`
+- `src/cueplayer/ui/cue_monitor_panel.py`
+- `tests/ui/test_cue_list_note_edit_during_playback.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_MarkTrackRenameImmediateRefresh.md`
+- `.ai/handoffs/2026-08-12_PreserveNoteEditAcrossCue.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Fixed the stale retained-render cache at the mutation point instead of forcing
-  a song reload.
-- No playback, persistence, export, or version metadata changed.
+- The Note delegate already paints its own selection background and ignores
+  BackgroundRole, so skipping this model mutation removes only a redundant data
+  change; row selection remains visually highlighted.
+- Playback clock, Cue resolution, selection following, and Note commit semantics
+  remain unchanged.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_mark_lane_rename.py tests/ui/test_cached_timeline_poster.py -x`
-  - 10 passed.
+- `pytest -q tests/ui/test_cue_list_note_edit_during_playback.py -x`
+  - 1 passed.
+- `pytest -q tests/ui/test_cue_list_note_arrow_navigation.py -x`
+  - 2 passed.
+- `tests/ui/test_cue_list_playhead_scroll.py` was also attempted separately, but
+  the pre-existing tiny-viewport test at line 115 crashes Python with a Windows
+  PySide6 C-level stack overflow before completing; no assertion from this change
+  failed.
 
 ## Remaining issues
 
-- The fix should be smoke-tested in the packaged Windows UI before rebuilding
-  the 1.1.3 installer.
+- Confirm the fix during real playback in the Windows application.
+- The independent tiny Cue List viewport stack overflow in the test environment
+  remains to be diagnosed separately.
 
 ## Suggested next task
 
-Rename a Mark Track in the Windows application and confirm the header changes
-immediately; then rebuild and smoke-test CuePlayer 1.1.3.
+Edit a blank Note while playback crosses multiple Cues and confirm the typed text
+stays visible, then commit it with Enter and rebuild CuePlayer 1.1.3.
