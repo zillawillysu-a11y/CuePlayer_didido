@@ -116,6 +116,33 @@ class MarkDisplayDialog(QDialog):
         self.wave_color.setToolTip("Audio waveform color — applies to the whole project")
         form2.addRow("Waveform Color (project)", self.wave_color)
 
+        self.beat_grid_color = ColorSwatchButton(
+            getattr(line_src, "beat_grid_color", None) or "#4c8bf5"
+        )
+        self.beat_grid_color.setToolTip(
+            "Beat Grid line color — applies to the whole project"
+        )
+        form2.addRow("Beat Grid Color (project)", self.beat_grid_color)
+
+        self.beat_grid_line_style = QComboBox()
+        self.beat_grid_line_style.addItem("Solid", "solid")
+        self.beat_grid_line_style.addItem("Dashed", "dash")
+        self.beat_grid_line_style.addItem("Dotted", "dot")
+        grid_style = getattr(line_src, "beat_grid_line_style", "dash")
+        grid_idx = self.beat_grid_line_style.findData(grid_style)
+        self.beat_grid_line_style.setCurrentIndex(grid_idx if grid_idx >= 0 else 1)
+        self.beat_grid_line_style.setToolTip(
+            "Beat Grid vertical line style — applies to the whole project"
+        )
+        form2.addRow("Beat Grid Line Style (project)", self.beat_grid_line_style)
+
+        self.show_beat_grid = QCheckBox("Show Beat Grid")
+        self.show_beat_grid.setChecked(bool(getattr(line_src, "show_beat_grid", True)))
+        self.show_beat_grid.setToolTip(
+            "Show or hide all Beat Grid regions without deleting them"
+        )
+        form2.addRow("Beat Grid Visibility", self.show_beat_grid)
+
         self.playhead_color = ColorSwatchButton(
             getattr(line_src, "playhead_color", None) or "#3dd68c"
         )
@@ -228,6 +255,7 @@ class MarkDisplayDialog(QDialog):
         if close_btn is not None:
             close_btn.setAutoDefault(True)
             close_btn.setDefault(True)
+            close_btn.clicked.connect(self._apply)
             close_btn.clicked.connect(self.accept)
         layout.addWidget(buttons)
 
@@ -237,6 +265,9 @@ class MarkDisplayDialog(QDialog):
         self.secondary_enabled_box.toggled.connect(self._on_secondary_enabled_toggled)
         self.secondary_clear_spin.valueChanged.connect(self._apply)
         self.wave_color.color_changed.connect(self._apply)
+        self.beat_grid_color.color_changed.connect(self._apply)
+        self.beat_grid_line_style.currentIndexChanged.connect(self._apply)
+        self.show_beat_grid.toggled.connect(self._apply)
         self.playhead_color.color_changed.connect(self._apply)
         self.tc_clock_box.toggled.connect(self._apply)
         self.output_toggles_box.toggled.connect(self._apply)
@@ -274,6 +305,14 @@ class MarkDisplayDialog(QDialog):
         target.mark_dash_on = spacing
         target.mark_dash_off = spacing
         target.waveform_color = self.wave_color.color()
+        if hasattr(target, "beat_grid_color"):
+            target.beat_grid_color = self.beat_grid_color.color()
+        if hasattr(target, "beat_grid_line_style"):
+            target.beat_grid_line_style = str(
+                self.beat_grid_line_style.currentData() or "dash"
+            )
+        if hasattr(target, "show_beat_grid"):
+            target.show_beat_grid = self.show_beat_grid.isChecked()
         label_px = int(self.wave_label_font.value())
         if self._project is not None:
             self._project.wave_label_font_px = label_px

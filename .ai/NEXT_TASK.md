@@ -1,42 +1,34 @@
 # Next task
 
-**Status:** Blocked — awaiting real-hardware/onPC validation from Willy
-**Type:** Validation (MA3 exporter — Song View / Song Change Workflow)
-**Updated:** 2026-08-09
+**Status:** Awaiting user validation
+**Type:** Validation (Timeline / Beat Grid)
+**Updated:** 2026-08-12
 
 ## Do this first
 
-Export one show from CuePlayer with a View Layout containing:
+Open the Windows application and validate:
 
-- Sequence
-- Groups
-- fixed Effects (Template EFX)
-- per-song Effects (Song EFX)
-- Macros
+1. Move a Beat Grid, press Ctrl+Z, then Ctrl+Y; its complete region should
+   return to the old position and then the new position.
+2. In Setup mode, overlap a Mark with a Beat Grid division. With magnet enabled,
+   dragging the overlap should move the Mark and snap it to Beat Grid divisions.
+3. Disable magnet and drag the same overlap; the complete Beat Grid region
+   should move instead.
+4. Confirm right-click still exposes both Mark actions and the Beat Grid submenu.
 
-Import and run it on grandMA3 2.3.2, then report the exact result for:
-
-1. Widget positions and sizes on the 18x10 screen.
-2. First visible pool cells for Sequence, Groups, Template EFX, Song EFX,
-   and Macros. MA3 XML now derives `ScrollV` from View Layout start/stride.
-3. ViewButton switching when Page Change runs.
-4. The trimmed install macro completing without Illegal object/property or
-   missing steps.
-5. Fixed per-song Sequence Pool block reservation.
-6. Effect/Group Pool Start + Slots Per Song affecting exported numbers.
-
-Do not change MA3 XML further without an official reference or a real onPC
-export demonstrating the required shape/property.
+If these pass, resume the blocked grandMA3 2.3.2 hardware/onPC validation
+documented in the prior reports and handoffs.
 
 ## Explicitly out of scope
 
-- MA2 export logic
-- Page/Groups allocation behavior beyond the validation above
-- CSV
-- video-waveform code
-- unconfirmed MA3 ViewWidget pool types
+- Playback clock behavior
+- MA2/MA3 XML changes
+- Persistence schema changes
 
-## Scratch files
+## Relevant files
 
-Pre-existing `.codex-test-tmp/`, `.tt-p1/`, `.tt-p2/`, and
-`startup_error.txt` are unrelated untracked scratch files and were not touched.
+- `src/cueplayer/domain/undo.py`
+- `src/cueplayer/ui/main_window.py`
+- `src/cueplayer/ui/timeline_widget.py`
+- `tests/domain/test_beat_grid.py`
+- `tests/ui/test_beat_grid_selection.py`

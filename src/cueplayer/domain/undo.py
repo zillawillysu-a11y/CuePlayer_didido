@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cueplayer.domain.models import Mark, Project, SetlistCategory, Song, VideoClip
+from cueplayer.domain.models import BeatGridRegion, Mark, Project, SetlistCategory, Song, VideoClip
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,77 @@ class DeleteMarksCommand:
     def redo(self, song: Song) -> None:
         ids = {m.id for m in self.marks}
         song.marks = [m for m in song.marks if m.id not in ids]
+
+
+@dataclass(frozen=True)
+class BeatGridSnapshot:
+    id: str
+    start_seconds: float
+    end_seconds: float
+    bpm: float
+    beats_per_bar: int
+    beat_unit: int
+    subdivision: int
+
+    @classmethod
+    def from_grid(cls, grid: BeatGridRegion) -> BeatGridSnapshot:
+        return cls(
+            id=grid.id,
+            start_seconds=grid.start_seconds,
+            end_seconds=grid.end_seconds,
+            bpm=grid.bpm,
+            beats_per_bar=grid.beats_per_bar,
+            beat_unit=grid.beat_unit,
+            subdivision=grid.subdivision,
+        )
+
+    def to_grid(self) -> BeatGridRegion:
+        return BeatGridRegion(
+            id=self.id,
+            start_seconds=self.start_seconds,
+            end_seconds=self.end_seconds,
+            bpm=self.bpm,
+            beats_per_bar=self.beats_per_bar,
+            beat_unit=self.beat_unit,
+            subdivision=self.subdivision,
+        )
+
+
+@dataclass
+class DeleteBeatGridCommand:
+    grid: BeatGridSnapshot
+    label: str = "Delete Beat Grid"
+
+    def undo(self, song: Song) -> None:
+        if not any(grid.id == self.grid.id for grid in song.beat_grids):
+            song.beat_grids.append(self.grid.to_grid())
+            song.beat_grids.sort(key=lambda grid: grid.start_seconds)
+
+    def redo(self, song: Song) -> None:
+        song.beat_grids = [grid for grid in song.beat_grids if grid.id != self.grid.id]
+
+
+@dataclass
+class MoveBeatGridCommand:
+    grid_id: str
+    old_start: float
+    new_start: float
+    label: str = "Move Beat Grid"
+
+    def _move(self, song: Song, start: float) -> None:
+        grid = next((item for item in song.beat_grids if item.id == self.grid_id), None)
+        if grid is None:
+            return
+        duration = grid.end_seconds - grid.start_seconds
+        grid.start_seconds = float(start)
+        grid.end_seconds = float(start) + duration
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._move(song, self.old_start)
+
+    def redo(self, song: Song) -> None:
+        self._move(song, self.new_start)
 
 
 @dataclass

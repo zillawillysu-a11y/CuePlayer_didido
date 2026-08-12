@@ -86,6 +86,10 @@ class IconButton(QPushButton):
 
         # Glyphs authored for ~34×30; scale for larger transport buttons.
         scale = min(self.width() / 34.0, self.height() / 30.0)
+        if self._kind in ("song_start", "next_song"):
+            # Navigation buttons stay narrow for layout, but their triangles
+            # should visually match the main Play triangle.
+            scale = min(52.0 / 34.0, self.height() / 30.0)
         painter.translate(self.width() / 2, self.height() / 2)
         painter.scale(scale, scale)
         cx, cy = 0.0, 0.0
@@ -98,6 +102,18 @@ class IconButton(QPushButton):
             path.moveTo(cx - 5, cy - 8)
             path.lineTo(cx - 5, cy + 8)
             path.lineTo(cx + 9, cy)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif kind in ("song_start", "next_song"):
+            # Previous-style transport glyph means "start of this song";
+            # next-style means activate the next song in setlist order.
+            direction = 1 if kind == "song_start" else -1
+            bar_x = cx - 7 * direction
+            painter.drawRoundedRect(QRectF(bar_x - 1, cy - 8, 2, 16), 0.8, 0.8)
+            path = QPainterPath()
+            path.moveTo(cx + 6 * direction, cy - 8)
+            path.lineTo(cx + 6 * direction, cy + 8)
+            path.lineTo(cx - 5 * direction, cy)
             path.closeSubpath()
             painter.drawPath(path)
         elif kind == "pause":
@@ -140,6 +156,34 @@ class IconButton(QPushButton):
             painter.setPen(QPen(color, 1.6, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(QRectF(cx - 7, cy - 6, 14, 12))
+        elif kind == "metronome":
+            painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            body = QPainterPath()
+            body.moveTo(cx - 7, cy + 7)
+            body.lineTo(cx - 4, cy - 7)
+            body.lineTo(cx + 4, cy - 7)
+            body.lineTo(cx + 7, cy + 7)
+            body.closeSubpath()
+            painter.drawPath(body)
+            painter.drawLine(QPointF(cx, cy + 4), QPointF(cx + 3, cy - 5))
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(cx + 3, cy - 5), 1.8, 1.8)
+        elif kind == "magnet":
+            painter.setPen(
+                QPen(color, 4.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            )
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            path = QPainterPath()
+            path.moveTo(cx - 6, cy - 6)
+            path.lineTo(cx - 6, cy + 1)
+            path.cubicTo(cx - 6, cy + 8, cx + 6, cy + 8, cx + 6, cy + 1)
+            path.lineTo(cx + 6, cy - 6)
+            painter.drawPath(path)
+            painter.setPen(QPen(color, 2.0, Qt.PenStyle.SolidLine))
+            painter.drawLine(QPointF(cx - 8, cy - 7), QPointF(cx - 4, cy - 7))
+            painter.drawLine(QPointF(cx + 4, cy - 7), QPointF(cx + 8, cy - 7))
         elif kind == "speaker_mute":
             # Track Mute — speaker cone with an X (always drawn; `_active`
             # still switches the fill/border to the highlighted "on" color).

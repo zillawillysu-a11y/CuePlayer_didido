@@ -32,9 +32,9 @@ from cueplayer.media.audio_loader import PeakLevel
 from cueplayer.media.av_lock import av_path_lock
 
 # Bump when on-disk layout changes (Converter must understand this schema).
-ARTIFACT_FORMAT_VERSION = 5
+ARTIFACT_FORMAT_VERSION = 6
 # Base envelope density (bins / source-second). 15 min → 360k bins ≈ 3.2 MB.
-BASE_PEAKS_PER_SECOND = 400.0
+BASE_PEAKS_PER_SECOND = 4000.0
 MAX_PEAK_BINS = 2_000_000
 # Pyramid aggregate factors over base bins (Music-lane style zoom levels).
 PYRAMID_FACTORS = (4, 16, 64, 256)

@@ -242,6 +242,49 @@ class Mark:
 
 
 @dataclass
+class BeatGridRegion:
+    """A tempo grid bounded to part of a song timeline."""
+
+    id: str
+    start_seconds: float
+    end_seconds: float
+    bpm: float = 120.0
+    beats_per_bar: int = 4
+    beat_unit: int = 4
+    subdivision: int = 1
+
+    @classmethod
+    def create(
+        cls,
+        start_seconds: float,
+        end_seconds: float,
+        *,
+        bpm: float = 120.0,
+        beats_per_bar: int = 4,
+        beat_unit: int = 4,
+        subdivision: int = 1,
+    ) -> BeatGridRegion:
+        start, end = sorted((max(0.0, float(start_seconds)), max(0.0, float(end_seconds))))
+        return cls(
+            id=_new_id(),
+            start_seconds=start,
+            end_seconds=end,
+            bpm=max(1.0, float(bpm)),
+            beats_per_bar=max(1, int(beats_per_bar)),
+            beat_unit=max(1, int(beat_unit)),
+            subdivision=max(1, int(subdivision)),
+        )
+
+    @property
+    def beat_seconds(self) -> float:
+        return (60.0 / max(1.0, float(self.bpm))) * (4.0 / max(1, int(self.beat_unit)))
+
+    @property
+    def step_seconds(self) -> float:
+        return self.beat_seconds / max(1, int(self.subdivision))
+
+
+@dataclass
 class SetlistCategory:
     """Folder-like grouping in the Setlist (organizational only — export still uses songs)."""
 
@@ -322,6 +365,7 @@ class Song:
     mark_lane_height: float = 28.0
     mark_lanes: list[MarkLane] = field(default_factory=list)
     marks: list[Mark] = field(default_factory=list)
+    beat_grids: list[BeatGridRegion] = field(default_factory=list)
     show_mark_tracks: bool = True
     show_mark_stem: bool = False
     # Deprecated per-song copies; mark line look is project-global (kept for migration).
@@ -546,6 +590,17 @@ class Song:
             video_lane_height=self.video_lane_height,
             mark_lane_height=self.mark_lane_height,
             mark_lanes=deepcopy(self.mark_lanes),
+            beat_grids=[
+                BeatGridRegion.create(
+                    grid.start_seconds,
+                    grid.end_seconds,
+                    bpm=grid.bpm,
+                    beats_per_bar=grid.beats_per_bar,
+                    beat_unit=grid.beat_unit,
+                    subdivision=grid.subdivision,
+                )
+                for grid in self.beat_grids
+            ],
             show_mark_tracks=self.show_mark_tracks,
             show_mark_stem=self.show_mark_stem,
             mark_line_style=self.mark_line_style,
@@ -1273,6 +1328,9 @@ class Project:
     # Font size (pt) for Wave Cue / Wave Note labels on the waveform — project-global.
     wave_label_font_px: int = 10
     waveform_color: str = "#616161"
+    beat_grid_color: str = "#4c8bf5"
+    beat_grid_line_style: MarkLineStyle = "dash"
+    show_beat_grid: bool = True
     # Playhead (NOW) line on the timeline — project-global like waveform_color.
     playhead_color: str = "#3dd68c"
     # Mark lane row height (pixels) — one value for the whole show.

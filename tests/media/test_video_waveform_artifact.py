@@ -699,5 +699,8 @@ def test_memory_bound() -> None:
     assert n <= MAX_PEAK_BINS
     artifact_bytes = n * (4 + 4 + 1)
     full_rate = dur * 48000 * 4
-    assert artifact_bytes < full_rate / 50.0
+    # High-zoom fidelity uses a denser v6 envelope. It remains comfortably
+    # bounded versus retained 48 kHz float PCM while avoiding the old 400 Hz
+    # cache's visible stair-steps.
+    assert artifact_bytes < full_rate / 8.0
     assert n == int(np.ceil(dur * BASE_PEAKS_PER_SECOND)) or n == MAX_PEAK_BINS

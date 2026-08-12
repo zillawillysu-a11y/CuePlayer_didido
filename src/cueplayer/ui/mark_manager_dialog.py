@@ -876,6 +876,12 @@ class MarkManagerDialog(QDialog):
     def _append_row(self, lane: MarkLane) -> None:
         row = self._lane_row_count()
         self.table.insertRow(row)
+        # When the bulk-toggle footer already exists, inserting at ``row``
+        # pushes that footer down by one.  Keep its tracked index in sync or
+        # the new lane is mistaken for the footer and the real footer is later
+        # validated as an incomplete lane (the former "Row 10" failure).
+        if self._bulk_footer_row is not None:
+            self._bulk_footer_row += 1
 
         index_item = QTableWidgetItem(str(lane.index))
         index_item.setFlags(index_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -910,6 +916,9 @@ class MarkManagerDialog(QDialog):
         key.addItem("(None)", "")
         for digit in range(1, 10):
             key.addItem(str(digit), str(digit))
+        for number in range(1, 13):
+            label = f"F{number}"
+            key.addItem(label, label)
         idx = key.findData(lane.shortcut.strip())
         key.setCurrentIndex(idx if idx >= 0 else 0)
         key.setProperty("last_data", key.currentData())

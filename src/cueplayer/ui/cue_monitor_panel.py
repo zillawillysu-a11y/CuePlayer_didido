@@ -52,7 +52,7 @@ from cueplayer.domain.cue_list_columns import (
 )
 from cueplayer.ui.output_quick_toggles import OutputQuickToggles
 from cueplayer.ui.theme import BG_SELECTED, SPLITTER_HOVER, SPLITTER_IDLE, TEXT
-from cueplayer.ui.transport_bar import format_time
+from cueplayer.ui.transport_bar import format_time, parse_time
 
 _COL_COUNT = len(CUE_LIST_FIELDS)
 # Cue List QSS: ``padding: 8px 8px`` on items. Keep height/paint in sync so the
@@ -317,6 +317,8 @@ class CueMonitorPanel(QWidget):
     selection_changed = Signal(list)  # list[str] mark ids
     note_changed = Signal(str, str, str)  # mark_id, old_name, new_name
     cue_id_changed = Signal(str, str, str)  # mark_id, old_id, new_id
+    time_changed = Signal(str, float, float)  # mark_id, old_time, new_time
+    time_edit_failed = Signal(str)
     cue_id_edit_failed = Signal(str)  # user-facing reason
     cue_list_layout_changed = Signal()
     renumber_cue_ids_requested = Signal(object)  # lane_index: int | None (None = all)
@@ -344,6 +346,7 @@ class CueMonitorPanel(QWidget):
         self._cue_list_follow_left_viewport = False
         self._updating_table = False
         self._syncing_selection = False
+        self._preserve_multi_selection = False
         self._secondary_hold_mark_id: str | None = None
         self._secondary_cleared = False
         self._secondary_clear_timer = QTimer(self)
@@ -667,6 +670,7 @@ class CueMonitorPanel(QWidget):
         self.cue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.cue_table.customContextMenuRequested.connect(self._show_cue_list_context_menu)
         self.cue_table.cellClicked.connect(self._on_cell_clicked)
+        self.cue_table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.cue_table.itemChanged.connect(self._on_item_changed)
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
         self.cue_table.installEventFilter(self)
@@ -2140,11 +2144,12 @@ class CueMonitorPanel(QWidget):
                     self._mark_id_to_row[mark.id] = row
 
                     time_item = QTableWidgetItem(format_time(mark.time_seconds))
-                    time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    time_item.setFlags(time_item.flags() | Qt.ItemFlag.ItemIsEditable)
                     time_item.setData(Qt.ItemDataRole.UserRole, mark.id)
                     time_item.setTextAlignment(
                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
                     )
+                    time_item.setToolTip("Double-click to edit time (MM:SS.mmm)")
                     self.cue_table.setItem(row, time_col, time_item)
 
                     cue_id_text = cue_ids.get(mark.id, "")
@@ -2212,6 +2217,7 @@ class CueMonitorPanel(QWidget):
 
     def set_selected_mark_ids(self, mark_ids: set[str] | list[str]) -> None:
         wanted = set(mark_ids)
+        self._preserve_multi_selection = len(wanted) > 1
         self._syncing_selection = True
         self.cue_table.clearSelection()
         model = self.cue_table.selectionModel()
@@ -2353,6 +2359,7 @@ class CueMonitorPanel(QWidget):
     def _on_selection_changed(self) -> None:
         if self._updating_table or self._syncing_selection:
             return
+        self._preserve_multi_selection = len(self.selected_mark_ids()) > 1
         self.selection_changed.emit(self.selected_mark_ids())
 
     def _on_cell_clicked(self, row: int, column: int) -> None:
@@ -2381,6 +2388,13 @@ class CueMonitorPanel(QWidget):
         if not multi:
             self.seek_requested.emit(mark.time_seconds)
 
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        if self._field_at_col(column) != "time":
+            return
+        item = self.cue_table.item(row, column)
+        if item is not None and item.flags() & Qt.ItemFlag.ItemIsEditable:
+            self.cue_table.editItem(item)
+
     def _navigate_note_editor(self, row: int, column: int, delta: int) -> None:
         """Commit current Note, then continue editing the adjacent Cue row."""
         target = max(0, min(self.cue_table.rowCount() - 1, int(row) + int(delta)))
@@ -2401,16 +2415,39 @@ class CueMonitorPanel(QWidget):
         if self._updating_table or self._song is None:
             return
         field = self._field_at_col(item.column())
-        if field not in ("note", "cue_id"):
+        if field not in ("time", "note", "cue_id"):
             return
         mark_id = self._mark_id_at_row(item.row())
         mark = self._song.mark_by_id(mark_id) if mark_id else None
         if mark is None:
             return
-        if field == "note":
+        if field == "time":
+            self._apply_time_edit(item, mark)
+        elif field == "note":
             self._apply_note_edit(item, mark)
         else:
             self._apply_cue_id_edit(item, mark)
+
+    def _apply_time_edit(self, item: QTableWidgetItem, mark: Mark) -> None:
+        old_time = float(mark.time_seconds)
+        parsed = parse_time(item.text())
+        if parsed is None:
+            self._updating_table = True
+            item.setText(format_time(old_time))
+            self._updating_table = False
+            self.time_edit_failed.emit("Enter time as MM:SS.mmm or seconds")
+            return
+        duration = float(self._song.duration_seconds) if self._song is not None else parsed
+        new_time = min(parsed, max(0.0, duration))
+        self._updating_table = True
+        item.setText(format_time(new_time))
+        self._updating_table = False
+        if abs(new_time - old_time) < 1e-9:
+            return
+        mark.time_seconds = new_time
+        if self._song is not None:
+            self._song.sort_marks()
+        self.time_changed.emit(str(mark.id), old_time, new_time)
 
     def _apply_note_edit(self, item: QTableWidgetItem, mark: Mark) -> None:
         old_name = mark.display_name
@@ -2749,6 +2786,15 @@ class CueMonitorPanel(QWidget):
             return
         row = self._row_for_mark_id(mark.id)
         if row < 0:
+            return
+        if self._preserve_multi_selection or len(self.selected_mark_ids()) > 1:
+            # Playhead follow is navigation, not a user selection command.
+            # Keep an intentional multi-Mark selection intact across a seek;
+            # only move the Cue List viewport to the current playhead row.
+            if not self._cue_list_follow_suspended:
+                self._scroll_cue_row_into_view(mark.id, only_if_obscured=True)
+            self._playhead_list_mark_id = mark.id
+            self._follow_target_row = row
             return
         if self._cue_list_follow_suspended:
             # User scrolled away to inspect — keep their scroll position, but still

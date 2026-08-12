@@ -688,6 +688,9 @@ def project_to_dict(
         "mark_line_width": project.mark_line_width,
         "wave_label_font_px": int(getattr(project, "wave_label_font_px", 10) or 10),
         "waveform_color": project.waveform_color,
+        "beat_grid_color": project.beat_grid_color,
+        "beat_grid_line_style": project.beat_grid_line_style,
+        "show_beat_grid": bool(project.show_beat_grid),
         "playhead_color": project.playhead_color,
         "mark_lane_height": float(project.mark_lane_height),
         "show_mark_track_colors": bool(project.show_mark_track_colors),
@@ -811,6 +814,18 @@ def project_to_dict(
                     }
                     for mark in song.marks
                 ],
+                "beat_grids": [
+                    {
+                        "id": grid.id,
+                        "start_seconds": grid.start_seconds,
+                        "end_seconds": grid.end_seconds,
+                        "bpm": grid.bpm,
+                        "beats_per_bar": grid.beats_per_bar,
+                        "beat_unit": grid.beat_unit,
+                        "subdivision": grid.subdivision,
+                    }
+                    for grid in song.beat_grids
+                ],
                 "show_mark_tracks": song.show_mark_tracks,
                 "show_mark_stem": song.show_mark_stem,
                 "now_lanes_configured": song.now_lanes_configured,
@@ -923,6 +938,21 @@ def project_from_dict(
             )
             for mark in song_data.get("marks", [])
         ]
+        from cueplayer.domain.models import BeatGridRegion
+
+        beat_grids = [
+            BeatGridRegion(
+                id=str(grid.get("id") or ""),
+                start_seconds=max(0.0, float(grid.get("start_seconds", 0.0))),
+                end_seconds=max(0.0, float(grid.get("end_seconds", 0.0))),
+                bpm=max(1.0, float(grid.get("bpm", 120.0))),
+                beats_per_bar=max(1, int(grid.get("beats_per_bar", 4))),
+                beat_unit=max(1, int(grid.get("beat_unit", 4))),
+                subdivision=max(1, int(grid.get("subdivision", 1))),
+            )
+            for grid in song_data.get("beat_grids", [])
+            if isinstance(grid, dict)
+        ]
         variants, selected_variant_id = _variants_from_song_data(
             song_data, project_dir=project_dir
         )
@@ -975,6 +1005,7 @@ def project_from_dict(
                 ),
                 mark_lanes=mark_lanes,
                 marks=marks,
+                beat_grids=beat_grids,
                 show_mark_tracks=bool(song_data.get("show_mark_tracks", True)),
                 show_mark_stem=bool(song_data.get("show_mark_stem", False)),
                 mark_line_style=_coerce_mark_line_style(
@@ -1048,6 +1079,13 @@ def project_from_dict(
             min(28, int(data.get("wave_label_font_px", 10) or 10)),
         ),
         waveform_color=wave_color,
+        beat_grid_color=_coerce_waveform_color(
+            data.get("beat_grid_color"), default="#4c8bf5"
+        ),
+        beat_grid_line_style=_coerce_mark_line_style(
+            data.get("beat_grid_line_style"), default="dash"
+        ),
+        show_beat_grid=bool(data.get("show_beat_grid", True)),
         playhead_color=playhead_color,
         mark_lane_height=mark_lane_height,
         show_mark_track_colors=show_mark_track_colors,

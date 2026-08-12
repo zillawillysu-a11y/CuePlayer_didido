@@ -63,6 +63,8 @@ from PySide6.QtWidgets import (
 from cueplayer.domain.models import (
     DEFAULT_STILL_CLIP_DURATION_SECONDS,
     AudioTrack,
+    BeatGridRegion,
+    Mark,
     Project,
     SetlistCategory,
     Song,
@@ -130,14 +132,17 @@ from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, Setl
 from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
 from cueplayer.domain.undo import (
     AddMarksCommand,
+    BeatGridSnapshot,
     AddVideoClipsCommand,
     ChangeMarkLanesCommand,
     DeleteMarksCommand,
+    DeleteBeatGridCommand,
     DeleteVideoClipsCommand,
     EditMainCueIdCommand,
     EditVideoClipsCommand,
     MarkSnapshot,
     MoveMarksCommand,
+    MoveBeatGridCommand,
     RenumberMainCueIdsCommand,
     RenameMarkCommand,
     SetlistEditCommand,
@@ -187,6 +192,7 @@ from cueplayer.web_remote.main_window_remote_host import MainWindowRemoteHost
 from cueplayer.web_remote.dialog import WebRemoteDialog
 from cueplayer.web_remote.prefs import load_web_remote_prefs, save_web_remote_prefs
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
+from cueplayer.ui.beat_grid_dialog import AutoAddMarksDialog, BeatGridEditDialog
 from cueplayer.ui.mark_manager_dialog import MarkManagerDialog
 from cueplayer.ui.ndi_install_dialog import show_ndi_install_dialog
 from cueplayer.ui.setlist_sheet_page import SetlistSheetPage
@@ -999,6 +1005,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, project: Project | None = None) -> None:
         super().__init__()
+        self._restore_last_project_on_startup = project is None
         self.startup_session_ready = False
         self.project = project or Project.create("Untitled Project", with_song=False)
         # Workspace stand-in when Setlist is empty — never listed as a song.
@@ -1022,6 +1029,7 @@ class MainWindow(QMainWindow):
         # Internal clipboard for Ctrl+C/Ctrl+V on timeline video clips
         # (Delete/Backspace reuse the existing _delete_video_clips path).
         self._video_clip_clipboard: list[VideoClipSnapshot] = []
+        self._mark_clipboard: list[MarkSnapshot] = []
         # Left/Right arrow-key jog: elapsed-hold-time bookkeeping per
         # direction, used to accelerate the seek step (see _nudge_frames()).
         self._nudge_hold_start: dict[int, float] = {}
@@ -1367,8 +1375,10 @@ class MainWindow(QMainWindow):
             self._on_setlist_header_context_menu
         )
         self.transport.play_clicked.connect(self.playback.play)
-        self.transport.pause_clicked.connect(self.playback.pause)
+        self.transport.pause_clicked.connect(self._pause_without_view_jump)
         self.transport.stop_clicked.connect(self.playback.stop)
+        self.transport.song_start_clicked.connect(self._go_to_song_start_or_previous)
+        self.transport.next_song_clicked.connect(self._go_to_next_song)
         self.toolbar.view_mode_changed.connect(self._set_view_mode)
         self.show_patch_page.settings_changed.connect(self._mark_dirty)
         self.show_patch_page.export_finished.connect(self._on_ma_export_finished)
@@ -1400,6 +1410,13 @@ class MainWindow(QMainWindow):
         self.timeline.note_rename_requested.connect(self._on_note_changed)
         self.timeline.cue_id_edit_requested.connect(self._on_cue_id_changed)
         self.timeline.change_type_requested.connect(self._change_mark_types)
+        self.timeline.copy_marks_requested.connect(self._copy_marks)
+        self.timeline.paste_marks_requested.connect(self._paste_marks)
+        self.timeline.beat_grid_created.connect(self._create_beat_grid)
+        self.timeline.beat_grid_edit_requested.connect(self._edit_beat_grid)
+        self.timeline.beat_grid_auto_marks_requested.connect(self._auto_add_grid_marks)
+        self.timeline.beat_grid_moved.connect(self._on_beat_grid_moved)
+        self.timeline.beat_grid_delete_requested.connect(self._delete_beat_grid)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)
         self.timeline.offset_requested.connect(self._offset_marks)
@@ -1449,6 +1466,10 @@ class MainWindow(QMainWindow):
         self.monitor.delete_requested.connect(self._delete_marks)
         self.monitor.note_changed.connect(self._on_note_changed)
         self.monitor.cue_id_changed.connect(self._on_cue_id_changed)
+        self.monitor.time_changed.connect(self._on_mark_time_changed)
+        self.monitor.time_edit_failed.connect(
+            lambda msg: self.status.showMessage(msg, 3000)
+        )
         self.monitor.cue_id_edit_failed.connect(
             lambda msg: self.status.showMessage(msg, 3000)
         )
@@ -1487,8 +1508,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, activated=self._delete_current_selection)
         QShortcut(QKeySequence.StandardKey.Undo, self, activated=self._undo_action)
         QShortcut(QKeySequence.StandardKey.Redo, self, activated=self._redo_action)
-        QShortcut(QKeySequence.StandardKey.Copy, self, activated=self._copy_video_clips)
-        QShortcut(QKeySequence.StandardKey.Paste, self, activated=self._paste_video_clips)
+        QShortcut(QKeySequence.StandardKey.Copy, self, activated=self._copy_selection)
+        QShortcut(QKeySequence.StandardKey.Paste, self, activated=self._paste_selection)
         self._rebuild_digit_shortcuts()
         app = QApplication.instance()
         if app is not None:
@@ -1510,8 +1531,9 @@ class MainWindow(QMainWindow):
                 self._restore_clean_output_visibility()
                 self._restore_clean_output_geometry()
                 self._sync_video_output_active()
-                if not self._try_restore_last_project():
-                    self._maybe_load_demo_fixture()
+                if self._restore_last_project_on_startup:
+                    if not self._try_restore_last_project():
+                        self._maybe_load_demo_fixture()
                 self._sync_timeline_geometry()
                 self._sync_transport_layout()
                 self.monitor.ensure_now_splitter_ready()
@@ -2504,6 +2526,16 @@ class MainWindow(QMainWindow):
         )
         self._show_video_track_action.toggled.connect(self._on_show_video_track_toggled)
         view_menu.addAction(self._show_video_track_action)
+        self._show_beat_grid_action = QAction("Show &Beat Grid", self)
+        self._show_beat_grid_action.setCheckable(True)
+        self._show_beat_grid_action.setChecked(
+            bool(getattr(self.project, "show_beat_grid", True))
+        )
+        self._show_beat_grid_action.setToolTip(
+            "Show or hide Beat Grid regions without deleting them"
+        )
+        self._show_beat_grid_action.toggled.connect(self._on_show_beat_grid_toggled)
+        view_menu.addAction(self._show_beat_grid_action)
         act_video_preview = QAction("Video &Preview Panel", self)
         act_video_preview.setCheckable(True)
         act_video_preview.setChecked(True)
@@ -4612,6 +4644,35 @@ class MainWindow(QMainWindow):
         """Activate setlist song — orchestration lives on ``ShowSessionService``."""
         self.show_session.activate_song_at(index, stop_playback=stop_playback)
 
+    def _go_to_song_start_or_previous(self) -> None:
+        """Seek to 00:00; when already there, activate the previous song."""
+        if float(self.playback.position) > 0.05:
+            self._canonical_seek(0.0, input_source="transport_song_start")
+            self.timeline.set_position(0.0)
+            return
+        self._go_to_relative_song(-1)
+
+    def _go_to_next_song(self) -> None:
+        """Activate the next song in canonical project/setlist order."""
+        self._go_to_relative_song(1)
+
+    def _go_to_relative_song(self, delta: int) -> None:
+        if not self.project.songs or self.current_song not in self.project.songs:
+            return
+        index = self.project.songs.index(self.current_song)
+        target_index = index + int(delta)
+        if target_index < 0 or target_index >= len(self.project.songs):
+            edge = "first" if delta < 0 else "last"
+            self.status.showMessage(f"Already at the {edge} song", 1800)
+            return
+        # Selecting the displayed row uses the same activation path as a user
+        # click and keeps the left Setlist highlight in sync.
+        for row in range(self.song_list.rowCount()):
+            if self.song_list.row_song_index(row) == target_index:
+                self.song_list.setCurrentCell(row, SetlistWidget.COL_TITLE)
+                return
+        self._activate_song(target_index, stop_playback=True)
+
     def _activate_song_monitor(self, gen: int, song) -> None:  # noqa: ANN001
         """Back-compat wrapper; prefer ``ShowSessionService._activate_song_monitor``."""
         self.show_session._activate_song_monitor(gen, song)
@@ -4991,10 +5052,19 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
         """Forward Explorer file drops from setlist chrome and the main view."""
         if event is not None and isinstance(event, QKeyEvent):
+            if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Meta):
+                timeline = getattr(self, "timeline", None)
+                if timeline is not None:
+                    timeline._selection_ctrl_held = (  # noqa: SLF001
+                        event.type() != QEvent.Type.KeyRelease
+                    )
             if event.type() == QEvent.Type.KeyRelease:
                 digit = event.key() - int(Qt.Key.Key_0)
                 if 1 <= digit <= 9:
                     self._mark_shortcut_latch.discard(str(digit))
+                function_number = event.key() - int(Qt.Key.Key_F1) + 1
+                if 1 <= function_number <= 12:
+                    self._mark_shortcut_latch.discard(f"F{function_number}")
         scroll = getattr(self, "_timeline_scroll", None)
         if scroll is not None and watched is scroll.viewport():
             if event is not None and event.type() == QEvent.Type.Resize:
@@ -5070,8 +5140,16 @@ class MainWindow(QMainWindow):
             shortcut.setParent(None)
             shortcut.deleteLater()
         self._digit_shortcuts.clear()
-        for digit in range(1, 10):
-            key = str(digit)
+        supported = [str(digit) for digit in range(1, 10)] + [
+            f"F{number}" for number in range(1, 13)
+        ]
+        assigned = {
+            str(lane.shortcut or "").strip()
+            for lane in self.current_song.mark_lanes
+        }
+        for key in supported:
+            if key not in assigned:
+                continue
             sc = QShortcut(QKeySequence(key), self)
             sc.setAutoRepeat(False)
             sc.activated.connect(lambda k=key: self._add_mark_by_shortcut(k))
@@ -5650,6 +5728,9 @@ class MainWindow(QMainWindow):
         if clip_ids:
             self._delete_video_clips(clip_ids)
             return
+        if (grid_id := self.timeline.selected_beat_grid_id()) is not None:
+            self._delete_beat_grid(grid_id)
+            return
         ids = self.timeline.selected_mark_ids() or self.monitor.selected_mark_ids()
         if ids:
             self._delete_marks(ids)
@@ -5724,6 +5805,9 @@ class MainWindow(QMainWindow):
         )
         self._mark_dirty()
         self._refresh_marks_ui()
+
+    def _on_mark_time_changed(self, mark_id: str, old_time: float, new_time: float) -> None:
+        self._on_marks_moved({str(mark_id): (float(old_time), float(new_time))})
 
     def _undo_action(self) -> None:
         result = self._undo.undo(self._undo_ctx)
@@ -5974,6 +6058,11 @@ class MainWindow(QMainWindow):
             dash_on=float(p.mark_dash_on),
             dash_off=float(p.mark_dash_off),
             waveform_color=str(p.waveform_color or "#616161"),
+            beat_grid_color=str(getattr(p, "beat_grid_color", None) or "#4c8bf5"),
+            beat_grid_line_style=str(
+                getattr(p, "beat_grid_line_style", None) or "dash"
+            ),
+            show_beat_grid=bool(getattr(p, "show_beat_grid", True)),
             playhead_color=str(getattr(p, "playhead_color", None) or "#3dd68c"),
             wave_label_font_px=int(getattr(p, "wave_label_font_px", 10) or 10),
         )
@@ -5981,6 +6070,11 @@ class MainWindow(QMainWindow):
         self.timeline.apply_mark_track_colors(bool(getattr(p, "show_mark_track_colors", True)))
         self.timeline.set_show_wave_gain_line(bool(getattr(p, "show_wave_gain_line", False)), emit=False)
         self.timeline.set_show_ltc_gain_line(bool(getattr(p, "show_ltc_gain_line", False)), emit=False)
+        action = getattr(self, "_show_beat_grid_action", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(bool(getattr(p, "show_beat_grid", True)))
+            action.blockSignals(False)
         if hasattr(self, "monitor"):
             self._sync_output_timecode_clock_ui()
 
@@ -8035,10 +8129,199 @@ class MainWindow(QMainWindow):
         if not clips:
             return
         self._video_clip_clipboard = [VideoClipSnapshot.from_clip(c) for c in clips]
+        self._mark_clipboard = []
         if len(clips) == 1:
             self.status.showMessage(f"Copied video clip: {clips[0].name}", 2000)
         else:
             self.status.showMessage(f"Copied {len(clips)} video clips", 2000)
+
+    def _copy_selection(self) -> None:
+        if _text_input_has_focus():
+            return
+        mark_ids = self.timeline.selected_mark_ids()
+        if mark_ids:
+            self._copy_marks(mark_ids)
+        else:
+            self._copy_video_clips()
+
+    def _paste_selection(self) -> None:
+        if _text_input_has_focus():
+            return
+        if self._mark_clipboard:
+            self._paste_marks(float(self.playback.position))
+        else:
+            self._paste_video_clips()
+
+    def _beat_grid_by_id(self, grid_id: str) -> BeatGridRegion | None:
+        return next((grid for grid in self.current_song.beat_grids if grid.id == grid_id), None)
+
+    def _on_show_beat_grid_toggled(self, visible: bool) -> None:
+        self.project.show_beat_grid = bool(visible)
+        self._apply_project_mark_line_settings()
+        self._mark_dirty()
+
+    def _pause_without_view_jump(self) -> None:
+        self.timeline.freeze_viewport_for_pause()
+        self.playback.pause()
+
+    def _on_beat_grid_moved(self, grid_id: str, old_start: float, new_start: float) -> None:
+        self._push_song_undo(
+            MoveBeatGridCommand(
+                grid_id=str(grid_id),
+                old_start=float(old_start),
+                new_start=float(new_start),
+            )
+        )
+        self._mark_dirty()
+
+    def _delete_beat_grid(self, grid_id: str) -> None:
+        grid = self._beat_grid_by_id(grid_id)
+        if grid is None:
+            return
+        snapshot = BeatGridSnapshot.from_grid(grid)
+        before = len(self.current_song.beat_grids)
+        self.current_song.beat_grids = [
+            grid for grid in self.current_song.beat_grids if grid.id != grid_id
+        ]
+        if len(self.current_song.beat_grids) == before:
+            return
+        self._push_song_undo(DeleteBeatGridCommand(grid=snapshot))
+        self.timeline.set_song(self.current_song)
+        self._mark_dirty()
+        self.status.showMessage("Deleted Beat Grid", 2500)
+
+    def _create_beat_grid(self, start_seconds: float, end_seconds: float) -> None:
+        grid = BeatGridRegion.create(
+            start_seconds,
+            end_seconds,
+            bpm=float(self.current_song.bpm or 120.0),
+        )
+        dialog = BeatGridEditDialog(grid, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        bpm, numerator, denominator, subdivision, duration = dialog.values()
+        grid.bpm, grid.beats_per_bar = bpm, numerator
+        grid.beat_unit, grid.subdivision = denominator, subdivision
+        grid.end_seconds = min(self.current_song.duration_seconds, grid.start_seconds + duration)
+        self.current_song.beat_grids.append(grid)
+        self.current_song.beat_grids.sort(key=lambda item: item.start_seconds)
+        self.timeline.set_song(self.current_song)
+        self._mark_dirty()
+        self.status.showMessage(
+            f"Beat Grid: {grid.bpm:g} BPM · {grid.beats_per_bar}/{grid.beat_unit}", 3000
+        )
+
+    def _edit_beat_grid(self, grid_id: str) -> None:
+        grid = self._beat_grid_by_id(grid_id)
+        if grid is None:
+            return
+        dialog = BeatGridEditDialog(grid, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        bpm, numerator, denominator, subdivision, duration = dialog.values()
+        grid.bpm, grid.beats_per_bar = bpm, numerator
+        grid.beat_unit, grid.subdivision = denominator, subdivision
+        grid.end_seconds = min(self.current_song.duration_seconds, grid.start_seconds + duration)
+        self.timeline.set_song(self.current_song)
+        self._mark_dirty()
+
+    def _auto_add_grid_marks(self, grid_id: str, clicked_seconds: float) -> None:
+        grid = self._beat_grid_by_id(grid_id)
+        if grid is None:
+            return
+        dialog = AutoAddMarksDialog(self.current_song, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        lane_index, interval, bars = dialog.values()
+        base_step = grid.step_seconds
+        snap_index = max(0, round((clicked_seconds - grid.start_seconds) / base_step))
+        first = grid.start_seconds + snap_index * base_step
+        if interval == "bar":
+            stride = grid.beats_per_bar * grid.subdivision
+        elif interval.startswith("beat_"):
+            try:
+                beat_count = max(1, int(interval.split("_", 1)[1]))
+            except (TypeError, ValueError):
+                beat_count = 1
+            stride = beat_count * grid.subdivision
+        elif interval == "beat":
+            stride = grid.subdivision
+        else:
+            stride = 1
+        finite_end = None
+        if bars > 0:
+            finite_end = min(
+                grid.end_seconds,
+                first + bars * grid.beats_per_bar * grid.beat_seconds,
+            )
+        created: list[Mark] = []
+        index = 0
+        while True:
+            at = first + index * stride * base_step
+            if finite_end is not None:
+                if at >= finite_end - 1e-9:
+                    break
+            elif at > grid.end_seconds + 1e-9:
+                break
+            created.append(self.current_song.add_mark(lane_index, at))
+            index += 1
+        if not created:
+            return
+        self._push_song_undo(
+            AddMarksCommand(
+                marks=[MarkSnapshot.from_mark(mark) for mark in created],
+                label=f"Auto Add {len(created)} Marks",
+            )
+        )
+        self.timeline.set_selected_mark_ids([mark.id for mark in created])
+        self._mark_dirty()
+        self._refresh_marks_ui()
+        self.status.showMessage(f"Auto-added {len(created)} mark(s)", 3000)
+
+    def _copy_marks(self, mark_ids: list) -> None:
+        if _text_input_has_focus():
+            return
+        wanted = {str(mark_id) for mark_id in mark_ids}
+        marks = sorted(
+            (mark for mark in self.current_song.marks if mark.id in wanted),
+            key=lambda mark: mark.time_seconds,
+        )
+        if not marks:
+            return
+        self._mark_clipboard = [MarkSnapshot.from_mark(mark) for mark in marks]
+        self._video_clip_clipboard = []
+        label = "mark" if len(marks) == 1 else "marks"
+        self.status.showMessage(f"Copied {len(marks)} {label}", 2000)
+
+    def _paste_marks(self, target_seconds: float) -> None:
+        if _text_input_has_focus() or not self._mark_clipboard:
+            return
+        anchor = min(snap.time_seconds for snap in self._mark_clipboard)
+        duration = max(0.0, float(self.current_song.duration_seconds))
+        created: list[Mark] = []
+        for snap in self._mark_clipboard:
+            lane = self.current_song.lane_by_index(int(snap.lane_index))
+            if lane is None:
+                continue
+            at = min(duration, max(0.0, float(target_seconds) + snap.time_seconds - anchor))
+            mark = self.current_song.add_mark(
+                int(snap.lane_index), at, display_name=str(snap.display_name)
+            )
+            mark.ma_export_name = snap.ma_export_name
+            created.append(mark)
+        if not created:
+            return
+        self.current_song.sort_marks()
+        self._push_song_undo(
+            AddMarksCommand(
+                marks=[MarkSnapshot.from_mark(mark) for mark in created],
+                label="Paste Mark" if len(created) == 1 else "Paste Marks",
+            )
+        )
+        self.timeline.set_selected_mark_ids([mark.id for mark in created])
+        self._mark_dirty()
+        self._refresh_marks_ui()
+        self.status.showMessage(f"Pasted {len(created)} mark(s)", 2500)
 
     def _paste_video_clips(self) -> None:
         """Ctrl+V: paste the copied clip(s) at the playhead, preserving their

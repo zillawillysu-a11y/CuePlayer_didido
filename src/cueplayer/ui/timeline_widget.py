@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import ctypes
+import sys
 from pathlib import Path
 from time import monotonic_ns
 
@@ -17,6 +19,7 @@ from PySide6.QtGui import (
     QFont,
     QInputDevice,
     QKeyEvent,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
@@ -57,6 +60,20 @@ from cueplayer.media.video_loader import STILL_IMAGE_SUFFIXES
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"} | set(STILL_IMAGE_SUFFIXES)
 
 
+def _native_control_key_down() -> bool:
+    """Read physical Ctrl state on Windows when Qt drops mouse modifiers."""
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        return any(
+            bool(user32.GetAsyncKeyState(vkey) & 0x8000)
+            for vkey in (0x11, 0xA2, 0xA3)
+        )
+    except Exception:
+        return False
+
+
 def _artifact_level_for_pixels(levels: list, samples_per_pixel: float):  # noqa: ANN201
     """Use base bins when zoom exposes more pixels than the first pyramid level.
 
@@ -89,8 +106,15 @@ class TimelineWidget(QWidget):
     note_rename_requested = Signal(str, str, str)  # mark_id, old_name, new_name
     cue_id_edit_requested = Signal(str, str, str)  # mark_id, old_id, new_id
     change_type_requested = Signal(list, int)  # mark ids, new lane_index
+    copy_marks_requested = Signal(list)  # selected mark ids
+    paste_marks_requested = Signal(float)  # target song time
     loop_changed = Signal(object, object)  # loop_a, loop_b
     auto_scroll_changed = Signal(bool)
+    beat_grid_created = Signal(float, float)
+    beat_grid_edit_requested = Signal(str)
+    beat_grid_auto_marks_requested = Signal(str, float)
+    beat_grid_moved = Signal(str, float, float)  # grid id, old start, new start
+    beat_grid_delete_requested = Signal(str)
 
     # Video clip lane.
     video_clip_selection_changed = Signal(list)  # list[str] clip ids
@@ -182,6 +206,9 @@ class TimelineWidget(QWidget):
         self._mark_line_width = 1.0
         self._wave_label_font_px = 10
         self._waveform_color = "#616161"
+        self._beat_grid_color = "#4c8bf5"
+        self._beat_grid_line_style: MarkLineStyle = "dash"
+        self._show_beat_grid = True
         self._playhead_color = "#3dd68c"
         self._loop_a: float | None = None
         self._loop_b: float | None = None
@@ -213,6 +240,12 @@ class TimelineWidget(QWidget):
         self._hover_mark_lane_header: int | None = None
         # After a click-seek, keep the view where you clicked until wheel or Auto Scroll.
         self._view_pinned = False
+        self._transport_view_freeze_scroll: float | None = None
+        self._transport_view_freeze_timer = QTimer(self)
+        self._transport_view_freeze_timer.setSingleShot(True)
+        self._transport_view_freeze_timer.timeout.connect(
+            self._release_transport_view_freeze
+        )
         self._scrub_edge = 64.0
         self._wave_split_hit = 6
         self._last_scrub_preview_ms = 0
@@ -221,7 +254,9 @@ class TimelineWidget(QWidget):
         # A waveform press is only a click-seek until pointer travel proves it
         # is a drag. This avoids pause/final-land/resume for ordinary clicks.
         self._pending_scrub_press_x: float | None = None
+        self._pending_beat_grid_seek_time: float | None = None
         self._selected_mark_ids: set[str] = set()
+        self._selection_ctrl_held = False
         self._box_selecting = False
         self._box_additive = False
         self._box_origin = QPointF()
@@ -230,6 +265,7 @@ class TimelineWidget(QWidget):
         self._dragging_marks = False
         self._drag_moved = False
         self._drag_ids: set[str] = set()
+        self._drag_anchor_mark_id: str | None = None
         self._drag_start_times: dict[str, float] = {}
         self._drag_origin_x = 0.0
         self._drag_click_seek: float | None = None
@@ -247,6 +283,20 @@ class TimelineWidget(QWidget):
         self._pan_click_seek: float | None = None
         self._box_select_mode = False
         self._setup_mode = False
+        self._beat_grid_create_mode = False
+        self._beat_snap_enabled = False
+        self._beat_grid_start: float | None = None
+        self._selected_beat_grid_id: str | None = None
+        self._selected_beat_grid_index: int | None = None
+        self._hover_beat_grid_id: str | None = None
+        self._hover_beat_grid_index: int | None = None
+        self._context_beat_grid_id: str | None = None
+        self._context_beat_grid_index: int | None = None
+        self._dragging_beat_grid_id: str | None = None
+        self._beat_grid_drag_origin_x = 0.0
+        self._beat_grid_drag_start = 0.0
+        self._beat_grid_drag_end = 0.0
+        self._beat_grid_drag_moved = False
         self._playing = False
         self._video_waveform_pending_refresh = False
         # Content epoch for Video Track peaks baked into the static backdrop.
@@ -364,6 +414,14 @@ class TimelineWidget(QWidget):
         self.box_select_button = IconButton(
             "marquee", "Box-select mode (enable to drag-select Marks with left click)", self, size=btn_size, overlay=True
         )
+        self.beat_grid_button = IconButton(
+            "metronome", "Beat Grid — click start, then end", self,
+            size=btn_size, overlay=True
+        )
+        self.beat_snap_button = IconButton(
+            "magnet", "Snap Marks to Beat Grid", self,
+            size=btn_size, overlay=True
+        )
         self.auto_scroll_button = IconButton(
             "letter_a",
             "Auto Scroll — follow the playhead (on when highlighted)",
@@ -382,9 +440,13 @@ class TimelineWidget(QWidget):
         )
         self.setup_button.set_active(self._setup_mode)
         self.box_select_button.set_active(self._box_select_mode)
+        self.beat_grid_button.set_active(False)
+        self.beat_snap_button.set_active(False)
         self._sync_auto_scroll_button()
         self.setup_button.clicked.connect(self._toggle_setup_mode)
         self.box_select_button.clicked.connect(self._toggle_box_select_mode)
+        self.beat_grid_button.clicked.connect(self._toggle_beat_grid_mode)
+        self.beat_snap_button.clicked.connect(self._toggle_beat_snap)
         self.auto_scroll_button.clicked.connect(self._toggle_auto_scroll_button)
         self.zoom_out_button.clicked.connect(lambda: self.zoom_by(1 / 1.15))
         self.zoom_in_button.clicked.connect(lambda: self.zoom_by(1.15))
@@ -392,6 +454,8 @@ class TimelineWidget(QWidget):
         for btn in (
             self.setup_button,
             self.box_select_button,
+            self.beat_grid_button,
+            self.beat_snap_button,
             self.auto_scroll_button,
             self.zoom_out_button,
             self.zoom_in_button,
@@ -408,7 +472,12 @@ class TimelineWidget(QWidget):
         y = self._ruler_height + 6
 
         # Left: Setup + box-select (edit modes).
-        left_buttons = (self.setup_button, self.box_select_button)
+        left_buttons = (
+            self.setup_button,
+            self.box_select_button,
+            self.beat_grid_button,
+            self.beat_snap_button,
+        )
         x = self._header_width + margin
         for btn in left_buttons:
             btn.move(x, y)
@@ -432,6 +501,16 @@ class TimelineWidget(QWidget):
     def _toggle_auto_scroll_button(self) -> None:
         self.set_auto_scroll(not self._auto_scroll)
         self.auto_scroll_changed.emit(self._auto_scroll)
+
+    def _toggle_beat_grid_mode(self) -> None:
+        self._beat_grid_create_mode = not self._beat_grid_create_mode
+        self._beat_grid_start = None
+        self.beat_grid_button.set_active(self._beat_grid_create_mode)
+        self.update()
+
+    def _toggle_beat_snap(self) -> None:
+        self._beat_snap_enabled = not self._beat_snap_enabled
+        self.beat_snap_button.set_active(self._beat_snap_enabled)
 
     def _sync_auto_scroll_button(self) -> None:
         """Keep Auto Scroll chip + tooltip in sync with on/off state."""
@@ -813,6 +892,8 @@ class TimelineWidget(QWidget):
             # must retain the buffer that just arrived.
             self._audio = None
         self._selected_mark_ids.clear()
+        self._selected_beat_grid_id = None
+        self._selected_beat_grid_index = None
         self._selected_clip_ids.clear()
         self._dragging_audio_gain = False
         self._audio_gain_zone = None
@@ -869,6 +950,9 @@ class TimelineWidget(QWidget):
         dash_on: float,
         dash_off: float,
         waveform_color: str | None = None,
+        beat_grid_color: str | None = None,
+        beat_grid_line_style: str | None = None,
+        show_beat_grid: bool | None = None,
         playhead_color: str | None = None,
         wave_label_font_px: int | None = None,
     ) -> None:
@@ -884,9 +968,25 @@ class TimelineWidget(QWidget):
         if waveform_color is not None:
             q = QColor(waveform_color)
             self._waveform_color = q.name() if q.isValid() else "#616161"
+        if beat_grid_color is not None:
+            q = QColor(beat_grid_color)
+            self._beat_grid_color = q.name() if q.isValid() else "#4c8bf5"
+        if beat_grid_line_style in ("solid", "dash", "dot"):
+            self._beat_grid_line_style = beat_grid_line_style  # type: ignore[assignment]
+        if show_beat_grid is not None:
+            self._show_beat_grid = bool(show_beat_grid)
+            if hasattr(self, "beat_grid_button"):
+                self.beat_grid_button.setEnabled(self._show_beat_grid)
+                self.beat_snap_button.setEnabled(self._show_beat_grid)
+            if not self._show_beat_grid:
+                self._beat_grid_create_mode = False
+                self._beat_grid_start = None
+                self._hover_beat_grid_id = None
+                self._hover_beat_grid_index = None
         if playhead_color is not None:
             q = QColor(playhead_color)
             self._playhead_color = q.name() if q.isValid() else "#3dd68c"
+        self._invalidate_scrub_backdrop(reason="display_settings")
         self.update()
 
     def apply_mark_lane_height(self, height: float) -> None:
@@ -911,6 +1011,9 @@ class TimelineWidget(QWidget):
 
     def selected_mark_ids(self) -> list[str]:
         return list(self._selected_mark_ids)
+
+    def selected_beat_grid_id(self) -> str | None:
+        return self._context_beat_grid_id or self._selected_beat_grid_id
 
     def set_selected_mark_ids(self, mark_ids: set[str] | list[str], *, emit: bool = True) -> None:
         new_ids = set(mark_ids)
@@ -1428,7 +1531,9 @@ class TimelineWidget(QWidget):
     ) -> None:  # noqa: ANN001
         """Colored shortcut + name on neutral header — no row tint."""
         accent = self._lane_accent_color(lane)
-        shortcut = (lane.shortcut or str(lane.index)).strip()
+        # Empty really means no shortcut.  Falling back to lane.index made a
+        # stale-looking "9" remain after Mark 9 was explicitly set to None.
+        shortcut = (lane.shortcut or "").strip()
         name = (lane.name or "").strip()
         row_h = int(self._lane_height)
         gap = "  "
@@ -1532,12 +1637,18 @@ class TimelineWidget(QWidget):
         if e.type() == QEvent.Type.ShortcutOverride:
             key = e.key()
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-                if self._selected_mark_ids or self._selected_clip_ids:
+                if self._selected_mark_ids or self._selected_clip_ids or self.selected_beat_grid_id():
                     e.accept()
         return super().event(e)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Meta):
+            self._selection_ctrl_held = True
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if (grid_id := self.selected_beat_grid_id()) is not None:
+                self.beat_grid_delete_requested.emit(grid_id)
+                event.accept()
+                return
             if self._selected_clip_ids:
                 self.delete_video_clips_requested.emit(list(self._selected_clip_ids))
                 event.accept()
@@ -1556,6 +1667,11 @@ class TimelineWidget(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Meta):
+            self._selection_ctrl_held = False
+        super().keyReleaseEvent(event)
 
     def set_show_mark_tracks(self, visible: bool) -> None:
         self._show_mark_tracks = visible
@@ -1726,14 +1842,30 @@ class TimelineWidget(QWidget):
     def auto_scroll(self) -> bool:
         return self._auto_scroll
 
+    def center_on_playhead(self) -> None:
+        """Explicitly center the current playhead without changing Auto Scroll."""
+        self._view_pinned = True
+        self._center_on_playhead()
+        self.update()
+
+    def freeze_viewport_for_pause(self, milliseconds: int = 180) -> None:
+        """Hold horizontal scroll while pause drains final engine callbacks."""
+        self._transport_view_freeze_scroll = float(self._scroll_x)
+        self._transport_view_freeze_timer.start(max(50, int(milliseconds)))
+
+    def _release_transport_view_freeze(self) -> None:
+        if self._transport_view_freeze_scroll is not None:
+            self._scroll_x = float(self._transport_view_freeze_scroll)
+            self._clamp_scroll()
+            self._reset_playhead_dirty_tracking()
+            self.update()
+        self._transport_view_freeze_scroll = None
+
     def set_playing(self, playing: bool) -> None:
         was = self._playing
         self._playing = bool(playing)
-        # Resume follow on play so a prior click/scrub/pan doesn't leave the
-        # view stuck until the user zooms with the mouse wheel.
-        if self._playing and not was and self._auto_scroll and not self._scrubbing:
-            self._view_pinned = False
-            self._center_on_playhead()
+        # Play/Pause themselves never move the viewport. Auto Scroll resumes
+        # through subsequent position ticks and follows only at the edge band.
         if was != self._playing:
             # Transport state must NOT select a different static render path.
             # Keep the retained native cache; only dynamic overlay (playhead)
@@ -1790,6 +1922,13 @@ class TimelineWidget(QWidget):
             return Qt.CursorShape.SizeHorCursor
         return Qt.CursorShape.ArrowCursor
 
+    def _cursor_for_beat_grid_hover(self) -> Qt.CursorShape:
+        return (
+            Qt.CursorShape.SizeHorCursor
+            if self._setup_mode
+            else Qt.CursorShape.PointingHandCursor
+        )
+
     def _cursor_for_loop_hover(self, x: float, y: float) -> Qt.CursorShape:
         if self._in_waveform(x, y):
             return Qt.CursorShape.ArrowCursor
@@ -1824,6 +1963,8 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         elif self._hit_loop_handle(x, y) is not None:
             self.setCursor(self._cursor_for_loop_hover(x, y))
+        elif self._hit_beat_grid_division(x, y) is not None:
+            self.setCursor(self._cursor_for_beat_grid_hover())
         elif self._hit_mark_at(x, y) is not None:
             self.setCursor(self._cursor_for_mark_hover(x, y))
         elif self._box_select_mode and self._in_mark_tracks(x, y):
@@ -1895,7 +2036,10 @@ class TimelineWidget(QWidget):
             perf_diag.count("timeline.set_position.calls")
             self._position = seconds
             scroll_moved = False
-            if self._auto_scroll:
+            if self._transport_view_freeze_scroll is not None:
+                self._scroll_x = float(self._transport_view_freeze_scroll)
+                self._clamp_scroll()
+            elif self._auto_scroll:
                 prev_scroll = self._scroll_x
                 if self._view_transform_busy or self._view_transform_quality_pending:
                     # Wheel zoom owns the viewport until its trailing-edge bake.
@@ -2425,7 +2569,6 @@ class TimelineWidget(QWidget):
         blit source does not shimmer by ±1 px each tick.
         """
         if not self._playing:
-            self._center_on_playhead()
             return
         view_w = self._view_width()
         if view_w <= 1.0:
@@ -3042,6 +3185,7 @@ class TimelineWidget(QWidget):
     ) -> None:
         self._paint_ruler(painter, include_labels=include_ruler_labels)
         wave_bottom = self._paint_waveform(painter)
+        self._paint_beat_grids(painter)
         self._paint_video_lane(painter)
         self._paint_ltc_lane(painter)
         tracks_top = self._tracks_top_y()
@@ -3062,6 +3206,183 @@ class TimelineWidget(QWidget):
         painter.fillRect(0, 0, self._header_width, self.height(), QColor("#111113"))
         self._paint_headers(painter, wave_bottom, tracks_top)
         self._paint_header_splitter(painter)
+
+    def _beat_grid_at_time(self, seconds: float):
+        if self._song is None:
+            return None
+        candidates = [
+            grid for grid in self._song.beat_grids
+            if grid.start_seconds - 1e-9 <= seconds <= grid.end_seconds + 1e-9
+        ]
+        return min(candidates, key=lambda grid: grid.end_seconds - grid.start_seconds, default=None)
+
+    def _hit_beat_grid(self, x: float, y: float):
+        """Return the grid whose nearest visible division was actually clicked."""
+        hit = self._hit_beat_grid_division(x, y)
+        return hit[0] if hit is not None else None
+
+    def _hit_beat_grid_division(self, x: float, y: float):
+        """Return ``(grid, division index)`` for the nearest visible line."""
+        if self._song is None or not self._show_beat_grid or not self._in_waveform(x, y):
+            return None
+        seconds = self._time_for_x(x)
+        best = None
+        # Use the same device-pixel snapped X as painting.  A symmetric
+        # 16-logical-pixel band matches the forgiving Mark hit target on
+        # high-DPI Windows while
+        # still choosing the nearest division when the grid is dense.
+        best_px = 16.0
+        for grid in self._song.beat_grids:
+            if not (grid.start_seconds - 1e-9 <= seconds <= grid.end_seconds + 1e-9):
+                continue
+            step = grid.step_seconds
+            if step <= 1e-9:
+                continue
+            index = round((seconds - grid.start_seconds) / step)
+            at = grid.start_seconds + index * step
+            if at < grid.start_seconds - 1e-9 or at > grid.end_seconds + 1e-9:
+                continue
+            painted_x = self._device_snap(self._x_for_time(at))
+            distance = abs(painted_x - float(x))
+            if distance <= best_px:
+                best, best_px = (grid, index), distance
+        return best
+
+    def _snap_time_to_beat_grid(self, seconds: float) -> float:
+        """Snap to the nearest Beat Grid division inside a 16px threshold."""
+        if not self._beat_snap_enabled or not self._show_beat_grid or self._song is None:
+            return seconds
+        best_time = seconds
+        best_pixels = 16.0
+        for grid in self._song.beat_grids:
+            step = grid.step_seconds
+            if step <= 1e-9 or seconds < grid.start_seconds or seconds > grid.end_seconds:
+                continue
+            index = round((seconds - grid.start_seconds) / step)
+            candidate = grid.start_seconds + index * step
+            candidate = min(grid.end_seconds, max(grid.start_seconds, candidate))
+            distance = abs(candidate - seconds) * self._pixels_per_second
+            if distance <= best_pixels:
+                best_pixels = distance
+                best_time = candidate
+        return best_time
+
+    def _paint_beat_grids(self, painter: QPainter) -> None:
+        if self._song is None or not self._show_beat_grid:
+            return
+        color = QColor(self._beat_grid_color or "#4c8bf5")
+        left_t = self._time_for_x(self._header_width)
+        right_t = self._time_for_x(self._paint_right())
+        top = self._ruler_height
+        bottom = self._wave_bottom_y()
+        painter.save()
+        painter.setClipRect(
+            QRectF(
+                self._header_width,
+                top,
+                max(1, self._paint_right() - self._header_width),
+                bottom - top,
+            )
+        )
+        for grid in self._song.beat_grids:
+            step = grid.step_seconds
+            if step <= 1e-9 or grid.end_seconds < left_t or grid.start_seconds > right_t:
+                continue
+            first = max(0, int(math.ceil((left_t - grid.start_seconds) / step - 1e-9)))
+            last = int(math.floor((min(right_t, grid.end_seconds) - grid.start_seconds) / step + 1e-9))
+            beat_seconds = grid.beat_seconds
+            if beat_seconds * self._pixels_per_second >= 3.0:
+                fill = QColor(color)
+                first_beat = max(0, int(math.floor((left_t - grid.start_seconds) / beat_seconds)))
+                last_beat = int(math.ceil((min(right_t, grid.end_seconds) - grid.start_seconds) / beat_seconds))
+                for beat_index in range(first_beat, last_beat):
+                    if beat_index % 2:
+                        continue
+                    is_first_beat = beat_index % max(1, grid.beats_per_bar) == 0
+                    fill.setAlpha(18 if is_first_beat else 8)
+                    beat_start = max(grid.start_seconds, grid.start_seconds + beat_index * beat_seconds)
+                    beat_end = min(grid.end_seconds, beat_start + beat_seconds)
+                    if beat_end > beat_start:
+                        painter.fillRect(
+                            QRectF(self._x_for_time(beat_start), top,
+                                   self._x_for_time(beat_end) - self._x_for_time(beat_start), bottom - top),
+                            fill,
+                        )
+            draw_stride = 1
+            if step * self._pixels_per_second < 2.0:
+                draw_stride = max(1, grid.subdivision)
+            if beat_seconds * self._pixels_per_second < 2.0:
+                draw_stride = max(1, grid.subdivision * grid.beats_per_bar)
+            first = int(math.ceil(first / draw_stride) * draw_stride)
+            for index in range(first, last + 1, draw_stride):
+                sub = index % max(1, grid.subdivision)
+                beat = index // max(1, grid.subdivision)
+                is_bar = sub == 0 and beat % max(1, grid.beats_per_bar) == 0
+                line_color = QColor(color)
+                line_color.setAlpha(245 if is_bar else (135 if sub == 0 else 65))
+                style = {
+                    "solid": Qt.PenStyle.SolidLine,
+                    "dot": Qt.PenStyle.DotLine,
+                }.get(self._beat_grid_line_style, Qt.PenStyle.DashLine)
+                painter.setPen(QPen(line_color, 2.5 if is_bar else 1.0, style))
+                x = self._device_snap(self._x_for_time(grid.start_seconds + index * step))
+                painter.drawLine(QLineF(x, top, x, bottom))
+        painter.restore()
+
+    def _paint_selected_beat_grid(self, painter: QPainter) -> None:
+        if self._song is None or not self._show_beat_grid or self._view_transform_busy:
+            return
+        highlights: list[tuple[str, int, bool]] = []
+        if self._context_beat_grid_id is not None and self._context_beat_grid_index is not None:
+            highlights.append(
+                (self._context_beat_grid_id, self._context_beat_grid_index, True)
+            )
+        if self._hover_beat_grid_id is not None and self._hover_beat_grid_index is not None:
+            hover_key = (self._hover_beat_grid_id, self._hover_beat_grid_index)
+            if not any((grid_id, index) == hover_key for grid_id, index, _ in highlights):
+                highlights.append((hover_key[0], hover_key[1], False))
+        if not highlights:
+            return
+        top, bottom = self._ruler_height, self._wave_bottom_y()
+        color = QColor(self._beat_grid_color or "#4c8bf5")
+        style = {
+            "solid": Qt.PenStyle.SolidLine,
+            "dot": Qt.PenStyle.DotLine,
+        }.get(self._beat_grid_line_style, Qt.PenStyle.DashLine)
+        painter.save()
+        painter.setClipRect(
+            QRectF(
+                self._header_width,
+                top,
+                max(1, self._paint_right() - self._header_width),
+                bottom - top,
+            )
+        )
+        outline = QColor("#f2f2f2")
+        for grid_id, index, selected in highlights:
+            grid = next((item for item in self._song.beat_grids if item.id == grid_id), None)
+            if grid is None:
+                continue
+            at = grid.start_seconds + index * grid.step_seconds
+            if at < grid.start_seconds - 1e-9 or at > grid.end_seconds + 1e-9:
+                continue
+            x = self._device_snap(self._x_for_time(at))
+            outline.setAlpha(225 if selected else 150)
+            painter.setPen(QPen(outline, 4.0 if selected else 3.0, style))
+            painter.drawLine(QLineF(x, top, x, bottom))
+            color.setAlpha(255 if selected else 220)
+            painter.setPen(QPen(color, 1.8 if selected else 1.3, style))
+            painter.drawLine(QLineF(x, top, x, bottom))
+        painter.restore()
+
+    def _paint_beat_grid_creation_guide(self, painter: QPainter) -> None:
+        if not self._beat_grid_create_mode or self._beat_grid_start is None:
+            return
+        color = QColor(self._beat_grid_color or "#4c8bf5")
+        color.setAlpha(230)
+        painter.setPen(QPen(color, 2.0, Qt.PenStyle.DashLine))
+        x = self._x_for_time(self._beat_grid_start)
+        painter.drawLine(QLineF(x, self._ruler_height, x, self._wave_bottom_y()))
 
     def _scrub_tick(self) -> None:
         if not self._scrubbing:
@@ -3217,6 +3538,7 @@ class TimelineWidget(QWidget):
 
         # Defer seek until release if this stays a click (no drag).
         self._drag_click_seek = mark.time_seconds
+        self._drag_anchor_mark_id = hit_id
 
         lane = self._song.lane_by_index(mark.lane_index) if self._song else None
         if lane is not None and lane.locked:
@@ -3499,15 +3821,77 @@ class TimelineWidget(QWidget):
         x = event.position().x()
         y = event.position().y()
         if event.button() == Qt.MouseButton.LeftButton:
-            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            ctrl = bool(
-                event.modifiers()
+            self._pending_beat_grid_seek_time = None
+            self._context_beat_grid_id = None
+            self._context_beat_grid_index = None
+            self._selected_beat_grid_id = None
+            self._selected_beat_grid_index = None
+            if (
+                self._beat_grid_create_mode
+                and x >= self._header_width
+                and (self._in_waveform(x, y) or self._in_scrub_zone(x, y))
+            ):
+                at = min(self._duration(), max(0.0, self._time_for_x(x)))
+                if self._beat_grid_start is None:
+                    self._beat_grid_start = at
+                else:
+                    start = self._beat_grid_start
+                    self._beat_grid_start = None
+                    self._beat_grid_create_mode = False
+                    self.beat_grid_button.set_active(False)
+                    if abs(at - start) >= 0.01:
+                        self.beat_grid_created.emit(min(start, at), max(start, at))
+                self.update()
+                return
+            modifiers = event.modifiers() | QApplication.keyboardModifiers()
+            shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            ctrl = self._selection_ctrl_held or _native_control_key_down() or bool(
+                modifiers
                 & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
             )
-            alt = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
             # Alt+left still pans even in box-select mode.
             if alt and x >= self._header_width:
                 self._begin_pan(x)
+                return
+            # At an exact Mark/Beat Grid overlap, the magnet is the explicit
+            # intent switch: ON edits/snaps the Mark; OFF edits the Beat Grid.
+            overlap_mark_id = self._hit_mark_at(x, y)
+            if (
+                self._setup_mode
+                and self._beat_snap_enabled
+                and overlap_mark_id is not None
+                and self._hit_beat_grid_division(x, y) is not None
+            ):
+                self._begin_mark_interaction(
+                    overlap_mark_id, x, y, shift=shift, ctrl=ctrl
+                )
+                return
+            grid_division_hit = self._hit_beat_grid_division(x, y)
+            if grid_division_hit is not None:
+                grid_hit, division_index = grid_division_hit
+                snapped_time = min(
+                    grid_hit.end_seconds,
+                    grid_hit.start_seconds + division_index * grid_hit.step_seconds,
+                )
+                self._selected_beat_grid_id = grid_hit.id
+                self._selected_beat_grid_index = division_index
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                if self._setup_mode:
+                    self._dragging_beat_grid_id = grid_hit.id
+                    self._beat_grid_drag_origin_x = x
+                    self._beat_grid_drag_start = grid_hit.start_seconds
+                    self._beat_grid_drag_end = grid_hit.end_seconds
+                    self._beat_grid_drag_moved = False
+                    self.grabMouse()
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                else:
+                    self._view_pinned = True
+                    self._pending_scrub_press_x = float(x)
+                    self._pending_beat_grid_seek_time = snapped_time
+                    self.grabMouse()
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
+                self.update()
                 return
             if self._near_header_split(x):
                 self._resizing_header = True
@@ -3630,6 +4014,26 @@ class TimelineWidget(QWidget):
         elif self._dragging_audio_gain and event.buttons() & Qt.MouseButton.LeftButton:
             zone = self._audio_gain_zone or "wave"
             self._apply_gain_at_y(y, zone)
+        elif self._dragging_beat_grid_id is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            grid = next(
+                (item for item in (self._song.beat_grids if self._song else [])
+                 if item.id == self._dragging_beat_grid_id),
+                None,
+            )
+            if grid is not None:
+                dx = x - self._beat_grid_drag_origin_x
+                if abs(dx) >= self._drag_slop:
+                    self._beat_grid_drag_moved = True
+                if self._beat_grid_drag_moved:
+                    duration = self._beat_grid_drag_end - self._beat_grid_drag_start
+                    new_start = min(
+                        max(0.0, self._beat_grid_drag_start + dx / max(1e-6, self._pixels_per_second)),
+                        max(0.0, self._duration() - duration),
+                    )
+                    grid.start_seconds = new_start
+                    grid.end_seconds = new_start + duration
+                    self._invalidate_scrub_backdrop(reason="beat_grid_drag")
+                    self.update()
         elif self._dragging_marks and event.buttons() & Qt.MouseButton.LeftButton:
             dx = x - self._drag_origin_x
             if abs(dx) >= self._drag_slop and self._setup_mode:
@@ -3638,6 +4042,12 @@ class TimelineWidget(QWidget):
                 self._pending_single_select = None
             if self._drag_moved and self._song is not None:
                 dt = dx / max(1e-6, self._pixels_per_second)
+                anchor_start = self._drag_start_times.get(
+                    self._drag_anchor_mark_id or ""
+                )
+                if anchor_start is not None and self._beat_snap_enabled:
+                    desired_anchor = anchor_start + dt
+                    dt += self._snap_time_to_beat_grid(desired_anchor) - desired_anchor
                 duration = self._duration()
                 for mid, start_t in self._drag_start_times.items():
                     m = self._song.mark_by_id(mid)
@@ -3664,6 +4074,7 @@ class TimelineWidget(QWidget):
                 press_x = float(self._pending_scrub_press_x)
                 if abs(x - press_x) >= self._drag_slop:
                     self._pending_scrub_press_x = None
+                    self._pending_beat_grid_seek_time = None
                     self._scrubbing = True
                     if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
                         self._rebuild_scrub_backdrop(reason="scrub_seed")
@@ -3678,6 +4089,7 @@ class TimelineWidget(QWidget):
                     self._scrub_timer.start()
             else:
                 self._pending_scrub_press_x = None
+                self._pending_beat_grid_seek_time = None
                 self.releaseMouse()
         elif self._scrubbing:
             if event.buttons() & Qt.MouseButton.LeftButton:
@@ -3686,6 +4098,16 @@ class TimelineWidget(QWidget):
                 # LeftButton no longer down but release event may be missing.
                 self._end_scrub_once(reason="fallback_move_no_button", x=x)
         else:
+            grid_hover = self._hit_beat_grid_division(x, y)
+            hover_grid_id = grid_hover[0].id if grid_hover is not None else None
+            hover_grid_index = grid_hover[1] if grid_hover is not None else None
+            if (
+                hover_grid_id != self._hover_beat_grid_id
+                or hover_grid_index != self._hover_beat_grid_index
+            ):
+                self._hover_beat_grid_id = hover_grid_id
+                self._hover_beat_grid_index = hover_grid_index
+                self.update()
             hover_header = self._near_header_split(x)
             hover_wave = False if hover_header else self._near_wave_split(y)
             shift_hover = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -3750,6 +4172,8 @@ class TimelineWidget(QWidget):
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
             elif loop_h is not None:
                 self.setCursor(self._cursor_for_loop_hover(x, y))
+            elif grid_hover is not None:
+                self.setCursor(self._cursor_for_beat_grid_hover())
             elif hit is not None:
                 self.setCursor(self._cursor_for_mark_hover(x, y))
             elif clip_hit is not None:
@@ -3780,6 +4204,10 @@ class TimelineWidget(QWidget):
 
     def leaveEvent(self, event) -> None:  # noqa: ANN001
         changed = False
+        if self._hover_beat_grid_id is not None:
+            self._hover_beat_grid_id = None
+            self._hover_beat_grid_index = None
+            changed = True
         if self._hover_mark_id is not None:
             self._hover_mark_id = None
             changed = True
@@ -3797,15 +4225,46 @@ class TimelineWidget(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_beat_grid_id is not None:
+            grid_id = self._dragging_beat_grid_id
+            old_start = self._beat_grid_drag_start
+            grid = next(
+                (item for item in (self._song.beat_grids if self._song else []) if item.id == grid_id),
+                None,
+            )
+            self._dragging_beat_grid_id = None
+            moved = self._beat_grid_drag_moved
+            self._beat_grid_drag_moved = False
+            self.releaseMouse()
+            self._invalidate_scrub_backdrop(reason="beat_grid_drag_release")
+            if moved and grid is not None and abs(grid.start_seconds - old_start) >= 1e-9:
+                self.beat_grid_moved.emit(grid.id, old_start, grid.start_seconds)
+            elif not moved:
+                target = None
+                if grid is not None and self._selected_beat_grid_index is not None:
+                    target = grid.start_seconds + self._selected_beat_grid_index * grid.step_seconds
+                if target is None:
+                    target = self._time_for_x(float(event.position().x()))
+                target = min(self._duration(), max(0.0, target))
+                self._view_pinned = True
+                self._emit_seek(target, input_source="beat_grid")
+                self._position = target
+            self._restore_hover_cursor(event.position().x(), event.position().y())
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self._pending_scrub_press_x is not None
         ):
             self._pending_scrub_press_x = None
             self.releaseMouse()
-            target = min(
-                self._time_for_x(float(event.position().x())), self._duration()
-            )
+            target = self._pending_beat_grid_seek_time
+            self._pending_beat_grid_seek_time = None
+            if target is None:
+                target = min(
+                    self._time_for_x(float(event.position().x())), self._duration()
+                )
             self._emit_seek(target, input_source="waveform")
             self._position = target
             self._restore_hover_cursor(event.position().x(), event.position().y())
@@ -3942,6 +4401,7 @@ class TimelineWidget(QWidget):
                 self.selection_changed.emit(list(self._selected_mark_ids))
             self._drag_ids.clear()
             self._drag_start_times.clear()
+            self._drag_anchor_mark_id = None
             self._drag_moved = False
             self._pending_single_select = None
             if not was_scrub:
@@ -3957,6 +4417,9 @@ class TimelineWidget(QWidget):
 
     def _show_wave_gain_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = QMenu(self)
+        paste = menu.addAction("Paste Mark(s) Here")
+        paste.setShortcut(QKeySequence.StandardKey.Paste)
+        menu.addSeparator()
         if self._show_wave_gain_line:
             toggle = menu.addAction("Hide volume adjustment")
         else:
@@ -3968,7 +4431,9 @@ class TimelineWidget(QWidget):
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen is toggle:
+        if chosen is paste:
+            self.paste_marks_requested.emit(self._time_for_x(float(pos.x())))
+        elif chosen is toggle:
             self.set_show_wave_gain_line(not self._show_wave_gain_line)
             self._invalidate_scrub_backdrop()
             self.update()
@@ -4044,6 +4509,9 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return
         menu = QMenu(self)
+        paste = menu.addAction("Paste Mark(s) Here")
+        paste.setShortcut(QKeySequence.StandardKey.Paste)
+        menu.addSeparator()
         if self._show_mark_lane_resize_bar:
             resize = menu.addAction("Hide resize bar")
         else:
@@ -4058,6 +4526,9 @@ class TimelineWidget(QWidget):
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
             return
+        if chosen is paste:
+            self.paste_marks_requested.emit(self._time_for_x(float(pos.x())))
+            return
         if chosen is resize:
             self._toggle_mark_lane_resize_bar()
             return
@@ -4071,12 +4542,15 @@ class TimelineWidget(QWidget):
             return
         x = float(pos.x())
         y = float(pos.y())
+        beat_grid_hit = self._hit_beat_grid_division(x, y)
         # Marks (including waveform stems) win over wave-gain / lane menus.
         hit_id = self._hit_mark_at(x, y)
         if hit_id is not None:
             if hit_id not in self._selected_mark_ids:
                 self.set_selected_mark_ids([hit_id])
-            self._show_mark_item_context_menu(pos, list(self._selected_mark_ids))
+            self._show_mark_item_context_menu(
+                pos, list(self._selected_mark_ids), beat_grid_hit=beat_grid_hit
+            )
             return
         lane_idx = self._lane_index_at(x, y)
         if lane_idx is not None:
@@ -4087,6 +4561,28 @@ class TimelineWidget(QWidget):
         if self._in_video_lane(x, y):
             self._show_video_clip_context_menu(pos, x, y)
             return
+        if self._in_waveform(x, y):
+            grid_hit = self._hit_beat_grid_division(x, y)
+            if grid_hit is not None:
+                grid, division_index = grid_hit
+                self._selected_beat_grid_id = grid.id
+                self._selected_beat_grid_index = division_index
+                self._context_beat_grid_id = grid.id
+                self._context_beat_grid_index = division_index
+                self.update()
+                menu = QMenu(self)
+                edit = menu.addAction("Edit Beat Grid…")
+                auto = menu.addAction("Auto Add Marks…")
+                menu.addSeparator()
+                delete_grid = menu.addAction("Delete Beat Grid")
+                chosen = menu.exec(self.mapToGlobal(pos))
+                if chosen is edit:
+                    self.beat_grid_edit_requested.emit(grid.id)
+                elif chosen is auto:
+                    self.beat_grid_auto_marks_requested.emit(grid.id, self._time_for_x(x))
+                elif chosen is delete_grid:
+                    self.beat_grid_delete_requested.emit(grid.id)
+                return
         if self._in_waveform(x, y) and self._audio is not None:
             self._show_wave_gain_context_menu(pos)
             return
@@ -4097,11 +4593,33 @@ class TimelineWidget(QWidget):
             self._show_mark_tracks_area_menu(pos)
             return
 
-    def _show_mark_item_context_menu(self, pos, ids: list[str]) -> None:  # noqa: ANN001
+    def _show_mark_item_context_menu(
+        self, pos, ids: list[str], *, beat_grid_hit=None
+    ) -> None:  # noqa: ANN001
         if self._song is None or not ids:
             return
         menu = QMenu(self)
+        paste = menu.addAction("Paste Mark(s) Here")
+        paste.setShortcut(QKeySequence.StandardKey.Paste)
+        beat_edit = None
+        beat_auto = None
+        beat_delete = None
+        if beat_grid_hit is not None:
+            beat_grid, division_index = beat_grid_hit
+            self._selected_beat_grid_id = beat_grid.id
+            self._selected_beat_grid_index = division_index
+            self._context_beat_grid_id = beat_grid.id
+            self._context_beat_grid_index = division_index
+            beat_menu = menu.addMenu("Beat Grid")
+            beat_edit = beat_menu.addAction("Edit Beat Grid…")
+            beat_auto = beat_menu.addAction("Auto Add Marks…")
+            beat_menu.addSeparator()
+            beat_delete = beat_menu.addAction("Delete Beat Grid")
+        menu.addSeparator()
         n = len(ids)
+        copy_action = menu.addAction("Copy" if n == 1 else f"Copy Marks ({n})")
+        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        menu.addSeparator()
         delete_action = menu.addAction(
             "Delete Mark" if n == 1 else f"Delete Marks ({n})"
         )
@@ -4163,6 +4681,23 @@ class TimelineWidget(QWidget):
 
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen is paste:
+            self.paste_marks_requested.emit(self._time_for_x(float(pos.x())))
+            return
+        if beat_edit is not None and chosen is beat_edit:
+            self.beat_grid_edit_requested.emit(beat_grid_hit[0].id)
+            return
+        if beat_auto is not None and chosen is beat_auto:
+            self.beat_grid_auto_marks_requested.emit(
+                beat_grid_hit[0].id, self._time_for_x(float(pos.x()))
+            )
+            return
+        if beat_delete is not None and chosen is beat_delete:
+            self.beat_grid_delete_requested.emit(beat_grid_hit[0].id)
+            return
+        if chosen is copy_action:
+            self.copy_marks_requested.emit(ids)
             return
         if chosen is delete_action:
             self.delete_requested.emit(ids)
@@ -4362,6 +4897,8 @@ class TimelineWidget(QWidget):
                     # Selection / hover Mark chrome is the final Mark pass.
                     self._paint_marks_dynamic_overlay(painter)
                     self._paint_loop_region(painter)
+                    self._paint_selected_beat_grid(painter)
+                    self._paint_beat_grid_creation_guide(painter)
                     self._paint_selection_box(painter)
                     self._paint_audio_loading_overlay(painter)
                     self._paint_playhead(painter)
@@ -4387,6 +4924,7 @@ class TimelineWidget(QWidget):
                     with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                         self._paint_marks_dynamic_overlay(painter)
                         self._paint_loop_region(painter)
+                        self._paint_selected_beat_grid(painter)
                         self._paint_playhead(painter)
                         self._paint_header_splitter(painter)
                     return
@@ -4394,6 +4932,7 @@ class TimelineWidget(QWidget):
                 with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
                     self._paint_marks_dynamic_overlay(painter)
                     self._paint_loop_region(painter)
+                    self._paint_selected_beat_grid(painter)
                     self._paint_playhead(painter)
                     self._paint_header_splitter(painter)
                 return
@@ -4404,6 +4943,8 @@ class TimelineWidget(QWidget):
         with perf_diag.span("timeline.dynamic_overlay.paint_ms"):
             self._paint_marks_dynamic_overlay(painter)
             self._paint_loop_region(painter)
+            self._paint_selected_beat_grid(painter)
+            self._paint_beat_grid_creation_guide(painter)
             self._paint_selection_box(painter)
             self._paint_audio_loading_overlay(painter)
             self._paint_playhead(painter)
@@ -5066,7 +5607,14 @@ class TimelineWidget(QWidget):
         view_right = right
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
-        if samples_per_pixel <= 1.5:
+        finest_bucket = min(
+            (
+                max(1, int(level.samples_per_bucket))
+                for level in self._audio.peak_levels
+            ),
+            default=1,
+        )
+        if self._audio.mono.size and samples_per_pixel <= finest_bucket:
             self._paint_waveform_raw(
                 painter, self._audio, mid, amp, view_left, view_right
             )
@@ -5152,6 +5700,7 @@ class TimelineWidget(QWidget):
             painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
             return
 
+        interpolated_outline = False
         if level is not None:
             spb = max(1, int(level.samples_per_bucket))
             s0 = np.floor((src_t0 - origin) * pps).astype(np.int64)
@@ -5179,24 +5728,57 @@ class TimelineWidget(QWidget):
             s1 = np.ceil((src_t1 - origin) * pps).astype(np.int64)
             lo = np.full(xs.size, np.nan, dtype=np.float32)
             hi = np.full(xs.size, np.nan, dtype=np.float32)
-            for i in np.flatnonzero(valid):
-                i = int(i)
-                a0 = max(0, int(s0[i]))
-                a1 = max(a0 + 1, min(n, int(s1[i])))
-                if a0 >= n or not np.any(cov[a0:a1]):
-                    continue
-                lo[i] = float(art.mins[a0:a1].min())
-                hi[i] = float(art.maxs[a0:a1].max())
+            if samples_per_pixel < 1.0 and n > 1:
+                interpolated_outline = True
+                # Zoom has exceeded the artifact's finite peak resolution.
+                # Repeating one cached bin across many screen pixels creates
+                # the large rectangular steps seen at high zoom. Interpolate
+                # adjacent signed envelopes instead; it cannot invent detail,
+                # but it preserves the waveform silhouette without distortion.
+                positions = (src_t0 - origin) * pps
+                left_bins = np.floor(positions).astype(np.int64)
+                fractions = positions - left_bins
+                for i in np.flatnonzero(valid):
+                    i = int(i)
+                    a0 = max(0, min(n - 1, int(left_bins[i])))
+                    a1 = min(n - 1, a0 + 1)
+                    if not (cov[a0] or cov[a1]):
+                        continue
+                    frac = float(fractions[i]) if a1 != a0 else 0.0
+                    lo[i] = float(art.mins[a0]) * (1.0 - frac) + float(art.mins[a1]) * frac
+                    hi[i] = float(art.maxs[a0]) * (1.0 - frac) + float(art.maxs[a1]) * frac
+            else:
+                for i in np.flatnonzero(valid):
+                    i = int(i)
+                    a0 = max(0, int(s0[i]))
+                    a1 = max(a0 + 1, min(n, int(s1[i])))
+                    if a0 >= n or not np.any(cov[a0:a1]):
+                        continue
+                    lo[i] = float(art.mins[a0:a1].min())
+                    hi[i] = float(art.maxs[a0:a1].max())
 
-        # Batch QPainter lines where covered.
+        # Batch QPainter lines where covered. Once zoom exceeds cached peak
+        # resolution, draw only the two envelope outlines; filling every
+        # min→max column turns the interpolated result into a blurry solid band.
         lines: list[QLineF] = []
+        previous_lo: QPointF | None = None
+        previous_hi: QPointF | None = None
         for i in range(xs.size):
             if not (lo[i] == lo[i] and hi[i] == hi[i]):
+                previous_lo = None
+                previous_hi = None
                 continue
             x = float(xs[i])
-            lines.append(
-                QLineF(x, mid + float(lo[i]) * amp, x, mid + float(hi[i]) * amp)
-            )
+            lo_point = QPointF(x, mid + float(lo[i]) * amp)
+            hi_point = QPointF(x, mid + float(hi[i]) * amp)
+            if interpolated_outline:
+                if previous_lo is not None and previous_hi is not None:
+                    lines.append(QLineF(previous_lo, lo_point))
+                    lines.append(QLineF(previous_hi, hi_point))
+                previous_lo = lo_point
+                previous_hi = hi_point
+            else:
+                lines.append(QLineF(lo_point, hi_point))
         if lines:
             painter.drawLines(lines)
         painter.setPen(QColor("#27272a"))
@@ -5338,8 +5920,30 @@ class TimelineWidget(QWidget):
         mins = level.mins
         maxs = level.maxs
         lines: list[QLineF] = []
+        # Peak-only disk caches can remain active after zoom exceeds their
+        # finest bucket. Smooth between bucket centers rather than stretching
+        # each bucket into a block across multiple pixels.
+        interpolate = samples_per_pixel < spb and maxs.size > 1
+        previous_lo: QPointF | None = None
+        previous_hi: QPointF | None = None
         for i in np.flatnonzero(valid):
             i = int(i)
+            if interpolate:
+                position = max(0.0, float(s0[i]) / float(spb))
+                left = min(maxs.size - 1, int(math.floor(position)))
+                right = min(maxs.size - 1, left + 1)
+                fraction = position - left if right != left else 0.0
+                lo = float(mins[left]) * (1.0 - fraction) + float(mins[right]) * fraction
+                hi = float(maxs[left]) * (1.0 - fraction) + float(maxs[right]) * fraction
+                x = float(xs[i])
+                lo_point = QPointF(x, mid + lo * amp)
+                hi_point = QPointF(x, mid + hi * amp)
+                if previous_lo is not None and previous_hi is not None:
+                    lines.append(QLineF(previous_lo, lo_point))
+                    lines.append(QLineF(previous_hi, hi_point))
+                previous_lo = lo_point
+                previous_hi = hi_point
+                continue
             bb0 = int(b0[i])
             bb1 = int(b1[i])
             if bb0 >= bb1 or bb0 >= maxs.size:

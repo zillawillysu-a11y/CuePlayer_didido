@@ -99,3 +99,19 @@ def test_bulk_footer_stays_column_aligned_after_resize(app: QApplication) -> Non
         assert wrap is not None
         assert dialog.table.columnWidth(col) == header.sectionSize(col)
         assert dialog._bulk_checks[col].parentWidget() is wrap
+
+
+def test_tenth_mark_is_inserted_before_footer_and_collects_cleanly(app: QApplication) -> None:
+    song = Song.create("Ten")
+    dialog = MarkManagerDialog(song)
+    assert dialog._lane_row_count() == 9
+
+    dialog._add_row()
+
+    assert dialog._lane_row_count() == 10
+    assert dialog._bulk_footer_row == dialog.table.rowCount() - 1
+    assert dialog.table.item(9, 0).text() == "10"
+    lanes = dialog._collect_draft_lanes()
+    assert lanes is not None
+    assert len(lanes) == 10
+    assert lanes[-1].index == 10

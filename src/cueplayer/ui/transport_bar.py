@@ -30,6 +30,26 @@ def format_time(seconds: float) -> str:
     return f"{mins:02d}:{secs:02d}.{ms:03d}"
 
 
+def parse_time(text: str) -> float | None:
+    """Parse Cue List time as seconds, MM:SS(.mmm), or H:MM:SS(.mmm)."""
+    raw = str(text).strip()
+    if not raw:
+        return None
+    try:
+        parts = raw.split(":")
+        if len(parts) == 1:
+            value = float(parts[0])
+        elif len(parts) == 2:
+            value = int(parts[0]) * 60.0 + float(parts[1])
+        elif len(parts) == 3:
+            value = int(parts[0]) * 3600.0 + int(parts[1]) * 60.0 + float(parts[2])
+        else:
+            return None
+    except ValueError:
+        return None
+    return value if value >= 0.0 else None
+
+
 # Borderless text chips — glyph/label only, soft hover fill.
 _FLAT_BTN = (
     "QPushButton {"
@@ -142,6 +162,8 @@ class BottomTransportBar(QWidget):
     play_clicked = Signal()
     pause_clicked = Signal()
     stop_clicked = Signal()
+    song_start_clicked = Signal()
+    next_song_clicked = Signal()
     set_loop_a_clicked = Signal()
     set_loop_b_clicked = Signal()
     clear_loop_clicked = Signal()
@@ -176,9 +198,15 @@ class BottomTransportBar(QWidget):
         row.setSpacing(8)
 
         big = QSize(52, 44)
+        self.song_start_button = IconButton(
+            "song_start", "Return to the start of this song", size=QSize(32, 44)
+        )
         self.play_button = IconButton("play", "Play", size=big)
         self.pause_button = IconButton("pause", "Pause here", size=big)
         self.stop_button = IconButton("stop", "Stop and reset", size=big)
+        self.next_song_button = IconButton(
+            "next_song", "Go to the next song", size=QSize(32, 44)
+        )
 
         self.loop_a_button = QPushButton("A")
         self.loop_a_button.setToolTip("Set point A")
@@ -278,9 +306,11 @@ class BottomTransportBar(QWidget):
         row.addWidget(self._left_rail)
         row.addStretch(1)
         row.addWidget(self._balance)
+        row.addWidget(self.song_start_button)
         row.addWidget(self.play_button)
         row.addWidget(self.pause_button)
         row.addWidget(self.stop_button)
+        row.addWidget(self.next_song_button)
         row.addSpacing(14)
         self._cluster_gap_item = row.itemAt(row.count() - 1)
         row.addWidget(self._ab_group)
@@ -288,9 +318,11 @@ class BottomTransportBar(QWidget):
         row.addWidget(self._right_rail)
         root.addLayout(row)
 
+        self.song_start_button.clicked.connect(self.song_start_clicked.emit)
         self.play_button.clicked.connect(self.play_clicked.emit)
         self.pause_button.clicked.connect(self.pause_clicked.emit)
         self.stop_button.clicked.connect(self.stop_clicked.emit)
+        self.next_song_button.clicked.connect(self.next_song_clicked.emit)
         self.loop_a_button.clicked.connect(self.set_loop_a_clicked.emit)
         self.loop_b_button.clicked.connect(self.set_loop_b_clicked.emit)
         self.loop_clear_button.clicked.connect(self.clear_loop_clicked.emit)
@@ -331,15 +363,17 @@ class BottomTransportBar(QWidget):
 
     def _play_buttons_width(self) -> int:
         return (
-            self.play_button.width()
+            self.song_start_button.width()
+            + self.play_button.width()
             + self.pause_button.width()
             + self.stop_button.width()
+            + self.next_song_button.width()
         )
 
     def _row_spacing_total(self) -> int:
         """All QHBoxLayout spacings between the 10 row items (incl. stretches)."""
         spacing = int(self._row_layout.spacing()) if self._row_layout is not None else 8
-        return 9 * spacing
+        return max(0, self._row_layout.count() - 1) * spacing
 
     def _cluster_width(self) -> int:
         """Visible Play…Clear span (buttons + Stop→A gap + A/B group, no rails)."""
@@ -378,6 +412,9 @@ class BottomTransportBar(QWidget):
             row_spacing = 2
         for btn in (self.play_button, self.pause_button, self.stop_button):
             btn.setFixedSize(play_sz)
+        nav_width = {"full": 32, "compact": 28, "minimal": 24}[density]
+        for btn in (self.song_start_button, self.next_song_button):
+            btn.setFixedSize(QSize(nav_width, play_sz.height()))
         for btn in (self.loop_a_button, self.loop_b_button):
             btn.setFixedSize(ab_sz)
         self.loop_clear_button.setFixedSize(clear_sz)
