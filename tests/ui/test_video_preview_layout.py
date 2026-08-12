@@ -55,3 +55,41 @@ def test_video_preview_splitter_cannot_drag_collapse(app: QApplication) -> None:
     window._clamp_video_preview_splitter()
     sizes = split.sizes()
     assert sizes[1] >= mw._VIDEO_PREVIEW_SPLIT_MIN_HEIGHT
+
+
+def test_video_preview_visibility_restores_from_machine_setting(
+    app: QApplication,
+) -> None:
+    window = MainWindow(project=Project.create("Preview visibility"))
+    settings = window._settings
+    existed = settings.contains(mw._KEY_VIDEO_PREVIEW_VISIBLE)
+    previous = settings.value(mw._KEY_VIDEO_PREVIEW_VISIBLE)
+    settings.setValue(mw._KEY_VIDEO_PREVIEW_VISIBLE, False)
+
+    try:
+        window._restore_ui_layout()
+
+        assert not window.video_preview_panel.isVisible()
+        assert not window._act_video_preview.isChecked()
+    finally:
+        if existed:
+            settings.setValue(mw._KEY_VIDEO_PREVIEW_VISIBLE, previous)
+        else:
+            settings.store.remove(mw._KEY_VIDEO_PREVIEW_VISIBLE)
+
+
+def test_video_preview_toggle_persists_machine_setting(app: QApplication) -> None:
+    window = MainWindow(project=Project.create("Preview toggle"))
+    settings = window._settings
+    existed = settings.contains(mw._KEY_VIDEO_PREVIEW_VISIBLE)
+    previous = settings.value(mw._KEY_VIDEO_PREVIEW_VISIBLE)
+
+    try:
+        window._toggle_video_preview_panel(False)
+
+        assert settings.value(mw._KEY_VIDEO_PREVIEW_VISIBLE, True, type=bool) is False
+    finally:
+        if existed:
+            settings.setValue(mw._KEY_VIDEO_PREVIEW_VISIBLE, previous)
+        else:
+            settings.store.remove(mw._KEY_VIDEO_PREVIEW_VISIBLE)

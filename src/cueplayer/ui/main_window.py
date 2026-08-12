@@ -105,6 +105,7 @@ from cueplayer.application.settings_service import (
     KEY_TIMELINE_HEADER_WIDTH as _KEY_TIMELINE_HEADER_WIDTH,
     KEY_TIMELINE_PREVIEW_SPLITTER as _KEY_TIMELINE_PREVIEW_SPLITTER,
     KEY_TIMELINE_SPLITTER as _KEY_TIMELINE_SPLITTER,
+    KEY_VIDEO_PREVIEW_VISIBLE as _KEY_VIDEO_PREVIEW_VISIBLE,
     KEY_VIEW_MODE as _KEY_VIEW_MODE,
     SETTINGS_APP as _SETTINGS_APP,
     SETTINGS_ORG as _SETTINGS_ORG,
@@ -1826,7 +1827,10 @@ class MainWindow(QMainWindow):
             raw = self._settings.value(_KEY_TIMELINE_PREVIEW_SPLITTER)
             if raw:
                 preview_split.restoreState(raw)
-            self._clamp_video_preview_splitter()
+            preview_visible = bool(
+                self._settings.value(_KEY_VIDEO_PREVIEW_VISIBLE, True, type=bool)
+            )
+            self._set_video_preview_visible(preview_visible, persist=False)
         raw_hw = self._settings.value(_KEY_TIMELINE_HEADER_WIDTH)
         if raw_hw is not None:
             try:
@@ -1943,6 +1947,9 @@ class MainWindow(QMainWindow):
             self._settings.setValue(
                 _KEY_TIMELINE_PREVIEW_SPLITTER, preview_split.saveState()
             )
+        self._settings.setValue(
+            _KEY_VIDEO_PREVIEW_VISIBLE, self._video_preview_visible()
+        )
         self._settings.setValue(
             _KEY_TIMELINE_HEADER_WIDTH, int(self.timeline.header_width())
         )
@@ -2708,8 +2715,18 @@ class MainWindow(QMainWindow):
         split.setSizes([timeline, preview])
 
     def _toggle_video_preview_panel(self, visible: bool) -> None:
+        self._set_video_preview_visible(bool(visible), persist=True)
+
+    def _set_video_preview_visible(self, visible: bool, *, persist: bool) -> None:
         split = getattr(self, "_timeline_preview_split", None)
         self.video_preview_panel.setVisible(visible)
+        action = getattr(self, "_act_video_preview", None)
+        if action is not None and action.isChecked() != visible:
+            action.blockSignals(True)
+            action.setChecked(visible)
+            action.blockSignals(False)
+        if persist and not getattr(self, "_restoring_session", False):
+            self._settings.setValue(_KEY_VIDEO_PREVIEW_VISIBLE, visible)
         if split is None:
             self._sync_video_output_active()
             return

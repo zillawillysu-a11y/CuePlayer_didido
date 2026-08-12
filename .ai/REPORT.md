@@ -5,49 +5,45 @@
 
 ## Task objective
 
-Keep Cue List playback-follow from interrupting continuous Note editing after
-the user moves to the adjacent row.
+Restore the Video Preview Panel visibility from the state in which CuePlayer
+was last closed.
 
 ## What was implemented
 
-- Cue List playhead row selection now pauses while any table cell editor is
-  active.
-- The same protection covers the one-event-loop gap while Up/Down navigation
-  commits one Note and opens the adjacent Note editor.
-- NOW cards and playback position continue updating; only the table selection
-  follow is deferred until editing ends.
-- Added a regression test that edits the next Note while playback crosses to a
-  later Cue and verifies the editor, text, and selected row remain intact.
+- Added a machine-local `ui/video_preview_visible` setting.
+- View > Video Preview Panel changes persist immediately.
+- Startup layout restore applies the saved visibility to both the panel and its
+  checked menu action.
+- Closing CuePlayer saves the actual panel visibility with the other UI session
+  state.
+- Existing users without the new key retain the previous default: visible.
 
 ## Files changed
 
-- `src/cueplayer/ui/cue_monitor_panel.py`
-- `tests/ui/test_cue_list_note_edit_during_playback.py`
+- `src/cueplayer/application/settings_service.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/ui/test_video_preview_layout.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_CueListContinuousNoteEditing.md`
+- `.ai/handoffs/2026-08-12_VideoPreviewVisibilityRestore.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- The fix is contained in CueMonitorPanel UI coordination.
-- Song data and the playback/audio master clock are unchanged.
+- Preview visibility is machine UI state in SettingsService/QSettings, not
+  project or Song content.
+- Video decode and the shared audio playback clock are unchanged.
 
 ## Tests performed
 
-- `tests/ui/test_cue_list_note_edit_during_playback.py` plus
-  `tests/ui/test_cue_list_note_arrow_navigation.py`: 4 passed.
-- `tests/ui/test_cue_list_playhead_scroll.py`: first 2 passed, then the existing
-  tiny-viewport Qt test caused a Windows native stack overflow at line 115;
-  reproduces when that file is run independently.
+- `tests/ui/test_video_preview_layout.py tests/ui/test_main_window_shutdown.py`
+  - 6 passed.
 
 ## Remaining issues
 
-- User should validate continuous Note entry during real playback.
-- The pre-existing Windows Qt stack overflow in the tiny Cue List viewport test
-  remains outside this bugfix.
+- User should close Preview, restart the packaged/source app, and confirm it
+  stays closed.
 
 ## Suggested next task
 
-During playback, edit a Note, press Down to enter the next Note, and confirm
-crossing another Cue no longer closes or redirects the editor; then package
-CuePlayer 1.1.3.
+Validate Video Preview off/on persistence across two restarts, then rebuild and
+smoke-test CuePlayer 1.1.3.
