@@ -95,12 +95,9 @@ class AutoAddMarksDialog(QDialog):
             if lane.visible and not lane.locked:
                 self.lane.addItem(lane.name, lane.index)
         self.interval = QComboBox()
-        self.interval.addItem("1 Beat", "beat")
-        self.interval.addItem("2 Beats", "beat_2")
-        self.interval.addItem("3 Beats", "beat_3")
-        self.interval.addItem("8 Beats", "beat_8")
-        self.interval.addItem("1 Bar", "bar")
-        self.interval.addItem("1 Subdivision", "subdivision")
+        for beats in (0.5, 1, 2, 3, 4, 5, 6, 7, 8):
+            label = "0.5" if beats == 0.5 else str(int(beats))
+            self.interval.addItem(label, float(beats))
         self.bars = NoWheelSpinBox()
         self.bars.setRange(0, 9999)
         self.bars.setSpecialValueText("To Grid End")
@@ -117,9 +114,9 @@ class AutoAddMarksDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[int, str, int]:
+    def values(self) -> tuple[int, float, int]:
         return (
             int(self.lane.currentData()),
-            str(self.interval.currentData()),
+            float(self.interval.currentData()),
             int(self.bars.value()),
         )

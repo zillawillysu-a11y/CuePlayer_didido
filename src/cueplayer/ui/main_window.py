@@ -8291,22 +8291,11 @@ class MainWindow(QMainWindow):
         dialog = AutoAddMarksDialog(self.current_song, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        lane_index, interval, bars = dialog.values()
+        lane_index, interval_beats, bars = dialog.values()
         base_step = grid.step_seconds
         snap_index = max(0, round((clicked_seconds - grid.start_seconds) / base_step))
         first = grid.start_seconds + snap_index * base_step
-        if interval == "bar":
-            stride = grid.beats_per_bar * grid.subdivision
-        elif interval.startswith("beat_"):
-            try:
-                beat_count = max(1, int(interval.split("_", 1)[1]))
-            except (TypeError, ValueError):
-                beat_count = 1
-            stride = beat_count * grid.subdivision
-        elif interval == "beat":
-            stride = grid.subdivision
-        else:
-            stride = 1
+        interval_seconds = max(0.5, float(interval_beats)) * grid.beat_seconds
         finite_end = None
         if bars > 0:
             finite_end = min(
@@ -8316,7 +8305,7 @@ class MainWindow(QMainWindow):
         created: list[Mark] = []
         index = 0
         while True:
-            at = first + index * stride * base_step
+            at = first + index * interval_seconds
             if finite_end is not None:
                 if at >= finite_end - 1e-9:
                     break

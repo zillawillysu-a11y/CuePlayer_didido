@@ -5,42 +5,42 @@
 
 ## Task objective
 
-Bind keyboard U to the Beat Grid magnet toggle and synchronize its overlay
-indicator.
+Replace Auto Add Marks interval choices with numeric beat counts from 0.5 to 8.
 
 ## What was implemented
 
-- Added a window-level U shortcut for Beat Grid snapping.
-- Added Timeline toggle/query methods so keyboard and magnet button use the same
-  state transition.
-- Suppressed U while text/numeric input has focus.
-- Extended shortcut tests to cover S and U toggle, indicator, and typing guards.
+- Replaced the prior Beat/Bar/Subdivision labels with `0.5, 1, 2, 3, 4, 5,
+  6, 7, 8`.
+- Interval values now represent beat counts directly.
+- Auto-mark spacing is calculated as selected beats multiplied by the Beat Grid
+  beat duration; 0.5 therefore creates marks every half beat.
+- The selected grid division remains the first mark and the existing Bars limit
+  remains unchanged.
 
 ## Files changed
 
+- `src/cueplayer/ui/beat_grid_dialog.py`
 - `src/cueplayer/ui/main_window.py`
-- `src/cueplayer/ui/timeline_widget.py`
-- `tests/ui/test_setup_mode_shortcut.py`
+- `tests/ui/test_auto_add_marks_intervals.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_BeatMagnetUShortcut.md`
+- `.ai/handoffs/2026-08-12_AutoAddNumericBeatIntervals.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Timeline remains the single owner of magnet state; MainWindow routes the
-  shortcut only.
-- Snapping thresholds and Mark/Grid interaction behavior are unchanged.
+- The dialog returns a numeric beat count rather than encoded UI strings.
+- Beat spacing uses `grid.beat_seconds`, independent of visual subdivision.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_setup_mode_shortcut.py -x`
-  - 4 passed.
+- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_auto_add_marks_intervals.py tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
+  - 21 passed.
 
 ## Remaining issues
 
-- Confirm physical U key behavior and magnet feedback in the Windows app.
+- Validate all interval labels and half-beat placement in the Windows app.
 
 ## Suggested next task
 
-Validate S and U toggles plus Note typing protection, then rebuild CuePlayer
-1.1.3.
+Auto-add marks using 0.5, 1, 4, and 8 beat intervals from a selected grid line,
+confirm the Bars limit, then rebuild CuePlayer 1.1.3.

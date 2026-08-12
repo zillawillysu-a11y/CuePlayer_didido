@@ -1,21 +1,20 @@
 # Next task
 
 **Status:** Awaiting user validation and packaging
-**Type:** Shortcut validation / Release 1.1.3
+**Type:** Auto Add Marks validation / Release 1.1.3
 **Updated:** 2026-08-12
 
 ## Do this first
 
-1. Press S and confirm Mark movement mode and S chip toggle together.
-2. Press U and confirm Beat Grid magnet snapping and magnet chip toggle together.
-3. Click either chip and confirm its keyboard shortcut remains synchronized.
-4. Type words containing S and U in a Cue List Note and confirm neither mode
-   changes.
+1. Right-click a Beat Grid line and open Auto Add Marks.
+2. Confirm Interval contains exactly `0.5, 1, 2, 3, 4, 5, 6, 7, 8`.
+3. Test 0.5, 1, 4, and 8 and confirm spacing begins at the selected line.
+4. Confirm the Bars field still limits how many measures are generated.
 5. Rebuild and smoke-test CuePlayer 1.1.3.
 
 ## Relevant files
 
+- `src/cueplayer/ui/beat_grid_dialog.py`
 - `src/cueplayer/ui/main_window.py`
-- `src/cueplayer/ui/timeline_widget.py`
-- `tests/ui/test_setup_mode_shortcut.py`
+- `tests/ui/test_auto_add_marks_intervals.py`
 - `packaging/build_windows.ps1`
