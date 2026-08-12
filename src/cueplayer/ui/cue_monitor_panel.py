@@ -179,14 +179,17 @@ class _PaddedItemDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):  # noqa: ANN001
         editor = super().createEditor(parent, option, index)
         if editor is not None:
-            editor.setStyleSheet(
-                "padding: 4px 6px; margin: 0; min-height: 1.4em;"
-            )
+            editor.setStyleSheet("padding: 2px 6px; margin: 0;")
             editor.setProperty("cue_list_row", int(index.row()))
             editor.setProperty("cue_list_column", int(index.column()))
             editor.installEventFilter(self)
             self.editor_opened.emit()
         return editor
+
+    def updateEditorGeometry(self, editor, option, index) -> None:  # noqa: ANN001, N802
+        # Keep the line editor inside and vertically centered in the Cue row.
+        # A stylesheet min-height previously made it overflow toward the row below.
+        editor.setGeometry(option.rect.adjusted(2, 2, -2, -2))
 
     def eventFilter(self, editor, event) -> bool:  # noqa: ANN001, N802
         if event.type() == QEvent.Type.KeyPress and event.key() in (

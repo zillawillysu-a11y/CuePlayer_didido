@@ -162,3 +162,29 @@ def test_mouse_handoff_to_another_note_survives_playhead_follow(
     )
     panel.close()
     app.processEvents()
+
+
+def test_note_editor_fits_inside_its_row(app: QApplication) -> None:
+    song = Song.create("Editor geometry")
+    song.add_mark(1, 1.0)
+    lane = song.lane_by_index(1)
+    assert lane is not None
+    lane.cue_list_enabled = True
+    panel = CueMonitorPanel()
+    panel.resize(700, 500)
+    panel.set_song(song)
+    panel.show()
+    app.processEvents()
+
+    note_col = panel._col_for_field("note")
+    panel.cue_table.setCurrentCell(0, note_col)
+    panel.cue_table.editItem(panel.cue_table.item(0, note_col))
+    app.processEvents()
+    editor = app.focusWidget()
+    assert isinstance(editor, QLineEdit)
+    row_rect = panel.cue_table.visualRect(panel.cue_table.model().index(0, note_col))
+
+    assert editor.geometry().top() >= row_rect.top()
+    assert editor.geometry().bottom() <= row_rect.bottom()
+    panel.close()
+    app.processEvents()

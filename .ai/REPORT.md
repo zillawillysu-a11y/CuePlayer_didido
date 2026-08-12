@@ -5,45 +5,48 @@
 
 ## Task objective
 
-Eliminate intermittent Cue List Note editor dismissal when moving between rows
-with Up/Down or by clicking another Note during playback.
+Fix the remaining Cue List Note editor dismissal during playback and vertically
+align the inline editor inside its row.
 
 ## What was implemented
 
-- CueMonitorPanel now tracks an explicit editor session instead of relying only
-  on Qt's instantaneous EditingState.
-- Delegate editor open/close events begin and finish the protected session.
-- Pressing an editable Note/Cue ID cell protects the mouse handoff before the
-  old editor closes.
-- The session remains protected through the queued Up/Down adjacent-row handoff.
-- Playhead row-follow resumes only after Qt confirms no replacement editor was
-  opened; NOW playback display continues updating throughout.
-- Added a real mouse-click editor-to-editor regression test while crossing a Cue.
+- Found the root cause beyond playhead selection: committing Note/Cue ID called
+  `_refresh_marks_ui()`, whose delayed full Cue List rebuild destroyed the newly
+  opened adjacent editor.
+- Note and Cue ID commits now repaint Timeline/status without rebuilding Cue List;
+  the live table item is already authoritative and updated.
+- Structural Mark operations still use the existing full Cue List refresh.
+- Removed the editor stylesheet minimum height and explicitly inset its geometry
+  by two pixels so it stays centered and fully inside the row.
+- Retained the editor-session/playhead-follow protection from the prior fix.
 
 ## Files changed
 
 - `src/cueplayer/ui/cue_monitor_panel.py`
+- `src/cueplayer/ui/main_window.py`
 - `tests/ui/test_cue_list_note_edit_during_playback.py`
+- `tests/ui/test_cue_list_note_no_rebuild.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_CueListEditorSessionGuard.md`
+- `.ai/handoffs/2026-08-12_CueListInlineEditNoRebuild.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Fix remains UI coordination only.
-- Song/Mark persistence and the playback audio master clock are unchanged.
+- Full list rebuild remains reserved for structural row/order changes.
+- Inline text edits update their existing item and only invalidate dependent
+  Timeline/status presentation.
+- Playback/audio clock and project schema are unchanged.
 
 ## Tests performed
 
-- `tests/ui/test_cue_list_note_edit_during_playback.py` plus
-  `tests/ui/test_cue_list_note_arrow_navigation.py`: 5 passed.
+- Note playback, keyboard navigation, editor geometry, and no-rebuild suites:
+  8 passed.
 
 ## Remaining issues
 
-- User should validate repeated Up/Down and mouse Note switching during real
-  playback, especially with closely spaced Cues.
+- User should validate rapid Up/Down and mouse switching during real playback.
 
 ## Suggested next task
 
-Stress-test continuous Cue Note entry using both Up/Down and direct mouse clicks
-while playback crosses several Cues, then package CuePlayer 1.1.3.
+Stress-test Note and Cue ID editing throughout playback; if stable, package and
+smoke-test CuePlayer 1.1.3.

@@ -5783,11 +5783,12 @@ class MainWindow(QMainWindow):
         self.monitor.refresh_list()
         self.monitor.set_position(self.playback.position, self.engine.duration)
 
-    def _refresh_marks_ui(self) -> None:
+    def _refresh_marks_ui(self, *, refresh_cue_list: bool = True) -> None:
         # Marks are baked into the play/scrub backdrop — invalidate once.
         self.timeline.bump_mark_backdrop_revision(reason="marks_ui_refresh")
         self.timeline.update()
-        self._schedule_cue_list_refresh()
+        if refresh_cue_list:
+            self._schedule_cue_list_refresh()
         self._refresh_status()
 
     def _on_marks_moved(self, moved: object) -> None:
@@ -5832,14 +5833,17 @@ class MainWindow(QMainWindow):
     def _on_note_changed(self, mark_id: str, old_name: str, new_name: str) -> None:
         self._push_song_undo(RenameMarkCommand(mark_id=mark_id, old_name=old_name, new_name=new_name))
         self._mark_dirty()
-        self._refresh_marks_ui()
+        # CueMonitorPanel already updated the live item. Rebuilding the entire
+        # table here destroys an adjacent Note editor opened by Up/Down or a
+        # mouse click, especially when playback ticks during the handoff.
+        self._refresh_marks_ui(refresh_cue_list=False)
 
     def _on_cue_id_changed(self, mark_id: str, old_id: str, new_id: str) -> None:
         self._push_song_undo(
             EditMainCueIdCommand(mark_id=mark_id, old_id=old_id, new_id=new_id)
         )
         self._mark_dirty()
-        self._refresh_marks_ui()
+        self._refresh_marks_ui(refresh_cue_list=False)
 
     def _on_mark_time_changed(self, mark_id: str, old_time: float, new_time: float) -> None:
         self._on_marks_moved({str(mark_id): (float(old_time), float(new_time))})
