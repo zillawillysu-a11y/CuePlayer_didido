@@ -337,3 +337,46 @@ def test_overlap_drag_always_prioritizes_mark(app: QApplication) -> None:
     assert timeline._dragging_beat_grid_id == grid.id
     assert timeline._dragging_marks is False
     QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=uncovered_pos)
+
+
+def test_locked_grid_can_be_selected_but_not_dragged_or_resized(
+    app: QApplication,
+) -> None:
+    timeline = TimelineWidget()
+    song = Song.create("Locked grid")
+    song.duration_seconds = 10.0
+    grid = BeatGridRegion.create(1.0, 5.0, bpm=120.0, locked=True)
+    song.beat_grids.append(grid)
+    timeline.resize(900, 500)
+    timeline.set_song(song)
+    timeline.show()
+    timeline._setup_mode = True
+    app.processEvents()
+    y = timeline._ruler_height + 60
+    original = (grid.start_seconds, grid.end_seconds)
+
+    middle = QPoint(int(round(timeline._x_for_time(2.0))), y)
+    QTest.mousePress(timeline, Qt.MouseButton.LeftButton, pos=middle)
+    assert timeline._selected_beat_grid_id == grid.id
+    assert timeline._dragging_beat_grid_id is None
+    QTest.mouseMove(timeline, QPoint(middle.x() + 60, y), delay=10)
+    QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=QPoint(middle.x() + 60, y))
+    assert (grid.start_seconds, grid.end_seconds) == pytest.approx(original)
+
+    endpoint = QPoint(int(round(timeline._x_for_time(grid.end_seconds))), y)
+    QTest.mousePress(
+        timeline,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        endpoint,
+    )
+    assert timeline._selected_beat_grid_id == grid.id
+    assert timeline._dragging_beat_grid_id is None
+    QTest.mouseMove(timeline, QPoint(endpoint.x() + 60, y), delay=10)
+    QTest.mouseRelease(
+        timeline,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        QPoint(endpoint.x() + 60, y),
+    )
+    assert (grid.start_seconds, grid.end_seconds) == pytest.approx(original)

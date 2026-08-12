@@ -112,6 +112,7 @@ class TimelineWidget(QWidget):
     auto_scroll_changed = Signal(bool)
     beat_grid_created = Signal(float, float)
     beat_grid_edit_requested = Signal(str)
+    beat_grid_lock_requested = Signal(str, bool)
     beat_grid_auto_marks_requested = Signal(str, float)
     beat_grid_moved = Signal(str, float, float)  # grid id, old start, new start
     beat_grid_resized = Signal(str, float, float, float, float)
@@ -3886,7 +3887,7 @@ class TimelineWidget(QWidget):
                 )
                 return
             endpoint_hit = self._hit_beat_grid_endpoint(x, y) if ctrl else None
-            if self._setup_mode and endpoint_hit is not None:
+            if self._setup_mode and endpoint_hit is not None and not endpoint_hit[0].locked:
                 grid_hit, edge = endpoint_hit
                 self._selected_beat_grid_id = grid_hit.id
                 self._selected_beat_grid_index = None
@@ -3909,7 +3910,7 @@ class TimelineWidget(QWidget):
                 self._selected_beat_grid_id = grid_hit.id
                 self._selected_beat_grid_index = division_index
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                if self._setup_mode:
+                if self._setup_mode and not grid_hit.locked:
                     self._dragging_beat_grid_id = grid_hit.id
                     self._beat_grid_drag_origin_x = x
                     self._beat_grid_drag_start = grid_hit.start_seconds
@@ -4633,6 +4634,9 @@ class TimelineWidget(QWidget):
                 menu = QMenu(self)
                 edit = menu.addAction("Edit Beat Grid…")
                 auto = menu.addAction("Auto Add Marks…")
+                lock = menu.addAction("BPM Grid Lock")
+                lock.setCheckable(True)
+                lock.setChecked(bool(grid.locked))
                 menu.addSeparator()
                 delete_grid = menu.addAction("Delete Beat Grid")
                 chosen = menu.exec(self.mapToGlobal(pos))
@@ -4640,6 +4644,8 @@ class TimelineWidget(QWidget):
                     self.beat_grid_edit_requested.emit(grid.id)
                 elif chosen is auto:
                     self.beat_grid_auto_marks_requested.emit(grid.id, self._time_for_x(x))
+                elif chosen is lock:
+                    self.beat_grid_lock_requested.emit(grid.id, lock.isChecked())
                 elif chosen is delete_grid:
                     self.beat_grid_delete_requested.emit(grid.id)
                 return
@@ -4664,6 +4670,7 @@ class TimelineWidget(QWidget):
         beat_edit = None
         beat_auto = None
         beat_delete = None
+        beat_lock = None
         if beat_grid_hit is not None:
             beat_grid, division_index = beat_grid_hit
             self._selected_beat_grid_id = beat_grid.id
@@ -4673,6 +4680,9 @@ class TimelineWidget(QWidget):
             beat_menu = menu.addMenu("Beat Grid")
             beat_edit = beat_menu.addAction("Edit Beat Grid…")
             beat_auto = beat_menu.addAction("Auto Add Marks…")
+            beat_lock = beat_menu.addAction("BPM Grid Lock")
+            beat_lock.setCheckable(True)
+            beat_lock.setChecked(bool(beat_grid.locked))
             beat_menu.addSeparator()
             beat_delete = beat_menu.addAction("Delete Beat Grid")
         menu.addSeparator()
@@ -4751,6 +4761,11 @@ class TimelineWidget(QWidget):
         if beat_auto is not None and chosen is beat_auto:
             self.beat_grid_auto_marks_requested.emit(
                 beat_grid_hit[0].id, self._time_for_x(float(pos.x()))
+            )
+            return
+        if beat_lock is not None and chosen is beat_lock:
+            self.beat_grid_lock_requested.emit(
+                beat_grid_hit[0].id, beat_lock.isChecked()
             )
             return
         if beat_delete is not None and chosen is beat_delete:

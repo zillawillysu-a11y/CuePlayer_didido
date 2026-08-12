@@ -5,52 +5,48 @@
 
 ## Task objective
 
-Prevent an in-progress Cue List Note edit from being erased when playback crosses
-to the next Cue.
+Add a per-region BPM Grid Lock toggle that prevents drag/resize while preserving
+selection and all context-menu actions.
 
 ## What was implemented
 
-- Stopped `_apply_now_highlight()` from writing the unused BackgroundRole to
-  Note cells.
-- This prevents Qt from reloading an active Note QLineEdit from the still-
-  uncommitted model value during NOW highlight changes.
-- Added a regression test that types an uncommitted Note, advances playback to
-  the next Cue, and confirms the editor text remains intact.
+- Added a checkable `BPM Grid Lock` action to the direct Beat Grid context menu
+  and the Beat Grid submenu shown at Mark/Grid overlaps.
+- Locked grids remain selectable and seekable, including in Setup mode.
+- Locked grids reject normal whole-region dragging and Ctrl endpoint resizing.
+- Lock state persists with the project and defaults to unlocked for old files.
+- Lock/unlock is recorded as an undoable Beat Grid edit.
 
 ## Files changed
 
-- `src/cueplayer/ui/cue_monitor_panel.py`
-- `tests/ui/test_cue_list_note_edit_during_playback.py`
+- `src/cueplayer/domain/models.py`
+- `src/cueplayer/domain/undo.py`
+- `src/cueplayer/persistence/project_store.py`
+- `src/cueplayer/ui/timeline_widget.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/domain/test_beat_grid.py`
+- `tests/ui/test_beat_grid_selection.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_PreserveNoteEditAcrossCue.md`
+- `.ai/handoffs/2026-08-12_BpmGridLock.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- The Note delegate already paints its own selection background and ignores
-  BackgroundRole, so skipping this model mutation removes only a redundant data
-  change; row selection remains visually highlighted.
-- Playback clock, Cue resolution, selection following, and Note commit semantics
-  remain unchanged.
+- Lock is song/domain data because it belongs to an individual Beat Grid and
+  must persist across sessions.
+- Selection/seek remains available; only mutation gestures are gated.
+- Reused full Beat Grid snapshots so lock toggles participate in Ctrl+Z/Ctrl+Y.
 
 ## Tests performed
 
-- `pytest -q tests/ui/test_cue_list_note_edit_during_playback.py -x`
-  - 1 passed.
-- `pytest -q tests/ui/test_cue_list_note_arrow_navigation.py -x`
-  - 2 passed.
-- `tests/ui/test_cue_list_playhead_scroll.py` was also attempted separately, but
-  the pre-existing tiny-viewport test at line 115 crashes Python with a Windows
-  PySide6 C-level stack overflow before completing; no assertion from this change
-  failed.
+- `.venv/Scripts/python.exe -m pytest -q tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
+  - 20 passed.
 
 ## Remaining issues
 
-- Confirm the fix during real playback in the Windows application.
-- The independent tiny Cue List viewport stack overflow in the test environment
-  remains to be diagnosed separately.
+- Validate the checked menu state and locked interaction in the Windows app.
 
 ## Suggested next task
 
-Edit a blank Note while playback crosses multiple Cues and confirm the typed text
-stays visible, then commit it with Enter and rebuild CuePlayer 1.1.3.
+Lock a BPM Grid, confirm selection/Edit/Auto Add/Delete still work while both
+drag modes are blocked, then unlock and rebuild CuePlayer 1.1.3.

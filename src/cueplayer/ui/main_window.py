@@ -1416,6 +1416,7 @@ class MainWindow(QMainWindow):
         self.timeline.paste_marks_requested.connect(self._paste_marks)
         self.timeline.beat_grid_created.connect(self._create_beat_grid)
         self.timeline.beat_grid_edit_requested.connect(self._edit_beat_grid)
+        self.timeline.beat_grid_lock_requested.connect(self._set_beat_grid_locked)
         self.timeline.beat_grid_auto_marks_requested.connect(self._auto_add_grid_marks)
         self.timeline.beat_grid_moved.connect(self._on_beat_grid_moved)
         self.timeline.beat_grid_resized.connect(self._on_beat_grid_resized)
@@ -8256,6 +8257,20 @@ class MainWindow(QMainWindow):
             self._push_song_undo(EditBeatGridCommand(old_grid=before, new_grid=after))
         self.timeline.set_song(self.current_song)
         self._mark_dirty()
+
+    def _set_beat_grid_locked(self, grid_id: str, locked: bool) -> None:
+        grid = self._beat_grid_by_id(grid_id)
+        if grid is None or grid.locked == bool(locked):
+            return
+        before = BeatGridSnapshot.from_grid(grid)
+        grid.locked = bool(locked)
+        after = BeatGridSnapshot.from_grid(grid)
+        self._push_song_undo(EditBeatGridCommand(old_grid=before, new_grid=after))
+        self.timeline.update()
+        self._mark_dirty()
+        self.status.showMessage(
+            "BPM Grid locked" if grid.locked else "BPM Grid unlocked", 2000
+        )
 
     def _auto_add_grid_marks(self, grid_id: str, clicked_seconds: float) -> None:
         grid = self._beat_grid_by_id(grid_id)

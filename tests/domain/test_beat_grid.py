@@ -22,6 +22,7 @@ def test_beat_grid_math_and_round_trip() -> None:
         beat_unit=4,
         subdivision=2,
         color="#abcdef",
+        locked=True,
     )
     song.beat_grids.append(grid)
     project.beat_grid_color = "#123456"
@@ -43,6 +44,7 @@ def test_beat_grid_math_and_round_trip() -> None:
     assert restored.beat_unit == 4
     assert restored.subdivision == 2
     assert restored.color == "#abcdef"
+    assert restored.locked is True
 
 
 def test_old_project_without_beat_grid_fields_uses_defaults() -> None:
@@ -105,6 +107,7 @@ def test_edit_beat_grid_command_undoes_color_and_all_settings() -> None:
     grid.beat_unit = 8
     grid.subdivision = 2
     grid.color = "#abcdef"
+    grid.locked = True
     after = BeatGridSnapshot.from_grid(grid)
     command = EditBeatGridCommand(old_grid=before, new_grid=after)
 

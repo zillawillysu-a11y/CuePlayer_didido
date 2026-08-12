@@ -93,6 +93,7 @@ class BeatGridSnapshot:
     beat_unit: int
     subdivision: int
     color: str
+    locked: bool
 
     @classmethod
     def from_grid(cls, grid: BeatGridRegion) -> BeatGridSnapshot:
@@ -105,6 +106,7 @@ class BeatGridSnapshot:
             beat_unit=grid.beat_unit,
             subdivision=grid.subdivision,
             color=grid.color,
+            locked=grid.locked,
         )
 
     def to_grid(self) -> BeatGridRegion:
@@ -117,6 +119,7 @@ class BeatGridSnapshot:
             beat_unit=self.beat_unit,
             subdivision=self.subdivision,
             color=self.color,
+            locked=self.locked,
         )
 
 
@@ -152,6 +155,7 @@ class EditBeatGridCommand:
         grid.beat_unit = snapshot.beat_unit
         grid.subdivision = snapshot.subdivision
         grid.color = snapshot.color
+        grid.locked = snapshot.locked
         song.beat_grids.sort(key=lambda item: item.start_seconds)
 
     def undo(self, song: Song) -> None:
