@@ -5,42 +5,42 @@
 
 ## Task objective
 
-Replace Auto Add Marks interval choices with numeric beat counts from 0.5 to 8.
+Keep BPM Grid lines visible after adding a Video clip and loading its waveform.
 
 ## What was implemented
 
-- Replaced the prior Beat/Bar/Subdivision labels with `0.5, 1, 2, 3, 4, 5,
-  6, 7, 8`.
-- Interval values now represent beat counts directly.
-- Auto-mark spacing is calculated as selected beats multiplied by the Beat Grid
-  beat duration; 0.5 therefore creates marks every half beat.
-- The selected grid division remains the first mark and the existing Bars limit
-  remains unchanged.
+- Restroked Beat Grid rendering immediately after the progressive Music/Video
+  waveform overlay.
+- Preserved the existing order where Mark selection, Grid hover/selection,
+  Loop, and Playhead dynamic overlays remain above the grid.
+- Added a regression test that asserts progressive waveform paint occurs before
+  the Beat Grid restroke.
 
 ## Files changed
 
-- `src/cueplayer/ui/beat_grid_dialog.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_auto_add_marks_intervals.py`
+- `src/cueplayer/ui/timeline_widget.py`
+- `tests/ui/test_beat_grid_video_overlay_order.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_AutoAddNumericBeatIntervals.md`
+- `.ai/handoffs/2026-08-12_KeepBeatGridAboveVideoWaveform.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- The dialog returns a numeric beat count rather than encoded UI strings.
-- Beat spacing uses `grid.beat_seconds`, independent of visual subdivision.
+- Fixed only the progressive overlay path; static cached rendering and hit
+  testing remain unchanged.
+- Beat Grid remains clipped to the waveform region and does not cover Video or
+  Mark lanes.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_auto_add_marks_intervals.py tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
-  - 21 passed.
+- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_beat_grid_video_overlay_order.py tests/ui/test_video_select_during_play.py tests/ui/test_beat_grid_selection.py -x`
+  - 18 passed, with four pre-existing deprecated QMouseEvent constructor warnings.
 
 ## Remaining issues
 
-- Validate all interval labels and half-beat placement in the Windows app.
+- Confirm visual behavior with a real Video waveform in the Windows app.
 
 ## Suggested next task
 
-Auto-add marks using 0.5, 1, 4, and 8 beat intervals from a selected grid line,
-confirm the Bars limit, then rebuild CuePlayer 1.1.3.
+Add a Video clip to a song with a BPM Grid, wait for waveform loading, and verify
+the grid remains visible during play/pause/zoom before rebuilding CuePlayer 1.1.3.

@@ -4973,6 +4973,11 @@ class TimelineWidget(QWidget):
                     waveform_overlay = self._needs_waveform_overlay()
                     if waveform_overlay:
                         self._paint_progressive_waveform_overlay(painter)
+                        # Progressive Music/Video waveform refreshes paint over
+                        # the retained backdrop. Beat Grid is part of that
+                        # backdrop, so restroke it after the waveform or its
+                        # lines disappear while Video peaks are pending/ready.
+                        self._paint_beat_grids(painter)
                     # Video header caption + selection chrome must paint in
                     # PLAYING and PAUSED alike (transport must not change
                     # static-looking pixels such as "No clip selected").
