@@ -196,6 +196,7 @@ from cueplayer.web_remote.prefs import load_web_remote_prefs, save_web_remote_pr
 from cueplayer.ui.mark_display_dialog import MarkDisplayDialog
 from cueplayer.ui.beat_grid_dialog import AutoAddMarksDialog, BeatGridEditDialog
 from cueplayer.ui.mark_manager_dialog import MarkManagerDialog
+from cueplayer.ui.video_clip_dialog import VideoClipEditDialog
 from cueplayer.ui.ndi_install_dialog import show_ndi_install_dialog
 from cueplayer.ui.setlist_sheet_page import SetlistSheetPage
 from cueplayer.ui.show_patch_page import ShowPatchPage
@@ -220,7 +221,7 @@ from cueplayer.ui.drag_drop import (
 )
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
-from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar
+from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar, format_time
 from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget, rgb_frame_to_qimage
@@ -1432,6 +1433,7 @@ class MainWindow(QMainWindow):
         self.timeline.add_video_clip_requested.connect(self._add_video_clip_at)
         self.timeline.split_video_clip_requested.connect(self._split_video_clip)
         self.timeline.duplicate_video_clip_requested.connect(self._duplicate_video_clip)
+        self.timeline.edit_video_clip_requested.connect(self._edit_video_clip)
         self.timeline.video_files_dropped.connect(self._add_video_clips_from_paths)
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
         self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
@@ -8175,6 +8177,31 @@ class MainWindow(QMainWindow):
         self.project.show_beat_grid = bool(visible)
         self._apply_project_mark_line_settings()
         self._mark_dirty()
+
+    def _edit_video_clip(self, clip_id: str) -> None:
+        clip = self.current_song.video_clip_by_id(clip_id)
+        if clip is None:
+            return
+        dialog = VideoClipEditDialog(clip, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        timeline_start, source_in, source_out = dialog.values()
+        old = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
+        duration = source_out - source_in
+        new = (timeline_start, source_in, duration)
+        if all(abs(float(a) - float(b)) < 1e-9 for a, b in zip(old, new)):
+            return
+        clip.start_seconds = timeline_start
+        clip.source_in_seconds = source_in
+        clip.source_out_seconds = source_out
+        clip.duration_seconds = duration
+        self.current_song.sort_video_clips()
+        self._on_video_clip_edited(clip.id, old, new)
+        self.timeline.set_selected_video_clip_ids([clip.id])
+        self.timeline.update()
+        self.status.showMessage(
+            f"Video source: {format_time(source_in)}–{format_time(source_out)}", 3000
+        )
 
     def _pause_without_view_jump(self) -> None:
         self.timeline.freeze_viewport_for_pause()

@@ -127,6 +127,7 @@ class TimelineWidget(QWidget):
     add_video_clip_requested = Signal(float)  # timeline seconds to add at
     split_video_clip_requested = Signal(str, float)  # clip id, split time
     duplicate_video_clip_requested = Signal(str)  # clip id
+    edit_video_clip_requested = Signal(str)  # clip id
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
     video_track_mute_toggled = Signal(bool)
     video_track_visibility_changed = Signal(bool)  # show_video_track
@@ -3760,6 +3761,7 @@ class TimelineWidget(QWidget):
             else "Lock this clip (Shift+drag temporarily frees move/trim)"
         )
         hide_action = menu.addAction("Show" if clip.hidden else "Hide")
+        edit_action = menu.addAction("Edit Video Clip…")
         menu.addSeparator()
         hide_track_action = menu.addAction("Hide Video / LTC Tracks")
         menu.addSeparator()
@@ -3789,6 +3791,9 @@ class TimelineWidget(QWidget):
             return
         if chosen is hide_track_action:
             self.set_show_video_track(False)
+            return
+        if chosen is edit_action:
+            self.edit_video_clip_requested.emit(clip_id)
             return
         if chosen is lock_action:
             new_locked = not clip.locked
