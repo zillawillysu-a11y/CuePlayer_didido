@@ -7846,7 +7846,7 @@ class MainWindow(QMainWindow):
         del lane_index, new_name
         self._mark_dirty()
         self.monitor.set_song(self.current_song)
-        self.timeline.update()
+        self._refresh_marks_ui()
         self.status.showMessage("Mark track renamed", 2000)
 
     def _on_video_clip_edited(self, clip_id: str, old: tuple, new: tuple) -> None:

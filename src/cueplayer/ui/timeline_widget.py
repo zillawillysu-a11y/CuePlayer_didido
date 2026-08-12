@@ -1594,6 +1594,10 @@ class TimelineWidget(QWidget):
         if not new_name or new_name == lane.name:
             return
         lane.name = new_name
+        # Track headers are baked into the retained timeline backdrop. A plain
+        # update() can therefore repaint the old cached name until set_song()
+        # runs during a song switch; invalidate that backdrop immediately.
+        self.bump_mark_backdrop_revision(reason="mark_lane_rename")
         self.lane_name_changed.emit(lane_index, new_name)
         self.update()
 

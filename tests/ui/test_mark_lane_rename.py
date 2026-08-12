@@ -74,6 +74,9 @@ def test_rename_mark_lane_updates_name(app: QApplication, monkeypatch: pytest.Mo
         "cueplayer.ui.timeline_widget.QInputDialog.getText",
         lambda *args, **kwargs: ("Verse Hits", True),
     )
+    before_revision = widget._mark_backdrop_revision
     widget._rename_mark_lane_at(1)
     assert song.lane_by_index(1).name == "Verse Hits"
     assert renamed == [(1, "Verse Hits")]
+    assert widget._mark_backdrop_revision == before_revision + 1
+    assert widget._scrub_backdrop is None

@@ -5,42 +5,43 @@
 
 ## Task objective
 
-Prepare CuePlayer version 1.1.3 for a user-run Windows package build.
+Make an inline Mark Track rename appear immediately without switching songs.
 
 ## What was implemented
 
-- Updated the Python package/application version to 1.1.3.
-- Updated the Inno Setup default and compile example to 1.1.3.
-- Verified the build environment imports `cueplayer.__version__` as 1.1.3.
+- Invalidated the retained Mark/timeline backdrop immediately after a lane name
+  changes.
+- Routed the main-window rename handler through the canonical Mark UI refresh,
+  keeping the timeline, Cue List/monitor, and status synchronized.
+- Added a regression assertion that Rename increments the Mark backdrop revision
+  and drops the stale scrub backdrop.
 
 ## Files changed
 
-- `pyproject.toml`
-- `src/cueplayer/__init__.py`
-- `packaging/CuePlayer.iss`
+- `src/cueplayer/ui/timeline_widget.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/ui/test_mark_lane_rename.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_ReleaseVersion1.1.3.md`
+- `.ai/handoffs/2026-08-12_MarkTrackRenameImmediateRefresh.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Kept version values aligned across package metadata, runtime About/version
-  access, and installer fallback metadata.
-- The existing Windows build script remains the single packaging entry point.
+- Fixed the stale retained-render cache at the mutation point instead of forcing
+  a song reload.
+- No playback, persistence, export, or version metadata changed.
 
 ## Tests performed
 
-- Imported `cueplayer.__version__` from the project environment and asserted it
-  equals `1.1.3`.
-- Searched all three release metadata files and confirmed no 1.1.2 remains.
+- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_mark_lane_rename.py tests/ui/test_cached_timeline_poster.py -x`
+  - 10 passed.
 
 ## Remaining issues
 
-- The user still needs to execute the Windows build script.
-- Setup.exe is produced only when Inno Setup 6 or 7 is installed; the portable
-  ZIP is produced independently.
+- The fix should be smoke-tested in the packaged Windows UI before rebuilding
+  the 1.1.3 installer.
 
 ## Suggested next task
 
-Run `packaging/build_windows.ps1`, launch the resulting executable, and verify
-the version and Beat Grid workflows before distribution.
+Rename a Mark Track in the Windows application and confirm the header changes
+immediately; then rebuild and smoke-test CuePlayer 1.1.3.
