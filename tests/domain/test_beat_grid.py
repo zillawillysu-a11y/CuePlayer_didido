@@ -6,6 +6,7 @@ from cueplayer.domain.undo import (
     BeatGridSnapshot,
     DeleteBeatGridCommand,
     MoveBeatGridCommand,
+    ResizeBeatGridCommand,
 )
 
 
@@ -86,3 +87,15 @@ def test_move_beat_grid_command_undo_and_redo_preserve_duration() -> None:
     assert (grid.start_seconds, grid.end_seconds) == pytest.approx((3.0, 11.5))
     command.undo(song)
     assert (grid.start_seconds, grid.end_seconds) == pytest.approx((1.25, 9.75))
+
+
+def test_resize_beat_grid_command_undo_and_redo() -> None:
+    song = Project.create("Resize grid").songs[0]
+    grid = BeatGridRegion.create(1.0, 9.0, bpm=120.0)
+    song.beat_grids.append(grid)
+    command = ResizeBeatGridCommand(grid.id, 1.0, 9.0, 2.0, 12.0)
+
+    command.redo(song)
+    assert (grid.start_seconds, grid.end_seconds) == pytest.approx((2.0, 12.0))
+    command.undo(song)
+    assert (grid.start_seconds, grid.end_seconds) == pytest.approx((1.0, 9.0))

@@ -5,42 +5,49 @@
 
 ## Task objective
 
-Make Mark dragging always take priority when a Mark overlaps a Beat Grid line.
+Allow Ctrl-dragging the first or last Beat Grid boundary to change its Duration.
 
 ## What was implemented
 
-- Removed the magnet toggle from overlap hit-test priority.
-- In Setup mode, an overlapping Mark now always begins a Mark drag.
-- Beat Grid regions remain draggable from any uncovered grid division.
-- The magnet toggle now affects snapping only.
+- Added symmetric endpoint hit-testing for Beat Grid Start and End.
+- In Setup mode, Ctrl+drag on Start changes only Start; Ctrl+drag on End changes
+  only End.
+- Normal grid dragging continues to move the complete region without changing
+  Duration.
+- Added `ResizeBeatGridCommand`, so endpoint resizing supports Ctrl+Z/Ctrl+Y.
+- Enforced a minimum region length of one subdivision and clamped endpoints to
+  the song range.
 
 ## Files changed
 
+- `src/cueplayer/domain/undo.py`
+- `src/cueplayer/ui/main_window.py`
 - `src/cueplayer/ui/timeline_widget.py`
+- `tests/domain/test_beat_grid.py`
 - `tests/ui/test_beat_grid_selection.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_MarkFirstOverlapDrag.md`
+- `.ai/handoffs/2026-08-12_BeatGridCtrlResize.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Kept priority resolution in timeline hit-testing; no domain or persistence
-  behavior changed.
-- Mark-first behavior is unconditional at an exact overlap, giving the most
-  commonly edited object a stable interaction rule.
+- Live resizing remains a timeline interaction, while committed history uses
+  the domain undo stack.
+- Resize history stores both old/new Start and End values rather than deriving
+  Duration, avoiding drift across undo/redo.
+- Mark-first overlap behavior remains unchanged; use an uncovered endpoint when
+  a Mark occupies the exact same hit area.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_beat_grid_selection.py -x`
-  - 11 passed.
+- `.venv/Scripts/python.exe -m pytest -q tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
+  - 18 passed.
 
 ## Remaining issues
 
-- Hands-on Windows UI confirmation is still recommended.
-- To move a grid hidden entirely by Marks, the user must grab another uncovered
-  division of the same grid.
+- Hands-on Windows UI confirmation is recommended for endpoint hit comfort.
 
 ## Suggested next task
 
-Validate Mark-first overlap dragging and Beat Grid move undo/redo in the Windows
+Validate Ctrl-dragging both Beat Grid endpoints and Ctrl+Z/Ctrl+Y in the Windows
 application, then resume the pending grandMA3 hardware/onPC validation.

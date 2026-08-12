@@ -143,6 +143,7 @@ from cueplayer.domain.undo import (
     MarkSnapshot,
     MoveMarksCommand,
     MoveBeatGridCommand,
+    ResizeBeatGridCommand,
     RenumberMainCueIdsCommand,
     RenameMarkCommand,
     SetlistEditCommand,
@@ -1416,6 +1417,7 @@ class MainWindow(QMainWindow):
         self.timeline.beat_grid_edit_requested.connect(self._edit_beat_grid)
         self.timeline.beat_grid_auto_marks_requested.connect(self._auto_add_grid_marks)
         self.timeline.beat_grid_moved.connect(self._on_beat_grid_moved)
+        self.timeline.beat_grid_resized.connect(self._on_beat_grid_resized)
         self.timeline.beat_grid_delete_requested.connect(self._delete_beat_grid)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)
@@ -8170,6 +8172,25 @@ class MainWindow(QMainWindow):
                 grid_id=str(grid_id),
                 old_start=float(old_start),
                 new_start=float(new_start),
+            )
+        )
+        self._mark_dirty()
+
+    def _on_beat_grid_resized(
+        self,
+        grid_id: str,
+        old_start: float,
+        old_end: float,
+        new_start: float,
+        new_end: float,
+    ) -> None:
+        self._push_song_undo(
+            ResizeBeatGridCommand(
+                grid_id=str(grid_id),
+                old_start=float(old_start),
+                old_end=float(old_end),
+                new_start=float(new_start),
+                new_end=float(new_end),
             )
         )
         self._mark_dirty()

@@ -155,6 +155,30 @@ class MoveBeatGridCommand:
 
 
 @dataclass
+class ResizeBeatGridCommand:
+    grid_id: str
+    old_start: float
+    old_end: float
+    new_start: float
+    new_end: float
+    label: str = "Resize Beat Grid"
+
+    def _resize(self, song: Song, start: float, end: float) -> None:
+        grid = next((item for item in song.beat_grids if item.id == self.grid_id), None)
+        if grid is None:
+            return
+        grid.start_seconds = float(start)
+        grid.end_seconds = float(end)
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._resize(song, self.old_start, self.old_end)
+
+    def redo(self, song: Song) -> None:
+        self._resize(song, self.new_start, self.new_end)
+
+
+@dataclass
 class MoveMarksCommand:
     """id → (old_time, new_time)."""
 

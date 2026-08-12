@@ -1,28 +1,26 @@
 # Next task
 
 **Status:** Awaiting user validation
-**Type:** Validation (Timeline / Beat Grid)
+**Type:** Validation (Timeline / Beat Grid resize)
 **Updated:** 2026-08-12
 
 ## Do this first
 
-Open the Windows application and validate:
+In Setup mode on Windows, validate:
 
-1. Drag a position where a Mark exactly overlaps a Beat Grid division; the Mark
-   must move whether the magnet is enabled or disabled.
-2. Drag a different Beat Grid division without a Mark on it; the whole Beat Grid
-   region must move.
-3. Press Ctrl+Z and Ctrl+Y after moving the Beat Grid.
+1. Hold Ctrl and drag the first Beat Grid boundary; only Start should change.
+2. Hold Ctrl and drag the last boundary; only End should change.
+3. Ctrl+Z and Ctrl+Y should undo and redo each Duration adjustment.
+4. Dragging an internal uncovered division without Ctrl should still move the
+   complete region.
+5. A Mark/Grid overlap should still prioritize the Mark.
 
 If these pass, resume the pending grandMA3 2.3.2 hardware/onPC validation.
 
-## Explicitly out of scope
-
-- Playback clock behavior
-- MA2/MA3 XML changes
-- Persistence schema changes
-
 ## Relevant files
 
+- `src/cueplayer/domain/undo.py`
+- `src/cueplayer/ui/main_window.py`
 - `src/cueplayer/ui/timeline_widget.py`
+- `tests/domain/test_beat_grid.py`
 - `tests/ui/test_beat_grid_selection.py`

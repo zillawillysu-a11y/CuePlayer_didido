@@ -114,6 +114,7 @@ class TimelineWidget(QWidget):
     beat_grid_edit_requested = Signal(str)
     beat_grid_auto_marks_requested = Signal(str, float)
     beat_grid_moved = Signal(str, float, float)  # grid id, old start, new start
+    beat_grid_resized = Signal(str, float, float, float, float)
     beat_grid_delete_requested = Signal(str)
 
     # Video clip lane.
@@ -297,6 +298,7 @@ class TimelineWidget(QWidget):
         self._beat_grid_drag_start = 0.0
         self._beat_grid_drag_end = 0.0
         self._beat_grid_drag_moved = False
+        self._beat_grid_resize_edge: str | None = None
         self._playing = False
         self._video_waveform_pending_refresh = False
         # Content epoch for Video Track peaks baked into the static backdrop.
@@ -3248,6 +3250,19 @@ class TimelineWidget(QWidget):
                 best, best_px = (grid, index), distance
         return best
 
+    def _hit_beat_grid_endpoint(self, x: float, y: float):
+        """Return ``(grid, edge)`` when a visible start/end handle is hit."""
+        if self._song is None or not self._show_beat_grid or not self._in_waveform(x, y):
+            return None
+        best = None
+        best_px = 16.0
+        for grid in self._song.beat_grids:
+            for edge, seconds in (("start", grid.start_seconds), ("end", grid.end_seconds)):
+                distance = abs(self._device_snap(self._x_for_time(seconds)) - float(x))
+                if distance <= best_px:
+                    best, best_px = (grid, edge), distance
+        return best
+
     def _snap_time_to_beat_grid(self, seconds: float) -> float:
         """Snap to the nearest Beat Grid division inside a 16px threshold."""
         if not self._beat_snap_enabled or not self._show_beat_grid or self._song is None:
@@ -3866,6 +3881,20 @@ class TimelineWidget(QWidget):
                     overlap_mark_id, x, y, shift=shift, ctrl=ctrl
                 )
                 return
+            endpoint_hit = self._hit_beat_grid_endpoint(x, y) if ctrl else None
+            if self._setup_mode and endpoint_hit is not None:
+                grid_hit, edge = endpoint_hit
+                self._selected_beat_grid_id = grid_hit.id
+                self._selected_beat_grid_index = None
+                self._dragging_beat_grid_id = grid_hit.id
+                self._beat_grid_resize_edge = edge
+                self._beat_grid_drag_origin_x = x
+                self._beat_grid_drag_start = grid_hit.start_seconds
+                self._beat_grid_drag_end = grid_hit.end_seconds
+                self._beat_grid_drag_moved = False
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.grabMouse()
+                return
             grid_division_hit = self._hit_beat_grid_division(x, y)
             if grid_division_hit is not None:
                 grid_hit, division_index = grid_division_hit
@@ -3882,6 +3911,7 @@ class TimelineWidget(QWidget):
                     self._beat_grid_drag_start = grid_hit.start_seconds
                     self._beat_grid_drag_end = grid_hit.end_seconds
                     self._beat_grid_drag_moved = False
+                    self._beat_grid_resize_edge = None
                     self.grabMouse()
                     self.setCursor(Qt.CursorShape.SizeHorCursor)
                 else:
@@ -4024,13 +4054,29 @@ class TimelineWidget(QWidget):
                 if abs(dx) >= self._drag_slop:
                     self._beat_grid_drag_moved = True
                 if self._beat_grid_drag_moved:
-                    duration = self._beat_grid_drag_end - self._beat_grid_drag_start
-                    new_start = min(
-                        max(0.0, self._beat_grid_drag_start + dx / max(1e-6, self._pixels_per_second)),
-                        max(0.0, self._duration() - duration),
-                    )
-                    grid.start_seconds = new_start
-                    grid.end_seconds = new_start + duration
+                    delta = dx / max(1e-6, self._pixels_per_second)
+                    if self._beat_grid_resize_edge == "start":
+                        minimum = max(0.01, grid.step_seconds)
+                        grid.start_seconds = min(
+                            max(0.0, self._beat_grid_drag_start + delta),
+                            self._beat_grid_drag_end - minimum,
+                        )
+                        grid.end_seconds = self._beat_grid_drag_end
+                    elif self._beat_grid_resize_edge == "end":
+                        minimum = max(0.01, grid.step_seconds)
+                        grid.start_seconds = self._beat_grid_drag_start
+                        grid.end_seconds = max(
+                            self._beat_grid_drag_start + minimum,
+                            min(self._duration(), self._beat_grid_drag_end + delta),
+                        )
+                    else:
+                        duration = self._beat_grid_drag_end - self._beat_grid_drag_start
+                        new_start = min(
+                            max(0.0, self._beat_grid_drag_start + delta),
+                            max(0.0, self._duration() - duration),
+                        )
+                        grid.start_seconds = new_start
+                        grid.end_seconds = new_start + duration
                     self._invalidate_scrub_backdrop(reason="beat_grid_drag")
                     self.update()
         elif self._dragging_marks and event.buttons() & Qt.MouseButton.LeftButton:
@@ -4227,16 +4273,27 @@ class TimelineWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging_beat_grid_id is not None:
             grid_id = self._dragging_beat_grid_id
             old_start = self._beat_grid_drag_start
+            old_end = self._beat_grid_drag_end
+            resize_edge = self._beat_grid_resize_edge
             grid = next(
                 (item for item in (self._song.beat_grids if self._song else []) if item.id == grid_id),
                 None,
             )
             self._dragging_beat_grid_id = None
+            self._beat_grid_resize_edge = None
             moved = self._beat_grid_drag_moved
             self._beat_grid_drag_moved = False
             self.releaseMouse()
             self._invalidate_scrub_backdrop(reason="beat_grid_drag_release")
-            if moved and grid is not None and abs(grid.start_seconds - old_start) >= 1e-9:
+            if moved and grid is not None and resize_edge is not None:
+                if (
+                    abs(grid.start_seconds - old_start) >= 1e-9
+                    or abs(grid.end_seconds - old_end) >= 1e-9
+                ):
+                    self.beat_grid_resized.emit(
+                        grid.id, old_start, old_end, grid.start_seconds, grid.end_seconds
+                    )
+            elif moved and grid is not None and abs(grid.start_seconds - old_start) >= 1e-9:
                 self.beat_grid_moved.emit(grid.id, old_start, grid.start_seconds)
             elif not moved:
                 target = None

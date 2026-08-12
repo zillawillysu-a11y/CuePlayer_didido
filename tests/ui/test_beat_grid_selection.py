@@ -66,6 +66,54 @@ def test_setup_drag_moves_entire_grid(app: QApplication) -> None:
     assert grid.end_seconds - grid.start_seconds == pytest.approx(4.0)
 
 
+@pytest.mark.parametrize(
+    ("edge", "drag_pixels"),
+    (("start", 40), ("end", 40)),
+)
+def test_ctrl_drag_grid_endpoint_resizes_duration(
+    app: QApplication, edge: str, drag_pixels: int
+) -> None:
+    timeline = TimelineWidget()
+    song = Song.create("Grid resize")
+    song.duration_seconds = 10.0
+    grid = BeatGridRegion.create(1.0, 5.0, bpm=120.0)
+    song.beat_grids.append(grid)
+    timeline.resize(900, 500)
+    timeline.set_song(song)
+    timeline.show()
+    timeline._setup_mode = True
+    app.processEvents()
+    original = (grid.start_seconds, grid.end_seconds)
+    emitted: list[tuple] = []
+    timeline.beat_grid_resized.connect(lambda *args: emitted.append(args))
+    at = grid.start_seconds if edge == "start" else grid.end_seconds
+    start = QPoint(int(round(timeline._x_for_time(at))), timeline._ruler_height + 60)
+    end = QPoint(start.x() + drag_pixels, start.y())
+
+    QTest.mousePress(
+        timeline,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        start,
+    )
+    QTest.mouseMove(timeline, end, delay=10)
+    QTest.mouseRelease(
+        timeline,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        end,
+    )
+
+    if edge == "start":
+        assert grid.start_seconds > original[0]
+        assert grid.end_seconds == pytest.approx(original[1])
+    else:
+        assert grid.start_seconds == pytest.approx(original[0])
+        assert grid.end_seconds > original[1]
+    assert emitted
+    assert emitted[-1][0] == grid.id
+
+
 def test_setup_click_without_drag_still_seeks(app: QApplication) -> None:
     timeline = TimelineWidget()
     song = Song.create("Grid setup seek")
