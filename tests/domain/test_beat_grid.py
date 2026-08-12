@@ -5,6 +5,7 @@ from cueplayer.persistence.project_store import project_from_dict, project_to_di
 from cueplayer.domain.undo import (
     BeatGridSnapshot,
     DeleteBeatGridCommand,
+    EditBeatGridCommand,
     MoveBeatGridCommand,
     ResizeBeatGridCommand,
 )
@@ -91,6 +92,26 @@ def test_move_beat_grid_command_undo_and_redo_preserve_duration() -> None:
     assert (grid.start_seconds, grid.end_seconds) == pytest.approx((3.0, 11.5))
     command.undo(song)
     assert (grid.start_seconds, grid.end_seconds) == pytest.approx((1.25, 9.75))
+
+
+def test_edit_beat_grid_command_undoes_color_and_all_settings() -> None:
+    song = Project.create("Edit grid").songs[0]
+    grid = BeatGridRegion.create(1.0, 5.0, bpm=120.0, color="#112233")
+    song.beat_grids.append(grid)
+    before = BeatGridSnapshot.from_grid(grid)
+    grid.end_seconds = 7.0
+    grid.bpm = 95.0
+    grid.beats_per_bar = 3
+    grid.beat_unit = 8
+    grid.subdivision = 2
+    grid.color = "#abcdef"
+    after = BeatGridSnapshot.from_grid(grid)
+    command = EditBeatGridCommand(old_grid=before, new_grid=after)
+
+    command.undo(song)
+    assert BeatGridSnapshot.from_grid(grid) == before
+    command.redo(song)
+    assert BeatGridSnapshot.from_grid(grid) == after
 
 
 def test_resize_beat_grid_command_undo_and_redo() -> None:

@@ -137,6 +137,7 @@ from cueplayer.domain.undo import (
     ChangeMarkLanesCommand,
     DeleteMarksCommand,
     DeleteBeatGridCommand,
+    EditBeatGridCommand,
     DeleteVideoClipsCommand,
     EditMainCueIdCommand,
     EditVideoClipsCommand,
@@ -8239,6 +8240,7 @@ class MainWindow(QMainWindow):
         grid = self._beat_grid_by_id(grid_id)
         if grid is None:
             return
+        before = BeatGridSnapshot.from_grid(grid)
         dialog = BeatGridEditDialog(
             grid, self, default_color=str(self.project.beat_grid_color or "#4c8bf5")
         )
@@ -8249,6 +8251,9 @@ class MainWindow(QMainWindow):
         grid.beat_unit, grid.subdivision = denominator, subdivision
         grid.color = color
         grid.end_seconds = min(self.current_song.duration_seconds, grid.start_seconds + duration)
+        after = BeatGridSnapshot.from_grid(grid)
+        if after != before:
+            self._push_song_undo(EditBeatGridCommand(old_grid=before, new_grid=after))
         self.timeline.set_song(self.current_song)
         self._mark_dirty()
 

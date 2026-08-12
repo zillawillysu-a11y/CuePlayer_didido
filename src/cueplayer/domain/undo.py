@@ -135,6 +135,33 @@ class DeleteBeatGridCommand:
 
 
 @dataclass
+class EditBeatGridCommand:
+    old_grid: BeatGridSnapshot
+    new_grid: BeatGridSnapshot
+    label: str = "Edit Beat Grid"
+
+    @staticmethod
+    def _apply(song: Song, snapshot: BeatGridSnapshot) -> None:
+        grid = next((item for item in song.beat_grids if item.id == snapshot.id), None)
+        if grid is None:
+            return
+        grid.start_seconds = snapshot.start_seconds
+        grid.end_seconds = snapshot.end_seconds
+        grid.bpm = snapshot.bpm
+        grid.beats_per_bar = snapshot.beats_per_bar
+        grid.beat_unit = snapshot.beat_unit
+        grid.subdivision = snapshot.subdivision
+        grid.color = snapshot.color
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._apply(song, self.old_grid)
+
+    def redo(self, song: Song) -> None:
+        self._apply(song, self.new_grid)
+
+
+@dataclass
 class MoveBeatGridCommand:
     grid_id: str
     old_start: float
