@@ -5,41 +5,42 @@
 
 ## Task objective
 
-Make Beat Grid color changes from Edit Beat Grid undoable.
+Prepare CuePlayer version 1.1.3 for a user-run Windows package build.
 
 ## What was implemented
 
-- Added `EditBeatGridCommand` using complete before/after snapshots.
-- Accepted Beat Grid edits now enter the song Undo Stack when any value changes.
-- Ctrl+Z/Ctrl+Y restores/reapplies color, BPM, time signature, subdivision, and
-  Duration as one atomic edit.
-- Accepting Edit without changes does not create an Undo entry.
+- Updated the Python package/application version to 1.1.3.
+- Updated the Inno Setup default and compile example to 1.1.3.
+- Verified the build environment imports `cueplayer.__version__` as 1.1.3.
 
 ## Files changed
 
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/domain/test_beat_grid.py`
+- `pyproject.toml`
+- `src/cueplayer/__init__.py`
+- `packaging/CuePlayer.iss`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_BeatGridEditUndo.md`
+- `.ai/handoffs/2026-08-12_ReleaseVersion1.1.3.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Undo stores immutable Beat Grid snapshots and updates the existing model object
-  in place, keeping timeline references valid.
-- All fields from one dialog acceptance are one Undo step.
+- Kept version values aligned across package metadata, runtime About/version
+  access, and installer fallback metadata.
+- The existing Windows build script remains the single packaging entry point.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
-  - 19 passed.
+- Imported `cueplayer.__version__` from the project environment and asserted it
+  equals `1.1.3`.
+- Searched all three release metadata files and confirmed no 1.1.2 remains.
 
 ## Remaining issues
 
-- Hands-on validation in the Windows application is recommended.
+- The user still needs to execute the Windows build script.
+- Setup.exe is produced only when Inno Setup 6 or 7 is installed; the portable
+  ZIP is produced independently.
 
 ## Suggested next task
 
-Change a grid color through Edit, verify Ctrl+Z/Ctrl+Y visually, then save and
-reopen to confirm the final chosen state persists.
+Run `packaging/build_windows.ps1`, launch the resulting executable, and verify
+the version and Beat Grid workflows before distribution.

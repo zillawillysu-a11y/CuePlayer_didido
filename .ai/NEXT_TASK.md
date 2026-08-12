@@ -1,19 +1,21 @@
 # Next task
 
-**Status:** Awaiting user validation
-**Type:** Validation (Beat Grid Edit undo)
+**Status:** Awaiting user packaging validation
+**Type:** Release validation (1.1.3 Windows)
 **Updated:** 2026-08-12
 
 ## Do this first
 
-1. Right-click a Beat Grid and change its color in Edit Beat Grid.
-2. Press Ctrl+Z; the old color must return.
-3. Press Ctrl+Y; the new color must return.
-4. Change color, BPM, and Duration together and verify they undo/redo as one step.
-5. Save/reopen and confirm the final state persists.
+1. Run `packaging/build_windows.ps1` from PowerShell.
+2. Confirm `dist/CuePlayer-1.1.3-YYYYMMDD-win64.zip` is generated.
+3. If Inno Setup is installed, confirm `dist/CuePlayer-Setup-1.1.3.exe` exists.
+4. Launch the packaged executable and smoke-test Beat Grid edit, color undo,
+   move/resize undo, Mark overlap priority, and playback.
 
 ## Relevant files
 
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/domain/test_beat_grid.py`
+- `packaging/build_windows.ps1`
+- `packaging/CuePlayer.iss`
+- `packaging/cueplayer.spec`
+- `pyproject.toml`
+- `src/cueplayer/__init__.py`
