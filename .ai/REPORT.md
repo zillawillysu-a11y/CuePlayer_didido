@@ -5,52 +5,42 @@
 
 ## Task objective
 
-Make Beat Grid dragging undoable and remove ambiguity when a Mark and Beat Grid
-division overlap.
+Make Mark dragging always take priority when a Mark overlaps a Beat Grid line.
 
 ## What was implemented
 
-- Added an undo command that restores or reapplies a Beat Grid move while
-  preserving its duration.
-- Connected completed Beat Grid drags to the song undo stack, so Ctrl+Z and
-  Ctrl+Y work after moving a grid.
-- Defined overlap drag intent through the existing magnet toggle: in Setup mode,
-  magnet on gives Mark dragging priority; magnet off gives Beat Grid dragging
-  priority.
-- Added domain and UI regression coverage for both behaviors.
+- Removed the magnet toggle from overlap hit-test priority.
+- In Setup mode, an overlapping Mark now always begins a Mark drag.
+- Beat Grid regions remain draggable from any uncovered grid division.
+- The magnet toggle now affects snapping only.
 
 ## Files changed
 
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/ui/main_window.py`
 - `src/cueplayer/ui/timeline_widget.py`
-- `tests/domain/test_beat_grid.py`
 - `tests/ui/test_beat_grid_selection.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_BeatGridMoveUndoOverlapDrag.md`
+- `.ai/handoffs/2026-08-12_MarkFirstOverlapDrag.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Beat Grid history stays in the existing domain undo system instead of adding
-  widget-local history.
-- The timeline continues to mutate the grid during live drag; it records one
-  old/new start command only on release, matching Mark drag behavior.
-- The existing magnet toggle doubles as an explicit overlap intent switch, so
-  no new mode or dialog is required.
+- Kept priority resolution in timeline hit-testing; no domain or persistence
+  behavior changed.
+- Mark-first behavior is unconditional at an exact overlap, giving the most
+  commonly edited object a stable interaction rule.
 
 ## Tests performed
 
-- `.venv/Scripts/python.exe -m pytest -q tests/domain/test_beat_grid.py tests/ui/test_beat_grid_selection.py -x`
-  - 15 passed.
+- `.venv/Scripts/python.exe -m pytest -q tests/ui/test_beat_grid_selection.py -x`
+  - 11 passed.
 
 ## Remaining issues
 
-- The drag priority and Ctrl+Z/Ctrl+Y behavior still need hands-on confirmation
-  in the packaged Windows application.
-- The previously blocked grandMA3 real-hardware/onPC validation remains pending.
+- Hands-on Windows UI confirmation is still recommended.
+- To move a grid hidden entirely by Marks, the user must grab another uncovered
+  division of the same grid.
 
 ## Suggested next task
 
-Validate the two overlap modes and Beat Grid move undo/redo in the Windows app;
-after confirmation, resume the pending grandMA3 2.3.2 hardware/onPC validation.
+Validate Mark-first overlap dragging and Beat Grid move undo/redo in the Windows
+application, then resume the pending grandMA3 hardware/onPC validation.

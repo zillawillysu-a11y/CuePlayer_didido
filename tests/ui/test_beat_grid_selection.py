@@ -252,7 +252,7 @@ def test_pause_freeze_blocks_final_auto_scroll_position_ticks(app: QApplication)
     assert timeline._scroll_x == pytest.approx(1234.0)
 
 
-def test_overlap_drag_priority_uses_magnet_as_intent_switch(app: QApplication) -> None:
+def test_overlap_drag_always_prioritizes_mark(app: QApplication) -> None:
     timeline = TimelineWidget()
     song = Song.create("Overlap")
     song.duration_seconds = 10.0
@@ -277,6 +277,15 @@ def test_overlap_drag_priority_uses_magnet_as_intent_switch(app: QApplication) -
 
     timeline._beat_snap_enabled = False
     QTest.mousePress(timeline, Qt.MouseButton.LeftButton, pos=pos)
+    assert timeline._dragging_marks is True
+    assert timeline._dragging_beat_grid_id is None
+    assert mark.id in timeline._drag_ids
+    QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=pos)
+
+    uncovered_pos = QPoint(
+        int(round(timeline._x_for_time(2.5))), timeline._ruler_height + 60
+    )
+    QTest.mousePress(timeline, Qt.MouseButton.LeftButton, pos=uncovered_pos)
     assert timeline._dragging_beat_grid_id == grid.id
     assert timeline._dragging_marks is False
-    QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=pos)
+    QTest.mouseRelease(timeline, Qt.MouseButton.LeftButton, pos=uncovered_pos)

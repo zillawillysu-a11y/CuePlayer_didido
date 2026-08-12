@@ -3854,12 +3854,11 @@ class TimelineWidget(QWidget):
             if alt and x >= self._header_width:
                 self._begin_pan(x)
                 return
-            # At an exact Mark/Beat Grid overlap, the magnet is the explicit
-            # intent switch: ON edits/snaps the Mark; OFF edits the Beat Grid.
+            # Marks always win at an exact Mark/Beat Grid overlap. The magnet
+            # controls snapping only; drag an uncovered division to move grid.
             overlap_mark_id = self._hit_mark_at(x, y)
             if (
                 self._setup_mode
-                and self._beat_snap_enabled
                 and overlap_mark_id is not None
                 and self._hit_beat_grid_division(x, y) is not None
             ):
