@@ -515,6 +515,13 @@ class TimelineWidget(QWidget):
         self._beat_snap_enabled = not self._beat_snap_enabled
         self.beat_snap_button.set_active(self._beat_snap_enabled)
 
+    def toggle_beat_snap(self) -> None:
+        """Toggle Beat Grid magnet snapping and its indicator together."""
+        self._toggle_beat_snap()
+
+    def beat_snap_enabled(self) -> bool:
+        return bool(self._beat_snap_enabled)
+
     def _sync_auto_scroll_button(self) -> None:
         """Keep Auto Scroll chip + tooltip in sync with on/off state."""
         if not hasattr(self, "auto_scroll_button"):

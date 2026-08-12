@@ -1507,6 +1507,7 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.playback.toggle)
         QShortcut(QKeySequence(Qt.Key.Key_S), self, activated=self._toggle_setup_shortcut)
+        QShortcut(QKeySequence(Qt.Key.Key_U), self, activated=self._toggle_beat_snap_shortcut)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self._nudge_frames(-1))
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=lambda: self._nudge_frames(1))
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._delete_current_selection)
@@ -1531,6 +1532,11 @@ class MainWindow(QMainWindow):
         if _text_input_has_focus():
             return
         self.timeline.toggle_setup_mode()
+
+    def _toggle_beat_snap_shortcut(self) -> None:
+        if _text_input_has_focus():
+            return
+        self.timeline.toggle_beat_snap()
 
     def _restore_startup_session(self) -> None:
         """Restore window layout, last project, and demo fixture fallback."""

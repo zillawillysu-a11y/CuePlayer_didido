@@ -6,12 +6,12 @@
 
 ## Do this first
 
-1. With Timeline focused, press S and confirm Mark movement mode and the S chip
-   both turn on; press S again and confirm both turn off.
-2. Edit a Cue List Note containing the letter S and confirm typing does not toggle
-   Setup mode.
-3. Confirm clicking the S chip and pressing S remain mutually synchronized.
-4. Rebuild and smoke-test CuePlayer 1.1.3.
+1. Press S and confirm Mark movement mode and S chip toggle together.
+2. Press U and confirm Beat Grid magnet snapping and magnet chip toggle together.
+3. Click either chip and confirm its keyboard shortcut remains synchronized.
+4. Type words containing S and U in a Cue List Note and confirm neither mode
+   changes.
+5. Rebuild and smoke-test CuePlayer 1.1.3.
 
 ## Relevant files
 
