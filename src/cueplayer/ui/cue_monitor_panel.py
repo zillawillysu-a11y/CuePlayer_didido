@@ -126,6 +126,7 @@ class _PaddedItemDelegate(QStyledItemDelegate):
     """
 
     editor_navigation_requested = Signal(int, int, int)  # row, column, delta
+    editor_opened = Signal()
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         opt = QStyleOptionViewItem(option)
@@ -184,6 +185,7 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             editor.setProperty("cue_list_row", int(index.row()))
             editor.setProperty("cue_list_column", int(index.column()))
             editor.installEventFilter(self)
+            self.editor_opened.emit()
         return editor
 
     def eventFilter(self, editor, event) -> bool:  # noqa: ANN001, N802
@@ -351,6 +353,7 @@ class CueMonitorPanel(QWidget):
         # the adjacent one on the next event-loop turn. Keep playhead follow
         # from claiming the table during that gap.
         self._editor_navigation_pending = False
+        self._editor_session_active = False
         self._secondary_hold_mark_id: str | None = None
         self._secondary_cleared = False
         self._secondary_clear_timer = QTimer(self)
@@ -630,6 +633,8 @@ class CueMonitorPanel(QWidget):
         self._cue_item_delegate.editor_navigation_requested.connect(
             self._navigate_note_editor
         )
+        self._cue_item_delegate.editor_opened.connect(self._on_cue_editor_opened)
+        self._cue_item_delegate.closeEditor.connect(self._on_cue_editor_closed)
         self.cue_table.setItemDelegate(self._cue_item_delegate)
         self.cue_table.verticalHeader().setVisible(False)
         self.cue_table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
@@ -674,6 +679,7 @@ class CueMonitorPanel(QWidget):
         self.cue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.cue_table.customContextMenuRequested.connect(self._show_cue_list_context_menu)
         self.cue_table.cellClicked.connect(self._on_cell_clicked)
+        self.cue_table.cellPressed.connect(self._on_cell_pressed)
         self.cue_table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.cue_table.itemChanged.connect(self._on_item_changed)
         self.cue_table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -2392,6 +2398,30 @@ class CueMonitorPanel(QWidget):
         if not multi:
             self.seek_requested.emit(mark.time_seconds)
 
+    def _on_cell_pressed(self, row: int, column: int) -> None:
+        """Protect an editor-to-editor mouse handoff before Qt closes the old one."""
+        field = self._field_at_col(column)
+        if field not in ("note", "cue_id"):
+            return
+        item = self.cue_table.item(row, column)
+        if item is not None and item.flags() & Qt.ItemFlag.ItemIsEditable:
+            self._editor_session_active = True
+
+    def _on_cue_editor_opened(self) -> None:
+        self._editor_session_active = True
+
+    def _on_cue_editor_closed(self) -> None:
+        # Qt destroys the old editor before cellClicked opens the one the user
+        # just pressed. Decide only after that mouse/key event has completed.
+        QTimer.singleShot(0, self._finish_cue_editor_handoff)
+
+    def _finish_cue_editor_handoff(self) -> None:
+        if self._editor_navigation_pending:
+            return
+        self._editor_session_active = (
+            self.cue_table.state() == QAbstractItemView.State.EditingState
+        )
+
     def _on_cell_double_clicked(self, row: int, column: int) -> None:
         if self._field_at_col(column) != "time":
             return
@@ -2797,7 +2827,8 @@ class CueMonitorPanel(QWidget):
         # Never let its row-follow selection close an editor or interrupt the
         # one-event-loop handoff to the next Note cell.
         if (
-            self._editor_navigation_pending
+            self._editor_session_active
+            or self._editor_navigation_pending
             or self.cue_table.state() == QAbstractItemView.State.EditingState
         ):
             return

@@ -111,3 +111,54 @@ def test_crossing_cue_does_not_interrupt_adjacent_note_editor(
     )
     panel.close()
     app.processEvents()
+
+
+def test_mouse_handoff_to_another_note_survives_playhead_follow(
+    app: QApplication,
+) -> None:
+    song = Song.create("Mouse Note edit")
+    song.duration_seconds = 10.0
+    first = song.add_mark(1, 1.0)
+    second = song.add_mark(1, 2.0)
+    third = song.add_mark(1, 3.0)
+    lane = song.lane_by_index(1)
+    assert lane is not None
+    lane.cue_list_enabled = True
+
+    panel = CueMonitorPanel()
+    panel.resize(700, 700)
+    panel.set_song(song)
+    panel.show()
+    panel.set_position(first.time_seconds + 0.01, song.duration_seconds)
+    app.processEvents()
+
+    note_col = panel._col_for_field("note")
+    first_row = panel._row_for_mark_id(first.id)
+    second_row = panel._row_for_mark_id(second.id)
+    panel.cue_table.setCurrentCell(first_row, note_col)
+    panel.cue_table.editItem(panel.cue_table.item(first_row, note_col))
+    app.processEvents()
+    first_editor = app.focusWidget()
+    assert isinstance(first_editor, QLineEdit)
+    first_editor.setText("First mouse note")
+
+    target_index = panel.cue_table.model().index(second_row, note_col)
+    target = panel.cue_table.visualRect(target_index).center()
+    QTest.mouseClick(panel.cue_table.viewport(), Qt.MouseButton.LeftButton, pos=target)
+    app.processEvents()
+
+    second_editor = app.focusWidget()
+    assert isinstance(second_editor, QLineEdit)
+    assert int(second_editor.property("cue_list_row")) == second_row
+    second_editor.setText("Typing after mouse handoff")
+    panel.set_position(third.time_seconds + 0.01, song.duration_seconds)
+    app.processEvents()
+
+    assert app.focusWidget() is second_editor
+    assert second_editor.text() == "Typing after mouse handoff"
+    assert panel.cue_table.currentRow() == second_row
+    panel.cue_table.closeEditor(
+        second_editor, QAbstractItemDelegate.EndEditHint.RevertModelCache
+    )
+    panel.close()
+    app.processEvents()

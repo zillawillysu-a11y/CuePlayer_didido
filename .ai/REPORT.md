@@ -5,45 +5,45 @@
 
 ## Task objective
 
-Restore the Video Preview Panel visibility from the state in which CuePlayer
-was last closed.
+Eliminate intermittent Cue List Note editor dismissal when moving between rows
+with Up/Down or by clicking another Note during playback.
 
 ## What was implemented
 
-- Added a machine-local `ui/video_preview_visible` setting.
-- View > Video Preview Panel changes persist immediately.
-- Startup layout restore applies the saved visibility to both the panel and its
-  checked menu action.
-- Closing CuePlayer saves the actual panel visibility with the other UI session
-  state.
-- Existing users without the new key retain the previous default: visible.
+- CueMonitorPanel now tracks an explicit editor session instead of relying only
+  on Qt's instantaneous EditingState.
+- Delegate editor open/close events begin and finish the protected session.
+- Pressing an editable Note/Cue ID cell protects the mouse handoff before the
+  old editor closes.
+- The session remains protected through the queued Up/Down adjacent-row handoff.
+- Playhead row-follow resumes only after Qt confirms no replacement editor was
+  opened; NOW playback display continues updating throughout.
+- Added a real mouse-click editor-to-editor regression test while crossing a Cue.
 
 ## Files changed
 
-- `src/cueplayer/application/settings_service.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_video_preview_layout.py`
+- `src/cueplayer/ui/cue_monitor_panel.py`
+- `tests/ui/test_cue_list_note_edit_during_playback.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_VideoPreviewVisibilityRestore.md`
+- `.ai/handoffs/2026-08-12_CueListEditorSessionGuard.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Preview visibility is machine UI state in SettingsService/QSettings, not
-  project or Song content.
-- Video decode and the shared audio playback clock are unchanged.
+- Fix remains UI coordination only.
+- Song/Mark persistence and the playback audio master clock are unchanged.
 
 ## Tests performed
 
-- `tests/ui/test_video_preview_layout.py tests/ui/test_main_window_shutdown.py`
-  - 6 passed.
+- `tests/ui/test_cue_list_note_edit_during_playback.py` plus
+  `tests/ui/test_cue_list_note_arrow_navigation.py`: 5 passed.
 
 ## Remaining issues
 
-- User should close Preview, restart the packaged/source app, and confirm it
-  stays closed.
+- User should validate repeated Up/Down and mouse Note switching during real
+  playback, especially with closely spaced Cues.
 
 ## Suggested next task
 
-Validate Video Preview off/on persistence across two restarts, then rebuild and
-smoke-test CuePlayer 1.1.3.
+Stress-test continuous Cue Note entry using both Up/Down and direct mouse clicks
+while playback crosses several Cues, then package CuePlayer 1.1.3.
