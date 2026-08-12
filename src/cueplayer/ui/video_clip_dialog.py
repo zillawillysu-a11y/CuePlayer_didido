@@ -18,9 +18,20 @@ from cueplayer.ui.transport_bar import format_time, parse_time
 
 
 class VideoClipEditDialog(QDialog):
-    def __init__(self, clip: VideoClip, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        clip: VideoClip,
+        parent: QWidget | None = None,
+        *,
+        timeline_duration: float | None = None,
+    ) -> None:
         super().__init__(parent)
         self._source_duration = max(0.0, float(clip.source_duration_seconds or 0.0))
+        self._timeline_duration = (
+            max(0.0, float(timeline_duration))
+            if timeline_duration is not None
+            else None
+        )
         self.setWindowTitle("Edit Video Clip")
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -76,6 +87,14 @@ class VideoClipEditDialog(QDialog):
         error = ""
         if start is None or source_in is None or source_out is None:
             error = "Enter time as MM:SS.mmm, HH:MM:SS.mmm, or seconds."
+        elif (
+            self._timeline_duration is not None
+            and start > self._timeline_duration + 1e-6
+        ):
+            error = (
+                "Timeline Start cannot exceed the song length "
+                f"({format_time(self._timeline_duration)})."
+            )
         elif source_out <= source_in:
             error = "Source Out must be later than Source In."
         elif self._source_duration > 0 and source_out > self._source_duration + 1e-6:

@@ -8182,7 +8182,11 @@ class MainWindow(QMainWindow):
         clip = self.current_song.video_clip_by_id(clip_id)
         if clip is None:
             return
-        dialog = VideoClipEditDialog(clip, self)
+        dialog = VideoClipEditDialog(
+            clip,
+            self,
+            timeline_duration=float(self.current_song.duration_seconds),
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         timeline_start, source_in, source_out = dialog.values()

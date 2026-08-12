@@ -55,3 +55,28 @@ def test_rejects_source_out_beyond_media_duration(app: QApplication) -> None:
 
     assert dialog.result() != QDialog.DialogCode.Accepted
     warning.assert_called_once()
+
+
+def test_rejects_timeline_start_beyond_song_length(app: QApplication) -> None:
+    dialog = VideoClipEditDialog(_clip(), timeline_duration=185.0)
+    dialog.timeline_start.setText("03:05.001")
+
+    with patch("cueplayer.ui.video_clip_dialog.QMessageBox.warning") as warning:
+        dialog._validate_and_accept()
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    warning.assert_called_once_with(
+        dialog,
+        "Invalid Video Clip Time",
+        "Timeline Start cannot exceed the song length (03:05.000).",
+    )
+    assert dialog.values()[0] == pytest.approx(185.001)
+
+
+def test_accepts_timeline_start_at_song_end(app: QApplication) -> None:
+    dialog = VideoClipEditDialog(_clip(), timeline_duration=185.0)
+    dialog.timeline_start.setText("03:05.000")
+
+    dialog._validate_and_accept()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
