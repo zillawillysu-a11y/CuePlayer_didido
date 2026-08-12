@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from cueplayer.domain.models import BeatGridRegion, Song
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 class BeatGridEditDialog(QDialog):
-    def __init__(self, grid: BeatGridRegion, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        grid: BeatGridRegion,
+        parent: QWidget | None = None,
+        *,
+        default_color: str = "#4c8bf5",
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Beat Grid")
         layout = QVBoxLayout(self)
@@ -32,22 +48,39 @@ class BeatGridEditDialog(QDialog):
         self.duration.setDecimals(3)
         self.duration.setSuffix(" s")
         self.duration.setValue(max(0.01, grid.end_seconds - grid.start_seconds))
+        self._color = str(grid.color or default_color or "#4c8bf5")
+        self.color_button = QPushButton()
+        self.color_button.clicked.connect(self._choose_color)
+        self._update_color_button()
         form.addRow("BPM", self.bpm)
         form.addRow("Beats per bar", self.numerator)
         form.addRow("Beat unit", self.denominator)
         form.addRow("Subdivision", self.subdivision)
         form.addRow("Duration", self.duration)
+        form.addRow("Grid color", self.color_button)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[float, int, int, int, float]:
+    def _choose_color(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self._color), self, "Beat Grid Color")
+        if chosen.isValid():
+            self._color = chosen.name()
+            self._update_color_button()
+
+    def _update_color_button(self) -> None:
+        self.color_button.setText(self._color.upper())
+        self.color_button.setStyleSheet(
+            f"QPushButton {{ background: {self._color}; color: white; }}"
+        )
+
+    def values(self) -> tuple[float, int, int, int, float, str]:
         return (
             float(self.bpm.value()), int(self.numerator.value()),
             int(self.denominator.value()), int(self.subdivision.value()),
-            float(self.duration.value()),
+            float(self.duration.value()), str(self._color),
         )
 
 

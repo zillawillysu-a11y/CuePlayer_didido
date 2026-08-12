@@ -252,6 +252,7 @@ class BeatGridRegion:
     beats_per_bar: int = 4
     beat_unit: int = 4
     subdivision: int = 1
+    color: str = ""
 
     @classmethod
     def create(
@@ -263,6 +264,7 @@ class BeatGridRegion:
         beats_per_bar: int = 4,
         beat_unit: int = 4,
         subdivision: int = 1,
+        color: str = "",
     ) -> BeatGridRegion:
         start, end = sorted((max(0.0, float(start_seconds)), max(0.0, float(end_seconds))))
         return cls(
@@ -273,6 +275,7 @@ class BeatGridRegion:
             beats_per_bar=max(1, int(beats_per_bar)),
             beat_unit=max(1, int(beat_unit)),
             subdivision=max(1, int(subdivision)),
+            color=str(color or ""),
         )
 
     @property

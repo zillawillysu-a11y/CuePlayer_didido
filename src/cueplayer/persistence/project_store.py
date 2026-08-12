@@ -823,6 +823,7 @@ def project_to_dict(
                         "beats_per_bar": grid.beats_per_bar,
                         "beat_unit": grid.beat_unit,
                         "subdivision": grid.subdivision,
+                        "color": grid.color,
                     }
                     for grid in song.beat_grids
                 ],
@@ -949,6 +950,7 @@ def project_from_dict(
                 beats_per_bar=max(1, int(grid.get("beats_per_bar", 4))),
                 beat_unit=max(1, int(grid.get("beat_unit", 4))),
                 subdivision=max(1, int(grid.get("subdivision", 1))),
+                color=str(grid.get("color") or ""),
             )
             for grid in song_data.get("beat_grids", [])
             if isinstance(grid, dict)

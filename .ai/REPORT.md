@@ -5,38 +5,38 @@
 
 ## Task objective
 
-Allow Ctrl-dragging the first or last Beat Grid boundary to change its Duration.
+Allow each Beat Grid region to have its own color through Edit Beat Grid.
 
 ## What was implemented
 
-- Added symmetric endpoint hit-testing for Beat Grid Start and End.
-- In Setup mode, Ctrl+drag on Start changes only Start; Ctrl+drag on End changes
-  only End.
-- Normal grid dragging continues to move the complete region without changing
-  Duration.
-- Added `ResizeBeatGridCommand`, so endpoint resizing supports Ctrl+Z/Ctrl+Y.
-- Enforced a minimum region length of one subdivision and clamped endpoints to
-  the song range.
+- Added a Grid color picker to the Beat Grid editor.
+- Stored the selected color on each `BeatGridRegion` and persisted it with the
+  project.
+- Timeline lines, alternating beat fills, hover, and selected highlights now use
+  the region color.
+- Existing projects without a per-grid color continue to use the global Display
+  Settings Beat Grid color.
+- Beat Grid delete undo snapshots preserve the individual color.
 
 ## Files changed
 
+- `src/cueplayer/domain/models.py`
 - `src/cueplayer/domain/undo.py`
+- `src/cueplayer/persistence/project_store.py`
+- `src/cueplayer/ui/beat_grid_dialog.py`
 - `src/cueplayer/ui/main_window.py`
 - `src/cueplayer/ui/timeline_widget.py`
 - `tests/domain/test_beat_grid.py`
-- `tests/ui/test_beat_grid_selection.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_BeatGridCtrlResize.md`
+- `.ai/handoffs/2026-08-12_BeatGridPerRegionColor.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- Live resizing remains a timeline interaction, while committed history uses
-  the domain undo stack.
-- Resize history stores both old/new Start and End values rather than deriving
-  Duration, avoiding drift across undo/redo.
-- Mark-first overlap behavior remains unchanged; use an uncovered endpoint when
-  a Mark occupies the exact same hit area.
+- Per-region color belongs to the Beat Grid domain model because it is song data,
+  not a temporary UI preference.
+- An empty color remains a supported fallback to the project-wide display color
+  for backward compatibility.
 
 ## Tests performed
 
@@ -45,9 +45,10 @@ Allow Ctrl-dragging the first or last Beat Grid boundary to change its Duration.
 
 ## Remaining issues
 
-- Hands-on Windows UI confirmation is recommended for endpoint hit comfort.
+- The native Windows color dialog and visual contrast should be confirmed by the
+  user in the running application.
 
 ## Suggested next task
 
-Validate Ctrl-dragging both Beat Grid endpoints and Ctrl+Z/Ctrl+Y in the Windows
-application, then resume the pending grandMA3 hardware/onPC validation.
+Validate editing two Beat Grid regions to different colors, save/reopen the
+project, and confirm both colors persist.

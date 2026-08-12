@@ -92,6 +92,7 @@ class BeatGridSnapshot:
     beats_per_bar: int
     beat_unit: int
     subdivision: int
+    color: str
 
     @classmethod
     def from_grid(cls, grid: BeatGridRegion) -> BeatGridSnapshot:
@@ -103,6 +104,7 @@ class BeatGridSnapshot:
             beats_per_bar=grid.beats_per_bar,
             beat_unit=grid.beat_unit,
             subdivision=grid.subdivision,
+            color=grid.color,
         )
 
     def to_grid(self) -> BeatGridRegion:
@@ -114,6 +116,7 @@ class BeatGridSnapshot:
             beats_per_bar=self.beats_per_bar,
             beat_unit=self.beat_unit,
             subdivision=self.subdivision,
+            color=self.color,
         )
 
 

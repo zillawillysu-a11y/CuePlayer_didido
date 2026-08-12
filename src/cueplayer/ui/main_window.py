@@ -8217,12 +8217,15 @@ class MainWindow(QMainWindow):
             end_seconds,
             bpm=float(self.current_song.bpm or 120.0),
         )
-        dialog = BeatGridEditDialog(grid, self)
+        dialog = BeatGridEditDialog(
+            grid, self, default_color=str(self.project.beat_grid_color or "#4c8bf5")
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        bpm, numerator, denominator, subdivision, duration = dialog.values()
+        bpm, numerator, denominator, subdivision, duration, color = dialog.values()
         grid.bpm, grid.beats_per_bar = bpm, numerator
         grid.beat_unit, grid.subdivision = denominator, subdivision
+        grid.color = color
         grid.end_seconds = min(self.current_song.duration_seconds, grid.start_seconds + duration)
         self.current_song.beat_grids.append(grid)
         self.current_song.beat_grids.sort(key=lambda item: item.start_seconds)
@@ -8236,12 +8239,15 @@ class MainWindow(QMainWindow):
         grid = self._beat_grid_by_id(grid_id)
         if grid is None:
             return
-        dialog = BeatGridEditDialog(grid, self)
+        dialog = BeatGridEditDialog(
+            grid, self, default_color=str(self.project.beat_grid_color or "#4c8bf5")
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        bpm, numerator, denominator, subdivision, duration = dialog.values()
+        bpm, numerator, denominator, subdivision, duration, color = dialog.values()
         grid.bpm, grid.beats_per_bar = bpm, numerator
         grid.beat_unit, grid.subdivision = denominator, subdivision
+        grid.color = color
         grid.end_seconds = min(self.current_song.duration_seconds, grid.start_seconds + duration)
         self.timeline.set_song(self.current_song)
         self._mark_dirty()

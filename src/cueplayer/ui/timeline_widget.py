@@ -3285,7 +3285,6 @@ class TimelineWidget(QWidget):
     def _paint_beat_grids(self, painter: QPainter) -> None:
         if self._song is None or not self._show_beat_grid:
             return
-        color = QColor(self._beat_grid_color or "#4c8bf5")
         left_t = self._time_for_x(self._header_width)
         right_t = self._time_for_x(self._paint_right())
         top = self._ruler_height
@@ -3300,6 +3299,7 @@ class TimelineWidget(QWidget):
             )
         )
         for grid in self._song.beat_grids:
+            color = QColor(grid.color or self._beat_grid_color or "#4c8bf5")
             step = grid.step_seconds
             if step <= 1e-9 or grid.end_seconds < left_t or grid.start_seconds > right_t:
                 continue
@@ -3359,7 +3359,6 @@ class TimelineWidget(QWidget):
         if not highlights:
             return
         top, bottom = self._ruler_height, self._wave_bottom_y()
-        color = QColor(self._beat_grid_color or "#4c8bf5")
         style = {
             "solid": Qt.PenStyle.SolidLine,
             "dot": Qt.PenStyle.DotLine,
@@ -3378,6 +3377,7 @@ class TimelineWidget(QWidget):
             grid = next((item for item in self._song.beat_grids if item.id == grid_id), None)
             if grid is None:
                 continue
+            color = QColor(grid.color or self._beat_grid_color or "#4c8bf5")
             at = grid.start_seconds + index * grid.step_seconds
             if at < grid.start_seconds - 1e-9 or at > grid.end_seconds + 1e-9:
                 continue

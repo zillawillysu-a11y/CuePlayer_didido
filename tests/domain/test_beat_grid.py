@@ -20,6 +20,7 @@ def test_beat_grid_math_and_round_trip() -> None:
         beats_per_bar=3,
         beat_unit=4,
         subdivision=2,
+        color="#abcdef",
     )
     song.beat_grids.append(grid)
     project.beat_grid_color = "#123456"
@@ -40,6 +41,7 @@ def test_beat_grid_math_and_round_trip() -> None:
     assert restored.beats_per_bar == 3
     assert restored.beat_unit == 4
     assert restored.subdivision == 2
+    assert restored.color == "#abcdef"
 
 
 def test_old_project_without_beat_grid_fields_uses_defaults() -> None:
@@ -61,7 +63,8 @@ def test_delete_beat_grid_command_undo_and_redo_preserve_all_settings() -> None:
     project = Project.create("Undo grid")
     song = project.songs[0]
     grid = BeatGridRegion.create(
-        1.25, 9.75, bpm=137.5, beats_per_bar=3, beat_unit=8, subdivision=4
+        1.25, 9.75, bpm=137.5, beats_per_bar=3, beat_unit=8, subdivision=4,
+        color="#fedcba",
     )
     song.beat_grids.append(grid)
     command = DeleteBeatGridCommand(grid=BeatGridSnapshot.from_grid(grid))
@@ -72,6 +75,7 @@ def test_delete_beat_grid_command_undo_and_redo_preserve_all_settings() -> None:
     command.undo(song)
     restored = song.beat_grids[0]
     assert restored == grid
+    assert restored.color == "#fedcba"
 
     command.redo(song)
     assert song.beat_grids == []

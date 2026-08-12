@@ -1,26 +1,22 @@
 # Next task
 
 **Status:** Awaiting user validation
-**Type:** Validation (Timeline / Beat Grid resize)
+**Type:** Validation (Beat Grid per-region color)
 **Updated:** 2026-08-12
 
 ## Do this first
 
-In Setup mode on Windows, validate:
-
-1. Hold Ctrl and drag the first Beat Grid boundary; only Start should change.
-2. Hold Ctrl and drag the last boundary; only End should change.
-3. Ctrl+Z and Ctrl+Y should undo and redo each Duration adjustment.
-4. Dragging an internal uncovered division without Ctrl should still move the
-   complete region.
-5. A Mark/Grid overlap should still prioritize the Mark.
+1. Create or edit two Beat Grid regions and assign different colors.
+2. Confirm lines, translucent beat fills, hover, and selection use each color.
+3. Save and reopen the project; confirm both colors persist.
+4. Open an older project and confirm grids without individual colors still use
+   the Display Settings color.
 
 If these pass, resume the pending grandMA3 2.3.2 hardware/onPC validation.
 
 ## Relevant files
 
-- `src/cueplayer/domain/undo.py`
-- `src/cueplayer/ui/main_window.py`
+- `src/cueplayer/domain/models.py`
+- `src/cueplayer/persistence/project_store.py`
+- `src/cueplayer/ui/beat_grid_dialog.py`
 - `src/cueplayer/ui/timeline_widget.py`
-- `tests/domain/test_beat_grid.py`
-- `tests/ui/test_beat_grid_selection.py`
