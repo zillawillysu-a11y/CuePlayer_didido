@@ -13,6 +13,9 @@ and prevent duplicate song names from selecting the wrong MA3 objects.
 - Assign colliding MA song names pool-qualified unique identities and propagate
   them through all name-linked MA3 objects and files.
 - Added focused regression tests.
+- Fixed batch Duplicate selection by resolving the newly created immutable song
+  IDs after all reverse-order insertions; original songs are no longer mixed
+  into the copy selection when moving it to another Folder.
 
 ## Files changed
 
@@ -23,6 +26,8 @@ and prevent duplicate song names from selecting the wrong MA3 objects.
 - `tests/persistence/test_heal_stale_media.py`
 - `tests/exporters/test_ma3_song_workflow.py`
 - `tests/exporters/test_show_patch.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/ui/test_duplicate_song_selection.py`
 - `.ai/REPORT.md`
 - `.ai/NEXT_TASK.md`
 - `.ai/handoffs/2026-08-15_MediaRelinkAndMa3Identity.md`
@@ -44,6 +49,7 @@ and prevent duplicate song names from selecting the wrong MA3 objects.
 - Restore Python and run focused tests.
 - Validate affected project relinking in the app.
 - Validate PAGE CHANGE and duplicate-name behavior in MA3 2.3.2.
+- Validate a full-Folder batch Duplicate/move in the UI.
 
 ## Suggested next task
 

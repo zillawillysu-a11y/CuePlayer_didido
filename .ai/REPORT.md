@@ -23,6 +23,9 @@ wrong Sequence/Timecode.
   such as `Same_Song_S201`; the same identity is used for Sequence, Timecode,
   Page, View, song Macro, and generated filenames.
 - Added regression coverage for all three failures.
+- Batch Duplicate now records new song IDs and resolves their final indexes only
+  after every insertion, so dragging the selected copies cannot move originals
+  out of their old Folder.
 
 ## Files changed
 
@@ -33,6 +36,8 @@ wrong Sequence/Timecode.
 - `tests/persistence/test_heal_stale_media.py`
 - `tests/exporters/test_ma3_song_workflow.py`
 - `tests/exporters/test_show_patch.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/ui/test_duplicate_song_selection.py`
 - `.ai/REPORT.md`
 - `.ai/handoffs/2026-08-15_MediaRelinkAndMa3Identity.md`
 - `.ai/NEXT_TASK.md`
@@ -48,7 +53,7 @@ wrong Sequence/Timecode.
 ## Tests performed
 
 - `git diff --check`: passed (line-ending notices only).
-- Added three focused regression tests.
+- Added four focused regression tests.
 - Pytest could not start because `.venv/pyvenv.cfg` points to removed
   `C:\Users\User\AppData\Local\Programs\Python\Python314\python.exe`;
   PowerShell has no other `python`/`py` command available.
@@ -58,6 +63,8 @@ wrong Sequence/Timecode.
 - Recreate the project virtual environment or install the expected Python, then
   run the focused persistence and MA exporter suites.
 - Validate the generated Page Change macro in grandMA3 2.3.2 hardware/onPC.
+- Validate duplicating every song in a collapsed/expanded Folder selects only
+  the copies and leaves every original in the source Folder.
 - Existing project JSON will heal when opened/saved by the corrected app; no
   user project outside the repository was directly overwritten in this task.
 

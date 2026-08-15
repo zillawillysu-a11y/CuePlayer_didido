@@ -4882,7 +4882,7 @@ class MainWindow(QMainWindow):
         if not indexes:
             return
 
-        new_indexes: list[int] = []
+        new_song_ids: list[str] = []
         with self._setlist_edit("Duplicate Song"):
             for row in sorted(indexes, reverse=True):
                 source = self.project.songs[row]
@@ -4892,8 +4892,18 @@ class MainWindow(QMainWindow):
                 )
                 insert_at = row + 1
                 self.project.songs.insert(insert_at, dup)
-                new_indexes.append(insert_at)
-            new_indexes.sort()
+                new_song_ids.append(dup.id)
+            # Inserting several duplicates in reverse order shifts every
+            # previously recorded list index. Re-resolve by immutable IDs so
+            # the post-Duplicate selection contains only copies, never a mix
+            # of originals and copies that would move the wrong songs when
+            # dragged into a new Folder.
+            new_song_id_set = set(new_song_ids)
+            new_indexes = [
+                i
+                for i, song in enumerate(self.project.songs)
+                if song.id in new_song_id_set
+            ]
 
             self._rebuild_song_list(select_indexes=new_indexes)
             self._activate_song(new_indexes[0], stop_playback=True)
