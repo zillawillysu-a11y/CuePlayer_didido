@@ -5,71 +5,50 @@
 
 ## Task objective
 
-Prevent duplicated same-name media from unlinking the original setlist, update
-the MA3 Page Change fixed macro to the supplied working shape with a dynamic
-first Main Sequence, and prevent duplicate MA song names from selecting the
-wrong Sequence/Timecode.
+Add a safe, recoverable Clean Unused Media feature for project-owned media.
 
 ## What was implemented
 
-- Stale media healing now prefers an existing legacy `Media/<basename>` file
-  before the recursive unique-basename fallback. A duplicated copy in a nested
-  Setlist folder therefore no longer makes the original song Unlinked.
-- MA3 Page Change now follows the supplied command order and emits
-  `Off Sequence <first-main> Thru - Sequence $"song"`.
-- The first Main Sequence is derived from the first exported plan that includes
-  Main, including per-song pool overrides.
-- Duplicate case-insensitive MA song names receive stable pool-qualified names
-  such as `Same_Song_S201`; the same identity is used for Sequence, Timecode,
-  Page, View, song Macro, and generated filenames.
-- Added regression coverage for all three failures.
-- Batch Duplicate now records new song IDs and resolves their final indexes only
-  after every insertion, so dragging the selected copies cannot move originals
-  out of their old Folder.
+- Added `File → Clean Unused Media…`.
+- Scans recognized audio, video and still-image files only under the current
+  saved project's `Media` directory.
+- Protects every path referenced by Audio Tracks, Audio Variants and Video Clips.
+- Presents count, total size and relative paths before a default-No confirmation.
+- Moves confirmed files to `.cueplayer_trash/Unused Media <timestamp>` while
+  preserving relative folders; it never permanently deletes them.
+- Ignores non-media files and refuses paths outside the project's Media folder.
+- Added Unicode and recoverability regression tests.
 
 ## Files changed
 
-- `src/cueplayer/persistence/media_layout.py`
-- `src/cueplayer/exporters/plan_from_song.py`
-- `src/cueplayer/exporters/show_patch.py`
-- `src/cueplayer/exporters/ma3/exporter.py`
-- `tests/persistence/test_heal_stale_media.py`
-- `tests/exporters/test_ma3_song_workflow.py`
-- `tests/exporters/test_show_patch.py`
+- `src/cueplayer/persistence/unused_media.py`
 - `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_duplicate_song_selection.py`
+- `tests/persistence/test_unused_media.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-15_MediaRelinkAndMa3Identity.md`
 - `.ai/NEXT_TASK.md`
+- `.ai/handoffs/2026-08-15_CleanUnusedMedia.md`
 
 ## Architecture decisions
 
-- Media recovery remains in persistence and uses a deterministic legacy-layout
-  candidate before the conservative ambiguous-name fallback.
-- MA uniqueness is established once in show patch planning and propagated
-  through the export plan, rather than patched independently in XML writers.
-- Playback clock and media playback code are untouched.
+- Persistence performs discovery and quarantine; the UI only previews and asks.
+- Audio Track and new Audio Variant persistence are both treated as live refs.
+- Quarantine is intentionally project-local and recoverable.
+- Playback and its clock are unchanged.
 
 ## Tests performed
 
-- `git diff --check`: passed (line-ending notices only).
-- Added four focused regression tests.
-- Pytest could not start because `.venv/pyvenv.cfg` points to removed
-  `C:\Users\User\AppData\Local\Programs\Python\Python314\python.exe`;
-  PowerShell has no other `python`/`py` command available.
+- `git diff --check`: performed after implementation.
+- Tests added: Variant/Track/Video protection, Unicode paths, non-media ignore,
+  preserved relative layout, recoverable move.
+- Pytest could not run because `.venv` points to a removed Python 3.14 executable
+  and PowerShell has no other `python` or `py` launcher.
 
 ## Remaining issues
 
-- Recreate the project virtual environment or install the expected Python, then
-  run the focused persistence and MA exporter suites.
-- Validate the generated Page Change macro in grandMA3 2.3.2 hardware/onPC.
-- Validate duplicating every song in a collapsed/expanded Folder selects only
-  the copies and leaves every original in the source Folder.
-- Existing project JSON will heal when opened/saved by the corrected app; no
-  user project outside the repository was directly overwritten in this task.
+- Restore/recreate `.venv` and run the focused test suite.
+- Perform one real UI preview on SAX MACHINE before confirming cleanup.
 
 ## Suggested next task
 
-Restore the Python environment, run the focused regression suites, open the
-affected SAX MACHINE project to confirm its original songs relink, export a
-two-song duplicate-name MA3 fixture, and validate PAGE CHANGE on MA3 2.3.2.
+Restore Python, run the focused regression suites, then preview the SAX MACHINE
+root-level files with Clean Unused Media and validate restoring one quarantined file.

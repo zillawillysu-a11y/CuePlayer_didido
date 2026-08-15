@@ -125,6 +125,10 @@ from cueplayer.persistence.media_layout import (
     sync_all_songs_media_to_setlist_folders,
 )
 from cueplayer.persistence.project_bundle import BundleResult, collect_project_bundle
+from cueplayer.persistence.unused_media import (
+    find_unused_media,
+    quarantine_unused_media,
+)
 from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
@@ -2426,6 +2430,12 @@ class MainWindow(QMainWindow):
         )
         act_bundle.triggered.connect(self._collect_project_bundle)
         menu.addAction(act_bundle)
+        act_clean_unused = QAction("Clean &Unused Media…", self)
+        act_clean_unused.setToolTip(
+            "Find media not referenced by this project and move it to a recoverable folder"
+        )
+        act_clean_unused.triggered.connect(self._clean_unused_media)
+        menu.addAction(act_clean_unused)
         menu.addSeparator()
         act_export = QAction("&Export…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -5474,6 +5484,74 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _format_cache_size(n_bytes: int) -> str:
         return f"{max(0, int(n_bytes)) / (1024**3):.2f} GB"
+
+    @staticmethod
+    def _format_media_size(n_bytes: int) -> str:
+        size = max(0, int(n_bytes))
+        if size >= 1024**3:
+            return f"{size / (1024**3):.2f} GB"
+        if size >= 1024**2:
+            return f"{size / (1024**2):.1f} MB"
+        if size >= 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size} bytes"
+
+    def _clean_unused_media(self) -> None:
+        """File → Clean Unused Media: preview, confirm, then quarantine."""
+        if self._project_path is None:
+            QMessageBox.information(
+                self,
+                "Clean Unused Media",
+                "Save the project first so CuePlayer knows which Media folder belongs to it.",
+            )
+            return
+        unused = find_unused_media(self.project, project_file=self._project_path)
+        if not unused:
+            QMessageBox.information(
+                self,
+                "Clean Unused Media",
+                "No unused media files were found in this project's Media folder.",
+            )
+            return
+        total = sum(item.size_bytes for item in unused)
+        preview = "\n".join(str(item.relative_path) for item in unused[:15])
+        if len(unused) > 15:
+            preview += f"\n…and {len(unused) - 15} more"
+        answer = QMessageBox.question(
+            self,
+            "Clean Unused Media",
+            (
+                f"Found {len(unused)} unused media file(s), "
+                f"{self._format_media_size(total)} total.\n\n"
+                f"{preview}\n\n"
+                "They will not be permanently deleted. They will be moved to "
+                "the project's .cueplayer_trash folder so you can restore them.\n\n"
+                "Continue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = quarantine_unused_media(
+                unused, project_file=self._project_path
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Unable to Clean Media", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Unused Media Moved",
+            (
+                f"Moved {len(result.moved_files)} file(s), "
+                f"{self._format_media_size(result.moved_bytes)}.\n\n"
+                f"Recover them from:\n{result.quarantine_dir}"
+            ),
+        )
+        self.status.showMessage(
+            f"Unused media moved to {result.quarantine_dir.name}", 5000
+        )
 
     def _clear_media_cache(self) -> None:
         from cueplayer.media.cache_management import (
