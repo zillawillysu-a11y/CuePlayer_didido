@@ -739,7 +739,10 @@ class Ma3Exporter:
     # exporter's equivalent macros already rely on); everything else here
     # is deliberately static text, not reinterpreted logic.
     def _fixed_song_change_macro_definitions(
-        self, song_list_name: str, viewbutton: str = "2.10"
+        self,
+        song_list_name: str,
+        viewbutton: str = "2.10",
+        first_main_sequence: int = 1,
     ) -> list[tuple[str, list[tuple[str, bool]]]]:
         return [
             (
@@ -758,11 +761,16 @@ class Ma3Exporter:
                 "Page Change",
                 [
                     ('Page $"song"', True),
-                    ("Off Sequence 201 Thru", True),
+                    ('Select Sequence $"song"', True),
+                    ("Goto Cue 0.5", True),
+                    (
+                        f'Off Sequence {max(1, int(first_main_sequence))} '
+                        'Thru - Sequence $"song"',
+                        True,
+                    ),
                     ("Off Timecode 1 Thru", True),
                     ("<<< Timecode 1 Thru", True),
-                    ('Select Sequence $"song".', True),
-                    ("Goto Cue 0.5", True),
+                    ('Select Sequence $"song"', True),
                     ('Assign View $"song" At ViewButton $songviewbutton', True),
                     ("Master 3.1 At BPM $songbpm", True),
                     ('Select Timecode $"song"', True),
@@ -784,6 +792,7 @@ class Ma3Exporter:
         include_fixed: bool = True,
         include_songs: bool = True,
         viewbutton: str = "2.10",
+        first_main_sequence: int | None = None,
     ) -> None:
         """Write the fixed control macros plus one macro per song.
 
@@ -802,8 +811,22 @@ class Ma3Exporter:
         root = self._root()
         definitions: list[tuple[str, list[tuple[str, bool]]]] = []
         if include_fixed:
+            sequence_start = (
+                int(first_main_sequence)
+                if first_main_sequence is not None
+                else next(
+                    (
+                        int(plan.profile.sequence_pool_start)
+                        for plan in plans
+                        if plan.profile.include_main
+                    ),
+                    1,
+                )
+            )
             definitions.extend(
-                self._fixed_song_change_macro_definitions(song_list_name, viewbutton)
+                self._fixed_song_change_macro_definitions(
+                    song_list_name, viewbutton, sequence_start
+                )
             )
         if include_songs:
             for plan in plans:

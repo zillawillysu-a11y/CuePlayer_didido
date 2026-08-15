@@ -59,6 +59,36 @@ def test_show_patch_uses_english_sequence_names() -> None:
     assert abs(plans[0].profile.start_offset_seconds - 3600.0) < 1e-6
 
 
+def test_duplicate_ma_song_names_get_one_consistent_unique_identity() -> None:
+    """MA3 name lookups must never bind two songs to the same Sequence."""
+    songs = [
+        _song_with_buttons("舊版", ma="Same Song", button_names=[]),
+        _song_with_buttons("新版", ma="Same Song", button_names=[]),
+    ]
+    settings = MaExportSettings(console="ma3", sequence_pool_start=201)
+
+    slots = build_show_patch(songs, settings)
+
+    assert [slot.ma_base for slot in slots] == ["Same_Song_S201", "Same_Song_S221"]
+    assert len({slot.main_sequence_name.casefold() for slot in slots}) == 2
+
+    from cueplayer.exporters.show_patch import plans_from_show_patch
+
+    plans = plans_from_show_patch(slots, settings)
+    assert [plan.song_name for plan in plans] == ["Same_Song_S201", "Same_Song_S221"]
+    assert [plan.profile.main_sequence_name for plan in plans] == [
+        "Same_Song_S201", "Same_Song_S221"
+    ]
+    assert [plan.profile.timecode_name for plan in plans] == [
+        "Same_Song_S201", "Same_Song_S221"
+    ]
+    assert [plan.profile.page_name for plan in plans] == [
+        "Same_Song_S201", "Same_Song_S221"
+    ]
+    assert len({plan.profile.main_sequence_file for plan in plans}) == 2
+    assert len({plan.profile.timecode_file for plan in plans}) == 2
+
+
 def test_ma3_sequence_pools_reserve_a_fixed_block_per_song() -> None:
     """Real-hardware feedback: MA3's Sequence pools used to pack tightly
     (no reserved gap between songs), unlike MA2 and unlike Effect/Group

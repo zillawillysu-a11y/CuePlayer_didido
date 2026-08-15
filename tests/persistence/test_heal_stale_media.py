@@ -35,6 +35,37 @@ def test_heal_relinks_unique_basename_under_media(tmp_path: Path) -> None:
     assert scan_missing_media(project) == []
 
 
+def test_heal_prefers_legacy_media_root_when_duplicate_has_same_basename(
+    tmp_path: Path,
+) -> None:
+    """Duplicating a song must not make the original song appear Unlinked."""
+    root = tmp_path / "show"
+    root.mkdir()
+    project_file = root / "show.cueplayer.json"
+    media = root / "Media"
+    original = media / "原歌.wav"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"ORIGINAL")
+    duplicate = media / "New Set" / "原歌 (copy)" / "原歌.wav"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(b"NEW VERSION")
+    stale = media / "_Unfiled" / "原歌" / "原歌.wav"
+
+    project = Project.create("Show")
+    song = project.songs[0]
+    song.name = "原歌"
+    song.audio_tracks.append(
+        AudioTrack(id="a1", name="Main", path=stale, role="main")
+    )
+
+    assert scan_missing_media(project)
+    healed = heal_stale_media_paths(project, project_file=project_file)
+
+    assert healed >= 1
+    assert Path(song.audio_tracks[0].path).resolve() == original.resolve()
+    assert scan_missing_media(project) == []
+
+
 def test_move_rewrites_all_songs_sharing_old_path(tmp_path: Path) -> None:
     """Exclusive relocate must not leave a second song pointing at the old path."""
     root = tmp_path / "show"

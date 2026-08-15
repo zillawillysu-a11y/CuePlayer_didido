@@ -109,11 +109,12 @@ def test_song_change_macros_fixed_definitions_match_reference(tmp_path: Path) ->
     ]
     assert _macro_lines(macros["Page Change"]) == [
         ('Page $"song"', True),
-        ("Off Sequence 201 Thru", True),
+        ('Select Sequence $"song"', True),
+        ("Goto Cue 0.5", True),
+        ('Off Sequence 1 Thru - Sequence $"song"', True),
         ("Off Timecode 1 Thru", True),
         ("<<< Timecode 1 Thru", True),
-        ('Select Sequence $"song".', True),
-        ("Goto Cue 0.5", True),
+        ('Select Sequence $"song"', True),
         ('Assign View $"song" At ViewButton $songviewbutton', True),
         ("Master 3.1 At BPM $songbpm", True),
         ('Select Timecode $"song"', True),
@@ -122,6 +123,29 @@ def test_song_change_macros_fixed_definitions_match_reference(tmp_path: Path) ->
     assert _macro_lines(macros["Set Songviewbutton"]) == [
         ('SetGlobalVariable "songviewbutton" "2.10"', True),
     ]
+
+
+def test_page_change_uses_first_main_sequence_and_excludes_current_song(
+    tmp_path: Path,
+) -> None:
+    plans = [_plan("Song A"), _plan("Song B")]
+    plans[0].profile.sequence_pool_start = 321
+    plans[1].profile.sequence_pool_start = 201
+    path = tmp_path / "macros.xml"
+
+    Ma3Exporter().write_song_change_macros(
+        plans, path, include_songs=False
+    )
+
+    root = load_xml_root(path)
+    page_change = next(
+        macro
+        for macro in root
+        if xml_tag_local(macro.tag) == "Macro" and macro.get("Name") == "Page Change"
+    )
+    assert (
+        'Off Sequence 321 Thru - Sequence $"song"', True
+    ) in _macro_lines(page_change)
 
 
 def test_song_change_macros_per_song_definitions(tmp_path: Path) -> None:

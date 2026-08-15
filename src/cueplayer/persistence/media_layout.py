@@ -96,6 +96,19 @@ def locate_under_media(path: Path, media_dir: Path) -> Path | None:
     basename = path.name
     if not basename:
         return None
+    # Older CuePlayer projects kept imported media directly under Media/.
+    # A later Save may have persisted the intended Setlist/Song subfolder
+    # before the physical move completed.  Once a duplicated song introduces
+    # a second file with the same basename, the generic rglob fallback below
+    # becomes ambiguous and used to leave the original song Unlinked.  The
+    # legacy root file is deterministic and belongs to the original project,
+    # so prefer it before falling back to a unique recursive match.
+    legacy_root_file = media_dir / basename
+    if legacy_root_file.is_file():
+        try:
+            return legacy_root_file.resolve()
+        except OSError:
+            return legacy_root_file
     matches = [p for p in media_dir.rglob(basename) if p.is_file()]
     if len(matches) == 1:
         try:

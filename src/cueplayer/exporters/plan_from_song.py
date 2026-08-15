@@ -56,6 +56,7 @@ def build_export_plan(
     button_allocations: list[dict] | None = None,
     include_main: bool = True,
     included_button_lane_indices: set[int] | None = None,
+    export_base_name: str | None = None,
 ) -> SongExportPlan:
     """
     Map the current song's Main / Button marks into an MA export plan.
@@ -69,7 +70,11 @@ def build_export_plan(
         if start_offset_seconds is not None
         else timecode_to_seconds(song.start_timecode or "01:00:00:00", rate)
     )
-    base = _song_ascii_base(song)
+    base = (
+        sanitize_ma_name(export_base_name, fallback="Song")
+        if export_base_name is not None
+        else _song_ascii_base(song)
+    )
     file_base = base.replace(" ", "_")
 
     id_lanes = {lane.index for lane in song.mark_lanes if lane.cue_id_enabled}

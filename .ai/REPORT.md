@@ -1,51 +1,68 @@
 # Latest AI task report
 
-**Date:** 2026-08-12
+**Date:** 2026-08-15
 **Branch:** `codex/fix-from-1.1.1`
 
 ## Task objective
 
-Make left-click Add Mark from Mark Track headers an opt-in safety switch,
-defaulting off and configurable from the header context menu.
+Prevent duplicated same-name media from unlinking the original setlist, update
+the MA3 Page Change fixed macro to the supplied working shape with a dynamic
+first Main Sequence, and prevent duplicate MA song names from selecting the
+wrong Sequence/Timecode.
 
 ## What was implemented
 
-- Added project-global `mark_lane_header_add_enabled`, default `False`.
-- Left-clicking a Mark Track name emits Add Mark only when enabled.
-- Right-clicking any Mark Track name now shows a checkable
-  `Click Track Header to Add Mark` action.
-- Disabled mode no longer shows the pointing-hand add affordance over headers.
-- Toggle changes mark the project dirty, show status feedback, and persist in
-  project JSON.
-- Legacy projects without the field load safely with the feature off.
+- Stale media healing now prefers an existing legacy `Media/<basename>` file
+  before the recursive unique-basename fallback. A duplicated copy in a nested
+  Setlist folder therefore no longer makes the original song Unlinked.
+- MA3 Page Change now follows the supplied command order and emits
+  `Off Sequence <first-main> Thru - Sequence $"song"`.
+- The first Main Sequence is derived from the first exported plan that includes
+  Main, including per-song pool overrides.
+- Duplicate case-insensitive MA song names receive stable pool-qualified names
+  such as `Same_Song_S201`; the same identity is used for Sequence, Timecode,
+  Page, View, song Macro, and generated filenames.
+- Added regression coverage for all three failures.
 
 ## Files changed
 
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/ui/timeline_widget.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_mark_lane_rename.py`
-- `tests/persistence/test_mark_lane_header_add.py`
+- `src/cueplayer/persistence/media_layout.py`
+- `src/cueplayer/exporters/plan_from_song.py`
+- `src/cueplayer/exporters/show_patch.py`
+- `src/cueplayer/exporters/ma3/exporter.py`
+- `tests/persistence/test_heal_stale_media.py`
+- `tests/exporters/test_ma3_song_workflow.py`
+- `tests/exporters/test_show_patch.py`
 - `.ai/REPORT.md`
-- `.ai/handoffs/2026-08-12_MarkTrackHeaderAddSwitch.md`
+- `.ai/handoffs/2026-08-15_MediaRelinkAndMa3Identity.md`
 - `.ai/NEXT_TASK.md`
 
 ## Architecture decisions
 
-- This is project/show behavior, not a machine preference or per-lane flag.
-- Mark creation remains routed through the existing `add_mark_requested` signal.
-- Playback clock and Mark undo behavior are unchanged.
+- Media recovery remains in persistence and uses a deterministic legacy-layout
+  candidate before the conservative ambiguous-name fallback.
+- MA uniqueness is established once in show patch planning and propagated
+  through the export plan, rather than patched independently in XML writers.
+- Playback clock and media playback code are untouched.
 
 ## Tests performed
 
-- Header click behavior plus project persistence compatibility: 9 passed.
+- `git diff --check`: passed (line-ending notices only).
+- Added three focused regression tests.
+- Pytest could not start because `.venv/pyvenv.cfg` points to removed
+  `C:\Users\User\AppData\Local\Programs\Python\Python314\python.exe`;
+  PowerShell has no other `python`/`py` command available.
 
 ## Remaining issues
 
-- User should validate right-click toggle wording and behavior in the real UI.
+- Recreate the project virtual environment or install the expected Python, then
+  run the focused persistence and MA exporter suites.
+- Validate the generated Page Change macro in grandMA3 2.3.2 hardware/onPC.
+- Existing project JSON will heal when opened/saved by the corrected app; no
+  user project outside the repository was directly overwritten in this task.
 
 ## Suggested next task
 
-Confirm header clicks do nothing by default, enable the right-click switch and
-confirm they add Marks, then package and smoke-test CuePlayer 1.1.3.
+Restore the Python environment, run the focused regression suites, open the
+affected SAX MACHINE project to confirm its original songs relink, export a
+two-song duplicate-name MA3 fixture, and validate PAGE CHANGE on MA3 2.3.2.

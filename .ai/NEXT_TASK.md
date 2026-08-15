@@ -1,23 +1,27 @@
 # Next task
 
-**Status:** Awaiting user validation and packaging
-**Type:** Mark Track header Add switch / Release 1.1.3
-**Updated:** 2026-08-12
+**Status:** Awaiting environment repair and user validation
+**Type:** Regression validation / MA3 onPC smoke test
+**Updated:** 2026-08-15
 
 ## Do this first
 
-1. Left-click several Mark Track names and confirm no Mark is added by default.
-2. Right-click a Track name and enable `Click Track Header to Add Mark`.
-3. Confirm left-click now adds the selected Mark Type at the playhead.
-4. Save/reopen and confirm the project remembers the switch.
-5. Recheck Cue List Note editing during playback.
-6. Rebuild and smoke-test CuePlayer 1.1.3.
+1. Restore/recreate `.venv` (its configured Python 3.14 executable is missing).
+2. Run:
+   `.venv\Scripts\python.exe -m pytest tests/persistence/test_heal_stale_media.py tests/exporters/test_ma3_song_workflow.py tests/exporters/test_show_patch.py -q`
+3. Open the affected SAX MACHINE project and confirm old songs relink to the
+   flat `Media/<filename>` originals while duplicated songs keep their new files.
+4. Export two songs with the same MA Export Name and verify the generated MA
+   identities are unique and consistent.
+5. Import into grandMA3 2.3.2 and validate PAGE CHANGE, especially the dynamic
+   `Off Sequence <first-main> Thru - Sequence $"song"` command.
 
 ## Relevant files
 
-- `src/cueplayer/domain/models.py`
-- `src/cueplayer/persistence/project_store.py`
-- `src/cueplayer/ui/timeline_widget.py`
-- `tests/ui/test_mark_lane_rename.py`
-- `tests/persistence/test_mark_lane_header_add.py`
-- `packaging/build_windows.ps1`
+- `src/cueplayer/persistence/media_layout.py`
+- `src/cueplayer/exporters/plan_from_song.py`
+- `src/cueplayer/exporters/show_patch.py`
+- `src/cueplayer/exporters/ma3/exporter.py`
+- `tests/persistence/test_heal_stale_media.py`
+- `tests/exporters/test_ma3_song_workflow.py`
+- `tests/exporters/test_show_patch.py`

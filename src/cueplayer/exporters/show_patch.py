@@ -144,6 +144,16 @@ def build_show_patch(
     main_page0 = _base(main_page0, "page")
     page_per_song = bool(getattr(settings, "page_per_song", True))
 
+    raw_bases = [
+        sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
+        for song in songs
+    ]
+    duplicate_bases = {
+        base.casefold()
+        for base in raw_bases
+        if sum(candidate.casefold() == base.casefold() for candidate in raw_bases) > 1
+    }
+    used_bases: set[str] = set()
     slots: list[SongPatchSlot] = []
     for i, song in enumerate(songs):
         song_overrides = overrides.get(song.id) or {}
@@ -151,7 +161,7 @@ def build_show_patch(
             int(song_overrides["page"]) if "page" in song_overrides
             else ((main_page0 + i) if page_per_song else main_page0)
         )
-        base = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
+        raw_base = raw_bases[i]
         selection = settings.export_content_by_song.get(song.id, {})
         include_main = bool(selection.get("main", True))
         raw_buttons = selection.get("buttons")
@@ -162,6 +172,22 @@ def build_show_patch(
         main_sequence = (
             int(song_overrides["sequence"]) if "sequence" in song_overrides else seq
         )
+        # Page Change selects Sequence, Timecode, Page, View and the per-song
+        # Macro by one shared MA-safe name.  Duplicate song/export names would
+        # therefore select an arbitrary object on MA3.  Give every colliding
+        # song a stable pool-qualified name and pass it through the whole plan.
+        base = (
+            f"{raw_base}_S{main_sequence}"
+            if raw_base.casefold() in duplicate_bases
+            else raw_base
+        )
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in used_bases:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        base = candidate
+        used_bases.add(base.casefold())
         timecode_pool = (
             int(song_overrides["timecode"]) if "timecode" in song_overrides else tc
         )
@@ -360,6 +386,7 @@ def plans_from_show_patch(
                 # against the $song global variable, same reason
                 # main_sequence_name dropped its "_Main" suffix above.
                 timecode_name=slot.ma_base,
+                export_base_name=slot.ma_base,
             )
         )
     return plans
