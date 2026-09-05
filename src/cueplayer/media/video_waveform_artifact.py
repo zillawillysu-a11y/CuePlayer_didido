@@ -32,7 +32,7 @@ from cueplayer.media.audio_loader import PeakLevel
 from cueplayer.media.av_lock import av_path_lock
 
 # Bump when on-disk layout changes (Converter must understand this schema).
-ARTIFACT_FORMAT_VERSION = 6
+ARTIFACT_FORMAT_VERSION = 7  # v6 may contain discarded batch tails; rebuild lazily
 # Base envelope density (bins / source-second). 15 min → 360k bins ≈ 3.2 MB.
 BASE_PEAKS_PER_SECOND = 4000.0
 MAX_PEAK_BINS = 2_000_000
@@ -548,6 +548,8 @@ class SequentialWaveformDecoder:
         self.batch_count = 0
         self._cursor_seconds = 0.0
         self._pending_seek: float | None = None
+        self._pcm_iterator = None
+        self._pending_pcm: tuple[float, np.ndarray] | None = None
 
     @property
     def no_stream(self) -> bool:
@@ -559,6 +561,8 @@ class SequentialWaveformDecoder:
 
     def close(self) -> None:
         """Close demux and release ``av_path_lock`` (safe while paused)."""
+        self._pcm_iterator = None
+        self._pending_pcm = None
         if self._container is not None:
             try:
                 self._container.close()
@@ -643,12 +647,37 @@ class SequentialWaveformDecoder:
             except Exception:
                 pass
         self._iterator = self._container.decode(self._stream)
-        if self._resampler is not None:
-            # Flush resampler after seek.
-            try:
-                list(self._resampler.resample(None))
-            except Exception:
-                pass
+        # A flushed resampler is at EOF; seeking requires a fresh instance.
+        import av
+        self._resampler = av.AudioResampler(format="fltp", layout="stereo", rate=self._sample_rate)
+        self._pending_pcm = None
+        self._pcm_iterator = self._decoded_pcm()
+
+    def _decoded_pcm(self):
+        """Yield bounded decoded frames with source PTS, including resampler flush."""
+        next_time = self._cursor_seconds
+        for frame in self._iterator:
+            frame_time = (
+                float(frame.pts * (frame.time_base or self._stream.time_base))
+                if frame.pts is not None and (frame.time_base or self._stream.time_base)
+                else next_time
+            )
+            for resampled in self._resampler.resample(frame):
+                arr = resampled.to_ndarray().T.astype(np.float32, copy=False)
+                if not arr.size:
+                    continue
+                origin = (float(resampled.pts * resampled.time_base)
+                          if resampled.pts is not None and resampled.time_base else frame_time)
+                next_time = origin + len(arr) / self._sample_rate
+                frame_time = next_time
+                yield origin, arr
+        for resampled in self._resampler.resample(None):
+            arr = resampled.to_ndarray().T.astype(np.float32, copy=False)
+            if arr.size:
+                origin = (float(resampled.pts * resampled.time_base)
+                          if resampled.pts is not None and resampled.time_base else next_time)
+                next_time = origin + len(arr) / self._sample_rate
+                yield origin, arr
 
     def read_batch(self, *, max_seconds: float = BATCH_SECONDS) -> _DecodeBatch:
         """Decode up to ``max_seconds`` of PCM. Caller must have ensure_open()."""
@@ -660,54 +689,52 @@ class SequentialWaveformDecoder:
         if self._eof or self._container is None or self._iterator is None:
             return _DecodeBatch(kind=DECODE_EOF)
         max_dur = max(0.05, float(max_seconds))
-        end_time = self._cursor_seconds + max_dur
+        sample_rate = int(self._sample_rate) or 48000
+        max_frames = max(1, int(round(max_dur * sample_rate)))
         chunks: list[np.ndarray] = []
         collected_start: float | None = None
-        sample_rate = int(self._sample_rate) or 48000
+        collected_frames = 0
         try:
-            for frame in self._iterator:
-                frame_t = (
-                    float(frame.pts * self._stream.time_base)
-                    if frame.pts is not None and self._stream.time_base
-                    else None
-                )
-                if frame_t is not None:
-                    if frame_t + 0.05 < self._cursor_seconds:
-                        continue
-                    if frame_t >= end_time:
-                        # Put cursor at frame_t so next batch continues here.
-                        self._cursor_seconds = float(frame_t)
+            while collected_frames < max_frames:
+                if self._pending_pcm is not None:
+                    origin, samples = self._pending_pcm
+                    self._pending_pcm = None
+                else:
+                    try:
+                        origin, samples = next(self._pcm_iterator)
+                    except StopIteration:
+                        self._eof = True
                         break
-                    if collected_start is None:
-                        collected_start = max(self._cursor_seconds, frame_t)
-                for resampled in self._resampler.resample(frame):
-                    arr = resampled.to_ndarray()
-                    if arr.size:
-                        chunks.append(arr.T.astype(np.float32, copy=False))
-                if chunks:
-                    got = sum(c.shape[0] for c in chunks) / float(sample_rate)
-                    if got >= max_dur:
-                        break
-            else:
-                # Iterator exhausted.
-                for resampled in self._resampler.resample(None):
-                    arr = resampled.to_ndarray()
-                    if arr.size:
-                        chunks.append(arr.T.astype(np.float32, copy=False))
-                self._eof = True
+                expected = (self._cursor_seconds if collected_start is None else
+                            collected_start + collected_frames / sample_rate)
+                # Seek may decode a frame straddling the target; trim actual
+                # samples instead of merely changing the returned timestamp.
+                skip = max(0, int(round((expected - origin) * sample_rate)))
+                if skip >= len(samples):
+                    continue
+                if skip:
+                    samples = samples[skip:]
+                    origin += skip / sample_rate
+                if collected_start is not None and origin - expected > .5 / sample_rate:
+                    # Do not concatenate through a real PTS gap. Next batch
+                    # starts at its own origin; pending coverage stays unknown.
+                    self._pending_pcm = (origin, samples)
+                    break
+                if collected_start is None:
+                    collected_start = origin
+                take = min(len(samples), max_frames - collected_frames)
+                chunks.append(samples[:take])
+                collected_frames += take
+                if take < len(samples):
+                    # Copy the small remainder so it cannot retain the previous
+                    # full batch allocation; one decoded-frame tail is bounded.
+                    self._pending_pcm = (origin + take / sample_rate, samples[take:].copy())
         except Exception:
             return _DecodeBatch(kind=DECODE_ERROR)
 
         if not chunks:
-            if self._eof:
-                return _DecodeBatch(kind=DECODE_EOF)
-            # Mid-stream empty — do not permanently cover.
-            return _DecodeBatch(kind=DECODE_TRANSIENT_EMPTY)
-
+            return _DecodeBatch(kind=DECODE_EOF if self._eof else DECODE_TRANSIENT_EMPTY)
         samples = np.concatenate(chunks, axis=0)
-        max_frames = int(round(max_dur * sample_rate))
-        if samples.shape[0] > max_frames:
-            samples = samples[:max_frames]
         origin = collected_start if collected_start is not None else self._cursor_seconds
         dur = float(samples.shape[0]) / float(sample_rate)
         self._cursor_seconds = float(origin) + dur

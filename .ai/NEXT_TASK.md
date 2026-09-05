@@ -1,6 +1,7 @@
 ﻿# Next task
 
-Fix sequential video waveform batch carry with real PyAV continuity tests.
-Preserve PTS/source coverage; do not change playback decoder or PCM behavior.
-Continue independent work; affected ASIO driver/interface clarification pending.
-Read .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.
+Fix multi-wrap audio callback loop bookkeeping and routed source chunks using
+sample-exact tests. Keep MTC scheduling and public clock changes separate.
+User authorized independent small-step continuation with commit/push.
+ASIO interface clarification and hardware validation remain pending.
+See .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.
