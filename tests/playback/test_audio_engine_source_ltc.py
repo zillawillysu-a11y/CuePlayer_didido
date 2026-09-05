@@ -19,6 +19,13 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures" / "media" / "中文測試" / "LTC左_音樂右_測試.wav"
 
 
+@pytest.fixture(autouse=True)
+def declared_fake_device_channels(monkeypatch):
+    # These are routing tests, not native endpoint capability probes.
+    monkeypatch.setattr(eng_mod, "probe_supported_output_channels",
+                        lambda index, *, min_channels, samplerate: min_channels)
+
+
 def test_generator_disabled_skips_ltc_pcm(monkeypatch) -> None:
     from cueplayer.playback.devices import OutputDeviceInfo
 

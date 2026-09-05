@@ -106,6 +106,7 @@ class AudioEngine(QObject):
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
         self._diagnostic_stream_epoch = 0
+        self._last_stream_attempt_error: str | None = None
         self._diagnostic_transport_generation = 0
         self._audio_timing_trace = (
             AudioTimingTrace() if os.environ.get("CUEPLAYER_AUDIO_TRACE") == "1" else None
@@ -2145,6 +2146,7 @@ class AudioEngine(QObject):
         return {
             "trace_enabled": self._audio_timing_trace is not None,
             "stream_epoch": self._diagnostic_stream_epoch,
+            "last_stream_attempt_error": self._last_stream_attempt_error,
             "transport_generation": self._diagnostic_transport_generation,
             "source_rate": self._buffer.sample_rate if self._buffer is not None else None,
             "processing_rate": self._playback_rate,
@@ -2155,6 +2157,29 @@ class AudioEngine(QObject):
             "stream_reported": observed,
             "callbacks": self._audio_timing_trace.snapshot() if self._audio_timing_trace else [],
         }
+
+    def _prepare_output_rate(self, sample_rate: int, position_seconds: float) -> None:
+        """Prepare all rate-dependent consumers while no output callback is running.
+
+        Rate fallback is rare; preserve the existing pre-play resample wait here.
+        Moving long-file conversion out of the UI is a separate streaming change.
+        """
+        if sample_rate == self._playback_rate:
+            self._video_mixer.set_playback_rate(sample_rate)
+            return  # preserve normal deferred/prewarm behavior
+        if sample_rate != self._playback_rate:
+            with self._lock:
+                self._playback_rate = sample_rate
+                self._position_frame = int(round(position_seconds * sample_rate))
+                self._diagnostic_transport_generation += 1
+                self._stamp_write_head_unlocked()
+            self._invalidate_ltc_cache()
+            self._sync_ltc_cursor()
+        self._video_mixer.set_playback_rate(sample_rate)
+        self._refresh_playback_samples()
+        self._wait_for_playback_samples()
+        if self._buffer is not None and self._playback_samples is None:
+            raise RuntimeError("Output PCM rate conversion did not complete")
 
     def _open_output_stream(
         self,
@@ -2178,14 +2203,43 @@ class AudioEngine(QObject):
             kwargs["latency"] = latency
         if device is not None:
             kwargs["device"] = device
+        stream = None
+        previous_rate = self._playback_rate
+        previous_position = self._position_frame / max(1, previous_rate)
+        previous_playing = self._playing
         try:
-            self._stream = sd.OutputStream(**kwargs)
-            self._stream.start()
+            stream = sd.OutputStream(**kwargs)
+            reported_rate = float(getattr(stream, "samplerate", sample_rate))
+            if not np.isfinite(reported_rate) or abs(reported_rate - sample_rate) > 0.01:
+                raise sd.PortAudioError(
+                    f"Stream reported {reported_rate} Hz; requested {sample_rate} Hz"
+                )
+            # start() may invoke the callback before it returns. Publish consumers
+            # first; never expose 48k state to a newly opened 96k callback.
+            self._prepare_output_rate(sample_rate, previous_position)
+            self._stream = stream
+            stream.start()
             self._active_stream_token = self._stream_token()
             return True
-        except sd.PortAudioError:
+        except (sd.PortAudioError, RuntimeError) as exc:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             self._stream = None
             self._active_stream_token = None
+            # A failing start can already have invoked callbacks; restore logical
+            # position as well as rate after the native stream has been closed.
+            if self._playback_rate != previous_rate:
+                self._prepare_output_rate(previous_rate, previous_position)
+            with self._lock:
+                self._position_frame = int(round(previous_position * previous_rate))
+                self._playing = previous_playing
+                self._stamp_write_head_unlocked()
+            # A rejected low-latency attempt followed by a successful ordinary
+            # open is normal; retain diagnostics without a spurious UI warning.
+            self._last_stream_attempt_error = str(exc)
             return False
 
     def _device_default_rate(self, device: int | None) -> float | None:
@@ -2242,9 +2296,6 @@ class AudioEngine(QObject):
                 self._route = {k: list(v) for k, v in route.items()}
                 self._clamp_route_to_channels(ch)
             if self._try_open_stream_variant(device=dev, channels=ch, sample_rate=sr):
-                if sr != prev_rate:
-                    self._playback_rate = sr
-                    self._refresh_playback_samples()
                 return True
             self._playback_rate = prev_rate
             self._output_channel_count = prev_ch

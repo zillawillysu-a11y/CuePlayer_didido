@@ -12,6 +12,7 @@ touching real audio hardware.
 from __future__ import annotations
 
 from pathlib import Path
+from collections import OrderedDict
 
 import numpy as np
 import pytest
@@ -62,7 +63,9 @@ class _FakeStream:
 @pytest.fixture
 def engine(monkeypatch) -> AudioEngine:
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [_stereo_device()])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [_stereo_device()])
+    monkeypatch.setattr(audio_engine_mod, "probe_supported_output_channels",
+                        lambda index, *, min_channels, samplerate: min_channels)
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", lambda **kwargs: None)
     monkeypatch.setattr(audio_engine_mod.sd, "OutputStream", _FakeStream)
     eng = AudioEngine()
@@ -90,9 +93,12 @@ def _inject_fake_clip_audio(engine: AudioEngine, clip: VideoClip, value: float) 
     origin = float(clip.source_in_seconds)
     dur = n / float(engine._playback_rate)
     key = (str(clip.path), engine._playback_rate, round(origin, 2), round(dur, 2))
-    engine._video_mixer._cache[clip.id] = _CachedPcm(
-        samples=samples, origin_seconds=origin, key=key
-    )
+    with engine._video_mixer._lock:
+        engine._video_mixer._cache[clip.id] = OrderedDict([(key, _CachedPcm(
+            samples=samples, origin_seconds=origin,
+            origin_frame=round(origin * engine._playback_rate), key=key
+        ))])
+        engine._video_mixer._publish_snapshot_locked()
 
 
 def test_engine_mixes_video_clip_audio_into_output(engine: AudioEngine) -> None:
@@ -226,12 +232,15 @@ def test_music_volume_scales_music_but_not_video_clip_audio(engine: AudioEngine)
 
 def test_music_volume_does_not_affect_ltc(monkeypatch) -> None:
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda: [_stereo_device()])
+    monkeypatch.setattr(audio_engine_mod, "list_output_devices", lambda dedupe=True: [_stereo_device()])
+    monkeypatch.setattr(audio_engine_mod, "probe_supported_output_channels",
+                        lambda index, *, min_channels, samplerate: min_channels)
     monkeypatch.setattr(audio_engine_mod.sd, "check_output_settings", lambda **kwargs: None)
     monkeypatch.setattr(audio_engine_mod.sd, "OutputStream", _FakeStream)
     eng = AudioEngine()
     eng.apply_audio_settings(
-        AudioOutputSettings(output_device_name="Test", ltc_enabled=True, ltc_channels=[1])
+        AudioOutputSettings(output_device_name="Test", ltc_enabled=True,
+                            ltc_source="generator", ltc_channels=[1])
     )
     eng.set_buffer(_silent_buffer())
     eng.flush_deferred_buffer_setup()
