@@ -1,7 +1,6 @@
 ﻿# Next task
 
-Fix multi-wrap audio callback loop bookkeeping and routed source chunks using
-sample-exact tests. Keep MTC scheduling and public clock changes separate.
-User authorized independent small-step continuation with commit/push.
-ASIO interface clarification and hardware validation remain pending.
+Bound MTC catch-up and reset on natural loop discontinuity without MIDI I/O
+inside the audio callback. Test fake ports first. Public clock/ASIO hardware
+validation still requires the affected interface/driver to be identified.
 See .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.

@@ -2001,7 +2001,7 @@ class AudioEngine(QObject):
                     if end - start < frames:
                         if loop_on and self._loop_engage and end >= b_frame:
                             need = frames - (end - start)
-                            self._position_frame = a_frame + need
+                            self._position_frame = a_frame + need % max(1, b_frame - a_frame)
                             # Rebuild as contiguous logical block starting at `start`.
                             music = self._assemble_looped_music(
                                 start, frames, a_frame, b_frame, sample_rate
@@ -2023,7 +2023,9 @@ class AudioEngine(QObject):
                         music = self._music_chunk(start, frames, sample_rate)
                         ltc = self._ltc_chunk(start, frames)
                         video = self._video_chunk(start, frames)
-                        self._position_frame = end
+                        self._position_frame = (
+                            a_frame if loop_on and self._loop_engage and end == b_frame else end
+                        )
 
                     # Reject corrupt Video Audio contribution (NaN/Inf already
                     # zeroed inside mixer; enforce shape + finite here too).
@@ -2047,9 +2049,13 @@ class AudioEngine(QObject):
                     sources[:, SRC_LTC_BUS] = ltc
                     ltc_idx = self._cached_file_ltc_idx
                     if ltc_idx is not None:
-                        sources[:, SRC_FILE_LTC] = self._source_channel_chunk(
-                            ltc_idx, start, frames
-                        )
+                        if loop_on and self._loop_engage and start + frames > b_frame:
+                            sources[:, SRC_FILE_LTC] = self._assemble_looped_chunk(
+                                lambda pos, count: self._source_channel_chunk(ltc_idx, pos, count),
+                                start, frames, a_frame, b_frame,
+                            )
+                        else:
+                            sources[:, SRC_FILE_LTC] = self._source_channel_chunk(ltc_idx, start, frames)
                     # Music Source destinations must hear the *processed* bed
                     # (LTC-stripped + music_volume + video clip audio), not a raw
                     # file channel — otherwise Video Track audio vanishes and the
@@ -2403,6 +2409,26 @@ class AudioEngine(QObject):
         self._append_routing_warning("Could not open audio output stream.")
         return False
 
+    @staticmethod
+    def _assemble_looped_chunk(reader, start, frames, a_frame, b_frame, *reader_args):
+        """Read only valid contiguous segments; a callback may wrap many times."""
+        if frames <= 0 or b_frame <= a_frame:
+            return reader(start, frames, *reader_args)
+        if start >= b_frame:
+            start = a_frame + (start - a_frame) % (b_frame - a_frame)
+        first_n = min(frames, b_frame - start)
+        first = reader(start, first_n, *reader_args)
+        if first_n == frames:
+            return first
+        out = np.empty((frames, *first.shape[1:]), dtype=first.dtype)
+        out[:first_n] = first
+        written = first_n
+        while written < frames:
+            count = min(frames - written, b_frame - a_frame)
+            out[written:written + count] = reader(a_frame, count, *reader_args)
+            written += count
+        return out
+
     def _assemble_looped_music(
         self,
         start: int,
@@ -2411,38 +2437,17 @@ class AudioEngine(QObject):
         b_frame: int,
         sample_rate: int,
     ) -> np.ndarray:
-        first_n = max(0, min(frames, b_frame - start))
-        music = self._music_chunk(start, frames, sample_rate)
-        if first_n >= frames:
-            return music
-        need = frames - first_n
-        wrap = self._music_chunk(a_frame, need, sample_rate)
-        music[first_n:] = wrap[:need]
-        return music
+        return self._assemble_looped_chunk(self._music_chunk, start, frames, a_frame, b_frame, sample_rate)
 
     def _assemble_looped_ltc(
         self, start: int, frames: int, a_frame: int, b_frame: int
     ) -> np.ndarray:
-        first_n = max(0, min(frames, b_frame - start))
-        ltc = self._ltc_chunk(start, frames)
-        if first_n >= frames:
-            return ltc
-        need = frames - first_n
-        wrap = self._ltc_chunk(a_frame, need)
-        ltc[first_n:] = wrap[:need]
-        return ltc
+        return self._assemble_looped_chunk(self._ltc_chunk, start, frames, a_frame, b_frame)
 
     def _assemble_looped_video(
         self, start: int, frames: int, a_frame: int, b_frame: int
     ) -> np.ndarray:
-        first_n = max(0, min(frames, b_frame - start))
-        video = self._video_chunk(start, frames)
-        if first_n >= frames:
-            return video
-        need = frames - first_n
-        wrap = self._video_chunk(a_frame, need)
-        video[first_n:] = wrap[:need]
-        return video
+        return self._assemble_looped_chunk(self._video_chunk, start, frames, a_frame, b_frame)
 
     def _stop_stream(self) -> bool:
         self._active_stream_token = None
