@@ -108,3 +108,48 @@ def test_fallback_token_matches_final_rate(monkeypatch):
     assert engine._position_frame == 192000
     assert engine._active_stream_token == engine._stream_token()
     assert engine._ltc_pcm is None
+
+
+def test_conversion_failure_restores_existing_pcm_without_second_conversion(monkeypatch):
+    engine = engine_at_two_seconds()
+    previous_pcm = engine._playback_samples
+    calls = []
+
+    def failed_conversion():
+        calls.append(engine._playback_rate)
+        engine._playback_samples = None
+        raise RuntimeError('conversion failed')
+
+    monkeypatch.setattr(engine, '_refresh_playback_samples', failed_conversion)
+    assert not engine._open_output_stream(device=None, channels=2, sample_rate=96000)
+    assert calls == [96000]
+    assert engine._playback_samples is previous_pcm
+    assert engine._playback_rate == engine._video_mixer._playback_rate == 48000
+    assert engine._position_frame == 96000
+
+
+def test_failed_close_retains_stream_and_stops_fallback(monkeypatch):
+    engine = engine_at_two_seconds()
+    attempts = []
+    can_close = [False]
+
+    class Broken:
+        def __init__(self, **kwargs):
+            self.samplerate = kwargs['samplerate']
+            attempts.append(self)
+        def start(self):
+            raise module.sd.PortAudioError('start failed')
+        def stop(self): pass
+        def close(self):
+            if not can_close[0]:
+                raise module.sd.PortAudioError('close failed')
+
+    monkeypatch.setattr(module.sd, 'OutputStream', Broken)
+    assert not engine._start_stream()
+    assert len(attempts) == 1
+    assert engine._stream is attempts[0]
+    assert not engine.playing
+    assert 'close' in engine.routing_warning.lower()
+    can_close[0] = True  # permit deliberate retry/fixture teardown
+    assert engine._stop_stream()
+    assert engine._stream is None

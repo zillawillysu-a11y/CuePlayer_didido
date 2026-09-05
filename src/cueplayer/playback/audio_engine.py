@@ -62,6 +62,10 @@ from cueplayer.timecode.ltc_decode import decode_ltc_timecode
 from cueplayer.timecode.smpte import Timecode, parse_timecode
 
 
+class _StreamCloseFailure(RuntimeError):
+    """Native stream ownership is unresolved; do not try another endpoint."""
+
+
 @dataclass(frozen=True, slots=True)
 class OutputTimecodeState:
     """LTC/MTC output status for the monitor timecode clock."""
@@ -2207,6 +2211,9 @@ class AudioEngine(QObject):
         previous_rate = self._playback_rate
         previous_position = self._position_frame / max(1, previous_rate)
         previous_playing = self._playing
+        previous_music = (self._playback_samples, self._playback_cache_key,
+                          self._playback_resample_future)
+        previous_ltc = (self._ltc_pcm, self._ltc_cache_key, self._ltc_cache_future)
         try:
             stream = sd.OutputStream(**kwargs)
             reported_rate = float(getattr(stream, "samplerate", sample_rate))
@@ -2225,18 +2232,27 @@ class AudioEngine(QObject):
             if stream is not None:
                 try:
                     stream.close()
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    self._stream = stream
+                    self._active_stream_token = None
+                    with self._lock:
+                        self._playing = False
+                    self._last_stream_attempt_error = str(close_exc)
+                    raise _StreamCloseFailure(f"Could not close audio stream: {close_exc}") from exc
             self._stream = None
             self._active_stream_token = None
             # A failing start can already have invoked callbacks; restore logical
             # position as well as rate after the native stream has been closed.
-            if self._playback_rate != previous_rate:
-                self._prepare_output_rate(previous_rate, previous_position)
             with self._lock:
+                self._playback_rate = previous_rate
+                (self._playback_samples, self._playback_cache_key,
+                 self._playback_resample_future) = previous_music
+                self._ltc_pcm, self._ltc_cache_key, self._ltc_cache_future = previous_ltc
                 self._position_frame = int(round(previous_position * previous_rate))
                 self._playing = previous_playing
                 self._stamp_write_head_unlocked()
+            self._video_mixer.set_playback_rate(previous_rate)
+            self._sync_ltc_cursor()
             # A rejected low-latency attempt followed by a successful ordinary
             # open is normal; retain diagnostics without a spurious UI warning.
             self._last_stream_attempt_error = str(exc)
@@ -2268,7 +2284,15 @@ class AudioEngine(QObject):
         return False
 
     def _start_stream(self) -> bool:
-        self._stop_stream()
+        try:
+            return self._start_stream_attempts()
+        except _StreamCloseFailure as exc:
+            self._append_routing_warning(str(exc))
+            return False
+
+    def _start_stream_attempts(self) -> bool:
+        if not self._stop_stream():
+            return False
         base_device = self._device_index
         base_channels = self._output_channel_count
         base_rate = self._playback_rate
@@ -2414,12 +2438,20 @@ class AudioEngine(QObject):
         video[first_n:] = wrap[:need]
         return video
 
-    def _stop_stream(self) -> None:
+    def _stop_stream(self) -> bool:
+        self._active_stream_token = None
         if self._stream is not None:
             try:
                 self._stream.stop()
-                self._stream.close()
             except Exception:
-                pass
+                pass  # close must still be attempted if stop fails
+            try:
+                self._stream.close()
+            except Exception as exc:
+                with self._lock:
+                    self._playing = False
+                self._last_stream_attempt_error = str(exc)
+                self._append_routing_warning(f"Could not close audio stream: {exc}")
+                return False  # retain ownership for an explicit subsequent retry
             self._stream = None
-        self._active_stream_token = None
+        return True
