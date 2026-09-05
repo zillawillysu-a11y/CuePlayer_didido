@@ -65,17 +65,23 @@ def _peak_arrays(buffer: AudioBuffer) -> dict[str, np.ndarray]:
     return arrays
 
 
-def _levels_from_npz(data: np.lib.npyio.NpzFile) -> list[PeakLevel]:
+def _levels_from_npz(data: np.lib.npyio.NpzFile, mono: np.ndarray) -> list[PeakLevel]:
     n_peaks = int(data["n_peaks"])
     levels: list[PeakLevel] = []
     for i in range(n_peaks):
-        levels.append(
-            PeakLevel(
-                samples_per_bucket=int(data[f"peak_{i}_spb"]),
-                mins=np.asarray(data[f"peak_{i}_mins"], dtype=np.float32),
-                maxs=np.asarray(data[f"peak_{i}_maxs"], dtype=np.float32),
-            )
-        )
+        spb = int(data[f"peak_{i}_spb"])
+        mins = np.asarray(data[f"peak_{i}_mins"], dtype=np.float32)
+        maxs = np.asarray(data[f"peak_{i}_maxs"], dtype=np.float32)
+        if spb <= 0:
+            raise ValueError("invalid peak bucket size")
+        whole, remainder = divmod(mono.size, spb)
+        # Old caches omitted the final partial bucket. Repair from their saved
+        # normalized mono without re-decoding or rebuilding the whole pyramid.
+        if remainder and mins.size == maxs.size == whole:
+            tail = mono[whole * spb:]
+            mins = np.append(mins, np.float32(tail.min()))
+            maxs = np.append(maxs, np.float32(tail.max()))
+        levels.append(PeakLevel(spb, mins, maxs))
     return levels
 
 
@@ -92,7 +98,7 @@ def load_cached_audio(path: Path) -> AudioBuffer | None:
             sample_rate = int(data["sample_rate"])
             samples = np.asarray(data["samples"], dtype=np.float32)
             mono = np.asarray(data["mono"], dtype=np.float32)
-            levels = _levels_from_npz(data)
+            levels = _levels_from_npz(data, mono)
         return AudioBuffer(
             path=path,
             sample_rate=sample_rate,
@@ -126,7 +132,7 @@ def load_cached_waveform_peaks(path: Path) -> AudioBuffer | None:
             frames = int(data["frames"])
             channels = max(1, int(data["channels"]))
             mono = np.asarray(data["mono"], dtype=np.float32)
-            levels = _levels_from_npz(data)
+            levels = _levels_from_npz(data, mono)
         samples = np.zeros((max(1, frames), channels), dtype=np.float32)
         return AudioBuffer(
             path=path,
@@ -226,7 +232,7 @@ def load_cached_video_standin(cache_key: str) -> AudioBuffer | None:
             )
             channels = max(1, int(data["channels"])) if "channels" in data else 1
             mono = np.asarray(data["mono"], dtype=np.float32)
-            levels = _levels_from_npz(data)
+            levels = _levels_from_npz(data, mono)
             path_str = str(data["path"]) if "path" in data else ""
             # Legacy full-PCM standin files still load (samples present).
             if "samples" in data:

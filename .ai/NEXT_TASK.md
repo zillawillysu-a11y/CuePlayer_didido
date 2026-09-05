@@ -1,9 +1,7 @@
 ﻿# Next task
 
-Fix waveform LOD selection and partial tail buckets with regression tests.
-Do not change playback PCM. Continue small commit/push slices as authorized.
-
-ASIO driver/interface clarification remains pending; current machine enumerates
-ASIO4ALL v2 and Realtek ASIO, no Focusrite. Do not infer the affected driver.
-DAC shadow is diagnostic-only pending timestamp/loopback validation.
-Read .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.
+Render Music waveform at current zoom resolution during cached preview, keeping
+other cached layers and fixed-size annotations. Cover partial pixel-end buckets.
+Validate image geometry and viewport paint cost. Preserve PCM and clock behavior.
+ASIO interface clarification remains pending; continue independent work.
+See .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.

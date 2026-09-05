@@ -54,13 +54,20 @@ class AudioBuffer:
 
 def _minmax_buckets(mono: np.ndarray, samples_per_bucket: int) -> PeakLevel:
     spb = max(1, int(samples_per_bucket))
-    buckets = max(1, mono.size // spb)
+    buckets, remainder = divmod(mono.size, spb)
     usable = buckets * spb
     chunk = mono[:usable].reshape(buckets, spb)
+    mins = chunk.min(axis=1).astype(np.float32)
+    maxs = chunk.max(axis=1).astype(np.float32)
+    if remainder:
+        # Preserve the real tail envelope; zero padding would invent amplitude.
+        tail = mono[usable:]
+        mins = np.append(mins, np.float32(tail.min()))
+        maxs = np.append(maxs, np.float32(tail.max()))
     return PeakLevel(
         samples_per_bucket=spb,
-        mins=chunk.min(axis=1).astype(np.float32),
-        maxs=chunk.max(axis=1).astype(np.float32),
+        mins=mins,
+        maxs=maxs,
     )
 
 
@@ -117,11 +124,11 @@ def build_peak_envelope(samples: np.ndarray, target_buckets: int = 4000) -> np.n
 def choose_peak_level(levels: list[PeakLevel], samples_per_pixel: float) -> PeakLevel | None:
     if not levels:
         return None
-    # Prefer the finest level that still has >= ~1 bucket per pixel.
-    for level in reversed(levels):
+    # Levels are coarse -> fine. Use the coarsest bucket no wider than a pixel.
+    for level in levels:
         if level.samples_per_bucket <= max(1.0, samples_per_pixel):
             return level
-    return levels[0]
+    return levels[-1]
 
 
 def probe_audio_duration(path: Path) -> float | None:
