@@ -5,6 +5,7 @@ No logging, locks, growing containers or native device calls in record(). Python
 scalar arithmetic still has interpreter overhead: this is not a zero-cost probe.
 """
 from array import array
+import math
 
 
 FIELDS = (
@@ -15,6 +16,52 @@ FIELDS = (
 )
 # Reasons describe render state, NOT a signal-level assertion that all buses are silent.
 REASONS = {0: "render", 1: "paused", 2: "exception", 3: "music_not_ready", 4: "end"}
+
+
+def estimate_dac_position(rows, stream_time, stream_epoch):
+    """Diagnostic shadow only; never extrapolate through unknown queued audio.
+
+    stream_time and dac_time must both be PortAudio timestamps. Host monotonic
+    deliberately does not enter this calculation. Wrapped/partial blocks need
+    a segment contract and are rejected instead of guessed.
+    """
+    def unavailable(reason):
+        return {"quality": "unavailable", "reason": reason, "position_seconds": None}
+
+    if stream_time is None or not math.isfinite(stream_time):
+        return unavailable("no_stream_time")
+    for row in reversed(rows):
+        if row["stream_epoch"] != stream_epoch:
+            continue
+        dac, current = row["dac_time"], row["current_time"]
+        if not math.isfinite(dac) or not math.isfinite(current) or dac <= 0 or dac < current:
+            continue
+        if dac > stream_time:
+            continue  # already queued, not yet at DAC
+        rate, frames = row["callback_rate"], row["frames"]
+        if not math.isfinite(rate) or rate <= 0 or frames <= 0:
+            return unavailable("invalid_rate_or_frames")
+        elapsed = stream_time - dac
+        if elapsed >= frames / rate:
+            return unavailable("outside_recorded_block")
+        if row["processing_rate"] != rate:
+            return unavailable("rate_mismatch")
+        if int(row["status_flags"]) & 8:
+            return unavailable("output_underflow")
+        if row["reason"] != 0:
+            return unavailable(REASONS.get(int(row["reason"]), "unknown_render_state"))
+        if row["end_frame"] - row["start_frame"] != frames:
+            return unavailable("discontinuous_or_partial_block")
+        return {
+            "quality": "driver_timestamp_estimate",
+            "reason": "linear_render_block",
+            "position_seconds": row["start_frame"] / rate + elapsed,
+            "stream_epoch": stream_epoch,
+            "transport_generation": row["transport_generation"],
+            "callback_sequence": row["sequence"],
+            "queued_seconds_at_callback": dac - current,
+        }
+    return unavailable("no_matching_dac_interval")
 
 
 class AudioTimingTrace:

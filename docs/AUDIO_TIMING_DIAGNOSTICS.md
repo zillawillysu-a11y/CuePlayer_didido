@@ -15,6 +15,20 @@ published. For a programmatic non-RT inspection, call
 `engine.audio_timing_diagnostics()`. Read before closing the engine. There is
 no new UI, auto-upload or callback disk write.
 
+While playback is running, choose **Tools → Write Performance Report…**. The
+existing menu is visible with CUEPLAYER_PERF=1. It snapshots the callback ring
+before writing the report. The log now includes `dac_presentation_shadow`,
+`legacy_ui_position_seconds` and stream `time`. Driver stream time and callback
+DAC time share the PortAudio clock (verified against installed sounddevice's
+Stream.time implementation/documentation); Python monotonic is not subtracted.
+
+The shadow selects the recorded block actually scheduled at the queried stream
+time, including an older generation still queued after a seek. It rejects
+unrecorded intervals, inactive streams, underflows, missing timestamps and
+wrapped/partial blocks without a segment contract. Quality is explicitly a
+driver-timestamp estimate, not physical loopback certification. It does not
+replace the Timeline position or apply the manual sync offset.
+
 The ring holds the latest 512 callbacks, so its time span depends on blocksize.
 At 48k/480 frames it contains about 5.12 seconds; at 48k/64 about 0.68 seconds.
 Take a snapshot promptly after an event. It is not an entire-show recording.

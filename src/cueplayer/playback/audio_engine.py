@@ -55,7 +55,7 @@ from cueplayer.playback.midi_cue_notes import MidiCueNotes
 from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.diagnostics import perf as perf_diag
-from cueplayer.diagnostics.audio_timing import AudioTimingTrace
+from cueplayer.diagnostics.audio_timing import AudioTimingTrace, estimate_dac_position
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
@@ -2142,11 +2142,15 @@ class AudioEngine(QObject):
         """Non-RT report; device properties are observations, not verified hardware rate."""
         stream = self._stream
         observed = {}
-        for name in ("samplerate", "latency", "active", "closed"):
+        for name in ("samplerate", "latency", "active", "closed", "time"):
             try:
                 observed[name] = getattr(stream, name) if stream is not None else None
             except Exception:
                 observed[name] = None
+        rows = self._audio_timing_trace.snapshot() if self._audio_timing_trace else []
+        estimate = estimate_dac_position(rows, observed["time"], self._diagnostic_stream_epoch)
+        if observed["active"] is not True:
+            estimate = {"quality": "unavailable", "reason": "stream_not_active", "position_seconds": None}
         return {
             "trace_enabled": self._audio_timing_trace is not None,
             "stream_epoch": self._diagnostic_stream_epoch,
@@ -2159,7 +2163,9 @@ class AudioEngine(QObject):
             "music_resample_ready": self._playback_samples is not None,
             "source_ready_ranges": "unknown: AudioBuffer has no readiness contract",
             "stream_reported": observed,
-            "callbacks": self._audio_timing_trace.snapshot() if self._audio_timing_trace else [],
+            "callbacks": rows,
+            "dac_presentation_shadow": estimate,
+            "legacy_ui_position_seconds": self.position,
         }
 
     def _prepare_output_rate(self, sample_rate: int, position_seconds: float) -> None:
