@@ -112,6 +112,8 @@ class AudioEngine(QObject):
         self._diagnostic_stream_epoch = 0
         self._last_stream_attempt_error: str | None = None
         self._diagnostic_transport_generation = 0
+        self._loop_discontinuity_sequence = 0
+        self._mtc_seen_loop_sequence = 0
         self._audio_timing_trace = (
             AudioTimingTrace() if os.environ.get("CUEPLAYER_AUDIO_TRACE") == "1" else None
         )
@@ -1086,6 +1088,7 @@ class AudioEngine(QObject):
             self._poll.stop()
         self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
+        self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_play(self.position)
         if self._audio_settings.effective_mtc_output() or self._audio_settings.effective_midi_cue_notes():
             self._mtc_timer.start()
@@ -1188,6 +1191,7 @@ class AudioEngine(QObject):
                 self._clear_write_head_stamp_unlocked()
         self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
+        self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
         # Off-RT: rebuild contiguous Video Audio coverage from the new playhead
@@ -1209,8 +1213,12 @@ class AudioEngine(QObject):
 
     def _mtc_tick(self) -> None:
         if self._playing:
+            loop_sequence = self._loop_discontinuity_sequence
             pos = self.raw_position
             self._sync_mtc_to_file_ltc(pos)
+            if loop_sequence != self._mtc_seen_loop_sequence:
+                self._mtc.on_seek(pos, playing=True)
+                self._mtc_seen_loop_sequence = loop_sequence
             self._mtc.tick(pos)
             self._midi_cues.update(pos)
 
@@ -2002,6 +2010,8 @@ class AudioEngine(QObject):
                         if loop_on and self._loop_engage and end >= b_frame:
                             need = frames - (end - start)
                             self._position_frame = a_frame + need % max(1, b_frame - a_frame)
+                            self._loop_discontinuity_sequence += 1
+                            self._diagnostic_transport_generation += 1
                             # Rebuild as contiguous logical block starting at `start`.
                             music = self._assemble_looped_music(
                                 start, frames, a_frame, b_frame, sample_rate
@@ -2026,6 +2036,9 @@ class AudioEngine(QObject):
                         self._position_frame = (
                             a_frame if loop_on and self._loop_engage and end == b_frame else end
                         )
+                        if loop_on and self._loop_engage and end == b_frame:
+                            self._loop_discontinuity_sequence += 1
+                            self._diagnostic_transport_generation += 1
 
                     # Reject corrupt Video Audio contribution (NaN/Inf already
                     # zeroed inside mixer; enforce shape + finite here too).

@@ -43,6 +43,7 @@ def test_mtc_configure_missing_port_reports_error() -> None:
     try:
         err = out.configure(
             enabled=True,
+            midi_master=True,
             port_name="",
             start_timecode="01:00:00:00",
             fps=30.0,
@@ -58,6 +59,7 @@ def test_mtc_configure_unknown_port_reports_error() -> None:
     try:
         err = out.configure(
             enabled=True,
+            midi_master=True,
             port_name="__cueplayer_no_such_midi_port__",
             start_timecode="01:00:00:00",
             fps=30.0,

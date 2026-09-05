@@ -173,7 +173,7 @@ class MtcOutput:
                 self._close_port_locked()
             if self._port is not None and not port_changed:
                 return None
-            if self._port_name:
+            if self._port_name or self._enabled:
                 err = self._reopen_port_locked()
                 if err:
                     return err
@@ -244,6 +244,11 @@ class MtcOutput:
             if qf_rate <= 0:
                 return
             target = int(max(0.0, position_seconds) * qf_rate)
+            if target < self._last_qf_index or target - self._last_qf_index > 8:
+                # A backward discontinuity or more than one QF group overdue:
+                # re-anchor instead of waiting for old time / replaying a burst.
+                self._reset_qf_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds)
             while self._last_qf_index < target:
                 self._last_qf_index += 1
                 # Align piece to absolute QF index so seekers stay consistent.

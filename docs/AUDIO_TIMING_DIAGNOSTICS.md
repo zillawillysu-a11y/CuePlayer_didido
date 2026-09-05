@@ -40,8 +40,8 @@ Fields distinguish callback-requested, engine-processing and source rates.
 `stream_reported` reads samplerate/latency/active/closed on the reporting thread;
 these do not measure the hardware oscillator. Stream epoch counts open attempts,
 including failed attempts. Transport generation currently identifies seeks;
-natural loop wraps can be inferred from frame discontinuities but do not yet
-publish a full transport-generation contract.
+natural loop wraps also increment it. A mixed/wrapped block still needs a full
+segment contract before it can drive the public presentation clock.
 
 `current_time` and `dac_time` use the PortAudio time base. `host_monotonic` uses
 Python monotonic; do not subtract them without establishing a clock bridge.
