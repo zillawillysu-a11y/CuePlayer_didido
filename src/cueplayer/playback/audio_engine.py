@@ -55,6 +55,7 @@ from cueplayer.playback.midi_cue_notes import MidiCueNotes
 from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.diagnostics import perf as perf_diag
+from cueplayer.diagnostics.audio_timing import AudioTimingTrace
 from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
@@ -104,12 +105,18 @@ class AudioEngine(QObject):
         self._resume_after_scrub = False
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
+        self._diagnostic_stream_epoch = 0
+        self._diagnostic_transport_generation = 0
+        self._audio_timing_trace = (
+            AudioTimingTrace() if os.environ.get("CUEPLAYER_AUDIO_TRACE") == "1" else None
+        )
         # Audio callback continuity (lock-free reads for report; written only
         # from the PortAudio callback thread — no file I/O, no extra locks).
         self._cb_count = 0
         self._cb_underflow = 0
         self._cb_status_flags_or = 0
         self._cb_interval_sum = 0.0
+        self._cb_interval_count = 0
         self._cb_interval_max = 0.0
         self._cb_exec_sum = 0.0
         self._cb_exec_max = 0.0
@@ -1165,6 +1172,7 @@ class AudioEngine(QObject):
         seconds = min(max(0.0, seconds), self.duration)
         sr = self._sample_rate()
         with self._lock:
+            self._diagnostic_transport_generation += 1
             self._position_frame = int(round(float(seconds) * sr))
             # Update under lock so the audio callback cannot wrap to A
             # after a seek that intentionally left the A–B region.
@@ -1894,6 +1902,7 @@ class AudioEngine(QObject):
         return self._start_stream()
 
     def _make_stream_callback(self, sample_rate: int):
+        stream_epoch = self._diagnostic_stream_epoch
         def callback(outdata, frames, time_info, status) -> None:  # noqa: ANN001
             # Continuity probes — no file I/O, no extra locks beyond the
             # existing mix lock. Do not redesign AudioEngine timing here.
@@ -1906,17 +1915,18 @@ class AudioEngine(QObject):
             try:
                 flags = int(status)
             except Exception:
-                flags = 0
+                flags = int(getattr(status, "_flags", 0))
             underflow = False
             try:
                 underflow = bool(getattr(status, "output_underflow", False))
             except Exception:
                 underflow = False
             if not underflow and flags:
-                # PortAudio paOutputUnderflowed is bit 1 (value 2).
-                underflow = bool(flags & 2)
+                # Callback status paOutputUnderflow is 0x8 (0x2 is input overflow).
+                underflow = bool(flags & 8)
             if self._cb_last_mono > 0.0:
                 interval = cb_t0 - self._cb_last_mono
+                self._cb_interval_count += 1
                 self._cb_interval_sum += interval
                 if interval > self._cb_interval_max:
                     self._cb_interval_max = interval
@@ -1934,21 +1944,33 @@ class AudioEngine(QObject):
                     except Exception:
                         pass
             self._cb_last_mono = cb_t0
+            # Start-to-start interval belongs to the PREVIOUS callback's frames.
+            self._cb_expected_period = float(frames) / sample_rate if sample_rate > 0 else 0.0
             self._cb_count += 1
             if underflow:
                 self._cb_underflow += 1
             self._cb_status_flags_or |= int(flags)
 
-            del time_info
+            trace = self._audio_timing_trace
+            trace_start = self._position_frame
+            trace_end = trace_start
+            trace_generation = self._diagnostic_transport_generation
+            trace_reason = 0
             try:
                 with self._lock:
+                    trace_start = self._position_frame
+                    trace_end = trace_start
+                    trace_generation = self._diagnostic_transport_generation
                     if not self._playing:
+                        trace_reason = 1
                         outdata.fill(0)
                         exec_s = time.monotonic() - cb_t0
                         self._cb_exec_sum += exec_s
                         if exec_s > self._cb_exec_max:
                             self._cb_exec_max = exec_s
                         return
+                    if self._buffer is not None and self._playback_samples is None:
+                        trace_reason = 3
                     loop_on = (
                         self.loop_enabled
                         and self.loop_a is not None
@@ -1991,6 +2013,7 @@ class AudioEngine(QObject):
                             video = self._video_chunk(start, frames)
                             self._position_frame = total_frames
                             self._playing = False
+                            trace_reason = 4
                     else:
                         music = self._music_chunk(start, frames, sample_rate)
                         ltc = self._ltc_chunk(start, frames)
@@ -2032,10 +2055,28 @@ class AudioEngine(QObject):
                         sources, self._route, self._output_channel_count
                     )
                     self._stamp_write_head_unlocked()
+                    trace_end = self._position_frame
                 # Always fully overwrite outdata (never leave uninitialized).
                 outdata[:] = routed
             except Exception:
+                trace_reason = 2
                 outdata.fill(0)
+            finally:
+                if trace is not None:
+                    try:
+                        trace.record(
+                            stream_epoch, trace_generation, cb_t0,
+                            float(getattr(time_info, "currentTime", float("nan"))),
+                            float(getattr(time_info, "outputBufferDacTime", float("nan"))),
+                            frames, sample_rate, self._playback_rate,
+                            self._buffer.sample_rate if self._buffer is not None else 0,
+                            trace_start, trace_end,
+                            getattr(status, "_flags", flags), trace_reason,
+                            time.monotonic() - cb_t0,
+                        )
+                    except Exception:
+                        # Diagnostics must never interrupt or change rendered audio.
+                        pass
             exec_s = time.monotonic() - cb_t0
             self._cb_exec_sum += exec_s
             if exec_s > self._cb_exec_max:
@@ -2052,7 +2093,7 @@ class AudioEngine(QObject):
             "status_flags_or": int(self._cb_status_flags_or),
             "expected_period_s": float(self._cb_expected_period),
             "interval_mean_s": (
-                float(self._cb_interval_sum) / max(1, n - 1) if n > 1 else 0.0
+                float(self._cb_interval_sum) / max(1, self._cb_interval_count)
             ),
             "interval_max_s": float(self._cb_interval_max),
             "exec_mean_s": float(self._cb_exec_sum) / max(1, n) if n else 0.0,
@@ -2067,6 +2108,8 @@ class AudioEngine(QObject):
     def publish_audio_continuity_to_perf(self) -> None:
         """Copy continuity counters into PERF attrs (call from report path only)."""
         snap = self.audio_callback_continuity()
+        if self._audio_timing_trace is not None:
+            perf_diag.note("audio.timing", self.audio_timing_diagnostics())
         for key, value in snap.items():
             perf_diag.note(f"audio.callback.{key}", value)
         if int(snap["callback_count"]) > 0:
@@ -2090,6 +2133,29 @@ class AudioEngine(QObject):
         except Exception:
             pass
 
+    def audio_timing_diagnostics(self) -> dict:
+        """Non-RT report; device properties are observations, not verified hardware rate."""
+        stream = self._stream
+        observed = {}
+        for name in ("samplerate", "latency", "active", "closed"):
+            try:
+                observed[name] = getattr(stream, name) if stream is not None else None
+            except Exception:
+                observed[name] = None
+        return {
+            "trace_enabled": self._audio_timing_trace is not None,
+            "stream_epoch": self._diagnostic_stream_epoch,
+            "transport_generation": self._diagnostic_transport_generation,
+            "source_rate": self._buffer.sample_rate if self._buffer is not None else None,
+            "processing_rate": self._playback_rate,
+            "device_index": self._device_index,
+            "output_channels": self._output_channel_count,
+            "music_resample_ready": self._playback_samples is not None,
+            "source_ready_ranges": "unknown: AudioBuffer has no readiness contract",
+            "stream_reported": observed,
+            "callbacks": self._audio_timing_trace.snapshot() if self._audio_timing_trace else [],
+        }
+
     def _open_output_stream(
         self,
         *,
@@ -2098,6 +2164,9 @@ class AudioEngine(QObject):
         sample_rate: int,
         latency: str | float | None = "low",
     ) -> bool:
+        self._diagnostic_stream_epoch += 1
+        self._cb_last_mono = 0.0
+        self._cb_expected_period = 0.0
         kwargs: dict = {
             "samplerate": sample_rate,
             "channels": channels,

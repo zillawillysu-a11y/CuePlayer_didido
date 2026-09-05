@@ -136,6 +136,9 @@ def test_engine_ltc_route_opens_three_channels_on_focusrite(monkeypatch) -> None
     multi = _dev(1, "Focusrite USB", ch=8)
     monkeypatch.setattr(eng_mod, "list_output_devices", lambda dedupe=True: [multi] if dedupe else [stereo, multi])
     monkeypatch.setattr(eng_mod.sd, "check_output_settings", lambda **kwargs: None)
+    # The synthetic index must not query a real machine's unrelated endpoint.
+    monkeypatch.setattr(eng_mod, "probe_supported_output_channels",
+                        lambda index, **kwargs: 8 if index == 1 else 2)
 
     QApplication.instance() or QApplication([])
     engine = eng_mod.AudioEngine()

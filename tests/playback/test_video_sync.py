@@ -263,6 +263,7 @@ def test_playing_throttles_rapid_decodes(app: QApplication, red_clip_path: Path)
     assert len(frames) < 60
 
     controller.set_playing(False)  # flush: the last requested position must land.
+    _drain_async(controller, app)
     assert len(frames) >= 1
     controller.shutdown()
 
@@ -361,7 +362,7 @@ def test_duplicate_decoded_frame_is_not_reemitted(app: QApplication, red_clip_pa
     # FPS=10 in _make_solid_clip -> both land inside the same ~0.1s frame.
     controller.update_position(0.01)
     controller.update_position(0.02)
-
+    _drain_async(controller, app)
     assert len(frames) == 1
 
 
@@ -618,6 +619,7 @@ def _drain_async(controller: VideoSyncController, app: QApplication, timeout: fl
         app.processEvents()
         if (
             not controller._async_inflight
+            and not controller._flush_timer.isActive()
             and not controller._final_land_pending
             and not controller._land_retry_timer.isActive()
         ):

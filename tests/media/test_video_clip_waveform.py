@@ -9,11 +9,27 @@ import pytest
 
 from cueplayer.domain.models import VideoClip
 from cueplayer.media.video_clip_waveform import (
-    build_clip_waveform_data,
+    peaks_from_artifact,
     sample_clip_peaks_for_times,
     sample_source_raw_for_clip_times,
     timeline_to_clip_local,
 )
+from cueplayer.media.video_waveform_artifact import empty_artifact, _fill_chunk_peaks
+
+
+@pytest.fixture
+def source_peaks(tmp_path):
+    """Exercise current shared-source artifact API, not removed PCM clip copies."""
+    path = tmp_path / "來源.wav"
+    path.touch()
+
+    def build(clip, *, mono, sample_rate, mono_origin_seconds=0.0):
+        art = empty_artifact(path, duration_seconds=max(0.05, mono.size / sample_rate))
+        _fill_chunk_peaks(art, pcm=mono, pcm_rate=sample_rate, pcm_origin=mono_origin_seconds)
+        art.complete = bool(mono.size)
+        return peaks_from_artifact(clip, art)
+
+    return build
 
 
 def _clip(**kwargs) -> VideoClip:
@@ -33,19 +49,19 @@ def _clip(**kwargs) -> VideoClip:
     return clip
 
 
-def test_build_clip_waveform_data_has_pyramid() -> None:
+def test_source_artifact_has_pyramid(source_peaks) -> None:
     sr = 1000
     t = np.linspace(0, 2 * np.pi, sr * 2, dtype=np.float32)
     mono = (0.5 * np.sin(t)).astype(np.float32)
     clip = _clip(duration_seconds=2.0, source_out_seconds=2.0)
-    peaks = build_clip_waveform_data(clip, mono=mono, sample_rate=sr)
+    peaks = source_peaks(clip, mono=mono, sample_rate=sr)
     assert peaks is not None
-    assert peaks.mono.size == sr * 2
+    assert peaks.mono.size / peaks.sample_rate == pytest.approx(2.0)
     assert len(peaks.peak_levels) >= 1
     assert peaks.mins.size >= 64
 
 
-def test_build_clip_waveform_loops_when_clip_longer_than_source() -> None:
+def test_source_sampling_loops_without_copying_pcm(source_peaks) -> None:
     sr = 100
     mono = np.zeros(sr * 2, dtype=np.float32)
     mono[10:20] = 1.0
@@ -55,29 +71,28 @@ def test_build_clip_waveform_loops_when_clip_longer_than_source() -> None:
         source_in_seconds=0.0,
         source_out_seconds=2.0,
     )
-    data = build_clip_waveform_data(clip, mono=mono, sample_rate=sr)
+    data = source_peaks(clip, mono=mono, sample_rate=sr)
     assert data is not None
-    first_half = data.maxs[:20]
-    second_half = data.maxs[20:]
-    assert float(first_half.max()) > 0.5
-    assert float(second_half.max()) > 0.5
+    first = sample_source_raw_for_clip_times(data, clip, clip_t0=0.1, clip_t1=0.2)
+    repeat = sample_source_raw_for_clip_times(data, clip, clip_t0=2.1, clip_t1=2.2)
+    assert first[1] > 0.5
+    assert repeat == pytest.approx(first)
 
 
-def test_still_clip_returns_peaks_from_source_in() -> None:
+def test_still_clip_returns_peaks_from_source_in(source_peaks) -> None:
     sr = 100
     mono = np.linspace(-1.0, 1.0, sr, dtype=np.float32)
     clip = _clip(duration_seconds=3.0, media_kind="still", source_in_seconds=0.5)
-    peaks = build_clip_waveform_data(clip, mono=mono, sample_rate=sr)
+    peaks = source_peaks(clip, mono=mono, sample_rate=sr)
     assert peaks is not None
     assert peaks.mins.size >= 64
 
 
-def test_empty_mono_returns_none() -> None:
+def test_pending_artifact_is_not_reported_as_silence(source_peaks) -> None:
     clip = _clip()
-    assert (
-        build_clip_waveform_data(clip, mono=np.zeros(0, dtype=np.float32), sample_rate=48000)
-        is None
-    )
+    peaks = source_peaks(clip, mono=np.zeros(0, dtype=np.float32), sample_rate=48000)
+    assert np.isnan(peaks.mins).all()
+    assert not np.any(peaks.coverage)
 
 
 def test_timeline_to_clip_local() -> None:
@@ -87,24 +102,24 @@ def test_timeline_to_clip_local() -> None:
     assert timeline_to_clip_local(15.1, clip) is None
 
 
-def test_sample_source_raw_resolves_trimmed_audio() -> None:
+def test_sample_source_raw_resolves_trimmed_audio(source_peaks) -> None:
     sr = 1000
     mono = np.zeros(sr * 4, dtype=np.float32)
     mono[1500:1600] = 1.0
     clip = _clip(duration_seconds=2.0, source_in_seconds=1.5, source_out_seconds=3.5)
-    peaks = build_clip_waveform_data(clip, mono=mono, sample_rate=sr, mono_origin_seconds=0.0)
+    peaks = source_peaks(clip, mono=mono, sample_rate=sr, mono_origin_seconds=0.0)
     assert peaks is not None
     lo, hi = sample_source_raw_for_clip_times(peaks, clip, clip_t0=0.0, clip_t1=0.2)
     assert hi > 0.5
 
 
-def test_sample_clip_peaks_tracks_time_offset() -> None:
+def test_sample_clip_peaks_tracks_time_offset(source_peaks) -> None:
     sr = 1000
     mono = np.zeros(sr * 10, dtype=np.float32)
     mono[0:100] = 1.0
     mono[5000:5100] = -1.0
     clip = _clip(duration_seconds=10.0, source_out_seconds=10.0)
-    peaks = build_clip_waveform_data(clip, mono=mono, sample_rate=sr)
+    peaks = source_peaks(clip, mono=mono, sample_rate=sr)
     assert peaks is not None
 
     start_lo, start_hi = sample_clip_peaks_for_times(
