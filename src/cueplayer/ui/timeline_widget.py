@@ -2856,9 +2856,9 @@ class TimelineWidget(QWidget):
         return True
 
     def _blit_zoom_preview(self, painter: QPainter) -> bool:
-        """Temporary zoom preview: scale spatial layers; keep annotations fixed-size.
+        """Zoom preview: retain spatial cache, redraw Music at current resolution.
 
-        Waveform / grid / clips scale with the time transform. Cue Notes, seconds
+        Other spatial layers scale with the time transform. Cue Notes, seconds
         text, and marker glyphs keep constant pixel/font size and only move in X.
         """
         spatial = self._spatial_backdrop
@@ -2938,7 +2938,15 @@ class TimelineWidget(QWidget):
             ),
         )
         painter.restore()
-        # Screen-space annotations (constant pixel size) on top of scaled spatial.
+        # A stretched raster invents transient widths. Repaint only the visible
+        # Music band from the existing peak LOD/raw data (no decode/cache bake).
+        painter.save()
+        painter.setClipRect(hw, self._ruler_height, content_w, self._wave_height)
+        with perf_diag.span("timeline.zoom.waveform_current_resolution_ms"):
+            self._paint_waveform(painter)
+            self._paint_beat_grids(painter)
+        painter.restore()
+        # Restore fixed-size notes/stems over the freshly painted waveform.
         self._paint_zoom_screen_annotations(painter)
         return True
 
@@ -6035,10 +6043,10 @@ class TimelineWidget(QWidget):
         dur = self._duration()
         valid = (t1 > 0.0) & (t0 < dur)
         s0 = (t0 * audio.sample_rate).astype(np.int64)
-        s1 = (t1 * audio.sample_rate).astype(np.int64)
+        s1 = np.ceil(t1 * audio.sample_rate).astype(np.int64)
         spb = max(1, int(level.samples_per_bucket))
         b0 = np.maximum(0, s0 // spb)
-        b1 = np.minimum(level.maxs.size, np.maximum(b0 + 1, s1 // spb))
+        b1 = np.minimum(level.maxs.size, np.maximum(b0 + 1, (s1 + spb - 1) // spb))
         # Prefetch level arrays once; column reduce stays O(width) but without
         # per-pixel Python slicing overhead on the hot path where possible.
         mins = level.mins

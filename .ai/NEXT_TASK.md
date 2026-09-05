@@ -1,7 +1,6 @@
 ﻿# Next task
 
-Render Music waveform at current zoom resolution during cached preview, keeping
-other cached layers and fixed-size annotations. Cover partial pixel-end buckets.
-Validate image geometry and viewport paint cost. Preserve PCM and clock behavior.
-ASIO interface clarification remains pending; continue independent work.
-See .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.
+Fix sequential video waveform batch carry with real PyAV continuity tests.
+Preserve PTS/source coverage; do not change playback decoder or PCM behavior.
+Continue independent work; affected ASIO driver/interface clarification pending.
+Read .ai/REPORT.md and CUEPLAYER_TECHNICAL_AUDIT.md.

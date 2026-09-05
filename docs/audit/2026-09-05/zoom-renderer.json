@@ -1,0 +1,25 @@
+{
+  "scope": "Synthetic three-hour peak-only Music-band QImage paint, 1200px width, DPR1. No file decode, no physical display, no full Timeline benchmark.",
+  "measurements": [
+    {
+      "pps": 0.1,
+      "median_ms": 7.915049995062873,
+      "p95_ms": 10.031894998246571
+    },
+    {
+      "pps": 10,
+      "median_ms": 5.101499999000225,
+      "p95_ms": 6.528679999610176
+    },
+    {
+      "pps": 100,
+      "median_ms": 5.519600003026426,
+      "p95_ms": 8.264245001191739
+    },
+    {
+      "pps": 500,
+      "median_ms": 5.181050000828691,
+      "p95_ms": 7.337099999858766
+    }
+  ]
+}
