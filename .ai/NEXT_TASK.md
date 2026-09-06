@@ -1,26 +1,23 @@
 # Next task
 
-LTC Generator Clips — Phase 2: playback wiring + UI + exporter.
-Phase 1 (domain/mapping/persistence/tests) is complete — see
-`.ai/handoffs/2026-09-06_LtcClipsDomainPhase1.md`.
+LTC Generator Clips — Phase 3: per-song clip create/edit UI + exporter wiring.
+Playback wiring is complete — see
+`.ai/handoffs/2026-09-06_LtcClipsPlaybackPhase2.md` (LTC audio inside clips
+only, MTC re-anchoring per clip, `--:--:--:--` display outside clips, 20 new
+regression tests passing).
 
-1. Playback (AudioEngine + MTC):
-   - When the resolved song mode is `clip_generator`, emit generated LTC
-     only inside clips: LTC cache key and the realtime `LtcPlaybackCursor`
-     must follow the clip table (TC restarts at each clip's
-     `start_timecode`); no LTC outside clips.
-   - MTC: no MTC output outside clips (respect the existing MTC toggle).
-   - UI timecode clock / readouts: show `No TC` or `--:--:--:--` outside
-     clips.
-   - `full_track_generator` must keep today's single-offset behavior.
-2. UI: create/edit LTC Generator Clips per song (start position, duration,
-   start TC). Creating the first clip switches the song to
-   `clip_generator` (stops full-track generator; striped can't coexist).
-   Show `validate_ltc_clips` errors (block save/use) and warnings
-   (overlapping timeline ranges, overlapping/backwards TC ranges).
-   Removing the last clip keeps `clip_generator`; never auto-restore
-   `full_track_generator`.
-3. Exporter (MA2 + MA3, per user spec):
+1. UI: create/edit LTC Generator Clips per song (start position, duration,
+   start TC), e.g. in the timeline / song edit surfaces:
+   - Creating the first clip switches the song to `clip_generator` (stops
+     full-track generator; stripes can't coexist).
+   - Show `validate_ltc_clips` errors (block save/use) and warnings
+     (overlapping timeline ranges, overlapping/backwards TC ranges).
+   - Removing the last clip keeps `clip_generator`; never auto-restore
+     `full_track_generator`.
+   - After any clip table change call
+     `AudioEngine.refresh_song_ltc_routing()` (re-arms the async clip PCM
+     cache, the MTC TC source, file-LTC routing and the output stream).
+2. Exporter (MA2 + MA3, per user spec):
    - `full_track_generator`: unchanged math.
    - `clip_generator`: Timecode Events only for marks inside a clip;
      out-of-clip marks still export their Sequence Cue but get no Timecode
@@ -35,3 +32,8 @@ Carry-over (not blocking):
   diagnostic fix).
 - Physical loopback 440 Hz + long-capture drift check were parked by the
   user (recent ASIO test clean; no clock correction).
+- Pre-existing test failures unrelated to the LTC clip work (verified on
+  clean tree): `test_ndi_probe` DLL-path test, 2× `test_song_use_left_ltc`
+  routing assertions, `test_video_sync` flake (1 failure + occasional AV in
+  the video-decoder thread), `test_clock_fit_narrow_panel` font-rendering
+  failures.

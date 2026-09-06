@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from cueplayer.timecode.mtc import (
@@ -129,6 +130,11 @@ class MtcOutput:
         self._playing = False
         self._last_qf_index = -1
         self._qf_piece = 0  # 0–7 cycling
+        # Optional position → TC mapping (clip_generator mode). A provider
+        # returning ``None`` means “no TC source at this position” (outside
+        # every LTC clip): no quarter frames and no full-frame dumps there.
+        # ``None`` provider = legacy single timebase.
+        self._tc_provider: Callable[[float], Timecode | None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -186,9 +192,35 @@ class MtcOutput:
             if parsed is not None:
                 self._start_tc = parsed
 
+    def set_tc_provider(
+        self, provider: Callable[[float], Timecode | None] | None
+    ) -> None:
+        """
+        Install the position → TC mapping MTC must mirror.
+
+        Used by ``clip_generator`` songs so MTC shares the exact LTC clip
+        mapping (``ltc_timecode_at``). The provider must be cheap and lock-free
+        (it is called under the MTC lock, from the UI tick). Pass ``None`` to
+        fall back to the single ``start_timecode`` timebase.
+        """
+        with self._lock:
+            self._tc_provider = provider
+
+    def _tc_at_locked(self, position_seconds: float) -> Timecode | None:
+        """TC at ``position_seconds`` per the active mapping (lock held)."""
+        if self._tc_provider is not None:
+            try:
+                return self._tc_provider(float(position_seconds))
+            except Exception:  # noqa: BLE001 — mapping must never kill MTC
+                return None
+        return absolute_timecode(self._start_tc, position_seconds, self._fps)
+
     def timecode_at(self, position_seconds: float) -> Timecode:
         """SMPTE value MTC would send at this playback position."""
         with self._lock:
+            tc = self._tc_at_locked(position_seconds)
+            if tc is not None:
+                return tc
             return absolute_timecode(self._start_tc, position_seconds, self._fps)
 
     def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
@@ -244,7 +276,12 @@ class MtcOutput:
             if qf_rate <= 0:
                 return
             target = int(max(0.0, position_seconds) * qf_rate)
-            if target < self._last_qf_index or target - self._last_qf_index > 8:
+            if self._last_qf_index < 0:
+                # Resuming after a no-TC stretch (outside an LTC clip):
+                # re-anchor + full frame so receivers latch the new TC mapping.
+                self._reset_qf_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds)
+            elif target < self._last_qf_index or target - self._last_qf_index > 8:
                 # A backward discontinuity or more than one QF group overdue:
                 # re-anchor instead of waiting for old time / replaying a burst.
                 self._reset_qf_locked(position_seconds)
@@ -256,7 +293,11 @@ class MtcOutput:
                 # 8 QFs span 2 TC frames; freeze TC at the even frame of the group.
                 group = self._last_qf_index // 8
                 frame_pos = (group * 2) / fps
-                tc = absolute_timecode(self._start_tc, frame_pos, fps)
+                tc = self._tc_at_locked(frame_pos)
+                if tc is None:
+                    # No TC source at this frame (outside every LTC clip):
+                    # stay silent, keep the index advancing without a burst.
+                    continue
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
                     self._port.send(self._note_msg(0xF1, data))
@@ -279,7 +320,9 @@ class MtcOutput:
     def _send_full_frame_locked(self, position_seconds: float) -> None:
         if self._port is None:
             return
-        tc = absolute_timecode(self._start_tc, position_seconds, self._fps)
+        tc = self._tc_at_locked(position_seconds)
+        if tc is None:
+            return
         try:
             import mido
 

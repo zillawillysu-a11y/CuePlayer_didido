@@ -17,6 +17,11 @@ import numpy as np
 import sounddevice as sd
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from cueplayer.domain.ltc_clips import (
+    clip_at_position,
+    ltc_timecode_at,
+    resolved_song_ltc_source_mode,
+)
 from cueplayer.domain.models import (
     AudioOutputSettings,
     Song,
@@ -160,6 +165,12 @@ class AudioEngine(QObject):
         self._ltc_cache_future = None
         self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
         self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
+        # clip_generator: per-clip LTC table (async) — silence outside clips.
+        self._ltc_clip_table: tuple[tuple[int, int, np.ndarray], ...] | None = None
+        self._ltc_clip_cache_key: tuple | None = None
+        self._ltc_clip_cache_future = None
+        # MTC TC-source identity for clip re-anchoring (see _mtc_tc_source_key).
+        self._mtc_source_key: tuple = ("base",)
         self._detected_ltc_channel: int | None = None
         self._ltc_detect_ran = False
         self._ltc_detect_inflight = False
@@ -249,18 +260,24 @@ class AudioEngine(QObject):
             or translate_active
         )
         if tc_active:
-            # When LTC source is from-file, the actual timecode numbers come from
-            # decoding the stripe — regardless of whether LTC output is enabled.
-            # MTC mirrors the same source, so show file-decoded TC when available.
-            decode_ch = self._decode_source_channel()
-            decoded = self._decode_file_ltc_timecode(pos) if decode_ch is not None else None
-            if decoded is not None:
-                tc_str = decoded.format()
-            elif self.mtc_enabled:
-                tc_str = self._mtc.timecode_at(pos).format()
+            if self._resolved_ltc_mode() == "clip_generator":
+                # clip_generator: TC comes only from the clip mapping; outside
+                # every clip show No TC — never the song-start fallback.
+                mapped = self._clip_ltc_timecode_at(pos)
+                tc_str = mapped.format() if mapped is not None else "--:--:--:--"
             else:
-                start = parse_timecode(self._song_start_tc) or Timecode(1, 0, 0, 0)
-                tc_str = absolute_timecode(start, pos, self._song_fps).format()
+                # When LTC source is from-file, the actual timecode numbers come from
+                # decoding the stripe — regardless of whether LTC output is enabled.
+                # MTC mirrors the same source, so show file-decoded TC when available.
+                decode_ch = self._decode_source_channel()
+                decoded = self._decode_file_ltc_timecode(pos) if decode_ch is not None else None
+                if decoded is not None:
+                    tc_str = decoded.format()
+                elif self.mtc_enabled:
+                    tc_str = self._mtc.timecode_at(pos).format()
+                else:
+                    start = parse_timecode(self._song_start_tc) or Timecode(1, 0, 0, 0)
+                    tc_str = absolute_timecode(start, pos, self._song_fps).format()
 
         sending = bool(self._playing and outputs)
         return OutputTimecodeState(
@@ -288,6 +305,9 @@ class AudioEngine(QObject):
         song = self._song
         if song is None:
             return None
+        # clip_generator: generated clip LTC owns the bus — no file stripe.
+        if self._resolved_ltc_mode() == "clip_generator":
+            return None
         side = coerce_file_ltc_side(getattr(song, "file_ltc_side", "auto"))
         if side == "off":
             return None
@@ -303,12 +323,41 @@ class AudioEngine(QObject):
     def _song_uses_file_ltc(self) -> bool:
         return self._song_file_ltc_channel() is not None
 
+    def _resolved_ltc_mode(self) -> str:
+        """Effective per-song LTC source mode (see domain.ltc_clips).
+
+        Explicit per-song modes win. The legacy ``auto`` default mirrors the
+        pre-clip behavior driven by project ``AudioOutputSettings``.
+        """
+        s = self._audio_settings
+        song = self._song
+        if song is None:
+            if not s.ltc_enabled:
+                return "off"
+            return (
+                "full_track_generator" if s.ltc_source == "generator" else "striped_file"
+            )
+        return resolved_song_ltc_source_mode(
+            song,
+            project_ltc_source=s.ltc_source,
+            ltc_enabled=s.ltc_enabled,
+        )
+
+    def _uses_clip_ltc(self) -> bool:
+        """clip_generator song: generated LTC only inside its LTC clips."""
+        return bool(
+            self._audio_settings.ltc_enabled
+            and self._resolved_ltc_mode() == "clip_generator"
+        )
+
     def _uses_generated_ltc(self) -> bool:
         if self._song_uses_file_ltc():
             return False
+        if self._uses_clip_ltc():
+            return False
         return bool(
             self._audio_settings.ltc_enabled
-            and self._audio_settings.ltc_source == "generator"
+            and self._resolved_ltc_mode() == "full_track_generator"
             and self._audio_settings.ltc_generator_enabled
         )
 
@@ -333,6 +382,8 @@ class AudioEngine(QObject):
 
     def _file_ltc_channel(self) -> int | None:
         """Loaded-file channel carrying striped LTC (for bus or L/R leg routing)."""
+        if self._resolved_ltc_mode() == "clip_generator":
+            return None
         s = self._audio_settings
         uses_ltc_leg = is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
         uses_file_bus = bool(s.ltc_enabled and s.ltc_source != "generator")
@@ -353,6 +404,8 @@ class AudioEngine(QObject):
 
     def _resolved_file_ltc_channel(self, *, require_settings: bool = False) -> int | None:
         """Which loaded-file channel carries striped LTC (0=L, 1=R)."""
+        if self._resolved_ltc_mode() == "clip_generator":
+            return None
         song_ch = self._song_file_ltc_channel()
         if song_ch is not None:
             if require_settings and not self._audio_settings.ltc_enabled:
@@ -382,6 +435,9 @@ class AudioEngine(QObject):
         """Source file channel for the dedicated LTC output bus."""
         if not self._audio_settings.ltc_enabled:
             return None
+        # clip_generator: the generated clip LTC feeds the bus (no file channel).
+        if self._resolved_ltc_mode() == "clip_generator":
+            return None
         song_ch = self._song_file_ltc_channel()
         if song_ch is not None:
             return song_ch
@@ -402,6 +458,10 @@ class AudioEngine(QObject):
         if not s.ltc_enabled and not translating:
             return None
         mode = str(s.ltc_source or "auto")
+        # clip_generator: display/MTC TC comes from the clip mapping, never
+        # from a decoded file stripe.
+        if self._resolved_ltc_mode() == "clip_generator":
+            return None
         # Translate never mirrors Song Start / generator numbers — always file.
         if mode == "generator":
             if not translating:
@@ -458,6 +518,9 @@ class AudioEngine(QObject):
         self, position_seconds: float, *, force: bool = False
     ) -> None:
         """When file LTC translate is active, lock MTC origin to the decoded stripe TC."""
+        if self._resolved_ltc_mode() == "clip_generator":
+            # The clip mapping owns MTC — never mirror a decoded file stripe.
+            return
         if not self._audio_settings.effective_mtc_output():
             return
         if not self._audio_settings.effective_ltc_to_mtc_translate():
@@ -631,6 +694,7 @@ class AudioEngine(QObject):
         Call whenever the active song changes.
         """
         self._song = song
+        self._install_mtc_tc_source()
         self._video_mixer.set_song(song)
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
@@ -667,6 +731,7 @@ class AudioEngine(QObject):
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
+        self._install_mtc_tc_source()
 
     def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
         """
@@ -706,14 +771,22 @@ class AudioEngine(QObject):
         self._resolve_device_and_route()
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
+            self._invalidate_clip_ltc_cache()
+        elif self._uses_clip_ltc():
+            self._ensure_clip_ltc_cache()
+            with self._lock:
+                self._ltc_pcm = None
+                self._ltc_cache_key = None
         else:
             with self._lock:
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
+            self._invalidate_clip_ltc_cache()
         if not self._audio_settings.ltc_enabled:
             with self._lock:
                 self._ltc_pcm = None
                 self._ltc_cache_key = None
+            self._invalidate_clip_ltc_cache()
 
         # Re-run auto-detect when using a file source, or when Translate needs a
         # stripe even if LTC source is still Internal generator.
@@ -734,6 +807,7 @@ class AudioEngine(QObject):
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
+        self._install_mtc_tc_source()
         if self._audio_settings.effective_ltc_to_mtc_translate():
             self._sync_mtc_to_file_ltc(
                 pos if was_playing else self.raw_position, force=True
@@ -937,6 +1011,8 @@ class AudioEngine(QObject):
             return
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
+        elif self._uses_clip_ltc():
+            self._ensure_clip_ltc_cache()
         self._resolve_device_and_route()
         self._refresh_ltc_detection()
         self._prewarm_output_stream()
@@ -1019,6 +1095,8 @@ class AudioEngine(QObject):
             return
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
+        elif self._uses_clip_ltc():
+            self._ensure_clip_ltc_cache()
         try:
             self._ensure_stream()
         except Exception:
@@ -1062,6 +1140,8 @@ class AudioEngine(QObject):
         if needs_stream:
             if self._uses_generated_ltc():
                 self._ensure_ltc_cache()
+            elif self._uses_clip_ltc():
+                self._ensure_clip_ltc_cache()
             if not self._ensure_stream():
                 self._playing = False
                 self._silent_timer.stop()
@@ -1102,6 +1182,7 @@ class AudioEngine(QObject):
             and (
                 self._buffer is not None
                 or self._ltc_pcm is not None
+                or self._ltc_clip_table is not None
                 or has_source_ltc
                 or has_video_audio
             )
@@ -1191,6 +1272,7 @@ class AudioEngine(QObject):
                 self._clear_write_head_stamp_unlocked()
         self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
+        self._mtc_source_key = self._mtc_tc_source_key(seconds)
         self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_seek(self.position)
         self.position_changed.emit(self.position)
@@ -1219,6 +1301,12 @@ class AudioEngine(QObject):
             if loop_sequence != self._mtc_seen_loop_sequence:
                 self._mtc.on_seek(pos, playing=True)
                 self._mtc_seen_loop_sequence = loop_sequence
+            key = self._mtc_tc_source_key(pos)
+            if key != self._mtc_source_key:
+                # Crossed into/out of an LTC clip: re-anchor MTC (full frame
+                # while a TC mapping is active; silence outside clips).
+                self._mtc_source_key = key
+                self._mtc.on_seek(pos, playing=True)
             self._mtc.tick(pos)
             self._midi_cues.update(pos)
 
@@ -1296,9 +1384,12 @@ class AudioEngine(QObject):
 
     def _invalidate_ltc_cache(self) -> None:
         self._ltc_cache_future = None
+        self._ltc_clip_cache_future = None
         with self._lock:
             self._ltc_pcm = None
             self._ltc_cache_key = None
+            self._ltc_clip_table = None
+            self._ltc_clip_cache_key = None
             self._ltc_cursor.reset()
 
     def _sync_ltc_cursor(self) -> None:
@@ -1357,11 +1448,161 @@ class AudioEngine(QObject):
 
         future.add_done_callback(_done)
 
+    def _clip_ltc_cache_key(self) -> tuple | None:
+        """Identity of the per-clip LTC table (rate, fps, clip set)."""
+        song = self._song
+        if song is None:
+            return None
+        clips = tuple(
+            (
+                clip.id,
+                round(float(clip.timeline_start_seconds), 6),
+                round(float(clip.duration_seconds), 6),
+                str(clip.start_timecode),
+            )
+            for clip in song.ltc_clips
+        )
+        return (
+            self._sample_rate(),
+            round(float(self._song_fps), 4),
+            clips,
+        )
+
+    def _invalidate_clip_ltc_cache(self) -> None:
+        self._ltc_clip_cache_future = None
+        with self._lock:
+            self._ltc_clip_table = None
+            self._ltc_clip_cache_key = None
+
+    def _ensure_clip_ltc_cache(self) -> None:
+        """Async per-clip LTC PCM table of (timeline_start, timeline_end, pcm)."""
+        if not self._uses_clip_ltc():
+            return
+        song = self._song
+        key = self._clip_ltc_cache_key()
+        if song is None or key is None:
+            return
+        sr = self._sample_rate()
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        with self._lock:
+            if self._ltc_clip_cache_key == key and self._ltc_clip_table is not None:
+                return
+        if self._ltc_clip_cache_future is not None and not self._ltc_clip_cache_future.done():
+            return
+
+        clips = list(song.ltc_clips)
+
+        def _build() -> tuple[tuple, tuple]:
+            table = []
+            for clip in clips:
+                dur = max(0.0, float(clip.duration_seconds))
+                if dur <= 0.0 or parse_timecode(clip.start_timecode) is None:
+                    continue
+                try:
+                    pcm = generate_ltc_pcm(dur, sr, clip.start_timecode, fps, amplitude=1.0)
+                except ValueError:
+                    continue
+                clip_start = int(round(float(clip.timeline_start_seconds) * sr))
+                table.append((clip_start, clip_start + pcm.size, pcm))
+            return key, tuple(table)
+
+        future = self._ltc_executor.submit(_build)
+        self._ltc_clip_cache_future = future
+
+        def _done(fut) -> None:
+            try:
+                built_key, table = fut.result()
+            except Exception:
+                return
+            with self._lock:
+                if not self._uses_clip_ltc() or self._clip_ltc_cache_key() != built_key:
+                    return
+                self._ltc_clip_table = table
+                self._ltc_clip_cache_key = built_key
+
+        future.add_done_callback(_done)
+
+    def _clip_ltc_chunk(self, start: int, frames: int) -> np.ndarray:
+        """LTC for a clip_generator song: generated inside clips, silence outside."""
+        out = np.zeros(frames, dtype=np.float32)
+        sr = self._sample_rate()
+        end = start + frames
+        table = self._ltc_clip_table
+        if table is not None:
+            for clip_start, clip_end, pcm in table:
+                lo = max(start, clip_start)
+                hi = min(end, clip_end)
+                if hi <= lo:
+                    continue
+                s0 = lo - clip_start
+                take = hi - lo
+                out[lo - start : hi - start] = pcm[s0 : s0 + take]
+            return out
+        # Cache not ready yet — render overlapping clips incrementally (O(chunk)).
+        song = self._song
+        if song is None:
+            return out
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        for clip in song.ltc_clips:
+            if parse_timecode(clip.start_timecode) is None:
+                continue
+            clip_start = int(round(float(clip.timeline_start_seconds) * sr))
+            clip_end = int(round(clip.end_seconds * sr))
+            lo = max(start, clip_start)
+            hi = min(end, clip_end)
+            if hi <= lo:
+                continue
+            cursor = LtcPlaybackCursor(sr, fps, clip.start_timecode, amplitude=1.0)
+            seg = cursor.render(lo - clip_start, hi - lo)
+            out[lo - start : hi - start] = seg[: hi - lo]
+        return out
+
+    def _clip_ltc_timecode_at(self, position_seconds: float) -> Timecode | None:
+        """Mapped output TC at a timeline position (None outside every clip)."""
+        song = self._song
+        if song is None:
+            return None
+        return ltc_timecode_at(song.ltc_clips, self._song_fps, position_seconds)
+
+    def _mtc_clip_provider(self):
+        """Position → TC mapping MTC must mirror, or None for the legacy timebase."""
+        song = self._song
+        if song is None or self._resolved_ltc_mode() != "clip_generator":
+            return None
+        clips = list(song.ltc_clips)
+        fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        return lambda pos: ltc_timecode_at(clips, fps, float(pos))
+
+    def _mtc_tc_source_key(self, position_seconds: float) -> tuple:
+        """Identity of the MTC TC source at a position (re-anchor on change)."""
+        song = self._song
+        if song is None or self._resolved_ltc_mode() != "clip_generator":
+            return ("base",)
+        clip = clip_at_position(song.ltc_clips, position_seconds)
+        if clip is None:
+            return ("none",)
+        return ("clip", clip.id)
+
+    def _install_mtc_tc_source(self) -> None:
+        """Point MTC at the song's TC mapping; re-anchor when the source changes."""
+        self._mtc.set_tc_provider(self._mtc_clip_provider())
+        pos = self.raw_position
+        key = self._mtc_tc_source_key(pos)
+        if key != self._mtc_source_key:
+            self._mtc_source_key = key
+            self._mtc.on_seek(pos, playing=self._playing)
+
     def _ltc_bus_active(self, *, max_ch: int | None = None) -> bool:
         s = self._audio_settings
         if not s.ltc_enabled:
             return False
         ch = max_ch if max_ch is not None else max(1, int(self._output_channel_count or 2))
+        if self._resolved_ltc_mode() == "clip_generator":
+            # Generated clip LTC uses the dedicated bus (like the full-track
+            # generator); a legacy 3.5mm stereo-leg split still works.
+            if ltc_output_channels_from_settings(s, max_ch=ch):
+                return True
+            return is_ltc_route(s.music_l_route) or is_ltc_route(s.music_r_route)
         if ltc_output_channels_from_settings(s, max_ch=ch):
             return True
         # Legacy 3.5mm split: LTC on a stereo leg instead of the dedicated bus.
@@ -1377,10 +1618,12 @@ class AudioEngine(QObject):
         pos = self.raw_position
         if was_playing:
             self.pause()
+        self._invalidate_ltc_cache()
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
-        else:
-            self._invalidate_ltc_cache()
+        elif self._uses_clip_ltc():
+            self._ensure_clip_ltc_cache()
+        self._install_mtc_tc_source()
         self._resolve_device_and_route()
         self._refresh_source_routing_cache()
         self._rebuild_output_stream()
@@ -1852,6 +2095,14 @@ class AudioEngine(QObject):
         if not self._audio_settings.ltc_enabled:
             return out
         gain = float(self._audio_settings.ltc_gain)
+        if self._uses_clip_ltc():
+            seg = self._clip_ltc_chunk(start, frames)
+            if gain < 1.0 - 1e-6:
+                seg = seg * gain
+            elif gain <= 1e-6:
+                seg = np.zeros_like(seg)
+            out[: seg.size] = seg
+            return out
         src_ch = self._effective_ltc_source_channel()
         if src_ch is not None:
             out = self._source_channel_chunk(src_ch, start, frames)
