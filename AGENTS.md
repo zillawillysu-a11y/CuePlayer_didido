@@ -35,10 +35,18 @@ Playback Engine is the only playback clock source.
 
 **Permanent rules:** [`docs/BOUNDARY_RULES.md`](docs/BOUNDARY_RULES.md) (dependency directions) · [`docs/MIGRATION_RULES.md`](docs/MIGRATION_RULES.md) (one-module strangler). Target layout: [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md).
 
+## Working mode
+
+- Work directly in the current project with the user, using a single assistant.
+- Do not delegate to local models or other computers, or resume the cancelled
+  multi-worker setup, unless the user explicitly requests it again.
+
 ## Multi-machine / GitHub
 
 - Remote: `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (`origin`).
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
+- The user has authorized committing and pushing each completed task. Do this
+  automatically and verify the remote branch matches the local commit.
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
 ## Recent handoff (2026-08)
