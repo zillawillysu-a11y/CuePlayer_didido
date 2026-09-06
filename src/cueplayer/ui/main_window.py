@@ -1175,6 +1175,7 @@ class MainWindow(QMainWindow):
         self.timeline = TimelineWidget()
         self.timeline.set_song(self.current_song)
         self._apply_project_mark_line_settings()
+        self._push_ltc_mode_to_timeline()
         self.timeline.set_position(0.0)
         self.monitor = CueMonitorPanel()
         self.monitor.set_song(self.current_song)

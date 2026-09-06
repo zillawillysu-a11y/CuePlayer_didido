@@ -3090,6 +3090,14 @@ class TimelineWidget(QWidget):
         right = float(self.width())
         hw = float(self._header_width)
         tracks_top = self._tracks_top_y()
+        # Bold Mark-glyph font must not leak onto whatever this painter draws
+        # next in the same frame. Without save/restore here, every live caption
+        # painted after this call in the zoom-preview frame (Video/LTC Clips
+        # header sub-labels in _paint_video_selection_live /
+        # _paint_ltc_selection_live, which never set their own font) inherited
+        # this bold weight for as long as the wheel-zoom gesture kept calling
+        # this path — read by the user as the header labels "getting bolder".
+        painter.save()
         font = QFont(self.font())
         font.setBold(True)
         font.setPointSize(int(self._wave_label_font_px))
@@ -3120,6 +3128,7 @@ class TimelineWidget(QWidget):
             hotspot_x = float(sprite["hotspot_x"])
             y = float(sprite["lane_y"])
             painter.drawPixmap(int(round(x - hotspot_x)), int(round(y)), pm)
+        painter.restore()
 
     def _rebuild_scrub_backdrop(self, reason: str = "rebuild") -> None:
         """Rasterize static timeline layers once (waveform + Marks + lanes).
@@ -5601,6 +5610,9 @@ class TimelineWidget(QWidget):
         top = self._video_lane_top_y()
         row_h = int(self._video_lane_base_height)
         right = self._paint_right()
+        # Never inherit a bold weight left over by a Mark-glyph zoom-preview
+        # pass earlier in this same paintEvent (see _paint_zoom_screen_annotations).
+        painter.setFont(self.font())
         fm = painter.fontMetrics()
         text_w = max(24, self._header_width - 16)
 
@@ -6492,6 +6504,9 @@ class TimelineWidget(QWidget):
         top = self._ltc_lane_top_y()
         right = self._paint_right()
         band_h = self._ltc_band_height()
+        # Never inherit a bold weight left over by a Mark-glyph zoom-preview
+        # pass earlier in this same paintEvent (see _paint_zoom_screen_annotations).
+        painter.setFont(self.font())
         fm = painter.fontMetrics()
         text_w = max(24, self._header_width - 16)
 

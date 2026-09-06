@@ -202,6 +202,10 @@ class ShowHost(Protocol):
         """Apply project mark-line chrome to the timeline."""
         ...
 
+    def _push_ltc_mode_to_timeline(self) -> None:
+        """Sync the timeline's LTC source mode from the active song (display)."""
+        ...
+
     def _sync_timeline_geometry(self) -> None:
         """Relayout timeline after video-track visibility / song swap."""
         ...

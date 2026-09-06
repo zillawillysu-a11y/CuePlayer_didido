@@ -92,6 +92,7 @@ def _make_host(project: Project) -> SimpleNamespace:
     host._sync_loop_ui = MagicMock()
     host._arm_timeline_audio_loading_placeholder = MagicMock()
     host._apply_project_mark_line_settings = MagicMock()
+    host._push_ltc_mode_to_timeline = MagicMock()
     host._sync_timeline_geometry = MagicMock()
     host._rebuild_digit_shortcuts = MagicMock()
     host._refresh_output_timecode_clock = MagicMock()

@@ -186,10 +186,19 @@ class ShowSessionService:
         h.engine.set_song_timebase(song.start_timecode, song.fps)
 
     def refresh_timeline(self) -> None:
-        """Re-bind timeline song + project mark-line chrome."""
+        """Re-bind timeline song + project mark-line chrome.
+
+        Must push the resolved LTC source mode here too — this is the one path
+        shared by initial hydration (MainWindow construction / project restore)
+        and every later song switch. Waiting for the audio-load completion
+        callback (``_apply_loaded_audio``) to push the mode left songs with no
+        main audio file (e.g. clip_generator-only songs) stuck on the
+        TimelineWidget default until the user manually toggled the Source menu.
+        """
         h = self._host
         h.timeline.set_song(h.current_song)
         h._apply_project_mark_line_settings()
+        h._push_ltc_mode_to_timeline()
 
     def refresh_video(self) -> None:
         """Re-bind video sync to the current song."""

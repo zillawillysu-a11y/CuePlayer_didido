@@ -165,3 +165,48 @@ def test_mark_annotation_sprite_outline_matches_selection_state(app: QApplicatio
     rings = {s["mark_id"]: _has_white_ring(s["lane_pixmap"]) for s in sprites}
     assert rings["m1"] is True
     assert rings["m2"] is False
+
+
+def test_zoom_screen_annotations_do_not_leak_bold_font(app: QApplication) -> None:
+    """Regression: header/lane caption text must not go bold during wheel zoom.
+
+    ``_paint_zoom_screen_annotations`` sets a bold font for Mark lane-glyph
+    text. It must restore the painter's font before returning — otherwise
+    every live caption painted later in the same frame (e.g. the "Video" /
+    "LTC Clips" header sub-captions in ``_paint_video_selection_live`` /
+    ``_paint_ltc_selection_live``, which do not set their own font) inherits
+    that bold weight for as long as the wheel-zoom gesture keeps calling this
+    path, and reverts only once the gesture stops.
+    """
+    from PySide6.QtGui import QFont, QImage, QPainter
+
+    from cueplayer.domain.models import Mark
+
+    timeline = TimelineWidget()
+    timeline.resize(1200, 600)
+    song = Song.create("Marks")
+    song.duration_seconds = 30.0
+    lane = song.mark_lanes[0]
+    lane.visible = True
+    song.marks = [Mark(id="m1", lane_index=lane.index, time_seconds=2.0)]
+    timeline.set_song(song)
+    timeline.show()
+    app.processEvents()
+
+    timeline._mark_annotation_sprites = timeline._bake_mark_annotation_sprites()
+    assert timeline._mark_annotation_sprites, "test setup must produce at least one sprite"
+
+    image = QImage(timeline.width(), timeline.height(), QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    painter.setFont(timeline.font())
+    weight_before = painter.font().weight()
+
+    timeline._paint_zoom_screen_annotations(painter)
+
+    assert painter.font().weight() == weight_before, (
+        "painter font weight must not leak past _paint_zoom_screen_annotations "
+        "(this bold weight would bleed into the next live-caption draw call in "
+        "the same paintEvent frame)"
+    )
+    assert painter.font().weight() != QFont.Weight.Bold
+    painter.end()

@@ -151,6 +151,9 @@ class _StubShowHost:
     def _apply_project_mark_line_settings(self) -> None:
         return None
 
+    def _push_ltc_mode_to_timeline(self) -> None:
+        return None
+
     def _sync_timeline_geometry(self) -> None:
         return None
 
