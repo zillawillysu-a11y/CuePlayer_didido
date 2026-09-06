@@ -2359,6 +2359,27 @@ class AudioEngine(QObject):
 
         return callback
 
+    def _reset_audio_callback_continuity(self) -> None:
+        """Clear per-stream continuity counters; call only after a stream opens.
+
+        These counters describe one PortAudio stream's callback behavior
+        (underflow/deadline-miss rates, interval stats). Carrying them across
+        a stream close/reopen would blend two streams' diagnostics together.
+        """
+        self._cb_count = 0
+        self._cb_underflow = 0
+        self._cb_status_flags_or = 0
+        self._cb_interval_sum = 0.0
+        self._cb_interval_count = 0
+        self._cb_interval_max = 0.0
+        self._cb_exec_sum = 0.0
+        self._cb_exec_max = 0.0
+        self._cb_deadline_miss = 0
+        self._cb_miss_play_decode_sum = 0
+        self._cb_miss_va_window_sum = 0
+        self._cb_miss_play_decode_last = 0
+        self._cb_miss_va_window_last = 0
+
     def audio_callback_continuity(self) -> dict[str, float | int]:
         """Low-overhead PortAudio continuity snapshot (no AudioEngine retiming)."""
         n = int(self._cb_count)
@@ -2502,6 +2523,7 @@ class AudioEngine(QObject):
             self._prepare_output_rate(sample_rate, previous_position)
             self._stream = stream
             stream.start()
+            self._reset_audio_callback_continuity()
             self._active_stream_token = self._stream_token()
             return True
         except (sd.PortAudioError, RuntimeError) as exc:

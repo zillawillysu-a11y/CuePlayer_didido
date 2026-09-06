@@ -97,3 +97,53 @@ def test_variable_blocks_and_status_bits_are_counted_correctly(monkeypatch):
     assert snap['expected_period_s'] == pytest.approx(.005)
     engine._open_output_stream(device=None, channels=2, sample_rate=48000)
     assert engine._cb_last_mono == 0.0  # downtime is not a deadline miss
+
+
+def test_new_stream_resets_continuity_counters_but_failed_open_does_not(monkeypatch):
+    from cueplayer.playback import audio_engine as module
+
+    engine = module.AudioEngine()
+    callback = engine._make_stream_callback(48000)
+    callback(np.zeros((480, 2), np.float32), 480, None, 8)  # output underflow
+    callback(np.zeros((480, 2), np.float32), 480, None, 0)
+    before = engine.audio_callback_continuity()
+    assert before['callback_count'] == 2
+    assert before['output_underflow_count'] == 1
+
+    class Failing:
+        def __init__(self, **kwargs):
+            self.samplerate = kwargs['samplerate']
+
+        def start(self):
+            raise module.sd.PortAudioError('synthetic start failure')
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module.sd, 'OutputStream', Failing)
+    assert not engine._open_output_stream(device=None, channels=2, sample_rate=48000)
+    after_failure = engine.audio_callback_continuity()
+    assert after_failure['callback_count'] == 2
+    assert after_failure['output_underflow_count'] == 1
+
+    class Working:
+        def __init__(self, **kwargs):
+            self.samplerate = kwargs['samplerate']
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module.sd, 'OutputStream', Working)
+    assert engine._open_output_stream(device=None, channels=2, sample_rate=48000)
+    after_success = engine.audio_callback_continuity()
+    assert after_success['callback_count'] == 0
+    assert after_success['output_underflow_count'] == 0

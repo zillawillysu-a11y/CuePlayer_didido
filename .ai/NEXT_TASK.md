@@ -1,17 +1,11 @@
 # Next task
 
-Reset audio callback continuity diagnostic counters when opening a new output stream, with a narrow playback regression test.
+No new task queued yet. Candidates parked by user (not started):
 
-LTC Generator Clips Phase 1–4 are complete. Phase 4 details: `.ai/handoffs/2026-09-06_LtcClipsExporterPhase4.md`.
+- Physical loopback 440 Hz + long-capture drift check.
+- Pre-existing unrelated failures documented in `.ai/REPORT.md` (Windows video-sync access
+  violation, NDI probe test, `test_song_use_left_ltc.py` routing assertions) — investigate only if
+  the user asks; not blocking.
 
-**Scope:**
-
-1. Identify continuity / underrun counters scoped to one output-stream lifetime.
-2. Reset only those counters after a new stream successfully opens.
-3. Add a narrow playback regression test.
-4. Do not alter routing, clock math, LTC/MTC mapping, UI, or exporters.
-
-**Carry-over (not blocking):**
-
-- Physical loopback 440 Hz + long-capture drift check (parked by user).
-- Pre-existing unrelated failures are documented in `.ai/REPORT.md`.
+See `.ai/handoffs/2026-09-06_AudioContinuityReset.md` for the just-completed audio callback
+continuity reset task.
