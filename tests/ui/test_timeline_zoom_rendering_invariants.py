@@ -210,3 +210,57 @@ def test_zoom_screen_annotations_do_not_leak_bold_font(app: QApplication) -> Non
     )
     assert painter.font().weight() != QFont.Weight.Bold
     painter.end()
+
+
+def test_static_layer_bake_does_not_leak_bold_font_into_headers(app: QApplication) -> None:
+    """Regression: zoom-out's exact-viewport fallback bakes ``_paint_static_layers``
+    directly (bypassing ``_paint_zoom_screen_annotations``) far more often than
+    zoom-in does, because the retained spatial backdrop's overscan margin is sized
+    around the *previous* PPS viewport: zooming out grows the visible time window
+    past that cached region almost every wheel tick, while zooming in shrinks it
+    and usually stays inside the cache.
+
+    That fallback bake draws on-waveform Cue/Note captions
+    (``_paint_marks_impl``) which used to set a bold font on the shared painter
+    and never restore it, so every header caption drawn afterward in the same
+    bake (``_paint_headers``: "Video" / "LTC Clips" / lane name labels) inherited
+    bold weight for as long as zoom-out kept re-entering this path.
+    """
+    from PySide6.QtGui import QFont, QImage, QPainter
+
+    from cueplayer.domain.models import Mark
+
+    timeline = TimelineWidget()
+    timeline.resize(1200, 600)
+    song = _ltc_song()
+    lane = song.mark_lanes[0]
+    lane.visible = True
+    lane.show_cue_id_on_wave = True
+    lane.cue_id_enabled = True
+    lane.show_note_on_wave = True
+    mark = Mark(id="m1", lane_index=lane.index, time_seconds=2.0)
+    mark.main_cue_id = "1"
+    mark.display_name = "Test Note"
+    song.marks = [mark]
+    timeline.set_song(song)
+    timeline.set_ltc_source_mode("clip_generator")
+    timeline.show()
+    app.processEvents()
+
+    image = QImage(timeline.width(), timeline.height(), QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    painter.setFont(timeline.font())
+    weight_before = painter.font().weight()
+
+    # This is exactly what the zoom-out exact-viewport fallback in
+    # `_blit_zoom_preview` calls directly, without ever routing through
+    # `_paint_zoom_screen_annotations`.
+    timeline._paint_static_layers(painter)
+
+    assert painter.font().weight() == weight_before, (
+        "painter font weight must not leak past _paint_static_layers "
+        "(the bold cue/note wave-label font must not bleed into header "
+        "captions drawn later in the same zoom-out fallback bake)"
+    )
+    assert painter.font().weight() != QFont.Weight.Bold
+    painter.end()

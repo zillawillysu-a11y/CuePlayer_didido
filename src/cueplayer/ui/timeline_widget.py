@@ -5822,6 +5822,7 @@ class TimelineWidget(QWidget):
 
     def _paint_headers(self, painter: QPainter, wave_bottom: int, tracks_top: int) -> None:
         painter.save()
+        painter.setFont(self.font())
         painter.setClipRect(0, 0, self._header_width, self.height())
         text_w = max(24, self._header_width - 16)
         fm = painter.fontMetrics()
@@ -6859,6 +6860,7 @@ class TimelineWidget(QWidget):
                             color.lighter(140) if (selected or hovered) else color
                         )
                         painter.setPen(label_color)
+                        painter.save()
                         font = painter.font()
                         font.setBold(True)
                         font.setPointSize(int(self._wave_label_font_px))
@@ -6877,6 +6879,7 @@ class TimelineWidget(QWidget):
                                 note_text, Qt.TextElideMode.ElideRight, 140
                             )
                             painter.drawText(QPointF(x + 5, text_y), elided)
+                        painter.restore()
 
             if not lane_shapes:
                 continue

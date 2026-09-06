@@ -107,3 +107,17 @@ No rect/PPS/scaling math, blit compositing order, or renderer architecture was c
 4. Confirm zoom-in still behaves correctly (already fixed, should be unaffected).
 5. Confirm marks with on-waveform Cue/Note captions enabled render normally (not bold)
    at rest and do not affect header label weight afterward.
+
+## Remaining issues
+
+None known for zoom-in or zoom-out label bolding. Pre-existing, unrelated issues noted
+during this session (not touched, see `.ai/NEXT_TASK.md`):
+`test_timeline_scrub_backdrop_font.py::test_scrub_backdrop_uses_widget_font` (pre-existing
+`TypeError`, confirmed present on baseline before this change), and two UI test files
+(`test_timeline_video_track_controls.py`, `test_transport_main_window_center.py`) that can
+hang/crash the interpreter under the offscreen Qt platform due to a pre-existing
+non-daemon `webrtc_listen` thread.
+
+## Suggested next task
+
+None queued — see `.ai/NEXT_TASK.md`. Await next manual-test findings.
