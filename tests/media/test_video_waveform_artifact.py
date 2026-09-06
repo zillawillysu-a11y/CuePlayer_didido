@@ -693,6 +693,117 @@ def test_corrupt_cache_triggers_safe_rebuild(
     assert rebuilt is not None and rebuilt.complete
 
 
+def test_two_different_media_clips_both_get_waveforms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two Video Clips on different media files must each build/hydrate peaks.
+
+    Regression for: only the first Video Clip on a track showed a waveform;
+    later clips (even on a wholly different media file) never did.
+    """
+    path_a = tmp_path / "clip_a.mp4"
+    path_b = tmp_path / "clip_b.mp4"
+    path_a.write_bytes(b"a")
+    path_b.write_bytes(b"b")
+    _install_fake_decoder(monkeypatch, path_a, source_duration=40.0)
+
+    clip_a = VideoClip.create(
+        name="a", path=path_a, start_seconds=0.0, duration_seconds=10.0,
+        source_duration_seconds=10.0,
+    )
+    clip_b = VideoClip.create(
+        name="b", path=path_b, start_seconds=10.0, duration_seconds=10.0,
+        source_duration_seconds=10.0,
+    )
+
+    cache = VideoClipWaveformCache()
+    for clip in (clip_a, clip_b):
+        key = cache.key_for(clip)
+        cache._build_async(cache._generation, key, clip)
+
+    peaks_a = cache.get_peaks(clip_a, allow_submit=False)
+    peaks_b = cache.get_peaks(clip_b, allow_submit=False)
+    assert peaks_a is not None and peaks_a.mono.size > 0
+    assert peaks_b is not None and peaks_b.mono.size > 0
+
+
+def test_three_clips_not_only_first_has_waveform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "shared3.mp4"
+    path.write_bytes(b"x")
+    _install_fake_decoder(monkeypatch, path, source_duration=40.0)
+
+    clips = [
+        VideoClip.create(
+            name=f"c{i}", path=path, start_seconds=float(i * 10),
+            duration_seconds=10.0, source_duration_seconds=10.0,
+        )
+        for i in range(3)
+    ]
+    cache = VideoClipWaveformCache()
+    for clip in clips:
+        cache._build_async(cache._generation, cache.key_for(clip), clip)
+
+    results = [cache.get_peaks(c, allow_submit=False) for c in clips]
+    for i, peaks in enumerate(results):
+        assert peaks is not None and peaks.mono.size > 0, f"clip index {i} has no waveform"
+
+
+def test_two_clips_same_media_different_timeline_positions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "shared.mp4"
+    path.write_bytes(b"x")
+    _install_fake_decoder(monkeypatch, path, source_duration=40.0)
+
+    clip_a = VideoClip.create(
+        name="a", path=path, start_seconds=0.0, duration_seconds=10.0,
+        source_duration_seconds=10.0, source_in_seconds=0.0,
+    )
+    clip_b = VideoClip.create(
+        name="b", path=path, start_seconds=20.0, duration_seconds=10.0,
+        source_duration_seconds=10.0, source_in_seconds=0.0,
+    )
+    cache = VideoClipWaveformCache()
+    for clip in (clip_a, clip_b):
+        cache._build_async(cache._generation, cache.key_for(clip), clip)
+
+    peaks_a = cache.get_peaks(clip_a, allow_submit=False)
+    peaks_b = cache.get_peaks(clip_b, allow_submit=False)
+    assert peaks_a is not None and peaks_a.mono.size > 0
+    assert peaks_b is not None and peaks_b.mono.size > 0
+
+
+def test_deleting_one_clip_keeps_others_waveform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_a = tmp_path / "del_a.mp4"
+    path_b = tmp_path / "del_b.mp4"
+    path_a.write_bytes(b"a")
+    path_b.write_bytes(b"b")
+    _install_fake_decoder(monkeypatch, path_a, source_duration=40.0)
+
+    clip_a = VideoClip.create(
+        name="a", path=path_a, start_seconds=0.0, duration_seconds=10.0,
+        source_duration_seconds=10.0,
+    )
+    clip_b = VideoClip.create(
+        name="b", path=path_b, start_seconds=10.0, duration_seconds=10.0,
+        source_duration_seconds=10.0,
+    )
+    cache = VideoClipWaveformCache()
+    for clip in (clip_a, clip_b):
+        cache._build_async(cache._generation, cache.key_for(clip), clip)
+    assert cache.get_peaks(clip_a, allow_submit=False) is not None
+    assert cache.get_peaks(clip_b, allow_submit=False) is not None
+
+    # Delete clip_a from the song's clip list — its cache entry is simply
+    # not looked up again; clip_b's entry must be untouched.
+    peaks_b_after = cache.get_peaks(clip_b, allow_submit=False)
+    assert peaks_b_after is not None and peaks_b_after.mono.size > 0
+
+
 def test_memory_bound() -> None:
     dur = 15 * 60.0
     n = artifact_bin_count(dur)

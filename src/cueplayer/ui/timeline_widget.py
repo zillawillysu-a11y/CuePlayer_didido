@@ -391,9 +391,11 @@ class TimelineWidget(QWidget):
         self._zoom_quality_timer.setInterval(self._view_transform_debounce_ms)
         self._zoom_quality_timer.timeout.connect(self._finish_view_transform_gesture)
         # Progressive VideoWaveformArtifact — paint live over retained Mark bake.
-        self._artifact_wave = None  # VideoWaveformArtifact | None
-        self._artifact_wave_clip = None  # VideoClip | None
-        self._artifact_wave_complete = False
+        # Keyed by VideoClip.id: a Song with N Video Clips (no music audio
+        # track) needs N independent Music-lane stand-in waveforms, one per
+        # clip's own timeline span — a single mutable used to leak all but
+        # the first clip's region as a blank gap.
+        self._artifact_waves: dict[str, tuple[VideoWaveformArtifact, VideoClip, bool]] = {}
         self._waveform_overlay_revision = 0
         self._waveform_layer_rebuild_count = 0
         self._box_click_seek: float | None = None
@@ -998,6 +1000,7 @@ class TimelineWidget(QWidget):
         if self._song is None:
             return
         self._video_waveform_cache.preload(list(self._song.video_clips))
+        self.prune_artifact_waveforms({c.id for c in self._song.video_clips})
         self._invalidate_scrub_backdrop()
         self.update()
 
@@ -1880,9 +1883,7 @@ class TimelineWidget(QWidget):
     def set_audio(self, audio: AudioBuffer | None, *, reset_view: bool = True) -> None:
         self._audio = audio
         if audio is not None:
-            self._artifact_wave = None
-            self._artifact_wave_clip = None
-            self._artifact_wave_complete = False
+            self._artifact_waves.clear()
             self._audio_loading = False
             self._audio_loading_label = ""
             if reset_view:
@@ -1899,24 +1900,31 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop()
         self.update()
 
-    def set_artifact_waveform(
+    def set_artifact_waveform_for_clip(
         self,
+        clip: VideoClip,
         art: VideoWaveformArtifact | None,
-        clip: VideoClip | None = None,
         *,
         complete: bool = False,
     ) -> None:
-        """Bind Music-lane display to the shared VideoWaveformArtifact.
+        """Bind one Video Clip's Music-lane stand-in span to its own artifact.
 
-        Progressive partials paint directly from artifact peaks — no full-duration
-        AudioBuffer / pyramid rebuild. Same revision as the Video Track lane.
+        A Song without a music audio track shows each Video Clip's embedded
+        audio as the Music-lane wave, mapped only over that clip's own
+        [start, end) span. Progressive partials paint directly from artifact
+        peaks — no full-duration AudioBuffer / pyramid rebuild.
         """
         # Artifact-backed Music is the active source for video-only songs; a
         # stale/legacy AudioBuffer must not override its full song duration.
         self._audio = None
-        self._artifact_wave = art
-        self._artifact_wave_clip = clip
-        self._artifact_wave_complete = bool(complete and art is not None and art.complete)
+        if art is None:
+            self._artifact_waves.pop(clip.id, None)
+        else:
+            self._artifact_waves[clip.id] = (
+                art,
+                clip,
+                bool(complete and art.complete),
+            )
         if art is not None and art.coverage_ratio > 0:
             self._audio_loading = False
             # Keep a lightweight loading label while incomplete so the corner
@@ -1945,10 +1953,29 @@ class TimelineWidget(QWidget):
                 perf_diag.count("timeline.waveform_layer.progressive_refresh")
         self.update()
 
+    def clear_artifact_waveform_for_clip(self, clip_id: str) -> None:
+        if self._artifact_waves.pop(clip_id, None) is not None:
+            self._waveform_overlay_revision += 1
+            self.update()
+
+    def prune_artifact_waveforms(self, valid_clip_ids: set[str]) -> None:
+        """Drop stand-in entries for Video Clips no longer on the song."""
+        stale = [cid for cid in self._artifact_waves if cid not in valid_clip_ids]
+        for cid in stale:
+            del self._artifact_waves[cid]
+        if stale:
+            self._waveform_overlay_revision += 1
+
+    def _artifact_waves_any_coverage(self) -> bool:
+        return any(art.coverage_ratio > 0 for art, _clip, _complete in self._artifact_waves.values())
+
+    def _artifact_waves_all_complete(self) -> bool:
+        return bool(self._artifact_waves) and all(
+            complete for _art, _clip, complete in self._artifact_waves.values()
+        )
+
     def clear_artifact_waveform(self) -> None:
-        self._artifact_wave = None
-        self._artifact_wave_clip = None
-        self._artifact_wave_complete = False
+        self._artifact_waves.clear()
         self._waveform_overlay_revision += 1
 
     def pixels_per_second(self) -> float:
@@ -1960,13 +1987,13 @@ class TimelineWidget(QWidget):
         self._audio_loading_label = (label or "").strip()
         if loading:
             # Do not clear a live progressive artifact — pending bins stay pending.
-            if self._artifact_wave is None:
+            if not self._artifact_waves:
                 self._audio = None
                 self._ltc_audio = None
                 self._ltc_channel = None
             self._layout_video_track_overlay()
             # Progressive artifact already paints; skip full Mark rebuild.
-            if self._artifact_wave is not None and self._artifact_wave.coverage_ratio > 0:
+            if self._artifact_waves_any_coverage():
                 self.update()
                 return
         # Play/scrub uses a cached backdrop — must rebuild or the loading
@@ -6073,14 +6100,13 @@ class TimelineWidget(QWidget):
         """True when live progressive waves should paint over the retained bake."""
         if self._view_transform_busy:
             return False
-        art = self._artifact_wave
-        if art is not None and art.coverage_ratio > 0 and not self._artifact_wave_complete:
+        if self._artifact_waves_any_coverage() and not self._artifact_waves_all_complete():
             return True
         if self._waveform_overlay_revision > 0 and not (
             self._scrub_backdrop is not None
             and int(self._video_waveform_baked_revision)
             == int(self._video_waveform_revision)
-            and self._artifact_wave_complete
+            and self._artifact_waves_all_complete()
         ):
             # Video-lane progressive peaks landed while Mark bake is retained.
             if self._song is not None and self._song.video_clips:
@@ -6130,23 +6156,19 @@ class TimelineWidget(QWidget):
 
     def _paint_audio_loading_overlay(self, painter: QPainter) -> None:
         """Corner loading copy — no full-band dim (that washed out the playhead)."""
-        has_artifact = (
-            self._artifact_wave is not None and self._artifact_wave.coverage_ratio > 0
-        )
+        has_artifact = self._artifact_waves_any_coverage()
         if not self._audio_loading and not (
             self._audio is None and not has_artifact and self._song_expects_waveform()
         ):
             return
         if (self._audio is not None or has_artifact) and not self._audio_loading:
-            if has_artifact and self._artifact_wave is not None and not self._artifact_wave.complete:
+            if has_artifact and not self._artifact_waves_all_complete():
                 pass  # still show Building… plate
             else:
                 return
         y0 = self._ruler_height
         label = self._audio_loading_label
-        if self._audio_loading or (
-            has_artifact and self._artifact_wave is not None and not self._artifact_wave.complete
-        ):
+        if self._audio_loading or (has_artifact and not self._artifact_waves_all_complete()):
             line1 = "Loading audio…" if not has_artifact else "Building waveform…"
             line2 = label if label else "Reading file"
         else:
@@ -6186,9 +6208,10 @@ class TimelineWidget(QWidget):
         right = self._paint_right()
         painter.fillRect(self._header_width, y0, right, self._wave_height, QColor("#09090b"))
 
-        art = self._artifact_wave
-        if art is not None and art.coverage_ratio > 0:
-            self._paint_artifact_waveform(painter, art, y0, y1, right)
+        if self._artifact_waves_any_coverage():
+            for art, clip, _complete in self._artifact_waves.values():
+                if art.coverage_ratio > 0:
+                    self._paint_artifact_waveform(painter, art, clip, y0, y1, right)
             painter.setPen(QColor("#27272a"))
             painter.drawLine(0, y1 - 1, right, y1 - 1)
             return y1
@@ -6253,11 +6276,18 @@ class TimelineWidget(QWidget):
         self,
         painter: QPainter,
         art: VideoWaveformArtifact,
+        clip: VideoClip | None,
         y0: int,
         y1: int,
         right: int,
     ) -> None:
-        """Paint Music lane from shared artifact peaks (pending bins skipped)."""
+        """Paint one Video Clip's Music-lane stand-in span from its artifact.
+
+        Called once per (clip, artifact) entry in ``self._artifact_waves`` —
+        each call only paints inside that clip's own [start, end) span, so a
+        Song with several Video Clips gets several independent spans instead
+        of one clip's mapping silently covering the whole lane.
+        """
         mid = y0 + self._wave_height / 2
         amp = (self._wave_height / 2) - 8
         color = QColor(self._waveform_color or "#616161")
@@ -6268,7 +6298,6 @@ class TimelineWidget(QWidget):
         view_right = right
         pps = float(art.peaks_per_second)
         samples_per_pixel = pps / max(1e-6, self._pixels_per_second)
-        clip = self._artifact_wave_clip
         # Prefer pyramid level when available.
         levels = list(art.levels) if art.levels else []
         level = _artifact_level_for_pixels(levels, samples_per_pixel)
@@ -6311,8 +6340,18 @@ class TimelineWidget(QWidget):
 
         valid = np.isfinite(src_t0) & np.isfinite(src_t1)
         if not np.any(valid):
-            painter.setPen(QColor("#27272a"))
-            painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
+            # Only draw the flat fallback across this clip's own span — other
+            # entries in ``self._artifact_waves`` still need to paint their
+            # spans in the same call to ``_paint_waveform``.
+            if clip is None:
+                painter.setPen(QColor("#27272a"))
+                painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
+            else:
+                lx = max(view_left, int(self._x_for_time(clip.start_seconds)))
+                rx = min(view_right, int(self._x_for_time(clip.end_seconds)))
+                if rx > lx:
+                    painter.setPen(QColor("#27272a"))
+                    painter.drawLine(QPointF(lx, mid), QPointF(rx, mid))
             return
 
         interpolated_outline = False

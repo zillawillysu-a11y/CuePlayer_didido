@@ -1,12 +1,23 @@
 # Next task
 
-Waiting on user manual verification (Splash / Main Window title / Help→About dialog /
-normal startup) before the next, separate "Release Build" task (run
-`packaging\build_windows.ps1` on the Windows build machine and check the built
-`CuePlayer.exe` Properties dialog). Do not start Release Build until the user confirms.
+Waiting on user manual verification of the Multiple Video Clips Music-lane stand-in
+waveform fix (checklist in `.ai/REPORT.md`), and separately, user manual verification
+(Splash / Main Window title / Help→About dialog / normal startup) before the next,
+separate "Release Build" task (run `packaging\build_windows.ps1` on the Windows build
+machine and check the built `CuePlayer.exe` Properties dialog). Do not start Release
+Build until the user confirms.
 
 Candidates parked by user (not started):
 
+- 4 pre-existing baseline test failures found while testing the Multiple Video Clips fix
+  (confirmed present with the fix reverted, not caused by it) — investigate only if the
+  user asks: `test_video_playhead_jank.py::test_play_uses_coarse_video_wave_and_wider_overscan`,
+  `test_mouse_static_backdrop_parity.py::test_video_lane_region_unchanged_on_scrub_press`,
+  `test_scrub_fallback_final_land.py::test_fallback_release_finalizes_when_left_button_up`,
+  `test_video_standin_cache.py::test_video_standin_restores_from_cache_on_reactivate`.
+- `tests/ui/test_video_waveform_backdrop_revision.py` hangs when run without
+  `QT_QPA_PLATFORM=offscreen` set (calls `TimelineWidget.show()`, needs a real window in
+  this sandbox) — not a bug, just remember to set that env var for this suite.
 - Physical loopback 440 Hz + long-capture drift check.
 - Pre-existing unrelated failures documented in `.ai/REPORT.md` history (Windows video-sync
   access violation, NDI probe test, `test_song_use_left_ltc.py` routing assertions) — investigate
@@ -24,6 +35,18 @@ Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Multiple Video Clips Music-lane stand-in waveform: a Song with 2+ Video Clips and no
+  music audio track only showed the video-audio stand-in waveform over the first clip's
+  region. Root cause: `TimelineWidget` held a single `_artifact_wave`/`_artifact_wave_clip`
+  pair and `MainWindow` always scheduled the first eligible clip only. Fixed by making
+  `TimelineWidget._artifact_waves` a `dict[clip_id, (artifact, clip, complete)]` and
+  `MainWindow._schedule_video_music_standin`/`_on_video_standin_finished` walk every
+  eligible clip in turn. The Video Track lane's own per-clip waveform was already correct
+  for N clips (verified, not the bug). See
+  `.ai/handoffs/2026-09-07_MultiVideoClipMusicStandinWaveformFix.md`.
+
+Previously resolved:
 
 - Cue Player 1.14 version / copyright / About integration: single canonical source
   `src/cueplayer/app_info.py` (reads `cueplayer.__version__`) now feeds Splash (new

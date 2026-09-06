@@ -1,97 +1,78 @@
-# Cue Player 1.14 version / copyright / About integration
+# Multiple Video Clips — Music-lane stand-in waveform only covered clip #1
 
-Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Baseline: `fe50976`. Status: complete
-(code/config only — no release build performed, per instruction).
+Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Baseline: `a77dc31`. Status: complete.
 
 ## Task objective
 
-Set the product to **Cue Player 1.14**, copyright
-`Copyright © 2026 DiDiDo Design Co., Ltd. All rights reserved.`, and integrate it so
-Splash, Main Window title, a new About dialog, and Windows EXE packaging metadata all
-read one canonical version/copyright source — no per-file hardcoded duplicates. Do not
-touch playback/audio/MTC/LTC/video-sync/timeline-zoom/exporters/persistence/routing, and
-do not run an actual PyInstaller/Inno Setup build this session.
+Bugfix: a Song's Video Track with 2+ Video Clips only showed the Music-lane
+video-audio stand-in waveform over the first clip's region; clip #2+ regions stayed
+blank even though the clips existed correctly on the timeline. Audit first, confirm
+root cause, minimal fix, regression tests, no packaging.
 
-## Audit findings (before implementing)
+## Root cause (confirmed with user via clarifying question before fixing)
 
-- Canonical-ish source already existed: `src/cueplayer/__init__.py` → `__version__ =
-  "1.1.3"`. No `constants.py`/`version.py`/app-wide info module existed yet.
-- Two independent hardcoded duplicates of that version string: `pyproject.toml`
-  (`[project].version`) and `packaging/CuePlayer.iss`'s `#ifndef` fallback default.
-  `packaging/build_windows.ps1` already read `cueplayer.__version__` dynamically for its
-  zip filename and the `iscc /DMyAppVersion=` override — no fix needed there.
-- `packaging/cueplayer.spec`'s `EXE(...)` had **no** `version=` kwarg at all — the built
-  .exe currently ships with empty Windows file-properties metadata (no Company/Copyright/
-  Product Version).
-- Main window title (`main_window.py`) used a hardcoded `MAIN_WINDOW_TITLE_PREFIX =
-  "CuePlayer Main"`, no version shown.
-- Splash (`ui/splash.py`) custom-paints `"CuePlayer"` via `QPainter`, no version/copyright.
-- No Help menu, no About dialog existed anywhere in the repo.
-- Full audit detail: `.ai/handoffs/2026-09-07_VersionCopyrightAboutIntegration.md`.
+Two waveform surfaces exist. The Video Track lane's own per-clip waveform
+(`_paint_video_clip_waveform` / `VideoClipWaveformCache`) was already correct for any
+number of clips — verified with new regression tests, not touched.
 
-## Implementation
+The bug was in the **Music-lane video-audio stand-in** (shown when a Song has no music
+audio track, substituting the video's own embedded audio as the Music-lane waveform):
+`TimelineWidget` held a single mutable `_artifact_wave`/`_artifact_wave_clip` pair, and
+`MainWindow._primary_video_clip_for_standin()` always picked the first eligible clip.
+`_paint_artifact_waveform` masked every pixel outside that one clip's `[start, end)`
+span to NaN (blank). Clips #2+ never got their own artifact/clip binding at all.
 
-New canonical module `src/cueplayer/app_info.py` derives `APP_NAME`, `APP_VERSION`
-(from `cueplayer.__version__`), `COMPANY_NAME`, `COPYRIGHT_YEAR`, `APP_TITLE`,
-`COPYRIGHT`, and `version_tuple()` (Windows 4-int version quad, parsed — not
-hand-maintained). `__version__` bumped to `"1.14"`.
+## Fix
 
-- Splash: added a low-key `Version 1.14` / copyright footer anchored to the bottom
-  edge, independent of the existing centered title/bar/message block — that block's
-  font/size/position is untouched, and the 520×300 pixmap size is unchanged.
-- Main window title: `MAIN_WINDOW_TITLE_PREFIX` now reads `app_info.APP_TITLE`
-  (`"Cue Player 1.14"`) instead of a hardcoded string; the existing
-  `f"{prefix} — {name}{dirty}"` suffix pattern is unchanged.
-- New `src/cueplayer/ui/about_dialog.py` (`AboutDialog(QDialog)`): app icon (reused,
-  no new asset), name, version, copyright, one Close button. Wired into a new `&Help`
-  menu — the rightmost top-level menu — via `&About Cue Player`.
-- `pyproject.toml`: `version = "1.1.3"` → `dynamic = ["version"]` reading
-  `cueplayer.__version__`, removing that duplicate literal.
-- `packaging/CuePlayer.iss`: fallback default synced to `"1.14"` (comment explains
-  `build_windows.ps1` always overrides it dynamically); installer behavior/paths
-  untouched.
-- `packaging/cueplayer.spec`: new Windows-only block builds a `VSVersionInfo` from
-  `cueplayer.app_info` (Product/File Name, Product/File Version, Company Name, Legal
-  Copyright, numeric version quad from `version_tuple()`), passed to `EXE(version=...)`;
-  wrapped in `try/except` so a missing PyInstaller versioninfo helper never breaks the
-  build (falls back to today's no-metadata behavior).
-
-## Tests
-
-- `tests/util/test_app_info.py` (new): constants, `APP_TITLE`, exact `COPYRIGHT`,
-  `version_tuple()`.
-- `tests/ui/test_about_dialog_and_title.py` (new): main window title prefix/instance,
-  Help menu is rightmost and contains About, About dialog's labels match canonical text.
-- `tests/ui/test_splash.py`: added a regression test that the version/copyright footer
-  paints (non-background pixels in the bottom band) while pixmap size stays 520×300.
-
-Result: `pytest tests/util tests/domain tests/ui/test_compact_window_min_size.py
-tests/ui/test_splash.py tests/ui/test_about_dialog_and_title.py -q` → **183 passed**.
-Full `tests/ui` sweep skipped — `test_cue_list_playhead_scroll.py` is a pre-existing,
-unrelated interpreter hang on this Windows agent (already tracked in `NEXT_TASK.md`);
-not caused by, or relevant to, this task.
-
-## Startup + packaging validation
-
-Offscreen smoke script instantiated a real `QApplication`, `show_startup_splash`,
-`MainWindow(Project.create("Smoke"))`, and `AboutDialog` — no exceptions;
-`window.windowTitle() == "Cue Player 1.14 — Smoke *"`, `about.windowTitle() == "About
-Cue Player"`.
-
-PyInstaller is not installed in the dev `.venv` on this agent (only installed by
-`build_windows.ps1` on the real Windows build machine), so the `VSVersionInfo`
-construction could not be executed end-to-end in-process this session; verified
-instead via `version_tuple()` unit test, manual re-read of the spec block (every
-`StringStruct` sources from `app_info`, no literals), and a repo-wide grep confirming
-no leftover `"1.1.3"` / duplicate `"1.14"` in tracked files. **No PyInstaller build,
-Inno Setup compile, or release artifact was produced this session** — that is the next,
-separate "Release Build" task, to run on the real Windows build machine and confirm the
-built .exe's Properties dialog.
+- `TimelineWidget`: replaced the single pair with
+  `self._artifact_waves: dict[clip_id, (artifact, clip, complete)]`;
+  `set_artifact_waveform_for_clip` / `clear_artifact_waveform_for_clip` /
+  `prune_artifact_waveforms`; `_paint_artifact_waveform` now takes an explicit `clip`
+  param and is called once per dict entry, each painting only its own clip's span.
+- `MainWindow`: `_schedule_video_music_standin` / `_on_video_standin_finished` now walk
+  every eligible clip in turn (one build at a time, on the existing single-worker
+  executor) instead of stopping after the first clip; the `_video_standin_finished`
+  Signal now carries the `clip_id` so results are routed to the right clip's entry
+  instead of a single global slot.
+- Full detail, all edge cases (same-media clips, delete, split/duplicate, trim/move
+  live-reference correctness, legacy AudioBuffer path guard): see
+  `.ai/handoffs/2026-09-07_MultiVideoClipMusicStandinWaveformFix.md`.
 
 ## Files changed
 
-`src/cueplayer/__init__.py`, `src/cueplayer/app_info.py` (new),
-`src/cueplayer/ui/about_dialog.py` (new), `src/cueplayer/ui/main_window.py`,
-`src/cueplayer/ui/splash.py`, `pyproject.toml`, `packaging/CuePlayer.iss`,
-`packaging/cueplayer.spec`, `tests/util/test_app_info.py` (new),
-`tests/ui/test_about_dialog_and_title.py` (new), `tests/ui/test_splash.py`.
+- `src/cueplayer/ui/timeline_widget.py`
+- `src/cueplayer/ui/main_window.py`
+- `tests/ui/test_waveform_high_zoom_outline.py` (updated call site for new signature)
+- `tests/media/test_video_waveform_artifact.py` (+4 Video-lane multi-clip lock-in tests)
+- `tests/ui/test_video_music_standin_multi_clip.py` (new, +4 regression tests for the bug)
+
+## Test results
+
+- Targeted + broad video/waveform/timeline UI suites: **146 passed** total across the
+  runs in this session (`QT_QPA_PLATFORM=offscreen` required — without it one file's
+  `TimelineWidget.show()` hangs waiting for a real window in this sandbox).
+- 4 pre-existing baseline failures encountered, reproduced identically with the fix
+  reverted (git-stashed) — confirmed **not** caused by this change: 
+  `test_video_playhead_jank.py::test_play_uses_coarse_video_wave_and_wider_overscan`,
+  `test_mouse_static_backdrop_parity.py::test_video_lane_region_unchanged_on_scrub_press`,
+  `test_scrub_fallback_final_land.py::test_fallback_release_finalizes_when_left_button_up`,
+  `test_video_standin_cache.py::test_video_standin_restores_from_cache_on_reactivate`.
+- Skipped per instruction: `test_cue_list_playhead_scroll.py`, known Windows
+  `test_video_sync` crash path, real PortAudio device tests.
+
+## Out of scope (not touched)
+
+LTC waveform/clips, MTC thread, Playback Engine clock, MA exporter, version/copyright/
+About, Windows title-bar Video freeze, NDI, persistence schema.
+
+## Manual verification checklist for the user
+
+1. Create Video Clips A, B, C on one Song's Video Track using 3 different video files
+   with no music audio track on the song — confirm all three show a Music-lane
+   waveform above their own span.
+2. A and B using the same video file — both still show their own span correctly.
+3. Move clip B — its Music-lane span moves with it.
+4. Trim clip B — its Music-lane span's content stays correctly mapped to the new
+   trim/offset.
+5. Delete clip A — B and C's Music-lane waveforms remain.
+6. Save → Close → Reload the project — all clips' Music-lane waveforms still show.

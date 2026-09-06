@@ -51,7 +51,7 @@ def test_high_zoom_artifact_does_not_fill_between_envelopes(app: QApplication) -
     image = QImage(700, 100, QImage.Format.Format_ARGB32)
     image.fill(QColor("#09090b"))
     painter = QPainter(image)
-    timeline._paint_artifact_waveform(painter, art, 0, 100, 700)
+    timeline._paint_artifact_waveform(painter, art, None, 0, 100, 700)
     painter.end()
 
     # Interior between the two red outlines stays unfilled.
