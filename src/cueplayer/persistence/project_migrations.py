@@ -43,6 +43,10 @@ def migrate_project_dict(data: dict[str, Any], from_version: int) -> dict[str, A
         _migrate_v1_to_v2(migrated)
         version = 2
 
+    if version == 2:
+        _migrate_v2_to_v3(migrated)
+        version = 3
+
     if version != SCHEMA_VERSION:
         raise SchemaError(f"No migration path from schema_version {from_version}.")
 
@@ -59,6 +63,47 @@ def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
         if not isinstance(song, dict):
             continue
         _ensure_song_variants_from_audio_tracks(song)
+
+
+def _migrate_v2_to_v3(data: dict[str, Any]) -> None:
+    """Add per-song LTC clip fields (schema v3).
+
+    Legacy songs keep today's behavior: ``ltc_source_mode = "auto"``
+    (resolved from project AudioOutputSettings) and an empty clip list.
+    """
+    songs = data.get("songs")
+    if not isinstance(songs, list):
+        return
+    for song in songs:
+        if not isinstance(song, dict):
+            continue
+        song.setdefault("ltc_source_mode", "auto")
+        clips = song.get("ltc_clips")
+        if not isinstance(clips, list):
+            song["ltc_clips"] = []
+            continue
+        cleaned: list[dict[str, Any]] = []
+        for clip in clips:
+            if not isinstance(clip, dict):
+                continue
+            clip_id = str(clip.get("id") or "")
+            if not clip_id:
+                clip_id = str(uuid4())
+            cleaned.append(
+                {
+                    "id": clip_id,
+                    "timeline_start_seconds": float(
+                        clip.get("timeline_start_seconds", 0.0) or 0.0
+                    ),
+                    "duration_seconds": float(
+                        clip.get("duration_seconds", 0.0) or 0.0
+                    ),
+                    "start_timecode": str(
+                        clip.get("start_timecode", "01:00:00:00") or "01:00:00:00"
+                    ),
+                }
+            )
+        song["ltc_clips"] = cleaned
 
 
 def _ensure_song_variants_from_audio_tracks(song: dict[str, Any]) -> None:

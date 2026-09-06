@@ -13,13 +13,43 @@ import numpy as np
 
 from cueplayer.domain.song_variant import SongVariant
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 LaneType = Literal["main", "top_button"]
 AudioRole = Literal["main", "reference"]
 MarkLineStyle = Literal["solid", "dash", "dot"]
 SetlistNameMode = Literal["zh", "both", "en"]
 FileLtcSide = Literal["off", "left", "right", "auto"]
+
+
+# Per-song LTC source mode — mutually exclusive (one state per song):
+# - "striped_file":        use the LTC striped in the media file (routing via
+#                          ``file_ltc_side``).
+# - "full_track_generator": continuous generated LTC for the whole song
+#                           (legacy generator behavior).
+# - "clip_generator":      only generated LTC clips emit LTC; outside clips
+#                           there is no LTC and no MTC (display "No TC").
+# - "off":                 no LTC output for this song.
+# - "auto" (legacy default): resolve from project AudioOutputSettings as
+#                           before this field existed (generator →
+#                           full_track_generator, auto/source sides →
+#                           striped_file, disabled → off).
+# See domain/ltc_clips.py for mapping / validation helpers.
+SongLtcSourceMode = Literal[
+    "auto",
+    "striped_file",
+    "full_track_generator",
+    "clip_generator",
+    "off",
+]
+
+
+def coerce_song_ltc_source_mode(value: object, *, default: str = "auto") -> str:
+    """Normalize a per-song LTC source mode; unknown values become ``default``."""
+    raw = str(value or "").strip().lower()
+    if raw in ("auto", "striped_file", "full_track_generator", "clip_generator", "off"):
+        return raw
+    return default
 
 
 def coerce_file_ltc_side(
@@ -308,6 +338,48 @@ class SetlistCategory:
 
 
 @dataclass
+class LtcClip:
+    """One generated-LTC window on the song timeline (clip_generator mode).
+
+    Inside the clip the output timecode is
+    ``start_timecode + (timeline_position - timeline_start_seconds)`` at the
+    song FPS. Outside every clip the song outputs no LTC and no MTC.
+    """
+
+    id: str
+    timeline_start_seconds: float
+    duration_seconds: float
+    start_timecode: str
+
+    @property
+    def end_seconds(self) -> float:
+        return float(self.timeline_start_seconds) + float(self.duration_seconds)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        timeline_start_seconds: float,
+        duration_seconds: float,
+        start_timecode: str,
+    ) -> LtcClip:
+        return cls(
+            id=_new_id(),
+            timeline_start_seconds=float(timeline_start_seconds),
+            duration_seconds=float(duration_seconds),
+            start_timecode=str(start_timecode or "01:00:00:00").strip(),
+        )
+
+    def copy_with_new_id(self) -> LtcClip:
+        return LtcClip(
+            id=_new_id(),
+            timeline_start_seconds=float(self.timeline_start_seconds),
+            duration_seconds=float(self.duration_seconds),
+            start_timecode=str(self.start_timecode),
+        )
+
+
+@dataclass
 class Song:
     id: str
     name: str
@@ -340,6 +412,12 @@ class Song:
     # and strip it from the music/speaker bus. "auto" uses stripe detection.
     # Values: "off" | "left" | "right" | "auto". Default auto — detect & route.
     file_ltc_side: str = "auto"
+    # Per-song LTC source mode (mutually exclusive; see SongLtcSourceMode).
+    # Default "auto" keeps legacy behavior (resolved from project settings).
+    ltc_source_mode: str = "auto"
+    # Generated-LTC clips (used when ltc_source_mode == "clip_generator").
+    # Kept sorted by timeline_start_seconds by the domain helpers.
+    ltc_clips: list[LtcClip] = field(default_factory=list)
     # Track-level mute for every video clip's embedded audio (picture keeps
     # showing — this only silences the clip's own audio bus). Defaults to
     # audible: alignment work needs to hear video against the music track;
@@ -587,6 +665,8 @@ class Song:
             row_color=self.row_color,
             category_id=None,
             file_ltc_side=coerce_file_ltc_side(self.file_ltc_side),
+            ltc_source_mode=coerce_song_ltc_source_mode(self.ltc_source_mode),
+            ltc_clips=[clip.copy_with_new_id() for clip in self.ltc_clips],
             video_track_muted=self.video_track_muted,
             show_video_track=self.show_video_track,
             show_ltc_track=self.show_ltc_track,

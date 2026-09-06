@@ -12,13 +12,13 @@ from cueplayer.persistence.project_store import load_project, save_project
 from cueplayer.repository.project_repository import ProjectRepository
 
 
-def test_schema_version_is_two() -> None:
-    assert SCHEMA_VERSION == 2
+def test_schema_version_is_three() -> None:
+    assert SCHEMA_VERSION == 3
 
 
 def test_migrate_v0_to_v2_empty_songs() -> None:
     data = migrate_project_dict({"id": "abc", "name": "測試", "songs": []}, from_version=0)
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == SCHEMA_VERSION
 
 
 def test_migrate_v1_builds_variants_from_audio_tracks() -> None:
@@ -53,7 +53,7 @@ def test_migrate_v1_builds_variants_from_audio_tracks() -> None:
         ],
     }
     migrated = migrate_project_dict(raw, from_version=1)
-    assert migrated["schema_version"] == 2
+    assert migrated["schema_version"] == SCHEMA_VERSION
     song = migrated["songs"][0]
     assert len(song["variants"]) == 2
     assert song["selected_variant_id"] == "variant-t-main"
@@ -90,12 +90,12 @@ def test_round_trip_variants_unicode(tmp_path: Path) -> None:
     save_project(project, path)
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == SCHEMA_VERSION
     assert data["songs"][0]["variants"][0]["name"] == "新版"
     assert "\\u" not in path.read_text(encoding="utf-8")
 
     loaded = load_project(path)
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == SCHEMA_VERSION
     assert len(loaded.songs[0].variants) == 1
     assert loaded.songs[0].selected_variant_id == variant.id
     assert loaded.songs[0].variants[0].path == audio
@@ -144,13 +144,13 @@ def test_load_legacy_v1_file_via_repository(tmp_path: Path) -> None:
 
     repo = ProjectRepository()
     loaded = repo.load(path)
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == SCHEMA_VERSION
     assert len(loaded.songs[0].variants) == 1
     assert loaded.songs[0].selected_variant() is not None
     assert loaded.songs[0].selected_audio_path() == audio
 
     repo.save(loaded, path)
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["schema_version"] == 2
+    assert saved["schema_version"] == SCHEMA_VERSION
     assert saved["songs"][0]["variants"]
     assert saved["songs"][0]["audio_tracks"]  # Phase A: tracks still written

@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from cueplayer.domain.models import (
     SCHEMA_VERSION,
@@ -24,7 +25,9 @@ from cueplayer.domain.models import (
     VideoClip,
     VideoDecodeQuality,
     coerce_file_ltc_side,
+    coerce_song_ltc_source_mode,
 )
+from cueplayer.domain.models import LtcClip
 from cueplayer.domain.song_variant import SongVariant, coerce_variant_kind
 from cueplayer.persistence.mark_template import dicts_to_lanes, lanes_to_dicts
 from cueplayer.persistence.media_paths import (
@@ -465,6 +468,32 @@ def _variant_from_dict(
     )
 
 
+def _ltc_clips_from_song_data(song_data: dict[str, Any]) -> list[LtcClip]:
+    raw = song_data.get("ltc_clips")
+    if not isinstance(raw, list):
+        return []
+    clips: list[LtcClip] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        clip_id = str(entry.get("id") or "")
+        if not clip_id:
+            clip_id = str(uuid4())
+        clips.append(
+            LtcClip(
+                id=clip_id,
+                timeline_start_seconds=float(
+                    entry.get("timeline_start_seconds", 0.0)
+                ),
+                duration_seconds=float(entry.get("duration_seconds", 0.0)),
+                start_timecode=str(
+                    entry.get("start_timecode", "01:00:00:00") or "01:00:00:00"
+                ),
+            )
+        )
+    return clips
+
+
 def _variants_from_song_data(
     song_data: dict[str, Any], *, project_dir: Path | None
 ) -> tuple[list[SongVariant], str | None]:
@@ -731,6 +760,16 @@ def project_to_dict(
                 "duration_seconds": song.duration_seconds,
                 "use_left_ltc": bool(song.file_ltc_side == "left"),  # legacy mirror
                 "file_ltc_side": coerce_file_ltc_side(song.file_ltc_side),
+                "ltc_source_mode": coerce_song_ltc_source_mode(song.ltc_source_mode),
+                "ltc_clips": [
+                    {
+                        "id": clip.id,
+                        "timeline_start_seconds": clip.timeline_start_seconds,
+                        "duration_seconds": clip.duration_seconds,
+                        "start_timecode": clip.start_timecode,
+                    }
+                    for clip in song.ltc_clips
+                ],
                 "audio_tracks": [
                     {
                         "id": track.id,
@@ -988,6 +1027,10 @@ def project_from_dict(
                     song_data.get("file_ltc_side"),
                     use_left_ltc=bool(song_data.get("use_left_ltc", False)),
                 ),
+                ltc_source_mode=coerce_song_ltc_source_mode(
+                    song_data.get("ltc_source_mode", "auto")
+                ),
+                ltc_clips=_ltc_clips_from_song_data(song_data),
                 audio_tracks=audio_tracks,
                 variants=variants,
                 selected_variant_id=selected_variant_id,

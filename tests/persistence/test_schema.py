@@ -11,7 +11,7 @@ from cueplayer.persistence.project_store import dict_to_ma_export, ma_export_to_
 
 def test_migrate_version_zero() -> None:
     data = migrate_project_dict({"id": "abc", "name": "測試", "songs": []}, from_version=0)
-    assert data["schema_version"] == SCHEMA_VERSION == 2
+    assert data["schema_version"] == SCHEMA_VERSION == 3
 
 
 def test_reject_future_schema() -> None:

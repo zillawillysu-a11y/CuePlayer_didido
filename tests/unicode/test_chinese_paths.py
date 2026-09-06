@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cueplayer.domain.models import AudioTrack, Project, VideoClip
+from cueplayer.domain.models import SCHEMA_VERSION, AudioTrack, Project, VideoClip
 from cueplayer.persistence.project_store import load_project, save_project
 
 
@@ -50,7 +50,7 @@ def test_chinese_project_round_trip(tmp_path: Path) -> None:
 
     loaded = load_project(project_file)
     assert loaded.name == "燈光編程專案"
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == SCHEMA_VERSION
     assert loaded.songs[0].name == "第一首歌"
     assert loaded.songs[0].audio_tracks[0].path == audio_path
     assert loaded.songs[0].video_clips[0].path == video_path
@@ -64,5 +64,5 @@ def test_schema_version_present_in_saved_json(tmp_path: Path) -> None:
     save_project(project, path)
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == SCHEMA_VERSION
     assert data["name"] == "Schema測試"
