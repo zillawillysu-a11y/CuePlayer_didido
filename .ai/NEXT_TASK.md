@@ -64,6 +64,17 @@ Candidates parked by user (not started):
 
 Resolved this session:
 
+- About Dialog logo sharpness: the Help → About Cue Player logo looked blurry
+  because it loaded the app icon with `QPixmap(path)` (which only reads an
+  `.ico`'s first/16x16 frame) then upscaled it 3x to 48x48. Fixed by loading
+  via `QIcon(path).pixmap(device_size, device_size)` sized from
+  `devicePixelRatioF()`, which lets Qt pick the ico's matching larger layer
+  (it has 16/24/32/48/64/128/256px layers) at every DPI scale (100/125/150/
+  200%) instead of upscaling. Display size unchanged (48 logical px); menu
+  structure, About text, version, copyright untouched. See
+  `.ai/handoffs/2026-09-07_AboutDialogLogoSharpnessFix.md`. Needs user manual
+  verification across DPI scales (see handoff for steps).
+
 - Marquee Multi-Selection + Group Move: box-select drag across the Video/LTC/Mark lanes
   now selects items of all three types together (previously Mark-only, and selecting one
   type always cleared the others). Dragging any selected item when the combined selection

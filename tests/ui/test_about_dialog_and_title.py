@@ -55,3 +55,37 @@ def test_about_dialog_shows_canonical_version_and_copyright(app: QApplication) -
     assert any(APP_NAME == t for t in texts)
     assert any(f"Version {APP_VERSION}" == t for t in texts)
     assert any(COPYRIGHT == t for t in texts)
+
+
+def test_about_dialog_logo_pixmap_is_not_upscaled_from_a_tiny_source(
+    app: QApplication,
+) -> None:
+    """The logo must come from a layer at least as large as its display size.
+
+    Regression guard for an About dialog that used to grab the .ico's first
+    (16x16) frame via QPixmap(path) and stretch it up to 48x48, which reads
+    as blurry. QIcon.pixmap() must be asked for the display size directly so
+    Qt selects a matching (or larger) source layer instead of upscaling.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    from cueplayer.ui.about_dialog import _LOGO_LOGICAL_SIZE
+
+    dialog = AboutDialog()
+
+    icon_label = next(
+        (
+            w
+            for w in dialog.findChildren(QLabel)
+            if w.pixmap() is not None and not w.pixmap().isNull()
+        ),
+        None,
+    )
+    assert icon_label is not None, "About dialog should show a logo pixmap"
+
+    pixmap = icon_label.pixmap()
+    dpr = pixmap.devicePixelRatio() or 1.0
+    device_px_size = round(_LOGO_LOGICAL_SIZE * dpr)
+
+    assert pixmap.width() >= device_px_size
+    assert pixmap.height() >= device_px_size

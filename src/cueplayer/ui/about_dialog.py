@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 
 from cueplayer.app_info import APP_NAME, APP_VERSION, COPYRIGHT
 from cueplayer.util.runtime import app_icon_path
+
+_LOGO_LOGICAL_SIZE = 48
 
 
 class AboutDialog(QDialog):
@@ -29,16 +31,19 @@ class AboutDialog(QDialog):
         icon_path = app_icon_path()
         icon_label: QLabel | None = None
         if icon_path is not None:
-            pixmap = QPixmap(str(icon_path)).scaled(
-                48,
-                48,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            icon = QIcon(str(icon_path))
+            dpr = self.devicePixelRatioF() or 1.0
+            device_size = round(_LOGO_LOGICAL_SIZE * dpr)
+            # QIcon.pixmap() lets Qt pick the best-matching layer from a
+            # multi-resolution .ico (or rasterize an .svg) at the requested
+            # device size, instead of upscaling a fixed small frame.
+            pixmap = icon.pixmap(device_size, device_size)
+            pixmap.setDevicePixelRatio(dpr)
             if not pixmap.isNull():
                 icon_label = QLabel(self)
+                icon_label.setFixedSize(_LOGO_LOGICAL_SIZE, _LOGO_LOGICAL_SIZE)
                 icon_label.setPixmap(pixmap)
-                self.setWindowIcon(QIcon(str(icon_path)))
+                self.setWindowIcon(icon)
 
         name_label = QLabel(APP_NAME, self)
         name_font = name_label.font()
