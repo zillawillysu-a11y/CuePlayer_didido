@@ -36,6 +36,15 @@ Commit/push and final remote-hash verification follow this report update.
 The missing Git author configuration is resolved for this checkout. Other
 computers have their own Git configuration. ASIO verification remains pending.
 
+Follow-up (2026-09-06, closing verification): a later session re-checked the
+previous change and closed the task. git config --local shows user.name=
+Codex Agent, user.email=codex@openai.com and push.default=upstream. The commit
+4631427 ("Restore direct workflow and persist automatic GitHub sync")
+contains exactly the files listed above. git status -sb shows a clean tree
+tracking origin/cursor/technical-audit-0815-028d. git ls-remote confirms the
+remote branch equals local HEAD 4631427b4d9cbb9d2251613e83ed406f6bba4559.
+Task closed; .ai/REPORT.md updated to match.
+
 ## Suggested next task
 Capture Tools → Write Performance Report during affected Focusrite USB ASIO
 playback (including seek/loop), then analyze rate consistency and DAC shadow

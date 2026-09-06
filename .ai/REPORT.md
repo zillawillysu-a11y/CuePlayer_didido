@@ -1,6 +1,8 @@
-# Persistent Git commit and push workflow
+# Persistent Git commit and push workflow — closed
 Date: 2026-09-06. Branch: technical-audit-0815-028d.
 Upstream: origin/cursor/technical-audit-0815-028d.
+Status: complete. Commit 4631427 pushed; remote hash verified equal to
+local HEAD (4631427b4d9cbb9d2251613e83ed406f6bba4559).
 
 ## Task objective
 Enable routine commits and GitHub pushes after every completed task, including
@@ -10,8 +12,10 @@ publishing the previously staged direct-workflow cleanup.
 Saved repository-local user.name=Codex Agent and user.email=codex@openai.com,
 matching the previous six commits. Set repository-local push.default=upstream
 because the local and upstream branch names differ. Recorded standing user
-authorization for task commits/pushes and required remote verification.
-Included the previous cleanup and its handoff in this change.
+authorization for task commits/pushes and required remote verification in
+AGENTS.md and .cursor/rules/auto-push.mdc. Included the previous cleanup and
+its handoff in the commit. The closing verification step (remote hash match)
+was completed on 2026-09-06 by a follow-up session.
 
 ## Files changed
 - AGENTS.md
@@ -30,11 +34,14 @@ no branch renaming or force push. Git author configuration is per checkout.
 Inspected previous commit authors, Git configuration and upstream tracking.
 Authenticated remote read succeeded and remote matched the starting commit.
 Ran git diff --cached --check. No application runtime tests needed.
-Commit/push and final remote-hash verification follow this report update.
+Closing verification (2026-09-06): git config --local shows user.name,
+user.email and push.default=upstream; git status -sb shows a clean tree
+tracking origin/cursor/technical-audit-0815-028d; git ls-remote confirms the
+remote branch equals local HEAD 4631427.
 
 ## Remaining issues
-The missing Git author configuration is resolved for this checkout. Other
-computers have their own Git configuration. ASIO verification remains pending.
+None for this task. Other computers still have their own Git configuration.
+ASIO verification remains pending (see Suggested next task).
 
 ## Suggested next task
 Capture Tools → Write Performance Report during affected Focusrite USB ASIO
