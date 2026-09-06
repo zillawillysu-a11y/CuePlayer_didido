@@ -82,11 +82,11 @@ def isolated_audio_engines(monkeypatch, retained_qapplication):
         controller._async_pool.shutdown(wait=True, cancel_futures=True)
     for engine in engines:
         if shiboken6.isValid(engine):
-            for timer in (engine._poll, engine._silent_timer, engine._mtc_timer):
+            for timer in (engine._poll, engine._silent_timer):
                 timer.stop()
         engine._playing = False
         engine._stop_stream()
-        engine.shutdown_midi_outputs()
+        engine.shutdown_midi_outputs()  # also stops the MTC ticker thread
         for executor in (engine._ltc_executor, engine._resample_executor,
                          engine._ltc_detect_executor, engine._video_mixer._executor):
             executor.shutdown(wait=True, cancel_futures=True)

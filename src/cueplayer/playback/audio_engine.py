@@ -8,6 +8,7 @@ import sys
 if sys.platform == "win32":
     os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -65,6 +66,8 @@ from cueplayer.routing.matrix import apply_routing, warn_if_outputs_insufficient
 from cueplayer.timecode.ltc import LtcPlaybackCursor, generate_ltc_pcm
 from cueplayer.timecode.ltc_decode import decode_ltc_timecode
 from cueplayer.timecode.smpte import Timecode, parse_timecode
+
+log = logging.getLogger(__name__)
 
 
 class _StreamCloseFailure(RuntimeError):
@@ -205,9 +208,21 @@ class AudioEngine(QObject):
         self._silent_timer = QTimer(self)
         self._silent_timer.setInterval(16)
         self._silent_timer.timeout.connect(self._silent_tick)
-        self._mtc_timer = QTimer(self)
-        self._mtc_timer.setInterval(4)
-        self._mtc_timer.timeout.connect(self._mtc_tick)
+        # MTC quarter-frame / MIDI cue-note scheduling must not depend on the
+        # Qt GUI event loop: Windows suspends that loop's timers while any
+        # top-level window is in a native title-bar move/resize modal loop
+        # (dragging or press-holding the caption of the main window or the
+        # Clean Video Output window), which used to freeze real MIDI Timecode
+        # output for the duration of the drag. `_mtc_tick` only touches
+        # already-thread-safe state (`MtcOutput`/`MidiCueNotes` each guard
+        # themselves with their own lock; the AudioEngine bookkeeping it
+        # reads — `raw_position`, loop/source-change sequence numbers — is
+        # either lock-protected or safely re-checked every tick), so it is
+        # driven from a dedicated daemon thread paced by a wall-clock
+        # `Event.wait` instead of a GUI `QTimer`. See `_start_mtc_thread` /
+        # `_stop_mtc_thread`.
+        self._mtc_thread_stop = threading.Event()
+        self._mtc_thread: threading.Thread | None = None
 
     @property
     def buffer(self) -> AudioBuffer | None:
@@ -1146,7 +1161,7 @@ class AudioEngine(QObject):
                 self._playing = False
                 self._silent_timer.stop()
                 self._poll.stop()
-                self._mtc_timer.stop()
+                self._stop_mtc_thread()
                 self._mtc.on_pause()
                 self._midi_cues.on_pause()
                 self.playing_changed.emit(False)
@@ -1171,7 +1186,7 @@ class AudioEngine(QObject):
         self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_play(self.position)
         if self._audio_settings.effective_mtc_output() or self._audio_settings.effective_midi_cue_notes():
-            self._mtc_timer.start()
+            self._start_mtc_thread()
         self.playing_changed.emit(True)
 
     def pause(self, *, for_scrub: bool = False) -> None:
@@ -1199,7 +1214,7 @@ class AudioEngine(QObject):
             self._clear_write_head_stamp_unlocked()
         self._silent_timer.stop()
         self._poll.stop()
-        self._mtc_timer.stop()
+        self._stop_mtc_thread()
         self._mtc.on_pause()
         self._midi_cues.on_pause()
         if not for_scrub:
@@ -1289,9 +1304,41 @@ class AudioEngine(QObject):
 
     def shutdown_midi_outputs(self) -> None:
         """Release MTC / MIDI cue note ports (call on app exit)."""
-        self._mtc_timer.stop()
+        self._stop_mtc_thread()
         self._mtc.close()
         self._midi_cues.close()
+
+    def _start_mtc_thread(self) -> None:
+        """Start the off-GUI-thread MTC/MIDI-cue ticker (idempotent)."""
+        if self._mtc_thread is not None and self._mtc_thread.is_alive():
+            return
+        self._mtc_thread_stop.clear()
+        t = threading.Thread(
+            target=self._mtc_thread_loop,
+            name="mtc-tick",
+            daemon=True,
+        )
+        self._mtc_thread = t
+        t.start()
+
+    def _stop_mtc_thread(self) -> None:
+        """Stop the MTC ticker thread and wait for it to exit (bounded)."""
+        self._mtc_thread_stop.set()
+        t = self._mtc_thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=1.0)
+        self._mtc_thread = None
+
+    def _mtc_thread_loop(self) -> None:
+        # Same 4 ms cadence the GUI QTimer previously used, but paced by a
+        # wall-clock wait on a plain thread — never blocked by the Qt event
+        # loop (e.g. Windows' native title-bar move/resize modal loop).
+        stop = self._mtc_thread_stop
+        while not stop.wait(0.004):
+            try:
+                self._mtc_tick()
+            except Exception:  # noqa: BLE001 — ticker must never die silently
+                log.exception("MTC tick thread error")
 
     def _mtc_tick(self) -> None:
         if self._playing:

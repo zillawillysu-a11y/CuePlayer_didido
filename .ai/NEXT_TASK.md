@@ -20,6 +20,20 @@ No new task queued yet. Candidates parked by user (not started):
 
 Resolved this session:
 
+- Windows title-bar interaction (click / press-hold / drag on the main window or the
+  Clean Video Output window) freezing real MTC output during playback. Root cause:
+  `AudioEngine._mtc_timer` was a GUI-thread `QTimer` pacing `MtcOutput.tick()` /
+  `MidiCueNotes.update()`; Windows suspends all Qt timers on the GUI thread during the
+  native title-bar move/resize modal loop. Music audio, audio LTC, and the Playback
+  Engine's real position were never affected (PortAudio callback thread, independent of
+  Qt); only MTC quarter-frame/MIDI-cue-note output and the (cosmetic) UI TC display /
+  video frame refresh stalled. Fixed by replacing `_mtc_timer` with a dedicated daemon
+  thread (`_start_mtc_thread`/`_stop_mtc_thread`/`_mtc_thread_loop`) paced by a
+  wall-clock `Event.wait(0.004)` instead of a `QTimer`, calling the existing
+  `_mtc_tick()` unchanged. See `.ai/handoffs/2026-09-07_MtcTitleBarStallFix.md`.
+
+Previously resolved:
+
 - Zoom-**out** track/lane header labels ("Video" / "LTC Clips" / Mark lane names) temporarily
   going bold during a continuous wheel-zoom-out gesture (the zoom-in case was already fixed in the
   prior task) — root-caused to an unguarded bold-font mutation in `_paint_marks_impl`'s on-waveform
