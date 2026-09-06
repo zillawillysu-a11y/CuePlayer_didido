@@ -16,6 +16,9 @@ from cueplayer.ui.theme import (
 # Item-data roles for the media badge column.
 ROLE_LTC_CHANNEL = int(Qt.ItemDataRole.UserRole) + 12
 ROLE_HAS_VIDEO = int(Qt.ItemDataRole.UserRole) + 13
+# Explicit generator mode ("clip_generator" / "full_track_generator") — None
+# for striped-file / off songs (those show the L/R badge when detected).
+ROLE_LTC_MODE = int(Qt.ItemDataRole.UserRole) + 14
 
 _COL_MEDIA = 4
 # Must stay in sync with SetlistWidget._LTC_COLUMN_WIDTH.
@@ -58,6 +61,7 @@ class SetlistRowDelegate(RowColorDelegate):
         row_hex = self._row_color_hex(index)
         channel = index.data(ROLE_LTC_CHANNEL)
         has_video = bool(index.data(ROLE_HAS_VIDEO))
+        ltc_mode = str(index.data(ROLE_LTC_MODE) or "")
         show_ltc = self._show_ltc_badge()
         show_video = self._show_video_badge()
 
@@ -81,6 +85,15 @@ class SetlistRowDelegate(RowColorDelegate):
                     ("LTC", lit),
                     ("L", lit if ltc_side == 0 else dim),
                     ("R", lit if ltc_side == 1 else dim),
+                ]
+            )
+        elif show_ltc and ltc_mode in ("clip_generator", "full_track_generator"):
+            # Generated LTC (no file stripe): one letter for the generator kind.
+            lit = badge_lit_on_background(row_hex)
+            parts.extend(
+                [
+                    ("LTC", lit),
+                    ("C" if ltc_mode == "clip_generator" else "G", lit),
                 ]
             )
 

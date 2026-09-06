@@ -54,7 +54,10 @@ Playback Engine is the only playback clock source.
   automatically and verify the remote branch matches the local commit.
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
-## Recent handoff (2026-08)
+## Recent handoff (2026-09)
 
-Song Variants **persisted** (schema v2). **Next:** playback uses
-`selected_audio_path()`. See `docs/song_variant_design.md` / `.ai/NEXT_TASK.md`.
+LTC Generator Clips: domain + playback + hardening + **Timeline UI** done
+(schema v3, 4 explicit source modes, per-clip MTC re-anchoring, half-open
+`[start, end)` boundaries, undo/redo + persistence). **Next:** Phase 4 —
+MA2/MA3 exporter wiring for `clip_generator`. See
+`.ai/handoffs/2026-09-06_LtcClipsUiPhase3.md` / `.ai/NEXT_TASK.md`.

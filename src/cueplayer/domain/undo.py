@@ -7,7 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cueplayer.domain.models import BeatGridRegion, Mark, Project, SetlistCategory, Song, VideoClip
+from cueplayer.domain.ltc_clips import remove_ltc_clip, sorted_ltc_clips
+from cueplayer.domain.models import (
+    BeatGridRegion,
+    LtcClip,
+    Mark,
+    Project,
+    SetlistCategory,
+    Song,
+    VideoClip,
+)
 
 
 @dataclass(frozen=True)
@@ -419,6 +428,117 @@ class DeleteVideoClipsCommand:
         song.video_clips = [c for c in song.video_clips if c.id not in ids]
 
 
+@dataclass(frozen=True)
+class LtcClipSnapshot:
+    """Immutable LTC generator-clip state for undo/redo."""
+
+    id: str
+    timeline_start_seconds: float
+    duration_seconds: float
+    start_timecode: str
+
+    @classmethod
+    def from_clip(cls, clip: LtcClip) -> LtcClipSnapshot:
+        return cls(
+            id=clip.id,
+            timeline_start_seconds=clip.timeline_start_seconds,
+            duration_seconds=clip.duration_seconds,
+            start_timecode=clip.start_timecode,
+        )
+
+    def to_clip(self) -> LtcClip:
+        return LtcClip(
+            id=self.id,
+            timeline_start_seconds=self.timeline_start_seconds,
+            duration_seconds=self.duration_seconds,
+            start_timecode=self.start_timecode,
+        )
+
+
+@dataclass
+class AddLtcClipCommand:
+    """Add one LTC generator clip (also switches the song to clip_generator)."""
+
+    clip: LtcClipSnapshot
+    old_mode: str  # song.ltc_source_mode before the add (restored on undo)
+    label: str = "Add LTC Clip"
+
+    def undo(self, song: Song) -> None:
+        song.ltc_clips = [c for c in song.ltc_clips if c.id != self.clip.id]
+        song.ltc_source_mode = self.old_mode
+
+    def redo(self, song: Song) -> None:
+        if not any(c.id == self.clip.id for c in song.ltc_clips):
+            song.ltc_clips.append(self.clip.to_clip())
+            song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+        # Same mutual-exclusion rule as add_ltc_clip: adding a clip always
+        # puts the song in clip_generator.
+        song.ltc_source_mode = "clip_generator"
+
+
+@dataclass
+class DeleteLtcClipsCommand:
+    """Delete LTC clip(s). Mode is never auto-changed (Phase 1 rule)."""
+
+    clips: list[LtcClipSnapshot]
+    label: str = "Delete LTC Clip"
+
+    def undo(self, song: Song) -> None:
+        existing = {c.id for c in song.ltc_clips}
+        for snap in self.clips:
+            if snap.id not in existing:
+                song.ltc_clips.append(snap.to_clip())
+        song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def redo(self, song: Song) -> None:
+        ids = {snap.id for snap in self.clips}
+        for snap in self.clips:
+            remove_ltc_clip(song, snap.id)
+
+
+LtcClipTransform = tuple[float, float, str]  # (start_seconds, duration_seconds, start_timecode)
+
+
+@dataclass
+class EditLtcClipsCommand:
+    """Move / trim / start-TC edit: id -> (old_transform, new_transform)."""
+
+    changes: dict[str, tuple[LtcClipTransform, LtcClipTransform]]
+    label: str = "Edit LTC Clip"
+
+    def _apply(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.changes.items():
+            clip = next((c for c in song.ltc_clips if c.id == clip_id), None)
+            if clip is None:
+                continue
+            start, duration, start_tc = transforms[index]
+            clip.timeline_start_seconds = start
+            clip.duration_seconds = duration
+            clip.start_timecode = start_tc
+        song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def undo(self, song: Song) -> None:
+        self._apply(song, 0)
+
+    def redo(self, song: Song) -> None:
+        self._apply(song, 1)
+
+
+@dataclass
+class SetLtcSourceModeCommand:
+    """Explicit per-song LTC source mode switch (four user states; never auto)."""
+
+    old_mode: str
+    new_mode: str
+    label: str = "Set LTC Source Mode"
+
+    def undo(self, song: Song) -> None:
+        song.ltc_source_mode = self.old_mode
+
+    def redo(self, song: Song) -> None:
+        song.ltc_source_mode = self.new_mode
+
+
 ClipTransform = tuple[float, float, float]  # (start_seconds, source_in_seconds, duration_seconds)
 
 
@@ -599,10 +719,20 @@ class UndoStack:
         self._limit = max(1, limit)
         self._undo: list[_ContextCommand] = []
         self._redo: list[_ContextCommand] = []
+        self._last_executed: _ContextCommand | None = None
+
+    @property
+    def last_executed_command(self) -> object | None:
+        """Inner command of the latest undo/redo (post-sync hooks use this)."""
+        command = self._last_executed
+        if isinstance(command, SongScopedCommand):
+            return command.command
+        return command
 
     def clear(self) -> None:
         self._undo.clear()
         self._redo.clear()
+        self._last_executed = None
 
     def clear_song_scoped(self) -> None:
         self._undo = [c for c in self._undo if isinstance(c, SetlistEditCommand)]
@@ -650,6 +780,7 @@ class UndoStack:
             return None
         command = self._undo.pop()
         command.undo(ctx)
+        self._last_executed = command
         self._redo.append(command)
         setlist = command if isinstance(command, SetlistEditCommand) else None
         song_id = command.song_id if isinstance(command, SongScopedCommand) else None
@@ -660,6 +791,7 @@ class UndoStack:
             return None
         command = self._redo.pop()
         command.redo(ctx)
+        self._last_executed = command
         self._undo.append(command)
         setlist = command if isinstance(command, SetlistEditCommand) else None
         song_id = command.song_id if isinstance(command, SongScopedCommand) else None

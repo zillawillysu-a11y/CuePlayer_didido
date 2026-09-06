@@ -26,7 +26,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMenu, QSlider, QWidget
 
-from cueplayer.domain.models import MarkLineStyle, Song, VideoClip
+from cueplayer.domain.ltc_clips import (
+    POS_EPS,
+    ltc_clip_tc_range,
+    sorted_ltc_clips,
+    validate_ltc_clips,
+)
+from cueplayer.domain.models import LtcClip, MarkLineStyle, Song, VideoClip
 from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.media.audio_loader import AudioBuffer, choose_peak_level
 from cueplayer.media.video_clip_waveform import (
@@ -129,6 +135,15 @@ class TimelineWidget(QWidget):
     duplicate_video_clip_requested = Signal(str)  # clip id
     edit_video_clip_requested = Signal(str)  # clip id
     video_files_dropped = Signal(list, float)  # paths, drop time seconds
+
+    # LTC generator clip lane (clip_generator mode).
+    ltc_clip_selection_changed = Signal(list)  # list[str] clip ids
+    ltc_clips_changed = Signal()  # clip table / mode structural change — refresh playback
+    ltc_clip_edited = Signal(str, tuple, tuple)  # clip id, old (start,dur,tc), new (start,dur,tc)
+    delete_ltc_clips_requested = Signal(list)  # list[str] clip ids
+    add_ltc_clip_requested = Signal(float)  # timeline seconds to add at
+    edit_ltc_clip_requested = Signal(str)  # clip id
+    ltc_source_mode_requested = Signal(str)  # explicit mode for the current song
     video_track_mute_toggled = Signal(bool)
     video_track_visibility_changed = Signal(bool)  # show_video_track
     wave_gain_line_visibility_changed = Signal(bool)
@@ -202,6 +217,22 @@ class TimelineWidget(QWidget):
         self._clip_drag_moved = False
         self._video_gesture_active = False
         self._clip_edge_hit = 8.0
+        # LTC generator clip lane. The resolved per-song mode is pushed by the
+        # MainWindow (it owns AudioOutputSettings); the lane is only editable
+        # in clip_generator mode.
+        self._ltc_source_mode = "off"
+        self._selected_ltc_clip_ids: set[str] = set()
+        self._hover_ltc_clip_id: str | None = None
+        self._dragging_ltc_clip: str | None = None
+        self._trimming_ltc_clip: tuple[str, str] | None = None  # (clip_id, "left" | "right")
+        self._ltc_clip_drag_snapshot: dict[str, tuple[float, float, str]] = {}
+        self._ltc_clip_drag_origin_x = 0.0
+        self._ltc_clip_drag_moved = False
+        # Cached validation (updated on set_song / mode / edit commits — never
+        # per paint).
+        self._ltc_clip_warnings: list[str] = []
+        self._ltc_clip_overlap_ids: set[str] = set()
+        self._ltc_clip_tc_warn_ids: set[str] = set()
         self._show_mark_tracks = True
         self._show_mark_stem = False
         self._mark_line_style: MarkLineStyle = "solid"
@@ -915,6 +946,14 @@ class TimelineWidget(QWidget):
         self._selected_beat_grid_id = None
         self._selected_beat_grid_index = None
         self._selected_clip_ids.clear()
+        self._selected_ltc_clip_ids = set()
+        self._hover_ltc_clip_id = None
+        self._dragging_ltc_clip = None
+        self._trimming_ltc_clip = None
+        self._ltc_clip_drag_snapshot = {}
+        self._ltc_clip_drag_moved = False
+        self._ltc_clip_tc_warn_ids = set()
+        self._refresh_ltc_clip_validation()
         self._dragging_audio_gain = False
         self._audio_gain_zone = None
         self._audio_gain_drag_bounds = None
@@ -1050,6 +1089,7 @@ class TimelineWidget(QWidget):
     def clear_selection(self, *, emit: bool = True) -> None:
         self.set_selected_mark_ids([], emit=emit)
         self.set_selected_video_clip_ids([], emit=emit)
+        self.set_selected_ltc_clip_ids([], emit=emit)
 
     def selected_video_clip_ids(self) -> list[str]:
         return list(self._selected_clip_ids)
@@ -1076,9 +1116,87 @@ class TimelineWidget(QWidget):
     def _ltc_available(self) -> bool:
         return self._ltc_channel is not None and self._ltc_audio is not None
 
+    def _ltc_clip_lane_active(self) -> bool:
+        """Editable LTC generator-clip lane (resolved mode = clip_generator)."""
+        return (
+            self._song is not None
+            and self._ltc_source_mode == "clip_generator"
+            and self._video_lane_visible()
+        )
+
     def _ltc_lane_visible(self) -> bool:
-        """LTC inspect lane shares the Video eye — shown only when Video is shown."""
-        return self._ltc_available() and self._video_lane_visible()
+        """LTC lane shares the Video eye — stripe inspect lane OR clip_generator
+        editing lane. full_track_generator / off never show the lane."""
+        if not self._video_lane_visible():
+            return False
+        return self._ltc_available() or self._ltc_clip_lane_active()
+
+    def set_ltc_source_mode(self, mode: str) -> None:
+        """Push the resolved per-song LTC mode (MainWindow owns resolution)."""
+        mode = str(mode or "off").strip().lower()
+        lane_was_visible = self._ltc_lane_visible()
+        self._ltc_source_mode = mode
+        if mode != "clip_generator":
+            self._selected_ltc_clip_ids = set()
+            self._hover_ltc_clip_id = None
+            self._dragging_ltc_clip = None
+            self._trimming_ltc_clip = None
+            self._ltc_clip_drag_snapshot = {}
+            self._ltc_clip_drag_moved = False
+        self._refresh_ltc_clip_validation()
+        if lane_was_visible != self._ltc_lane_visible():
+            self._apply_layout_heights()
+        self.update()
+
+    def selected_ltc_clip_ids(self) -> list[str]:
+        return list(self._selected_ltc_clip_ids)
+
+    def set_selected_ltc_clip_ids(self, clip_ids: set[str] | list[str], *, emit: bool = True) -> None:
+        new_ids = set(clip_ids)
+        if new_ids == self._selected_ltc_clip_ids:
+            return
+        self._selected_ltc_clip_ids = new_ids
+        if new_ids and self._selected_clip_ids:
+            # Clip selections are per-lane; keep the invariants symmetric.
+            self.set_selected_video_clip_ids([], emit=False)
+        if new_ids and self._selected_mark_ids:
+            self._selected_mark_ids = set()
+        self.update()
+        if emit:
+            self.ltc_clip_selection_changed.emit(list(self._selected_ltc_clip_ids))
+
+    def _single_selected_ltc_clip(self) -> LtcClip | None:
+        if self._song is None or len(self._selected_ltc_clip_ids) != 1:
+            return None
+        return self._song.ltc_clip_by_id(next(iter(self._selected_ltc_clip_ids)))
+
+    def _refresh_ltc_clip_validation(self) -> None:
+        """Cache warnings / overlap ids for the current song's LTC clips."""
+        self._ltc_clip_warnings = []
+        self._ltc_clip_overlap_ids = set()
+        self._ltc_clip_tc_warn_ids = set()
+        if self._song is None or not self._song.ltc_clips:
+            return
+        fps = float(self._song.fps or 30.0)
+        _errors, warnings = validate_ltc_clips(
+            self._song.ltc_clips, fps, self._song.duration_seconds
+        )
+        self._ltc_clip_warnings = list(warnings)
+        clips = sorted_ltc_clips(self._song.ltc_clips)
+        for i in range(len(clips)):
+            for j in range(i + 1, len(clips)):
+                a, b = clips[i], clips[j]
+                if float(b.timeline_start_seconds) < a.end_seconds - POS_EPS:
+                    self._ltc_clip_overlap_ids.add(a.id)
+                    self._ltc_clip_overlap_ids.add(b.id)
+                range_a = ltc_clip_tc_range(a, fps)
+                range_b = ltc_clip_tc_range(b, fps)
+                if range_a is None or range_b is None:
+                    continue
+                if range_b.start_frames < range_a.end_frames:
+                    # Allowed, but visible: overlapping / backwards TC ranges.
+                    self._ltc_clip_tc_warn_ids.add(a.id)
+                    self._ltc_clip_tc_warn_ids.add(b.id)
 
     def set_show_video_track(self, visible: bool, *, emit: bool = True) -> None:
         """Show / hide Video + LTC lanes together (Preview / Clean Output keep playing)."""
@@ -1675,6 +1793,10 @@ class TimelineWidget(QWidget):
                 return
             if self._selected_clip_ids:
                 self.delete_video_clips_requested.emit(list(self._selected_clip_ids))
+                event.accept()
+                return
+            if self._selected_ltc_clip_ids:
+                self.delete_ltc_clips_requested.emit(list(self._selected_ltc_clip_ids))
                 event.accept()
                 return
             if self._selected_mark_ids:
@@ -3737,6 +3859,296 @@ class TimelineWidget(QWidget):
             self.video_clips_batch_edited.emit(changes)
             self.update()
 
+    # ------------------------------------------------------------------
+    # LTC generator clip lane (clip_generator mode).
+    #
+    # Same gesture architecture as the Video clip lane: snapshot on press,
+    # live domain mutation during the drag (cheap — repaints the LTC band
+    # only), commit signal on release. Playback engine refresh happens once
+    # at commit (MainWindow), never per mouse move.
+    # ------------------------------------------------------------------
+
+    def _in_ltc_lane(self, x: float, y: float) -> bool:
+        """Editable LTC generator-clip lane band (clip_generator mode)."""
+        if not self._ltc_clip_lane_active() or x < self._header_width:
+            return False
+        top = self._ltc_lane_top_y()
+        return top <= y < top + self._ltc_band_height()
+
+    def _hit_ltc_clip(self, x: float, y: float) -> tuple[str, str] | None:
+        """Return (clip_id, zone) with zone in {'left', 'right', 'body'}; leftmost-drawn wins."""
+        if self._song is None or not self._in_ltc_lane(x, y):
+            return None
+        for clip in self._song.ltc_clips:
+            x0 = self._x_for_time(clip.timeline_start_seconds)
+            x1 = self._x_for_time(clip.end_seconds)
+            if x1 < x0:
+                x0, x1 = x1, x0
+            if x0 - self._clip_edge_hit <= x <= x1 + self._clip_edge_hit:
+                if abs(x - x0) <= self._clip_edge_hit:
+                    return (clip.id, "left")
+                if abs(x - x1) <= self._clip_edge_hit:
+                    return (clip.id, "right")
+                if x0 <= x <= x1:
+                    return (clip.id, "body")
+        return None
+
+    def _ltc_lane_dirty_rect(self) -> QRect:
+        top = self._ltc_lane_top_y()
+        return QRect(0, top, self.width(), max(1, self._ltc_band_height()))
+
+    def _update_ltc_lane(self) -> None:
+        self.update(self._ltc_lane_dirty_rect())
+
+    def _ltc_min_duration(self) -> float:
+        fps = float(self._song.fps or 30.0) if self._song is not None else 30.0
+        return max(0.05, 1.0 / fps)
+
+    def _ltc_clamp_start(
+        self, clip_id: str, candidate: float, duration: float, *, dt: float
+    ) -> float:
+        """Clamp a dragged start to song bounds and away from other clips.
+
+        Timeline overlap is blocked in the UI editing layer: dragging right
+        parks the left edge at the neighbour's left edge, dragging left parks
+        it at the neighbour's right edge.
+        """
+        song = self._song
+        if song is None:
+            return max(0.0, candidate)
+        song_end = max(0.0, float(song.duration_seconds))
+        candidate = max(0.0, min(candidate, max(0.0, song_end - duration)))
+        for other in song.ltc_clips:
+            if other.id == clip_id:
+                continue
+            o0 = float(other.timeline_start_seconds)
+            o1 = float(other.end_seconds)
+            if candidate + duration <= o0 + POS_EPS or candidate >= o1 - POS_EPS:
+                continue  # no overlap with this neighbour
+            if dt >= 0:
+                candidate = min(candidate, o0 - duration)
+            else:
+                candidate = max(candidate, o1)
+        return max(0.0, min(candidate, max(0.0, song_end - duration)))
+
+    def _begin_ltc_clip_interaction(
+        self,
+        clip_id: str,
+        zone: str,
+        x: float,
+        *,
+        shift: bool,
+        ctrl: bool,
+    ) -> None:
+        if self._song is None:
+            return
+        clip = self._song.ltc_clip_by_id(clip_id)
+        if clip is None:
+            return
+        if ctrl:
+            ids = set(self._selected_ltc_clip_ids)
+            ids.symmetric_difference_update({clip_id})
+            self.set_selected_ltc_clip_ids(ids)
+        elif shift:
+            self.set_selected_ltc_clip_ids(set(self._selected_ltc_clip_ids) | {clip_id})
+        else:
+            self.set_selected_ltc_clip_ids([clip_id])
+        self._ltc_clip_drag_snapshot = {
+            clip_id: (
+                clip.timeline_start_seconds,
+                clip.duration_seconds,
+                clip.start_timecode,
+            )
+        }
+        self._ltc_clip_drag_origin_x = x
+        self._ltc_clip_drag_moved = False
+        self._view_pinned = True
+        self.grabMouse()
+        if zone in ("left", "right"):
+            self._trimming_ltc_clip = (clip_id, zone)
+        else:
+            self._dragging_ltc_clip = clip_id
+        self.setCursor(
+            Qt.CursorShape.SizeHorCursor if zone in ("left", "right") else Qt.CursorShape.ClosedHandCursor
+        )
+        self.update()
+
+    def _update_ltc_clip_drag(self, x: float, *, snap: bool = True) -> None:
+        if self._song is None or self._dragging_ltc_clip is None:
+            return
+        clip = self._song.ltc_clip_by_id(self._dragging_ltc_clip)
+        snapshot = self._ltc_clip_drag_snapshot.get(self._dragging_ltc_clip)
+        if clip is None or snapshot is None:
+            return
+        dx = x - self._ltc_clip_drag_origin_x
+        if abs(dx) >= self._drag_slop:
+            self._ltc_clip_drag_moved = True
+        if not self._ltc_clip_drag_moved:
+            return
+        start0, dur0, _tc0 = snapshot
+        dt = dx / max(1e-6, self._pixels_per_second)
+        candidate = start0 + dt
+        if snap and self._beat_snap_enabled:
+            candidate = self._snap_time_to_beat_grid(candidate)
+        candidate = self._ltc_clamp_start(clip.id, candidate, dur0, dt=dt)
+        clip.timeline_start_seconds = candidate
+        self._update_ltc_lane()
+
+    def _update_ltc_clip_trim(self, x: float) -> None:
+        if self._song is None or self._trimming_ltc_clip is None:
+            return
+        clip_id, zone = self._trimming_ltc_clip
+        clip = self._song.ltc_clip_by_id(clip_id)
+        snapshot = self._ltc_clip_drag_snapshot.get(clip_id)
+        if clip is None or snapshot is None:
+            return
+        dx = x - self._ltc_clip_drag_origin_x
+        if abs(dx) >= self._drag_slop:
+            self._ltc_clip_drag_moved = True
+        if not self._ltc_clip_drag_moved:
+            return
+        start0, dur0, _tc0 = snapshot
+        dt = dx / max(1e-6, self._pixels_per_second)
+        song_end = max(0.0, float(self._song.duration_seconds))
+        min_dur = self._ltc_min_duration()
+        end0 = start0 + dur0
+        others = [c for c in self._song.ltc_clips if c.id != clip_id]
+        if zone == "left":
+            # Reaper-style generator trim: the left edge moves but the start
+            # timecode stays — the new head still sends the original start TC.
+            lower = 0.0
+            for other in others:
+                o0 = float(other.timeline_start_seconds)
+                o1 = float(other.end_seconds)
+                if o0 <= start0 + POS_EPS:
+                    lower = max(lower, o1)
+            new_start = min(max(start0 + dt, lower), end0 - min_dur)
+            clip.timeline_start_seconds = new_start
+            clip.duration_seconds = end0 - new_start
+        else:
+            upper = song_end
+            for other in others:
+                o0 = float(other.timeline_start_seconds)
+                o1 = float(other.end_seconds)
+                if o0 >= end0 - POS_EPS:
+                    upper = min(upper, o0)
+            new_end = min(max(end0 + dt, start0 + min_dur), upper)
+            clip.duration_seconds = new_end - start0
+        self._update_ltc_lane()
+
+    def _end_ltc_clip_gesture(self) -> None:
+        """Shared release-time bookkeeping for both LTC drag-move and trim."""
+        clip_id = self._dragging_ltc_clip or (
+            self._trimming_ltc_clip[0] if self._trimming_ltc_clip else None
+        )
+        moved = self._ltc_clip_drag_moved
+        self._dragging_ltc_clip = None
+        self._trimming_ltc_clip = None
+        self._ltc_clip_drag_moved = False
+        if clip_id and moved and self._song is not None:
+            clip = self._song.ltc_clip_by_id(clip_id)
+            old = self._ltc_clip_drag_snapshot.get(clip_id)
+            if clip is not None and old is not None:
+                new = (
+                    clip.timeline_start_seconds,
+                    clip.duration_seconds,
+                    clip.start_timecode,
+                )
+                if (
+                    abs(old[0] - new[0]) > 1e-6
+                    or abs(old[1] - new[1]) > 1e-6
+                    or old[2] != new[2]
+                ):
+                    self.ltc_clip_edited.emit(clip_id, old, new)
+        self._ltc_clip_drag_snapshot = {}
+
+    def _show_ltc_clip_context_menu(self, pos, x: float, y: float) -> None:  # noqa: ANN001
+        """Context menu for the whole LTC lane (stripe-inspect or clip lane).
+
+        The LTC Source submenu is always available so the four mutually
+        exclusive source modes can be reached from any state; the clip
+        add/edit/delete actions only appear in clip_generator mode.
+        """
+        if self._song is None:
+            return
+        clip_lane_active = self._ltc_clip_lane_active()
+        hit = self._hit_ltc_clip(x, y) if clip_lane_active else None
+        menu = QMenu(self)
+        time_here = self._time_for_x(x)
+        hide_track_action = menu.addAction("Hide Video / LTC Tracks")
+        hide_track_action.setToolTip(
+            "Collapse Video + LTC lanes after alignment — Preview/Clean Output keep playing"
+        )
+        if self._show_ltc_gain_line:
+            gain_action = menu.addAction("Hide Music volume adjustment")
+        else:
+            gain_action = menu.addAction("Show Music volume adjustment")
+        reset_action = None
+        if self._show_ltc_gain_line:
+            menu.addSeparator()
+            reset_action = menu.addAction("Reset Music to 0 dB")
+        menu.addSeparator()
+        source_menu = menu.addMenu("LTC Source")
+        source_actions: list[tuple[object, str]] = []
+        for label, mode in (
+            ("Off", "off"),
+            ("Striped File", "striped_file"),
+            ("Full Track Generator", "full_track_generator"),
+            ("Clip Generator", "clip_generator"),
+        ):
+            act = source_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(mode == self._ltc_source_mode)
+            source_actions.append((act, mode))
+        add_action = None
+        edit_action = None
+        delete_action = None
+        clip_id: str | None = None
+        if clip_lane_active:
+            if hit is None:
+                add_action = menu.addAction("Add LTC Clip Here…")
+                add_action.setToolTip(
+                    "Create a generated-LTC window starting at this timeline position"
+                )
+            else:
+                clip_id, _zone = hit
+                clip = self._song.ltc_clip_by_id(clip_id)
+                if clip is not None:
+                    if clip_id not in self._selected_ltc_clip_ids:
+                        self.set_selected_ltc_clip_ids([clip_id])
+                    ids = list(self._selected_ltc_clip_ids)
+                    edit_action = menu.addAction("Edit LTC Clip…")
+                    edit_action.setToolTip(
+                        "Change timeline start, duration, or the start timecode this clip sends"
+                    )
+                    delete_action = menu.addAction(f"Delete LTC Clip(s) ({len(ids)})")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is hide_track_action:
+            self.set_show_video_track(False)
+        elif chosen is gain_action:
+            self.set_show_ltc_gain_line(not self._show_ltc_gain_line)
+            self._invalidate_scrub_backdrop()
+            self.update()
+        elif reset_action is not None and chosen is reset_action:
+            self._song.music_volume = 1.0
+            self._sync_music_volume_ui()
+            self.music_volume_changed.emit(1.0)
+            self._invalidate_scrub_backdrop()
+            self.update()
+        elif chosen is add_action:
+            self.add_ltc_clip_requested.emit(time_here)
+        elif chosen is edit_action and clip_id is not None:
+            self.edit_ltc_clip_requested.emit(clip_id)
+        elif chosen is delete_action and clip_id is not None:
+            self.delete_ltc_clips_requested.emit(list(self._selected_ltc_clip_ids))
+        else:
+            for act, mode in source_actions:
+                if chosen is act:
+                    self.ltc_source_mode_requested.emit(mode)
+                    return
+
     def _show_video_clip_context_menu(self, pos, x: float, y: float) -> None:  # noqa: ANN001
         if self._song is None:
             return
@@ -3971,6 +4383,17 @@ class TimelineWidget(QWidget):
                 self._begin_video_clip_interaction(
                     clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
                 )
+            elif (ltc_clip_hit := self._hit_ltc_clip(x, y)) is not None:
+                # Double-click on the body edits the clip (see
+                # mouseDoubleClickEvent); the first press already selected it.
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self._begin_ltc_clip_interaction(
+                    ltc_clip_hit[0], ltc_clip_hit[1], x, shift=shift, ctrl=ctrl
+                )
+            elif self._in_ltc_lane(x, y):
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                if not (shift or ctrl):
+                    self.set_selected_ltc_clip_ids([])
             elif self._near_video_lane_split(y):
                 self._resizing_video_lane = True
                 self.grabMouse()
@@ -4143,6 +4566,11 @@ class TimelineWidget(QWidget):
             self._update_video_clip_drag(x, snap=not shift)
         elif self._trimming_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self._update_video_clip_trim(x)
+        elif self._dragging_ltc_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self._update_ltc_clip_drag(x, snap=not shift)
+        elif self._trimming_ltc_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._update_ltc_clip_trim(x)
         elif self._box_selecting and event.buttons() & Qt.MouseButton.LeftButton:
             self._box_current = event.position()
             rect = self._selection_box_rect()
@@ -4238,6 +4666,14 @@ class TimelineWidget(QWidget):
             if clip_hover_id != self._hover_clip_id:
                 self._hover_clip_id = clip_hover_id
                 self.update()
+            ltc_clip_hover = (
+                None if (hover or hit is not None or clip_hit is not None)
+                else self._hit_ltc_clip(x, y)
+            )
+            ltc_hover_id = ltc_clip_hover[0] if ltc_clip_hover is not None else None
+            if ltc_hover_id != self._hover_ltc_clip_id:
+                self._hover_ltc_clip_id = ltc_hover_id
+                self.update()
             header_lane = None if hover else self._hit_mark_lane_header(x, y)
             if header_lane != self._hover_mark_lane_header:
                 self._hover_mark_lane_header = header_lane
@@ -4263,6 +4699,12 @@ class TimelineWidget(QWidget):
                 self.setCursor(
                     Qt.CursorShape.SizeHorCursor
                     if clip_hit[1] in ("left", "right")
+                    else Qt.CursorShape.OpenHandCursor
+                )
+            elif ltc_clip_hover is not None:
+                self.setCursor(
+                    Qt.CursorShape.SizeHorCursor
+                    if ltc_clip_hover[1] in ("left", "right")
                     else Qt.CursorShape.OpenHandCursor
                 )
             elif self._in_mark_tracks(x, y):
@@ -4299,6 +4741,9 @@ class TimelineWidget(QWidget):
             changed = True
         if self._hover_audio_gain_zone is not None:
             self._hover_audio_gain_zone = None
+            changed = True
+        if self._hover_ltc_clip_id is not None:
+            self._hover_ltc_clip_id = None
             changed = True
         if self._header_split_hover:
             self._header_split_hover = False
@@ -4427,6 +4872,15 @@ class TimelineWidget(QWidget):
             self.update()
             super().mouseReleaseEvent(event)
             return
+        if event.button() == Qt.MouseButton.LeftButton and (
+            self._dragging_ltc_clip is not None or self._trimming_ltc_clip is not None
+        ):
+            self.releaseMouse()
+            self._end_ltc_clip_gesture()
+            self._restore_hover_cursor(event.position().x(), event.position().y())
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             was_scrub = self._scrubbing
             was_box = self._box_selecting
@@ -4503,6 +4957,17 @@ class TimelineWidget(QWidget):
                 self.update()
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001, N802
+        # The first press of the pair already selected the clip and committed
+        # (no-move) — the double-click itself just opens the editor.
+        if self._dragging_ltc_clip is None and self._trimming_ltc_clip is None:
+            hit = self._hit_ltc_clip(float(event.position().x()), float(event.position().y()))
+            if hit is not None and hit[1] == "body":
+                self.edit_ltc_clip_requested.emit(hit[0])
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def _in_ltc_waveform(self, x: float, y: float) -> bool:
         if not self._ltc_lane_visible() or self._ltc_audio is None or x < self._header_width:
             return False
@@ -4535,30 +5000,6 @@ class TimelineWidget(QWidget):
             self._song.audio_gain_db = 0.0
             self.audio_gain_changed.emit(0.0)
             self._sync_audio_gain_ui()
-            self._invalidate_scrub_backdrop()
-            self.update()
-
-    def _show_ltc_gain_context_menu(self, pos) -> None:  # noqa: ANN001
-        menu = QMenu(self)
-        if self._show_ltc_gain_line:
-            toggle = menu.addAction("Hide Music volume adjustment")
-        else:
-            toggle = menu.addAction("Show Music volume adjustment")
-        reset = None
-        if self._show_ltc_gain_line:
-            menu.addSeparator()
-            reset = menu.addAction("Reset Music to 0 dB")
-        chosen = menu.exec(self.mapToGlobal(pos))
-        if chosen is None:
-            return
-        if chosen is toggle:
-            self.set_show_ltc_gain_line(not self._show_ltc_gain_line)
-            self._invalidate_scrub_backdrop()
-            self.update()
-        elif reset is not None and chosen is reset and self._song is not None:
-            self._song.music_volume = 1.0
-            self._sync_music_volume_ui()
-            self.music_volume_changed.emit(1.0)
             self._invalidate_scrub_backdrop()
             self.update()
 
@@ -4674,6 +5115,9 @@ class TimelineWidget(QWidget):
         if self._in_video_lane(x, y):
             self._show_video_clip_context_menu(pos, x, y)
             return
+        if self._in_ltc_lane(x, y) or self._in_ltc_waveform(x, y):
+            self._show_ltc_clip_context_menu(pos, x, y)
+            return
         if self._in_waveform(x, y):
             grid_hit = self._hit_beat_grid_division(x, y)
             if grid_hit is not None:
@@ -4703,9 +5147,6 @@ class TimelineWidget(QWidget):
                 return
         if self._in_waveform(x, y) and self._audio is not None:
             self._show_wave_gain_context_menu(pos)
-            return
-        if self._in_ltc_waveform(x, y):
-            self._show_ltc_gain_context_menu(pos)
             return
         if self._in_mark_tracks(x, y):
             self._show_mark_tracks_area_menu(pos)
@@ -5020,6 +5461,7 @@ class TimelineWidget(QWidget):
                     # PLAYING and PAUSED alike (transport must not change
                     # static-looking pixels such as "No clip selected").
                     self._paint_video_selection_live(painter)
+                    self._paint_ltc_selection_live(painter)
                     # Video fills and live selection chrome are both above the
                     # retained backdrop.  Restore every visible waveform stem
                     # only after those passes; the old ordering immediately
@@ -5400,9 +5842,24 @@ class TimelineWidget(QWidget):
             ltc_top = self._ltc_lane_top_y()
             ltc_h = self._ltc_band_height()
             painter.fillRect(0, ltc_top, self._header_width, ltc_h, QColor("#111113"))
-            side = "L" if self._ltc_channel == 0 else "R" if self._ltc_channel == 1 else "?"
-            painter.setPen(QColor(self._ltc_waveform_color))
-            painter.drawText(8, ltc_top + int(ltc_h / 2) + 4, f"LTC {side}")
+            if self._ltc_clip_lane_active():
+                painter.setPen(QColor(self._ltc_waveform_color))
+                painter.drawText(8, ltc_top + 13, "LTC Clips")
+                if ltc_h >= 40:
+                    clip = self._single_selected_ltc_clip()
+                    sub = (
+                        fm.elidedText(
+                            clip.start_timecode, Qt.TextElideMode.ElideRight, text_w
+                        )
+                        if clip is not None
+                        else "No clip selected"
+                    )
+                    painter.setPen(QColor("#71717a"))
+                    painter.drawText(8, ltc_top + 28, sub)
+            else:
+                side = "L" if self._ltc_channel == 0 else "R" if self._ltc_channel == 1 else "?"
+                painter.setPen(QColor(self._ltc_waveform_color))
+                painter.drawText(8, ltc_top + int(ltc_h / 2) + 4, f"LTC {side}")
         self._paint_mark_track_headers(painter, tracks_top)
         painter.restore()
 
@@ -5917,7 +6374,7 @@ class TimelineWidget(QWidget):
         painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
 
     def _paint_ltc_lane(self, painter: QPainter) -> None:
-        if not self._ltc_lane_visible() or self._ltc_audio is None:
+        if not self._ltc_lane_visible():
             return
         top = self._ltc_lane_top_y()
         height = self._ltc_band_height()
@@ -5925,6 +6382,14 @@ class TimelineWidget(QWidget):
         painter.fillRect(self._header_width, top, right, height, QColor("#0c0c0e"))
         painter.setPen(QColor("#27272a"))
         painter.drawLine(0, top + height - 1, right, top + height - 1)
+
+        if self._ltc_clip_lane_active():
+            # Generator-clip editing lane: blank outside clips, clips carry the
+            # start TC. No waveform (there is no file stripe in this mode).
+            self._paint_ltc_clips(painter)
+            return
+        if self._ltc_audio is None:
+            return
 
         mid = top + height / 2
         amp = max(4.0, (height / 2) - 4)
@@ -5953,6 +6418,100 @@ class TimelineWidget(QWidget):
             )
         painter.setPen(QColor("#3f3f46"))
         painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
+
+    def _paint_ltc_clips(self, painter: QPainter) -> None:
+        """Editable LTC generator clips (clip_generator mode)."""
+        if self._song is None:
+            return
+        top = self._ltc_lane_top_y()
+        right = self._paint_right()
+        band_h = self._ltc_band_height()
+        fm = painter.fontMetrics()
+        for clip in self._song.ltc_clips:
+            x0 = self._x_for_time(clip.timeline_start_seconds)
+            x1 = self._x_for_time(clip.end_seconds)
+            if x1 < self._header_width - 2 or x0 > right + 2:
+                continue
+            rx0 = max(x0, float(self._header_width))
+            rx1 = min(x1, float(right))
+            rect = QRectF(rx0, top + 3, max(2.0, rx1 - rx0), band_h - 6)
+            selected = clip.id in self._selected_ltc_clip_ids
+            hovered = clip.id == self._hover_ltc_clip_id
+            is_overlap = clip.id in self._ltc_clip_overlap_ids
+            is_tc_warn = clip.id in self._ltc_clip_tc_warn_ids
+            # Same orange family as the LTC lane — this is generated LTC.
+            base = QColor("#d29922")
+            if selected:
+                base = base.lighter(135)
+            elif hovered:
+                base = base.lighter(115)
+            painter.fillRect(rect, with_alpha(base.name(), 150))
+            if is_overlap:
+                painter.fillRect(rect, with_alpha("#ff6b6b", 50))
+            if is_overlap:
+                border = QColor("#f4f4f5") if selected else QColor("#ff8f8f")
+                pen = QPen(border, 2 if selected else 1, Qt.PenStyle.DashLine)
+            else:
+                border = QColor("#f4f4f5") if selected else QColor("#18181b")
+                pen = QPen(border, 2 if selected else 1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
+            label = clip.start_timecode
+            if is_tc_warn:
+                # Allowed, but visible: overlapping / backwards TC range.
+                label += "  \u26a0"
+            elided = fm.elidedText(label, Qt.TextElideMode.ElideRight, max(4, int(rect.width()) - 8))
+            painter.setPen(QColor("#ffd28a") if is_tc_warn else QColor("#f4f4f5"))
+            painter.drawText(
+                QPointF(rect.left() + 4, rect.top() + rect.height() / 2 + 4), elided
+            )
+
+    def _paint_ltc_selection_live(self, painter: QPainter) -> None:
+        """Redraw LTC clip selection chrome over the play/scrub backdrop."""
+        if not self._ltc_clip_lane_active() or self._song is None:
+            return
+        top = self._ltc_lane_top_y()
+        right = self._paint_right()
+        band_h = self._ltc_band_height()
+        fm = painter.fontMetrics()
+        text_w = max(24, self._header_width - 16)
+
+        # Header caption under "LTC Clips" — live selection (start TC shown).
+        if band_h >= 40:
+            painter.fillRect(0, top + 17, self._header_width, 15, QColor("#111113"))
+            clip = self._single_selected_ltc_clip()
+            painter.setPen(QColor("#71717a"))
+            sub_text = (
+                fm.elidedText(clip.start_timecode, Qt.TextElideMode.ElideRight, text_w)
+                if clip is not None
+                else "No clip selected"
+            )
+            painter.drawText(8, top + 28, sub_text)
+
+        if not self._selected_ltc_clip_ids and self._hover_ltc_clip_id is None:
+            return
+        for clip in self._song.ltc_clips:
+            selected = clip.id in self._selected_ltc_clip_ids
+            hovered = clip.id == self._hover_ltc_clip_id
+            if not selected and not hovered:
+                continue
+            x0 = self._x_for_time(clip.timeline_start_seconds)
+            x1 = self._x_for_time(clip.end_seconds)
+            if x1 < self._header_width - 2 or x0 > right + 2:
+                continue
+            rx0 = max(x0, float(self._header_width))
+            rx1 = min(x1, float(right))
+            rect = QRectF(rx0, top + 3, max(2.0, rx1 - rx0), band_h - 6)
+            if selected:
+                painter.fillRect(rect, with_alpha("#d29922", 60))
+            border = QColor("#f4f4f5") if selected else QColor("#e8c877")
+            pen = QPen(border, 2 if selected else 1)
+            if clip.id in self._ltc_clip_overlap_ids:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
 
     def _paint_ltc_silhouette_peaks(
         self,

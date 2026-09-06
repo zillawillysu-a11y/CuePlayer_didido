@@ -1059,6 +1059,12 @@ class Song:
                 return clip
         return None
 
+    def ltc_clip_by_id(self, clip_id: str) -> LtcClip | None:
+        for clip in self.ltc_clips:
+            if clip.id == clip_id:
+                return clip
+        return None
+
     def add_video_clip(self, clip: VideoClip) -> VideoClip:
         self.video_clips.append(clip)
         self.sort_video_clips()

@@ -57,6 +57,11 @@ def test_ltc_detect_populates_setlist_badge(app: QApplication) -> None:
     song.audio_tracks = [
         AudioTrack(id="main", name="stripe", path=LTC_LEFT_FIXTURE, role="main")
     ]
+    # Force a cold in-memory LTC cache: the disk cache may already hold the
+    # result from an earlier run, which would skip detection entirely and
+    # never fire the setlist refresh this test is verifying.
+    key = window._audio_cache_key(LTC_LEFT_FIXTURE)
+    window._audio_ltc_cache.pop(key, None)
     window._store_audio_cache(LTC_LEFT_FIXTURE, buffer, write_disk=False, schedule_ltc=True)
 
     deadline = time.monotonic() + 5.0

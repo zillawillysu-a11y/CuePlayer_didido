@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cueplayer.domain.ltc_clips import resolved_song_ltc_source_mode
+from cueplayer.domain.models import Song
 from cueplayer.exporters.common import sanitize_ma_name
 from cueplayer.ui.drag_drop import AUDIO_SUFFIXES, VIDEO_SUFFIXES
 
@@ -43,8 +45,9 @@ _COL_BPM = 3
 _COL_TC = 4
 _COL_FPS = 5
 _COL_LEFT_LTC = 6
-_COL_FILE = 7
-_COL_COUNT = 8
+_COL_LTC_SOURCE = 7
+_COL_FILE = 8
+_COL_COUNT = 9
 
 
 _EDIT_STYLE = "QLineEdit { border-radius: 3px; }"
@@ -63,6 +66,10 @@ class SongDraft:
     song_id: str | None = None
     # off | left | right | auto — send that file channel to Settings LTC Ch.
     file_ltc_side: str = "auto"
+    # Per-song LTC source mode (explicit one of off / striped_file /
+    # full_track_generator / clip_generator). Legacy "auto" is resolved for
+    # display and written back as an explicit mode on accept.
+    ltc_source_mode: str = "auto"
     # True when the Edit Song file cell Clear button wiped media.
     media_cleared: bool = False
 
@@ -244,10 +251,12 @@ class SongEditDialog(QDialog):
         *,
         title: str = "Edit Song",
         parent: QWidget | None = None,
+        project: object | None = None,
     ) -> None:
         super().__init__(parent)
         if not drafts:
             raise ValueError("SongEditDialog requires at least one draft")
+        self._project = project
         self.setWindowTitle(title)
         width = 1200 if len(drafts) > 1 else 1040
         self.resize(width, min(480, 180 + 44 * len(drafts)))
@@ -264,6 +273,7 @@ class SongEditDialog(QDialog):
                 video_path=d.video_path,
                 song_id=d.song_id,
                 file_ltc_side=str(d.file_ltc_side or "auto"),
+                ltc_source_mode=str(getattr(d, "ltc_source_mode", "auto") or "auto"),
             )
             for d in drafts
         ]
@@ -290,6 +300,7 @@ class SongEditDialog(QDialog):
                 "Start Timecode",
                 "FPS",
                 "File LTC",
+                "LTC Source",
                 "Media File",
             ]
         )
@@ -314,6 +325,8 @@ class SongEditDialog(QDialog):
         header.resizeSection(_COL_FPS, 72)
         header.setSectionResizeMode(_COL_LEFT_LTC, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(_COL_LEFT_LTC, 78)
+        header.setSectionResizeMode(_COL_LTC_SOURCE, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(_COL_LTC_SOURCE, 118)
         header.setSectionResizeMode(_COL_FILE, QHeaderView.ResizeMode.Interactive)
         header.resizeSection(_COL_FILE, 260)
         header.setMinimumSectionSize(40)
@@ -374,6 +387,27 @@ class SongEditDialog(QDialog):
             )
             self.table.setCellWidget(row, _COL_LEFT_LTC, ltc_combo)
 
+            source_combo = QComboBox()
+            for label, value in (
+                ("Off", "off"),
+                ("Striped File", "striped_file"),
+                ("Full Track Generator", "full_track_generator"),
+                ("Clip Generator", "clip_generator"),
+            ):
+                source_combo.addItem(label, value)
+            # Legacy "auto" projects show the resolved result — auto itself is
+            # never offered as a new option.
+            current = str(draft.ltc_source_mode or "auto")
+            if current not in ("striped_file", "full_track_generator", "clip_generator", "off"):
+                current = self._resolved_auto_mode(current)
+            idx = source_combo.findData(current)
+            source_combo.setCurrentIndex(idx if idx >= 0 else source_combo.findData("striped_file"))
+            source_combo.setToolTip(
+                "Where this song’s output timecode comes from (mutually exclusive). "
+                "Clip Generator: generated LTC only inside LTC clips on the timeline."
+            )
+            self.table.setCellWidget(row, _COL_LTC_SOURCE, source_combo)
+
             file_cell = _AudioFileCell(draft.audio_path or draft.video_path)
             self.table.setCellWidget(row, _COL_FILE, file_cell)
 
@@ -418,6 +452,28 @@ class SongEditDialog(QDialog):
         if isinstance(widget, QComboBox):
             return str(widget.currentData() or "auto")
         return "auto"
+
+    def _ltc_source_at_row(self, row: int) -> str:
+        widget = self.table.cellWidget(row, _COL_LTC_SOURCE)
+        if isinstance(widget, QComboBox):
+            return str(widget.currentData() or "off")
+        return "off"
+
+    def _resolved_auto_mode(self, mode: str) -> str:
+        """Legacy auto → the result the legacy project settings resolve to."""
+        project = self._project
+        ltc_source = "auto"
+        ltc_enabled = True
+        if project is not None:
+            ao = getattr(project, "audio_output", None)
+            if ao is not None:
+                ltc_source = str(getattr(ao, "ltc_source", "auto") or "auto")
+                ltc_enabled = bool(getattr(ao, "ltc_enabled", True))
+        return resolved_song_ltc_source_mode(
+            Song(id="_resolve", name="_resolve", ltc_source_mode=mode),
+            project_ltc_source=ltc_source,
+            ltc_enabled=ltc_enabled,
+        )
 
     def _accept(self) -> None:
         updated: list[SongDraft] = []
@@ -525,6 +581,7 @@ class SongEditDialog(QDialog):
                     video_path=video_path,
                     song_id=self._drafts[row].song_id,
                     file_ltc_side=self._file_ltc_side_at_row(row),
+                    ltc_source_mode=self._ltc_source_at_row(row),
                     media_cleared=media_cleared,
                 )
             )

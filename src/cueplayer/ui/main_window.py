@@ -133,25 +133,42 @@ from cueplayer.domain.media_relink import scan_missing_media
 from cueplayer.media.ltc_detect import detect_ltc_channel
 from cueplayer.ui.dnd_mime import EXPORT_SONG_IDS_MIME
 from cueplayer.ui.row_color import ROLE_ROW_COLOR
-from cueplayer.ui.setlist_delegate import ROLE_HAS_VIDEO, ROLE_LTC_CHANNEL, SetlistRowDelegate
+from cueplayer.ui.setlist_delegate import (
+    ROLE_HAS_VIDEO,
+    ROLE_LTC_CHANNEL,
+    ROLE_LTC_MODE,
+    SetlistRowDelegate,
+)
 from cueplayer.ui.missing_media_dialog import MissingMediaRelinkDialog
+from cueplayer.domain.ltc_clips import (
+    add_ltc_clip,
+    remove_ltc_clip,
+    resolved_song_ltc_source_mode,
+    sorted_ltc_clips,
+    validate_ltc_clips,
+)
 from cueplayer.domain.undo import (
     AddMarksCommand,
     BeatGridSnapshot,
+    AddLtcClipCommand,
     AddVideoClipsCommand,
     ChangeMarkLanesCommand,
+    DeleteLtcClipsCommand,
     DeleteMarksCommand,
     DeleteBeatGridCommand,
     EditBeatGridCommand,
     DeleteVideoClipsCommand,
+    EditLtcClipsCommand,
     EditMainCueIdCommand,
     EditVideoClipsCommand,
+    LtcClipSnapshot,
     MarkSnapshot,
     MoveMarksCommand,
     MoveBeatGridCommand,
     ResizeBeatGridCommand,
     RenumberMainCueIdsCommand,
     RenameMarkCommand,
+    SetLtcSourceModeCommand,
     SetlistEditCommand,
     SetlistStateSnapshot,
     SetVariantAnchorOffsetCommand,
@@ -296,6 +313,7 @@ class SetlistWidget(QTableWidget):
     ROLE_SONG_INDEX = Qt.ItemDataRole.UserRole + 11
     ROLE_LTC_CHANNEL = ROLE_LTC_CHANNEL
     ROLE_HAS_VIDEO = ROLE_HAS_VIDEO
+    ROLE_LTC_MODE = ROLE_LTC_MODE
 
     audio_files_dropped = Signal(list)
     audio_drop_rejected = Signal(str)
@@ -1439,6 +1457,12 @@ class MainWindow(QMainWindow):
         self.timeline.split_video_clip_requested.connect(self._split_video_clip)
         self.timeline.duplicate_video_clip_requested.connect(self._duplicate_video_clip)
         self.timeline.edit_video_clip_requested.connect(self._edit_video_clip)
+        self.timeline.ltc_clips_changed.connect(self._on_ltc_clips_changed)
+        self.timeline.ltc_clip_edited.connect(self._on_ltc_clip_edited)
+        self.timeline.delete_ltc_clips_requested.connect(self._delete_ltc_clips)
+        self.timeline.add_ltc_clip_requested.connect(self._add_ltc_clip_at)
+        self.timeline.edit_ltc_clip_requested.connect(self._edit_ltc_clip)
+        self.timeline.ltc_source_mode_requested.connect(self._on_ltc_source_mode_requested)
         self.timeline.video_files_dropped.connect(self._add_video_clips_from_paths)
         self.timeline.video_track_mute_toggled.connect(self._on_video_track_mute_toggled)
         self.timeline.video_track_visibility_changed.connect(self._on_video_track_visibility_changed)
@@ -3219,6 +3243,7 @@ class MainWindow(QMainWindow):
         self._undo_ctx = UndoContext(self.project, self.current_song.id)
         self._rebuild_song_list(select_indexes=[])
         self.show_session.apply_empty_workspace()
+        self._push_ltc_mode_to_timeline()
 
     def _sync_setlist_name_mode_ui(self) -> None:
         mode = self.project.setlist_name_mode
@@ -3438,7 +3463,12 @@ class MainWindow(QMainWindow):
                 )
             self.song_list.setItem(table_row, SetlistWidget.COL_BPM, bpm_item)
 
-            ltc_channel = self._ltc_channel_for_song(song)
+            ltc_mode = self._resolved_ltc_mode_for_song(song)
+            ltc_channel = (
+                None
+                if ltc_mode == "clip_generator"
+                else self._ltc_channel_for_song(song)
+            )
             has_video = bool(song.video_clips)
             ltc_item = QTableWidgetItem("")
             ltc_item.setFlags(
@@ -3448,10 +3478,17 @@ class MainWindow(QMainWindow):
             )
             ltc_item.setData(SetlistWidget.ROLE_LTC_CHANNEL, ltc_channel)
             ltc_item.setData(SetlistWidget.ROLE_HAS_VIDEO, has_video)
+            ltc_item.setData(SetlistWidget.ROLE_LTC_MODE, ltc_mode)
             tip_parts_media: list[str] = []
             if has_video:
                 tip_parts_media.append("Has video clip(s) on the timeline")
-            if ltc_channel == 0:
+            if ltc_mode == "clip_generator":
+                tip_parts_media.append(
+                    "LTC: Clip Generator — generated LTC only inside LTC clips"
+                )
+            elif ltc_mode == "full_track_generator":
+                tip_parts_media.append("LTC: Full Track Generator (song start TC)")
+            elif ltc_channel == 0:
                 tip_parts_media.append("Striped LTC detected on Left channel")
             elif ltc_channel == 1:
                 tip_parts_media.append("Striped LTC detected on Right channel")
@@ -3519,6 +3556,7 @@ class MainWindow(QMainWindow):
             video_path=video_path if video_path is not None else None,
             song_id=song.id,
             file_ltc_side=str(getattr(song, "file_ltc_side", "auto") or "auto"),
+            ltc_source_mode=str(getattr(song, "ltc_source_mode", "auto") or "auto"),
         )
 
     def _apply_draft_to_song(self, song: Song, draft: SongDraft) -> None:
@@ -3549,6 +3587,9 @@ class MainWindow(QMainWindow):
         from cueplayer.domain.models import coerce_file_ltc_side
 
         song.file_ltc_side = coerce_file_ltc_side(getattr(draft, "file_ltc_side", "off"))
+        draft_ltc_mode = getattr(draft, "ltc_source_mode", None)
+        if draft_ltc_mode is not None:
+            song.ltc_source_mode = str(draft_ltc_mode)
 
         current_audio = song.active_audio_path()
         current_video = Path(song.video_clips[0].path) if song.video_clips else None
@@ -4746,7 +4787,7 @@ class MainWindow(QMainWindow):
             start_timecode=self._default_start_timecode(),
             fps=self._default_fps(),
         )
-        dialog = SongEditDialog([draft], title="Add Song", parent=self)
+        dialog = SongEditDialog([draft], title="Add Song", parent=self, project=self)
         if not dialog.exec():
             return
         result = dialog.result_drafts()[0]
@@ -4805,7 +4846,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("No audio or video files to add", 2500)
             return
         title = "Import Song" if len(drafts) == 1 else f"Batch Import Songs ({len(drafts)})"
-        dialog = SongEditDialog(drafts, title=title, parent=self)
+        dialog = SongEditDialog(drafts, title=title, parent=self, project=self)
         if not dialog.exec():
             return
         last_index: int | None = None
@@ -5854,6 +5895,10 @@ class MainWindow(QMainWindow):
         if clip_ids:
             self._delete_video_clips(clip_ids)
             return
+        ltc_ids = self.timeline.selected_ltc_clip_ids()
+        if ltc_ids:
+            self._delete_ltc_clips(ltc_ids)
+            return
         if (grid_id := self.timeline.selected_beat_grid_id()) is not None:
             self._delete_beat_grid(grid_id)
             return
@@ -5954,6 +5999,10 @@ class MainWindow(QMainWindow):
             self.video_sync.refresh()
             self.engine.refresh_video_clips()
             self._refresh_marks_ui()
+            if self._is_ltc_command(self._undo.last_executed_command):
+                self.engine.refresh_song_ltc_routing()
+                self.timeline.invalidate_static_layers(reason="ltc_undo_redo")
+                self._refresh_setlist_ltc_cells()
         self._mark_dirty()
         self.status.showMessage(f"Undone: {label}", 2000)
 
@@ -5972,6 +6021,10 @@ class MainWindow(QMainWindow):
             self.video_sync.refresh()
             self.engine.refresh_video_clips()
             self._refresh_marks_ui()
+            if self._is_ltc_command(self._undo.last_executed_command):
+                self.engine.refresh_song_ltc_routing()
+                self.timeline.invalidate_static_layers(reason="ltc_undo_redo")
+                self._refresh_setlist_ltc_cells()
         self._mark_dirty()
         self.status.showMessage(f"Redone: {label}", 2000)
 
@@ -6260,6 +6313,7 @@ class MainWindow(QMainWindow):
         warning = self.engine.apply_audio_settings(ao)
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
+        self._push_ltc_mode_to_timeline()
         self.monitor.sync_output_quick_toggles(ao)
         self.settings.save_audio_output(ao)
         self._mark_dirty()
@@ -6349,6 +6403,7 @@ class MainWindow(QMainWindow):
         warning = self.engine.apply_audio_settings(settings)
         self._refresh_timecode_status()
         self._refresh_output_timecode_clock()
+        self._push_ltc_mode_to_timeline()
         self.monitor.sync_output_quick_toggles(settings)
         self._mark_dirty()
         if warning:
@@ -6601,6 +6656,32 @@ class MainWindow(QMainWindow):
         if key is None:
             return None
         return self._audio_ltc_cache.get(key)
+
+    def _resolved_ltc_mode_for_song(self, song: Song) -> str:
+        """Effective per-song LTC source mode (domain resolution; never auto)."""
+        ao = self.project.audio_output
+        return resolved_song_ltc_source_mode(
+            song,
+            project_ltc_source=str(getattr(ao, "ltc_source", "auto") or "auto"),
+            ltc_enabled=bool(getattr(ao, "ltc_enabled", True)),
+        )
+
+    def _ltc_display_channel_for_song(self, song: Song) -> int | None:
+        """File-stripe channel to show / strip from Music for display.
+
+        clip_generator songs never use a file stripe (generated LTC owns
+        the bus). Off / striped songs keep the legacy stripe-inspection
+        lane and L/R badge — it describes the file, not the output state.
+        """
+        if self._resolved_ltc_mode_for_song(song) == "clip_generator":
+            return None
+        return self._ltc_channel_for_song(song)
+
+    def _push_ltc_mode_to_timeline(self) -> None:
+        """Tell the timeline which per-song LTC mode is in effect (display)."""
+        song = self.current_song
+        mode = self._resolved_ltc_mode_for_song(song) if song is not None else "off"
+        self.timeline.set_ltc_source_mode(mode)
 
     def _ensure_ltc_detect_scheduled(self, song: Song) -> None:
         path = self._main_audio_path_for_song(song)
@@ -7045,12 +7126,25 @@ class MainWindow(QMainWindow):
             if song_index is None or song_index >= len(self.project.songs):
                 continue
             song = self.project.songs[song_index]
-            channel = self._ltc_channel_for_song(song)
+            mode = self._resolved_ltc_mode_for_song(song)
+            channel = (
+                None
+                if mode == "clip_generator"
+                else self._ltc_channel_for_song(song)
+            )
             item = self.song_list.item(table_row, SetlistWidget.COL_LTC)
             if item is None:
                 continue
             item.setData(SetlistWidget.ROLE_LTC_CHANNEL, channel)
-            if channel == 0:
+            item.setData(SetlistWidget.ROLE_LTC_MODE, mode)
+            if mode == "clip_generator":
+                item.setToolTip(
+                    "LTC: Clip Generator — generated LTC only inside LTC clips "
+                    "on the timeline"
+                )
+            elif mode == "full_track_generator":
+                item.setToolTip("LTC: Full Track Generator (from the song start TC)")
+            elif channel == 0:
                 item.setToolTip("Striped LTC detected on Left channel")
             elif channel == 1:
                 item.setToolTip("Striped LTC detected on Right channel")
@@ -7061,7 +7155,26 @@ class MainWindow(QMainWindow):
 
     def _refresh_timeline_waveform_for_ltc(self) -> None:
         """Redraw Music (sans LTC) + optional LTC inspect lane for the current song."""
-        path = self._main_audio_path_for_song(self.current_song)
+        song = self.current_song
+        self._push_ltc_mode_to_timeline()
+        if song is None:
+            self.timeline.set_ltc_audio(None)
+            return
+        if self._resolved_ltc_mode_for_song(song) == "clip_generator":
+            # No file stripe in clip_generator — never strip Music, never show
+            # the stripe lane (the clip lane paints from the domain clip table).
+            if self._timeline_ltc_exclude is not None:
+                self._timeline_ltc_exclude = None
+                path = self._main_audio_path_for_song(song)
+                buffer = self._cached_audio_buffer(path) if path is not None else None
+                if buffer is not None:
+                    self.timeline.set_audio(
+                        self._waveform_for_timeline(buffer, path, None),
+                        reset_view=False,
+                    )
+            self.timeline.set_ltc_audio(None)
+            return
+        path = self._main_audio_path_for_song(song)
         if path is None:
             self.timeline.set_ltc_audio(None)
             return
@@ -7069,7 +7182,7 @@ class MainWindow(QMainWindow):
         if buffer is None:
             self.timeline.set_ltc_audio(None)
             return
-        exclude = self._ltc_channel_for_song(self.current_song)
+        exclude = self._ltc_channel_for_song(song)
         if exclude != self._timeline_ltc_exclude:
             prev = self._timeline_ltc_exclude
             self._timeline_ltc_exclude = exclude
@@ -7684,7 +7797,7 @@ class MainWindow(QMainWindow):
             else:
                 # Progressive load: refresh resample snapshot now that PCM is complete.
                 self.engine.rebind_playback_samples()
-            exclude = self._ltc_channel_for_song(self.current_song)
+            exclude = self._ltc_display_channel_for_song(self.current_song)
             self._timeline_ltc_exclude = exclude
             # Song switch (replace_track=False) keeps the current zoom scale;
             # importing / replacing audio still resets to the default zoom.
@@ -7695,6 +7808,7 @@ class MainWindow(QMainWindow):
                     reset_view=not keep_zoom,
                 )
             self._apply_timeline_ltc_lane(buffer, exclude)
+            self._push_ltc_mode_to_timeline()
             perf_diag.note("audio.playback_ready", True)
             perf_diag.count("audio.apply.calls")
             if refresh_song_widgets:
@@ -8000,6 +8114,130 @@ class MainWindow(QMainWindow):
         self.engine.refresh_video_clips()
         self._mark_dirty()
         self.timeline.update()
+
+    # ---------------------------------------------------------------
+    # LTC generator clips (clip_generator mode) — Phase 3
+    # ---------------------------------------------------------------
+
+    _LTC_COMMAND_TYPES = (
+        AddLtcClipCommand,
+        DeleteLtcClipsCommand,
+        EditLtcClipsCommand,
+        SetLtcSourceModeCommand,
+    )
+
+    def _is_ltc_command(self, command: object) -> bool:
+        return isinstance(command, self._LTC_COMMAND_TYPES)
+
+    def _on_ltc_clip_edited(self, clip_id: str, old: tuple, new: tuple) -> None:
+        self._push_song_undo(EditLtcClipsCommand(changes={clip_id: (old, new)}))
+        self.engine.refresh_song_ltc_routing()
+        self.timeline.invalidate_static_layers(reason="ltc_clip_edited")
+        self.timeline.update()
+        self._mark_dirty()
+
+    def _on_ltc_clips_changed(self) -> None:
+        self._mark_dirty()
+        self.timeline.update()
+
+    def _ltc_clip_status(self, label: str) -> None:
+        song = self.current_song
+        if song is None:
+            self.status.showMessage(label, 2500)
+            return
+        fps = float(song.fps or 30.0)
+        _errors, warnings = validate_ltc_clips(song.ltc_clips, fps, song.duration_seconds)
+        if warnings:
+            self.status.showMessage(f"{label} · {len(warnings)} LTC warning(s)", 5000)
+        else:
+            self.status.showMessage(label, 2500)
+
+    def _add_ltc_clip_at(self, seconds: float) -> None:
+        song = self.current_song
+        if song is None:
+            return
+        from cueplayer.ui.ltc_clip_dialog import LtcClipEditDialog
+
+        dialog = LtcClipEditDialog(song, self, default_start_seconds=float(seconds))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        start, duration, start_tc = dialog.values()
+        old_mode = str(song.ltc_source_mode or "auto")
+        clip = add_ltc_clip(
+            song,
+            timeline_start_seconds=start,
+            duration_seconds=duration,
+            start_timecode=start_tc,
+        )
+        self._push_song_undo(
+            AddLtcClipCommand(clip=LtcClipSnapshot.from_clip(clip), old_mode=old_mode)
+        )
+        self.engine.refresh_song_ltc_routing()
+        self.timeline.set_selected_ltc_clip_ids([clip.id])
+        self.timeline.invalidate_static_layers(reason="ltc_clip_added")
+        self._mark_dirty()
+        self._ltc_clip_status(f"Added LTC clip: {start_tc}")
+
+    def _edit_ltc_clip(self, clip_id: str) -> None:
+        song = self.current_song
+        clip = song.ltc_clip_by_id(clip_id) if song is not None else None
+        if clip is None:
+            return
+        from cueplayer.ui.ltc_clip_dialog import LtcClipEditDialog
+
+        dialog = LtcClipEditDialog(song, self, clip=clip)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        start, duration, start_tc = dialog.values()
+        old = (clip.timeline_start_seconds, clip.duration_seconds, clip.start_timecode)
+        new = (start, duration, start_tc)
+        if abs(old[0] - new[0]) < 1e-9 and abs(old[1] - new[1]) < 1e-9 and old[2] == new[2]:
+            return
+        clip.timeline_start_seconds = start
+        clip.duration_seconds = duration
+        clip.start_timecode = start_tc
+        song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+        self._push_song_undo(EditLtcClipsCommand(changes={clip_id: (old, new)}))
+        self.engine.refresh_song_ltc_routing()
+        self.timeline.invalidate_static_layers(reason="ltc_clip_edited_dialog")
+        self.timeline.set_selected_ltc_clip_ids([clip_id])
+        self._mark_dirty()
+        self._ltc_clip_status(f"Updated LTC clip: {start_tc}")
+
+    def _delete_ltc_clips(self, clip_ids: list) -> None:
+        song = self.current_song
+        if not clip_ids or song is None:
+            return
+        wanted = {str(c) for c in clip_ids}
+        snapshots = [
+            LtcClipSnapshot.from_clip(c) for c in song.ltc_clips if c.id in wanted
+        ]
+        removed = sum(1 for snap in snapshots if remove_ltc_clip(song, snap.id))
+        if removed <= 0:
+            return
+        self._push_song_undo(DeleteLtcClipsCommand(clips=snapshots))
+        self.timeline.set_selected_ltc_clip_ids([])
+        self.engine.refresh_song_ltc_routing()
+        self.timeline.invalidate_static_layers(reason="ltc_clip_deleted")
+        self._mark_dirty()
+        self._ltc_clip_status(f"Deleted {removed} LTC clip(s)")
+
+    def _on_ltc_source_mode_requested(self, mode: str) -> None:
+        song = self.current_song
+        if song is None:
+            return
+        mode = str(mode or "off").strip().lower()
+        if mode not in ("off", "striped_file", "full_track_generator", "clip_generator"):
+            return
+        if mode == str(song.ltc_source_mode or "auto").strip().lower():
+            return
+        old_mode = str(song.ltc_source_mode or "auto")
+        song.ltc_source_mode = mode
+        self._push_song_undo(SetLtcSourceModeCommand(old_mode=old_mode, new_mode=mode))
+        self.engine.refresh_song_ltc_routing()
+        self._refresh_setlist_ltc_cells()
+        self._mark_dirty()
+        self.status.showMessage(f"LTC source for this song: {mode}", 3000)
 
     def _add_video_clip_at(self, seconds: float) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
