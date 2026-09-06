@@ -3554,6 +3554,7 @@ class ShowPatchPage(QWidget):
 
         try:
             plans = plans_from_show_patch(self._slots, self._project.ma_export)
+            export_warnings = [warning for plan in plans for warning in plan.warnings]
             button_tracks = sum(len(p.button_lanes) for p in plans)
             if console == "ma3":
                 all_paths = Ma3Exporter().export_show_to_directory(
@@ -3610,7 +3611,11 @@ class ShowPatchPage(QWidget):
             return
 
         try:
-            all_paths.update(self._write_export_allocation_report(directory))
+            all_paths.update(
+                self._write_export_allocation_report(
+                    directory, export_warnings=export_warnings
+                )
+            )
         except OSError as exc:
             QMessageBox.warning(
                 self,
@@ -3642,12 +3647,17 @@ class ShowPatchPage(QWidget):
             )
         else:
             macro_hint = ""
+        warning_hint = ""
+        if export_warnings:
+            warning_hint = "\n\nWarnings:\n" + "\n".join(
+                f"· {warning}" for warning in export_warnings
+            )
         QMessageBox.information(
             self,
             "Export Complete",
             f"Exported {len(self._slots)} song(s) "
             f"(Timecode includes {button_tracks} Button Top track(s)) →\n"
-            f"{directory}\n\n{names}{macro_hint}",
+            f"{directory}\n\n{names}{macro_hint}{warning_hint}",
         )
         self.export_finished.emit(all_paths)
 
@@ -3690,7 +3700,9 @@ class ShowPatchPage(QWidget):
             })
         return columns, rows
 
-    def _write_export_allocation_report(self, directory: Path) -> dict[str, Path]:
+    def _write_export_allocation_report(
+        self, directory: Path, *, export_warnings: list[str] | None = None
+    ) -> dict[str, Path]:
         """Write a TXT record of this export's Pool allocation alongside the
         MA files. The CSV report is a separate, user-directed Save As action
         (see ``_export_allocation_report_csv``) — it is not written here so
@@ -3704,6 +3716,9 @@ class ShowPatchPage(QWidget):
         text_path = directory / f"{stem}_Export_Allocation.txt"
         lines = [f"Show Name: {settings.ma2_show_name or 'CuePlayer'}", "", " | ".join(columns)]
         lines.extend(" | ".join(row[column] for column in columns) for row in rows)
+        if export_warnings:
+            lines.extend(["", "Warnings:"])
+            lines.extend(f"- {warning}" for warning in export_warnings)
         text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return {"show:allocation_txt": text_path}
 

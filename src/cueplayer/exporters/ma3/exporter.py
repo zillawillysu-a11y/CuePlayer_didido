@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 from cueplayer.exporters.common import (
     SongExportPlan,
+    button_lane_event_times_seconds,
+    cue_event_time_seconds,
     export_event_time_seconds,
     format_ma3_cue_no_attr,
     format_ma3_offset_seconds,
@@ -260,6 +262,7 @@ class Ma3Exporter:
             "data_pool": plan.profile.data_pool,
             "main_executor": plan.profile.main_executor,
             "ltc_latency_compensation_seconds": plan.profile.ltc_latency_compensation_seconds,
+            "warnings": list(plan.warnings),
         }
 
     def export_to_directory(
@@ -971,9 +974,11 @@ class Ma3Exporter:
         # in Object/ValCueDestination fail to resolve Cue destinations on import).
         main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
         for cue in plan.main_cues:
+            if not cue.emit_timecode_event:
+                continue
             cue_label = format_ma_cue_number(cue.cue_number)
             dest_handle = ma3_cue_destination_handle(cue.cue_number)
-            t = export_event_time_seconds(cue.time_seconds, plan.profile)
+            t = export_event_time_seconds(cue_event_time_seconds(cue), plan.profile)
             event = ET.SubElement(
                 main_cmds,
                 "CmdEvent",
@@ -1039,7 +1044,7 @@ class Ma3Exporter:
                 {"Guid": ma3_guid(), "Duration": "To End", "Play": "", "Rec": ""},
             )
             cmds = ET.SubElement(time_range, "CmdSubTrack")
-            for t in lane.mark_times_seconds:
+            for t in button_lane_event_times_seconds(lane):
                 abs_t = export_event_time_seconds(t, plan.profile)
                 event = ET.SubElement(
                     cmds,

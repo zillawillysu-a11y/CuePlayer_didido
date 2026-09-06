@@ -56,8 +56,8 @@ Playback Engine is the only playback clock source.
 
 ## Recent handoff (2026-09)
 
-LTC Generator Clips: domain + playback + hardening + **Timeline UI** done
-(schema v3, 4 explicit source modes, per-clip MTC re-anchoring, half-open
-`[start, end)` boundaries, undo/redo + persistence). **Next:** Phase 4 —
-MA2/MA3 exporter wiring for `clip_generator`. See
-`.ai/handoffs/2026-09-06_LtcClipsUiPhase3.md` / `.ai/NEXT_TASK.md`.
+LTC Generator Clips Phases 1–4 are complete: domain/persistence, playback/MTC,
+hardening, Timeline UI, and MA2/MA3 exporter wiring. Export uses half-open
+`[start, end)` clip mapping, preserves out-of-clip Sequence Cues while omitting
+their Timecode Events, and keeps one Timecode object per Song. See
+`.ai/handoffs/2026-09-06_LtcClipsExporterPhase4.md` / `.ai/NEXT_TASK.md`.

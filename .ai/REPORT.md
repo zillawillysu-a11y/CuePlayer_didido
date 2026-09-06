@@ -1,33 +1,50 @@
-# Phase 3 hardening — 保留 legacy LTC Source auto
-Date: 2026-09-06. Branch: technical-audit-0815-028d.
-Baseline: a05c823. Upstream: origin/cursor/technical-audit-0815-028d.
+# LTC Generator Clips — Phase 4 MA2 / MA3 Exporter
+
+Date: 2026-09-06. Branch: `technical-audit-0815-028d`. Baseline: `e54ecf2`. Status: complete.
 
 ## Task objective
-修正 SongEditDialog 未操作 LTC Source、只按 OK 就將 legacy `auto` 永久改為解析後模式的相容性問題。
+
+讓 MA2 與 MA3 exporter 支援 `clip_generator` 的逐 Clip Timecode mapping，同時保留既有 Sequence、full-track、full-show 與 timecode-only 行為。
 
 ## What was implemented
-- 每列記錄 QComboBox `activated` 使用者選擇事件；未操作的 legacy `auto` 在接受後仍保留 `auto`。
-- UI 維持四個 explicit 選項，legacy auto 仍顯示 resolved result。
-- 使用者明確選取（含重新選取目前顯示模式）後才轉為 explicit mode；程式設定 index 不視為使用者操作。
-- 原本 explicit mode 的接受行為不變；多列編輯互不影響。
+
+- `SongExportPlan` 分開保存 Mark timeline position 與實際 MA Timecode Event time；Main Cue 可明確略過 event，Button lane 有 filtered mapped event list。
+- `build_export_plan()` 在 `clip_generator` 只透過 `clip_at_position()` 與 `ltc_timecode_at()` 映射。Clip 外 Main Mark 仍留在 Sequence，只省略 Timecode Event；Button 的既有 2-cue self-release sequence 不變。
+- Clip events 以絕對 mapped TC 寫入同一 Song Timecode object，object offset 為 0，因此多個不連續或倒退的 Clip TC 仍是一 Song 一個 object。
+- MA2 單曲 XML 與 full-show Plugin 內嵌 XML、MA3 XML 均使用 resolved plan；MA2 略過 event 後仍以原 Sequence store-order index 指向正確 Cue。
+- 重用 `validate_ltc_clips()`，另做 pairwise backward／TC overlap 與 resulting event frame duplicate 檢查。全部只 warning，不阻擋、不重排、不改 TC、不拆 show。
+- Warning 包含 Song、Clip／Mark、問題類型及相關 TC；Show Patch 完成訊息與 `Export_Allocation.txt`、舊 Export Dialog 預覽與完成訊息均會呈現。
+- 新增 MA2／MA3 deterministic `clip_generator_timecode.xml` fixtures。
 
 ## Files changed
-- `src/cueplayer/ui/song_edit_dialog.py`
-- `tests/ui/test_song_edit_dialog.py`
-- `.ai/REPORT.md`
-- `.ai/handoffs/2026-09-06_LtcSourceAutoPhase3Hardening.md`
-- `.ai/NEXT_TASK.md`（補交接連結、修正舊 REPORT 引用；下一步仍為 Phase 4）
+
+- `src/cueplayer/exporters/common.py`, `plan_from_song.py`, `ma2/exporter.py`, `ma3/exporter.py`
+- `src/cueplayer/ui/export_dialog.py`, `show_patch_page.py`
+- `tests/exporters/test_ltc_clip_generator_export.py`
+- `fixtures/ma2/clip_generator_timecode.xml`, `fixtures/ma3/clip_generator_timecode.xml`
+- `.ai/REPORT.md`, `.ai/handoffs/2026-09-06_LtcClipsExporterPhase4.md`, `.ai/NEXT_TASK.md`, `AGENTS.md`
 
 ## Architecture decisions
-修改僅限 dialog 的使用者操作追蹤與 draft 讀回，不改 Timeline LTC interaction、playback engine、Phase 2 mapping、MA2/MA3 exporter 或 unrelated flaky tests。以 `activated` 區分顯示初始化與明確選擇，並涵蓋選回同一模式的情況。
+
+1. Mapping 留在 Song-to-plan adapter；MA2／MA3 不複製 domain formula。
+2. Legacy plan defaults 保留原 mark time 與 song start offset math。
+3. Sequence membership 與 Timecode event membership 分開，確保 clip 外 Mark 不丟 Cue。
+4. 絕對 mapped event TC 加 zero object offset 支援不連續 mapping，同時維持一 Song 一 object。
+5. Warning list 位於 plan，exporter summary 與 UI report 共用同一 deterministic source。
 
 ## Tests performed
-- `python -m pytest tests/ui/test_song_edit_dialog.py -q`：18 passed（14 個新增參數化 regression cases）；pytest cache 路徑權限警告，後續停用 cache plugin。
-- `.venv/Scripts/python.exe -m pytest -p no:cacheprovider tests/ui/test_song_edit_dialog.py tests/ui/test_edit_song_preserves_video.py tests/ui/test_song_edit_bpm_auto.py tests/ui/test_add_song_browse_and_new.py tests/domain/test_ltc_clips.py tests/persistence/test_ltc_clips_schema.py -q`：57 passed。
-- `git diff --check` 通過。
+
+- `tests/exporters`: **132 passed**。
+- `tests/exporters` + `tests/domain/test_ltc_clips.py`: **153 passed**。
+- Phase 4 targeted：**6 passed**，涵蓋 single/multi Clip、exact start/end、adjacent boundary、outside Sequence retention、單一 object、MA2 full-show embedded XML、backward/overlap/duplicate warnings、legacy modes。
+- Full-show/timecode-only regression combined batch：**60 passed, 4 pre-existing offscreen UI failures**。
+- `git diff --check`: passed。
 
 ## Remaining issues
-本次修正無未完成項目；既有無關測試與硬體驗證事項維持原交接。Phase 3 原 handoff 所述「接受時寫回明確模式」由本 hardening 的相容性規則取代。
+
+- 既有 offscreen PySide6 問題：`test_ma_preflight_export_integration.py` 3 cases 與 `test_row_color_export.py` 1 case 在 Qt fonts directory 缺失時看到空 ShowPatch queue；單獨重跑仍重現，未經本次 mapping path。
+- Carry-over：新 stream open 時 reset audio callback continuity counters；實體 loopback／長時間 drift；既有 NDI、routing、video-sync、font、WebRTC 與 Windows stack-overflow failures。
 
 ## Suggested next task
-LTC Generator Clips — Phase 4：MA2 + MA3 exporter wiring for `clip_generator`，完整範圍依 `.ai/NEXT_TASK.md`。本次未開始 Phase 4；完成 commit、push、remote 驗證後停止。
+
+Reset audio callback continuity diagnostic counters when opening a new output stream, with a narrow playback regression test. Do not start it automatically.

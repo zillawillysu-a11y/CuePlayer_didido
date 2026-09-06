@@ -339,6 +339,7 @@ class ExportDialog(QDialog):
                     f"· {song.name} ({base}) Seq {seq}/{seq + 1} · TC {tc} — "
                     f"{plan_summary_text(plan)}"
                 )
+                lines.extend(f"  ⚠ {warning}" for warning in plan.warnings)
             self.summary.setText("\n".join(lines))
         except Exception as exc:  # noqa: BLE001
             self.summary.setText(f"Unable to preview: {exc}")
@@ -380,6 +381,7 @@ class ExportDialog(QDialog):
 
         all_paths: dict[str, Path] = {}
         errors: list[str] = []
+        export_warnings: list[str] = []
         try:
             for song, seq, tc in self._pool_plan(songs):
                 plan = self._build_plan(song, sequence_pool_start=seq, timecode_pool=tc)
@@ -387,6 +389,7 @@ class ExportDialog(QDialog):
                     paths = Ma3Exporter().export_to_directory(plan, directory)
                 else:
                     paths = Ma2Exporter().export_to_directory(plan, directory)
+                export_warnings.extend(plan.warnings)
                 prefix = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
                 for key, path in paths.items():
                     all_paths[f"{prefix}:{key}"] = path
@@ -405,9 +408,14 @@ class ExportDialog(QDialog):
         if len(names) > 1200:
             names = "\n".join(f"· {p.name}" for p in list(all_paths.values())[:20])
             names += f"\n…{len(all_paths)} files total"
+        warning_text = ""
+        if export_warnings:
+            warning_text = "\n\nWarnings:\n" + "\n".join(
+                f"· {warning}" for warning in export_warnings
+            )
         QMessageBox.information(
             self,
             "Export Complete",
-            f"Exported {len(songs)} song(s) →\n{directory}\n\n{names}",
+            f"Exported {len(songs)} song(s) →\n{directory}\n\n{names}{warning_text}",
         )
         self.accept()

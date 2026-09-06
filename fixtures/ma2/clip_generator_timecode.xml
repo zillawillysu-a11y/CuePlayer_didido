@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MA>
+  <Timecode>
+    <Track><SubTrack>
+      <Event command="Go" time="108000"/>
+      <Event command="Go" time="108150"/>
+      <Event command="Go" time="1080000"/>
+    </SubTrack></Track>
+    <Track><SubTrack>
+      <Event command="Top" time="1080150"/>
+    </SubTrack></Track>
+  </Timecode>
+</MA>

@@ -132,11 +132,25 @@ MA_TIMECODE_TAIL_SECONDS = 1.0
 
 
 def plan_event_times_seconds(plan: "SongExportPlan") -> list[float]:
-    """Song-relative mark times for Main + Top Button events."""
-    times = [float(cue.time_seconds) for cue in plan.main_cues]
+    """Actual MA event times for Main + Top Button events."""
+    times = [cue_event_time_seconds(cue) for cue in plan.main_cues if cue.emit_timecode_event]
     for lane in plan.button_lanes:
-        times.extend(float(t) for t in lane.mark_times_seconds)
+        times.extend(button_lane_event_times_seconds(lane))
     return times
+
+
+def cue_event_time_seconds(cue: "ExportCue") -> float:
+    """Resolved event time; legacy plans keep using the mark timeline time."""
+    if cue.timecode_event_seconds is not None:
+        return float(cue.timecode_event_seconds)
+    return float(cue.time_seconds)
+
+
+def button_lane_event_times_seconds(lane: "ExportButtonLane") -> list[float]:
+    """Resolved button event times; ``None`` preserves legacy plan behavior."""
+    if lane.timecode_event_times_seconds is not None:
+        return [float(t) for t in lane.timecode_event_times_seconds]
+    return [float(t) for t in lane.mark_times_seconds]
 
 
 def timecode_span_seconds(plan: "SongExportPlan") -> float:
@@ -325,6 +339,10 @@ class ExportCue:
     display_name: str
     ma_export_name: str | None = None
     time_seconds: float = 0.0
+    # clip_generator may omit an event while retaining this Sequence Cue, or
+    # provide an absolute mapped TC time. Defaults preserve legacy exporters.
+    emit_timecode_event: bool = True
+    timecode_event_seconds: float | None = None
 
     def resolved_ma_name(self) -> str:
         label = format_ma_cue_number(self.cue_number)
@@ -371,6 +389,9 @@ class ExportButtonLane:
     ma_export_name: str | None = None
     executor: str = "1.201"
     mark_times_seconds: list[float] = field(default_factory=list)
+    # ``None`` means legacy behavior (events use mark_times_seconds). For
+    # clip_generator this is the filtered list of absolute mapped TC times.
+    timecode_event_times_seconds: list[float] | None = None
     # Pool index / file for this button's own Sequence (flash template).
     sequence_pool: int = 0
     sequence_name: str = ""
@@ -423,3 +444,4 @@ class SongExportPlan:
     # Domain Song.id — lets show-wide export steps (View/Macro Pool
     # assignment) key manual per-song Pool overrides back to a song.
     song_id: str = ""
+    warnings: list[str] = field(default_factory=list)

@@ -11,6 +11,8 @@ from cueplayer.exporters.common import (
     ExportCue,
     MaExportProfile,
     SongExportPlan,
+    button_lane_event_times_seconds,
+    cue_event_time_seconds,
     export_event_time_seconds,
     format_ma2_cue_link_name,
     format_ma_cue_number,
@@ -143,6 +145,7 @@ class Ma2Exporter:
             "timecode_pool": plan.profile.timecode_pool,
             "main_executor": plan.profile.main_executor,
             "ltc_latency_compensation_seconds": plan.profile.ltc_latency_compensation_seconds,
+            "warnings": list(plan.warnings),
         }
 
     def write_live_scan_plugin(self, directory: Path) -> dict[str, Path]:
@@ -861,14 +864,17 @@ class Ma2Exporter:
             no.text = str(value)
 
         main_sub = ET.SubElement(main_track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
+        event_i = 0
         for idx, cue in enumerate(plan.main_cues, start=1):
-            frames = _rel_event_frames(plan, cue.time_seconds)
+            if not cue.emit_timecode_event:
+                continue
+            frames = _rel_event_frames(plan, cue_event_time_seconds(cue))
             link_name = format_ma2_cue_link_name(cue.cue_number)
             event = ET.SubElement(
                 main_sub,
                 f"{{{MA2_NS}}}Event",
                 {
-                    "index": str(idx - 1),
+                    "index": str(event_i),
                     "time": str(frames),
                     "command": "Go",
                     "pressed": "true",
@@ -876,6 +882,7 @@ class Ma2Exporter:
                     "step": MA2_TC_STEP_NONE,
                 },
             )
+            event_i += 1
             cue_el = ET.SubElement(event, f"{{{MA2_NS}}}Cue", {"name": link_name})
             for value in ma2_timecode_cue_nos(main_seq, idx):
                 no = ET.SubElement(cue_el, f"{{{MA2_NS}}}No")
@@ -897,7 +904,7 @@ class Ma2Exporter:
                 no = ET.SubElement(obj, f"{{{MA2_NS}}}No")
                 no.text = str(value)
             sub = ET.SubElement(track, f"{{{MA2_NS}}}SubTrack", {"index": "0"})
-            for event_i, t in enumerate(lane.mark_times_seconds):
+            for event_i, t in enumerate(button_lane_event_times_seconds(lane)):
                 frames = _rel_event_frames(plan, t)
                 ET.SubElement(
                     sub,
@@ -1040,8 +1047,11 @@ class Ma2Exporter:
             main_seq = int(plan.profile.sequence_pool_start)
             seq_name = _xml_esc(plan.profile.main_sequence_name)
             events: list[str] = []
+            event_i = 0
             for idx, cue in enumerate(plan.main_cues, start=1):
-                frames = _rel_event_frames(plan, cue.time_seconds)
+                if not cue.emit_timecode_event:
+                    continue
+                frames = _rel_event_frames(plan, cue_event_time_seconds(cue))
                 max_frames = max(max_frames, frames)
                 link_name = _xml_esc(format_ma2_cue_link_name(cue.cue_number))
                 # MA2 sorts a fractional Preset Cue (for example 0.5) before
@@ -1056,10 +1066,11 @@ class Ma2Exporter:
                     for value in ma2_timecode_cue_nos(main_seq, cue_index)
                 )
                 events.append(
-                    f'<Event index="{idx - 1}" time="{frames}" command="Go" '
+                    f'<Event index="{event_i}" time="{frames}" command="Go" '
                     f'pressed="true" step="{MA2_TC_STEP_NONE}">'
                     f'<Cue name="{link_name}">{nos}</Cue></Event>'
                 )
+                event_i += 1
             tracks.append(
                 f'<Track index="{track_i}" active="true" expanded="true">'
                 f'<Object name="{seq_name}"><No>30</No><No>{page_pool}</No>'
@@ -1075,7 +1086,7 @@ class Ma2Exporter:
                 b_page, b_exec = parse_page_executor(lane.executor)
                 b_name = _xml_esc(lane.sequence_name or lane.resolved_ma_name())
                 bevents: list[str] = []
-                for event_i, t in enumerate(lane.mark_times_seconds):
+                for event_i, t in enumerate(button_lane_event_times_seconds(lane)):
                     frames = _rel_event_frames(plan, t)
                     max_frames = max(max_frames, frames)
                     bevents.append(
