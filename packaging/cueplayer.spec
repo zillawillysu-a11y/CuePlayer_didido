@@ -311,6 +311,66 @@ if _HOOKS.is_dir():
 else:
     hookspath = []
 
+# Windows EXE version resource (Product/File Version, Company, Copyright),
+# built from the single canonical source (cueplayer.app_info, which reads
+# cueplayer.__version__) so there is no second hardcoded version to maintain.
+version_info = None
+if sys.platform == "win32":
+    try:
+        sys.path.insert(0, str(SRC))
+        from cueplayer.app_info import (
+            APP_NAME,
+            APP_VERSION,
+            COMPANY_NAME,
+            COPYRIGHT,
+            version_tuple,
+        )
+        from PyInstaller.utils.win32.versioninfo import (
+            FixedFileInfo,
+            StringFileInfo,
+            StringStruct,
+            StringTable,
+            VarFileInfo,
+            VarStruct,
+            VSVersionInfo,
+        )
+
+        _vt = version_tuple()
+        version_info = VSVersionInfo(
+            ffi=FixedFileInfo(
+                filevers=_vt,
+                prodvers=_vt,
+                mask=0x3F,
+                flags=0x0,
+                OS=0x4,
+                fileType=0x1,
+                subtype=0x0,
+                date=(0, 0),
+            ),
+            kids=[
+                StringFileInfo(
+                    [
+                        StringTable(
+                            "040904B0",
+                            [
+                                StringStruct("CompanyName", COMPANY_NAME),
+                                StringStruct("FileDescription", APP_NAME),
+                                StringStruct("FileVersion", APP_VERSION),
+                                StringStruct("InternalName", "CuePlayer"),
+                                StringStruct("LegalCopyright", COPYRIGHT),
+                                StringStruct("OriginalFilename", "CuePlayer.exe"),
+                                StringStruct("ProductName", APP_NAME),
+                                StringStruct("ProductVersion", APP_VERSION),
+                            ],
+                        )
+                    ]
+                ),
+                VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — missing metadata must not break the build
+        print(f"Windows version resource skipped: {exc}", file=sys.stderr)
+
 icon_file = None
 for candidate in (
     ASSETS / "app_icon.ico",
@@ -409,6 +469,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_file,
+    version=version_info,
 )
 
 coll = COLLECT(

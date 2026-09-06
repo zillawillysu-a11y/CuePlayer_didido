@@ -1,10 +1,14 @@
 ; Inno Setup 7 (recommended, e.g. 7.0.2) or 6 — builds CuePlayer-Setup-<version>.exe
 ; Requires: packaging\build_windows.ps1 already produced dist\CuePlayer\
-; Compile:  iscc /DMyAppVersion=1.1.3 packaging\CuePlayer.iss
+; Compile:  iscc /DMyAppVersion=1.14 packaging\CuePlayer.iss
 ; Download: https://jrsoftware.org/isdl.php  (you build; employees only get Setup.exe)
+;
+; build_windows.ps1 always passes /DMyAppVersion from cueplayer.__version__
+; (the single canonical source, src/cueplayer/__init__.py). The fallback
+; below is only used if ISCC is invoked directly without that flag.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.3"
+  #define MyAppVersion "1.14"
 #endif
 
 #define MyAppName "CuePlayer"

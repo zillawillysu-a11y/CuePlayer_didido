@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
+from cueplayer.app_info import APP_VERSION, COPYRIGHT
 from cueplayer.ui.theme import ACCENT, BG_APP, BORDER, TEXT, TEXT_MUTED
 
 
@@ -108,6 +109,41 @@ def create_splash_pixmap(
         int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
         message,
     )
+
+    # Low-key version / copyright footer, anchored to the bottom edge — kept
+    # separate from the centered title/bar/message block above so it never
+    # shifts that block's existing position.
+    footer_font = QFont(msg_font)
+    footer_font.setPixelSize(11)
+    painter.setFont(footer_font)
+    footer_metrics = QFontMetrics(footer_font)
+    version_text = f"Version {APP_VERSION}"
+    version_h = footer_metrics.boundingRect(version_text).height()
+    copyright_h = footer_metrics.boundingRect(COPYRIGHT).height()
+    copyright_y = height - 14 - copyright_h
+    version_y = copyright_y - 2 - version_h
+
+    painter.setPen(QColor(TEXT_MUTED))
+    painter.drawText(
+        0,
+        version_y,
+        width,
+        version_h,
+        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+        version_text,
+    )
+    dim_copyright = QColor(TEXT_MUTED)
+    dim_copyright.setAlpha(160)
+    painter.setPen(dim_copyright)
+    painter.drawText(
+        0,
+        copyright_y,
+        width,
+        copyright_h,
+        int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+        COPYRIGHT,
+    )
+
     painter.end()
     return pixmap
 

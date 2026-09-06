@@ -1,6 +1,11 @@
 # Next task
 
-No new task queued yet. Candidates parked by user (not started):
+Waiting on user manual verification (Splash / Main Window title / Help→About dialog /
+normal startup) before the next, separate "Release Build" task (run
+`packaging\build_windows.ps1` on the Windows build machine and check the built
+`CuePlayer.exe` Properties dialog). Do not start Release Build until the user confirms.
+
+Candidates parked by user (not started):
 
 - Physical loopback 440 Hz + long-capture drift check.
 - Pre-existing unrelated failures documented in `.ai/REPORT.md` history (Windows video-sync
@@ -19,6 +24,16 @@ No new task queued yet. Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Cue Player 1.14 version / copyright / About integration: single canonical source
+  `src/cueplayer/app_info.py` (reads `cueplayer.__version__`) now feeds Splash (new
+  low-key "Version 1.14" + copyright footer, existing "Cue Player" title untouched),
+  Main Window title ("Cue Player 1.14 — <song>"), a new Help → About dialog, and
+  Windows EXE packaging metadata (`packaging/cueplayer.spec` now builds a
+  `VSVersionInfo` from `app_info`). `pyproject.toml` version is now `dynamic`,
+  reading `cueplayer.__version__`, removing the last duplicate literal. No release
+  build was run this session (explicitly deferred). See
+  `.ai/handoffs/2026-09-07_VersionCopyrightAboutIntegration.md`.
 
 - Windows title-bar interaction (click / press-hold / drag on the main window or the
   Clean Video Output window) freezing real MTC output during playback. Root cause:

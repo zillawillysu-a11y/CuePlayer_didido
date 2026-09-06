@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cueplayer"
-version = "1.1.3"
+dynamic = ["version"]
 description = "Timeline tool for lighting programming: multi-audio, LTC, VJ clips, and grandMA export"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -42,6 +42,9 @@ ndi = [
 
 [project.scripts]
 cueplayer = "cueplayer.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "cueplayer.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

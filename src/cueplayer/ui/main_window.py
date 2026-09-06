@@ -241,6 +241,8 @@ from cueplayer.ui.drag_drop import (
     setlist_import_paths_from_mime,
     video_paths_from_mime,
 )
+from cueplayer.app_info import APP_NAME, APP_TITLE
+from cueplayer.ui.about_dialog import AboutDialog
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar, format_time
@@ -252,7 +254,7 @@ _MEDIA_DIALOG_FILTER = (
     "Video & Images (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp);;"
     "All Files (*.*)"
 )
-MAIN_WINDOW_TITLE_PREFIX = "CuePlayer Main"
+MAIN_WINDOW_TITLE_PREFIX = APP_TITLE
 # Floor so the Video Preview splitter cannot be dragged shut (View menu still hides).
 _VIDEO_PREVIEW_SPLIT_MIN_HEIGHT = 96
 # Machine settings keys / org aliases: see application.settings_service (+ ProjectService).
@@ -2609,6 +2611,15 @@ class MainWindow(QMainWindow):
         self._clean_output_action.setCheckable(True)
         self._clean_output_action.triggered.connect(self._toggle_clean_output)
         view_menu.addAction(self._clean_output_action)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        act_about = QAction(f"&About {APP_NAME}", self)
+        act_about.setToolTip("Version and copyright information")
+        act_about.triggered.connect(self._show_about_dialog)
+        help_menu.addAction(act_about)
+
+    def _show_about_dialog(self) -> None:
+        AboutDialog(self).exec()
 
     def _autosave_enabled(self) -> bool:
         return self._project_service.autosave_enabled()

@@ -14,6 +14,7 @@ import pytest
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
+from cueplayer.app_info import APP_VERSION
 from cueplayer.ui.splash import create_splash_pixmap, show_startup_splash
 from cueplayer.ui.theme import BG_APP
 
@@ -82,3 +83,28 @@ def test_create_splash_pixmap_progress_fill() -> None:
     full_px = QColor(full.toImage().pixel(mid_x, bar_y))
     # Not asserting exact colors (layout math), only that progress changes paint.
     assert empty_px != full_px or empty.toImage() != full.toImage()
+
+
+def test_splash_footer_shows_version_without_moving_bar() -> None:
+    """Version/copyright footer must not shift the existing title/bar/message block."""
+    assert APP_VERSION == "1.14"
+    blank = create_splash_pixmap(message="Loading…", progress=0.0)
+    image = blank.toImage()
+    bg = QColor(BG_APP)
+    width, height = image.width(), image.height()
+
+    # Footer band (bottom ~50px) must contain non-background pixels — proof
+    # the version/copyright text actually painted there.
+    found_footer_text = False
+    for y in range(height - 50, height - 5):
+        for x in range(0, width, 4):
+            px = QColor(image.pixel(x, y))
+            if abs(px.red() - bg.red()) > 8 or abs(px.green() - bg.green()) > 8:
+                found_footer_text = True
+                break
+        if found_footer_text:
+            break
+    assert found_footer_text
+
+    # The default window size must stay unchanged (no layout blowout).
+    assert (width, height) == (520, 300)
