@@ -39,10 +39,6 @@ Candidates parked by user (not started):
   `test_mouse_static_backdrop_parity.py::test_video_lane_region_unchanged_on_scrub_press`,
   `test_scrub_fallback_final_land.py::test_fallback_release_finalizes_when_left_button_up`,
   `test_video_standin_cache.py::test_video_standin_restores_from_cache_on_reactivate`.
-- `tests/ui/test_marquee_over_track_colors.py::test_selection_box_paints_after_mark_track_colors`
-  fails on baseline (confirmed present with this session's marquee change reverted) — a
-  `_paint_lanes` paint-order/dispatch issue, not a selection bug; investigate only if the
-  user asks.
 - `tests/ui/test_video_waveform_backdrop_revision.py` hangs when run without
   `QT_QPA_PLATFORM=offscreen` set (calls `TimelineWidget.show()`, needs a real window in
   this sandbox) — not a bug, just remember to set that env var for this suite.
@@ -63,6 +59,24 @@ Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Release Preflight blocker `tests/ui/test_marquee_over_track_colors.py::test_selection_box_paints_after_mark_track_colors`
+  was a stale test, not a production regression. It asserted `_paint_lanes` (which paints
+  the mark-track-color lane fills) must be re-invoked on every box-select paint frame. That
+  stopped holding once the static backdrop cache (`_blit_scrub_backdrop` /
+  `_rebuild_scrub_backdrop`) started serving box-select frames too: on a cache hit, the
+  retained pixmap — which already has lanes baked in underneath — is blitted as-is and
+  `_paint_lanes` legitimately does not run that frame; `_paint_selection_box` still always
+  paints after the blit, so the box-above-track-colors invariant holds regardless. Verified
+  by reading `paintEvent`, `_blit_scrub_backdrop`/`_blit_native_backdrop`,
+  `_rebuild_scrub_backdrop`, and `_paint_lanes`: the box overlay call is unconditionally
+  after both the fresh-bake path (`_paint_static_layers` → `_paint_lanes`, inside
+  `_rebuild_scrub_backdrop`) and the cache-hit blit path. No production code changed. Split
+  the test into two: one that invalidates the cache first (asserts `_paint_lanes` runs,
+  then `_paint_selection_box`) and one with a warm cache (asserts the blit runs, then
+  `_paint_selection_box`), so the suite locks the real invariant — overlay-after-background
+  — under both cache states instead of one internal helper being called every frame. See
+  `.ai/handoffs/2026-09-07_MarqueeTrackColorTestStale.md`.
 
 - About Dialog logo sharpness: the Help → About Cue Player logo looked blurry
   because it loaded the app icon with `QPixmap(path)` (which only reads an
