@@ -1,5 +1,11 @@
 # Audio timing diagnostics (Phase 0)
 
+Company Focusrite measurements (2026-09-06): see
+[hardware evidence](audit/2026-09-06/README.md). Run
+`scripts/start_audio_diagnostics.ps1` for a fresh diagnostic GUI session.
+`scripts/asio_timing_probe.py` measures silent ASIO driver callbacks only;
+it does not substitute for an AudioEngine playback report.
+
 Opt-in observations only: these do not fix write-head/presentation timing or
 rate negotiation. Run the source checkout with:
 
