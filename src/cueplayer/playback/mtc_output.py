@@ -298,6 +298,33 @@ class MtcOutput:
                     # No TC source at this frame (outside every LTC clip):
                     # stay silent, keep the index advancing without a burst.
                     continue
+                if self._tc_provider is not None:
+                    # Clip mappings are discontinuous: an overdue group whose
+                    # frame predates the current clip must not be sent — it
+                    # would leak the previous clip's TC after a re-anchor.
+                    tc_now = self._tc_at_locked(position_seconds)
+                    if tc_now is None:
+                        # Playback is now outside every clip: discard the
+                        # stale overdue group(s); no full frame (no TC now).
+                        self._reset_qf_locked(position_seconds)
+                        break
+                    offset = int(
+                        round((position_seconds - frame_pos) * fps)
+                    )
+                    expected_now = add_frames(tc, offset, fps)
+                    if abs(
+                        expected_now.total_frames(fps)
+                        - tc_now.total_frames(fps)
+                    ) > 1:
+                        # The TC mapping changed between this group's frame
+                        # and now (crossed into another clip): discard the
+                        # whole stale group (its indices straddle the
+                        # re-anchor point — a plain reset would re-queue them
+                        # and loop forever), dump a full frame at the
+                        # current TC, and resume from the next group.
+                        self._last_qf_index = (group + 1) * 8 - 1
+                        self._send_full_frame_locked(position_seconds)
+                        break
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
                     self._port.send(self._note_msg(0xF1, data))

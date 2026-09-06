@@ -118,11 +118,15 @@ LTC gain applies, no-song legacy resolution.
   `song_use_left_ltc` routing tests, video-sync flake/AV, clock font-fit.
 - MTC QF groups straddling a clip boundary may send up to 2 TC frames of
   the previous clip's TC (8-QF group quantization); receivers re-latch on
-  the boundary full frame.
-- No clip create/edit UI yet — Phase 3. `refresh_song_ltc_routing()` is the
-  hook to call after clip edits (re-arms caches, MTC source, routing,
-  stream).
-- Exporter handling of out-of-clip marks / warnings — Phase 3.
+  the boundary full frame. **Superseded: fixed in
+  `.ai/handoffs/2026-09-06_LtcClipsPlaybackPhase2Hardening.md`** (stale-QF
+  guard in `MtcOutput.tick()`; no previous-clip QF after a re-anchor).
+- Exact-clip-end semantics (domain vs end-exclusive PCM). **Superseded:
+  unified to half-open `[start, end)` in the same hardening handoff.**
+- No clip create/edit UI yet — Phase 3 (UI only; exporter moved to Phase 4
+  — see `.ai/NEXT_TASK.md`). `refresh_song_ltc_routing()` is the hook to
+  call after clip edits (re-arms caches, MTC source, routing, stream).
+- Exporter handling of out-of-clip marks / warnings — Phase 4.
 
 ## Suggested next task
 LTC Generator Clips Phase 3: per-song clip create/edit UI (timeline),

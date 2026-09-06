@@ -363,6 +363,273 @@ def test_mtc_legacy_timebase_unchanged_without_provider() -> None:
     assert absolute_timecode(Timecode(1, 0, 0, 0), 1.5, FPS) == Timecode(1, 0, 1, 15)
 
 
+# --- MTC clip-boundary: no previous-clip QF leak -----------------------------
+
+
+def _tc_in_range(tc: Timecode, lo: Timecode, hi: Timecode) -> bool:
+    r = tc.total_frames(FPS)
+    return lo.total_frames(FPS) <= r < hi.total_frames(FPS)
+
+
+def _decode_qf_groups(
+    raw: list[tuple[float, int, int]]
+) -> list[tuple[Timecode, list[float]]]:
+    """Decode complete 8-piece QF groups from the accumulated
+    ``(position, piece_type, nibble)`` stream.
+
+    Returns ``(timecode, positions_of_the_8_pieces)`` per group. Groups
+    interrupted by a re-anchor (skipped pieces) never complete and are
+    ignored — exactly like a receiver that never latched them. A group
+    containing even one piece sent after a boundary must still carry the
+    correct (new-clip) TC — that is the no-leak assertion.
+    """
+    out: list[tuple[Timecode, list[float]]] = []
+    i = 0
+    while i < len(raw) - 7:
+        if raw[i][1] != 0 or not all(raw[i + k][1] == k for k in range(8)):
+            i += 1
+            continue
+        v = [raw[i + k][2] for k in range(8)]
+        hours = (v[6] | ((v[7] & 0x01) << 4)) & 0x1F
+        out.append(
+            (
+                Timecode(
+                    hours,
+                    v[4] | (v[5] << 4),
+                    v[2] | (v[3] << 4),
+                    v[0] | (v[1] << 4),
+                ),
+                [raw[i + k][0] for k in range(8)],
+            )
+        )
+        i += 8
+    return out
+
+
+def _run_mtc_steps(
+    engine, port: _FakePort, start_s: float, end_s: float, step_ms: float = 1.0
+) -> tuple[
+    list[tuple[float, list[Timecode], list[tuple[int, int]]]],
+    list[tuple[float, int, int]],
+    ]:
+    """Step the playhead by ``step_ms`` ms, run the engine MTC tick each step.
+
+    Returns ``(per_step, raw)`` where ``per_step`` is
+    ``(position, full_frames, qf_pieces)`` per step and ``raw`` is the
+    accumulated ``(position, piece_type, nibble)`` stream (a QF group spans
+    8 consecutive ticks at 1 ms steps, so it must be decoded from ``raw``,
+    not from a single step's capture).
+    """
+    engine._playing = True  # noqa: SLF001
+    with engine._lock:
+        engine._clear_write_head_stamp_unlocked()  # noqa: SLF001
+    engine._mtc._port = port  # noqa: SLF001
+    engine._mtc._enabled = True  # noqa: SLF001
+    engine._mtc._playing = True  # noqa: SLF001
+    per_step: list[tuple[float, list[Timecode], list[tuple[int, int]]]] = []
+    raw: list[tuple[float, int, int]] = []
+    pos = start_s
+    while pos <= end_s + 1e-9:
+        engine._position_frame = int(round(pos * SR))  # noqa: SLF001
+        port.messages.clear()
+        engine._mtc_tick()  # noqa: SLF001
+        fulls = [
+            _full_frame_tc(m) for m in port.messages if m.bytes()[0] == 0xF0
+        ]
+        qf = [
+            (m.bytes()[1] >> 4, m.bytes()[1] & 0x0F)
+            for m in port.messages
+            if m.bytes()[0] == 0xF1
+        ]
+        per_step.append((pos, fulls, qf))
+        raw.extend((pos, t, n) for (t, n) in qf)
+        pos += step_ms / 1000.0
+    engine._playing = False  # noqa: SLF001
+    return per_step, raw
+
+
+def test_mtc_adjacent_clips_no_previous_clip_qf_leak() -> None:
+    """Clip A → adjacent Clip B (no gap), very different start TCs, boundary
+    NOT on the 2-frame QF grid (4.05s = frame 121.5). After entering B, no
+    QF group may carry A's TC — the receiver must not see stale A frames."""
+    engine = _make_engine(None, mtc=True)
+    song = _clip_song(clips=[
+        (2.0, 2.05, "01:00:00:00"),   # A = [2.0, 4.05)
+        (4.05, 2.0, "02:00:00:00"),   # B = [4.05, 6.05], 1h offset
+    ])
+    _attach_clip_song(engine, song)
+    port = _FakePort()
+    per_step, raw = _run_mtc_steps(engine, port, 3.9, 4.3)
+
+    b_lo = Timecode(2, 0, 0, 0)
+    b_hi = Timecode(2, 0, 2, 0)
+    a_lo = Timecode(1, 0, 0, 0)
+    a_hi = Timecode(1, 0, 2, 1)
+    # The boundary crossing must have produced a B full frame + B QFs.
+    b_full = any(
+        _tc_in_range(tc, b_lo, b_hi) for pos, fulls, _ in per_step
+        if pos >= 4.05 for tc in fulls
+    )
+    groups = _decode_qf_groups(raw)
+    b_qf = any(
+        all(p >= 4.05 for p in piece_pos) and _tc_in_range(tc, b_lo, b_hi)
+        for tc, piece_pos in groups
+    )
+    assert b_full, "expected a B full frame after entering B"
+    assert b_qf, "expected B quarter frames after entering B"
+    # No stale A TC may leak: any completed QF group containing even one
+    # piece sent at/after the boundary must carry B's TC.
+    for tc, piece_pos in groups:
+        if any(p >= 4.05 for p in piece_pos):
+            assert _tc_in_range(tc, b_lo, b_hi), (
+                f"stale A QF group {tc.format()} (A range "
+                f"{a_lo.format()}-{a_hi.format()}) has pieces at "
+                f"{[round(p, 3) for p in piece_pos]}"
+            )
+
+
+def test_mtc_gap_then_clip_b_only_b_qf() -> None:
+    """Gap between clips: silence through the gap, then only B's TC."""
+    engine = _make_engine(None, mtc=True)
+    song = _clip_song(clips=[
+        (2.0, 2.0, "01:00:00:00"),   # A = [2.0, 4.0)
+        (5.0, 2.0, "02:00:00:00"),   # B = [5.0, 7.0); gap (4.0, 5.0)
+    ])
+    _attach_clip_song(engine, song)
+    port = _FakePort()
+    per_step, raw = _run_mtc_steps(engine, port, 3.9, 5.3)
+
+    # No MTC at all while in the gap.
+    for pos, fulls, qf in per_step:
+        if 4.0 <= pos < 5.0:
+            assert not fulls and not qf, f"MTC in gap at pos {pos}"
+    # Entering B: full frame + QFs, all in B's range.
+    b_lo, b_hi = Timecode(2, 0, 0, 0), Timecode(2, 0, 2, 0)
+    groups = _decode_qf_groups(raw)
+    assert any(
+        _tc_in_range(tc, b_lo, b_hi) for pos, fulls, _ in per_step
+        if pos >= 5.0 for tc in fulls
+    )
+    assert any(
+        all(p >= 5.0 for p in piece_pos) and _tc_in_range(tc, b_lo, b_hi)
+        for tc, piece_pos in groups
+    )
+    # After leaving A: every full frame and completed QF group is B's TC
+    # (a group with any piece sent in/after the gap must be B's, since the
+    # gap carries no TC at all).
+    for pos, fulls, _ in per_step:
+        if pos >= 4.0:
+            for tc in fulls:
+                assert _tc_in_range(tc, b_lo, b_hi), (
+                    f"non-B full frame at pos {pos}: {tc.format()}"
+                )
+    for tc, piece_pos in groups:
+        if any(p >= 4.0 for p in piece_pos):
+            assert _tc_in_range(tc, b_lo, b_hi), (
+                f"non-B QF group {tc.format()} with pieces at "
+                f"{[round(p, 3) for p in piece_pos]}"
+            )
+
+
+def test_mtc_backward_tc_clip_no_forward_leak() -> None:
+    """Clip B starts at a TC *earlier* than A's range (backward jump).
+    No QF from A's forward range may be sent after entering B."""
+    engine = _make_engine(None, mtc=True)
+    song = _clip_song(clips=[
+        (2.0, 2.05, "02:00:00:00"),   # A = [2.0, 4.05) @ 02:00:00:00
+        (4.05, 2.0, "01:00:00:00"),   # B = [4.05, 6.05) @ 01:00:00:00
+    ])
+    _attach_clip_song(engine, song)
+    port = _FakePort()
+    per_step, raw = _run_mtc_steps(engine, port, 3.9, 4.3)
+
+    b_lo, b_hi = Timecode(1, 0, 0, 0), Timecode(1, 0, 2, 0)
+    groups = _decode_qf_groups(raw)
+    assert any(
+        _tc_in_range(tc, b_lo, b_hi) for pos, fulls, _ in per_step
+        if pos >= 4.05 for tc in fulls
+    ), "expected a B full frame after entering B"
+    assert any(
+        all(p >= 4.05 for p in piece_pos) and _tc_in_range(tc, b_lo, b_hi)
+        for tc, piece_pos in groups
+    ), "expected B quarter frames after entering B"
+    for tc, piece_pos in groups:
+        if any(p >= 4.05 for p in piece_pos):
+            assert _tc_in_range(tc, b_lo, b_hi), (
+                f"stale A QF group {tc.format()} with pieces at "
+                f"{[round(p, 3) for p in piece_pos]}"
+            )
+
+
+# --- Exact clip-end boundary consistency ([start, end)) ---------------------
+
+
+def test_exact_end_boundary_consistent_across_audio_display_mtc() -> None:
+    """Single clip [2.0, 5.0): exact start included, exact end NOT included —
+    identically for domain mapping, LTC audio, display, and MTC source key."""
+    engine = _make_engine(None, mtc=True)
+    song = _clip_song(clips=[(2.0, 3.0, "01:00:00:00")])
+    _attach_clip_song(engine, song)
+    clip = song.ltc_clips[0]
+
+    # Exact start: inside — TC everywhere.
+    from cueplayer.domain.ltc_clips import ltc_timecode_at
+
+    assert ltc_timecode_at(song.ltc_clips, FPS, 2.0) == Timecode(1, 0, 0, 0)
+    assert engine.output_timecode_state(2.0).timecode == "01:00:00:00"
+    assert np.any(engine._ltc_chunk(2 * SR, 1000) != 0.0)  # noqa: SLF001
+    assert engine._mtc_tc_source_key(2.0) == ("clip", clip.id)  # noqa: SLF001
+
+    # One frame before the end (4.9667s = frame 89 of the clip): still inside.
+    one_frame_before = 5.0 - 1.0 / FPS
+    # 01:00:00:00 + 89 frames @ 30 fps = 01:00:02:29.
+    assert ltc_timecode_at(song.ltc_clips, FPS, one_frame_before) == Timecode(1, 0, 2, 29)
+    assert (
+        engine.output_timecode_state(one_frame_before).timecode == "01:00:02:29"
+    )
+    assert np.any(
+        engine._ltc_chunk(int(round(one_frame_before * SR)), 1000) != 0.0
+    )  # noqa: SLF001
+    assert engine._mtc_tc_source_key(one_frame_before) == ("clip", clip.id)  # noqa: SLF001
+
+    # Exact end (5.0): outside — silence, No TC, MTC source key = none.
+    assert ltc_timecode_at(song.ltc_clips, FPS, 5.0) is None
+    assert engine.output_timecode_state(5.0).timecode == "--:--:--:--"
+    assert not np.any(engine._ltc_chunk(5 * SR, 1000) != 0.0)  # noqa: SLF001
+    assert engine._mtc_tc_source_key(5.0) == ("none",)  # noqa: SLF001
+
+    # MTC sends nothing at/after the exact end.
+    port = _FakePort()
+    per_step, _ = _run_mtc_steps(engine, port, 4.8, 5.1)
+    for pos, fulls, qf in per_step:
+        if pos >= 5.0:
+            assert not fulls and not qf, f"MTC after clip end at pos {pos}"
+
+
+def test_adjacent_exact_boundary_belongs_to_b_in_all_layers() -> None:
+    """A = [1.0, 3.0), B = [3.0, 5.0): the shared boundary 3.0 is B's in the
+    domain mapping, the LTC audio, and the MTC source key."""
+    engine = _make_engine(None, mtc=True)
+    song = _clip_song(clips=[
+        (1.0, 2.0, "01:00:00:00"),
+        (3.0, 2.0, "01:10:00:00"),
+    ])
+    _attach_clip_song(engine, song)
+    from cueplayer.domain.ltc_clips import clip_at_position, ltc_timecode_at
+
+    clip_a, clip_b = song.ltc_clips
+    assert clip_at_position(song.ltc_clips, 3.0) is clip_b
+    assert ltc_timecode_at(song.ltc_clips, FPS, 3.0) == Timecode(1, 10, 0, 0)
+    assert _tc_close(
+        _decode(engine._ltc_chunk(3 * SR, SR)), Timecode(1, 10, 0, 0)  # noqa: SLF001
+    )
+    assert engine._mtc_tc_source_key(3.0) == ("clip", clip_b.id)  # noqa: SLF001
+    # And the frame before the boundary is still A.
+    just_before = 3.0 - 1.0 / FPS
+    assert clip_at_position(song.ltc_clips, just_before) is clip_a
+    assert engine._mtc_tc_source_key(just_before) == ("clip", clip_a.id)  # noqa: SLF001
+
+
 # --- Legacy / regression ------------------------------------------------------
 
 

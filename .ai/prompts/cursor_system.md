@@ -66,4 +66,6 @@ Details: `.ai/WORKFLOW.md`. Also enforced by `.cursor/rules/ai-workflow.mdc`.
 
 ## Language
 
-Respond to the user in the language they use (often Traditional Chinese). Keep status updates short and concrete.
+與使用者的聊天回覆、Phase 完成摘要、問題說明一律使用繁體中文。
+程式碼 identifier、既有英文 UI、技術檔案內容可依專案既有慣例保持英文。
+Keep status updates short and concrete.

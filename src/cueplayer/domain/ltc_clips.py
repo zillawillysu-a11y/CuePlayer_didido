@@ -52,25 +52,22 @@ def clip_at_position(
 ) -> LtcClip | None:
     """Return the clip covering ``position_seconds`` or ``None``.
 
-    A clip covers ``[start, end]`` at its exact end point (the final boundary
-    frame still belongs to it) and ``[start, end)`` otherwise. At an exact
-    boundary where one clip ends and another begins, the later clip wins.
+    Half-open interval ``[start, end)``: the start is included, the end is
+    NOT — matching the end-exclusive generated LTC PCM. At an exact boundary
+    where clip A ends and clip B begins, the boundary belongs to B (the
+    later clip wins). At the exact end of the last clip there is no clip
+    (no TC / silence), not a fallback.
     """
     pos = float(position_seconds)
     match: LtcClip | None = None
     for clip in sorted_ltc_clips(clips):
         start = float(clip.timeline_start_seconds)
-        end = clip.end_seconds
-        if pos < start - POS_EPS or pos > end + POS_EPS:
+        end = float(clip.end_seconds)
+        if pos < start - POS_EPS or pos >= end - POS_EPS:
             continue
-        # Later-starting clip wins at shared boundaries.
+        # Later-starting clip wins at shared boundaries / overlaps.
         if match is None or start >= float(match.timeline_start_seconds):
             match = clip
-    if match is None:
-        return None
-    # Half-open rule, except the last clip's end point is included.
-    if pos > match.end_seconds + POS_EPS:
-        return None
     return match
 
 

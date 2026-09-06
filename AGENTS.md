@@ -6,6 +6,11 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 Every task: **plan before code**; after code update [`.ai/REPORT.md`](.ai/REPORT.md) + a file under [`.ai/handoffs/`](.ai/handoffs/); then **stop**.  
 System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md). Cursor rule: `.cursor/rules/ai-workflow.mdc`.
 
+## Communication language (permanent)
+
+與使用者的聊天回覆、Phase 完成摘要、問題說明一律使用繁體中文。
+程式碼 identifier、既有英文 UI、技術檔案內容可依專案既有慣例保持英文。
+
 ## Non-negotiables
 
 - Full Unicode / Chinese support for project names, folders, and media paths from day one.

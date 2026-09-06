@@ -1,157 +1,130 @@
-# LTC Generator Clips — Phase 2 (playback wiring: LTC audio + MTC + display)
+# LTC Generator Clips — Phase 2 hardening（MTC 邊界 + exact-end 語義統一）
 Date: 2026-09-06. Branch: technical-audit-0815-028d.
 Upstream: origin/cursor/technical-audit-0815-028d.
-Status: complete (Phase 2 only; no clip editing UI / exporter / preview work).
+Status: complete（僅 Phase 2 hardening；未動 Phase 3 UI / Exporter）。
 
-## Task objective
-Wire the Phase-1 per-song `clip_generator` domain into playback:
+## Task objective（使用者指定，兩個邊界問題）
+1. MTC Quarter Frame 在 LTC Clip 邊界的「舊 Clip TC 洩漏」：進入新 Clip
+   re-anchor 後，不得再送出屬於前一個 Clip TC mapping 的 QF。
+2. LTC Clip exact-end boundary 一致性：`clip_at_position()` 原把「最後一個
+   Clip 的 exact end」視為 Clip 內，但 generated LTC PCM cache 是
+   end-exclusive → domain/display/MTC/audio 邊界語義不一致。統一為
+   half-open `[start, end)`。
 
-- Generated LTC audio only inside the song's LTC Generator Clips
-  (`output_tc = clip.start_timecode + (position - clip.timeline_start)`).
-- Outside every clip: **no LTC** (silence on the LTC bus), **no MTC**, and the
-  timecode display shows `--:--:--:--` (never a song-start fallback).
-- MTC shares the *same* clip mapping as the LTC audio; entering a clip
-  re-anchors MTC (full-frame dump + quarter frames at the mapped TC);
-  leaving a clip stops MTC output.
-- `full_track_generator`, `striped_file`, legacy `auto`, and explicit `off`
-  keep today's behavior (regression-tested).
+同時把「回覆一律繁體中文」寫入永久 Agent 規則（AGENTS.md +
+`.ai/prompts/cursor_system.md`）。
 
-Out of scope (per user): Timeline clip create/drag/trim UI, clip start-TC
-editor, MA2/MA3 exporters, export preview, multi-timecode show architecture.
+## 問題確認（都是真的）
 
-## What was implemented
+### 問題 1：QF 洩漏 — 確認存在
+`MtcOutput.tick()` 對每個逾期 QF group 用 `frame_pos = (group*2)/fps` 經
+provider 取 TC。當 Clip 邊界**不落在 2-frame QF 網格**上時（例如 4.05s =
+frame 121.5），engine 層 re-anchor（`on_seek(pos)` →
+`_reset_qf_index = int(pos*qf_rate)-1`）**之後**的第一個 group 的
+`frame_pos` 仍可能在舊 Clip 內 → re-anchor 的 Full Frame 之後立刻送出舊
+Clip TC 的 QF。實測（1ms 步進模擬播放 + 假 MIDI port 捕獲）確認：
+re-anchor 後送出的 QF group 解碼到 A 的 TC（01:00:xx），而非 B（02:00:xx）。
+engine 層 key re-anchor 只處理「group 完全逾期」的情況，處理不了
+「group index 跨越 re-anchor 點」的邊界情況。
 
-### `src/cueplayer/playback/mtc_output.py`
-- New optional TC provider: `set_tc_provider(provider)` where
-  `provider: (position_seconds) -> Timecode | None`. `None` provider keeps the
-  legacy single `start_timecode` timebase.
-- `tick()` now resolves each quarter-frame group's TC through
-  `_tc_at_locked()` (provider or timebase). A `None` result sends **no**
-  quarter frames for that group (index still advances — no burst on resume).
-- Resuming from a no-TC stretch re-anchors (`_reset_qf_locked` + full frame)
-  so receivers latch the new mapping.
-- `_send_full_frame_locked()` uses the provider; no full frame is emitted at
-  positions with no TC source.
-- `timecode_at()` falls back to the timebase when the provider yields `None`
-  (engine display does not rely on it in clip mode).
+### 問題 2：exact-end — 確認存在
+舊 `clip_at_position()` 對任何 Clip 的 exact end point（無後續 Clip 接續
+時）仍回傳該 Clip → `ltc_timecode_at()` / display / MTC source key 認為
+「有 TC」，但 PCM cache（end-exclusive）已 silence。四層不一致。
 
-### `src/cueplayer/playback/audio_engine.py`
-- `_resolved_ltc_mode()`: domain `resolved_song_ltc_source_mode` for the
-  active song; no song → legacy resolution from project settings.
-- `_uses_clip_ltc()`: `ltc_enabled` + resolved `clip_generator`.
-- `_uses_generated_ltc()`: now resolved-mode based. Legacy `auto` songs
-  resolve exactly as before (generator + `ltc_generator_enabled` gate);
-  explicit `full_track_generator` behaves like the legacy generator
-  (still gated by project `ltc_enabled` / `ltc_generator_enabled`); explicit
-  `off` / `striped_file` stop the full-track generator; `clip_generator`
-  never uses the full-track pcm (mutual exclusion).
-- Per-clip LTC PCM cache (`_ltc_clip_table`: `(timeline_start, timeline_end,
-  pcm)` per clip), built async on the existing `_ltc_executor`, keyed on
-  (sample rate, fps, clip set). `_clip_ltc_chunk()` mixes overlapping clip
-  slices; outside clips the chunk is silence. Fallback before the async
-  table is ready renders overlapping clips with throwaway
-  `LtcPlaybackCursor`s (O(chunk), same mapping).
-- `_ltc_chunk()` routes clip songs to `_clip_ltc_chunk()` before any
-  file-source/generator path; LTC gain applies.
-- `_ltc_bus_active()`: clip mode uses the dedicated LTC bus (or the legacy
-  3.5mm stereo-leg `LTC` route) — same wiring rules as the full-track
-  generator.
-- File-LTC suppression in clip mode (stripes cannot coexist with clips):
-  `_song_file_ltc_channel()`, `_file_ltc_channel()`,
-  `_resolved_file_ltc_channel()`, `_effective_ltc_source_channel()`,
-  `_decode_source_channel()` all return `None` when resolved mode is
-  `clip_generator`; `_sync_mtc_to_file_ltc()` never mirrors a decoded file
-  stripe in clip mode. Music bed is not stripe-stripped for clip songs.
-- MTC source install + re-anchoring:
-  - `_mtc_clip_provider()` → closure over a snapshot of `song.ltc_clips`
-    using domain `ltc_timecode_at` (single source of truth; no duplicate TC
-    math in the engine).
-  - `_install_mtc_tc_source()` called from `set_song`, `set_song_timebase`,
-    `apply_audio_settings`, `refresh_song_ltc_routing`; re-anchors when the
-    TC source identity changes.
-  - `_mtc_tc_source_key(pos)` (`("base",)` / `("none",)` / `("clip", id)`)
-    tracked in `_mtc_source_key`; `_mtc_tick()` re-anchors (full frame when a
-    mapping is active, silence outside) when the playhead crosses into/out of
-    a clip; `seek()` updates the key so the next tick doesn't double-anchor.
-- `output_timecode_state()`: clip mode shows the mapped TC inside clips and
-  `--:--:--:--` outside (never the song-start / generator fallback). Legacy
-  modes unchanged.
-- Cache invalidation (`_invalidate_ltc_cache`) also clears the clip table;
-  `pause()` keeps the stream alive when a clip table is active (video-only
-  songs with clip LTC).
-- A–B loop wrap (`_assemble_looped_ltc`) goes through `_ltc_chunk()`, so
-  loops automatically respect clip boundaries.
+## 修正內容
 
-### `tests/playback/test_ltc_clip_playback.py` (new, 20 tests)
-- In-clip chunk == per-clip `generate_ltc_pcm` slice; silence before/after;
-  straddling chunk split at the exact clip start.
-- Decoded TC inside clips matches `clip.start_timecode + offset`
-  (incl. 01:00:01:15 at +1.5 s).
-- Multiple clips restart TC at each clip's start; second clip independent of
-  the first.
-- Backward TC range (later clip starting before the earlier clip's TC) plays
-  correctly in playback (exporter warnings are later scope).
-- Adjacent clips: the later clip owns the shared boundary position.
-- Fallback renderer (cache not ready) matches the cached mapping.
-- Display: mapped TC inside, `--:--:--:--` outside (explicit check that the
-  song-start fallback is *not* shown), seek updates the display.
-- MTC: silent outside clips; full-frame re-anchor + QFs inside clip A at the
-  mapped TC; silence in the inter-clip gap; re-anchor to clip B's start TC.
-- Legacy single-timebase MTC unchanged without a provider.
-- Legacy `auto`+generator full-track pcm byte-identical; explicit
-  `full_track_generator` like legacy; explicit `off` silent; clip song with
-  generator project settings uses clips only (no full-track pcm); clip mode
-  ignores a striped file (no bus feed, no music stripping); clip display
-  independent of project `ltc_source`; LTC gain applies to clip LTC;
-  no-song legacy resolution.
+### `src/cueplayer/playback/mtc_output.py`（最小修正，僅 provider 模式生效）
+`tick()` 內、送 QF group 前新增 stale guard（`self._tc_provider is not
+None` 時才執行；legacy 單一 timebase 路徑零改動）：
+- `tc_now = provider(current_pos)` 為 `None`（現在在 gap / 無 TC）→ 該逾期
+  group 已過期 → `_reset_qf_locked(now)` 並停止本 tick 後續 group（無 Full
+  Frame，因現在沒有 TC）。
+- 否則連續性檢查：`add_frames(tc_of_group, round((now - frame_pos)*fps), fps)`
+  與 `tc_now` 相差 > 1 frame → mapping 在 group frame 與 now 之間改變
+  （跨入另一個 Clip）→ **跳過整個 stale group**
+  （`_last_qf_index = (group+1)*8 - 1`；plain reset 會把該組重新排隊造成
+  每 tick 重複丟棄的死鎖）→ 送 `now` 的 Full Frame → 本 tick 停止，下個
+  tick 從下一個 group 再開頭（piece 0 起，receiver 乾淨 latch）。
+- 容差 1 frame：同 Clip 內因 round() 產生的 ±1 frame 誤差不會誤觸發；
+  連續 TC 的相鄰 Clauses（A 尾 == B 頭）不會誤殺（該 QF 本來就是對的）。
+
+### `src/cueplayer/domain/ltc_clips.py`
+`clip_at_position()` 統一 half-open `[start, end)`：
+- `pos < start - POS_EPS` → 外；`pos >= end - POS_EPS` → 外。
+- 共享邊界（A.end == B.start）自然屬於 B（later-start wins 規則保留，
+  overlap 時仍是後起始者贏）。
+- 最後一個 Clip 的 exact end → `None`（無 TC / silence），不再有
+  「最後 Clip 含端點」特例。
+- `POS_EPS` 只吃浮點表示噪音（±1µs），真實 sample 距離邊界至少 1 個
+  sample（48kHz 下 ≈20.8µs），語義與 PCM cache 完全一致。
+- `ltc_timecode_at` / display / MTC source key 都走 `clip_at_position`，
+  一次修改四層同時一致。
+
+### 永久規則
+- `AGENTS.md` 新增「Communication language (permanent)」section。
+- `.ai/prompts/cursor_system.md` 的 Language section 改為同一規則。
+
+## 新增 regression tests
+
+`tests/playback/test_ltc_clip_playback.py`（+6 tests）：
+- `test_mtc_adjacent_clips_no_previous_clip_qf_leak`：A=[2,4.05) @01:00:00:00
+  → B=[4.05,6.05) @02:00:00:00（無 gap、TC 差 1 小時、邊界 off-grid）。
+  1ms 步進模擬播放 + 假 port 捕獲；斷言：進入 B 後有 B Full Frame + B QF；
+  **任何含邊界後 piece 的完整 QF group 都必須是 B 的 TC**（含「前 6 piece
+  在邊界前已送出」的跨邊界 group — 這正是舊實作會漏的情況）。
+  *已驗證：移除 guard 時此測試失敗（抓到洩漏）。*
+- `test_mtc_gap_then_clip_b_only_b_qf`：gap 期間零 MTC（無 Full Frame、無
+  QF）；進入 B 後只有 B 的 Full Frame / QF。
+- `test_mtc_backward_tc_clip_no_forward_leak`：B 的 start TC 比 A 更早
+  （backward jump）；進入 B 後不得出現 A 的前進 TC QF。
+- `test_exact_end_boundary_consistent_across_audio_display_mtc`：單 Clip
+  [2,5)：exact start 四層都有 TC；end 前 1 frame（4.9667s）四層都有 TC
+  （01:00:02:29）；exact end（5.0）四層全部「無 TC / silence / key=none」；
+  MTC 在 5.0 之後零輸出。
+- `test_adjacent_exact_boundary_belongs_to_b_in_all_layers`：A=[1,3)、
+  B=[3,5)：3.0 在 domain / audio / MTC key 三層都是 B；3.0 前 1 frame 仍
+  是 A。
+
+`tests/domain/test_ltc_clips.py`（+1 test，2 個既有測試改語義）：
+- `test_clip_at_position_half_open_boundaries`（新增）。
+- `test_last_clip_includes_its_end_point` → `test_exact_clip_end_has_no_timecode`
+  （exact end 改斷 None；end 前 1 frame 仍 inside）。
+- `test_gap_between_clips_has_no_timecode`（30.0 由「01:00:30:00」改為
+  None；補 29.966 仍 inside）。
 
 ## Files changed
-- `src/cueplayer/playback/audio_engine.py` (clip mapping wiring; ~230 lines
-  added incl. cache + helpers)
-- `src/cueplayer/playback/mtc_output.py` (TC provider; +~50 lines)
-- `tests/playback/test_ltc_clip_playback.py` (new)
-
-## Architecture decisions
-- Domain `ltc_clips` helpers remain the **single source** of the TC mapping;
-  the engine only ships cached PCM slices and passes the domain mapping into
-  MTC as a provider (no duplicate TC arithmetic in the playback layer).
-- MTC re-anchoring reuses the existing `on_seek`/full-frame machinery;
-  clip-boundary detection is a cheap source-key comparison per 4 ms tick.
-- Provider runs under the MTC lock and is pure (snapshot list + domain
-  function) — no engine lock → no deadlock.
-- Clip PCM is built per-clip (not one full-track buffer), so TC restarts are
-  exact and the table stays small; async build mirrors the existing
-  full-track cache pattern (published under `engine._lock`).
-- Explicit `full_track_generator` is gated by project
-  `ltc_enabled`/`ltc_generator_enabled` (conservative: an explicit song mode
-  cannot force output when the project generator switch is off).
+- `src/cueplayer/playback/mtc_output.py`（stale guard）
+- `src/cueplayer/domain/ltc_clips.py`（half-open `clip_at_position`）
+- `tests/playback/test_ltc_clip_playback.py`、`tests/domain/test_ltc_clips.py`
+- `AGENTS.md`、`.ai/prompts/cursor_system.md`（繁體中文永久規則）
 
 ## Tests performed
-- New: `tests/playback/test_ltc_clip_playback.py` — **20/20 passed**.
-- Regression: `tests/playback` (excl. `test_video_sync.py`), `tests/timecode`,
-  `tests/domain`, `tests/routing` — **462 passed, 3 failed**; all 3 failures
-  (`test_ndi_probe`, 2× `test_song_use_left_ltc`) **also fail on the clean
-  Phase-1 tree** (verified via `git stash`) → pre-existing, unrelated.
-- `tests/playback/test_video_sync.py` — 82 passed, 1 failed
-  (`test_duplicate_decoded_frame_is_not_reemitted`), identical on the clean
-  tree; an intermittent Windows AV in the video-decoder thread also occurred
-  in a combined run on the clean tree (fragile media area, not touched here).
-- `tests/ui` — 60 passed up to a pre-existing font-rendering failure
-  (`test_clock_fit_narrow_panel`), identical on the clean tree.
+- 新文件全綠：`tests/playback/test_ltc_clip_playback.py` **25/25**、
+  `tests/domain/test_ltc_clips.py` **21/21**。
+- Guard 有效性：暫時移除 guard → adjacent + backward 兩測試失敗（證明測試
+  抓得到洩漏）；還原 → 全綠。
+- 全相關 regression（除 flaky 的 `test_video_sync.py` 與 `tests/ui`）：
+  **951 passed, 3 failed** — 3 個 failed 全部為 clean tree 既有的
+  （`test_ndi_probe` DLL-path、2× `test_song_use_left_ltc` route-map），
+  已於先前 session 以 `git stash` 驗證與本次改動無關。
+- `tests/playback/test_video_sync.py`：82 passed / 1 failed
+  （`test_duplicate_decoded_frame_is_not_reemitted`，與 clean tree 相同）。
+- `tests/ui`：崩潰前 2 個 F 為既有 font-rendering failure
+  （`test_clock_fit_narrow_panel`）；其後 `webrtc_listen` asyncio 線程
+  Windows stack overflow crash — 既有環境性 flake（web_remote + asyncio，
+  與本次改動無關模組）。
 
 ## Remaining issues
-- Pre-existing test failures (unrelated): NDI probe DLL-path test,
-  `song_use_left_ltc` routing tests (route-map assertion), video-sync
-  flake/AV, clock font-fit test.
-- `MtcOutput.tick()` QF groups straddling a clip boundary may send up to 2 TC
-  frames of the *previous* clip's TC (quantization of the 8-QF group);
-  receivers re-latch on the full frame at the boundary.
-- No UI yet to create/edit clips — Phase 3. `refresh_song_ltc_routing()` is
-  the intended hook to call after clip edits (already re-arms caches, MTC
-  source, routing, stream).
-- Exporter handling of out-of-clip marks / warnings — Phase 3 (per
-  `.ai/NEXT_TASK.md`).
+- `tests/ui` 在 Windows 上偶發 `webrtc_listen` asyncio stack overflow
+  crash（既有、環境性，未在本次 scope）。
+- 上述 3+1+2 個既有 test failures 與本次無關，留待後續清理。
+- MTC guard 的連續性容差為 1 frame：TC 差恰為 1 frame 的 degenerate
+  backward 設定下，stale group 可能不被丟棄（該設定本身會被
+  `validate_ltc_clips` 警告）。
+- Phase 3（Clip UI）尚未開始 — 見 `.ai/NEXT_TASK.md`。
 
 ## Suggested next task
-See `.ai/NEXT_TASK.md` — LTC Generator Clips Phase 3: per-song clip
-create/edit UI (timeline), validation display, then MA2/MA3 exporter wiring.
+Phase 3：LTC Generator Clip UI（timeline 顯示 / create / drag / trim /
+start TC 編輯 / validation / source mode / `refresh_song_ltc_routing`
+接線）。MA2/MA3 Exporter 移到 Phase 4。

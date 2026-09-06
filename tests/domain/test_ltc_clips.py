@@ -51,7 +51,8 @@ def test_no_timecode_outside_clips() -> None:
     assert ltc_timecode_at(song.ltc_clips, 30.0, 99.0) is None
 
 
-def test_last_clip_includes_its_end_point() -> None:
+def test_exact_clip_end_has_no_timecode() -> None:
+    """Half-open [start, end): the exact end point is outside the clip."""
     song = _song()
     add_ltc_clip(
         song,
@@ -59,7 +60,10 @@ def test_last_clip_includes_its_end_point() -> None:
         duration_seconds=20.0,
         start_timecode="03:00:00:00",
     )
-    assert ltc_timecode_at(song.ltc_clips, 30.0, 100.0).format() == "03:00:20:00"
+    # One frame before the end is still inside (frame 599 = 03:00:19:29).
+    assert ltc_timecode_at(song.ltc_clips, 30.0, 99.966).format() == "03:00:19:29"
+    # Exact end point: no TC (consistent with the end-exclusive LTC PCM).
+    assert ltc_timecode_at(song.ltc_clips, 30.0, 100.0) is None
     assert ltc_timecode_at(song.ltc_clips, 30.0, 100.001) is None
 
 
@@ -97,8 +101,9 @@ def test_gap_between_clips_has_no_timecode() -> None:
         duration_seconds=30.0,
         start_timecode="05:00:00:00",
     )
-    # Exactly 30.0 is clip 1's end point (its last boundary); just after is gap.
-    assert ltc_timecode_at(song.ltc_clips, 30.0, 30.0).format() == "01:00:30:00"
+    # Half-open: clip 1's exact end point (30.0) is already in the gap.
+    assert ltc_timecode_at(song.ltc_clips, 30.0, 29.966).format() == "01:00:29:29"
+    assert ltc_timecode_at(song.ltc_clips, 30.0, 30.0) is None
     assert ltc_timecode_at(song.ltc_clips, 30.0, 30.001) is None
     assert ltc_timecode_at(song.ltc_clips, 30.0, 70.0).format() == "05:00:00:00"
 
@@ -119,6 +124,18 @@ def test_mapping_uses_song_fps_for_frames() -> None:
 def test_clip_at_position_returns_none_for_empty_clips() -> None:
     song = _song()
     assert clip_at_position(song.ltc_clips, 5.0) is None
+
+
+def test_clip_at_position_half_open_boundaries() -> None:
+    """[start, end): start included, end excluded."""
+    song = _song()
+    clip = add_ltc_clip(song, timeline_start_seconds=2.0, duration_seconds=3.0,
+                        start_timecode="01:00:00:00")
+    assert clip_at_position(song.ltc_clips, 1.999) is None
+    assert clip_at_position(song.ltc_clips, 2.0) is clip
+    assert clip_at_position(song.ltc_clips, 4.999) is clip
+    assert clip_at_position(song.ltc_clips, 5.0) is None
+    assert clip_at_position(song.ltc_clips, 5.001) is None
 
 
 def test_invalid_clip_start_timecode_maps_to_none() -> None:
