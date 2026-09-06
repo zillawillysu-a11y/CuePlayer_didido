@@ -3080,6 +3080,10 @@ class TimelineWidget(QWidget):
         move with PPS; pixel/font size stays constant.
         """
         self._paint_ruler_labels(painter)
+        if self._ltc_clip_lane_active():
+            # Clip rects/text must track PPS geometry without being resampled
+            # from a stretched raster — repaint them live every zoom frame.
+            self._paint_ltc_clips(painter)
         sprites = self._mark_annotation_sprites
         if not sprites:
             return
@@ -3162,7 +3166,10 @@ class TimelineWidget(QWidget):
             sp.setFont(self.font())
             with perf_diag.span("timeline.mark_backdrop.rebuild_ms"):
                 self._paint_static_layers(
-                    sp, include_marks=False, include_ruler_labels=False
+                    sp,
+                    include_marks=False,
+                    include_ruler_labels=False,
+                    include_ltc_clips=False,
                 )
             sp.end()
 
@@ -3173,6 +3180,8 @@ class TimelineWidget(QWidget):
             fp.setFont(self.font())
             tracks_top = self._tracks_top_y()
             self._paint_ruler_labels(fp)
+            if self._ltc_clip_lane_active():
+                self._paint_ltc_clips(fp)
             self._paint_marks(
                 fp,
                 start_y=tracks_top,
@@ -3241,7 +3250,10 @@ class TimelineWidget(QWidget):
                 continue
             color = QColor(lane.color if lane else "#ffffff")
             shape = lane.marker_shape if lane is not None else "circle"
-            size = max(5.0, self._lane_height * 0.28)
+            selected = mark.id in self._selected_mark_ids
+            hovered = mark.id == self._hover_mark_id
+            ring = selected or hovered
+            size = max(5.0, self._lane_height * (0.36 if selected else 0.28))
             wave_lines: list[str] = []
             if lane is not None:
                 show_cue = bool(getattr(lane, "show_cue_id_on_wave", False))
@@ -3287,8 +3299,8 @@ class TimelineWidget(QWidget):
                 color,
                 shape,
                 size=size,
-                outline=QColor(255, 255, 255, 210),
-                outline_width=1.8,
+                outline=QColor(255, 255, 255, 230 if selected else 210) if ring else None,
+                outline_width=2.2 if selected else (2.0 if hovered else 1.8),
             )
             p.end()
             out.append(
@@ -3336,12 +3348,13 @@ class TimelineWidget(QWidget):
         *,
         include_marks: bool = True,
         include_ruler_labels: bool = True,
+        include_ltc_clips: bool = True,
     ) -> None:
         self._paint_ruler(painter, include_labels=include_ruler_labels)
         wave_bottom = self._paint_waveform(painter)
         self._paint_beat_grids(painter)
         self._paint_video_lane(painter)
-        self._paint_ltc_lane(painter)
+        self._paint_ltc_lane(painter, include_clips=include_ltc_clips)
         tracks_top = self._tracks_top_y()
         self._paint_lanes(painter, start_y=tracks_top)
         if include_marks:
@@ -6373,7 +6386,7 @@ class TimelineWidget(QWidget):
         painter.setPen(QColor("#27272a"))
         painter.drawLine(QPointF(self._header_width, mid), QPointF(right, mid))
 
-    def _paint_ltc_lane(self, painter: QPainter) -> None:
+    def _paint_ltc_lane(self, painter: QPainter, *, include_clips: bool = True) -> None:
         if not self._ltc_lane_visible():
             return
         top = self._ltc_lane_top_y()
@@ -6386,7 +6399,12 @@ class TimelineWidget(QWidget):
         if self._ltc_clip_lane_active():
             # Generator-clip editing lane: blank outside clips, clips carry the
             # start TC. No waveform (there is no file stripe in this mode).
-            self._paint_ltc_clips(painter)
+            # Clip rects/text are excluded from the raster spatial cache (they
+            # must never be stretched during zoom preview) — see
+            # ``_paint_zoom_screen_annotations`` which redraws them live at
+            # the current PPS/geometry every frame instead.
+            if include_clips:
+                self._paint_ltc_clips(painter)
             return
         if self._ltc_audio is None:
             return
