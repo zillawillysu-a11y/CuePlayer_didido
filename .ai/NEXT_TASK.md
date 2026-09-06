@@ -5,6 +5,9 @@ LTC Generator Clips — Phase 4: **MA2 + MA3 exporter wiring for
 feature; domain / playback / hardening / UI are complete — see
 `.ai/handoffs/2026-09-06_LtcClipsUiPhase3.md`).
 
+Phase 3 legacy `auto` dialog compatibility hardening completed; see
+`.ai/handoffs/2026-09-06_LtcSourceAutoPhase3Hardening.md`.
+
 **Scope:**
 1. `full_track_generator`: unchanged math (existing Timecode export stays as
    is).
@@ -33,7 +36,7 @@ feature; domain / playback / hardening / UI are complete — see
 **Carry-over (not blocking):**
 - PySide6 intermittent `LOAD_ATTR` AttributeError on direct private reads of
   TimelineWidget from test code (worked around with `getattr()` in tests;
-  see `.ai/REPORT.md` architecture decision 6).
+  see `.ai/handoffs/2026-09-06_LtcClipsUiPhase3.md` architecture decision 6).
 - Reset audio callback continuity counters on stream open (small planned
   diagnostic fix).
 - Physical loopback 440 Hz + long-capture drift check (parked by user).

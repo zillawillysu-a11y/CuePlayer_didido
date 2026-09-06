@@ -68,7 +68,7 @@ class SongDraft:
     file_ltc_side: str = "auto"
     # Per-song LTC source mode (explicit one of off / striped_file /
     # full_track_generator / clip_generator). Legacy "auto" is resolved for
-    # display and written back as an explicit mode on accept.
+    # display and preserved until the user explicitly selects a source mode.
     ltc_source_mode: str = "auto"
     # True when the Edit Song file cell Clear button wiped media.
     media_cleared: bool = False
@@ -257,6 +257,7 @@ class SongEditDialog(QDialog):
         if not drafts:
             raise ValueError("SongEditDialog requires at least one draft")
         self._project = project
+        self._ltc_source_activated_rows: set[int] = set()
         self.setWindowTitle(title)
         width = 1200 if len(drafts) > 1 else 1040
         self.resize(width, min(480, 180 + 44 * len(drafts)))
@@ -402,6 +403,11 @@ class SongEditDialog(QDialog):
                 current = self._resolved_auto_mode(current)
             idx = source_combo.findData(current)
             source_combo.setCurrentIndex(idx if idx >= 0 else source_combo.findData("striped_file"))
+            # activated is user-only and also fires when reselecting the
+            # displayed mode; programmatic initialization is not an edit.
+            source_combo.activated.connect(
+                lambda _index, row=row: self._ltc_source_activated_rows.add(row)
+            )
             source_combo.setToolTip(
                 "Where this song’s output timecode comes from (mutually exclusive). "
                 "Clip Generator: generated LTC only inside LTC clips on the timeline."
@@ -454,6 +460,8 @@ class SongEditDialog(QDialog):
         return "auto"
 
     def _ltc_source_at_row(self, row: int) -> str:
+        if self._drafts[row].ltc_source_mode == "auto" and row not in self._ltc_source_activated_rows:
+            return "auto"
         widget = self.table.cellWidget(row, _COL_LTC_SOURCE)
         if isinstance(widget, QComboBox):
             return str(widget.currentData() or "off")
