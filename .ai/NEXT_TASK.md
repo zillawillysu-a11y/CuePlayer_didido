@@ -1,17 +1,30 @@
 ﻿# Next task
 
-Capture Tools → Write Performance Report during affected Focusrite USB ASIO
-playback (including seek/loop), then analyze rate consistency and DAC shadow
-against legacy UI timing. Confirm interface model and physical loopback setup
-before promoting any presentation-clock correction.
+Physical loopback pitch test on the Scarlett 4i4, then a longer continuous
+capture. Do NOT apply any clock correction before these results.
 
-Company hardware now exposes Focusrite USB ASIO, 6 in / 4 out. Silent 5/10-second
-checks: 44100 Hz, 1024 frames, reported 49.864 ms latency, no status flags,
-but nonuniform DAC intervals. Not physical timing or symptom certification.
-Source GUI launched with diagnostics; affected playback report still pending.
-See docs/audit/2026-09-06/README.md and the company Focusrite handoff.
+1. Loopback: play a known pure sine (e.g. 440.000 Hz) at constant level through
+   the Focusrite, route line-out -> line-in (or a second ASIO device), record
+   30–60 s, and measure the output frequency over time (FFT / freq track).
+   This measures the physical output pitch and any drift, independent of the
+   driver's internal sample counter.
+2. Long capture: continuous playback for 5–10 minutes with periodic
+   `Tools -> Write Performance Report` dumps, to check whether dac_time vs
+   host_monotonic drifts away from 1.0 over minutes (slow-drift trend).
 
-Software slices committed: diagnostics, stream-rate consistency/failure recovery,
-DAC shadow, waveform LOD/tail/zoom, video waveform batch carry, callback multiwrap,
-bounded MTC discontinuity recovery. No claim that all audit phases are complete.
-See .ai/REPORT.md, CUEPLAYER_TECHNICAL_AUDIT.md and docs/AUDIO_TIMING_DIAGNOSTICS.md.
+Background (2026-09-06 capture analysis): three manual dumps from one live
+Focusrite USB ASIO stream (epoch 6, 48000 Hz, 1024 frames, 2 ch) show a clean,
+stable 48 kHz vs the host clock (worst ~35 ppm = ~0.06 cents, ~two orders of
+magnitude below an audible key drift), no underflow, and only single-callback
+~21 ms stalls. The audible KEY/pitch drift is NOT explained by the ASIO sample
+rate or DAC clock in that data. The `Audio callback continuity` counters are
+cumulative since engine creation (misleading for the current stream); the
+per-ring `audio.timing` data is the correct signal.
+
+Follow-up diagnostic fix (planned, separate task): reset the audio callback
+continuity counters (callback_count, interval sum/max, exec, deadline_miss)
+on stream open so the report section reflects the current stream.
+
+No presentation-clock correction has been made. See .ai/REPORT.md,
+.ai/handoffs/2026-09-06_FocusriteKeyDriftAnalysis.md,
+docs/AUDIO_TIMING_DIAGNOSTICS.md and docs/audit/2026-09-06/README.md.
