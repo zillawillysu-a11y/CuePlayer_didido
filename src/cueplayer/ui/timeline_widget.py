@@ -108,6 +108,10 @@ class TimelineWidget(QWidget):
     delete_requested = Signal(list)  # list[str] mark ids
     marks_changed = Signal()
     marks_moved = Signal(object)  # dict[str, tuple[float, float]]
+    # Marquee-selection group move committed in one gesture, across types —
+    # one undo entry. Each dict is {id: (old_transform, new_transform)}, empty
+    # when that type had no selected/changed items.
+    group_move_committed = Signal(object, object, object)  # video, ltc, mark changes
     offset_requested = Signal(list, float)  # mark ids, delta seconds
     note_rename_requested = Signal(str, str, str)  # mark_id, old_name, new_name
     cue_id_edit_requested = Signal(str, str, str)  # mark_id, old_id, new_id
@@ -298,6 +302,21 @@ class TimelineWidget(QWidget):
         self._box_origin = QPointF()
         self._box_current = QPointF()
         self._box_base_ids: set[str] = set()
+        self._box_base_video_ids: set[str] = set()
+        self._box_base_ltc_ids: set[str] = set()
+        # Cross-type group move: dragging any selected Video Clip / LTC Clip /
+        # Mark while the combined selection spans more than one item (and
+        # includes at least one clip) moves everything selected by the same
+        # shared delta in one gesture / one undo entry. A marks-only
+        # multi-selection keeps using the older `_dragging_marks` path below
+        # (unchanged, including its beat-grid snap) since it never needs to
+        # touch clips.
+        self._group_dragging = False
+        self._group_drag_origin_x = 0.0
+        self._group_drag_moved = False
+        self._group_video_snapshot: dict[str, tuple[float, float, float]] = {}
+        self._group_ltc_snapshot: dict[str, tuple[float, float, str]] = {}
+        self._group_mark_snapshot: dict[str, float] = {}
         self._dragging_marks = False
         self._drag_moved = False
         self._drag_ids: set[str] = set()
@@ -1767,15 +1786,63 @@ class TimelineWidget(QWidget):
                     hit.add(mark.id)
         return hit
 
+    def _video_clips_in_box(self, rect: QRectF) -> set[str]:
+        """Marquee hit-test for Video Clips — item rect vs. box rect intersection."""
+        if self._song is None or not self._video_lane_visible():
+            return set()
+        top = float(self._video_lane_top_y())
+        bottom = top + float(self._video_lane_base_height)
+        lane_rect = QRectF(
+            float(self._header_width), top, max(0.0, float(self.width()) - self._header_width), max(1.0, bottom - top)
+        )
+        if not rect.intersects(lane_rect):
+            return set()
+        hit: set[str] = set()
+        for clip in self._song.video_clips:
+            x0 = self._x_for_time(clip.start_seconds)
+            x1 = self._x_for_time(clip.end_seconds)
+            clip_rect = QRectF(min(x0, x1), top, max(1.0, abs(x1 - x0)), max(1.0, bottom - top))
+            if rect.intersects(clip_rect):
+                hit.add(clip.id)
+        return hit
+
+    def _ltc_clips_in_box(self, rect: QRectF) -> set[str]:
+        """Marquee hit-test for LTC Clips — item rect vs. box rect intersection."""
+        if self._song is None or not self._ltc_clip_lane_active():
+            return set()
+        top = float(self._ltc_lane_top_y())
+        bottom = top + float(self._ltc_band_height())
+        lane_rect = QRectF(
+            float(self._header_width), top, max(0.0, float(self.width()) - self._header_width), max(1.0, bottom - top)
+        )
+        if not rect.intersects(lane_rect):
+            return set()
+        hit: set[str] = set()
+        for clip in self._song.ltc_clips:
+            x0 = self._x_for_time(clip.timeline_start_seconds)
+            x1 = self._x_for_time(clip.end_seconds)
+            clip_rect = QRectF(min(x0, x1), top, max(1.0, abs(x1 - x0)), max(1.0, bottom - top))
+            if rect.intersects(clip_rect):
+                hit.add(clip.id)
+        return hit
+
     def _selection_box_rect(self) -> QRectF:
         return QRectF(self._box_origin, self._box_current).normalized()
 
     def _emit_box_preview(self) -> None:
-        boxed = self._marks_in_box(self._selection_box_rect())
+        rect = self._selection_box_rect()
+        boxed_marks = self._marks_in_box(rect)
+        boxed_video = self._video_clips_in_box(rect)
+        boxed_ltc = self._ltc_clips_in_box(rect)
         if self._box_additive:
-            self._selected_mark_ids = set(self._box_base_ids) | boxed
+            self._selected_mark_ids = set(self._box_base_ids) | boxed_marks
+            self._selected_clip_ids = set(self._box_base_video_ids) | boxed_video
+            self._selected_ltc_clip_ids = set(self._box_base_ltc_ids) | boxed_ltc
         else:
-            self._selected_mark_ids = boxed
+            self._selected_mark_ids = boxed_marks
+            self._selected_clip_ids = boxed_video
+            self._selected_ltc_clip_ids = boxed_ltc
+        self._sync_video_clip_volume_ui()
         self.update()
 
     def event(self, e) -> bool:  # noqa: ANN001, N802
@@ -2066,7 +2133,14 @@ class TimelineWidget(QWidget):
     ) -> None:
         self._box_selecting = True
         self._box_additive = additive
-        self._box_base_ids = set(self._selected_mark_ids) if additive else set()
+        if additive:
+            self._box_base_ids = set(self._selected_mark_ids)
+            self._box_base_video_ids = set(self._selected_clip_ids)
+            self._box_base_ltc_ids = set(self._selected_ltc_clip_ids)
+        else:
+            self._box_base_ids = set()
+            self._box_base_video_ids = set()
+            self._box_base_ltc_ids = set()
         self._box_origin = pos
         self._box_current = pos
         self._box_click_seek = click_seek
@@ -2075,6 +2149,8 @@ class TimelineWidget(QWidget):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         if not additive:
             self._selected_mark_ids.clear()
+            self._selected_clip_ids.clear()
+            self._selected_ltc_clip_ids.clear()
         self.update()
 
     def _begin_pan(self, x: float, *, click_seek: float | None = None) -> None:
@@ -4111,6 +4187,171 @@ class TimelineWidget(QWidget):
                     self.ltc_clip_edited.emit(clip_id, old, new)
         self._ltc_clip_drag_snapshot = {}
 
+    # ------------------------------------------------------------------
+    # Cross-type group move (marquee multi-selection drag).
+    # ------------------------------------------------------------------
+
+    def _group_move_candidate(self) -> bool:
+        """True when the combined selection has >1 item and includes a clip.
+
+        A marks-only multi-selection keeps using the older ``_dragging_marks``
+        path (beat-grid snap etc.) since it never needs to touch clips.
+        """
+        total = (
+            len(self._selected_clip_ids)
+            + len(self._selected_ltc_clip_ids)
+            + len(self._selected_mark_ids)
+        )
+        has_clip = bool(self._selected_clip_ids or self._selected_ltc_clip_ids)
+        return total > 1 and has_clip
+
+    def _begin_group_drag(self, x: float) -> None:
+        if self._song is None:
+            return
+        self._group_video_snapshot = {}
+        for cid in self._selected_clip_ids:
+            clip = self._song.video_clip_by_id(cid)
+            if clip is not None and not clip.locked:
+                self._group_video_snapshot[cid] = (
+                    clip.start_seconds, clip.source_in_seconds, clip.duration_seconds
+                )
+        self._group_ltc_snapshot = {}
+        for cid in self._selected_ltc_clip_ids:
+            clip = self._song.ltc_clip_by_id(cid)
+            if clip is not None:
+                self._group_ltc_snapshot[cid] = (
+                    clip.timeline_start_seconds, clip.duration_seconds, clip.start_timecode
+                )
+        self._group_mark_snapshot = {}
+        for mid in self._selected_mark_ids:
+            mark = self._song.mark_by_id(mid)
+            if mark is None:
+                continue
+            lane = self._song.lane_by_index(mark.lane_index)
+            if lane is not None and lane.locked:
+                continue
+            self._group_mark_snapshot[mid] = mark.time_seconds
+        if not (
+            self._group_video_snapshot or self._group_ltc_snapshot or self._group_mark_snapshot
+        ):
+            return
+        self._group_dragging = True
+        self._group_drag_moved = False
+        self._group_drag_origin_x = x
+        self._view_pinned = True
+        self.grabMouse()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self.update()
+
+    def _clamp_group_delta_for_ltc_overlap(self, dt: float) -> float:
+        """Deterministic, group-wide clamp: selected LTC clips must not
+        overlap any unselected LTC clip after the move. Never modified
+        individually — one shared bound for the whole group."""
+        if not self._group_ltc_snapshot or self._song is None:
+            return dt
+        others = [c for c in self._song.ltc_clips if c.id not in self._group_ltc_snapshot]
+        song_end = max(0.0, float(self._song.duration_seconds))
+        dt_lo, dt_hi = -1e12, 1e12
+        for start0, dur0, _tc0 in self._group_ltc_snapshot.values():
+            end0 = start0 + dur0
+            dt_hi = min(dt_hi, song_end - end0)
+            for other in others:
+                o0 = float(other.timeline_start_seconds)
+                o1 = float(other.end_seconds)
+                if o0 >= end0 - POS_EPS:
+                    dt_hi = min(dt_hi, o0 - end0)
+                elif o1 <= start0 + POS_EPS:
+                    dt_lo = max(dt_lo, o1 - start0)
+                # Else: already overlapping before the drag — pre-existing
+                # state, not this gesture's concern to fix.
+        if dt_lo > dt_hi:
+            return 0.0
+        return max(dt_lo, min(dt_hi, dt))
+
+    def _clamp_group_delta(self, dt: float) -> float:
+        """Clamp the whole group's shared delta once — never per item, so
+        relative spacing between every selected item is preserved exactly."""
+        starts = (
+            [s for s, _si, _d in self._group_video_snapshot.values()]
+            + [s for s, _d, _tc in self._group_ltc_snapshot.values()]
+            + list(self._group_mark_snapshot.values())
+        )
+        if not starts:
+            return dt
+        min_start = min(starts)
+        if min_start + dt < 0.0:
+            dt = -min_start
+        return self._clamp_group_delta_for_ltc_overlap(dt)
+
+    def _update_group_drag(self, x: float) -> None:
+        if self._song is None or not self._group_dragging:
+            return
+        dx = x - self._group_drag_origin_x
+        if abs(dx) >= self._drag_slop:
+            self._group_drag_moved = True
+        if not self._group_drag_moved:
+            return
+        dt = self._clamp_group_delta(dx / max(1e-6, self._pixels_per_second))
+        for cid, (start0, _src_in0, _dur0) in self._group_video_snapshot.items():
+            clip = self._song.video_clip_by_id(cid)
+            if clip is not None:
+                clip.start_seconds = max(0.0, start0 + dt)
+        for cid, (start0, _dur0, _tc0) in self._group_ltc_snapshot.items():
+            clip = self._song.ltc_clip_by_id(cid)
+            if clip is not None:
+                clip.timeline_start_seconds = max(0.0, start0 + dt)
+        duration = self._duration()
+        for mid, t0 in self._group_mark_snapshot.items():
+            mark = self._song.mark_by_id(mid)
+            if mark is not None:
+                mark.time_seconds = min(duration, max(0.0, t0 + dt))
+        self._update_video_lane()
+        self._update_ltc_lane()
+        self.update()
+
+    def _end_group_drag(self) -> None:
+        moved = self._group_drag_moved
+        was_group = self._group_dragging
+        self._group_dragging = False
+        self._group_drag_moved = False
+        if was_group and moved and self._song is not None:
+            video_changes: dict[str, tuple[tuple, tuple]] = {}
+            for cid, old in self._group_video_snapshot.items():
+                clip = self._song.video_clip_by_id(cid)
+                if clip is None:
+                    continue
+                new = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
+                if abs(old[0] - new[0]) > 1e-6:
+                    video_changes[cid] = (old, new)
+            ltc_changes: dict[str, tuple[tuple, tuple]] = {}
+            for cid, old in self._group_ltc_snapshot.items():
+                clip = self._song.ltc_clip_by_id(cid)
+                if clip is None:
+                    continue
+                new = (clip.timeline_start_seconds, clip.duration_seconds, clip.start_timecode)
+                if abs(old[0] - new[0]) > 1e-6:
+                    ltc_changes[cid] = (old, new)
+            mark_changes: dict[str, tuple[float, float]] = {}
+            for mid, old_t in self._group_mark_snapshot.items():
+                mark = self._song.mark_by_id(mid)
+                if mark is None:
+                    continue
+                if abs(mark.time_seconds - old_t) > 1e-6:
+                    mark_changes[mid] = (old_t, mark.time_seconds)
+            if video_changes:
+                self._song.sort_video_clips()
+            if ltc_changes:
+                self._song.ltc_clips = sorted_ltc_clips(self._song.ltc_clips)
+            if mark_changes:
+                self._song.sort_marks()
+            if video_changes or ltc_changes or mark_changes:
+                self.group_move_committed.emit(video_changes, ltc_changes, mark_changes)
+                if video_changes or ltc_changes:
+                    self.video_clips_changed.emit()
+        self._group_video_snapshot = {}
+        self._group_ltc_snapshot = {}
+        self._group_mark_snapshot = {}
+
     def _show_ltc_clip_context_menu(self, pos, x: float, y: float) -> None:  # noqa: ANN001
         """Context menu for the whole LTC lane (stripe-inspect or clip lane).
 
@@ -4429,20 +4670,40 @@ class TimelineWidget(QWidget):
                 # Prefer clip select/drag over the Video lane splitter so clicks
                 # near the bottom of a clip still select during playback.
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                self._begin_video_clip_interaction(
-                    clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
-                )
+                if (
+                    clip_hit[1] == "body"
+                    and not shift
+                    and not ctrl
+                    and clip_hit[0] in self._selected_clip_ids
+                    and self._group_move_candidate()
+                ):
+                    self._begin_group_drag(x)
+                else:
+                    self._begin_video_clip_interaction(
+                        clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
+                    )
             elif (ltc_clip_hit := self._hit_ltc_clip(x, y)) is not None:
                 # Double-click on the body edits the clip (see
                 # mouseDoubleClickEvent); the first press already selected it.
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                self._begin_ltc_clip_interaction(
-                    ltc_clip_hit[0], ltc_clip_hit[1], x, shift=shift, ctrl=ctrl
-                )
+                if (
+                    ltc_clip_hit[1] == "body"
+                    and not shift
+                    and not ctrl
+                    and ltc_clip_hit[0] in self._selected_ltc_clip_ids
+                    and self._group_move_candidate()
+                ):
+                    self._begin_group_drag(x)
+                else:
+                    self._begin_ltc_clip_interaction(
+                        ltc_clip_hit[0], ltc_clip_hit[1], x, shift=shift, ctrl=ctrl
+                    )
             elif self._in_ltc_lane(x, y):
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                if not (shift or ctrl):
-                    self.set_selected_ltc_clip_ids([])
+                if shift or ctrl:
+                    self._begin_box_select(event.position(), additive=True)
+                else:
+                    self._begin_box_select(event.position(), additive=False)
             elif self._near_video_lane_split(y):
                 self._resizing_video_lane = True
                 self.grabMouse()
@@ -4478,11 +4739,21 @@ class TimelineWidget(QWidget):
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 self.update()
             elif (hit_id := self._hit_mark_at(x, y)) is not None:
-                self._begin_mark_interaction(hit_id, x, y, shift=shift, ctrl=ctrl)
+                if (
+                    not shift
+                    and not ctrl
+                    and hit_id in self._selected_mark_ids
+                    and self._group_move_candidate()
+                ):
+                    self._begin_group_drag(x)
+                else:
+                    self._begin_mark_interaction(hit_id, x, y, shift=shift, ctrl=ctrl)
             elif self._in_video_lane(x, y):
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
-                if not (shift or ctrl):
-                    self.set_selected_video_clip_ids([])
+                if shift or ctrl:
+                    self._begin_box_select(event.position(), additive=True)
+                else:
+                    self._begin_box_select(event.position(), additive=False)
             elif self._box_select_mode and (
                 self._in_mark_tracks(x, y) or self._in_scrub_zone(x, y) or shift
             ):
@@ -4498,7 +4769,10 @@ class TimelineWidget(QWidget):
                 self.grabMouse()
                 self.setCursor(Qt.CursorShape.ArrowCursor)
             elif self._in_mark_tracks(x, y):
-                self.clear_selection()
+                if shift or ctrl:
+                    self._begin_box_select(event.position(), additive=True)
+                else:
+                    self._begin_box_select(event.position(), additive=False)
             elif x >= self._header_width:
                 self.clear_selection()
         elif event.button() == Qt.MouseButton.MiddleButton:
@@ -4610,6 +4884,8 @@ class TimelineWidget(QWidget):
                         continue
                     m.time_seconds = min(max(0.0, start_t + dt), duration)
                 self.update()
+        elif self._group_dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            self._update_group_drag(x)
         elif self._dragging_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             self._update_video_clip_drag(x, snap=not shift)
@@ -4912,6 +5188,13 @@ class TimelineWidget(QWidget):
             self.update()
             super().mouseReleaseEvent(event)
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._group_dragging:
+            self.releaseMouse()
+            self._end_group_drag()
+            self._restore_hover_cursor(event.position().x(), event.position().y())
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton and (
             self._dragging_clip is not None or self._trimming_clip is not None
         ):
@@ -4977,6 +5260,8 @@ class TimelineWidget(QWidget):
                 else:
                     self._box_current = event.position()
                     self._emit_box_preview()
+                    self.video_clip_selection_changed.emit(list(self._selected_clip_ids))
+                    self.ltc_clip_selection_changed.emit(list(self._selected_ltc_clip_ids))
                     self.selection_changed.emit(list(self._selected_mark_ids))
             if was_drag and not drag_moved and click_seek is not None:
                 self._emit_seek(click_seek, input_source="mark_object")

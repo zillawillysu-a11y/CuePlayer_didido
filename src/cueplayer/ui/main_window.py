@@ -161,6 +161,7 @@ from cueplayer.domain.undo import (
     EditLtcClipsCommand,
     EditMainCueIdCommand,
     EditVideoClipsCommand,
+    GroupMoveCommand,
     LtcClipSnapshot,
     MarkSnapshot,
     MoveMarksCommand,
@@ -1459,6 +1460,7 @@ class MainWindow(QMainWindow):
         self.timeline.beat_grid_delete_requested.connect(self._delete_beat_grid)
         self.timeline.marks_changed.connect(self._on_marks_changed)
         self.timeline.marks_moved.connect(self._on_marks_moved)
+        self.timeline.group_move_committed.connect(self._on_group_move_committed)
         self.timeline.offset_requested.connect(self._offset_marks)
         self.timeline.loop_changed.connect(self._on_loop_region_dragged)
         self.timeline.video_clips_changed.connect(self._on_video_clips_changed)
@@ -5958,6 +5960,32 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._refresh_marks_ui()
 
+    def _on_group_move_committed(
+        self, video_changes: object, ltc_changes: object, mark_changes: object
+    ) -> None:
+        """Marquee-selection group drag release — one undo entry across types."""
+        video = dict(video_changes) if isinstance(video_changes, dict) else {}
+        ltc = dict(ltc_changes) if isinstance(ltc_changes, dict) else {}
+        marks = dict(mark_changes) if isinstance(mark_changes, dict) else {}
+        if not (video or ltc or marks):
+            return
+        from cueplayer.domain.main_cue_id import refresh_main_cue_ids
+
+        self._push_song_undo(
+            GroupMoveCommand(video_changes=video, ltc_changes=ltc, mark_changes=marks)
+        )
+        if marks:
+            refresh_main_cue_ids(self.current_song, mark_ids=set(marks.keys()))
+        if video or ltc:
+            self.video_sync.refresh()
+            self.engine.refresh_video_clips()
+        if ltc:
+            self.engine.refresh_song_ltc_routing()
+            self.timeline.invalidate_static_layers(reason="group_move_ltc")
+        self.timeline.refresh_video_clip_waveforms()
+        self._mark_dirty()
+        self._refresh_marks_ui()
+
     def _offset_marks(self, mark_ids: list, delta: float) -> None:
         if not mark_ids or abs(delta) < 1e-9:
             return
@@ -8186,6 +8214,7 @@ class MainWindow(QMainWindow):
         DeleteLtcClipsCommand,
         EditLtcClipsCommand,
         SetLtcSourceModeCommand,
+        GroupMoveCommand,
     )
 
     def _is_ltc_command(self, command: object) -> bool:

@@ -1,78 +1,83 @@
-# Multiple Video Clips — Music-lane stand-in waveform only covered clip #1
+# Marquee Multi-Selection + Group Move (Phase 1)
 
-Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Baseline: `a77dc31`. Status: complete.
+Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Baseline: `8be59df`. Status: complete.
 
 ## Task objective
 
-Bugfix: a Song's Video Track with 2+ Video Clips only showed the Music-lane
-video-audio stand-in waveform over the first clip's region; clip #2+ regions stayed
-blank even though the clips existed correctly on the timeline. Audit first, confirm
-root cause, minimal fix, regression tests, no packaging.
+Add marquee/box selection across Video Clips, LTC Clips, and Marks in one drag, and group
+move for the selected set with one shared delta and one undo entry. Ripple Edit / Insert
+Gap is an explicitly separate future phase.
 
-## Root cause (confirmed with user via clarifying question before fixing)
+## What changed
 
-Two waveform surfaces exist. The Video Track lane's own per-clip waveform
-(`_paint_video_clip_waveform` / `VideoClipWaveformCache`) was already correct for any
-number of clips — verified with new regression tests, not touched.
-
-The bug was in the **Music-lane video-audio stand-in** (shown when a Song has no music
-audio track, substituting the video's own embedded audio as the Music-lane waveform):
-`TimelineWidget` held a single mutable `_artifact_wave`/`_artifact_wave_clip` pair, and
-`MainWindow._primary_video_clip_for_standin()` always picked the first eligible clip.
-`_paint_artifact_waveform` masked every pixel outside that one clip's `[start, end)`
-span to NaN (blank). Clips #2+ never got their own artifact/clip binding at all.
-
-## Fix
-
-- `TimelineWidget`: replaced the single pair with
-  `self._artifact_waves: dict[clip_id, (artifact, clip, complete)]`;
-  `set_artifact_waveform_for_clip` / `clear_artifact_waveform_for_clip` /
-  `prune_artifact_waveforms`; `_paint_artifact_waveform` now takes an explicit `clip`
-  param and is called once per dict entry, each painting only its own clip's span.
-- `MainWindow`: `_schedule_video_music_standin` / `_on_video_standin_finished` now walk
-  every eligible clip in turn (one build at a time, on the existing single-worker
-  executor) instead of stopping after the first clip; the `_video_standin_finished`
-  Signal now carries the `clip_id` so results are routed to the right clip's entry
-  instead of a single global slot.
-- Full detail, all edge cases (same-media clips, delete, split/duplicate, trim/move
-  live-reference correctness, legacy AudioBuffer path guard): see
-  `.ai/handoffs/2026-09-07_MultiVideoClipMusicStandinWaveformFix.md`.
+- Selection (`timeline_widget.py`): the three existing per-type `set[str]` selection fields
+  now coexist (marquee finalize writes all three directly instead of going through the
+  mutually-exclusive setters). Marquee hit-testing generalized from Mark-only
+  (`_marks_in_box`) to also cover Video Clips (`_video_clips_in_box`, new) and LTC Clips
+  (`_ltc_clips_in_box`, new) using the same rect-intersects-item-rect rule, and is now
+  reachable from empty-space drags in the Video lane, LTC lane, and Mark tracks (previously
+  gated behind a manual toggle + Mark-tracks/scrub-zone only).
+- Group move (`timeline_widget.py`): dragging any selected item when the combined selection
+  spans more than one item and includes a clip now moves the *whole* selection by one
+  shared, clamped `dt` (`_begin_group_drag`/`_update_group_drag`/`_end_group_drag`). Boundary
+  clamp uses the group's single earliest start time (not per item). LTC's existing
+  overlap-disallowed policy is preserved via one deterministic delta-bound computed against
+  unselected LTC clips only — never a per-item re-clamp, so relative spacing survives
+  exactly. A marks-only multi-selection still uses the pre-existing, unmodified
+  `_dragging_marks` path (zero regression risk to that already-shipped feature).
+- Undo (`domain/undo.py`, `main_window.py`): new `GroupMoveCommand` (three optional
+  `id -> (old, new)` dicts, one per type) — slots into the existing `SongScopedCommand`/
+  `UndoStack` machinery unchanged. One `group_move_committed` signal → one command push.
+- Delete was **intentionally not extended** to multi-type in this phase (see handoff for
+  the exact, documented, non-crashing partial-delete behavior when this comes up).
+- Full detail, per-symbol rationale, and the LTC clamp math: see
+  `.ai/handoffs/2026-09-07_MarqueeMultiSelectGroupMove.md`.
 
 ## Files changed
 
 - `src/cueplayer/ui/timeline_widget.py`
 - `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_waveform_high_zoom_outline.py` (updated call site for new signature)
-- `tests/media/test_video_waveform_artifact.py` (+4 Video-lane multi-clip lock-in tests)
-- `tests/ui/test_video_music_standin_multi_clip.py` (new, +4 regression tests for the bug)
+- `src/cueplayer/domain/undo.py`
+- `tests/ui/test_marquee_group_move.py` (new, 9 tests)
 
 ## Test results
 
-- Targeted + broad video/waveform/timeline UI suites: **146 passed** total across the
-  runs in this session (`QT_QPA_PLATFORM=offscreen` required — without it one file's
-  `TimelineWidget.show()` hangs waiting for a real window in this sandbox).
-- 4 pre-existing baseline failures encountered, reproduced identically with the fix
-  reverted (git-stashed) — confirmed **not** caused by this change: 
-  `test_video_playhead_jank.py::test_play_uses_coarse_video_wave_and_wider_overscan`,
-  `test_mouse_static_backdrop_parity.py::test_video_lane_region_unchanged_on_scrub_press`,
-  `test_scrub_fallback_final_land.py::test_fallback_release_finalizes_when_left_button_up`,
-  `test_video_standin_cache.py::test_video_standin_restores_from_cache_on_reactivate`.
-- Skipped per instruction: `test_cue_list_playhead_scroll.py`, known Windows
-  `test_video_sync` crash path, real PortAudio device tests.
+- New file: 9/9 passed.
+- Targeted existing suites re-run (selection, undo, video/LTC clip editing, splitters,
+  setlist undo, all of `tests/domain/`): 38 + 21 + 166 = 225 passed, 1 pre-existing
+  baseline failure (`test_marquee_over_track_colors.py`, confirmed present with this
+  change reverted — unrelated paint-order issue, not a selection bug).
 
-## Out of scope (not touched)
+## Important environment note for future sessions
 
-LTC waveform/clips, MTC thread, Playback Engine clock, MA exporter, version/copyright/
-About, Windows title-bar Video freeze, NDI, persistence schema.
+**Do not run a full, unfiltered `tests/ui/` sweep in this sandbox.** A number of
+pre-existing tests write real bytes to a fake `clip.mp4` under `tmp_path` and then
+`show()` a `TimelineWidget` with the Video Track visible; on this Windows sandbox that
+triggers a real async waveform-decode subprocess (`video_waveform_worker`) that hangs on
+garbage input and never returns, hanging the whole pytest run along with it. Several
+orphaned instances of that subprocess (from earlier, unrelated sessions, running for
+hours) were found and killed with `Stop-Process` during this task. Always run targeted
+test files instead, and when a new Timeline test references a video/LTC file path, prefer
+one that does **not** exist on disk (as most existing passing tests already do) unless the
+test specifically needs real decode, in which case mock the decoder the way
+`tests/media/test_video_waveform_artifact.py` does.
 
 ## Manual verification checklist for the user
 
-1. Create Video Clips A, B, C on one Song's Video Track using 3 different video files
-   with no music audio track on the song — confirm all three show a Music-lane
-   waveform above their own span.
-2. A and B using the same video file — both still show their own span correctly.
-3. Move clip B — its Music-lane span moves with it.
-4. Trim clip B — its Music-lane span's content stays correctly mapped to the new
-   trim/offset.
-5. Delete clip A — B and C's Music-lane waveforms remain.
-6. Save → Close → Reload the project — all clips' Music-lane waveforms still show.
+1. Timeline has a Video Clip, an LTC Clip (clip_generator mode), and a Mark roughly
+   aligned in time. Drag a marquee from above the Video lane down through the LTC and Mark
+   lanes, covering all three — confirm all three highlight as selected.
+2. Drag any one of the three selected items — confirm all three move together by the same
+   amount, keeping their relative spacing.
+3. Drag the group left until the earliest item would go negative — confirm the whole group
+   stops together at the boundary (0s), not one item stopping while others keep moving.
+4. With an LTC Clip in the selected group and another LTC Clip nearby but not selected,
+   drag the group toward the unselected clip — confirm the group stops before overlapping
+   it (LTC's existing no-overlap rule still holds for the group as a whole).
+5. Press Ctrl+Z once after a group move — confirm all items return to their original
+   positions in one step (not one Undo per item). Ctrl+Shift+Z (or your Redo shortcut)
+   reapplies the whole move in one step.
+6. Click a single Video Clip (no marquee) and drag/trim it — confirm it behaves exactly as
+   before (only itself moves/trims, nothing group-related).
+7. Marquee-select only Marks (no clips) and drag one — confirm the existing marks-only
+   multi-drag behavior (including beat-grid snap, if enabled) is unchanged.

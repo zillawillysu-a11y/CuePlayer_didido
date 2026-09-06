@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -566,6 +566,66 @@ class EditVideoClipsCommand:
 
     def redo(self, song: Song) -> None:
         self._apply(song, 1)
+
+
+@dataclass
+class GroupMoveCommand:
+    """Marquee-selection group move: one undo entry across Video Clips, LTC
+    Clips, and Marks moved together by the same shared time delta.
+
+    Each dict uses the same ``id -> (old_transform, new_transform)`` shape as
+    the single-type commands above (``ClipTransform`` / ``LtcClipTransform`` /
+    ``(old_time, new_time)``) — a group move never needs a new transform
+    shape, only a way to apply several types' worth of them atomically.
+    """
+
+    video_changes: dict[str, tuple[ClipTransform, ClipTransform]] = field(default_factory=dict)
+    ltc_changes: dict[str, tuple[LtcClipTransform, LtcClipTransform]] = field(default_factory=dict)
+    mark_changes: dict[str, tuple[float, float]] = field(default_factory=dict)
+    label: str = "Move Selection"
+
+    def _apply_video(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.video_changes.items():
+            clip = song.video_clip_by_id(clip_id)
+            if clip is None:
+                continue
+            start, source_in, duration = transforms[index]
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        if self.video_changes:
+            song.sort_video_clips()
+
+    def _apply_ltc(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.ltc_changes.items():
+            clip = next((c for c in song.ltc_clips if c.id == clip_id), None)
+            if clip is None:
+                continue
+            start, duration, start_tc = transforms[index]
+            clip.timeline_start_seconds = start
+            clip.duration_seconds = duration
+            clip.start_timecode = start_tc
+        if self.ltc_changes:
+            song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def _apply_marks(self, song: Song, index: int) -> None:
+        for mark_id, times in self.mark_changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is not None:
+                mark.time_seconds = times[index]
+        if self.mark_changes:
+            song.sort_marks()
+
+    def undo(self, song: Song) -> None:
+        self._apply_video(song, 0)
+        self._apply_ltc(song, 0)
+        self._apply_marks(song, 0)
+
+    def redo(self, song: Song) -> None:
+        self._apply_video(song, 1)
+        self._apply_ltc(song, 1)
+        self._apply_marks(song, 1)
 
 
 @dataclass

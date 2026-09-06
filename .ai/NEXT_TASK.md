@@ -1,20 +1,48 @@
 # Next task
 
-Waiting on user manual verification of the Multiple Video Clips Music-lane stand-in
-waveform fix (checklist in `.ai/REPORT.md`), and separately, user manual verification
-(Splash / Main Window title / Help→About dialog / normal startup) before the next,
-separate "Release Build" task (run `packaging\build_windows.ps1` on the Windows build
-machine and check the built `CuePlayer.exe` Properties dialog). Do not start Release
-Build until the user confirms.
+Next phase (explicitly deferred by the user from this session): **Ripple Edit / Insert
+Gap / Insert Time** — auto-pushing later Video Clips, LTC Clips, and Marks to the right
+when inserting new content, building on this session's marquee multi-selection + group
+move. Do not start until the user asks for it.
+
+Otherwise: waiting on user manual verification of the Marquee Multi-Selection + Group
+Move feature (checklist in `.ai/REPORT.md`), the Multiple Video Clips Music-lane stand-in
+waveform fix (checklist in prior `.ai/REPORT.md` history / its handoff), and separately,
+user manual verification (Splash / Main Window title / Help→About dialog / normal
+startup) before the next, separate "Release Build" task (run
+`packaging\build_windows.ps1` on the Windows build machine and check the built
+`CuePlayer.exe` Properties dialog). Do not start Release Build until the user confirms.
+
+**Environment note for future sessions**: do NOT run a full unfiltered `tests/ui/` sweep
+in this sandbox — several pre-existing tests spawn a real `video_waveform_worker`
+subprocess (by writing bytes to a fake `.mp4` under `tmp_path` and showing a
+`TimelineWidget` with Video Track visible) that hangs on garbage input and never
+returns, hanging the whole pytest run. Run targeted test files instead; prefer
+non-existent video file paths in new Timeline tests unless real decode is specifically
+needed (see `.ai/handoffs/2026-09-07_MarqueeMultiSelectGroupMove.md`). Several
+already-orphaned instances of that subprocess (hours old, from earlier sessions) were
+found and killed with `Stop-Process` during this task — if a Timeline test session in
+this sandbox is later found "stuck", check for and kill lingering
+`video_waveform_worker` python processes before assuming a real bug.
 
 Candidates parked by user (not started):
 
+- Multi-type Delete (Delete key deleting Video Clips + LTC Clips + Marks together in one
+  keypress / one undo entry, for a heterogeneous marquee selection) — explicitly deferred
+  this session per instruction; currently Delete only deletes the highest-priority
+  selected type (Video Clips > LTC Clips > Marks) when a mixed selection exists, leaving
+  the others selected but undeleted (no crash, documented in this session's handoff).
+- Ripple Edit / Insert Gap / Insert Time (see "Next phase" above).
 - 4 pre-existing baseline test failures found while testing the Multiple Video Clips fix
   (confirmed present with the fix reverted, not caused by it) — investigate only if the
   user asks: `test_video_playhead_jank.py::test_play_uses_coarse_video_wave_and_wider_overscan`,
   `test_mouse_static_backdrop_parity.py::test_video_lane_region_unchanged_on_scrub_press`,
   `test_scrub_fallback_final_land.py::test_fallback_release_finalizes_when_left_button_up`,
   `test_video_standin_cache.py::test_video_standin_restores_from_cache_on_reactivate`.
+- `tests/ui/test_marquee_over_track_colors.py::test_selection_box_paints_after_mark_track_colors`
+  fails on baseline (confirmed present with this session's marquee change reverted) — a
+  `_paint_lanes` paint-order/dispatch issue, not a selection bug; investigate only if the
+  user asks.
 - `tests/ui/test_video_waveform_backdrop_revision.py` hangs when run without
   `QT_QPA_PLATFORM=offscreen` set (calls `TimelineWidget.show()`, needs a real window in
   this sandbox) — not a bug, just remember to set that env var for this suite.
@@ -35,6 +63,15 @@ Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Marquee Multi-Selection + Group Move: box-select drag across the Video/LTC/Mark lanes
+  now selects items of all three types together (previously Mark-only, and selecting one
+  type always cleared the others). Dragging any selected item when the combined selection
+  includes a clip now moves the whole selected set by one shared, clamped delta (boundary
+  clamp uses the group's single earliest item; LTC's overlap-disallowed policy is
+  preserved via one deterministic group-wide bound against unselected LTC clips, never a
+  per-item re-clamp). One new `GroupMoveCommand` gives the whole move a single undo/redo
+  entry. See `.ai/handoffs/2026-09-07_MarqueeMultiSelectGroupMove.md`.
 
 - Multiple Video Clips Music-lane stand-in waveform: a Song with 2+ Video Clips and no
   music audio track only showed the video-audio stand-in waveform over the first clip's
