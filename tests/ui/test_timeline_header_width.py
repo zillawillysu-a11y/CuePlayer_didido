@@ -78,6 +78,60 @@ def test_header_width_clamps_to_min_max(app: QApplication) -> None:
     assert widget.header_width() == widget._header_width_max
 
 
+def test_toolbar_anchor_tracks_header_width(app: QApplication) -> None:
+    """The left toolbar (S / marquee / metronome / magnet) must re-anchor to
+    header_width + margin immediately when the header/waveform splitter is
+    dragged — it used to only refresh on the next resizeEvent."""
+    widget = TimelineWidget()
+    song = Project.create("H").new_song("Song")
+    widget.set_song(song)
+    widget.resize(900, 400)
+    app.processEvents()
+
+    def left_edge() -> int:
+        return widget.setup_button.x()
+
+    before = left_edge()
+    assert before == pytest.approx(widget.header_width() + 8, abs=2)
+
+    widget.set_header_width(220)
+    app.processEvents()
+    after = left_edge()
+    assert after == pytest.approx(widget.header_width() + 8, abs=2)
+    assert after != before
+
+    _press_move_release(widget, widget.header_width(), 95.0)
+    app.processEvents()
+    dragged = left_edge()
+    assert dragged == pytest.approx(widget.header_width() + 8, abs=2)
+
+
+def test_header_child_controls_stay_within_header_width(app: QApplication) -> None:
+    """Volume slider/label pairs under the header must never extend past
+    header_width, even at the minimum header width."""
+    widget = TimelineWidget()
+    song = Project.create("H").new_song("Song")
+    widget.set_song(song)
+    widget.resize(900, 400)
+    widget.set_header_width(widget._header_width_min)
+    app.processEvents()
+    widget._music_header_expanded = True
+    widget._layout_music_header_overlay()
+    widget._layout_video_track_overlay()
+    app.processEvents()
+
+    header_w = widget.header_width()
+    for w in (
+        widget.music_volume_slider,
+        widget.music_volume_label,
+        widget.audio_gain_slider,
+        widget.audio_gain_label,
+        widget.video_clip_volume_slider,
+        widget.video_clip_volume_label,
+    ):
+        assert w.x() + w.width() <= header_w
+
+
 def test_header_split_preferred_over_mark_lane_hit(app: QApplication) -> None:
     widget = TimelineWidget()
     song = Project.create("H").new_song("Song")

@@ -754,9 +754,11 @@ class TimelineWidget(QWidget):
             self.music_expand_button.raise_()
         if self._music_header_expanded:
             sub_y = self._wave_bottom_y() + 4
-            label_w = 44
             slider_x = 8
-            slider_w = max(40, self._header_width - 16 - label_w - 4)
+            avail = max(0, self._header_width - slider_x - 4)
+            label_w = min(44, max(0, avail - 20))
+            slider_w = max(0, avail - label_w)
+            show_label = label_w > 0
             caption_y = sub_y + 2
             slider_y = caption_y + 12
             self.music_volume_caption.setGeometry(slider_x, caption_y, slider_w, 12)
@@ -764,6 +766,7 @@ class TimelineWidget(QWidget):
             self.music_volume_label.setGeometry(
                 slider_x + slider_w + 4, slider_y - 1, label_w, 18
             )
+            self.music_volume_label.setVisible(show_label)
             caption_y2 = slider_y + 16 + 6
             slider_y2 = caption_y2 + 12
             self.audio_gain_caption.setGeometry(slider_x, caption_y2, slider_w, 12)
@@ -771,16 +774,17 @@ class TimelineWidget(QWidget):
             self.audio_gain_label.setGeometry(
                 slider_x + slider_w + 4, slider_y2 - 1, label_w, 18
             )
+            self.audio_gain_label.setVisible(show_label)
             for w in (
                 self.music_volume_caption,
                 self.music_volume_slider,
-                self.music_volume_label,
                 self.audio_gain_caption,
                 self.audio_gain_slider,
-                self.audio_gain_label,
             ):
                 w.raise_()
                 w.show()
+            self.music_volume_label.raise_()
+            self.audio_gain_label.raise_()
         else:
             self.music_volume_caption.hide()
             self.music_volume_slider.hide()
@@ -812,9 +816,10 @@ class TimelineWidget(QWidget):
         self.video_mute_button.raise_()
         # Volume row is always shown under the Video title (no expand toggle).
         sub_y = top + row_h
-        label_w = 32
         slider_x = 8
-        slider_w = max(40, self._header_width - 16 - label_w - 4)
+        avail = max(0, self._header_width - slider_x - 4)
+        label_w = min(32, max(0, avail - 20))
+        slider_w = max(0, avail - label_w)
         slider_y = sub_y + 20
         self.video_clip_volume_slider.setGeometry(slider_x, slider_y, slider_w, 16)
         self.video_clip_volume_label.setGeometry(
@@ -823,7 +828,7 @@ class TimelineWidget(QWidget):
         self.video_clip_volume_slider.raise_()
         self.video_clip_volume_label.raise_()
         self.video_clip_volume_slider.show()
-        self.video_clip_volume_label.show()
+        self.video_clip_volume_label.setVisible(label_w > 0)
         self._layout_music_header_overlay()
 
     def _toggle_video_track_muted(self) -> None:
@@ -2588,6 +2593,7 @@ class TimelineWidget(QWidget):
         self._invalidate_scrub_backdrop()
         self._layout_music_header_overlay()
         self._layout_video_track_overlay()
+        self._layout_zoom_overlay()
         self.update()
         self.view_changed.emit()
         if emit:
@@ -5930,6 +5936,8 @@ class TimelineWidget(QWidget):
 
         # Header caption under "Video" — always refresh from live selection.
         sub_top = top + row_h
+        painter.save()
+        painter.setClipRect(0, sub_top, self._header_width, 18)
         painter.fillRect(0, sub_top, self._header_width, 18, QColor("#111113"))
         clip = self._single_selected_video_clip()
         painter.setPen(QColor("#71717a"))
@@ -5939,6 +5947,7 @@ class TimelineWidget(QWidget):
             else "No clip selected"
         )
         painter.drawText(8, sub_top + 13, name_text)
+        painter.restore()
 
         if not self._selected_clip_ids and self._hover_clip_id is None:
             return
@@ -6837,6 +6846,8 @@ class TimelineWidget(QWidget):
 
         # Header caption under "LTC Clips" — live selection (start TC shown).
         if band_h >= 40:
+            painter.save()
+            painter.setClipRect(0, top + 17, self._header_width, 15)
             painter.fillRect(0, top + 17, self._header_width, 15, QColor("#111113"))
             clip = self._single_selected_ltc_clip()
             painter.setPen(QColor("#71717a"))
@@ -6846,6 +6857,7 @@ class TimelineWidget(QWidget):
                 else "No clip selected"
             )
             painter.drawText(8, top + 28, sub_text)
+            painter.restore()
 
         if not self._selected_ltc_clip_ids and self._hover_ltc_clip_id is None:
             return
