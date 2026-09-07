@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from bisect import bisect_left, bisect_right
 
 if sys.platform == "win32":
     os.environ.setdefault("SD_ENABLE_ASIO", "1")
@@ -170,8 +171,24 @@ class AudioEngine(QObject):
         self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
         # clip_generator: per-clip LTC table (async) — silence outside clips.
         self._ltc_clip_table: tuple[tuple[int, int, np.ndarray], ...] | None = None
+        # Immutable range snapshot for callback lookup; never read Song clips
+        # or parse timecode on the PortAudio thread.
+        self._ltc_clip_intervals: tuple[tuple[int, int, str], ...] = ()
+        self._ltc_clip_starts: tuple[int, ...] = ()
+        self._ltc_clip_prefix_max_ends: tuple[int, ...] = ()
+        self._ltc_clip_non_overlapping = True
         self._ltc_clip_cache_key: tuple | None = None
         self._ltc_clip_cache_future = None
+        # Lock-free callback-owned PERF aggregation; publish on report only.
+        self._ltc_clip_lookup_count = 0
+        self._ltc_clip_lookup_sum_s = 0.0
+        self._ltc_clip_lookup_max_s = 0.0
+        self._ltc_clip_generate_count = 0
+        self._ltc_clip_generate_sum_s = 0.0
+        self._ltc_clip_generate_max_s = 0.0
+        self._ltc_clip_gap_fast_path_count = 0
+        self._ltc_clip_active_path_count = 0
+        self._ltc_clip_buffer_cross_boundary_count = 0
         # MTC TC-source identity for clip re-anchoring (see _mtc_tc_source_key).
         self._mtc_source_key: tuple = ("base",)
         self._detected_ltc_channel: int | None = None
@@ -709,6 +726,8 @@ class AudioEngine(QObject):
         Call whenever the active song changes.
         """
         self._song = song
+        self._prepare_clip_ltc_intervals()
+        self._invalidate_clip_ltc_cache()
         self._install_mtc_tc_source()
         self._video_mixer.set_song(song)
         self._video_mixer.set_muted(bool(song.video_track_muted) if song is not None else False)
@@ -1521,6 +1540,35 @@ class AudioEngine(QObject):
             self._ltc_clip_table = None
             self._ltc_clip_cache_key = None
 
+    def _prepare_clip_ltc_intervals(self) -> None:
+        """Snapshot valid clip frame ranges before the audio callback can run."""
+        song = self._song
+        sr = self._sample_rate()
+        rows: list[tuple[int, int, str]] = []
+        if song is not None:
+            for clip in song.ltc_clips:
+                duration = max(0.0, float(clip.duration_seconds))
+                tc = str(clip.start_timecode)
+                if duration <= 0.0 or parse_timecode(tc) is None:
+                    continue
+                start = int(round(float(clip.timeline_start_seconds) * sr))
+                end = start + max(1, int(round(duration * sr)))
+                rows.append((start, end, tc))
+        rows.sort(key=lambda row: row[0])
+        prefix: list[int] = []
+        max_end = -1
+        non_overlapping = True
+        for start, end, _tc in rows:
+            if prefix and start < max_end:
+                non_overlapping = False
+            max_end = max(max_end, end)
+            prefix.append(max_end)
+        # Assignment is atomic under the GIL; callback reads tuples only.
+        self._ltc_clip_intervals = tuple(rows)
+        self._ltc_clip_starts = tuple(row[0] for row in rows)
+        self._ltc_clip_prefix_max_ends = tuple(prefix)
+        self._ltc_clip_non_overlapping = non_overlapping
+
     def _ensure_clip_ltc_cache(self) -> None:
         """Async per-clip LTC PCM table of (timeline_start, timeline_end, pcm)."""
         if not self._uses_clip_ltc():
@@ -1529,6 +1577,7 @@ class AudioEngine(QObject):
         key = self._clip_ltc_cache_key()
         if song is None or key is None:
             return
+        self._prepare_clip_ltc_intervals()
         sr = self._sample_rate()
         fps = float(self._song_fps) if self._song_fps > 0 else 30.0
         with self._lock:
@@ -1537,19 +1586,16 @@ class AudioEngine(QObject):
         if self._ltc_clip_cache_future is not None and not self._ltc_clip_cache_future.done():
             return
 
-        clips = list(song.ltc_clips)
+        intervals = self._ltc_clip_intervals
 
         def _build() -> tuple[tuple, tuple]:
             table = []
-            for clip in clips:
-                dur = max(0.0, float(clip.duration_seconds))
-                if dur <= 0.0 or parse_timecode(clip.start_timecode) is None:
-                    continue
+            for clip_start, clip_end, start_tc in intervals:
+                dur = (clip_end - clip_start) / sr
                 try:
-                    pcm = generate_ltc_pcm(dur, sr, clip.start_timecode, fps, amplitude=1.0)
+                    pcm = generate_ltc_pcm(dur, sr, start_tc, fps, amplitude=1.0)
                 except ValueError:
                     continue
-                clip_start = int(round(float(clip.timeline_start_seconds) * sr))
                 table.append((clip_start, clip_start + pcm.size, pcm))
             return key, tuple(table)
 
@@ -1572,11 +1618,46 @@ class AudioEngine(QObject):
     def _clip_ltc_chunk(self, start: int, frames: int) -> np.ndarray:
         """LTC for a clip_generator song: generated inside clips, silence outside."""
         out = np.zeros(frames, dtype=np.float32)
-        sr = self._sample_rate()
         end = start + frames
+        track_perf = perf_diag.is_enabled()
+        lookup_t0 = time.perf_counter() if track_perf else 0.0
+        starts = self._ltc_clip_starts
+        prefix_ends = self._ltc_clip_prefix_max_ends
+        right = bisect_left(starts, end)
+        has_intersection = bool(right and prefix_ends[right - 1] > start)
+        if track_perf:
+            elapsed = time.perf_counter() - lookup_t0
+            self._ltc_clip_lookup_count += 1
+            self._ltc_clip_lookup_sum_s += elapsed
+            self._ltc_clip_lookup_max_s = max(self._ltc_clip_lookup_max_s, elapsed)
+        if not has_intersection:
+            if track_perf:
+                self._ltc_clip_gap_fast_path_count += 1
+            return out
+        if track_perf:
+            self._ltc_clip_active_path_count += 1
+        previous = bisect_right(starts, start) - 1
+        if self._ltc_clip_non_overlapping:
+            first = previous if previous >= 0 and self._ltc_clip_intervals[previous][1] > start else previous + 1
+            candidate_indices = range(max(0, first), right)
+        else:
+            # Overlapping clips are valid-but-warned data. Preserve their
+            # existing mix order while the normal case stays near O(1).
+            candidate_indices = range(right)
+        crosses_clip_start = bisect_right(starts, start) < right
+        crosses_active_clip_end = bool(
+            previous >= 0
+            and self._ltc_clip_intervals[previous][1] > start
+            and self._ltc_clip_intervals[previous][1] < end
+        )
+        if track_perf and (crosses_clip_start or crosses_active_clip_end):
+            self._ltc_clip_buffer_cross_boundary_count += 1
+        generate_t0 = time.perf_counter() if track_perf else 0.0
+        sr = self._sample_rate()
         table = self._ltc_clip_table
         if table is not None:
-            for clip_start, clip_end, pcm in table:
+            for index in candidate_indices:
+                clip_start, clip_end, pcm = table[index]
                 lo = max(start, clip_start)
                 hi = min(end, clip_end)
                 if hi <= lo:
@@ -1584,24 +1665,31 @@ class AudioEngine(QObject):
                 s0 = lo - clip_start
                 take = hi - lo
                 out[lo - start : hi - start] = pcm[s0 : s0 + take]
+            if track_perf:
+                elapsed = time.perf_counter() - generate_t0
+                self._ltc_clip_generate_count += 1
+                self._ltc_clip_generate_sum_s += elapsed
+                self._ltc_clip_generate_max_s = max(self._ltc_clip_generate_max_s, elapsed)
             return out
         # Cache not ready yet — render overlapping clips incrementally (O(chunk)).
         song = self._song
         if song is None:
             return out
         fps = float(self._song_fps) if self._song_fps > 0 else 30.0
-        for clip in song.ltc_clips:
-            if parse_timecode(clip.start_timecode) is None:
-                continue
-            clip_start = int(round(float(clip.timeline_start_seconds) * sr))
-            clip_end = int(round(clip.end_seconds * sr))
+        for index in candidate_indices:
+            clip_start, clip_end, start_timecode = self._ltc_clip_intervals[index]
             lo = max(start, clip_start)
             hi = min(end, clip_end)
             if hi <= lo:
                 continue
-            cursor = LtcPlaybackCursor(sr, fps, clip.start_timecode, amplitude=1.0)
+            cursor = LtcPlaybackCursor(sr, fps, start_timecode, amplitude=1.0)
             seg = cursor.render(lo - clip_start, hi - lo)
             out[lo - start : hi - start] = seg[: hi - lo]
+        if track_perf:
+            elapsed = time.perf_counter() - generate_t0
+            self._ltc_clip_generate_count += 1
+            self._ltc_clip_generate_sum_s += elapsed
+            self._ltc_clip_generate_max_s = max(self._ltc_clip_generate_max_s, elapsed)
         return out
 
     def _clip_ltc_timecode_at(self, position_seconds: float) -> Timecode | None:
@@ -2426,6 +2514,30 @@ class AudioEngine(QObject):
         self._cb_miss_va_window_sum = 0
         self._cb_miss_play_decode_last = 0
         self._cb_miss_va_window_last = 0
+        self._ltc_clip_lookup_count = 0
+        self._ltc_clip_lookup_sum_s = 0.0
+        self._ltc_clip_lookup_max_s = 0.0
+        self._ltc_clip_generate_count = 0
+        self._ltc_clip_generate_sum_s = 0.0
+        self._ltc_clip_generate_max_s = 0.0
+        self._ltc_clip_gap_fast_path_count = 0
+        self._ltc_clip_active_path_count = 0
+        self._ltc_clip_buffer_cross_boundary_count = 0
+
+    def ltc_clip_callback_diagnostics(self) -> dict[str, float | int]:
+        """Lock-free snapshot of clip LTC callback work for a PERF report."""
+        lookups = int(self._ltc_clip_lookup_count)
+        generated = int(self._ltc_clip_generate_count)
+        return {
+            "lookup_ms": round(1000.0 * self._ltc_clip_lookup_sum_s / max(1, lookups), 6),
+            "lookup_max_ms": round(1000.0 * self._ltc_clip_lookup_max_s, 6),
+            "generate_ms": round(1000.0 * self._ltc_clip_generate_sum_s / max(1, generated), 6),
+            "generate_max_ms": round(1000.0 * self._ltc_clip_generate_max_s, 6),
+            "gap_fast_path_count": int(self._ltc_clip_gap_fast_path_count),
+            "active_path_count": int(self._ltc_clip_active_path_count),
+            "clip_count": len(self._ltc_clip_intervals),
+            "buffer_cross_boundary_count": int(self._ltc_clip_buffer_cross_boundary_count),
+        }
 
     def audio_callback_continuity(self) -> dict[str, float | int]:
         """Low-overhead PortAudio continuity snapshot (no AudioEngine retiming)."""
@@ -2455,6 +2567,8 @@ class AudioEngine(QObject):
             perf_diag.note("audio.timing", self.audio_timing_diagnostics())
         for key, value in snap.items():
             perf_diag.note(f"audio.callback.{key}", value)
+        for key, value in self.ltc_clip_callback_diagnostics().items():
+            perf_diag.note(f"audio.ltc_clip.{key}", value)
         if int(snap["callback_count"]) > 0:
             perf_diag.note(
                 "audio.callback.underflow_rate",

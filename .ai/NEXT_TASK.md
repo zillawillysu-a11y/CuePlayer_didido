@@ -1,11 +1,16 @@
 # Next task
 
-Timing Hardening Phase B2.1 已完成（2026-09-07）。詳見 `.ai/REPORT.md` 與 `.ai/handoffs/2026-09-07_TimingHardening_PhaseB2_1_RegressionDiagnostic.md`。
+## Focused LTC Clips hardware verification（2026-09-07）
 
-下一步先以 `CUEPLAYER_PERF=1` **在程式啟動前**啟動 CuePlayer；確認 `Tools → Write Performance Report…` 可見。播放真實 show 後分別執行快速 Zoom、連續 Mark、標題列按住/拖曳並 release，按 action 後讀 `%LOCALAPPDATA%\CuePlayer\cueplayer_perf.log` 最後一段 `manual-dump`。
+LTC Clip Playback Hot-Path fix 已完成。Windows 上以 `CUEPLAYER_PERF=1` 啟動 CuePlayer，載入有多個 LTC clips 的 `clip_generator` Song，並在 playhead 保持於 gap 時播放至少 15 秒。使用 **Tools -> Write Performance Report**，只讀最新 manual dump。
 
-重點：`timeline.backdrop.incremental_strip_ms`、`timeline.backdrop.incremental_callback_gap_ms`、`timeline.backdrop.incremental_commit_ms`、`timeline.mark_layer.rebuild_ms`、`timeline.backdrop.incremental_callback_count`、`timeline.backdrop.incremental_pending_work`、`timeline.backdrop.incremental_stale_discard`、`ui.event_loop_long_task_ms`、`audio.callback.*`。
+必要 evidence：
 
-收到實機 dump 後，再明確決定是否做 B2.2 render fix。不要直接開始 Phase C，也不要改 Playback Engine、Audio clock、LTC、MTC、video decode、Clean Video architecture、Art-Net、Ripple Edit 或 Insert Gap。
+- gap 中 `audio.ltc_clip.gap_fast_path_count` 會增加。
+- gap 中 `audio.ltc_clip.active_path_count` 不變；all-gap exercise 的 `audio.ltc_clip.generate_ms` 應為零或不存在。
+- 對照 clip-active run、no-LTC run 的 `audio.callback.exec_max_s`、`deadline_miss_count`、`output_underflow_count`。
+- 重複 gap-to-clip 與 clip-to-gap boundary，確認精確的 half-open `[start, end)` 行為。
 
-不要執行完整未過濾 `tests/ui/`，部分 fake `.mp4` 會啟動並卡住真實 waveform worker。
+若 gap counter 證明此路徑已使用後 severe stalls 仍存在，以新 metrics 診斷第一個剩餘 LTC-Clips-only blocker（包含 callback 外 async PCM builder）。該 diagnostic task 不要恢復 Timeline B2.2。
+
+Pointers: `.ai/REPORT.md` and `.ai/handoffs/2026-09-07_LtcClipPlaybackHotPath.md`.

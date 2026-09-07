@@ -234,6 +234,67 @@ def test_clip_chunk_fallback_matches_cache() -> None:
     assert _tc_close(_decode(fallback), Timecode(1, 0, 0, 0))
 
 
+def test_clip_gap_fast_path_skips_fallback_renderer(monkeypatch) -> None:
+    """A callback wholly in a gap must not parse/generate any clip LTC."""
+    engine = _make_engine(None)
+    song = _clip_song(clips=[
+        (1.0, 1.0, "01:00:00:00"),
+        (5.0, 1.0, "02:00:00:00"),
+    ])
+    _attach_clip_song(engine, song)
+    class _UnexpectedTable:
+        def __iter__(self):  # noqa: ANN204
+            raise AssertionError("gap must not scan cached clips")
+
+    engine._ltc_clip_table = _UnexpectedTable()  # noqa: SLF001
+    monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
+
+    class _UnexpectedCursor:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            raise AssertionError("gap must not construct an LTC cursor")
+
+    monkeypatch.setattr(eng_mod, "LtcPlaybackCursor", _UnexpectedCursor)
+    assert not np.any(engine._ltc_chunk(3 * SR, 512) != 0.0)  # noqa: SLF001
+    assert engine.ltc_clip_callback_diagnostics()["gap_fast_path_count"] >= 1
+
+
+def test_clip_active_fallback_still_constructs_and_generates(monkeypatch) -> None:
+    """The fast gap check must not silence a real active clip before cache publish."""
+    engine = _make_engine(None)
+    song = _clip_song(clips=[(2.0, 2.0, "01:00:00:00")])
+    _attach_clip_song(engine, song)
+    engine._ltc_clip_table = None  # noqa: SLF001
+    monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
+    chunk = engine._ltc_chunk(2 * SR, 1000)  # noqa: SLF001
+    assert np.any(chunk != 0.0)
+    assert engine.ltc_clip_callback_diagnostics()["active_path_count"] >= 1
+
+
+def test_clip_gap_to_clip_crossing_is_not_fast_pathed(monkeypatch) -> None:
+    engine = _make_engine(None)
+    song = _clip_song(clips=[(2.0, 1.0, "01:00:00:00")])
+    _attach_clip_song(engine, song)
+    monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
+    chunk = engine._ltc_chunk(2 * SR - 100, 200)  # noqa: SLF001
+    assert not np.any(chunk[:100] != 0.0)
+    assert np.any(chunk[100:] != 0.0)
+    diag = engine.ltc_clip_callback_diagnostics()
+    assert diag["active_path_count"] >= 1
+    assert diag["buffer_cross_boundary_count"] >= 1
+
+
+def test_clip_generator_with_no_clips_is_gap_fast_path(monkeypatch) -> None:
+    engine = _make_engine(None)
+    song = _clip_song(clips=[])
+    song.ltc_source_mode = "clip_generator"
+    _attach_clip_song(engine, song)
+    monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
+    assert not np.any(engine._ltc_chunk(0, 512) != 0.0)  # noqa: SLF001
+    diag = engine.ltc_clip_callback_diagnostics()
+    assert diag["clip_count"] == 0
+    assert diag["gap_fast_path_count"] >= 1
+
+
 # --- Timecode display -------------------------------------------------------
 
 

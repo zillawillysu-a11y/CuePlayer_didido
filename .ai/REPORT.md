@@ -1,41 +1,46 @@
-# Timing Hardening Phase B2.1 — Regression Diagnostic + Performance Observability
+# LTC Clip Playback Hot-Path Diagnostic + Minimal Fix
 
 ## Task objective
 
-診斷 B2 是否造成 GUI scheduling regression，並恢復可見的 Performance Report 與 B2 strip observability；不改 Playback/Audio/LTC/MTC/video decode 或 Zoom/Mark rendering architecture。
+在 `clip_generator` Song 位於合法 gap 時，移除 PortAudio callback 內可避免的 LTC clip 工作，同時保留 active 與 crossing buffer 的 LTC 語意。
 
 ## What was implemented
 
-- 比較 `0687e22..80d6a04`：B2 diff 僅涉及 `TimelineWidget`、測試與 AI 文件；`audio_engine.py`、`main_window.py` position fan-out 沒有 B2 diff。Main UI TC 在 Windows title-bar modal loop 停住仍是既有 GUI presentation 限制，不是新的 Audio/LTC/MTC clock regression。
-- 確認 `Tools → Write Performance Report…` writer/action 仍存在；action 僅在程式啟動前 `CUEPLAYER_PERF=1` 時建立。現在保存 action reference，並以 UI test 確認可見及 trigger wiring。
-- 延用既有 perf framework，補上 strip callback count、callback gap、pending work（只能為 0/1）及 stale discard counters；現有 strip/commit/Mark layer spans 保留。
-- 新增 incremental pending-strip widget destruction regression test；既有 MTC GUI-stall-independence test 保持 PASS。
+- 追蹤 callback -> `_ltc_chunk()` -> `_clip_ltc_chunk()` -> cached LTC slices -> output routing。
+- 在 callback 外建立 immutable frame-interval snapshot，於 async cache 建立前排序 clips 並驗證／parse start TC。
+- 新增 binary-search gap fast path：buffer 與半開 `[start, end)` clips 無交集時立即回傳 silence；不掃描 cached table、不讀 mutable Song、不 parse TC、不建 cursor、不產生 waveform。
+- 一般 non-overlapping clips 只 slice candidate cached PCM ranges；有效但有 warning 的 overlap 保留保守 mix 行為。
+- 新增 lock-free callback PERF aggregation，於稍後發佈 `audio.ltc_clip.*`：lookup/generate mean/max、gap/active count、clip count、boundary-cross count。
+- 新增 gap、no-clips、active fallback、crossing 的窄測試。
 
 ## Files changed
 
-- `src/cueplayer/ui/timeline_widget.py`
-- `src/cueplayer/ui/main_window.py`
-- `tests/ui/test_performance_report_observability.py`
-- `tests/ui/test_timeline_backdrop_deferred_rebuild.py`
+- `src/cueplayer/playback/audio_engine.py`
+- `tests/playback/test_ltc_clip_playback.py`
 
 ## Architecture decisions
 
-- 未新增 profiler；所有 measurement 使用 `cueplayer.diagnostics.perf`，PERF disabled 時為 no-op。
-- B2 的 `singleShot(0)` strip callback 確實是 `strip → start(0) → strip` chain，但每次最多只有一個 pending timer，不會累積 queue；native modal loop 中不會產生 timer callbacks，因此沒有 pending backlog/burst。modal loop 結束後最多恢復一個 strip。
-- zero-delay chain 仍可能在一般 GUI event loop 中消耗大量 callback turns；現以 `incremental_callback_gap_ms`、`incremental_strip_ms`、`incremental_commit_ms` 與 `ui.event_loop_long_task_ms` 實測判定，未宣稱已排除 starvation。
+- Audio sample position 仍是唯一 playback clock。
+- callback 不呼叫會 lock 的 `diagnostics.perf`；僅在 PERF enabled 時更新 primitive，並於既有 non-RT report path 發佈。
+- UI、MTC、exporter、persistence、routing semantics 與 active clip mapping 均未改動。
 
 ## Tests performed
 
 ```text
-QT_QPA_PLATFORM=offscreen pytest -q tests/ui/test_performance_report_observability.py tests/ui/test_timeline_backdrop_deferred_rebuild.py tests/playback/test_mtc_gui_stall_independence.py
-11 passed
+.venv\\Scripts\\python.exe -m pytest -q tests/playback/test_ltc_clip_playback.py tests/domain/test_ltc_clips.py tests/playback/test_audio_engine_source_ltc.py tests/playback/test_audio_engine_generator_stereo_music.py tests/playback/test_ltc_off_strips_from_music.py
+55 passed
+
+.venv\\Scripts\\python.exe -m compileall -q src/cueplayer/playback/audio_engine.py
+git diff --check
 ```
+
+一項本機 `.pytest_cache` 存取 warning 未影響執行。
 
 ## Remaining issues
 
-- Zoom/Mark 實機仍卡頓有程式碼證據：Zoom strip 的 final commit 仍同步畫全部 ruler/LTC/Marks/sprites；Mark annotation rebuild 仍同步 `QPixmap(spatial)` + 全量 Mark/sprite pass。這不是本 diagnostic phase 要重寫的架構。
-- 使用者找不到 report 的原因是未以 `CUEPLAYER_PERF=1` 啟動，action 依既有設計不會顯示。log 預設為 `%LOCALAPPDATA%\CuePlayer\cueplayer_perf.log`。
+- 仍需真實 Windows PERF 驗證：以 `CUEPLAYER_PERF=1` 重現 clip gap，檢查 `audio.ltc_clip.gap_fast_path_count`、`generate_ms` 與 `audio.callback.*`。
+- callback 外 full-clip PCM builder 刻意未修改；僅在此修正後仍有 hardware stall 時，才 profile 其 startup GIL cost。
 
 ## Suggested next task
 
-先以 `CUEPLAYER_PERF=1` 實機蒐集 Zoom、Mark、title-bar hold/release 的最後 manual dump，依 `incremental_callback_gap_ms`、strip/commit/Mark max、pending/stale counts 判斷是否需要一個明確範圍的 B2.2 render fix；不要直接開始 Phase C。
+執行 focused Windows LTC Clips gap PERF 驗證。若 gap counter 證明此路徑已使用仍有 deadline miss，追查第一個剩餘 Clips-only blocker；否則另行進入 Timeline B2.2。
