@@ -41,7 +41,9 @@ def _dense_song(n: int = 200, spacing: float = 0.1) -> Song:
     return song
 
 
-def test_playback_position_does_not_rebuild_mark_backdrop(app: QApplication) -> None:
+def test_playback_position_does_not_rebuild_mark_backdrop(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
     perf_diag.set_enabled(True)
     perf_diag.clear()
     tl = TimelineWidget()
@@ -55,19 +57,24 @@ def test_playback_position_does_not_rebuild_mark_backdrop(app: QApplication) -> 
     app.processEvents()
     # Force one quality bake.
     tl._rebuild_scrub_backdrop(reason="test_seed")  # noqa: SLF001
-    snap0 = perf_diag.snapshot()["counters"]
-    rebuilds0 = int(snap0.get("timeline.mark_backdrop.rebuild_reason.test_seed", 0))
-    shapes0 = int(snap0.get("timeline.mark_backdrop.draw_marker_shape_count", 0))
-    assert shapes0 > 0
+    # Drain already-queued setup notifications before taking the playback-only
+    # baseline; B2 intentionally allows those notifications to yield.
+    app.processEvents()
+    rebuilds: list[str] = []
+    original = tl._rebuild_scrub_backdrop  # noqa: SLF001
+
+    def tracked(reason: str = "rebuild") -> None:
+        rebuilds.append(reason)
+        original(reason)
+
+    monkeypatch.setattr(tl, "_rebuild_scrub_backdrop", tracked)
     # Position ticks while playing must blit + overlay — not full mark bake.
     for i in range(30):
         tl.set_position(5.0 + i * 0.05)
         app.processEvents()
-    snap1 = perf_diag.snapshot()["counters"]
-    shapes1 = int(snap1.get("timeline.mark_backdrop.draw_marker_shape_count", 0))
-    # Overlay may draw a few selected shapes; must not redraw hundreds per tick.
-    assert shapes1 - shapes0 < 50
-    assert int(snap1.get("timeline.mark_backdrop.rebuild_reason.test_seed", 0)) == rebuilds0
+    # Other widgets may still finish their own deferred test setup, so use this
+    # widget-local hook rather than process-global perf counters.
+    assert rebuilds == []
     perf_diag.set_enabled(False)
 
 

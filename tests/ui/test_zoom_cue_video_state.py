@@ -84,7 +84,12 @@ def test_zoom_final_rebuild_is_atomic(app: QApplication) -> None:
     assert tl._spatial_backdrop is not None  # noqa: SLF001
     assert tl._scrub_backdrop is old_full  # noqa: SLF001
     assert tl._spatial_backdrop is old_spatial  # noqa: SLF001
-    app.processEvents()
+    # B2's quality raster yields after narrow strips; it is intentionally not
+    # required to monopolize one processEvents() turn.
+    for _ in range(32):
+        app.processEvents()
+        if tl._scrub_backdrop_build_state is None:  # noqa: SLF001
+            break
     assert tl._scrub_backdrop is not old_full or tl._spatial_backdrop is not old_spatial  # noqa: SLF001
     # Final sharp swap must not synchronously rasterize the historical 3.5-view
     # cache on the GUI thread.

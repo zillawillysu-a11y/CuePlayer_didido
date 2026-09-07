@@ -391,6 +391,19 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_rebuild_timer.timeout.connect(
             self._run_scheduled_scrub_backdrop_rebuild
         )
+        # A quality Zoom bake is deliberately cooperative: each timer turn
+        # rasterizes only a narrow x-strip into GUI-owned QPixmaps.  Keeping the
+        # QPixmap/QPainter work on this thread avoids unsafe QWidget/Qt font
+        # access from workers while ensuring one raster callback cannot starve
+        # the transport/UI timer for a whole viewport.
+        self._scrub_backdrop_build_generation = 0
+        self._scrub_backdrop_build_state: dict | None = None
+        self._scrub_backdrop_build_timer = QTimer(self)
+        self._scrub_backdrop_build_timer.setSingleShot(True)
+        self._scrub_backdrop_build_timer.timeout.connect(
+            self._run_incremental_scrub_backdrop_step
+        )
+        self._scrub_backdrop_build_strip_width = 128
         # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
         # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
         self._spatial_backdrop: QPixmap | None = None
@@ -2464,11 +2477,69 @@ class TimelineWidget(QWidget):
         return bool(self._view_transform_busy)
 
     def bump_mark_backdrop_revision(self, *, reason: str = "marks_changed") -> None:
-        """Invalidate baked Marks (edit / color / visibility)."""
+        """Refresh the Mark-only layer; waveform/grid raster remains valid."""
         self._mark_backdrop_revision += 1
-        self._invalidate_scrub_backdrop(
-            reason=reason, retain_for_deferred_rebuild=True
+        # Marks are already a distinct final pass in the retained full raster.
+        # They do not affect waveform, grid, lane background, Video/LTC clips,
+        # or playhead geometry, so a full static invalidation here was needless.
+        self._refresh_mark_annotations(reason=reason)
+        self.update()
+
+    def _refresh_mark_annotations(self, *, reason: str) -> None:
+        """Recompose only the Mark/label pass over the retained spatial raster.
+
+        The spatial cache deliberately excludes ruler labels, LTC clip captions,
+        and Marks.  A Mark edit therefore needs a cheap copy plus that final
+        annotation pass, never waveform/grid/video rasterization.
+        """
+        spatial = self._spatial_backdrop
+        if (
+            spatial is None
+            or spatial.isNull()
+            or not self._scrub_backdrop_geometry_ok()
+        ):
+            # There is no trustworthy spatial source (first paint, resize, or a
+            # concurrent Zoom generation).  Preserve the established deferred
+            # latest-state path instead of presenting mixed geometry.
+            self._invalidate_scrub_backdrop(
+                reason=reason, retain_for_deferred_rebuild=True
+            )
+            return
+        t0 = monotonic_ns()
+        full_pm = QPixmap(spatial)
+        saved_scroll = self._scroll_x
+        self._scroll_x = saved_scroll - float(self._scrub_backdrop_overscan)
+        self._paint_width_override = int(
+            self.width() + 2 * int(self._scrub_backdrop_overscan)
         )
+        try:
+            painter = QPainter(full_pm)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setFont(self.font())
+            self._paint_ruler_labels(painter)
+            if self._ltc_clip_lane_active():
+                self._paint_ltc_clips(painter)
+            self._paint_marks(
+                painter,
+                start_y=self._tracks_top_y(),
+                waveform_lines=True,
+                lane_shapes=True,
+                mode="static",
+            )
+            painter.end()
+            sprites = self._bake_mark_annotation_sprites()
+        finally:
+            self._scroll_x = saved_scroll
+            self._paint_width_override = None
+        self._scrub_backdrop = full_pm
+        self._mark_annotation_sprites = sprites
+        self._mark_backdrop_baked_revision = int(self._mark_backdrop_revision)
+        elapsed = (monotonic_ns() - t0) / 1_000_000.0
+        perf_diag.record_ms("timeline.mark_layer.rebuild_ms", elapsed)
+        if elapsed >= 16.7:
+            perf_diag.record_ms("ui.event_loop_long_task_ms", elapsed)
+        if perf_diag.is_enabled():
+            perf_diag.count(f"timeline.mark_layer.rebuild_reason.{reason}")
 
     def _begin_view_transform_gesture(self) -> None:
         # Seed retained caches before marking busy — otherwise the first wheel
@@ -2956,6 +3027,10 @@ class TimelineWidget(QWidget):
     def _invalidate_scrub_backdrop(
         self, reason: str = "generic", *, retain_for_deferred_rebuild: bool = False
     ) -> None:
+        self._scrub_backdrop_build_generation += 1
+        self._scrub_backdrop_build_state = None
+        if self._scrub_backdrop_build_timer.isActive():
+            self._scrub_backdrop_build_timer.stop()
         # Zoom/Mark input keeps the last atomically-completed cache drawable
         # while the queued replacement is pending. Other callers (notably song
         # switches) retain the established immediate-clear behavior so content
@@ -2986,7 +3061,124 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_rebuild_pending = False
         self._scrub_backdrop_rebuild_reason = ""
         if self.width() > 0 and self.height() > 0:
-            self._rebuild_scrub_backdrop(reason=reason)
+            if reason == "zoom_idle":
+                self._start_incremental_scrub_backdrop_build(reason)
+            else:
+                self._rebuild_scrub_backdrop(reason=reason)
+        self.update()
+
+    def _run_incremental_scrub_backdrop_step(self) -> None:
+        """Paint one narrow static-raster strip, then yield to Qt."""
+        state = self._scrub_backdrop_build_state
+        if state is None or state.get("generation") != self._scrub_backdrop_build_generation:
+            return
+        if (
+            self.width() != state["size"].width()
+            or self.height() != state["size"].height()
+            or abs(self._pixels_per_second - state["pps"]) >= 1e-6
+            or abs(self._scroll_x - state["scroll"]) >= 0.5
+        ):
+            self._scrub_backdrop_build_state = None
+            return
+        left = int(state["next_x"])
+        right = min(int(state["paint_w"]), left + self._scrub_backdrop_build_strip_width)
+        saved_scroll = self._scroll_x
+        self._scroll_x = float(state["scroll"]) - float(state["overscan"])
+        self._paint_width_override = int(state["paint_w"])
+        try:
+            painter = QPainter(state["spatial"])
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setFont(self.font())
+            painter.setClipRect(left, 0, max(1, right - left), self.height())
+            with perf_diag.span("timeline.backdrop.incremental_strip_ms"):
+                self._paint_static_layers(
+                    painter,
+                    include_marks=False,
+                    include_ruler_labels=False,
+                    include_ltc_clips=False,
+                    waveform_x_range=(left, right),
+                )
+            painter.end()
+        finally:
+            self._scroll_x = saved_scroll
+            self._paint_width_override = None
+        state["next_x"] = right
+        perf_diag.count("timeline.backdrop.incremental_strip_count")
+        if right < int(state["paint_w"]):
+            self._scrub_backdrop_build_timer.start(0)
+            return
+        self._complete_incremental_scrub_backdrop_build(state)
+
+    def _start_incremental_scrub_backdrop_build(self, reason: str) -> None:
+        """Allocate a private target and let zero-delay turns fill its strips."""
+        # Keep using the retained zoom-preview path until the final atomic swap;
+        # otherwise paintEvent would see a PPS mismatch and synchronously seed.
+        self._view_transform_busy = True
+        generation = self._scrub_backdrop_build_generation + 1
+        self._scrub_backdrop_build_generation = generation
+        overscan = 128
+        paint_w = int(self.width()) + 2 * overscan
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        spatial = QPixmap(int(paint_w * dpr), int(self.height() * dpr))
+        spatial.setDevicePixelRatio(dpr)
+        spatial.fill(QColor(BG_APP))
+        self._scrub_backdrop_build_state = {
+            "generation": generation,
+            "reason": reason,
+            "pps": float(self._pixels_per_second),
+            "scroll": float(self._scroll_x),
+            "size": QSize(self.size()),
+            "overscan": overscan,
+            "paint_w": paint_w,
+            "dpr": dpr,
+            "spatial": spatial,
+            "next_x": 0,
+            "started_ns": monotonic_ns(),
+        }
+        perf_diag.count("timeline.backdrop.incremental_started")
+        self._scrub_backdrop_build_timer.start(0)
+
+    def _complete_incremental_scrub_backdrop_build(self, state: dict) -> None:
+        """Add the cheap annotation pass and atomically commit this generation."""
+        if state.get("generation") != self._scrub_backdrop_build_generation:
+            return
+        spatial = state["spatial"]
+        full_pm = QPixmap(spatial)
+        saved_scroll = self._scroll_x
+        self._scroll_x = float(state["scroll"]) - float(state["overscan"])
+        self._paint_width_override = int(state["paint_w"])
+        try:
+            with perf_diag.span("timeline.backdrop.incremental_commit_ms"):
+                painter = QPainter(full_pm)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                painter.setFont(self.font())
+                self._paint_ruler_labels(painter)
+                if self._ltc_clip_lane_active():
+                    self._paint_ltc_clips(painter)
+                self._paint_marks(painter, start_y=self._tracks_top_y(), mode="static")
+                painter.end()
+                sprites = self._bake_mark_annotation_sprites()
+        finally:
+            self._scroll_x = saved_scroll
+            self._paint_width_override = None
+        if state.get("generation") != self._scrub_backdrop_build_generation:
+            return
+        self._scrub_backdrop = full_pm
+        self._spatial_backdrop = spatial
+        self._mark_annotation_sprites = sprites
+        self._scrub_backdrop_scroll = float(state["scroll"])
+        self._scrub_backdrop_pps = float(state["pps"])
+        self._scrub_backdrop_size = QSize(state["size"])
+        self._scrub_backdrop_overscan = int(state["overscan"])
+        self._scrub_backdrop_dpr = float(state["dpr"])
+        self._mark_backdrop_baked_revision = int(self._mark_backdrop_revision)
+        self._video_waveform_baked_revision = int(self._video_waveform_revision)
+        self._scrub_backdrop_build_state = None
+        self._view_transform_busy = False
+        self._view_transform_quality_pending = False
+        total = (monotonic_ns() - int(state["started_ns"])) / 1_000_000.0
+        perf_diag.record_ms("timeline.mark_backdrop.rebuild_ms", total)
+        perf_diag.count("timeline.backdrop.incremental_committed")
         self.update()
 
     def invalidate_static_layers(self, *, reason: str = "invalidate_static") -> None:
@@ -3306,6 +3498,10 @@ class TimelineWidget(QWidget):
         """
         # Direct callers (initial seed / explicit test helpers) supersede a
         # queued request, preventing a stale timer from doing a second bake.
+        self._scrub_backdrop_build_generation += 1
+        self._scrub_backdrop_build_state = None
+        if self._scrub_backdrop_build_timer.isActive():
+            self._scrub_backdrop_build_timer.stop()
         self._scrub_backdrop_rebuild_pending = False
         self._scrub_backdrop_rebuild_reason = ""
         if self._scrub_backdrop_rebuild_timer.isActive():
@@ -3532,9 +3728,10 @@ class TimelineWidget(QWidget):
         include_marks: bool = True,
         include_ruler_labels: bool = True,
         include_ltc_clips: bool = True,
+        waveform_x_range: tuple[int, int] | None = None,
     ) -> None:
         self._paint_ruler(painter, include_labels=include_ruler_labels)
-        wave_bottom = self._paint_waveform(painter)
+        wave_bottom = self._paint_waveform(painter, x_range=waveform_x_range)
         self._paint_beat_grids(painter)
         self._paint_video_lane(painter)
         self._paint_ltc_lane(painter, include_clips=include_ltc_clips)
@@ -6629,7 +6826,9 @@ class TimelineWidget(QWidget):
             line2,
         )
 
-    def _paint_waveform(self, painter: QPainter) -> int:
+    def _paint_waveform(
+        self, painter: QPainter, *, x_range: tuple[int, int] | None = None
+    ) -> int:
         y0 = self._ruler_height
         y1 = y0 + self._wave_height
         right = self._paint_right()
@@ -6670,6 +6869,9 @@ class TimelineWidget(QWidget):
 
         view_left = self._header_width
         view_right = right
+        if x_range is not None:
+            view_left = max(view_left, int(x_range[0]))
+            view_right = min(view_right, int(x_range[1]))
         samples_per_pixel = self._audio.sample_rate / self._pixels_per_second
 
         finest_bucket = min(
