@@ -3903,7 +3903,7 @@ class TimelineWidget(QWidget):
         self.setCursor(Qt.CursorShape.SizeHorCursor if zone in ("left", "right") else Qt.CursorShape.ClosedHandCursor)
         self.update()
 
-    def _update_video_clip_drag(self, x: float, *, snap: bool = True) -> None:
+    def _update_video_clip_drag(self, x: float) -> None:
         if self._song is None or self._dragging_clip is None:
             return
         clip = self._song.video_clip_by_id(self._dragging_clip)
@@ -3917,7 +3917,7 @@ class TimelineWidget(QWidget):
             return
         start0, _src_in0, dur0 = snapshot
         dt = dx / max(1e-6, self._pixels_per_second)
-        clip.start_seconds = clip_start_after_body_drag(start0, dt, snap=snap)
+        clip.start_seconds = clip_start_after_body_drag(start0, dt)
         self._update_video_lane()
 
     def _update_video_clip_trim(self, x: float) -> None:
@@ -4664,15 +4664,10 @@ class TimelineWidget(QWidget):
                     self.setCursor(Qt.CursorShape.ArrowCursor)
                 self.update()
                 return
-            if self._near_header_split(x):
-                self._resizing_header = True
-                self.grabMouse()
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif self._near_wave_split(y):
-                self._resizing_wave = True
-                self.grabMouse()
-                self.setCursor(Qt.CursorShape.SizeVerCursor)
-            elif (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
+            # Left/right trim edges win over the header-width splitter so a
+            # clip starting at 00:00 (whose left edge sits on the splitter)
+            # can still be trimmed instead of always resizing the header.
+            if (clip_hit := self._hit_video_clip(x, y, allow_locked_edit=shift)) is not None:
                 # Prefer clip select/drag over the Video lane splitter so clicks
                 # near the bottom of a clip still select during playback.
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -4688,6 +4683,14 @@ class TimelineWidget(QWidget):
                     self._begin_video_clip_interaction(
                         clip_hit[0], clip_hit[1], x, shift=shift, ctrl=ctrl
                     )
+            elif self._near_header_split(x):
+                self._resizing_header = True
+                self.grabMouse()
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif self._near_wave_split(y):
+                self._resizing_wave = True
+                self.grabMouse()
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
             elif (ltc_clip_hit := self._hit_ltc_clip(x, y)) is not None:
                 # Double-click on the body edits the clip (see
                 # mouseDoubleClickEvent); the first press already selected it.
@@ -4893,8 +4896,7 @@ class TimelineWidget(QWidget):
         elif self._group_dragging and event.buttons() & Qt.MouseButton.LeftButton:
             self._update_group_drag(x)
         elif self._dragging_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            self._update_video_clip_drag(x, snap=not shift)
+            self._update_video_clip_drag(x)
         elif self._trimming_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self._update_video_clip_trim(x)
         elif self._dragging_ltc_clip is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -4947,16 +4949,14 @@ class TimelineWidget(QWidget):
                 self._hover_beat_grid_id = hover_grid_id
                 self._hover_beat_grid_index = hover_grid_index
                 self.update()
-            hover_header = self._near_header_split(x)
-            hover_wave = False if hover_header else self._near_wave_split(y)
             shift_hover = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            # Resolve clip before the Video lane splitter so the bottom edge of
-            # a clip still shows clip hover (matches mousePress priority).
-            pre_clip = (
-                None
-                if (hover_header or hover_wave)
-                else self._hit_video_clip(x, y, allow_locked_edit=shift_hover)
-            )
+            # Resolve the clip (incl. left/right trim edges) before the header
+            # and Video lane splitters, matching mousePress priority — a clip
+            # starting at 00:00 sits on the header splitter and must still be
+            # trimmable.
+            pre_clip = self._hit_video_clip(x, y, allow_locked_edit=shift_hover)
+            hover_header = False if pre_clip is not None else self._near_header_split(x)
+            hover_wave = False if (hover_header or pre_clip is not None) else self._near_wave_split(y)
             hover_video = (
                 False
                 if (hover_header or hover_wave or pre_clip is not None)

@@ -2,49 +2,17 @@
 
 from __future__ import annotations
 
-# Generous pre-roll window for alignment (clip can start before song 0).
-_MIN_CLIP_START_SECONDS = -600.0
-# Soft snap at song 0 — park here unless the user deliberately drags past.
-_SNAP_AT_ZERO_SECONDS = 0.12
 
-
-def clip_start_after_body_drag(
-    start0: float,
-    dt_seconds: float,
-    *,
-    snap_seconds: float = _SNAP_AT_ZERO_SECONDS,
-    min_start_seconds: float = _MIN_CLIP_START_SECONDS,
-    snap: bool = True,
-) -> float:
+def clip_start_after_body_drag(start0: float, dt_seconds: float) -> float:
     """
-    Move a clip on the timeline.
+    Move a clip (its whole body, not a trim handle) on the timeline.
 
-    Clips may start *before* song 0 for pre-roll alignment. Song 0 has a soft
-    magnetic snap: when near zero the clip parks at 0 until the user drags
-    deliberately past the snap zone (left → negative, right → positive).
-
-    Pass ``snap=False`` (hold Shift while dragging) to bypass the zero latch.
+    Moving never touches trim/source state — it only repositions the clip,
+    and it clamps hard at song 0: the clip cannot be dragged to a negative
+    start. Continuing to drag left past 0 just holds the clip at 0 with no
+    jitter (matches the multi-select group-move clamp in timeline_widget).
     """
-    raw = start0 + dt_seconds
-    raw = max(min_start_seconds, raw)
-    if not snap:
-        return raw
-    snap_zone = max(0.02, float(snap_seconds))
-    if abs(raw) >= snap_zone:
-        return raw
-    # Inside the snap well around 0.
-    if start0 < -snap_zone:
-        # Coming back from negative pre-roll — latch at 0.
-        return 0.0
-    if start0 > snap_zone:
-        # Approaching 0 from the right — latch at 0.
-        return 0.0
-    # Already in the snap well (typically parked at 0).
-    if dt_seconds < 0 and raw <= -snap_zone:
-        return raw
-    if dt_seconds > 0 and raw >= snap_zone:
-        return raw
-    return 0.0
+    return max(0.0, start0 + dt_seconds)
 
 
 def clip_duration_after_right_trim(

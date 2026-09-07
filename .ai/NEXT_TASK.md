@@ -60,6 +60,22 @@ Candidates parked by user (not started):
 
 Resolved this session:
 
+- Video Clip left-trim-at-00:00 + body-move-past-00:00 hardening: fixed a
+  hit-test/hover priority bug where the header-width column splitter (5px
+  around `header_width`) silently stole clicks/hover from a Video Clip's
+  left trim handle whenever that clip's `start_seconds == 0` (its left edge
+  sits exactly on the splitter) — `_hit_video_clip` is now resolved before
+  the header/wave splitter checks in both `mousePressEvent` and
+  `mouseMoveEvent`. Also, per user decision, removed the old negative
+  "pre-roll" feature from `clip_start_after_body_drag()` (was covered by 3
+  tests) so a plain **body** drag now hard-clamps at `start_seconds >= 0`
+  with no trim/source-offset/duration changes and no jitter; left-trim
+  restore-past-a-previous-trim was already correctly clamped at 0 and
+  needed no change; multi-select group move was already correctly clamped
+  as one shared delta and needed no change. See
+  `.ai/handoffs/2026-09-07_VideoClipZeroTrimAndBodyClamp.md`. Needs user
+  manual verification (steps in that handoff).
+
 - Release Preflight blocker `tests/ui/test_marquee_over_track_colors.py::test_selection_box_paints_after_mark_track_colors`
   was a stale test, not a production regression. It asserted `_paint_lanes` (which paints
   the mark-track-color lane fills) must be re-invoked on every box-select paint frame. That
