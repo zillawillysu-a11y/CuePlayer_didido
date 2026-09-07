@@ -71,6 +71,8 @@ from cueplayer.timecode.smpte import Timecode, parse_timecode
 
 log = logging.getLogger(__name__)
 
+_MTC_JOIN_TIMEOUT_SECONDS = 1.0
+
 
 class _StreamCloseFailure(RuntimeError):
     """Native stream ownership is unresolved; do not try another endpoint."""
@@ -254,17 +256,26 @@ class AudioEngine(QObject):
         # themselves with their own lock; the AudioEngine bookkeeping it
         # reads — `raw_position`, loop/source-change sequence numbers — is
         # either lock-protected or safely re-checked every tick), so it is
-        # driven from a dedicated daemon thread paced by a wall-clock
-        # `Event.wait` instead of a GUI `QTimer`. See `_start_mtc_thread` /
+        # driven from a dedicated deadline-driven daemon thread instead of a
+        # GUI `QTimer` or a fixed-rate polling loop. See `_start_mtc_thread` /
         # `_stop_mtc_thread`.
-        self._mtc_thread_stop = threading.Event()
+        self._mtc_lifecycle_lock = threading.Lock()
+        self._mtc_thread_stop: threading.Event | None = None
+        self._mtc_thread_wake: threading.Event | None = None
         self._mtc_thread: threading.Thread | None = None
+        self._mtc_thread_generation = 0
+        self._mtc_active_generation = 0
+        self._mtc_sender_start_count = 0
+        self._mtc_sender_stop_count = 0
+        self._mtc_live_generations: set[int] = set()
+        self._mtc_duplicate_live_sender_peak = 0
         self._mtc_loop_count = 0
         self._mtc_loop_sum_s = 0.0
         self._mtc_loop_max_s = 0.0
         self._mtc_clock_lock_count = 0
         self._mtc_clock_lock_sum_s = 0.0
         self._mtc_clock_lock_max_s = 0.0
+        self._mtc_diagnostic_started_mono = 0.0
 
     @property
     def buffer(self) -> AudioBuffer | None:
@@ -783,6 +794,7 @@ class AudioEngine(QObject):
         self.set_music_volume(float(song.music_volume) if song is not None else 1.0)
         self.set_audio_gain_db(float(song.audio_gain_db) if song is not None else 0.0)
         self._midi_cues.set_song(song)
+        self._wake_mtc_thread()
         self.refresh_video_clips()
         self._refresh_source_routing_cache()
 
@@ -815,6 +827,7 @@ class AudioEngine(QObject):
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
         self._install_mtc_tc_source()
+        self._wake_mtc_thread()
 
     def apply_audio_settings(self, settings: AudioOutputSettings) -> str | None:
         """
@@ -1365,6 +1378,7 @@ class AudioEngine(QObject):
         self._mtc_source_key = self._mtc_tc_source_key(seconds)
         self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_seek(self.position)
+        self._wake_mtc_thread()
         self.position_changed.emit(self.position)
         # Off-RT: rebuild contiguous Video Audio coverage from the new playhead
         # so disjoint far-future cache entries cannot suppress local prefetch.
@@ -1385,46 +1399,103 @@ class AudioEngine(QObject):
 
     def _start_mtc_thread(self) -> None:
         """Start the off-GUI-thread MTC/MIDI-cue ticker (idempotent)."""
-        if self._mtc_thread is not None and self._mtc_thread.is_alive():
-            return
-        self._reset_mtc_timing_diagnostics()
-        self._mtc_thread_stop.clear()
-        t = threading.Thread(
-            target=self._mtc_thread_loop,
-            name="mtc-tick",
-            daemon=True,
-        )
-        self._mtc_thread = t
+        with self._mtc_lifecycle_lock:
+            current = self._mtc_thread
+            if current is not None and current.is_alive():
+                return
+            self._reset_mtc_timing_diagnostics()
+            self._mtc_thread_generation += 1
+            generation = self._mtc_thread_generation
+            stop = threading.Event()
+            wake = threading.Event()
+            t = threading.Thread(
+                target=self._mtc_thread_loop,
+                args=(generation, stop, wake),
+                name=f"mtc-tick-{generation}",
+                daemon=True,
+            )
+            self._mtc_thread_stop = stop
+            self._mtc_thread_wake = wake
+            self._mtc_thread = t
+            self._mtc_active_generation = generation
+            self._mtc_sender_start_count += 1
         t.start()
 
     def _stop_mtc_thread(self) -> None:
         """Stop the MTC ticker thread and wait for it to exit (bounded)."""
-        self._mtc_thread_stop.set()
-        t = self._mtc_thread
+        with self._mtc_lifecycle_lock:
+            t = self._mtc_thread
+            stop = self._mtc_thread_stop
+            wake = self._mtc_thread_wake
+            self._mtc_active_generation = 0
+        if stop is not None:
+            stop.set()
+        if wake is not None:
+            wake.set()
         if t is not None and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=1.0)
-        self._mtc_thread = None
+            t.join(timeout=_MTC_JOIN_TIMEOUT_SECONDS)
+        if t is None or not t.is_alive():
+            with self._mtc_lifecycle_lock:
+                if self._mtc_thread is t:
+                    self._mtc_thread = None
+                    self._mtc_thread_stop = None
+                    self._mtc_thread_wake = None
 
-    def _mtc_thread_loop(self) -> None:
-        # Same 4 ms cadence the GUI QTimer previously used, but paced by a
-        # wall-clock wait on a plain thread — never blocked by the Qt event
-        # loop (e.g. Windows' native title-bar move/resize modal loop).
-        stop = self._mtc_thread_stop
+    def _wake_mtc_thread(self) -> None:
+        """Wake the sender after an explicit clock/source discontinuity."""
+        with self._mtc_lifecycle_lock:
+            wake = self._mtc_thread_wake
+        if wake is not None:
+            wake.set()
+
+    def _mtc_thread_loop(
+        self,
+        generation: int,
+        stop: threading.Event,
+        wake: threading.Event,
+    ) -> None:
+        # GUI-independent but deadline-driven: one clock read / Python logic
+        # pass per required QF or cue-note deadline, plus explicit wakes for
+        # seek/source changes. No fixed 4 ms polling.
         track_timing = perf_diag.is_enabled()
-        while not stop.wait(0.004):
-            loop_t0 = time.perf_counter() if track_timing else 0.0
-            try:
-                self._mtc_tick()
-            except Exception:  # noqa: BLE001 — ticker must never die silently
-                log.exception("MTC tick thread error")
-            finally:
-                if track_timing:
-                    elapsed = time.perf_counter() - loop_t0
-                    self._mtc_loop_count += 1
-                    self._mtc_loop_sum_s += elapsed
-                    self._mtc_loop_max_s = max(self._mtc_loop_max_s, elapsed)
+        with self._mtc_lifecycle_lock:
+            self._mtc_live_generations.add(generation)
+            duplicates = max(0, len(self._mtc_live_generations) - 1)
+            self._mtc_duplicate_live_sender_peak = max(
+                self._mtc_duplicate_live_sender_peak, duplicates
+            )
+        try:
+            while not stop.is_set():
+                loop_t0 = time.perf_counter() if track_timing else 0.0
+                delay: float | None = None
+                try:
+                    delay = self._mtc_tick(generation)
+                except Exception:  # noqa: BLE001 — ticker must never die silently
+                    log.exception("MTC tick thread error")
+                finally:
+                    if track_timing:
+                        elapsed = time.perf_counter() - loop_t0
+                        self._mtc_loop_count += 1
+                        self._mtc_loop_sum_s += elapsed
+                        self._mtc_loop_max_s = max(self._mtc_loop_max_s, elapsed)
+                if stop.is_set():
+                    break
+                wake.wait(timeout=delay)
+                wake.clear()
+        finally:
+            with self._mtc_lifecycle_lock:
+                self._mtc_live_generations.discard(generation)
+                self._mtc_sender_stop_count += 1
+                if self._mtc_thread is threading.current_thread():
+                    self._mtc_thread = None
+                    self._mtc_thread_stop = None
+                    self._mtc_thread_wake = None
 
-    def _mtc_tick(self) -> None:
+    def _mtc_tick(self, generation: int | None = None) -> float | None:
+        if generation is not None:
+            with self._mtc_lifecycle_lock:
+                if generation != self._mtc_active_generation:
+                    return None
         if self._playing:
             loop_sequence = self._loop_discontinuity_sequence
             pos, clock_lock_wait = self._mtc_raw_position()
@@ -1446,6 +1517,14 @@ class AudioEngine(QObject):
                 self._mtc.on_seek(pos, playing=True)
             self._mtc.tick(pos)
             self._midi_cues.update(pos)
+            qf_delay = self._mtc.seconds_until_next_quarter_frame(pos)
+            note_delay = self._midi_cues.seconds_until_next_note(pos)
+            if qf_delay is None:
+                return note_delay
+            if note_delay is None:
+                return qf_delay
+            return min(qf_delay, note_delay)
+        return None
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
@@ -2859,6 +2938,7 @@ class AudioEngine(QObject):
         self._mtc_clock_lock_count = 0
         self._mtc_clock_lock_sum_s = 0.0
         self._mtc_clock_lock_max_s = 0.0
+        self._mtc_diagnostic_started_mono = time.monotonic()
         try:
             self._mtc.reset_timing_diagnostics()
         except Exception:
@@ -2867,8 +2947,28 @@ class AudioEngine(QObject):
     def mtc_timing_diagnostics(self) -> dict[str, float | int]:
         loops = int(self._mtc_loop_count)
         clocks = int(self._mtc_clock_lock_count)
+        elapsed = (
+            max(0.0, time.monotonic() - self._mtc_diagnostic_started_mono)
+            if self._mtc_diagnostic_started_mono > 0.0
+            else 0.0
+        )
+        with self._mtc_lifecycle_lock:
+            live_senders = len(self._mtc_live_generations)
+            lifecycle = {
+                "thread_generation_id": int(self._mtc_thread_generation),
+                "sender_start_count": int(self._mtc_sender_start_count),
+                "sender_stop_count": int(self._mtc_sender_stop_count),
+                "live_sender_count": int(live_senders),
+                "duplicate_live_sender_count": max(0, int(live_senders) - 1),
+                "duplicate_live_sender_peak": int(
+                    self._mtc_duplicate_live_sender_peak
+                ),
+            }
         result: dict[str, float | int] = {
             "loop_count": loops,
+            "scheduler_elapsed_s": elapsed,
+            "wakeups_per_second": loops / elapsed if elapsed > 0.0 else 0.0,
+            "clock_reads_per_second": clocks / elapsed if elapsed > 0.0 else 0.0,
             "loop_mean_ms": 1000.0 * self._mtc_loop_sum_s / max(1, loops),
             "loop_ms": 1000.0 * self._mtc_loop_sum_s / max(1, loops),
             "loop_max_ms": 1000.0 * self._mtc_loop_max_s,
@@ -2880,10 +2980,15 @@ class AudioEngine(QObject):
             ),
             "clock_lock_wait_max_ms": 1000.0 * self._mtc_clock_lock_max_s,
         }
+        result.update(lifecycle)
         try:
             result.update(self._mtc.timing_diagnostics())
         except Exception:
             pass
+        sends = int(result.get("send_count", 0))
+        result["midi_sends_per_second"] = (
+            sends / elapsed if elapsed > 0.0 else 0.0
+        )
         return result
 
     def audio_stream_diagnostics(self) -> dict[str, object]:

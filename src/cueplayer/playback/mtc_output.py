@@ -118,8 +118,9 @@ class MtcOutput:
     """
     Sends MTC quarter frames while playing; optional full-frame dump on seek/play.
 
-    Call ``tick(position_seconds)`` from the UI/audio poll (~4–16 ms). Uses the
-    playback position (not wall clock) so MTC stays locked to the audio engine.
+    ``AudioEngine`` calls ``tick(position_seconds)`` from its GUI-independent,
+    deadline-driven sender. Uses playback position (not wall clock) so MTC
+    stays locked to the audio engine.
     """
 
     def __init__(self) -> None:
@@ -337,6 +338,27 @@ class MtcOutput:
                     log.debug("MTC send failed: %s", exc)
                     break
                 self._qf_piece = (piece + 1) % 8
+
+    def seconds_until_next_quarter_frame(
+        self, position_seconds: float
+    ) -> float | None:
+        """Return the sample-clock delay to the next required QF deadline.
+
+        ``None`` means MTC is not currently active.  The sender uses this to
+        sleep until protocol work is due instead of polling at a fixed rate.
+        """
+        with self._lock:
+            if not self._playing or not self._enabled or self._port is None:
+                return None
+            qf_rate = self._fps * 4.0
+            if qf_rate <= 0:
+                return None
+            next_index = max(
+                self._last_qf_index + 1,
+                int(max(0.0, float(position_seconds)) * qf_rate) + 1,
+            )
+            deadline = next_index / qf_rate
+            return max(0.0, deadline - max(0.0, float(position_seconds)))
 
     def close(self) -> None:
         with self._lock:

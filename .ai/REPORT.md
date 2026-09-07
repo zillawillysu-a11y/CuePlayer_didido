@@ -1,99 +1,139 @@
-# Audio Timing Reliability — LTC Startup + DirectSound/MTC
+# DirectSound + MTC Regression — Pre/Post MTC Thread Comparison
 
 Date: 2026-09-08
+
 Branch: `technical-audit-0815-028d`
-Baseline: `4c866020ffd3434ed35186569ae0c6ccfd4fee8b`
+
+Regression commit: `fe5097667b8ef48b087f20b511f3b48b2e9c75e7`
+
+Parent: `9e899ffcd627926335177f7e4cf161d1a6545384`
 
 ## Task objective
 
-將兩個實機問題分開調查：Problem A（LTC Enable 後約 6 秒 transient theater-audio stutter）與 Problem B（DirectSound + MTC 持續 severe stutter）；先建立 evidence，再只修已被支持的 root cause。
+以 Git history、hardware PERF 與 deterministic fake-clock/fake-MIDI 比較，找出
+`fe509766` 將 MTC 從 GUI `QTimer` 移到 fixed 4 ms daemon thread 後，為何只在
+DirectSound + MTC ON 發生 severe stutter；在不恢復 GUI dependency、不降低 MTC
+正確性、不改 LTC/AudioEngine 大架構的前提下做最小 production fix。
 
 ## What was implemented
 
-### Problem A — **Strong evidence but not yet proven on post-fix hardware**
+### `fe509766` 前後精確差異
 
-完整 lifecycle：Monitor quick toggle / Audio dialog 寫入 `AudioOutputSettings.ltc_enabled` → `MainWindow._on_output_quick_toggle()` / `_open_audio_midi_settings()` → `AudioEngine.apply_audio_settings()`（GUI thread；若正在播放先 pause）→ `_resolve_device_and_route()` → resolved LTC mode 三選一 → clip mode `_ensure_clip_ltc_cache()` → single-worker `ltc-cache` executor → 每 clip `generate_ltc_pcm()` → 每 clip incremental publish 至 `_ltc_clip_pcm`（短暫 acquire `AudioEngine._lock`）→ `_done()` publish complete cache key → callback 對 ready clip slice cache、pending active clip 用 bounded cursor、gap 直接 silence。
+| 行為 | Parent `9e899ff`（修改前） | `fe509766`（修改後） |
+|---|---|---|
+| scheduler | `QTimer(self)`，interval 4 ms | daemon `Thread` + shared `Event.wait(0.004)` |
+| thread | QObject 所屬 GUI thread | 每次 play/resume 新建 Python thread `mtc-tick` |
+| wake | nominal 250/s；實際受 Qt event loop/coalescing/modal loop 影響 | 接近 250/s，與 GUI 無關，固定喚醒 Python thread |
+| clock read | 每個實際 timer timeout 讀一次 `raw_position` | 每個 4 ms wake 讀一次，接近 250 lock attempts/s |
+| generation/send | 每 tick 檢查 `int(position×fps×4)`；只為到期 QF 建 message/send | 完全相同；該 commit 未改 `MtcOutput.tick()` 或 backend |
+| locks | 短暫讀 AudioEngine lock；MTC lock 包 tick/send | 同一 clock lock改由 sender thread取得；send前 AudioEngine lock已釋放 |
+| allocations | engine init 建一個 QTimer並重用 | 每次 play/resume 建 Thread；Event在 init建；每個 wake有 Python call/context switch |
+| stop/start | 同一 QTimer start/stop，無 join | Event set、join最多 1 s、清 reference；下一次建新 Thread |
+| seek | GUI直接 `on_seek`，下一 timer繼續 | 同一 `on_seek`，可與 sender並行；sender仍每 4 ms醒來 |
+| pause | playing false → timer stop → `on_pause` | playing false → Event set/join → `on_pause` |
+| title-bar/modal | GUI timer停，MTC/Cue Notes中斷 | sender繼續，不依賴 GUI |
 
-實機舊 PERF dump（2026-09-07 16:02 UTC）有 15 clips、`builder_job_started=2`、`builder_job_completed=2`、`builder_duplicate_suppressed=4`、30 個 clip samples。`builder_clip_ms mean=404.33 / max=787.06`；兩個完整 job 分別約 6.02–6.14 秒（mean 6.083 秒）。`15 × 404 ms ≈ 6.06 秒`，與使用者 A2「LTC ON 立即卡、約 6 秒後恢復」時間尺度吻合。舊 dump 沒有 timestamp event ring，因此尚不能用同一份檔案精確證明 T0/T1/Tn；本輪加入 bounded `audio.ltc_clip.builder_event_ring`，記錄 Enable change、job start、每 clip completion、job complete/cancel，並在事件中 snapshot callback count / interval misses / exec-over-budget，供下一次實機 A/B 直接對時。
+舊 QTimer不是 deadline-only scheduler：GUI event loop正常時也標稱每 4 ms完整執行
+`_mtc_tick()`，包含 clock read、source/loop checks、`MtcOutput.tick()`及
+`MidiCueNotes.update()`。舊資料沒有真實 timer callback counter，所以不能聲稱歷史實際
+恆為 250/s；可確定設定值是 250/s，且 GUI busy/coalescing會降低、modal loop會歸零。
+`fe509766` 則把近 250/s變成固定的 Python thread wake/context-switch壓力。
 
-Root-cause evidence：舊 `generate_ltc_pcm()` 是 while-per-frame → `encode_ltc_frame_bits()` Python work → `_biphase_encode()` 80-bit Python loop + slice assignments；ThreadPoolExecutor 只把它搬到背景 Python thread，仍與 sounddevice Python callback 爭 GIL。降低 OS thread priority 不改 GIL ownership。舊 cancellation 只在 clip 邊界檢查；incremental publish 改善「cache 何時可用」，不降低約 6 秒的 CPU/GIL 總工作。
+### Regression cause 與逐項排除
 
-Production fix：`generate_ltc_pcm()` 改成 bounded（2048 LTC frames/batch）NumPy/native transition + uint8 parity-cumsum renderer；保留 cumulative rounding、bit boundaries、mid-cell transition、polarity correction、TC rollover、尾端不足 160 samples 留白等既有 semantics。Python 不再 per frame/per bit/per sample render。觀測 benchmark：
+- **A/B/C/E 是 confirmed architecture cause**：hardware regression boundary正是
+  `fe509766` 前後；該 commit唯一新增的持續 runtime壓力是 dedicated Python thread每
+  4 ms取得 GIL、讀 sample clock/lock、跑 MTC/Cue Note logic。DirectSound callback
+  period約 15.29 ms，平均每 period插入約 3.82次 Python wake；此 scheduling/GIL壓力
+  能解釋 B4 unique regression。
+- **D MIDI backend不是 primary root cause**：commit未改 Mido/python-rtmidi/WinMM或
+  send math；send仍只有 96–120 QF/s。實機 send mean約 0.278 ms、max約 8.755 ms，
+  backend latency可能放大 thread cost，但不是新機制。
+- **AudioEngine lock不是 primary root cause**：send前已釋放該 lock；deterministic test
+  證明 port.send時 lock可立即取得。實機 callback lock wait mean約 0.00128 ms、max
+  約 0.259 ms，不支持 severe blocker。fixed polling確實造成多餘 clock reads，修正後降低。
+- **沒有兩個 scheduler**：production source已無 `_mtc_timer`；唯一 start call在 `play()`。
+- **duplicate generation不是本次 hardware主因，但有真實 latent漏洞**：舊 shared Event
+  在 tick/send卡超過 1 s時，stop timeout後清 reference；下一 start會 clear同一 Event，
+  舊 thread可復活。實機 send max 8.755 ms沒有 evidence它曾觸發。blocked-tick test已證明
+  hazard；現改為 per-generation Events、generation guard、舊代 alive時拒絕新 start。
 
-- 60 s：scalar 86.9 ms → vectorized 12.9 ms（6.73×）
-- 300 s：scalar 451.2 ms → vectorized 64.9 ms（6.96×）
-- 15 × 270 s：scalar 6.0947 s → vectorized 0.9036 s（6.74×）
+### Quarter-frame cadence
 
-固定 inputs 對舊 scalar reference 為 byte-exact，涵蓋 24/25/30/29.97、drop-frame flag、跨午夜、短 clip、非整秒與跨 2048-frame batch boundary。既有 clip boundary、gap、full-track、decode、MTC mapping tests 保持通過。Generation 仍只在 `ltc-cache` worker；callback 未加入 LTC full generation、wait、join、I/O、Qt、logging 或 unbounded loop。
+| FPS | required QF/s | deadline period | 250 Hz over-poll |
+|---:|---:|---:|---:|
+| 24 | 96 | 10.4167 ms | 2.604× |
+| 25 | 100 | 10.0000 ms | 2.500× |
+| 29.97 | 119.88 | 8.3417 ms | 2.086× |
+| 30 | 120 | 8.3333 ms | 2.083× |
 
-Builder 行為釐清：clip Enable 會 build 所有有效 clips；same key + same generation 的重複 ensure 會 suppress。Toggle OFF 會 invalidate；再 ON 會 rebuild。clip stale job 在下一 clip boundary cancel 且 stale PCM 不 publish。Full-track 與 clip mode 在同一時刻互斥且共用 single-worker executor，所以不會同時執行；但 mode 快速切換時，舊 full-track future 沒有 generation cancellation，可能先跑完再讓 clip job接手。Vectorization 已將其 lifetime 同樣縮短，但這個 full-track stale-job lifecycle debt 未在本輪擴大重構。
+Controlled 1-second comparison（含 t=0 sample）為舊 scheduler 251 logic calls；新 deadline
+positions分別 97/101/120/121 calls，兩邊 QF bytes完全相同。
 
-### Problem B — **Not reproduced / insufficient evidence**
+### Production fix
 
-目前 stream path 對 ASIO / DirectSound 都要求 `float32`、resolved sample rate/channels、`blocksize=0`（backend-controlled），先試 `latency="low"`，失敗再用 backend default。此機唯讀 device query：Focusrite DirectSound endpoint 為 4ch / default 44.1 kHz / low latency 120 ms / high 240 ms；Focusrite ASIO 為 4ch / default 48 kHz / reported low/high 21.333 ms。實際播放仍可能依 source/device negotiation 開在不同 rate，必須以新 stream metrics 看 live stream，不能用 default 值猜。
-
-舊 dump 只有最後 callback 的 `expected_period_s=10 ms`，沒有 host API、device、output latency 或 frame distribution；其 interval mean 15.30 ms / max 33.68 ms、exec mean 0.389 ms / max 16.91 ms、underflow 0、status 0。舊 `deadline_miss_count=2280/5266` 實際只是 callback invocation interval threshold，不是 PortAudio underflow，且不能確認該 dump 屬哪個 backend。
-
-本輪新增：
-
-- `audio.stream.requested_blocksize/sample_rate/host_api/device/device_index/dtype/channels/requested_latency/output_latency`
-- `audio.callback.frame_count_min/max/mean` 與 `actual_period_expected_from_frames_ms`
-- `audio.callback.interval_miss_count` 與 `exec_over_budget_count` 分離；保留 `deadline_miss_count` 作 interval-miss backward-compatible alias
-- `audio.callback.lock_wait_ms/mean/max`；timer 明確從 acquire callback-wide `AudioEngine._lock` 前開始，完整 exec timer 也本來就在 acquire 前，因此舊 exec 已包含 lock wait
-- `mtc.loop_ms/mean/max`、`mtc.clock_lock_wait_ms/mean/max`、`mtc.send_ms/mean/max/count`
-
-MTC lifecycle：Play 後 dedicated daemon `mtc-tick` thread 以 `Event.wait(0.004)` pacing → 讀 sample-clock position → file-LTC sync / loop/source discontinuity re-anchor → `MtcOutput.tick()` → quarter-frame message → MIDI port send。MTC 每 tick 讀 `raw_position` 時會短暫 acquire callback 共用的 `AudioEngine._lock`；新 metric 精確只量 acquire wait。讀完 position 後 lock 已釋放；MIDI send 發生在獨立的 `MtcOutput._lock` 下，deterministic test 證明 send 當下 `AudioEngine._lock` 可立即取得。沒有證據顯示 MTC 改變 audio sample cursor；variable callback frames 與 interleaved MTC ticks 測得 cursor 仍精確等於 frames sum。
-
-因此本輪不宣稱 DirectSound + MTC root cause，也沒有任意放慢 MTC、放大 buffer、關 quarter-frame 或改 AudioEngine lock architecture。下一次 B1–B4 實機 dump 必須找出 DirectSound + MTC ON 唯一惡化的 `frame_count`、interval、exec、callback lock wait、MTC clock wait、loop 或 send 指標後，才選 production fix。
+- Dedicated sender保留，但改為：從唯一 Playback Engine sample position執行到期工作 →
+  計算下一 QF與下一 enabled cue-note deadline → Event等到最早 deadline或明確 wake
+  （seek/song/source change）→ 再讀 sample clock/send。
+- 沒有 fixed polling、arbitrary sleep、audio-callback send或第二 clock。wall clock只決定
+  何時醒來；訊息內容與到期判斷仍由 AudioEngine sample position決定。
+- pause/stop/shutdown set stop+wake+bounded join；thread未退出就保留 reference並拒絕新代。
+  每代獨立 Event，舊代不會被下一次 start `clear()`復活。
+- diagnostics新增 generation id、start/stop、live/duplicate count/peak、wakeups/s、clock
+  reads/s、MIDI sends/s。
+- title-bar/modal continuity保留：sender完全不依賴 Qt event loop。
 
 ## Files changed
 
-- `src/cueplayer/timecode/ltc.py`
 - `src/cueplayer/playback/audio_engine.py`
 - `src/cueplayer/playback/mtc_output.py`
-- `tests/timecode/test_ltc.py`
-- `tests/playback/test_ltc_clip_builder.py`
-- `tests/playback/test_audio_timing_diagnostics.py`
-- `tests/playback/test_audio_mtc_timing_reliability.py`（new）
+- `src/cueplayer/playback/midi_cue_notes.py`
+- `tests/playback/test_mtc_deadline_scheduler.py`（new）
+- `tests/playback/test_mtc_gui_stall_independence.py`
 - `.ai/REPORT.md`
 - `.ai/NEXT_TASK.md`
-- `.ai/handoffs/2026-09-08_AudioTiming_LTCStartup_DirectSoundMTC.md`
+- `.ai/handoffs/2026-09-08_DirectSound_MTC_Regression.md`（new）
 
 ## Architecture decisions
 
-- Playback Engine sample position remains the only clock；沒有第二個 video/MTC clock。
-- Problem A 只替換 encoder implementation；LTC protocol/waveform/TC mapping/cache/clip gap semantics 不變。
-- NumPy batch generation 只在 `ltc-cache` worker；callback 保持 bounded cache slice / cursor fallback。
-- Problem B 只加 lock-free callback counters與 background-thread local aggregation；report 時才 publish 到 PERF。MTC send timing 在 `CUEPLAYER_PERF` disabled 時不呼叫 timer。
-- 沒有改 Timeline、Marks、Clean Video UI、Art-Net、exporter、persistence 或 MA。
+- AudioEngine sample position仍是唯一 clock；Event timeout不是 TC source。
+- 不 revert GUI QTimer，因此 Windows title-bar/native modal loop仍不會中斷實際 MTC。
+- 既有 QF index、0→7 order、bounded discontinuity re-anchor、play/seek full-frame不變。
+- 29.97沿用既有 semantics（119.88 QF/s；rate bits保持既有 30 NDF handling）；不在本輪
+  擴張 drop-frame redesign。
+- Notes-only模式直接等下一 enabled mark deadline，不保留 4 ms mark-list polling。
+- 未改 LTC、DirectSound buffer、audio callback、Timeline、Video、Art-Net、exporter或 persistence。
 
 ## Tests performed
 
 ```text
-Focused final audio/LTC/MTC batch: 114 passed
-
-Broader non-video playback/timecode batch: 276 passed, 3 failed
-- 2 known baseline failures: test_song_use_left_ltc routing expectations
-- 1 environment-specific NDI test: installed Program Files NDI runtime adds an extra valid path
-
-Unfiltered tests/playback sweep: NOT COMPLETE
-- hit the repository's known Windows native access violation in test_video_sync
-  background PyAV decoder (av_path_lock/open_media_decoder); do not count as green.
-
-python -m compileall (touched source): passed
+Focused MTC/scheduler/timecode: 42 passed
+Playback + timecode (excluding known native-crash test_video_sync.py):
+357 passed, 3 known/environment failures
+- 2 existing test_song_use_left_ltc routing expectation failures
+- 1 environment-specific NDI runtime search-path failure
+Same set excluding those three known/environment files: 351 passed
+compileall: passed
 git diff --check: passed (only expected LF→CRLF notices)
+ruff: unavailable in repo virtualenv; not claimed
 ```
 
-所有新 correctness tests 不使用 fragile wall-clock thresholds。Benchmark 數字是 diagnostic observation，不是 CI assertion。
+Deterministic coverage：24/25/29.97/30 exact QF order/no duplicate/no skip；old polling vs
+deadline same bytes；play/pause/resume/seek/stop；repeated lifecycle；Song/device switch；
+blocked stale generation；AudioEngine lock release before send；zero Qt event-loop processing；
+variable callback frame cursor continuity。Correctness assertion不依賴 wall-clock message count。
 
 ## Remaining issues
 
-- Problem A 必須用相同劇場 Song 做 post-fix A1/A2/A3 硬體驗證；預期 builder lifetime 約由 6 秒降到約 1 秒以下，且 native NumPy 工作不再造成相同 GIL starvation。未做此 run 前維持 **Strong evidence but not yet proven**。
-- Problem B 必須做 ASIO/DirectSound × MTC OFF/ON 四格實機 A/B；目前為 **Not reproduced / insufficient evidence**，不可猜 production fix。
-- 若 B4 唯一升高 callback lock wait / MTC clock wait，下一個 narrow candidate 才是 lock-free bounded clock snapshot；若 send/loop 升高則調查 MIDI backend blocking/GIL；若只有 interval miss 但 frame-derived period、underflow/status、exec 都正常，先修 diagnostic interpretation，不動播放。
-- Full-track LTC stale future 尚無 generation-aware cancellation；向量化後成本已大幅降低，但 lifecycle debt仍應在有實機 evidence 時另案處理。
-- `.pytest_cache` 仍有既有 Windows access-denied warning；與本輪功能無關。
+- CI fake backend無法聽到真實 DirectSound output；architecture differential、protocol
+  equivalence與 lifecycle已證明，但仍須同一劇場 Focusrite DirectSound + MTC ON post-fix
+  實機確認，才可把 hardware outcome標為 closed。
+- Post-fix PERF應看到 wake/clock rate接近所選 FPS的 96–120/s，而非約 250/s；send cadence
+  不應下降，duplicate sender應為 0。
+- `.pytest_cache`既有 Windows access-denied warning與本輪無關。
 
 ## Suggested next task
 
-在劇場硬體執行同一 Song 的 A1/A2/A3 與 B1–B4 `CUEPLAYER_PERF=1` matrix，使用新 `builder_event_ring`、stream config、frame distribution、callback lock wait、MTC loop/clock-lock/send metrics：先確認 Problem A post-fix，再找出 DirectSound + MTC ON 唯一惡化因素；只有 evidence 指向單一機制後才實作 Problem B narrow fix。
+在同一劇場 Song／Focusrite endpoint執行 post-fix DirectSound + MTC ON 10秒實機驗證：
+確認 severe stutter消失、title-bar hold期間 MTC不中斷，保存 callback continuity、MTC
+wake/clock/send rates與 lifecycle counters；只驗證，不再改 LTC或 buffer。

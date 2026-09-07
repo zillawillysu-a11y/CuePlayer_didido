@@ -99,7 +99,7 @@ class MidiCueNotes:
             self._last_position = max(0.0, float(position_seconds))
 
     def update(self, position_seconds: float) -> None:
-        """Call from the engine position timer while playing."""
+        """Call from the engine's deadline-driven MIDI sender while playing."""
         with self._lock:
             if not self._enabled or not self._playing or self._song is None:
                 self._last_position = max(0.0, float(position_seconds))
@@ -112,6 +112,28 @@ class MidiCueNotes:
             marks = self._marks_to_fire_locked(prev, pos)
             for mark, lane in marks:
                 self._send_note_locked(lane, mark)
+
+    def seconds_until_next_note(self, position_seconds: float) -> float | None:
+        """Return the delay to the next enabled cue-note mark, if active."""
+        with self._lock:
+            if not self._enabled or not self._playing or self._song is None:
+                return None
+            pos = max(0.0, float(position_seconds))
+            next_time: float | None = None
+            for mark in self._song.marks:
+                mark_time = float(mark.time_seconds)
+                if mark_time <= pos:
+                    continue
+                lane = self._song.lane_by_index(mark.lane_index)
+                if lane is None or not bool(
+                    getattr(lane, "midi_note_enabled", False)
+                ):
+                    continue
+                if next_time is None or mark_time < next_time:
+                    next_time = mark_time
+            if next_time is None:
+                return None
+            return max(0.0, next_time - pos)
 
     def close(self) -> None:
         with self._lock:

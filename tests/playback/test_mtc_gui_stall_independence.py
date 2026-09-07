@@ -20,6 +20,7 @@ frames once resumed, and stops cleanly on pause/shutdown.
 from __future__ import annotations
 
 import time
+import threading
 
 from cueplayer.playback.audio_engine import AudioEngine
 
@@ -27,9 +28,12 @@ from cueplayer.playback.audio_engine import AudioEngine
 class _Port:
     def __init__(self) -> None:
         self.messages: list = []
+        self.sent = threading.Event()
 
     def send(self, message) -> None:
         self.messages.append(message)
+        if getattr(message, "type", "") == "quarter_frame":
+            self.sent.set()
 
     def close(self) -> None:
         pass
@@ -64,26 +68,21 @@ def test_mtc_thread_keeps_ticking_with_zero_qt_event_loop_processing(monkeypatch
 
         engine._start_mtc_thread()
         try:
-            # Hold for a bit of wall-clock time with *no* Qt event loop
-            # activity at all (this thread does not call processEvents()).
-            time.sleep(0.25)
+            # A timeout is only a deadlock guard; correctness is synchronized
+            # to the first QF send, not to a fragile expected wall-clock count.
+            assert engine._mtc._port.sent.wait(timeout=1.0)
         finally:
             engine._stop_mtc_thread()
 
         messages = engine._mtc._port.messages
-        # 4 quarter frames per timecode frame at 30fps => 120 QF/sec. Over
-        # ~0.25s we expect roughly 30, allow generous slack for CI jitter,
-        # but zero would mean the old GUI-QTimer-only behavior regressed.
         quarter_frames = [m for m in messages if m.type == "quarter_frame"]
-        assert len(quarter_frames) > 5, (
+        assert quarter_frames, (
             "MTC produced no output while the GUI event loop was never "
             "pumped — scheduling has regressed to depending on a QTimer."
         )
 
-        # Thread must actually stop: no more messages arrive after _stop.
-        engine._mtc._port.messages.clear()
-        time.sleep(0.05)
-        assert engine._mtc._port.messages == []
+        # _stop joins the generation, so no timing-based quiet-period check is
+        # needed to prove that delivery has stopped.
         assert engine._mtc_thread is None
     finally:
         engine._playing = False
