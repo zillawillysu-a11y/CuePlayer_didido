@@ -137,6 +137,140 @@ def test_cue_id_last_row_down_does_not_wrap(app: QApplication) -> None:
     assert panel.cue_table.currentRow() == last_row  # stayed on the last row
 
 
+def _song_with_button_between_cue_marks() -> tuple[Song, list[str]]:
+    """Lane 1 ("Main") has Cue ID enabled; lane 2 does not (a "Button" row with
+    no Cue ID, per the manual-test report — reuses the real per-lane
+    `cue_id_enabled` flag, not a text/blank heuristic)."""
+    song = Song.create("Skip")
+    mark_a = song.add_mark(1, 1.0)
+    mark_a.main_cue_id = "101"
+    mark_b = song.add_mark(2, 2.0)  # Button: lane 2 has cue_id_enabled=False
+    mark_d = song.add_mark(1, 3.0)
+    mark_d.main_cue_id = "102"
+    return song, [mark_a.id, mark_b.id, mark_d.id]
+
+
+def test_cue_id_down_skips_non_cue_id_row(app: QApplication) -> None:
+    del app
+    song, ids = _song_with_button_between_cue_marks()
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    col = LOGICAL_INDEX_BY_FIELD["cue_id"]
+    row_a = panel._mark_id_to_row[ids[0]]  # noqa: SLF001
+    row_d = panel._mark_id_to_row[ids[2]]  # noqa: SLF001
+    panel.cue_table.setCurrentCell(row_a, col)
+    panel.cue_table.editItem(panel.cue_table.item(row_a, col))
+
+    editor = panel.cue_table.focusWidget()
+    _send_vertical_key(editor, Qt.Key.Key_Down)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert panel.cue_table.currentRow() == row_d  # jumped straight past the Button row
+    assert panel.cue_table.state() == panel.cue_table.State.EditingState
+    next_editor = panel.cue_table.focusWidget()
+    assert isinstance(next_editor, QLineEdit)
+    assert next_editor.text() == "102"
+
+
+def test_cue_id_up_skips_non_cue_id_row(app: QApplication) -> None:
+    del app
+    song, ids = _song_with_button_between_cue_marks()
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    col = LOGICAL_INDEX_BY_FIELD["cue_id"]
+    row_a = panel._mark_id_to_row[ids[0]]  # noqa: SLF001
+    row_d = panel._mark_id_to_row[ids[2]]  # noqa: SLF001
+    panel.cue_table.setCurrentCell(row_d, col)
+    panel.cue_table.editItem(panel.cue_table.item(row_d, col))
+
+    editor = panel.cue_table.focusWidget()
+    _send_vertical_key(editor, Qt.Key.Key_Up)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert panel.cue_table.currentRow() == row_a
+
+
+def test_cue_id_down_skips_multiple_consecutive_non_cue_id_rows(app: QApplication) -> None:
+    del app
+    song = Song.create("SkipMany")
+    mark_a = song.add_mark(1, 1.0)
+    mark_a.main_cue_id = "101"
+    mark_b = song.add_mark(2, 2.0)
+    mark_c = song.add_mark(3, 2.5)
+    mark_e = song.add_mark(4, 2.7)
+    mark_d = song.add_mark(1, 3.0)
+    mark_d.main_cue_id = "102"
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    col = LOGICAL_INDEX_BY_FIELD["cue_id"]
+    row_a = panel._mark_id_to_row[mark_a.id]  # noqa: SLF001
+    row_d = panel._mark_id_to_row[mark_d.id]  # noqa: SLF001
+    del mark_b, mark_c, mark_e
+    panel.cue_table.setCurrentCell(row_a, col)
+    panel.cue_table.editItem(panel.cue_table.item(row_a, col))
+
+    editor = panel.cue_table.focusWidget()
+    _send_vertical_key(editor, Qt.Key.Key_Down)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert panel.cue_table.currentRow() == row_d
+
+
+def test_cue_id_down_at_last_cue_id_target_stays_and_keeps_editor(app: QApplication) -> None:
+    # A Button row exists after the last real Cue ID row: Down must not jump
+    # there, must not wrap, and must not destroy the current editor.
+    del app
+    song = Song.create("Boundary")
+    mark_a = song.add_mark(1, 1.0)
+    mark_a.main_cue_id = "101"
+    song.add_mark(2, 2.0)  # trailing Button row, no Cue ID
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    col = LOGICAL_INDEX_BY_FIELD["cue_id"]
+    row_a = panel._mark_id_to_row[mark_a.id]  # noqa: SLF001
+    panel.cue_table.setCurrentCell(row_a, col)
+    panel.cue_table.editItem(panel.cue_table.item(row_a, col))
+
+    editor = panel.cue_table.focusWidget()
+    editor.setText("999")
+    _send_vertical_key(editor, Qt.Key.Key_Down)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert panel.cue_table.currentRow() == row_a
+    assert panel.cue_table.state() == panel.cue_table.State.EditingState
+    current_editor = panel.cue_table.focusWidget()
+    assert isinstance(current_editor, QLineEdit)
+    assert current_editor.text() == "999"  # uncommitted edit preserved, not destroyed
+    mark_a_reloaded = next(m for m in song.marks if m.id == mark_a.id)
+    assert mark_a_reloaded.main_cue_id == "101"  # not committed since nothing to navigate to
+
+
+def test_cue_id_up_at_first_cue_id_target_stays_and_keeps_editor(app: QApplication) -> None:
+    del app
+    song = Song.create("Boundary2")
+    song.add_mark(2, 1.0)  # leading Button row, no Cue ID
+    mark_a = song.add_mark(1, 2.0)
+    mark_a.main_cue_id = "101"
+    panel = CueMonitorPanel()
+    panel.set_song(song)
+    col = LOGICAL_INDEX_BY_FIELD["cue_id"]
+    row_a = panel._mark_id_to_row[mark_a.id]  # noqa: SLF001
+    panel.cue_table.setCurrentCell(row_a, col)
+    panel.cue_table.editItem(panel.cue_table.item(row_a, col))
+
+    editor = panel.cue_table.focusWidget()
+    _send_vertical_key(editor, Qt.Key.Key_Up)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert panel.cue_table.currentRow() == row_a
+    assert panel.cue_table.state() == panel.cue_table.State.EditingState
+
+
 def test_note_navigation_regression_still_works(app: QApplication) -> None:
     # B8: widening the Cue ID guard must not disturb the existing Note nav.
     del app

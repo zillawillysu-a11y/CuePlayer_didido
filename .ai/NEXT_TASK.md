@@ -76,7 +76,10 @@ Resolved this session:
   the Note column already had (commit current value, open the adjacent row's Cue ID editor,
   stay in edit mode, no wrap at the first/last row), reusing the Note column's existing
   delegate/eventFilter mechanism almost unchanged; Cue ID additionally select-alls its text on
-  arrival. See `.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`. Needs user manual
+  arrival. Post-manual-test fix: navigation now skips rows whose lane has no Cue ID (previously
+  stalled on them and lost the editor) by scanning row-by-row for the next real
+  `ItemIsEditable` Cue ID cell before committing/closing anything, instead of a fixed
+  `row + delta`. See `.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`. Needs user manual
   verification (steps in that handoff).
 
 - Split Video Clip at Playhead + Video Clip Snap: Split already existed from an earlier

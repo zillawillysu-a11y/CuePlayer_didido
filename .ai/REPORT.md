@@ -56,6 +56,23 @@ Full detail, code-level reasoning, and files changed: see
 - Only `Key_Up`/`Key_Down` are intercepted; every other editing key falls through unchanged for
   both columns.
 
+### Post-manual-test fix — Cue ID navigation must skip rows without a Cue ID
+
+Manual testing found Up/Down used a naive `row + delta`, so it stopped dead on any "Button"
+row (a Mark whose lane has `cue_id_enabled=False`) instead of continuing to the next real Cue
+ID row — and because the delegate already committed/closed the editor before discovering the
+target wasn't editable, the user's edit position was lost outright.
+
+Fixed in `_PaddedItemDelegate` (`cue_monitor_panel.py`): new `_find_navigable_row` scans row by
+row in the Up/Down direction checking each row's real `ItemIsEditable` flag (the same flag
+`refresh_list` already derives from `lane.cue_id_enabled` — no text/blank heuristic), and
+`eventFilter` now runs this scan **before** committing/closing anything. If no navigable row
+exists in that direction, the key event is consumed and the current editor is left completely
+untouched (no commit, no close, no wrong jump); only once a target is found does the existing
+commit → close → open-adjacent flow run, now with the already-resolved target row instead of a
+single fixed offset. Note column unaffected (every row's Note cell is always editable, so the
+scan finds the immediate next row exactly as before).
+
 ## Tests
 
 Narrow/targeted files only (a full `tests/ui/` sweep is known to hang on fake `.mp4` bytes +
@@ -63,7 +80,7 @@ Narrow/targeted files only (a full `tests/ui/` sweep is known to hang on fake `.
 
 ```
 tests/ui/test_video_track_seek.py        6 passed  (new)
-tests/ui/test_cue_id_navigation.py       5 passed  (new)
+tests/ui/test_cue_id_navigation.py       10 passed (new; 5 added for the skip-non-Cue-ID-row fix)
 tests/ui/test_marquee_group_move.py      passed
 tests/ui/test_video_clip_snap.py         passed
 tests/ui/test_video_clip_split.py        passed

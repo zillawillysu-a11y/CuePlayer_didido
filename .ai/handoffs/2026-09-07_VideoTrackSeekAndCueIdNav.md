@@ -119,14 +119,62 @@ re-opens the same row's editor rather than wrapping or closing.
 key (Left/Right/Home/End/Backspace/Delete/Enter/Escape/Tab/copy-paste/undo) falls through to
 `super().eventFilter(editor, event)` unchanged, for both Note and Cue ID.
 
+## Post-manual-test fix — Cue ID navigation must skip non-Cue-ID rows
+
+Manual testing found the Cue ID Up/Down navigation above used a naive `row + delta` target,
+so it stopped on (and opened, uselessly, or bailed silently on) a "Button" row — any Mark row
+whose lane has `cue_id_enabled=False` and therefore no Cue ID cell to edit — instead of
+continuing past it to the next real Cue ID row, breaking the intended fast-entry workflow
+(e.g. `Cue Mark A(101) → Button B → Button C → Cue Mark D(102)`: Down from A should land on D,
+not stall on B).
+
+Root cause: `_PaddedItemDelegate.eventFilter` unconditionally called `commitData`/`closeEditor`
+*before* checking whether `row + delta` was even a valid Cue ID target — so by the time
+`_navigate_note_editor` discovered the single adjacent row wasn't editable and bailed out, the
+original editor was already closed, stranding the user's edit position.
+
+Fix, both in `_PaddedItemDelegate` (`cue_monitor_panel.py`):
+
+- New `_find_navigable_row(table, row, column, delta)`: starting from `row + delta`, steps by
+  `delta` one row at a time, checking each row's real `item(r, column).flags() &
+  Qt.ItemFlag.ItemIsEditable` (the same flag `refresh_list` already sets from
+  `lane.cue_id_enabled` — no text/blank heuristic, no new item-type check invented), until it
+  finds an editable cell or runs off the end of the table. This reuses the exact editability
+  signal the rest of the panel already trusts (e.g. `_on_cell_double_clicked`,
+  `_navigate_note_editor`'s own pre-existing editable check).
+- `eventFilter` now calls this **before** touching `commitData`/`closeEditor`. If no navigable
+  row is found in that direction, it accepts the key event and returns `True` immediately —
+  the current editor, its cursor position, and any uncommitted text are left completely
+  untouched, and nothing is wrongly committed. Only when a target row is found does it commit,
+  close, and emit `editor_navigation_requested` — now carrying the **already-resolved** target
+  row with `delta=0` (the delegate did the scanning; the panel side no longer needs to, or can,
+  recompute a wrong single-step target).
+- `_navigate_note_editor`'s doc comment was updated to state `row` arrives pre-resolved and
+  `delta` is always `0` from this call site now; its clamping arithmetic (`row + delta`) still
+  works unchanged since `delta` is 0.
+- Note column: unaffected in practice. Every Mark row's Note cell is always editable
+  regardless of lane, so the scan immediately finds `row + delta` — identical to the previous
+  adjacent-row behavior, per the requirement not to change Note's semantics.
+
+No change to: commit-before-navigate mechanism (still fires only once a target is confirmed),
+Select-All-on-arrival for Cue ID (unaffected, still applied only after a successful jump),
+first/last real-Cue-ID-row boundary semantics (still no wrap — now correctly defined as "no
+further *editable* row in that direction", not "no further row at all"), or any other editing
+key (Left/Right/Home/End/Backspace/Delete/Enter/Escape/Tab/copy-paste/undo — none of this touches
+that code path).
+
 ## Files changed
 
 - `src/cueplayer/ui/timeline_widget.py` — video-lane empty-click seek, video-clip body-click
   seek on release.
 - `src/cueplayer/ui/cue_monitor_panel.py` — widened Up/Down navigation guard to Cue ID, added
-  select-all on Cue ID editor arrival, added `QLineEdit` import.
+  select-all on Cue ID editor arrival, added `QLineEdit` import; post-manual-test fix added
+  `_find_navigable_row` and made `eventFilter` scan-before-commit so navigation skips rows
+  whose lane has no Cue ID instead of stalling on them.
 - `tests/ui/test_video_track_seek.py` (new) — Task A narrow tests.
-- `tests/ui/test_cue_id_navigation.py` (new) — Task B narrow tests.
+- `tests/ui/test_cue_id_navigation.py` (new, later extended) — Task B narrow tests, plus 5 more
+  covering skip-a-Button-row, skip-multiple-consecutive-Button-rows, and boundary-with-a-
+  trailing/leading-Button-row (editor must survive, not commit garbage, not wrap).
 
 ## Tests
 
@@ -135,7 +183,7 @@ hang on fake `.mp4` bytes + `video_waveform_worker`; all new tests use non-exist
 
 ```
 tests/ui/test_video_track_seek.py        6 passed
-tests/ui/test_cue_id_navigation.py       5 passed
+tests/ui/test_cue_id_navigation.py       10 passed (5 added for the skip-non-Cue-ID-row fix)
 tests/ui/test_marquee_group_move.py      passed
 tests/ui/test_video_clip_snap.py         passed
 tests/ui/test_video_clip_split.py        passed
@@ -197,3 +245,14 @@ seek calls. A8 (00:00 Move/Trim regression) is covered by the pre-existing
 13. Confirm Left/Right/Home/End/Backspace/Delete/Enter/Escape/Tab, copy/paste, and undo still
     work normally while editing a Cue ID.
 14. Confirm the Note column's existing Up/Down navigation is unaffected.
+15. Set up a lane sequence where a Cue-ID-enabled Mark is followed by one or more marks in a
+    lane without Cue ID enabled, then a Cue-ID-enabled Mark again (e.g. Main → Mark 2 → Main).
+    Edit the first Cue ID, press Down — confirm it jumps straight to the next Cue-ID-enabled
+    row, skipping the row(s) in between, and stays in edit mode with select-all applied.
+16. From that later row, press Up — confirm it jumps back to the first row, again skipping the
+    non-Cue-ID row(s).
+17. On the last Cue-ID-enabled row (with a trailing non-Cue-ID row after it), press Down —
+    confirm the editor stays open on the same row with your uncommitted text intact (does not
+    jump to the non-Cue-ID row, does not wrap to the first row, does not close/lose the editor).
+18. Mirror step 17 with Up on the first Cue-ID-enabled row (with a leading non-Cue-ID row
+    before it).

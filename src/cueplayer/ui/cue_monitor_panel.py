@@ -192,6 +192,21 @@ class _PaddedItemDelegate(QStyledItemDelegate):
         # A stylesheet min-height previously made it overflow toward the row below.
         editor.setGeometry(option.rect.adjusted(2, 2, -2, -2))
 
+    def _find_navigable_row(self, table, row: int, column: int, delta: int) -> int | None:
+        """Scan rows from `row` in `delta`'s direction for the next one whose
+        cell at `column` is actually editable, skipping non-editable rows
+        (e.g. a Button row with no Cue ID) rather than stopping on them.
+        Reuses the real per-cell `ItemIsEditable` flag `refresh_list` already
+        sets from lane/item type — never a text/blank heuristic.
+        """
+        r = row + delta
+        while 0 <= r < table.rowCount():
+            item = table.item(r, column)
+            if item is not None and (item.flags() & Qt.ItemFlag.ItemIsEditable):
+                return r
+            r += delta
+        return None
+
     def eventFilter(self, editor, event) -> bool:  # noqa: ANN001, N802
         if event.type() == QEvent.Type.KeyPress and event.key() in (
             Qt.Key.Key_Up,
@@ -204,14 +219,28 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             ):
                 row = int(editor.property("cue_list_row") or 0)
                 delta = -1 if event.key() == Qt.Key.Key_Up else 1
+                table = self.parent()
+                target = (
+                    self._find_navigable_row(table, row, column, delta)
+                    if table is not None
+                    else None
+                )
+                if target is None:
+                    # No further navigable row in that direction (boundary,
+                    # or nothing but non-editable rows beyond this one): stay
+                    # put, leave the current editor and its uncommitted text
+                    # untouched.
+                    event.accept()
+                    return True
                 # Commit before closing so itemChanged persists the current
                 # value. The panel opens the adjacent editor on the next
-                # event-loop turn.
+                # event-loop turn. delta=0 here: `target` is already the
+                # resolved destination row, not an offset from `row`.
                 self.commitData.emit(editor)
                 self.closeEditor.emit(
                     editor, QAbstractItemDelegate.EndEditHint.NoHint
                 )
-                self.editor_navigation_requested.emit(row, column, delta)
+                self.editor_navigation_requested.emit(target, column, 0)
                 event.accept()
                 return True
         return super().eventFilter(editor, event)
@@ -2438,9 +2467,12 @@ class CueMonitorPanel(QWidget):
             self.cue_table.editItem(item)
 
     def _navigate_note_editor(self, row: int, column: int, delta: int) -> None:
-        """Commit the current field, then continue editing it on the adjacent Cue row.
+        """Open the given row's editor for `column`, continuing an Up/Down navigation.
 
-        Shared by both the Note and Cue ID columns (Up/Down vertical navigation).
+        Shared by both the Note and Cue ID columns. `row` is already the resolved
+        destination (the delegate's `eventFilter` scanned past any non-editable
+        rows in between); `delta` is always 0 here and kept only so this stays a
+        plain `(row, column, delta)` slot for the `editor_navigation_requested` signal.
         """
         target = max(0, min(self.cue_table.rowCount() - 1, int(row) + int(delta)))
         item = self.cue_table.item(target, int(column))
