@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QScrollArea,
     QSizePolicy,
@@ -197,11 +198,15 @@ class _PaddedItemDelegate(QStyledItemDelegate):
             Qt.Key.Key_Down,
         ):
             column = int(editor.property("cue_list_column") or -1)
-            if column == LOGICAL_INDEX_BY_FIELD["note"]:
+            if column in (
+                LOGICAL_INDEX_BY_FIELD["note"],
+                LOGICAL_INDEX_BY_FIELD["cue_id"],
+            ):
                 row = int(editor.property("cue_list_row") or 0)
                 delta = -1 if event.key() == Qt.Key.Key_Up else 1
-                # Commit before closing so itemChanged persists the Note. The
-                # panel opens the adjacent editor on the next event-loop turn.
+                # Commit before closing so itemChanged persists the current
+                # value. The panel opens the adjacent editor on the next
+                # event-loop turn.
                 self.commitData.emit(editor)
                 self.closeEditor.emit(
                     editor, QAbstractItemDelegate.EndEditHint.NoHint
@@ -2433,12 +2438,16 @@ class CueMonitorPanel(QWidget):
             self.cue_table.editItem(item)
 
     def _navigate_note_editor(self, row: int, column: int, delta: int) -> None:
-        """Commit current Note, then continue editing the adjacent Cue row."""
+        """Commit the current field, then continue editing it on the adjacent Cue row.
+
+        Shared by both the Note and Cue ID columns (Up/Down vertical navigation).
+        """
         target = max(0, min(self.cue_table.rowCount() - 1, int(row) + int(delta)))
         item = self.cue_table.item(target, int(column))
         if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
             return
         self._editor_navigation_pending = True
+        is_cue_id = int(column) == LOGICAL_INDEX_BY_FIELD["cue_id"]
 
         def _open_adjacent() -> None:
             try:
@@ -2447,6 +2456,10 @@ class CueMonitorPanel(QWidget):
                     item, QAbstractItemView.ScrollHint.EnsureVisible
                 )
                 self.cue_table.editItem(item)
+                if is_cue_id:
+                    editor = self.cue_table.focusWidget()
+                    if isinstance(editor, QLineEdit):
+                        editor.selectAll()
             finally:
                 self._editor_navigation_pending = False
 

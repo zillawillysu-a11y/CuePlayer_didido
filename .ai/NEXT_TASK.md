@@ -5,8 +5,10 @@ Gap / Insert Time** — auto-pushing later Video Clips, LTC Clips, and Marks to 
 when inserting new content, building on this session's marquee multi-selection + group
 move. Do not start until the user asks for it.
 
-Otherwise: waiting on user manual verification of **Split Video Clip at Playhead + Video
-Clip Snap** (checklist in `.ai/REPORT.md` / `.ai/handoffs/2026-09-07_VideoClipSplitAndSnap.md`),
+Otherwise: waiting on user manual verification of **Timeline Video Seek + Cue ID Keyboard
+Navigation** (checklist in `.ai/REPORT.md` /
+`.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`), **Split Video Clip at Playhead + Video
+Clip Snap** (checklist in `.ai/handoffs/2026-09-07_VideoClipSplitAndSnap.md`),
 the Marquee Multi-Selection + Group
 Move feature (checklist in prior `.ai/REPORT.md` history), the Multiple Video Clips Music-lane
 stand-in waveform fix (checklist in prior `.ai/REPORT.md` history / its handoff), and separately,
@@ -61,6 +63,21 @@ Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Timeline Video Seek + Cue ID Keyboard Navigation: the Video Track can now be clicked to seek
+  the playhead exactly like the Music Track — clicking empty Video Track space seeks there, and
+  clicking a Video Clip's body both selects it and seeks to the exact clicked time (not the
+  clip's start), so Split-at-Playhead can target any point inside a clip directly. Clip body
+  drag and edge trim are unaffected (no stray seeking mid-gesture); the distinguishing logic
+  reuses the project's one existing drag-threshold constant and the Music Track's existing
+  click-seek call chain, with the seek firing on mouse-release (matches the pre-existing mark
+  click-seek pattern) so Move/Trim gestures never get an unwanted seek on press. Separately, the
+  Cue ID column in the Cue Monitor cue list now supports the same Up/Down vertical navigation
+  the Note column already had (commit current value, open the adjacent row's Cue ID editor,
+  stay in edit mode, no wrap at the first/last row), reusing the Note column's existing
+  delegate/eventFilter mechanism almost unchanged; Cue ID additionally select-alls its text on
+  arrival. See `.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`. Needs user manual
+  verification (steps in that handoff).
 
 - Split Video Clip at Playhead + Video Clip Snap: Split already existed from an earlier
   session (context menu + handler) but had 3 gaps, now fixed — undo/redo is now one atomic

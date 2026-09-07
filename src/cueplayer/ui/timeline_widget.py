@@ -4005,14 +4005,23 @@ class TimelineWidget(QWidget):
         clip.source_out_seconds = clip.source_in_seconds + clip.duration_seconds
         self._update_video_lane()
 
-    def _end_video_clip_gesture(self) -> None:
+    def _end_video_clip_gesture(self, release_x: float | None = None) -> None:
         """Shared release-time bookkeeping for both drag-move and trim gestures."""
         clip_id = self._dragging_clip or (self._trimming_clip[0] if self._trimming_clip else None)
         moved = self._clip_drag_moved
+        was_body_click = self._dragging_clip is not None
         self._dragging_clip = None
         self._trimming_clip = None
         self._clip_drag_moved = False
         self._video_gesture_active = False
+        # Plain click (no drag) on the clip body seeks the playhead to the
+        # exact time under the cursor, not the clip start — this mirrors the
+        # Music Track click-to-seek so Split-at-Playhead can target any point
+        # inside a clip without first scrubbing on the audio track.
+        if not moved and was_body_click and release_x is not None and self._song is not None:
+            seek_time = min(self._time_for_x(float(release_x)), self._duration())
+            self._emit_seek(seek_time, input_source="waveform")
+            self._position = seek_time
         if clip_id and moved and self._song is not None:
             clip = self._song.video_clip_by_id(clip_id)
             old = self._clip_drag_snapshot.get(clip_id)
@@ -4817,7 +4826,11 @@ class TimelineWidget(QWidget):
                 if shift or ctrl:
                     self._begin_box_select(event.position(), additive=True)
                 else:
-                    self._begin_box_select(event.position(), additive=False)
+                    self._begin_box_select(
+                        event.position(),
+                        additive=False,
+                        click_seek=self._time_for_x(x),
+                    )
             elif self._box_select_mode and (
                 self._in_mark_tracks(x, y) or self._in_scrub_zone(x, y) or shift
             ):
@@ -5260,7 +5273,7 @@ class TimelineWidget(QWidget):
             self._dragging_clip is not None or self._trimming_clip is not None
         ):
             self.releaseMouse()
-            self._end_video_clip_gesture()
+            self._end_video_clip_gesture(release_x=float(event.position().x()))
             self._restore_hover_cursor(event.position().x(), event.position().y())
             self.update()
             super().mouseReleaseEvent(event)
