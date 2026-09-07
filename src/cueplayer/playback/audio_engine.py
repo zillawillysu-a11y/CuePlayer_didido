@@ -169,8 +169,10 @@ class AudioEngine(QObject):
         self._ltc_cache_future = None
         self._ltc_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltc-cache")
         self._ltc_cursor = LtcPlaybackCursor(48000, 30.0, "01:00:00:00")
-        # clip_generator: per-clip LTC table (async) — silence outside clips.
-        self._ltc_clip_table: tuple[tuple[int, int, np.ndarray], ...] | None = None
+        # clip_generator: per-clip LTC PCM published incrementally by the
+        # async builder (clip index -> pcm). Geometry lives in the immutable
+        # interval snapshot below. Silence outside clips.
+        self._ltc_clip_pcm: dict[int, np.ndarray] = {}
         # Immutable range snapshot for callback lookup; never read Song clips
         # or parse timecode on the PortAudio thread.
         self._ltc_clip_intervals: tuple[tuple[int, int, str], ...] = ()
@@ -179,6 +181,11 @@ class AudioEngine(QObject):
         self._ltc_clip_non_overlapping = True
         self._ltc_clip_cache_key: tuple | None = None
         self._ltc_clip_cache_future = None
+        # Single in-flight builder job: (generation, key, future). Invalidation
+        # bumps the generation so a stale worker stops at the next clip
+        # boundary; an identical in-flight job is never stacked a second one.
+        self._ltc_clip_inflight: tuple[int, tuple, object] | None = None
+        self._ltc_clip_generation = 0
         # Lock-free callback-owned PERF aggregation; publish on report only.
         self._ltc_clip_lookup_count = 0
         self._ltc_clip_lookup_sum_s = 0.0
@@ -189,6 +196,8 @@ class AudioEngine(QObject):
         self._ltc_clip_gap_fast_path_count = 0
         self._ltc_clip_active_path_count = 0
         self._ltc_clip_buffer_cross_boundary_count = 0
+        self._ltc_clip_cache_hit_count = 0
+        self._ltc_clip_cache_miss_count = 0
         # MTC TC-source identity for clip re-anchoring (see _mtc_tc_source_key).
         self._mtc_source_key: tuple = ("base",)
         self._detected_ltc_channel: int | None = None
@@ -1216,7 +1225,8 @@ class AudioEngine(QObject):
             and (
                 self._buffer is not None
                 or self._ltc_pcm is not None
-                or self._ltc_clip_table is not None
+                or bool(self._ltc_clip_pcm)
+                or (self._uses_clip_ltc() and bool(self._ltc_clip_intervals))
                 or has_source_ltc
                 or has_video_audio
             )
@@ -1450,13 +1460,11 @@ class AudioEngine(QObject):
 
     def _invalidate_ltc_cache(self) -> None:
         self._ltc_cache_future = None
-        self._ltc_clip_cache_future = None
         with self._lock:
             self._ltc_pcm = None
             self._ltc_cache_key = None
-            self._ltc_clip_table = None
-            self._ltc_clip_cache_key = None
             self._ltc_cursor.reset()
+        self._invalidate_clip_ltc_cache()
 
     def _sync_ltc_cursor(self) -> None:
         self._ltc_cursor.configure(
@@ -1479,6 +1487,13 @@ class AudioEngine(QObject):
             return
 
         def _build() -> tuple[tuple, np.ndarray]:
+            from cueplayer.util.thread_priority import (
+                lower_background_thread_priority,
+            )
+
+            # Same background-worker policy as the clip builder: keep the
+            # heavy pure-Python render off the audio thread's CPU class.
+            lower_background_thread_priority()
             try:
                 pcm = generate_ltc_pcm(
                     dur,
@@ -1535,10 +1550,22 @@ class AudioEngine(QObject):
         )
 
     def _invalidate_clip_ltc_cache(self) -> None:
+        """Drop the clip PCM cache and cancel any in-flight builder job.
+
+        Cancellation is cooperative: the worker checks the generation token
+        between clips and stops at the next boundary, so a stale build never
+        burns the whole remaining GIL budget after an edit / song switch.
+        """
+        had_pcm = bool(self._ltc_clip_pcm)
         self._ltc_clip_cache_future = None
         with self._lock:
-            self._ltc_clip_table = None
+            self._ltc_clip_generation += 1
+            self._ltc_clip_pcm = {}
             self._ltc_clip_cache_key = None
+        if had_pcm:
+            # A published/partial cache was discarded → the next ensure is a
+            # genuine rebuild, not a first build.
+            perf_diag.count("audio.ltc_clip.cache_rebuild_count")
 
     def _prepare_clip_ltc_intervals(self) -> None:
         """Snapshot valid clip frame ranges before the audio callback can run."""
@@ -1570,7 +1597,17 @@ class AudioEngine(QObject):
         self._ltc_clip_non_overlapping = non_overlapping
 
     def _ensure_clip_ltc_cache(self) -> None:
-        """Async per-clip LTC PCM table of (timeline_start, timeline_end, pcm)."""
+        """Async per-clip LTC PCM (published incrementally, one builder at a time).
+
+        Builder lifecycle rules (keep the PortAudio callback starved-free):
+        - at most ONE in-flight build (single worker + inflight slot);
+        - an identical in-flight build is never stacked (dedup);
+        - an invalidated/stale build is cancelled cooperatively at the next
+          clip boundary (generation token) instead of running to completion;
+        - each finished clip's PCM is published immediately, so the callback
+          uses cached PCM as soon as a clip is ready and only falls back for
+          clips that are still pending.
+        """
         if not self._uses_clip_ltc():
             return
         song = self._song
@@ -1578,40 +1615,104 @@ class AudioEngine(QObject):
         if song is None or key is None:
             return
         self._prepare_clip_ltc_intervals()
+        with self._lock:
+            if self._ltc_clip_cache_key == key:
+                # Already fully published for this exact clip set.
+                return
+            inflight = self._ltc_clip_inflight
+            if (
+                inflight is not None
+                and inflight[1] == key
+                and inflight[0] == self._ltc_clip_generation
+            ):
+                # Same-key build still valid (not invalidated since submit):
+                # never stack another copy of it. A stale in-flight job
+                # (generation bumped by an edit/song switch) is NOT reusable —
+                # it will bail at its next clip boundary and a successor must
+                # run.
+                perf_diag.count("audio.ltc_clip.builder_duplicate_suppressed")
+                return
         sr = self._sample_rate()
         fps = float(self._song_fps) if self._song_fps > 0 else 30.0
-        with self._lock:
-            if self._ltc_clip_cache_key == key and self._ltc_clip_table is not None:
-                return
-        if self._ltc_clip_cache_future is not None and not self._ltc_clip_cache_future.done():
-            return
-
         intervals = self._ltc_clip_intervals
+        with self._lock:
+            generation = self._ltc_clip_generation + 1
+            self._ltc_clip_generation = generation
+            self._ltc_clip_inflight = (generation, key, None)
+        perf_diag.count("audio.ltc_clip.builder_job_started")
+        perf_diag.note("audio.ltc_clip.builder_active_jobs", 1)
 
-        def _build() -> tuple[tuple, tuple]:
-            table = []
-            for clip_start, clip_end, start_tc in intervals:
+        def _build() -> tuple[tuple, int, bool]:
+            from cueplayer.util.thread_priority import (
+                lower_background_thread_priority,
+            )
+
+            # Keep the heavy pure-Python render off the audio thread's CPU
+            # priority class (same policy as the other background workers).
+            lower_background_thread_priority()
+            t0 = time.perf_counter()
+            published = 0
+            completed = True
+            for index, (clip_start, clip_end, start_tc) in enumerate(intervals):
+                if self._ltc_clip_generation != generation:
+                    # Superseded by an edit / song switch / new build — stop
+                    # now; a queued successor owns the cache from here.
+                    completed = False
+                    break
                 dur = (clip_end - clip_start) / sr
+                clip_t0 = time.perf_counter()
                 try:
                     pcm = generate_ltc_pcm(dur, sr, start_tc, fps, amplitude=1.0)
                 except ValueError:
-                    continue
-                table.append((clip_start, clip_start + pcm.size, pcm))
-            return key, tuple(table)
+                    pcm = None  # permanently silent clip (invalid rate)
+                if perf_diag.is_enabled():
+                    perf_diag.record_ms(
+                        "audio.ltc_clip.builder_clip_ms",
+                        (time.perf_counter() - clip_t0) * 1000.0,
+                    )
+                if pcm is not None:
+                    with self._lock:
+                        if self._ltc_clip_generation == generation:
+                            self._ltc_clip_pcm[index] = pcm
+                            published += 1
+            if perf_diag.is_enabled():
+                perf_diag.record_ms(
+                    "audio.ltc_clip.builder_total_ms",
+                    (time.perf_counter() - t0) * 1000.0,
+                )
+            return key, published, completed
 
         future = self._ltc_executor.submit(_build)
-        self._ltc_clip_cache_future = future
+        with self._lock:
+            inflight = self._ltc_clip_inflight
+            # The worker may have finished before we stored the future (tiny
+            # clip set); in that case _done already cleared the slot.
+            if inflight is not None and inflight[0] == generation:
+                self._ltc_clip_inflight = (generation, key, future)
+                self._ltc_clip_cache_future = future
 
         def _done(fut) -> None:
             try:
-                built_key, table = fut.result()
+                built_key, _published, completed = fut.result()
             except Exception:
-                return
+                completed = False
+            still_active = False
             with self._lock:
-                if not self._uses_clip_ltc() or self._clip_ltc_cache_key() != built_key:
-                    return
-                self._ltc_clip_table = table
-                self._ltc_clip_cache_key = built_key
+                inflight = self._ltc_clip_inflight
+                if inflight is not None and inflight[0] == generation:
+                    if completed and self._ltc_clip_cache_key is None:
+                        self._ltc_clip_cache_key = built_key
+                    self._ltc_clip_inflight = None
+                    self._ltc_clip_cache_future = None
+                elif inflight is not None:
+                    # A successor job owns the slot; its _done reports zero.
+                    still_active = True
+            if completed:
+                perf_diag.count("audio.ltc_clip.builder_job_completed")
+            else:
+                perf_diag.count("audio.ltc_clip.builder_job_cancelled")
+            if not still_active:
+                perf_diag.note("audio.ltc_clip.builder_active_jobs", 0)
 
         future.add_done_callback(_done)
 
@@ -1654,37 +1755,44 @@ class AudioEngine(QObject):
             self._ltc_clip_buffer_cross_boundary_count += 1
         generate_t0 = time.perf_counter() if track_perf else 0.0
         sr = self._sample_rate()
-        table = self._ltc_clip_table
-        if table is not None:
-            for index in candidate_indices:
-                clip_start, clip_end, pcm = table[index]
-                lo = max(start, clip_start)
-                hi = min(end, clip_end)
-                if hi <= lo:
-                    continue
-                s0 = lo - clip_start
-                take = hi - lo
-                out[lo - start : hi - start] = pcm[s0 : s0 + take]
-            if track_perf:
-                elapsed = time.perf_counter() - generate_t0
-                self._ltc_clip_generate_count += 1
-                self._ltc_clip_generate_sum_s += elapsed
-                self._ltc_clip_generate_max_s = max(self._ltc_clip_generate_max_s, elapsed)
-            return out
-        # Cache not ready yet — render overlapping clips incrementally (O(chunk)).
-        song = self._song
-        if song is None:
-            return out
         fps = float(self._song_fps) if self._song_fps > 0 else 30.0
+        # Per-clip PCM published incrementally by the async builder. Ready
+        # clips are plain numpy slices; pending clips use the bounded
+        # O(chunk) fallback. The callback never waits on the builder.
+        pcm_by_clip = self._ltc_clip_pcm
+        pending: list[int] = []
         for index in candidate_indices:
-            clip_start, clip_end, start_timecode = self._ltc_clip_intervals[index]
+            clip_start = self._ltc_clip_intervals[index][0]
+            clip_end = self._ltc_clip_intervals[index][1]
             lo = max(start, clip_start)
             hi = min(end, clip_end)
             if hi <= lo:
                 continue
-            cursor = LtcPlaybackCursor(sr, fps, start_timecode, amplitude=1.0)
-            seg = cursor.render(lo - clip_start, hi - lo)
-            out[lo - start : hi - start] = seg[: hi - lo]
+            pcm = pcm_by_clip.get(index)
+            if pcm is None:
+                pending.append(index)
+                continue
+            s0 = lo - clip_start
+            take = hi - lo
+            out[lo - start : hi - start] = pcm[s0 : s0 + take]
+            if track_perf:
+                self._ltc_clip_cache_hit_count += 1
+        if pending:
+            song = self._song
+            if song is not None:
+                for index in pending:
+                    clip_start, clip_end, start_timecode = (
+                        self._ltc_clip_intervals[index]
+                    )
+                    lo = max(start, clip_start)
+                    hi = min(end, clip_end)
+                    if hi <= lo:
+                        continue
+                    cursor = LtcPlaybackCursor(sr, fps, start_timecode, amplitude=1.0)
+                    seg = cursor.render(lo - clip_start, hi - lo)
+                    out[lo - start : hi - start] = seg[: hi - lo]
+                    if track_perf:
+                        self._ltc_clip_cache_miss_count += 1
         if track_perf:
             elapsed = time.perf_counter() - generate_t0
             self._ltc_clip_generate_count += 1
@@ -2003,6 +2111,15 @@ class AudioEngine(QObject):
         """
         buf = self._buffer
         if buf is None or buf.channels < 2:
+            self._detected_ltc_channel = None
+            self._ltc_detect_ran = True
+            self._ltc_detect_inflight = False
+            self._refresh_source_routing_cache()
+            return
+        if self._resolved_ltc_mode() == "clip_generator":
+            # clip_generator owns the LTC bus; the file stripe is never
+            # consulted in this mode, so the scan would only burn CPU for
+            # nothing while the song is active.
             self._detected_ltc_channel = None
             self._ltc_detect_ran = True
             self._ltc_detect_inflight = False
@@ -2523,6 +2640,8 @@ class AudioEngine(QObject):
         self._ltc_clip_gap_fast_path_count = 0
         self._ltc_clip_active_path_count = 0
         self._ltc_clip_buffer_cross_boundary_count = 0
+        self._ltc_clip_cache_hit_count = 0
+        self._ltc_clip_cache_miss_count = 0
 
     def ltc_clip_callback_diagnostics(self) -> dict[str, float | int]:
         """Lock-free snapshot of clip LTC callback work for a PERF report."""
@@ -2537,6 +2656,8 @@ class AudioEngine(QObject):
             "active_path_count": int(self._ltc_clip_active_path_count),
             "clip_count": len(self._ltc_clip_intervals),
             "buffer_cross_boundary_count": int(self._ltc_clip_buffer_cross_boundary_count),
+            "cache_hit": int(self._ltc_clip_cache_hit_count),
+            "cache_miss": int(self._ltc_clip_cache_miss_count),
         }
 
     def audio_callback_continuity(self) -> dict[str, float | int]:

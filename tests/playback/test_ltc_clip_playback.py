@@ -115,7 +115,12 @@ def _wait_clip_cache(engine, timeout: float = 30.0) -> None:
     if fut is not None:
         fut.result(timeout=timeout)
     deadline = time.monotonic() + 5.0
-    while engine._ltc_clip_table is None and time.monotonic() < deadline:  # noqa: SLF001
+    while time.monotonic() < deadline:  # noqa: SLF001
+        if (
+            engine._ltc_clip_cache_key is not None
+            and len(engine._ltc_clip_pcm) >= len(engine._ltc_clip_intervals)
+        ):
+            return
         time.sleep(0.01)
 
 
@@ -242,11 +247,13 @@ def test_clip_gap_fast_path_skips_fallback_renderer(monkeypatch) -> None:
         (5.0, 1.0, "02:00:00:00"),
     ])
     _attach_clip_song(engine, song)
-    class _UnexpectedTable:
-        def __iter__(self):  # noqa: ANN204
+    # Even with a published cache the gap must return before touching any
+    # cached PCM or constructing a renderer.
+    class _UnexpectedPcm:
+        def get(self, *args, **kwargs):  # noqa: ANN001
             raise AssertionError("gap must not scan cached clips")
 
-    engine._ltc_clip_table = _UnexpectedTable()  # noqa: SLF001
+    engine._ltc_clip_pcm = _UnexpectedPcm()  # type: ignore[assignment]  # noqa: SLF001
     monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
 
     class _UnexpectedCursor:
@@ -263,7 +270,7 @@ def test_clip_active_fallback_still_constructs_and_generates(monkeypatch) -> Non
     engine = _make_engine(None)
     song = _clip_song(clips=[(2.0, 2.0, "01:00:00:00")])
     _attach_clip_song(engine, song)
-    engine._ltc_clip_table = None  # noqa: SLF001
+    engine._ltc_clip_pcm = {}  # noqa: SLF001 — force the fallback path
     monkeypatch.setattr(eng_mod.perf_diag, "is_enabled", lambda: True)
     chunk = engine._ltc_chunk(2 * SR, 1000)  # noqa: SLF001
     assert np.any(chunk != 0.0)
