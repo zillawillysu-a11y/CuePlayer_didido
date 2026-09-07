@@ -1,9 +1,55 @@
 # Next task
 
-Next phase (explicitly deferred by the user from this session): **Ripple Edit / Insert
-Gap / Insert Time** — auto-pushing later Video Clips, LTC Clips, and Marks to the right
-when inserting new content, building on this session's marquee multi-selection + group
-move. Do not start until the user asks for it.
+**Next phase: proceed from the 2026-09-07 Timing Architecture Diagnostic** — a
+Show-Critical, diagnostic-only audit (no production code changed) of Playback
+Clock/Audio/LTC/MTC/UI Timecode display/Clean Video Output/Timeline Zoom/Mark
+creation/Qt GUI thread/background workers, done to classify four reported Timecode-drop
+/ freeze symptoms. Full 23-section report:
+`.ai/handoffs/2026-09-07_TimingArchitectureDiagnostic.md`; summary in `.ai/REPORT.md`.
+Do **not** start implementation until the user reviews the diagnostic and explicitly
+picks a phase — this is a diagnosis, not an approved fix plan. Recommended phases from
+the diagnostic (do not renumber/rename without the user's input):
+
+- **Phase B — Timeline static-backdrop rebuild cost** (Issues 1 "Zoom Timecode drop" and
+  2 "Mark-creation Timecode drop" — both share one confirmed root cause: creating a Mark
+  or ending a zoom gesture invalidates `TimelineWidget._scrub_backdrop`, forcing a
+  synchronous, GUI-thread, measured-64–186 ms full backdrop rebake
+  (`_rebuild_scrub_backdrop`, `timeline_widget.py:3242-3329`, mostly a pure-Python
+  per-pixel-column loop in `_paint_waveform_peaks`) on the very next paint. High
+  confidence this is a UI/presentation-layer stall (GUI event-loop starvation), **not**
+  a Playback/LTC/MTC actual-output discontinuity — no code in either path touches
+  `AudioEngine._lock`/`_position_frame`/`MtcOutput`/`MidiCueNotes`). Needs the
+  diagnostic's §20 instrumentation data (`CUEPLAYER_PERF=1`, already built into the
+  app — no new code needed for this part) to confirm today's actual cost before
+  scoping a fix (candidate directions floated but **not decided**: vectorize the
+  per-pixel-column loop, split the rebuild across frames, or trim overscan further for
+  the `marks_ui_refresh`/`scrub_seed` reasons the way `zoom_idle` already was).
+- **Phase C — Clean Video Output title-bar freeze, Reason A only** (Issue 3). Real,
+  fixable gap: `video_sync.update_position()` — the entry point that decides which video
+  frame should be showing — is gated behind the exact same `AudioEngine._poll`
+  GUI-thread `QTimer` (16 ms, `audio_engine.py:205-207`) that used to freeze MTC, fixed
+  for MTC in `.ai/handoffs/2026-09-07_MtcTitleBarStallFix.md` but **never fixed for
+  video**. Candidate direction: decouple this trigger from `_poll` the same way MTC's
+  pacing was decoupled (a background-paced trigger). Note a **harder, separate,
+  structural constraint (Reason B, not in Phase C's scope)**: final pixel presentation
+  is an ordinary Qt `QWidget`/`QPainter` paint (`video_preview.py:153-191`), which
+  inherently requires the Qt event loop to be pumping regardless of scheduling thread —
+  a Phase C fix reduces the freeze (first frame ready the instant the drag ends) but
+  cannot eliminate it; fully eliminating it is a larger rendering-technology question,
+  explicitly out of scope, to raise with the user separately if still needed after
+  Phase C.
+- **Phase D — Main UI Timecode display title-bar freeze (Issue 4): recommend dropping
+  or reclassifying as "confirmed working as intended," not an open bug.** High
+  confidence, fully code-cited: every consumer downstream of `_poll` only *reads*
+  `AudioEngine.position` and writes to a display widget; nothing writes back to the
+  playback clock, LTC, or MTC. The freeze is real but has zero effect on audio or any
+  actual Timecode output — matches ordinary Qt/Windows title-bar behavior. Confirm with
+  the user before closing it outright.
+
+Do not start Ripple Edit / Insert Gap / Insert Time (previously the queued "next phase")
+until the user explicitly asks for it again — it is parked, not cancelled, but is
+**not** the next task by default anymore; the Timing Architecture diagnostic above takes
+priority per the user's explicit instruction this session.
 
 Otherwise: waiting on user manual verification of **Timeline Video Seek + Cue ID Keyboard
 Navigation** (checklist in `.ai/REPORT.md` /

@@ -1,97 +1,112 @@
-# Timeline Video Seek + Cue ID Keyboard Navigation
+# Timing Architecture Diagnostic (Zoom / Mark / Title-Bar Timecode Drop)
 
-Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Status: complete, needs user manual verification.
+Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Status: **diagnostic only —
+no production code changed.**
 
 ## Task objective
 
-Two small UX-polish items on top of the just-completed Split/Snap phase (not modified here):
+Show-critical diagnostic-only audit (explicitly no fixes this session) of CuePlayer's
+timing architecture — Playback Clock, Audio, LTC, MTC, Main UI Timecode display, Clean
+Video Output, Timeline interaction, Qt GUI thread, background workers — to build an
+execution/ownership/dependency map and classify four reported symptoms:
 
-- **A. Video Track click-to-seek**: clicking the Video Track (empty space, or a clip body)
-  moves the playhead to the clicked time, matching the Music Track's existing click-to-seek.
-  Dragging a clip body still moves it; dragging an edge still trims it; neither seeks
-  continuously mid-drag.
-- **B. Cue ID Up/Down navigation**: the Cue ID column in the Cue Monitor cue list gains the
-  same Up/Down "commit, open adjacent row's editor, stay in edit mode" behavior the Note
-  column already has.
+1. Occasional Timecode drop while zooming the Timeline with the mouse wheel.
+2. Occasional Timecode drop while creating/dropping a Mark.
+3. Clean Video Output freezes while the Windows title bar (main window or Clean Video
+   Output window) is held/dragged.
+4. Main UI Timecode display freezes during the same title-bar hold/drag.
 
-Full detail, code-level reasoning, and files changed: see
-`.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`.
+Full 23-section detail: `.ai/handoffs/2026-09-07_TimingArchitectureDiagnostic.md`.
 
 ## What was implemented
 
-### Part A — Video Track seek (`src/cueplayer/ui/timeline_widget.py`)
+Nothing in production code. Five parallel static-audit passes (independently reading
+`audio_engine.py`, `mtc_output.py`, `midi_cue_notes.py`, `video_sync.py`,
+`video_output_window.py`, `video_preview.py`, `timeline_widget.py`, `main_window.py`,
+`domain/models.py`, `domain/undo.py`, `cue_monitor_panel.py`, and a repo-wide
+QTimer/Thread/Lock inventory) were cross-checked against each other and against direct
+spot-re-reads of the load-bearing citations (all confirmed accurate: `_poll` QTimer at
+16 ms, the `_rebuild_scrub_backdrop` 64–186 ms hitch comment, `_async_frame_ready`'s
+`QueuedConnection`, `_mtc_thread`'s daemon-thread design, `_silent_timer`, `Song.add_mark`).
+Findings converged into one consolidated handoff document with the Architecture Map,
+Thread Ownership Map, Timer Inventory, per-subsystem path traces, Zoom and Mark
+execution traces, Windows title-bar analysis, per-issue classification tables, a Shared
+Root Cause Matrix, Unknowns, and an Instrumentation Plan.
 
-- Empty Video Track click now passes `click_seek=self._time_for_x(x)` into the existing
-  `_begin_box_select` call (same mechanism the waveform's box-select-mode branch already uses)
-  so a plain click (no drag, no shift/ctrl) seeks via the pre-existing box-select release logic.
-- Video Clip body click: `_end_video_clip_gesture` gained a `release_x` parameter and now seeks
-  to `_time_for_x(release_x)` (the actual clicked point, not `clip.start_seconds`) when the
-  gesture never crossed the drag threshold and was a body interaction (not a trim). Selection
-  already happened at mouse-press (pre-existing `_begin_video_clip_interaction`), so a plain
-  click both selects and seeks in one action.
-- No new drag-threshold, no new seek mechanism, no Playback Engine change: reused the existing
-  `self._drag_slop = 10.0` constant and the existing `_emit_seek(...) → seek_requested →
-  MainWindow._on_timeline_seek_requested → _canonical_seek → playback.seek(...)` chain that the
-  Music Track already drives.
-- Seek fires **on mouse-release**, matching the pre-existing mark-click pattern
-  (`_drag_click_seek`), because "was this a click or a drag" is only knowable once the gesture
-  ends; seeking on press would fire on every Move/Trim as well.
-- Edge (trim) clicks do not seek (spec only asked for body clicks). Track Header, all four
-  splitters, and Group Move are untouched/unaffected — they sit in earlier `elif` branches or a
-  fully separate code path. Marquee (shift/ctrl-held drag) never gets `click_seek`. Magnet
-  on/off cannot affect click-seek since it only gates `_update_video_clip_drag`/
-  `_update_video_clip_trim`.
+## Files changed
 
-### Part B — Cue ID navigation (`src/cueplayer/ui/cue_monitor_panel.py`)
+- `.ai/handoffs/2026-09-07_TimingArchitectureDiagnostic.md` (new) — full diagnostic.
+- `.ai/REPORT.md` (this file).
+- `.ai/NEXT_TASK.md` — points to this diagnostic's recommended next phases.
 
-- `_PaddedItemDelegate.eventFilter`'s Up/Down handling widened from
-  `column == LOGICAL_INDEX_BY_FIELD["note"]` to also match `LOGICAL_INDEX_BY_FIELD["cue_id"]`.
-  The commit-then-close-then-request-navigation logic was already column-agnostic.
-- The navigation handler (`_navigate_note_editor`) needed no logic change — it already worked
-  generically off an `int(column)` parameter — except one addition: after opening the adjacent
-  Cue ID editor, it now calls `.selectAll()` on it (guarded to `QLineEdit`). Note's behavior is
-  unchanged (no select-all), preserving its existing convention.
-- Commit-before-navigate, validation (`main_cue_id_fits_order` rejection of out-of-order
-  values), and no-wrap boundary clamping are all pre-existing mechanisms, inherited unchanged.
-- Only `Key_Up`/`Key_Down` are intercepted; every other editing key falls through unchanged for
-  both columns.
+No `src/cueplayer/` file was modified.
 
-### Post-manual-test fix — Cue ID navigation must skip rows without a Cue ID
+## Architecture decisions
 
-Manual testing found Up/Down used a naive `row + delta`, so it stopped dead on any "Button"
-row (a Mark whose lane has `cue_id_enabled=False`) instead of continuing to the next real Cue
-ID row — and because the delegate already committed/closed the editor before discovering the
-target wasn't editable, the user's edit position was lost outright.
+None made this session (diagnostic only). Key architecture facts **confirmed** (not
+decided) by this audit:
 
-Fixed in `_PaddedItemDelegate` (`cue_monitor_panel.py`): new `_find_navigable_row` scans row by
-row in the Up/Down direction checking each row's real `ItemIsEditable` flag (the same flag
-`refresh_list` already derives from `lane.cue_id_enabled` — no text/blank heuristic), and
-`eventFilter` now runs this scan **before** committing/closing anything. If no navigable row
-exists in that direction, the key event is consumed and the current editor is left completely
-untouched (no commit, no close, no wrong jump); only once a target is found does the existing
-commit → close → open-adjacent flow run, now with the already-resolved target row instead of a
-single fixed offset. Note column unaffected (every row's Note cell is always editable, so the
-scan finds the immediate next row exactly as before).
+- `AudioEngine._position_frame` (`audio_engine.py:107`) remains the single playback
+  clock, advanced only inside the PortAudio native callback thread under
+  `AudioEngine._lock` — unchanged, and the correct design per `AGENTS.md`/`WORKFLOW.md`'s
+  "AudioEngine sample position remains the only playback clock" rule.
+- LTC is not a separate clock: it is an array slice rendered into the *same* buffer as
+  music, in the *same* PortAudio callback (`audio_engine.py:2140-2178`).
+- MTC's own timing bug (GUI-`QTimer`-paced, frozen by the Windows title-bar modal loop)
+  was already fixed in a prior session (`.ai/handoffs/2026-09-07_MtcTitleBarStallFix.md`)
+  via a dedicated daemon thread — re-verified present and correct in the current code.
+- **New finding this session**: the *same* architectural bug class the MTC fix solved
+  is still present, unfixed, for two other consumers of the same `AudioEngine._poll`
+  GUI-thread `QTimer` — the Main UI Timecode display (cosmetic only, no real-output
+  consequence — High confidence) and Clean Video Output's frame-scheduling entry point
+  (`video_sync.update_position`), which for Clean Video Output is a real, fixable gap
+  layered under a second, harder, structural Qt-widget-paint constraint that a simple
+  thread swap cannot fully solve. See handoff §10/§13/§16.
+- **New finding this session**: Zoom and Mark creation share one confirmed root cause —
+  both invalidate `TimelineWidget._scrub_backdrop`, forcing a synchronous, GUI-thread,
+  measured-64–186 ms full backdrop rebake (`_rebuild_scrub_backdrop`,
+  `timeline_widget.py:3242-3329`) on the next paint. This is a UI/presentation-layer
+  stall (classifications D + E), not a Playback/LTC/MTC output discontinuity — no code
+  path in either trace touches `AudioEngine._lock`/`_position_frame`/`MtcOutput`/
+  `MidiCueNotes`. See handoff §11/§12/§18.
+- Two genuinely distinct root-cause families, not one unified bug: Family 1 (Zoom +
+  Mark) is GUI-thread CPU-cost-driven; Family 2 (title-bar Video + UI TC) is
+  OS-modal-loop-driven event-loop suspension. Recommend keeping them as separate fix
+  phases.
 
-## Tests
+## Tests performed
 
-Narrow/targeted files only (a full `tests/ui/` sweep is known to hang on fake `.mp4` bytes +
-`video_waveform_worker`; both new test files use non-existent video file paths):
+None — diagnostic-only session, no production code touched. All findings are static
+code reads, cross-verified across independent audit passes and, in the key cases,
+directly re-confirmed by grep/read against the current file contents by the session
+coordinator.
 
-```
-tests/ui/test_video_track_seek.py        6 passed  (new)
-tests/ui/test_cue_id_navigation.py       10 passed (new; 5 added for the skip-non-Cue-ID-row fix)
-tests/ui/test_marquee_group_move.py      passed
-tests/ui/test_video_clip_snap.py         passed
-tests/ui/test_video_clip_split.py        passed
-tests/ui/test_video_clip_timeline_zero_trim.py   passed
-tests/ui/test_timeline_header_width.py   passed
-tests/ui/test_cue_monitor_panel.py       passed
-tests/ui/test_timeline_splitter_drag.py  1 pre-existing failure (unrelated; confirmed also
-                                          fails on baseline commit 23aac87 via git stash)
-```
+## Remaining issues
 
-## Manual verification needed
+Everything is `UNKNOWN — NEEDS INSTRUMENTATION` rather than fixed; see handoff §19/§20
+for the full list and the proposed (not-yet-implemented) minimal instrumentation plan.
+Highlights:
 
-See the numbered steps at the end of
-`.ai/handoffs/2026-09-07_VideoTrackSeekAndCueIdNav.md`.
+- Exact current (post-overscan-trim) cost of `_rebuild_scrub_backdrop` is not measured
+  in this session — the 64–186 ms figure in the code's own comment predates a later
+  overscan reduction.
+- Whether GUI-thread GIL hold during that rebuild measurably delays the MTC thread's own
+  tick cadence or the PortAudio callback's Python-side glue is architecturally plausible
+  but not measured — CuePlayer already has a `CUEPLAYER_PERF=1` instrumentation
+  framework (`src/cueplayer/diagnostics/perf.py`) that covers almost all of this without
+  writing new code; one small proposed addition (`mtc.tick_interval_ms`) would close the
+  one real gap.
+- A real but benign, unaddressed race: `MidiCueNotes`'s background-thread scan of
+  `song.marks` (every 4 ms) shares no lock with `Song.add_mark`'s GUI-thread
+  append+sort — cannot corrupt memory under the GIL, but is architecture debt worth a
+  proper lock in a future session (not a cause of any of the four reported symptoms).
+
+## Suggested next task
+
+See `.ai/NEXT_TASK.md`. In short: **Phase B** (Timeline static-backdrop rebuild cost —
+Zoom/Mark, Family 1) and **Phase C** (Clean Video Output title-bar freeze, Reason A
+only — decouple `video_sync.update_position`'s trigger from `AudioEngine._poll`,
+mirroring the MTC fix). Phase D (Main UI TC display title-bar freeze) is recommended to
+be **dropped or reclassified as confirmed-working-as-intended**, not treated as an open
+bug — High confidence, fully code-cited, zero real-output consequence. Do not start any
+fix phase until the user reviews this diagnostic and explicitly requests it.
