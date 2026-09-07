@@ -123,6 +123,111 @@ def _biphase_encode(
     return out, level
 
 
+def _frame_rate_for_counting(fps: float) -> int:
+    """Integer HH:MM:SS:FF counter rate (same semantics as ``add_frames``)."""
+    if fps <= 0:
+        return 30
+    if abs(float(fps) - 29.97) < 0.02:
+        return 30
+    return max(1, int(round(float(fps))))
+
+
+def _encode_ltc_frame_bits_batch(
+    start: Timecode,
+    frame_indices: np.ndarray,
+    fps: float,
+    *,
+    drop_frame: bool,
+) -> np.ndarray:
+    """Vectorized equivalent of ``encode_ltc_frame_bits`` for many frames."""
+    count_rate = _frame_rate_for_counting(fps)
+    day_frames = 24 * 60 * 60 * count_rate
+    base = start.total_frames(fps)
+    total = (base + frame_indices.astype(np.int64, copy=False)) % day_frames
+    frames = total % count_rate
+    seconds_total = total // count_rate
+    seconds = seconds_total % 60
+    minutes_total = seconds_total // 60
+    minutes = minutes_total % 60
+    hours = (minutes_total // 60) % 24
+
+    bits = np.zeros((frame_indices.size, 80), dtype=np.uint8)
+
+    def put_bcd(values: np.ndarray, units_at: int, tens_at: int, tens_bits: int) -> None:
+        units = values % 10
+        tens = values // 10
+        for bit in range(4):
+            bits[:, units_at + bit] = (units >> bit) & 1
+        for bit in range(tens_bits):
+            bits[:, tens_at + bit] = (tens >> bit) & 1
+
+    put_bcd(frames, 0, 8, 2)
+    bits[:, 10] = 1 if drop_frame else 0
+    put_bcd(seconds, 16, 24, 3)
+    put_bcd(minutes, 32, 40, 3)
+    put_bcd(hours, 48, 56, 2)
+    bits[:, 64:80] = np.asarray(_SYNC_WORD, dtype=np.uint8)
+
+    # Match encode_ltc_frame_bits exactly: bit 27 starts at zero, then changes
+    # to one iff that provisional 80-bit word has an odd number of zero bits.
+    zero_count = 80 - np.count_nonzero(bits, axis=1)
+    bits[:, 27] = zero_count & 1
+    return bits
+
+
+def _render_ltc_frames_vectorized(
+    out: np.ndarray,
+    frame_starts: np.ndarray,
+    frame_lengths: np.ndarray,
+    start_timecode: Timecode,
+    fps: float,
+    amplitude: float,
+    *,
+    drop_frame: bool,
+) -> None:
+    """Render LTC with bounded native NumPy batches and no per-bit Python loop."""
+    # About 68 seconds at 30 fps / 48 kHz: bounded temporary storage (~3 MiB
+    # for the transition/cumsum array) while giving the scheduler a boundary
+    # between native batches on very long clips.
+    batch_frames = 2048
+    cells = np.arange(80, dtype=np.float64)
+    for first in range(0, int(frame_starts.size), batch_frames):
+        last = min(first + batch_frames, int(frame_starts.size))
+        starts = frame_starts[first:last]
+        lengths = frame_lengths[first:last]
+        chunk_start = int(starts[0])
+        chunk_end = int(starts[-1] + lengths[-1])
+        toggles = np.zeros(chunk_end - chunk_start, dtype=np.uint8)
+
+        # Cumulative rounding and integer midpoint are intentionally identical
+        # to _biphase_encode. Every cell start toggles; a data-one also toggles
+        # at its midpoint.
+        boundaries = np.rint(lengths[:, None] * cells[None, :] / 80.0).astype(
+            np.int64
+        )
+        ends = np.rint(lengths[:, None] * (cells[None, :] + 1.0) / 80.0).astype(
+            np.int64
+        )
+        bases = (starts - chunk_start)[:, None]
+        start_transitions = (bases + boundaries).reshape(-1)
+        toggles[start_transitions] = 1
+
+        bits = _encode_ltc_frame_bits_batch(
+            start_timecode,
+            np.arange(first, last, dtype=np.int64),
+            fps,
+            drop_frame=drop_frame,
+        )
+        mids = bases + boundaries + (ends - boundaries) // 2
+        toggles[mids[bits.astype(bool)]] = 1
+
+        # uint8 wraparound preserves parity and avoids an int64 cumsum buffer.
+        np.cumsum(toggles, dtype=np.uint8, out=toggles)
+        target = out[chunk_start:chunk_end]
+        target.fill(float(amplitude))
+        target[(toggles & 1).astype(bool)] = -float(amplitude)
+
+
 def generate_ltc_pcm(
     duration_seconds: float,
     sample_rate: int,
@@ -152,33 +257,32 @@ def generate_ltc_pcm(
 
     tc = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
     out = np.zeros(total_samples, dtype=np.float32)
-    level = float(amplitude)
-    pos = 0
-    frame_idx = 0
     min_frame_samples = 80 * 2
 
-    while pos < total_samples:
-        frame_len = min(
-            _ltc_frame_len(frame_idx, sr, rate),
-            total_samples - pos,
-        )
-        if frame_len < min_frame_samples:
-            if total_samples - pos < min_frame_samples:
-                break
-            frame_len = min(total_samples - pos, max(min_frame_samples, int(round(sr / rate))))
-
-        bits = encode_ltc_frame_bits(
-            tc.hours,
-            tc.minutes,
-            tc.seconds,
-            tc.frames,
+    # Frame geometry remains exactly the old cumulative-rounding geometry.
+    # The final short (<160 sample) fragment intentionally stays zero, as in
+    # the scalar implementation.
+    frame_count = max(1, int(np.ceil(total_samples * rate / sr)) + 1)
+    indices = np.arange(frame_count + 1, dtype=np.float64)
+    starts_all = np.rint(indices * sr / rate).astype(np.int64)
+    starts = starts_all[:-1]
+    nominal_lengths = np.maximum(min_frame_samples, np.diff(starts_all))
+    present = starts < total_samples
+    starts = starts[present]
+    lengths = np.minimum(nominal_lengths[present], total_samples - starts)
+    encodable = lengths >= min_frame_samples
+    starts = starts[encodable]
+    lengths = lengths[encodable]
+    if starts.size:
+        _render_ltc_frames_vectorized(
+            out,
+            starts,
+            lengths,
+            tc,
+            rate,
+            amplitude,
             drop_frame=drop_frame,
         )
-        wave, level = _biphase_encode(bits, frame_len, amplitude, initial_level=level)
-        out[pos : pos + frame_len] = wave
-        pos += frame_len
-        frame_idx += 1
-        tc = add_frames(tc, 1, rate)
 
     return out
 

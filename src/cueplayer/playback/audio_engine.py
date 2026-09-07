@@ -12,6 +12,7 @@ if sys.platform == "win32":
 import logging
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -118,6 +119,7 @@ class AudioEngine(QObject):
         self._resume_after_scrub = False
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
+        self._stream_requested_latency: str | float | None = None
         self._diagnostic_stream_epoch = 0
         self._last_stream_attempt_error: str | None = None
         self._diagnostic_transport_generation = 0
@@ -136,7 +138,13 @@ class AudioEngine(QObject):
         self._cb_interval_max = 0.0
         self._cb_exec_sum = 0.0
         self._cb_exec_max = 0.0
-        self._cb_deadline_miss = 0
+        self._cb_interval_miss = 0
+        self._cb_exec_over_budget = 0
+        self._cb_lock_wait_sum = 0.0
+        self._cb_lock_wait_max = 0.0
+        self._cb_frame_count_sum = 0
+        self._cb_frame_count_min = 0
+        self._cb_frame_count_max = 0
         self._cb_last_mono = 0.0
         self._cb_expected_period = 0.0
         self._cb_miss_play_decode_sum = 0
@@ -186,6 +194,8 @@ class AudioEngine(QObject):
         # boundary; an identical in-flight job is never stacked a second one.
         self._ltc_clip_inflight: tuple[int, tuple, object] | None = None
         self._ltc_clip_generation = 0
+        self._ltc_builder_events: deque[dict] = deque(maxlen=256)
+        self._ltc_builder_event_lock = threading.Lock()
         # Lock-free callback-owned PERF aggregation; publish on report only.
         self._ltc_clip_lookup_count = 0
         self._ltc_clip_lookup_sum_s = 0.0
@@ -249,6 +259,12 @@ class AudioEngine(QObject):
         # `_stop_mtc_thread`.
         self._mtc_thread_stop = threading.Event()
         self._mtc_thread: threading.Thread | None = None
+        self._mtc_loop_count = 0
+        self._mtc_loop_sum_s = 0.0
+        self._mtc_loop_max_s = 0.0
+        self._mtc_clock_lock_count = 0
+        self._mtc_clock_lock_sum_s = 0.0
+        self._mtc_clock_lock_max_s = 0.0
 
     @property
     def buffer(self) -> AudioBuffer | None:
@@ -650,6 +666,30 @@ class AudioEngine(QObject):
                 return max(0.0, (epoch_frame / sr) + min(elapsed, 0.08))
         return frame / sr
 
+    def _mtc_raw_position(self) -> tuple[float, float]:
+        """Return raw position plus exact AudioEngine-lock wait for the MTC thread."""
+        if not perf_diag.is_enabled():
+            return self.raw_position, 0.0
+        lock_t0 = time.perf_counter()
+        self._lock.acquire()
+        lock_wait_s = time.perf_counter() - lock_t0
+        try:
+            frame = int(self._position_frame)
+            epoch_frame = int(self._pos_epoch_frame)
+            epoch_mono = float(self._pos_epoch_mono)
+            playing = bool(self._playing)
+            scrubbing = bool(self._scrubbing)
+            sr = float(self._playback_rate)
+        finally:
+            self._lock.release()
+        if sr <= 0.0:
+            return 0.0, lock_wait_s
+        if playing and not scrubbing and epoch_mono > 0.0:
+            elapsed = time.monotonic() - epoch_mono
+            if elapsed > 0.0:
+                return max(0.0, (epoch_frame / sr) + min(elapsed, 0.08)), lock_wait_s
+        return frame / sr, lock_wait_s
+
     @property
     def position(self) -> float:
         """Audible / UI playhead (sync-offset compensated while playing)."""
@@ -782,6 +822,7 @@ class AudioEngine(QObject):
         Restarts the stream if currently playing.
         """
         was_playing = self._playing
+        was_ltc_enabled = bool(self._audio_settings.ltc_enabled)
         pos = self.position
         if was_playing:
             self.pause()
@@ -811,6 +852,11 @@ class AudioEngine(QObject):
             midi_button_base_note=int(getattr(settings, "midi_button_base_note", 48) or 48),
             output_channel_modes=list(getattr(settings, "output_channel_modes", []) or []),
         )
+        if was_ltc_enabled != bool(self._audio_settings.ltc_enabled):
+            self._record_ltc_builder_event(
+                "ltc_enable_changed",
+                enabled=bool(self._audio_settings.ltc_enabled),
+            )
         self._resolve_device_and_route()
         if self._uses_generated_ltc():
             self._ensure_ltc_cache()
@@ -1341,6 +1387,7 @@ class AudioEngine(QObject):
         """Start the off-GUI-thread MTC/MIDI-cue ticker (idempotent)."""
         if self._mtc_thread is not None and self._mtc_thread.is_alive():
             return
+        self._reset_mtc_timing_diagnostics()
         self._mtc_thread_stop.clear()
         t = threading.Thread(
             target=self._mtc_thread_loop,
@@ -1363,16 +1410,30 @@ class AudioEngine(QObject):
         # wall-clock wait on a plain thread — never blocked by the Qt event
         # loop (e.g. Windows' native title-bar move/resize modal loop).
         stop = self._mtc_thread_stop
+        track_timing = perf_diag.is_enabled()
         while not stop.wait(0.004):
+            loop_t0 = time.perf_counter() if track_timing else 0.0
             try:
                 self._mtc_tick()
             except Exception:  # noqa: BLE001 — ticker must never die silently
                 log.exception("MTC tick thread error")
+            finally:
+                if track_timing:
+                    elapsed = time.perf_counter() - loop_t0
+                    self._mtc_loop_count += 1
+                    self._mtc_loop_sum_s += elapsed
+                    self._mtc_loop_max_s = max(self._mtc_loop_max_s, elapsed)
 
     def _mtc_tick(self) -> None:
         if self._playing:
             loop_sequence = self._loop_discontinuity_sequence
-            pos = self.raw_position
+            pos, clock_lock_wait = self._mtc_raw_position()
+            if perf_diag.is_enabled():
+                self._mtc_clock_lock_count += 1
+                self._mtc_clock_lock_sum_s += clock_lock_wait
+                self._mtc_clock_lock_max_s = max(
+                    self._mtc_clock_lock_max_s, clock_lock_wait
+                )
             self._sync_mtc_to_file_ltc(pos)
             if loop_sequence != self._mtc_seen_loop_sequence:
                 self._mtc.on_seek(pos, playing=True)
@@ -1641,6 +1702,11 @@ class AudioEngine(QObject):
             self._ltc_clip_inflight = (generation, key, None)
         perf_diag.count("audio.ltc_clip.builder_job_started")
         perf_diag.note("audio.ltc_clip.builder_active_jobs", 1)
+        self._record_ltc_builder_event(
+            "builder_job_started",
+            generation=generation,
+            clip_count=len(intervals),
+        )
 
         def _build() -> tuple[tuple, int, bool]:
             from cueplayer.util.thread_priority import (
@@ -1666,9 +1732,17 @@ class AudioEngine(QObject):
                 except ValueError:
                     pcm = None  # permanently silent clip (invalid rate)
                 if perf_diag.is_enabled():
+                    clip_ms = (time.perf_counter() - clip_t0) * 1000.0
                     perf_diag.record_ms(
                         "audio.ltc_clip.builder_clip_ms",
-                        (time.perf_counter() - clip_t0) * 1000.0,
+                        clip_ms,
+                    )
+                    self._record_ltc_builder_event(
+                        "builder_clip_generated",
+                        generation=generation,
+                        clip_index=index,
+                        duration_seconds=round(dur, 6),
+                        elapsed_ms=round(clip_ms, 3),
                     )
                 if pcm is not None:
                     with self._lock:
@@ -1676,9 +1750,10 @@ class AudioEngine(QObject):
                             self._ltc_clip_pcm[index] = pcm
                             published += 1
             if perf_diag.is_enabled():
+                total_ms = (time.perf_counter() - t0) * 1000.0
                 perf_diag.record_ms(
                     "audio.ltc_clip.builder_total_ms",
-                    (time.perf_counter() - t0) * 1000.0,
+                    total_ms,
                 )
             return key, published, completed
 
@@ -1692,8 +1767,10 @@ class AudioEngine(QObject):
                 self._ltc_clip_cache_future = future
 
         def _done(fut) -> None:
+            built_key = None
+            published = 0
             try:
-                built_key, _published, completed = fut.result()
+                built_key, published, completed = fut.result()
             except Exception:
                 completed = False
             still_active = False
@@ -1711,6 +1788,11 @@ class AudioEngine(QObject):
                 perf_diag.count("audio.ltc_clip.builder_job_completed")
             else:
                 perf_diag.count("audio.ltc_clip.builder_job_cancelled")
+            self._record_ltc_builder_event(
+                "builder_job_completed" if completed else "builder_job_cancelled",
+                generation=generation,
+                published=int(published),
+            )
             if not still_active:
                 perf_diag.note("audio.ltc_clip.builder_active_jobs", 0)
 
@@ -2448,7 +2530,7 @@ class AudioEngine(QObject):
                     self._cb_interval_max = interval
                 # Deadline miss: gap significantly larger than one period.
                 if expected > 0.0 and interval > expected * 1.75:
-                    self._cb_deadline_miss += 1
+                    self._cb_interval_miss += 1
                     try:
                         from cueplayer.playback import media_load_probe as _mlp
 
@@ -2463,6 +2545,10 @@ class AudioEngine(QObject):
             # Start-to-start interval belongs to the PREVIOUS callback's frames.
             self._cb_expected_period = float(frames) / sample_rate if sample_rate > 0 else 0.0
             self._cb_count += 1
+            self._cb_frame_count_sum += int(frames)
+            if self._cb_frame_count_min <= 0 or int(frames) < self._cb_frame_count_min:
+                self._cb_frame_count_min = int(frames)
+            self._cb_frame_count_max = max(self._cb_frame_count_max, int(frames))
             if underflow:
                 self._cb_underflow += 1
             self._cb_status_flags_or |= int(flags)
@@ -2473,7 +2559,13 @@ class AudioEngine(QObject):
             trace_generation = self._diagnostic_transport_generation
             trace_reason = 0
             try:
+                lock_t0 = time.monotonic()
                 with self._lock:
+                    lock_wait_s = time.monotonic() - lock_t0
+                    self._cb_lock_wait_sum += lock_wait_s
+                    self._cb_lock_wait_max = max(
+                        self._cb_lock_wait_max, lock_wait_s
+                    )
                     trace_start = self._position_frame
                     trace_end = trace_start
                     trace_generation = self._diagnostic_transport_generation
@@ -2484,6 +2576,8 @@ class AudioEngine(QObject):
                         self._cb_exec_sum += exec_s
                         if exec_s > self._cb_exec_max:
                             self._cb_exec_max = exec_s
+                        if self._cb_expected_period > 0.0 and exec_s > self._cb_expected_period:
+                            self._cb_exec_over_budget += 1
                         return
                     if self._buffer is not None and self._playback_samples is None:
                         trace_reason = 3
@@ -2608,6 +2702,8 @@ class AudioEngine(QObject):
             self._cb_exec_sum += exec_s
             if exec_s > self._cb_exec_max:
                 self._cb_exec_max = exec_s
+            if self._cb_expected_period > 0.0 and exec_s > self._cb_expected_period:
+                self._cb_exec_over_budget += 1
 
         return callback
 
@@ -2626,7 +2722,13 @@ class AudioEngine(QObject):
         self._cb_interval_max = 0.0
         self._cb_exec_sum = 0.0
         self._cb_exec_max = 0.0
-        self._cb_deadline_miss = 0
+        self._cb_interval_miss = 0
+        self._cb_exec_over_budget = 0
+        self._cb_lock_wait_sum = 0.0
+        self._cb_lock_wait_max = 0.0
+        self._cb_frame_count_sum = 0
+        self._cb_frame_count_min = 0
+        self._cb_frame_count_max = 0
         self._cb_miss_play_decode_sum = 0
         self._cb_miss_va_window_sum = 0
         self._cb_miss_play_decode_last = 0
@@ -2674,7 +2776,24 @@ class AudioEngine(QObject):
             "interval_max_s": float(self._cb_interval_max),
             "exec_mean_s": float(self._cb_exec_sum) / max(1, n) if n else 0.0,
             "exec_max_s": float(self._cb_exec_max),
-            "deadline_miss_count": int(self._cb_deadline_miss),
+            "lock_wait_mean_ms": (
+                1000.0 * float(self._cb_lock_wait_sum) / max(1, n) if n else 0.0
+            ),
+            "lock_wait_ms": (
+                1000.0 * float(self._cb_lock_wait_sum) / max(1, n) if n else 0.0
+            ),
+            "lock_wait_max_ms": 1000.0 * float(self._cb_lock_wait_max),
+            "frame_count_min": int(self._cb_frame_count_min),
+            "frame_count_max": int(self._cb_frame_count_max),
+            "frame_count_mean": float(self._cb_frame_count_sum) / max(1, n),
+            "actual_period_expected_from_frames_ms": (
+                1000.0 * float(self._cb_frame_count_sum) / max(1, n) / max(1, self._playback_rate)
+            ),
+            "interval_miss_count": int(self._cb_interval_miss),
+            "exec_over_budget_count": int(self._cb_exec_over_budget),
+            # Backward-compatible alias; this was always an invocation-interval
+            # metric, never proof of a PortAudio output underflow.
+            "deadline_miss_count": int(self._cb_interval_miss),
             "miss_play_decode_submits_last": int(self._cb_miss_play_decode_last),
             "miss_va_decode_windows_last": int(self._cb_miss_va_window_last),
             "miss_play_decode_submits_sum": int(self._cb_miss_play_decode_sum),
@@ -2690,6 +2809,13 @@ class AudioEngine(QObject):
             perf_diag.note(f"audio.callback.{key}", value)
         for key, value in self.ltc_clip_callback_diagnostics().items():
             perf_diag.note(f"audio.ltc_clip.{key}", value)
+        with self._ltc_builder_event_lock:
+            builder_events = list(self._ltc_builder_events)
+        perf_diag.note("audio.ltc_clip.builder_event_ring", builder_events)
+        for key, value in self.audio_stream_diagnostics().items():
+            perf_diag.note(f"audio.stream.{key}", value)
+        for key, value in self.mtc_timing_diagnostics().items():
+            perf_diag.note(f"mtc.{key}", value)
         if int(snap["callback_count"]) > 0:
             perf_diag.note(
                 "audio.callback.underflow_rate",
@@ -2710,6 +2836,89 @@ class AudioEngine(QObject):
                 perf_diag.note("video_audio.event_ring", events[-80:])
         except Exception:
             pass
+
+    def _record_ltc_builder_event(self, kind: str, **fields) -> None:
+        """Bounded off-RT lifecycle trace correlated with callback counters."""
+        if not perf_diag.is_enabled():
+            return
+        event = {
+            "kind": str(kind),
+            "monotonic_s": round(time.monotonic(), 6),
+            "callback_count": int(self._cb_count),
+            "interval_miss_count": int(self._cb_interval_miss),
+            "exec_over_budget_count": int(self._cb_exec_over_budget),
+        }
+        event.update(fields)
+        with self._ltc_builder_event_lock:
+            self._ltc_builder_events.append(event)
+
+    def _reset_mtc_timing_diagnostics(self) -> None:
+        self._mtc_loop_count = 0
+        self._mtc_loop_sum_s = 0.0
+        self._mtc_loop_max_s = 0.0
+        self._mtc_clock_lock_count = 0
+        self._mtc_clock_lock_sum_s = 0.0
+        self._mtc_clock_lock_max_s = 0.0
+        try:
+            self._mtc.reset_timing_diagnostics()
+        except Exception:
+            pass
+
+    def mtc_timing_diagnostics(self) -> dict[str, float | int]:
+        loops = int(self._mtc_loop_count)
+        clocks = int(self._mtc_clock_lock_count)
+        result: dict[str, float | int] = {
+            "loop_count": loops,
+            "loop_mean_ms": 1000.0 * self._mtc_loop_sum_s / max(1, loops),
+            "loop_ms": 1000.0 * self._mtc_loop_sum_s / max(1, loops),
+            "loop_max_ms": 1000.0 * self._mtc_loop_max_s,
+            "clock_lock_wait_mean_ms": (
+                1000.0 * self._mtc_clock_lock_sum_s / max(1, clocks)
+            ),
+            "clock_lock_wait_ms": (
+                1000.0 * self._mtc_clock_lock_sum_s / max(1, clocks)
+            ),
+            "clock_lock_wait_max_ms": 1000.0 * self._mtc_clock_lock_max_s,
+        }
+        try:
+            result.update(self._mtc.timing_diagnostics())
+        except Exception:
+            pass
+        return result
+
+    def audio_stream_diagnostics(self) -> dict[str, object]:
+        """Resolve actual stream/device configuration from the live endpoint off-RT."""
+        device_name = str(self._audio_settings.output_device_name or "")
+        host_api = resolve_output_hostapi(str(self._audio_settings.output_hostapi or ""))
+        if self._device_index is not None:
+            try:
+                raw = sd.query_devices(self._device_index)
+                device_name = str(raw.get("name", device_name))
+                api_index = int(raw.get("hostapi", -1))
+                if api_index >= 0:
+                    host_api = str(sd.query_hostapis(api_index).get("name", host_api))
+            except Exception:
+                pass
+        latency = None
+        try:
+            latency = getattr(self._stream, "latency") if self._stream is not None else None
+        except Exception:
+            latency = None
+        return {
+            "requested_blocksize": 0,
+            "sample_rate": int(self._playback_rate),
+            "host_api": host_api,
+            "device": device_name,
+            "device_index": self._device_index,
+            "dtype": "float32",
+            "channels": int(self._output_channel_count),
+            "requested_latency": (
+                self._stream_requested_latency
+                if self._stream_requested_latency is not None
+                else "default"
+            ),
+            "output_latency": latency,
+        }
 
     def audio_timing_diagnostics(self) -> dict:
         """Non-RT report; device properties are observations, not verified hardware rate."""
@@ -2805,6 +3014,7 @@ class AudioEngine(QObject):
             self._prepare_output_rate(sample_rate, previous_position)
             self._stream = stream
             stream.start()
+            self._stream_requested_latency = latency
             self._reset_audio_callback_continuity()
             self._active_stream_token = self._stream_token()
             return True

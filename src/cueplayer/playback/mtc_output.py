@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.timecode.mtc import (
     absolute_timecode,
     full_frame_sysex,
@@ -130,6 +132,9 @@ class MtcOutput:
         self._playing = False
         self._last_qf_index = -1
         self._qf_piece = 0  # 0–7 cycling
+        self._send_count = 0
+        self._send_sum_s = 0.0
+        self._send_max_s = 0.0
         # Optional position → TC mapping (clip_generator mode). A provider
         # returning ``None`` means “no TC source at this position” (outside
         # every LTC clip): no quarter frames and no full-frame dumps there.
@@ -327,7 +332,7 @@ class MtcOutput:
                         break
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
-                    self._port.send(self._note_msg(0xF1, data))
+                    self._timed_send_locked(self._note_msg(0xF1, data))
                 except Exception as exc:  # noqa: BLE001
                     log.debug("MTC send failed: %s", exc)
                     break
@@ -338,6 +343,41 @@ class MtcOutput:
             self._enabled = False
             self._playing = False
             self._close_port_locked()
+
+    def reset_timing_diagnostics(self) -> None:
+        """Reset off-RT MIDI-send timing counters for a fresh playback run."""
+        with self._lock:
+            self._send_count = 0
+            self._send_sum_s = 0.0
+            self._send_max_s = 0.0
+
+    def timing_diagnostics(self) -> dict[str, float | int]:
+        """Snapshot MTC port-send duration; never called by the audio callback."""
+        with self._lock:
+            count = int(self._send_count)
+            mean_ms = 1000.0 * self._send_sum_s / max(1, count)
+            return {
+                "send_count": count,
+                "send_ms": mean_ms,
+                "send_mean_ms": mean_ms,
+                "send_max_ms": 1000.0 * self._send_max_s,
+            }
+
+    def _timed_send_locked(self, message: Any) -> None:
+        """Send one MTC message and aggregate wall time (MTC lock held)."""
+        if self._port is None:
+            return
+        if not perf_diag.is_enabled():
+            self._port.send(message)
+            return
+        t0 = time.perf_counter()
+        try:
+            self._port.send(message)
+        finally:
+            elapsed = time.perf_counter() - t0
+            self._send_count += 1
+            self._send_sum_s += elapsed
+            self._send_max_s = max(self._send_max_s, elapsed)
 
     def _reset_qf_locked(self, position_seconds: float) -> None:
         qf_rate = self._fps * 4.0
@@ -356,7 +396,7 @@ class MtcOutput:
             payload = full_frame_sysex(tc, self._fps)
             # mido sysex data is bytes between F0 and F7.
             msg = mido.Message("sysex", data=payload[1:-1])
-            self._port.send(msg)
+            self._timed_send_locked(msg)
         except Exception as exc:  # noqa: BLE001
             log.debug("MTC full-frame failed: %s", exc)
 

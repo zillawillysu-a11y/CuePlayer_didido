@@ -94,9 +94,65 @@ def test_variable_blocks_and_status_bits_are_counted_correctly(monkeypatch):
     snap = engine.audio_callback_continuity()
     assert snap['output_underflow_count'] == 1
     assert snap['deadline_miss_count'] == 0
+    assert snap['interval_miss_count'] == 0
+    assert snap['exec_over_budget_count'] == 0
     assert snap['expected_period_s'] == pytest.approx(.005)
+    assert snap['frame_count_min'] == 240
+    assert snap['frame_count_max'] == 960
+    assert snap['frame_count_mean'] == pytest.approx(560)
+    assert snap['actual_period_expected_from_frames_ms'] == pytest.approx(35 / 3)
     engine._open_output_stream(device=None, channels=2, sample_rate=48000)
     assert engine._cb_last_mono == 0.0  # downtime is not a deadline miss
+
+
+def test_callback_lock_wait_is_timed_before_acquire(monkeypatch):
+    from cueplayer.playback import audio_engine as module
+
+    now = [10.0]
+
+    class Lock:
+        def __enter__(self):
+            now[0] += 0.002
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    engine = AudioEngine()
+    engine._lock = Lock()
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    engine._make_stream_callback(48000)(
+        np.zeros((480, 2), np.float32), 480, None, 0
+    )
+    snap = engine.audio_callback_continuity()
+    assert snap["lock_wait_ms"] == pytest.approx(2.0)
+    assert snap["lock_wait_max_ms"] == pytest.approx(2.0)
+
+
+def test_interval_miss_and_execution_over_budget_are_separate(monkeypatch):
+    from cueplayer.playback import audio_engine as module
+
+    stamps = iter(
+        [
+            100.0,
+            100.0,
+            100.0,
+            100.0,
+            100.03,
+            100.03,
+            100.03,
+            100.05,
+        ]
+    )
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(stamps))
+    engine = AudioEngine()
+    callback = engine._make_stream_callback(48000)
+    for _ in range(2):
+        callback(np.zeros((480, 2), np.float32), 480, None, 0)
+    snap = engine.audio_callback_continuity()
+    assert snap["interval_miss_count"] == 1
+    assert snap["exec_over_budget_count"] == 1
+    assert snap["deadline_miss_count"] == snap["interval_miss_count"]
 
 
 def test_new_stream_resets_continuity_counters_but_failed_open_does_not(monkeypatch):

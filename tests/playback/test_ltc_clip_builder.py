@@ -208,6 +208,16 @@ def test_first_ensure_submits_one_job() -> None:
     assert _perf_attr("audio.ltc_clip.builder_active_jobs") == 0
     assert engine._ltc_clip_cache_key == engine._clip_ltc_cache_key()
     assert len(engine._ltc_clip_pcm) == len(engine._ltc_clip_intervals)
+    engine.publish_audio_continuity_to_perf()
+    events = _perf_attr("audio.ltc_clip.builder_event_ring")
+    builder_events = [event for event in events if event["kind"].startswith("builder_")]
+    assert [event["kind"] for event in builder_events] == [
+        "builder_job_started",
+        "builder_clip_generated",
+        "builder_job_completed",
+    ]
+    assert builder_events[0]["monotonic_s"] <= builder_events[-1]["monotonic_s"]
+    assert builder_events[-1]["published"] == 1
     # Report surface: builder metrics must appear in the PERF report text.
     report = perf_diag.report_text()
     assert "audio.ltc_clip.builder_job_started" in report

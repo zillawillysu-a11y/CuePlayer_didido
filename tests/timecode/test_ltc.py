@@ -8,6 +8,50 @@ import pytest
 from cueplayer.timecode.ltc import encode_ltc_frame_bits, generate_ltc_pcm, generate_ltc_pcm_segment
 
 
+def _scalar_reference(
+    duration_seconds: float,
+    sample_rate: int,
+    start_timecode: str,
+    fps: float,
+    *,
+    amplitude: float = 0.9,
+    drop_frame: bool = False,
+) -> np.ndarray:
+    """Pre-vectorization algorithm kept only as an exact equivalence oracle."""
+    from cueplayer.timecode.ltc import _biphase_encode, _ltc_frame_len
+    from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
+
+    sr = max(1, int(sample_rate))
+    total_samples = max(1, int(round(max(0.0, duration_seconds) * sr)))
+    rate = float(fps) if fps > 0 else 30.0
+    tc = parse_timecode(start_timecode) or Timecode(1, 0, 0, 0)
+    out = np.zeros(total_samples, dtype=np.float32)
+    level = float(amplitude)
+    pos = 0
+    frame_idx = 0
+    while pos < total_samples:
+        frame_len = min(_ltc_frame_len(frame_idx, sr, rate), total_samples - pos)
+        if frame_len < 160:
+            if total_samples - pos < 160:
+                break
+            frame_len = min(total_samples - pos, max(160, int(round(sr / rate))))
+        bits = encode_ltc_frame_bits(
+            tc.hours,
+            tc.minutes,
+            tc.seconds,
+            tc.frames,
+            drop_frame=drop_frame,
+        )
+        wave, level = _biphase_encode(
+            bits, frame_len, amplitude, initial_level=level
+        )
+        out[pos : pos + frame_len] = wave
+        pos += frame_len
+        frame_idx += 1
+        tc = add_frames(tc, 1, rate)
+    return out
+
+
 def test_encode_ltc_sync_word() -> None:
     bits = encode_ltc_frame_bits(1, 0, 0, 0)
     assert len(bits) == 80
@@ -48,6 +92,30 @@ def test_generate_ltc_various_fps(fps: float) -> None:
     pcm = generate_ltc_pcm(0.2, 48000, "10:00:00:00", fps)
     assert pcm.size == int(round(0.2 * 48000))
     assert np.any(pcm != 0)
+
+
+@pytest.mark.parametrize(
+    ("fps", "start", "duration", "drop_frame"),
+    [
+        (24.0, "00:00:00:00", 0.01, False),
+        (24.0, "01:02:03:04", 0.237, False),
+        (25.0, "10:59:58:23", 1.017, False),
+        (30.0, "23:59:59:29", 0.503, False),
+        (29.97, "03:14:15:09", 0.731, False),
+        (29.97, "03:14:15:09", 0.731, True),
+        (29.97, "23:59:58:17", 69.123, True),
+    ],
+)
+def test_vectorized_pcm_is_byte_exact_to_scalar_encoder(
+    fps: float, start: str, duration: float, drop_frame: bool
+) -> None:
+    expected = _scalar_reference(
+        duration, 48000, start, fps, amplitude=0.73, drop_frame=drop_frame
+    )
+    actual = generate_ltc_pcm(
+        duration, 48000, start, fps, amplitude=0.73, drop_frame=drop_frame
+    )
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_generate_ltc_continuous_no_gaps() -> None:
