@@ -2531,6 +2531,7 @@ class MainWindow(QMainWindow):
             tools_menu.addAction(act_align_anchors)
             tools_menu.addAction(act_ma_preflight)
         # Developer-only when CUEPLAYER_PERF=1 (no playback behavior change).
+        self._write_performance_report_action: QAction | None = None
         if perf_diag.is_enabled():
             act_perf = QAction("Write &Performance Report…", self)
             act_perf.setToolTip(
@@ -2538,6 +2539,7 @@ class MainWindow(QMainWindow):
             )
             act_perf.triggered.connect(self._write_performance_report)
             tools_menu.addAction(act_perf)
+            self._write_performance_report_action = act_perf
             act_profile = QAction("Profile &UI 5s (cProfile)…", self)
             act_profile.setToolTip(
                 "Run stdlib cProfile for 5 seconds while you play/scrub. "

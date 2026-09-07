@@ -404,6 +404,7 @@ class TimelineWidget(QWidget):
             self._run_incremental_scrub_backdrop_step
         )
         self._scrub_backdrop_build_strip_width = 128
+        self._scrub_backdrop_last_strip_callback_ns: int | None = None
         # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
         # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
         self._spatial_backdrop: QPixmap | None = None
@@ -3027,8 +3028,11 @@ class TimelineWidget(QWidget):
     def _invalidate_scrub_backdrop(
         self, reason: str = "generic", *, retain_for_deferred_rebuild: bool = False
     ) -> None:
+        if self._scrub_backdrop_build_state is not None:
+            perf_diag.count("timeline.backdrop.incremental_stale_discard")
         self._scrub_backdrop_build_generation += 1
         self._scrub_backdrop_build_state = None
+        perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
         if self._scrub_backdrop_build_timer.isActive():
             self._scrub_backdrop_build_timer.stop()
         # Zoom/Mark input keeps the last atomically-completed cache drawable
@@ -3069,8 +3073,19 @@ class TimelineWidget(QWidget):
 
     def _run_incremental_scrub_backdrop_step(self) -> None:
         """Paint one narrow static-raster strip, then yield to Qt."""
+        now = monotonic_ns()
+        previous = self._scrub_backdrop_last_strip_callback_ns
+        if previous is not None:
+            perf_diag.record_ms(
+                "timeline.backdrop.incremental_callback_gap_ms",
+                (now - previous) / 1_000_000.0,
+            )
+        self._scrub_backdrop_last_strip_callback_ns = now
+        perf_diag.count("timeline.backdrop.incremental_callback_count")
         state = self._scrub_backdrop_build_state
         if state is None or state.get("generation") != self._scrub_backdrop_build_generation:
+            perf_diag.count("timeline.backdrop.incremental_stale_discard")
+            perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
             return
         if (
             self.width() != state["size"].width()
@@ -3079,6 +3094,8 @@ class TimelineWidget(QWidget):
             or abs(self._scroll_x - state["scroll"]) >= 0.5
         ):
             self._scrub_backdrop_build_state = None
+            perf_diag.count("timeline.backdrop.incremental_stale_discard")
+            perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
             return
         left = int(state["next_x"])
         right = min(int(state["paint_w"]), left + self._scrub_backdrop_build_strip_width)
@@ -3105,6 +3122,9 @@ class TimelineWidget(QWidget):
         state["next_x"] = right
         perf_diag.count("timeline.backdrop.incremental_strip_count")
         if right < int(state["paint_w"]):
+            # One single-shot timer means there can never be a queued strip
+            # backlog: a callback schedules exactly one successor.
+            perf_diag.note("timeline.backdrop.incremental_pending_work", 1)
             self._scrub_backdrop_build_timer.start(0)
             return
         self._complete_incremental_scrub_backdrop_build(state)
@@ -3116,6 +3136,7 @@ class TimelineWidget(QWidget):
         self._view_transform_busy = True
         generation = self._scrub_backdrop_build_generation + 1
         self._scrub_backdrop_build_generation = generation
+        self._scrub_backdrop_last_strip_callback_ns = None
         overscan = 128
         paint_w = int(self.width()) + 2 * overscan
         dpr = max(1.0, float(self.devicePixelRatioF()))
@@ -3136,11 +3157,14 @@ class TimelineWidget(QWidget):
             "started_ns": monotonic_ns(),
         }
         perf_diag.count("timeline.backdrop.incremental_started")
+        perf_diag.note("timeline.backdrop.incremental_pending_work", 1)
         self._scrub_backdrop_build_timer.start(0)
 
     def _complete_incremental_scrub_backdrop_build(self, state: dict) -> None:
         """Add the cheap annotation pass and atomically commit this generation."""
         if state.get("generation") != self._scrub_backdrop_build_generation:
+            perf_diag.count("timeline.backdrop.incremental_stale_discard")
+            perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
             return
         spatial = state["spatial"]
         full_pm = QPixmap(spatial)
@@ -3174,6 +3198,7 @@ class TimelineWidget(QWidget):
         self._mark_backdrop_baked_revision = int(self._mark_backdrop_revision)
         self._video_waveform_baked_revision = int(self._video_waveform_revision)
         self._scrub_backdrop_build_state = None
+        perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
         self._view_transform_busy = False
         self._view_transform_quality_pending = False
         total = (monotonic_ns() - int(state["started_ns"])) / 1_000_000.0
@@ -3498,8 +3523,11 @@ class TimelineWidget(QWidget):
         """
         # Direct callers (initial seed / explicit test helpers) supersede a
         # queued request, preventing a stale timer from doing a second bake.
+        if self._scrub_backdrop_build_state is not None:
+            perf_diag.count("timeline.backdrop.incremental_stale_discard")
         self._scrub_backdrop_build_generation += 1
         self._scrub_backdrop_build_state = None
+        perf_diag.note("timeline.backdrop.incremental_pending_work", 0)
         if self._scrub_backdrop_build_timer.isActive():
             self._scrub_backdrop_build_timer.stop()
         self._scrub_backdrop_rebuild_pending = False

@@ -139,3 +139,15 @@ def test_pending_callback_is_safe_when_widget_is_destroyed(
     app.processEvents()
 
     assert calls == []
+
+
+def test_incremental_pending_strip_is_safe_when_widget_is_destroyed(
+    app: QApplication,
+) -> None:
+    widget = _timeline(app)
+    widget._rebuild_scrub_backdrop(reason="seed")  # noqa: SLF001
+    widget._start_incremental_scrub_backdrop_build("zoom_idle")  # noqa: SLF001
+    assert widget._scrub_backdrop_build_state is not None  # noqa: SLF001
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
