@@ -30,6 +30,32 @@ def clip_duration_after_right_trim(
     return min(max(min_duration, dur0 + dt_seconds), max_dur)
 
 
+def split_video_clip_transforms(
+    start_seconds: float,
+    source_in_seconds: float,
+    duration_seconds: float,
+    at_seconds: float,
+    *,
+    min_duration: float = 0.05,
+) -> tuple[float, float, float] | None:
+    """Domain math for a non-destructive split at the playhead.
+
+    Returns ``(left_duration, right_source_in, right_duration)`` so the
+    caller can shrink the original clip to `left_duration` and create a new
+    clip starting at `at_seconds` with the returned source-in/duration.
+    Returns ``None`` (no-op) when the playhead is too close to either end to
+    honor the same minimum-duration floor used by head/tail trim, so a split
+    never produces a clip shorter than a manual trim ever could.
+    """
+    end_seconds = start_seconds + duration_seconds
+    if not (start_seconds + min_duration <= at_seconds <= end_seconds - min_duration):
+        return None
+    left_duration = at_seconds - start_seconds
+    right_source_in = source_in_seconds + left_duration
+    right_duration = duration_seconds - left_duration
+    return left_duration, right_source_in, right_duration
+
+
 def default_video_clip_duration(
     source_duration: float,
     song_duration: float,

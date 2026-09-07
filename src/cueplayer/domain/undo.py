@@ -569,6 +569,42 @@ class EditVideoClipsCommand:
 
 
 @dataclass
+class SplitVideoClipCommand:
+    """Split at playhead: shrink the original clip and add the new right
+    clip as a single atomic undo entry (one undo restores the original)."""
+
+    original_id: str
+    original_before: ClipTransform
+    original_after: ClipTransform
+    new_clip: VideoClipSnapshot
+    label: str = "Split Video Clip"
+
+    def undo(self, song: Song) -> None:
+        song.video_clips = [c for c in song.video_clips if c.id != self.new_clip.id]
+        clip = song.video_clip_by_id(self.original_id)
+        if clip is not None:
+            start, source_in, duration = self.original_before
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        song.sort_video_clips()
+
+    def redo(self, song: Song) -> None:
+        clip = song.video_clip_by_id(self.original_id)
+        if clip is not None:
+            start, source_in, duration = self.original_after
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        existing = {c.id for c in song.video_clips}
+        if self.new_clip.id not in existing:
+            song.video_clips.append(self.new_clip.to_clip())
+        song.sort_video_clips()
+
+
+@dataclass
 class GroupMoveCommand:
     """Marquee-selection group move: one undo entry across Video Clips, LTC
     Clips, and Marks moved together by the same shared time delta.

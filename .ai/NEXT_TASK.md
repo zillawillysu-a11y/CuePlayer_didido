@@ -5,9 +5,11 @@ Gap / Insert Time** — auto-pushing later Video Clips, LTC Clips, and Marks to 
 when inserting new content, building on this session's marquee multi-selection + group
 move. Do not start until the user asks for it.
 
-Otherwise: waiting on user manual verification of the Marquee Multi-Selection + Group
-Move feature (checklist in `.ai/REPORT.md`), the Multiple Video Clips Music-lane stand-in
-waveform fix (checklist in prior `.ai/REPORT.md` history / its handoff), and separately,
+Otherwise: waiting on user manual verification of **Split Video Clip at Playhead + Video
+Clip Snap** (checklist in `.ai/REPORT.md` / `.ai/handoffs/2026-09-07_VideoClipSplitAndSnap.md`),
+the Marquee Multi-Selection + Group
+Move feature (checklist in prior `.ai/REPORT.md` history), the Multiple Video Clips Music-lane
+stand-in waveform fix (checklist in prior `.ai/REPORT.md` history / its handoff), and separately,
 user manual verification (Splash / Main Window title / Help→About dialog / normal
 startup) before the next, separate "Release Build" task (run
 `packaging\build_windows.ps1` on the Windows build machine and check the built
@@ -59,6 +61,24 @@ Candidates parked by user (not started):
   user asks.
 
 Resolved this session:
+
+- Split Video Clip at Playhead + Video Clip Snap: Split already existed from an earlier
+  session (context menu + handler) but had 3 gaps, now fixed — undo/redo is now one atomic
+  `SplitVideoClipCommand` entry (was two separate pushes needing two undos), the RIGHT
+  (new) clip is now selected after split (was neither), and the split boundary now shares
+  the same 0.05s minimum-duration floor as head/tail trim (was a looser, inconsistent
+  0.02s). Also built net-new Video Clip Move/Trim snapping onto the existing Magnet toggle
+  (`_beat_snap_enabled`) — audit found the only pre-existing snap was Beat-Grid-only for
+  Marks/LTC-clip-drag, nothing snapped to Marks/Playhead/clip-edges/LTC-edges before this.
+  New `_video_clip_snap_targets`/`_snap_time_for_video_clip` in `timeline_widget.py` give
+  Move (body drag) and Trim (head/tail) a 16px-threshold nearest-target snap to Marks >
+  Playhead > other Video Clip edges > LTC Clip edges (priority tie-break), reusing the
+  existing Magnet button — no second magnet system/button added. Magnet OFF is a full
+  bypass (regression-tested); Group Move is untouched (separate code path, its own
+  regression suite still passes). `S` was NOT bound as a Split shortcut (already a global
+  `_toggle_setup_shortcut` binding) — context-menu "Split at Playhead" remains the only
+  entry point. See `.ai/handoffs/2026-09-07_VideoClipSplitAndSnap.md`. Needs user manual
+  verification (steps in that handoff).
 
 - Video Clip left-trim-at-00:00 + body-move-past-00:00 hardening: fixed a
   hit-test/hover priority bug where the header-width column splitter (5px

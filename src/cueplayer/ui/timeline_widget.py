@@ -3565,6 +3565,42 @@ class TimelineWidget(QWidget):
                 best_time = candidate
         return best_time
 
+    def _video_clip_snap_targets(self, exclude_clip_id: str | None) -> list[tuple[int, float]]:
+        """Show-anchor candidates for Video Clip Move/Trim snapping.
+
+        Priority (lower wins ties): Mark(0) > Playhead(1) > other Video Clip
+        edge(2) > LTC Clip edge(3). Reuses the existing Magnet toggle
+        (`_beat_snap_enabled`) rather than a second snap system.
+        """
+        if self._song is None:
+            return []
+        targets: list[tuple[int, float]] = [(0, float(m.time_seconds)) for m in self._song.marks]
+        targets.append((1, float(self._position)))
+        for clip in self._song.video_clips:
+            if clip.id == exclude_clip_id:
+                continue
+            targets.append((2, float(clip.start_seconds)))
+            targets.append((2, float(clip.end_seconds)))
+        for ltc in self._song.ltc_clips:
+            targets.append((3, float(ltc.timeline_start_seconds)))
+            targets.append((3, float(ltc.end_seconds)))
+        return targets
+
+    def _snap_time_for_video_clip(self, seconds: float, exclude_clip_id: str | None) -> float:
+        """Snap a Video Clip Move/Trim edge to the nearest show anchor within 16px."""
+        if not self._beat_snap_enabled or self._song is None:
+            return seconds
+        best_time = seconds
+        best_px = 16.0
+        best_priority = 99
+        for priority, candidate in self._video_clip_snap_targets(exclude_clip_id):
+            distance = abs(candidate - seconds) * self._pixels_per_second
+            if distance < best_px - 1e-9:
+                best_time, best_px, best_priority = candidate, distance, priority
+            elif distance <= best_px + 1e-9 and priority < best_priority:
+                best_time, best_priority = candidate, priority
+        return best_time
+
     def _paint_beat_grids(self, painter: QPainter) -> None:
         if self._song is None or not self._show_beat_grid:
             return
@@ -3917,7 +3953,18 @@ class TimelineWidget(QWidget):
             return
         start0, _src_in0, dur0 = snapshot
         dt = dx / max(1e-6, self._pixels_per_second)
-        clip.start_seconds = clip_start_after_body_drag(start0, dt)
+        new_start = start0 + dt
+        if self._beat_snap_enabled:
+            raw_end = new_start + dur0
+            start_snapped = self._snap_time_for_video_clip(new_start, self._dragging_clip)
+            end_snapped = self._snap_time_for_video_clip(raw_end, self._dragging_clip)
+            start_moved = abs(start_snapped - new_start) > 1e-9
+            end_moved = abs(end_snapped - raw_end) > 1e-9
+            if start_moved and (not end_moved or abs(start_snapped - new_start) <= abs(end_snapped - raw_end)):
+                new_start = start_snapped
+            elif end_moved:
+                new_start = end_snapped - dur0
+        clip.start_seconds = clip_start_after_body_drag(new_start, 0.0)
         self._update_video_lane()
 
     def _update_video_clip_trim(self, x: float) -> None:
@@ -3937,12 +3984,18 @@ class TimelineWidget(QWidget):
         dt = dx / max(1e-6, self._pixels_per_second)
         min_dur = 0.05
         if zone == "left":
+            if self._beat_snap_enabled:
+                snapped_start = self._snap_time_for_video_clip(start0 + dt, clip_id)
+                dt = snapped_start - start0
             delta = min(max(dt, -start0), dur0 - min_dur)
             delta = max(delta, -src_in0)  # can't trim in before the source's own start
             clip.start_seconds = start0 + delta
             clip.source_in_seconds = src_in0 + delta
             clip.duration_seconds = dur0 - delta
         else:
+            if self._beat_snap_enabled:
+                snapped_end = self._snap_time_for_video_clip(start0 + dur0 + dt, clip_id)
+                dt = snapped_end - (start0 + dur0)
             clip.duration_seconds = clip_duration_after_right_trim(
                 dur0,
                 dt,
@@ -4483,7 +4536,9 @@ class TimelineWidget(QWidget):
         menu.addSeparator()
         hide_track_action = menu.addAction("Hide Video / LTC Tracks")
         menu.addSeparator()
-        can_split = clip.start_seconds + 0.02 < self._position < clip.end_seconds - 0.02
+        # 0.05s matches the head/tail trim minimum duration so a split never
+        # produces a clip shorter than a manual trim ever could.
+        can_split = clip.start_seconds + 0.05 <= self._position <= clip.end_seconds - 0.05
         split_action = menu.addAction("Split at Playhead")
         split_action.setEnabled(can_split and len(ids) == 1)
         duplicate_action = menu.addAction("Duplicate")

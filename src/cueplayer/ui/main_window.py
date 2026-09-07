@@ -173,6 +173,7 @@ from cueplayer.domain.undo import (
     SetlistEditCommand,
     SetlistStateSnapshot,
     SetVariantAnchorOffsetCommand,
+    SplitVideoClipCommand,
     UndoContext,
     UndoStack,
     VideoClipSnapshot,
@@ -247,7 +248,11 @@ from cueplayer.ui.about_dialog import AboutDialog
 from cueplayer.ui.theme import ACCENT, BG_SELECTED, contrast_text_color, with_alpha
 from cueplayer.ui.timeline_widget import TimelineWidget
 from cueplayer.ui.transport_bar import BottomTransportBar, TopToolBar, format_time
-from cueplayer.ui.video_clip_edit import clip_start_after_body_drag, default_video_clip_duration
+from cueplayer.ui.video_clip_edit import (
+    clip_start_after_body_drag,
+    default_video_clip_duration,
+    split_video_clip_transforms,
+)
 from cueplayer.ui.video_output_window import CleanVideoOutputWindow
 from cueplayer.ui.video_preview import VideoPreviewWidget, rgb_frame_to_qimage
 
@@ -8518,38 +8523,37 @@ class MainWindow(QMainWindow):
         clip = self.current_song.video_clip_by_id(clip_id)
         if clip is None or clip.locked:
             return
-        if not (clip.start_seconds + 0.02 < at_seconds < clip.end_seconds - 0.02):
+        old_transform = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
+        result = split_video_clip_transforms(
+            clip.start_seconds, clip.source_in_seconds, clip.duration_seconds, at_seconds
+        )
+        if result is None:
             self.status.showMessage("Move the playhead inside the clip to split", 2500)
             return
-        old_transform = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
-        first_duration = at_seconds - clip.start_seconds
+        left_duration, right_source_in, right_duration = result
         second = VideoClip.create(
             name=clip.name,
             path=clip.path,
             start_seconds=at_seconds,
-            source_in_seconds=clip.source_in_seconds + first_duration,
-            duration_seconds=clip.duration_seconds - first_duration,
+            source_in_seconds=right_source_in,
+            duration_seconds=right_duration,
             volume=clip.volume,
         )
         second.locked = clip.locked
         second.hidden = clip.hidden
-        clip.duration_seconds = first_duration
-        clip.source_out_seconds = clip.source_in_seconds + first_duration
+        second.source_duration_seconds = clip.source_duration_seconds
+        clip.duration_seconds = left_duration
+        clip.source_out_seconds = clip.source_in_seconds + left_duration
         self.current_song.add_video_clip(second)
         self._push_song_undo(
-            EditVideoClipsCommand(
-                changes={
-                    clip.id: (
-                        old_transform,
-                        (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds),
-                    )
-                },
-                label="Split Video Clip",
+            SplitVideoClipCommand(
+                original_id=clip.id,
+                original_before=old_transform,
+                original_after=(clip.start_seconds, clip.source_in_seconds, clip.duration_seconds),
+                new_clip=VideoClipSnapshot.from_clip(second),
             )
         )
-        self._push_song_undo(
-            AddVideoClipsCommand(clips=[VideoClipSnapshot.from_clip(second)], label="Split Video Clip")
-        )
+        self.timeline.set_selected_video_clip_ids([second.id])
         self.video_sync.refresh()
         self.engine.refresh_video_clips()
         self.timeline.refresh_video_clip_waveforms()
