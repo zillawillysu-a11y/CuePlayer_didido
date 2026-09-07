@@ -379,6 +379,18 @@ class TimelineWidget(QWidget):
         self._scrub_backdrop_size = QSize()
         self._scrub_backdrop_overscan = 0
         self._scrub_backdrop_dpr = 0.0
+        # Invalidations retain the last completed raster until a zero-delay GUI
+        # turn can install the replacement.  Rebuilding a dense backdrop here
+        # used to synchronously occupy the input/paint turn for 64--186 ms.
+        # QPixmap/QPainter remain GUI-thread-owned; this is scheduling, not a
+        # worker-thread handoff.
+        self._scrub_backdrop_rebuild_pending = False
+        self._scrub_backdrop_rebuild_reason = ""
+        self._scrub_backdrop_rebuild_timer = QTimer(self)
+        self._scrub_backdrop_rebuild_timer.setSingleShot(True)
+        self._scrub_backdrop_rebuild_timer.timeout.connect(
+            self._run_scheduled_scrub_backdrop_rebuild
+        )
         # Spatial-only cache (waveform/grid/clips) — scaled during zoom preview.
         # Mark text/glyphs live in ``_mark_annotation_sprites`` at fixed pixel size.
         self._spatial_backdrop: QPixmap | None = None
@@ -2454,7 +2466,9 @@ class TimelineWidget(QWidget):
     def bump_mark_backdrop_revision(self, *, reason: str = "marks_changed") -> None:
         """Invalidate baked Marks (edit / color / visibility)."""
         self._mark_backdrop_revision += 1
-        self._invalidate_scrub_backdrop(reason=reason)
+        self._invalidate_scrub_backdrop(
+            reason=reason, retain_for_deferred_rebuild=True
+        )
 
     def _begin_view_transform_gesture(self) -> None:
         # Seed retained caches before marking busy — otherwise the first wheel
@@ -2519,10 +2533,14 @@ class TimelineWidget(QWidget):
         if callable(flush):
             flush()
         with perf_diag.span("timeline.zoom.repaint_dispatch_ms"):
-            # Atomic rebuild: never clear the live cache before the replacement
-            # is ready (blank flash between scaled preview and final bake).
+            # Retain the zoom preview and queue exactly one latest-state bake.
+            # `_invalidate_scrub_backdrop` coalesces repeated requests; doing
+            # the expensive QPixmap/QPainter work synchronously here starved
+            # the GUI event loop and visibly froze the TC/playhead.
             if self.width() > 0 and self.height() > 0:
-                self._rebuild_scrub_backdrop(reason="zoom_idle")
+                self._invalidate_scrub_backdrop(
+                    reason="zoom_idle", retain_for_deferred_rebuild=True
+                )
             else:
                 self._invalidate_scrub_backdrop(reason="zoom_idle_empty")
             # Timeline-only repaint — do not force a main-window/global update.
@@ -2935,11 +2953,20 @@ class TimelineWidget(QWidget):
             return int(self._paint_width_override)
         return int(self.width())
 
-    def _invalidate_scrub_backdrop(self, reason: str = "generic") -> None:
-        self._scrub_backdrop = None
-        self._spatial_backdrop = None
-        self._mark_annotation_sprites = []
-        self._scrub_backdrop_overscan = 0
+    def _invalidate_scrub_backdrop(
+        self, reason: str = "generic", *, retain_for_deferred_rebuild: bool = False
+    ) -> None:
+        # Zoom/Mark input keeps the last atomically-completed cache drawable
+        # while the queued replacement is pending. Other callers (notably song
+        # switches) retain the established immediate-clear behavior so content
+        # from a different source can never flash as current.
+        if not retain_for_deferred_rebuild:
+            self._scrub_backdrop = None
+            self._spatial_backdrop = None
+            self._mark_annotation_sprites = []
+            self._scrub_backdrop_overscan = 0
+        self._scrub_backdrop_rebuild_pending = True
+        self._scrub_backdrop_rebuild_reason = str(reason)
         self._mark_backdrop_baked_revision = -1
         self._video_waveform_baked_revision = -1
         # Backdrop drop usually means scroll/zoom/content changed — don't keep a
@@ -2948,6 +2975,19 @@ class TimelineWidget(QWidget):
         if perf_diag.is_enabled():
             perf_diag.count(f"timeline.mark_backdrop.rebuild_reason.{reason}")
             perf_diag.count("timeline.mark_backdrop.cache_miss")
+        if not self._scrub_backdrop_rebuild_timer.isActive():
+            self._scrub_backdrop_rebuild_timer.start(0)
+
+    def _run_scheduled_scrub_backdrop_rebuild(self) -> None:
+        """Build one latest-state replacement after coalesced invalidations."""
+        if not self._scrub_backdrop_rebuild_pending:
+            return
+        reason = self._scrub_backdrop_rebuild_reason or "deferred"
+        self._scrub_backdrop_rebuild_pending = False
+        self._scrub_backdrop_rebuild_reason = ""
+        if self.width() > 0 and self.height() > 0:
+            self._rebuild_scrub_backdrop(reason=reason)
+        self.update()
 
     def invalidate_static_layers(self, *, reason: str = "invalidate_static") -> None:
         """Drop the play/scrub pixmap cache (waveform + baked Marks)."""
@@ -3015,6 +3055,25 @@ class TimelineWidget(QWidget):
 
     def _blit_native_backdrop(self, painter: QPainter) -> bool:
         """Scrub path: retained native-resolution cache + no transform."""
+        # A pending Mark-only change can safely show the prior complete raster
+        # for this one event-loop turn.  Do not synchronously rebuild from a
+        # paint event; the queued callback above will atomically replace it.
+        if (
+            self._scrub_backdrop_rebuild_pending
+            and self._scrub_backdrop is not None
+            and not self._scrub_backdrop.isNull()
+        ):
+            if abs(self._pixels_per_second - self._scrub_backdrop_pps) >= 1e-6:
+                return self._blit_zoom_preview(painter)
+            if self._scrub_backdrop_size != self.size():
+                return False
+            overscan = int(self._scrub_backdrop_overscan)
+            delta = int(round(self._scroll_x - self._scrub_backdrop_scroll))
+            margin = 8
+            if -overscan + margin <= delta <= overscan - margin:
+                return self._blit_native_pixmap(
+                    painter, self._scrub_backdrop, overscan=overscan, delta=delta
+                )
         if self._scrub_backdrop is None or self._scrub_backdrop.isNull():
             self._rebuild_scrub_backdrop(reason="scrub_seed")
         if not self._scrub_backdrop_geometry_ok():
@@ -3245,6 +3304,12 @@ class TimelineWidget(QWidget):
         Builds spatial + full caches off-screen, then swaps atomically so zoom
         preview never exposes a blank/invalid cache mid-gesture.
         """
+        # Direct callers (initial seed / explicit test helpers) supersede a
+        # queued request, preventing a stale timer from doing a second bake.
+        self._scrub_backdrop_rebuild_pending = False
+        self._scrub_backdrop_rebuild_reason = ""
+        if self._scrub_backdrop_rebuild_timer.isActive():
+            self._scrub_backdrop_rebuild_timer.stop()
         if self.width() <= 0 or self.height() <= 0:
             self._scrub_backdrop = None
             self._spatial_backdrop = None

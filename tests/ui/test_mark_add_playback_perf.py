@@ -51,3 +51,8 @@ def test_add_mark_while_playing_skips_backdrop_invalidate(
 
     assert len(song.marks) == before + 5
     assert calls == []
+    assert not window.timeline._scrub_backdrop_rebuild_pending  # noqa: SLF001
+    assert (  # noqa: SLF001
+        window.timeline._mark_backdrop_baked_revision
+        == window.timeline._mark_backdrop_revision
+    )
