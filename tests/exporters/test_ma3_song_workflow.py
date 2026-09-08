@@ -255,6 +255,23 @@ def test_install_commands_use_the_real_grandma3_import_syntax(tmp_path: Path) ->
     assert " At Timecode" in tc_import
 
 
+def test_install_macro_waits_for_each_sequence_import(tmp_path: Path) -> None:
+    """The final Sequence must be registered before Timecode resolves cues."""
+    plan = _plan("Rarely Think of It")
+    path = tmp_path / "install.xml"
+    Ma3Exporter().write_install_macro(plan, path)
+
+    root = load_xml_root(path)
+    sequence_imports = [
+        line
+        for line in root.iter()
+        if xml_tag_local(line.tag) == "MacroLine"
+        and line.get("Command", "").startswith("Import Sequence Library ")
+    ]
+    assert sequence_imports
+    assert all(line.get("Wait") == "0.200" for line in sequence_imports)
+
+
 def test_install_commands_do_not_label_individual_cues(tmp_path: Path) -> None:
     """Willy's real-hardware feedback: a Label-Sequence-Cue-after-Import
     approach was not reliable (only the Preset cue picked up its name; the

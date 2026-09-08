@@ -265,7 +265,7 @@ def test_ma3_25_uses_actual_pool_handles_for_main_and_button(tmp_path: Path) -> 
     root = load_xml_root(Ma3Exporter().export_to_directory(plan, tmp_path)["timecode"])
     assert root.get("DataVersion") == "2.5.0.3"
     events = [el for el in root.iter() if xml_tag_local(el.tag) == "CmdEvent"]
-    assert [event.get("CueDestination") for event in events] == ["Cue 2", "Cue 1"]
+    assert [event.get("CueDestination") for event in events] == ["Main", "Cue 1"]
     commands = [el for el in root.iter() if xml_tag_local(el.tag) == "RealtimeCmd"]
     assert [cmd.get("Object") for cmd in commands] == [
         "13.13.0.6.301",

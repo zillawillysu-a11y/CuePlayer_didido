@@ -984,6 +984,7 @@ class Ma3Exporter:
             if not cue.emit_timecode_event:
                 continue
             cue_label = format_ma_cue_number(cue.cue_number)
+            cue_destination = cue.cue_name_for_export() or f"Cue {cue_label}"
             dest_handle = ma3_cue_destination_handle(cue.cue_number)
             t = export_event_time_seconds(cue_event_time_seconds(cue), plan.profile)
             event = ET.SubElement(
@@ -992,7 +993,7 @@ class Ma3Exporter:
                 {
                     "Name": "Go+",
                     "Time": f"{t:.3f}",
-                    "CueDestination": f"Cue {cue_label}",
+                    "CueDestination": cue_destination,
                 },
             )
             ET.SubElement(
@@ -1182,9 +1183,17 @@ class Ma3Exporter:
             {"Name": name, "Guid": ma3_guid()},
         )
         for i, command in enumerate(commands, start=1):
+            attrs = {"Name": f"Line {i}", "Command": command, "Enabled": "Yes"}
+            # grandMA3 may finish registering an imported Sequence after the
+            # MacroLine itself returns.  Without a short line wait, the final
+            # Sequence in a batch can exist in the pool but still be unresolved
+            # when the immediately following Timecode import validates its cue
+            # handles; MA3 then strips that event's destination attributes.
+            if command.startswith("Import Sequence Library "):
+                attrs["Wait"] = "0.200"
             ET.SubElement(
                 macro,
                 "MacroLine",
-                {"Name": f"Line {i}", "Command": command, "Enabled": "Yes"},
+                attrs,
             )
         write_xml(root, path)
