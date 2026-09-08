@@ -241,7 +241,7 @@ def test_ma3_timecode_all_cue_destinations_named(tmp_path: Path) -> None:
     assert objs == {"13.13.0.5.6"}
 
 
-def test_ma3_25_uses_actual_pool_handles_for_main_and_button(tmp_path: Path) -> None:
+def test_ma3_25_uses_zero_based_pool_handles_for_main_and_button(tmp_path: Path) -> None:
     plan = SongExportPlan(
         song_name="V25",
         profile=MaExportProfile(
@@ -268,10 +268,10 @@ def test_ma3_25_uses_actual_pool_handles_for_main_and_button(tmp_path: Path) -> 
     assert [event.get("CueDestination") for event in events] == ["Main", "Cue 1"]
     commands = [el for el in root.iter() if xml_tag_local(el.tag) == "RealtimeCmd"]
     assert [cmd.get("Object") for cmd in commands] == [
+        "13.13.0.6.300",
         "13.13.0.6.301",
-        "13.13.0.6.302",
     ]
     assert [cmd.get("ValCueDestination") for cmd in commands] == [
-        "0.6.301.2000",
-        "0.6.302.1000",
+        "0.6.300.2000",
+        "0.6.301.1000",
     ]

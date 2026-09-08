@@ -975,11 +975,11 @@ class Ma3Exporter:
         # in Object/ValCueDestination fail to resolve Cue destinations on import).
         is_25 = plan.profile.ma3_export_version == "2.5"
         handle_kind = "6" if is_25 else "5"
-        main_seq_idx = (
-            int(plan.profile.sequence_pool_start)
-            if is_25
-            else max(0, int(plan.profile.sequence_pool_start) - 1)
-        )
+        # Both MA3 generations encode the Sequence as a zero-based index in
+        # Timecode handles.  The 2.5 schema changes only the handle kind from
+        # 5 to 6: console exports prove Sequence 201 is .5.200 on 2.3 and
+        # .6.200 on 2.5.
+        main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
         for cue in plan.main_cues:
             if not cue.emit_timecode_event:
                 continue
@@ -1034,7 +1034,7 @@ class Ma3Exporter:
                 lane.sequence_pool
                 or (plan.profile.sequence_pool_start + 1 + lane_i)
             )
-            btn_seq_idx = btn_pool if is_25 else max(0, btn_pool - 1)
+            btn_seq_idx = max(0, btn_pool - 1)
             track = ET.SubElement(
                 group,
                 "Track",
@@ -1183,17 +1183,9 @@ class Ma3Exporter:
             {"Name": name, "Guid": ma3_guid()},
         )
         for i, command in enumerate(commands, start=1):
-            attrs = {"Name": f"Line {i}", "Command": command, "Enabled": "Yes"}
-            # grandMA3 may finish registering an imported Sequence after the
-            # MacroLine itself returns.  Without a short line wait, the final
-            # Sequence in a batch can exist in the pool but still be unresolved
-            # when the immediately following Timecode import validates its cue
-            # handles; MA3 then strips that event's destination attributes.
-            if command.startswith("Import Sequence Library "):
-                attrs["Wait"] = "0.200"
             ET.SubElement(
                 macro,
                 "MacroLine",
-                attrs,
+                {"Name": f"Line {i}", "Command": command, "Enabled": "Yes"},
             )
         write_xml(root, path)

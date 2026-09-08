@@ -1,13 +1,13 @@
 # Next task
 
-**Verify the grandMA3 2.5 destination-resolution hotfix on real hardware.**
+**Verify corrected zero-based grandMA3 2.5 Timecode handles on the console.**
 
-Using CuePlayer's 2.5+ profile, export `S02_XiongZhai` Full again and run the newly
-generated install macro. Confirm:
+Export `S02_XiongZhai` again using the 2.5+ Full profile and run the newly generated
+install macro. Before importing, confirm the Timecode XML uses:
 
-1. Main Go+ Destination names display `TEST_1` and `TEST_2` and trigger the correct cues.
-2. Both `Mark_3` and `Mark_4` Top events display and trigger Cue 1.
-3. Re-export the imported Timecode and verify every event retains `Object`,
-   `ValCueDestination`, and `CueDestination`.
+- Main Sequence pool 1: `.6.0`
+- Mark_3 Sequence pool 2: `.6.1`
+- Mark_4 Sequence pool 3: `.6.2`
 
-If all three pass, close the MA3 2.5 profile verification task.
+On grandMA3 2.5.0.3 confirm Main destinations show their cue names and both Button
+tracks show/trigger Cue 1. Re-export the imported Timecode only if a destination fails.
