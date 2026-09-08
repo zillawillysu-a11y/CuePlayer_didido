@@ -1,13 +1,7 @@
 # Next task
 
-**Verify corrected zero-based grandMA3 2.5 Timecode handles on the console.**
+**Package and smoke-test CuePlayer 1.16 on Windows.**
 
-Export `S02_XiongZhai` again using the 2.5+ Full profile and run the newly generated
-install macro. Before importing, confirm the Timecode XML uses:
-
-- Main Sequence pool 1: `.6.0`
-- Mark_3 Sequence pool 2: `.6.1`
-- Mark_4 Sequence pool 3: `.6.2`
-
-On grandMA3 2.5.0.3 confirm Main destinations show their cue names and both Button
-tracks show/trigger Cue 1. Re-export the imported Timecode only if a destination fails.
+Run `packaging/build_windows.ps1`, then verify the packaged executable launches as
+Version 1.16. Smoke-test audio playback, simultaneous MTC + Art-Net Timecode, and one
+grandMA3 2.5 Full Export. Confirm the exported low-pool handles remain `.6.0/.6.1/.6.2`.

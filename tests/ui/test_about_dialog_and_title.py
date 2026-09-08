@@ -24,7 +24,7 @@ def app() -> QApplication:
 
 
 def test_main_window_title_prefix_is_canonical_app_title() -> None:
-    assert MAIN_WINDOW_TITLE_PREFIX == APP_TITLE == "Cue Player 1.15"
+    assert MAIN_WINDOW_TITLE_PREFIX == APP_TITLE == "Cue Player 1.16"
 
 
 def test_main_window_title_starts_with_app_title(app: QApplication) -> None:

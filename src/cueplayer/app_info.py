@@ -21,7 +21,7 @@ COPYRIGHT = f"Copyright © {COPYRIGHT_YEAR} {COMPANY_NAME} All rights reserved."
 
 
 def version_tuple() -> tuple[int, int, int, int]:
-    """Parse ``APP_VERSION`` (e.g. "1.15") into a 4-int Windows VersionInfo tuple."""
+    """Parse ``APP_VERSION`` (e.g. "1.16") into a 4-int Windows VersionInfo tuple."""
     parts = [int(p) for p in APP_VERSION.split(".") if p.isdigit()]
     parts = (parts + [0, 0, 0, 0])[:4]
     return (parts[0], parts[1], parts[2], parts[3])

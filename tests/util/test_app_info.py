@@ -16,12 +16,12 @@ from cueplayer.app_info import (
 
 def test_app_name_and_version() -> None:
     assert APP_NAME == "Cue Player"
-    assert APP_VERSION == "1.15"
+    assert APP_VERSION == "1.16"
     assert APP_VERSION == __version__
 
 
 def test_app_title_combines_name_and_version() -> None:
-    assert APP_TITLE == "Cue Player 1.15"
+    assert APP_TITLE == "Cue Player 1.16"
 
 
 def test_copyright_text() -> None:
@@ -31,4 +31,4 @@ def test_copyright_text() -> None:
 
 
 def test_version_tuple_parses_two_part_version() -> None:
-    assert version_tuple() == (1, 15, 0, 0)
+    assert version_tuple() == (1, 16, 0, 0)

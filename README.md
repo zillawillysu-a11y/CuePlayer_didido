@@ -6,7 +6,8 @@ Align multiple audio versions, LTC, VJ clips, and cue marks on one master timeli
 
 ## Status
 
-**1.15** — Art-Net 4 ArtTimeCode Output, independent MTC/ArtTC TRANS routing,
+**1.16** — grandMA3 2.5 XML profiles and corrected zero-based Timecode destination
+handles, plus Art-Net 4 ArtTimeCode Output, independent MTC/ArtTC TRANS routing,
 and Song-FPS-following timecode settings.
 
 Ship tip: `cursor/technical-audit-0815-028d`
@@ -71,7 +72,7 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## Next after 1.15
+## Next after 1.16
 
 1. Multi-audio version comparison + Align Anchors
 2. Missing Media Relink for rehearsals

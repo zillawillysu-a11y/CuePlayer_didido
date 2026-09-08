@@ -1,43 +1,41 @@
-# grandMA3 2.5 Zero-Based Timecode Handle Fix
+# CuePlayer 1.16 Release Version
 
 Date: 2026-09-09. Branch: `cursor/technical-audit-0815-028d`.
 
 ## Task objective
 
-Fix unresolved or incorrectly resolved MA3 2.5 Timecode cue destinations using a
-same-object 2.3.2/2.5.0.3 console-export comparison.
+Close the hardware-verified grandMA3 2.5 destination fix and bump CuePlayer to 1.16
+for Windows packaging.
 
 ## What was implemented
 
-- Corrected MA3 2.5 Timecode handles to remain zero-based (`pool - 1`).
-- Retained the 2.5 handle-kind change from `5` to `6`.
-- Main `CueDestination` continues to use the real exported cue name, with `Cue N`
-  fallback for unnamed cues.
-- Removed the disproven 0.200-second MacroLine wait workaround.
-- Updated regression tests and profile documentation.
+- Changed the canonical application version from 1.15 to 1.16.
+- Updated Inno Setup fallback/example metadata and release-facing README text.
+- Updated version, title, Splash, About, and Windows tuple assertions.
+- Recorded that the corrected zero-based MA3 2.5 handles passed real-console verification.
 
 ## Files changed
 
-MA3 exporter, exporter tests, MA3 profile documentation, report, handoff, and next task.
+Canonical version/app-info files, packaging metadata, release README, version/UI tests,
+report, handoff, and next-task documentation.
 
 ## Architecture decisions
 
-The same-object console exports are authoritative: Sequence 201 is `.5.200` on
-MA3 2.3.2 and `.6.200` on MA3 2.5.0.3. Pool indexing does not change between
-versions; only the handle kind changes. No playback or output architecture changed.
+`cueplayer.__version__` remains the canonical version authority. PyInstaller and the
+normal packaging script derive version metadata and filenames from it. No playback,
+audio, MTC, LTC, Art-Net, or exporter behavior changed in this release bump.
 
 ## Tests performed
 
-- Focused MA3 exporter/show workflow suite: **68 passed**.
-- Compileall passed.
+- Version and related exporter/UI suite: **23 passed**.
+- Runtime identity: `1.16 1.16 (1, 16, 0, 0)`.
 - Git diff check passed.
 
 ## Remaining issues
 
-Real-console verification is required. For Sequence pools 1/2/3, exported 2.5 handles
-must now be `.6.0/.6.1/.6.2`, and all destinations must survive console import.
+Build the Windows zip/installer and smoke-test the packaged executable before distribution.
 
 ## Suggested next task
 
-Run the exact real-console verification in `.ai/NEXT_TASK.md` and re-export the
-imported Timecode if any destination still fails.
+Package CuePlayer 1.16 on Windows and smoke-test launch, audio playback, Art-Net TC,
+MTC, and one MA3 2.5 Full Export from the packaged executable.
