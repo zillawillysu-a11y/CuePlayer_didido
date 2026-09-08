@@ -18,11 +18,14 @@ def output():
     return mtc
 
 
-def test_backwards_jump_resumes_quarter_frames_immediately():
+def test_explicit_backwards_jump_resumes_quarter_frames_immediately():
     mtc = output()
     try:
         mtc.tick(10)
         mtc._port.messages.clear()
+        # AudioEngine explicitly notifies seek/loop discontinuities. A raw
+        # interpolated-position correction alone must not be treated as one.
+        mtc.on_seek(2, playing=True)
         mtc.tick(2)
         assert any(m.bytes()[0] == 0xF0 for m in mtc._port.messages)
         assert any(m.bytes()[0] == 0xF1 for m in mtc._port.messages)

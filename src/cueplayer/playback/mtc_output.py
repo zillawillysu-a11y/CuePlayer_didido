@@ -133,9 +133,7 @@ class MtcOutput:
         self._playing = False
         self._last_qf_index = -1
         self._qf_piece = 0  # 0–7 cycling
-        self._send_count = 0
-        self._send_sum_s = 0.0
-        self._send_max_s = 0.0
+        self._reset_timing_diagnostics_locked()
         # Optional position → TC mapping (clip_generator mode). A provider
         # returning ``None`` means “no TC source at this position” (outside
         # every LTC clip): no quarter frames and no full-frame dumps there.
@@ -247,19 +245,25 @@ class MtcOutput:
                 return
             self._playing = True
             self._reset_qf_locked(position_seconds)
-            self._send_full_frame_locked(position_seconds)
+            self._last_qf_send_mono = None
+            self._last_tick_position = None
+            self._send_full_frame_locked(position_seconds, reason="play")
 
     def on_seek(self, position_seconds: float, *, playing: bool) -> None:
         with self._lock:
             if not self._enabled or self._port is None:
                 return
             self._reset_qf_locked(position_seconds)
+            self._last_qf_send_mono = None
+            self._last_tick_position = None
             if playing:
-                self._send_full_frame_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds, reason="seek_or_source")
 
     def on_pause(self) -> None:
         with self._lock:
             self._playing = False
+            self._last_qf_send_mono = None
+            self._last_tick_position = None
 
     def send_message(self, message: Any) -> None:
         """Send an arbitrary short MIDI message on the open MTC port (shared with cue notes)."""
@@ -272,7 +276,14 @@ class MtcOutput:
                 log.debug("MIDI send_message failed: %s", exc)
 
     def tick(self, position_seconds: float) -> None:
-        """Send any quarter frames due for the current sample-clock position."""
+        """Send due QFs; explicit transport jumps must call ``on_seek``.
+
+        The engine interpolates its sample cursor between audio callbacks.
+        Re-stamping that cursor can correct the estimate backwards even while
+        the audio samples advance. That is not a seek: keep the QF cursor and
+        wait for the sample clock to catch up, rather than emit a locate SysEx
+        and repeat already transmitted pieces.
+        """
         with self._lock:
             if not self._playing or not self._enabled or self._port is None:
                 return
@@ -282,16 +293,27 @@ class MtcOutput:
             if qf_rate <= 0:
                 return
             target = int(max(0.0, position_seconds) * qf_rate)
+            if perf_diag.is_enabled():
+                previous = self._last_tick_position
+                if previous is not None and position_seconds < previous:
+                    self._clock_backward_count += 1
+                    self._clock_backward_max_s = max(
+                        self._clock_backward_max_s, previous - position_seconds
+                    )
+                self._last_tick_position = position_seconds
             if self._last_qf_index < 0:
                 # Resuming after a no-TC stretch (outside an LTC clip):
                 # re-anchor + full frame so receivers latch the new TC mapping.
                 self._reset_qf_locked(position_seconds)
-                self._send_full_frame_locked(position_seconds)
-            elif target < self._last_qf_index or target - self._last_qf_index > 8:
-                # A backward discontinuity or more than one QF group overdue:
-                # re-anchor instead of waiting for old time / replaying a burst.
+                self._send_full_frame_locked(position_seconds, reason="resume")
+            elif target - self._last_qf_index > 8:
+                # More than one QF group overdue: bound the forward backlog.
+                # Backward transport jumps are handled explicitly by the
+                # engine's on_seek / loop notification, never inferred here.
+                # The cursor may also be intentionally ahead after skipping
+                # a group that straddles a clip boundary below.
                 self._reset_qf_locked(position_seconds)
-                self._send_full_frame_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds, reason="overdue")
             while self._last_qf_index < target:
                 self._last_qf_index += 1
                 # Align piece to absolute QF index so seekers stay consistent.
@@ -329,7 +351,7 @@ class MtcOutput:
                         # and loop forever), dump a full frame at the
                         # current TC, and resume from the next group.
                         self._last_qf_index = (group + 1) * 8 - 1
-                        self._send_full_frame_locked(position_seconds)
+                        self._send_full_frame_locked(position_seconds, reason="clip_boundary")
                         break
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
@@ -369,12 +391,27 @@ class MtcOutput:
     def reset_timing_diagnostics(self) -> None:
         """Reset off-RT MIDI-send timing counters for a fresh playback run."""
         with self._lock:
-            self._send_count = 0
-            self._send_sum_s = 0.0
-            self._send_max_s = 0.0
+            self._reset_timing_diagnostics_locked()
+
+    def _reset_timing_diagnostics_locked(self) -> None:
+        self._send_count = 0
+        self._send_sum_s = 0.0
+        self._send_max_s = 0.0
+        self._send_error_count = 0
+        self._qf_send_count = 0
+        self._qf_gap_count = 0
+        self._qf_gap_sum_s = 0.0
+        self._qf_gap_max_s = 0.0
+        self._last_qf_send_mono: float | None = None
+        self._last_tick_position: float | None = None
+        self._clock_backward_count = 0
+        self._clock_backward_max_s = 0.0
+        self._full_frame_counts = dict.fromkeys(
+            ("play", "seek_or_source", "resume", "overdue", "clip_boundary"), 0
+        )
 
     def timing_diagnostics(self) -> dict[str, float | int]:
-        """Snapshot MTC port-send duration; never called by the audio callback."""
+        """Sender-side durations/cadence; these do not measure receiver arrival."""
         with self._lock:
             count = int(self._send_count)
             mean_ms = 1000.0 * self._send_sum_s / max(1, count)
@@ -383,6 +420,15 @@ class MtcOutput:
                 "send_ms": mean_ms,
                 "send_mean_ms": mean_ms,
                 "send_max_ms": 1000.0 * self._send_max_s,
+                "send_error_count": self._send_error_count,
+                "qf_send_count": self._qf_send_count,
+                "qf_gap_mean_ms": 1000.0 * self._qf_gap_sum_s / max(1, self._qf_gap_count),
+                "qf_gap_max_ms": 1000.0 * self._qf_gap_max_s,
+                "clock_backward_count": self._clock_backward_count,
+                "clock_backward_max_ms": 1000.0 * self._clock_backward_max_s,
+                "full_frame_count": sum(self._full_frame_counts.values()),
+                **{f"full_frame_{key}_count": value
+                   for key, value in self._full_frame_counts.items()},
             }
 
     def _timed_send_locked(self, message: Any) -> None:
@@ -395,6 +441,18 @@ class MtcOutput:
         t0 = time.perf_counter()
         try:
             self._port.send(message)
+        except Exception:
+            self._send_error_count += 1
+            raise
+        else:
+            if message.type == "quarter_frame":
+                self._qf_send_count += 1
+                if self._last_qf_send_mono is not None:
+                    gap = max(0.0, t0 - self._last_qf_send_mono)
+                    self._qf_gap_count += 1
+                    self._qf_gap_sum_s += gap
+                    self._qf_gap_max_s = max(self._qf_gap_max_s, gap)
+                self._last_qf_send_mono = t0
         finally:
             elapsed = time.perf_counter() - t0
             self._send_count += 1
@@ -406,7 +464,7 @@ class MtcOutput:
         self._last_qf_index = int(max(0.0, position_seconds) * qf_rate) - 1
         self._qf_piece = 0
 
-    def _send_full_frame_locked(self, position_seconds: float) -> None:
+    def _send_full_frame_locked(self, position_seconds: float, *, reason: str) -> None:
         if self._port is None:
             return
         tc = self._tc_at_locked(position_seconds)
@@ -419,6 +477,8 @@ class MtcOutput:
             # mido sysex data is bytes between F0 and F7.
             msg = mido.Message("sysex", data=payload[1:-1])
             self._timed_send_locked(msg)
+            if perf_diag.is_enabled():
+                self._full_frame_counts[reason] += 1
         except Exception as exc:  # noqa: BLE001
             log.debug("MTC full-frame failed: %s", exc)
 
