@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GMA3>
+  <Timecode>
+    <TrackGroup>
+      <Track><TimeRange><CmdSubTrack>
+        <CmdEvent Name="Go+" Time="3600.000"/>
+        <CmdEvent Name="Go+" Time="3605.000"/>
+        <CmdEvent Name="Go+" Time="36000.000"/>
+      </CmdSubTrack></TimeRange></Track>
+      <Track><TimeRange><CmdSubTrack>
+        <CmdEvent Name="Top" Time="36005.000"/>
+      </CmdSubTrack></TimeRange></Track>
+    </TrackGroup>
+  </Timecode>
+</GMA3>

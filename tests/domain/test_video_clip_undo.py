@@ -9,6 +9,7 @@ from cueplayer.domain.undo import (
     AddVideoClipsCommand,
     DeleteVideoClipsCommand,
     EditVideoClipsCommand,
+    SplitVideoClipCommand,
     UndoStack,
     VideoClipSnapshot,
 )
@@ -88,3 +89,47 @@ def test_edit_video_clip_keeps_source_out_in_sync() -> None:
     assert reverted.source_in_seconds == 1.0
     assert reverted.duration_seconds == 2.0
     assert reverted.source_out_seconds == 3.0
+
+
+def test_split_video_clip_undo_redo_is_atomic() -> None:
+    # TEST S6: split is one undo entry — a single undo restores the original
+    # single clip, a single redo re-creates the two split clips.
+    song = Song.create("Song")
+    clip = VideoClip.create(
+        name="a", path=Path("a.mp4"), start_seconds=10.0, source_in_seconds=5.0, duration_seconds=20.0
+    )
+    song.add_video_clip(clip)
+
+    original_before = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
+    # Simulate the split already applied to the live clip (as MainWindow does).
+    clip.duration_seconds = 8.0
+    clip.source_out_seconds = clip.source_in_seconds + 8.0
+    original_after = (clip.start_seconds, clip.source_in_seconds, clip.duration_seconds)
+    second = VideoClip.create(
+        name="a", path=Path("a.mp4"), start_seconds=18.0, source_in_seconds=13.0, duration_seconds=12.0
+    )
+    song.add_video_clip(second)
+
+    stack = UndoStack()
+    stack.push(
+        SplitVideoClipCommand(
+            original_id=clip.id,
+            original_before=original_before,
+            original_after=original_after,
+            new_clip=VideoClipSnapshot.from_clip(second),
+        )
+    )
+
+    stack.undo(song)
+    assert [c.id for c in song.video_clips] == [clip.id]
+    restored = song.video_clip_by_id(clip.id)
+    assert (restored.start_seconds, restored.source_in_seconds, restored.duration_seconds) == original_before
+
+    stack.redo(song)
+    assert {c.id for c in song.video_clips} == {clip.id, second.id}
+    left = song.video_clip_by_id(clip.id)
+    right = song.video_clip_by_id(second.id)
+    assert (left.start_seconds, left.source_in_seconds, left.duration_seconds) == original_after
+    assert right.start_seconds == 18.0
+    assert right.source_in_seconds == 13.0
+    assert right.duration_seconds == 12.0

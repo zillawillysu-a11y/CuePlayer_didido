@@ -1,4 +1,4 @@
-"""Cursor-inspired dark theme for the whole app.
+"""Pitch-black Cursor-like theme for the whole app.
 
 Applied once in ``app.py`` via ``QApplication.setStyle("Fusion")`` +
 ``QApplication.setStyleSheet(build_stylesheet())``. Per-widget stylesheets
@@ -8,57 +8,102 @@ NOW cards, timeline painting) — see AGENTS.md / theme rollout notes.
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QPalette
+import base64
+from pathlib import Path
+
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 
 # Core palette -----------------------------------------------------------
-# Cursor-like: near-black chrome, slightly lifted side panels.
-BG_APP = "#09090b"
-BG_SIDEBAR = "#141416"
-BG_PANEL = "#111113"
-BG_RAISED = "#18181b"
-BG_INPUT = "#0c0c0e"
-BG_HOVER = "#1c1c1f"
-BG_SELECTED = "#1a3a5c"
+# Pitch-black chrome (Cursor-like): near-black surfaces, grey structure,
+# almost invisible splitters until hover.
+BG_APP = "#0d0d0d"
+BG_SIDEBAR = "#141414"
+BG_PANEL = "#111111"
+BG_RAISED = "#1a1a1a"
+BG_INPUT = "#0a0a0a"
+BG_HOVER = "#222222"
+BG_SELECTED = "#2a2a2a"
 
-BORDER = "#27272a"
-BORDER_STRONG = "#3f3f46"
+BORDER = "#1f1f1f"
+BORDER_STRONG = "#333333"
 
-TEXT = "#e4e4e7"
-TEXT_MUTED = "#a1a1aa"
-TEXT_DISABLED = "#52525b"
+TEXT = "#ededed"
+TEXT_MUTED = "#8a8a8a"
+TEXT_DISABLED = "#555555"
 
-ACCENT = "#4a9eff"
-ACCENT_HOVER = "#79b8ff"
-ACCENT_PRESSED = "#3a82d6"
-ACCENT_TEXT = "#09090b"
+# Semantic accent (Video badge, BPM, checked controls) — keep readable, not chrome.
+ACCENT = "#6e6e6e"
+ACCENT_HOVER = "#9a9a9a"
+ACCENT_PRESSED = "#525252"
+ACCENT_TEXT = "#0d0d0d"
+
+# Splitter / scrollbar chrome — black idle, grey hover (never blue).
+SPLITTER_IDLE = "#0d0d0d"
+SPLITTER_HOVER = "#5a5a5a"
+SCROLL_HANDLE = "#1a1a1a"
+SCROLL_HANDLE_HOVER = "#5a5a5a"
 
 DANGER = "#e5534b"
 WARNING = "#d29922"
+# Domain label colors (not chrome) — keep Timeline readable.
+COLOR_VIDEO = "#8b9cff"
+COLOR_LTC = WARNING
 
-# Shared QSlider look (used by Master Volume + LTC Gain, and any other
-# horizontal slider that wants the same groove/handle/accent styling).
-# QSlider isn't covered by the global stylesheet below because a few
-# sliders need per-instance sizing, so we share this snippet instead of
-# duplicating the QSS.
+# UI type — modern geometric sans (Apple Music / SF Pro–adjacent) with CJK
+# fallbacks. Prefer system faces on Windows/macOS; Public Sans when present.
+UI_FONT_CANDIDATES = (
+    "Segoe UI Variable",
+    "Segoe UI",
+    "Microsoft JhengHei UI",
+    "Microsoft JhengHei",
+    "PingFang TC",
+    "PingFang HK",
+    "Hiragino Sans CNS",
+    "Public Sans",
+    "Noto Sans CJK TC",
+    "Noto Sans TC",
+    "Source Han Sans TC",
+    "WenQuanYi Micro Hei",
+    "Noto Sans",
+)
+FONT_FAMILY_CSS = (
+    "'Segoe UI Variable', 'Segoe UI', 'Microsoft JhengHei UI', "
+    "'PingFang TC', 'Public Sans', 'Noto Sans CJK TC', 'Noto Sans TC', "
+    "'WenQuanYi Micro Hei', 'Noto Sans', sans-serif"
+)
+
+# Shared QSlider look (Master Volume + LTC Gain, timeline faders).
+# Groove/handle stay greyscale — no blue fill.
 SLIDER_QSS = f"""
 QSlider::groove:horizontal {{
-    height: 6px; background: {BORDER}; border-radius: 3px;
+    height: 4px; background: {BORDER_STRONG}; border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
-    width: 14px; margin: -5px 0; border-radius: 7px;
+    width: 12px; margin: -5px 0; border-radius: 6px;
+    background: {TEXT_MUTED};
+}}
+QSlider::handle:horizontal:hover {{
     background: {TEXT};
 }}
 QSlider::sub-page:horizontal {{
-    background: {TEXT}; border-radius: 3px;
+    background: {TEXT_MUTED}; border-radius: 2px;
 }}
 """
 
 
+# White tick on grey fill — Qt stylesheets need an image for a visible checkmark.
+_CHECK_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 15 15'>"
+    "<path d='M3.2 7.6 L6.2 10.6 L11.8 4.4' fill='none' stroke='#ffffff' "
+    "stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/>"
+    "</svg>"
+)
+_CHECK_ICON = "data:image/svg+xml;base64," + base64.b64encode(_CHECK_SVG.encode("utf-8")).decode("ascii")
+
+
 # Selection-styling helpers ------------------------------------------------
 # Shared so any hand-painted "this is selected / this is a drop target"
-# overlay (setlist drag indicator, timeline box-select, custom-colored rows,
-# etc.) reads as the same accent-blue family as the rest of the app instead
-# of a one-off, mismatched color.
+# overlay reads as the same greyscale family as the rest of the chrome.
 
 
 def with_alpha(hex_color: str, alpha: int) -> QColor:
@@ -77,7 +122,50 @@ def contrast_text_color(hex_color: str) -> str:
     return "#0b0b0d" if luminance > 150 else "#f4f4f5"
 
 
+def _row_luminance(hex_color: str) -> float:
+    color = QColor(hex_color)
+    if not color.isValid():
+        return 0.0
+    return 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+
+
+def secondary_text_on_background(row_hex: str | None) -> str:
+    """Muted BPM / secondary labels that stay readable on custom row colors."""
+    if not row_hex or not str(row_hex).strip():
+        return TEXT_MUTED
+    base = str(row_hex).strip()
+    if not QColor(base).isValid():
+        return TEXT_MUTED
+    return "#d4d4d8" if _row_luminance(base) < 140 else "#3f3f46"
+
+
+def badge_lit_on_background(row_hex: str | None, *, default: str = WARNING) -> str:
+    """Accent badge text (LTC active side, Video V) on optional row fill."""
+    if not row_hex or not str(row_hex).strip():
+        return default
+    base = str(row_hex).strip()
+    if not QColor(base).isValid():
+        return default
+    return contrast_text_color(base)
+
+
+def badge_dim_on_background(row_hex: str | None, *, default: str = TEXT_DISABLED) -> str:
+    """Inactive L/R side on optional row fill."""
+    if not row_hex or not str(row_hex).strip():
+        return default
+    base = QColor(str(row_hex).strip())
+    if not base.isValid():
+        return default
+    contrast = QColor(contrast_text_color(base.name()))
+    mix = 0.42
+    r = int(contrast.red() * mix + base.red() * (1.0 - mix))
+    g = int(contrast.green() * mix + base.green() * (1.0 - mix))
+    b = int(contrast.blue() * mix + base.blue() * (1.0 - mix))
+    return QColor(r, g, b).name()
+
+
 def build_stylesheet() -> str:
+    check_icon = _CHECK_ICON
     return f"""
 QWidget {{
     background-color: {BG_APP};
@@ -85,6 +173,7 @@ QWidget {{
     selection-background-color: {BG_SELECTED};
     selection-color: {TEXT};
     font-size: 13px;
+    font-family: {FONT_FAMILY_CSS};
 }}
 
 QMainWindow, QDialog {{
@@ -135,33 +224,30 @@ QMenu::separator {{
     margin: 4px 6px;
 }}
 
-/* --- Buttons --------------------------------------------------------- */
+/* --- Buttons (borderless / flat) -------------------------------------- */
 QPushButton {{
-    background-color: {BG_RAISED};
+    background-color: transparent;
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: none;
     border-radius: 6px;
     padding: 5px 12px;
 }}
 QPushButton:hover {{
     background-color: {BG_HOVER};
-    border-color: {BORDER_STRONG};
 }}
 QPushButton:pressed {{
-    background-color: {BG_APP};
+    background-color: {BG_SELECTED};
 }}
 QPushButton:checked {{
     background-color: {BG_SELECTED};
-    border-color: {ACCENT};
     color: #ffffff;
 }}
 QPushButton:disabled {{
     color: {TEXT_DISABLED};
-    border-color: {BORDER};
-    background-color: {BG_PANEL};
+    background-color: transparent;
 }}
 QPushButton:default {{
-    border-color: {ACCENT};
+    background-color: {BG_RAISED};
 }}
 
 /* --- Setlist sidebar (slightly lighter than app chrome) ---------------- */
@@ -175,16 +261,23 @@ QPushButton:default {{
 }}
 #setlistPanel QTableWidget {{
     background-color: {BG_SIDEBAR};
-    alternate-background-color: #19191c;
+    alternate-background-color: #181818;
     border: 1px solid {BORDER};
     border-radius: 8px;
 }}
 #setlistPanel QHeaderView::section {{
-    background-color: #1a1a1d;
+    background-color: #161616;
     color: {TEXT_MUTED};
 }}
 #setlistPanel QPushButton {{
-    background-color: {BG_RAISED};
+    background-color: transparent;
+    border: none;
+}}
+#setlistPanel QPushButton:hover {{
+    background-color: {BG_HOVER};
+}}
+#setlistPanel QPushButton:pressed {{
+    background-color: {BG_SELECTED};
 }}
 
 /* --- Inputs ------------------------------------------------------------ */
@@ -257,9 +350,21 @@ QCheckBox::indicator {{
 QRadioButton::indicator {{
     border-radius: 8px;
 }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+QCheckBox::indicator:checked {{
     background: {ACCENT};
     border-color: {ACCENT};
+    image: url({check_icon});
+}}
+QRadioButton::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {{
+    background: {BG_INPUT};
+}}
+QCheckBox::indicator:checked:hover, QRadioButton::indicator:checked:hover {{
+    background: {ACCENT_HOVER};
+    border-color: {ACCENT_HOVER};
 }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
     border-color: {ACCENT_HOVER};
@@ -293,10 +398,22 @@ QTableWidget, QTableView, QListWidget, QTreeWidget {{
 }}
 QTableWidget::item, QListWidget::item {{
     padding: 4px 6px;
+    border: none;
+    outline: none;
 }}
 QTableWidget::item:selected, QListWidget::item:selected, QTreeWidget::item:selected {{
     background: {BG_SELECTED};
     color: #ffffff;
+    border: none;
+    outline: none;
+}}
+QTableWidget::item:focus, QListWidget::item:focus, QTreeWidget::item:focus {{
+    border: none;
+    outline: none;
+}}
+QTableWidget::item:selected:focus, QListWidget::item:selected:focus {{
+    border: none;
+    outline: none;
 }}
 QHeaderView::section {{
     background-color: {BG_RAISED};
@@ -311,46 +428,68 @@ QTableCornerButton::section {{
     border: none;
 }}
 
+/* Setlist: selection is fill-only — no per-cell focus frames. */
+QWidget#setlistPanel QTableWidget {{
+    show-decoration-selected: 1;
+}}
+QWidget#setlistPanel QTableWidget::item {{
+    border: 0px;
+    outline: none;
+}}
+QWidget#setlistPanel QTableWidget::item:selected,
+QWidget#setlistPanel QTableWidget::item:focus,
+QWidget#setlistPanel QTableWidget::item:selected:active,
+QWidget#setlistPanel QTableWidget::item:selected:!active {{
+    border: 0px;
+    outline: none;
+}}
+
 /* --- Scrollbars ------------------------------------------------------- */
 QScrollBar:vertical {{
     background: transparent;
-    width: 12px;
+    width: 10px;
     margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: {BORDER_STRONG};
-    border-radius: 5px;
+    background: {SCROLL_HANDLE};
+    border-radius: 4px;
     min-height: 24px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {ACCENT};
+    background: {SCROLL_HANDLE_HOVER};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
 QScrollBar:horizontal {{
     background: transparent;
-    height: 12px;
+    height: 10px;
     margin: 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {BORDER_STRONG};
-    border-radius: 5px;
+    background: {SCROLL_HANDLE};
+    border-radius: 4px;
     min-width: 24px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {ACCENT};
+    background: {SCROLL_HANDLE_HOVER};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
 }}
 
-/* --- Misc ------------------------------------------------------------- */
+/* --- Splitters (pull bars) — black idle, grey hover -------------------- */
 QSplitter::handle {{
-    background: {BORDER};
+    background: {SPLITTER_IDLE};
 }}
 QSplitter::handle:hover {{
-    background: {ACCENT};
+    background: {SPLITTER_HOVER};
+}}
+QSplitter::handle:horizontal {{
+    width: 5px;
+}}
+QSplitter::handle:vertical {{
+    height: 5px;
 }}
 QStatusBar {{
     background-color: {BG_APP};
@@ -364,6 +503,44 @@ QDialogButtonBox QPushButton {{
     min-width: 72px;
 }}
 """
+
+
+def apply_ui_font(app) -> None:  # noqa: ANN001
+    """Apply a modern UI sans with Traditional Chinese fallbacks.
+
+    CuePlayer previously relied on Qt Fusion's default face (often boxy /
+    Arial-like). Prefer Segoe UI + Microsoft JhengHei UI on Windows, PingFang
+    on macOS, and Public Sans when the OS has it installed.
+    """
+    extra_paths = (
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Medium.ttf"),
+        Path("/usr/share/fonts/truetype/macos/PublicSans-Bold.ttf"),
+        Path.home() / "Library/Fonts/PublicSans-Regular.ttf",
+        Path("C:/Windows/Fonts/segoeui.ttf"),
+    )
+    for path in extra_paths:
+        try:
+            if path.is_file():
+                QFontDatabase.addApplicationFont(str(path))
+        except Exception:  # noqa: BLE001
+            pass
+
+    available = set(QFontDatabase.families())
+    chosen = [name for name in UI_FONT_CANDIDATES if name in available]
+    font = QFont()
+    if chosen:
+        font.setFamilies(chosen)
+    else:
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setStyleStrategy(
+        QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.PreferQuality
+    )
+    # 10pt ≈ previous 13px stylesheet size on 96 DPI; stylesheet still sets px.
+    if font.pointSize() <= 0:
+        font.setPointSize(10)
+    app.setFont(font)
 
 
 def apply_dark_palette(app) -> None:  # noqa: ANN001

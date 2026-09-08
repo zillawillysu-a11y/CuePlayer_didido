@@ -1,8 +1,9 @@
-"""Downsampled peak envelopes for video-clip lane waveforms."""
+"""Video Track lane peaks — views over the shared VideoWaveformArtifact."""
 
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,11 +11,17 @@ from typing import Callable
 
 import numpy as np
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.domain.models import VideoClip
-from cueplayer.media.video_audio_cache import get_video_audio_mono
-
-DEFAULT_WAVEFORM_BUCKETS = 4096
-MAX_WAVEFORM_BUCKETS = 8192
+from cueplayer.media.audio_loader import PeakLevel, choose_peak_level
+from cueplayer.media.video_limits import clip_source_duration_seconds
+from cueplayer.media.video_waveform_artifact import (
+    VideoWaveformArtifact,
+    artifact_cache_key,
+    artifact_store,
+    signed_overview_from_artifact,
+    waveform_build_is_paused,
+)
 
 
 @dataclass(frozen=True)
@@ -25,80 +32,31 @@ class ClipWaveformKey:
     source_out: float | None
     duration: float
     media_kind: str
-    buckets: int
 
 
 @dataclass
 class ClipWaveformPeaks:
-    mins: np.ndarray  # float32, normalized signed min per bucket
-    maxs: np.ndarray  # float32, normalized signed max per bucket
+    """Zoom-aware waveform data sourced from VideoWaveformArtifact."""
 
-
-def build_clip_waveform_peaks(
-    clip: VideoClip,
-    *,
-    mono: np.ndarray,
-    sample_rate: int,
-    buckets: int,
-) -> ClipWaveformPeaks | None:
-    """
-    Peak envelope over the clip's timeline length.
-
-    Respects source trim and loops embedded audio when the clip is longer than
-    its trimmed source span (same rule as `VideoAudioMixer.chunk_at`).
-    """
-    if mono.size == 0 or sample_rate <= 0:
-        return None
-    buckets = max(8, int(buckets))
-    duration = max(0.0, float(clip.duration_seconds))
-    if duration <= 1e-9:
-        return None
-
-    span = max(0.0, clip.source_span_seconds)
-    src_in = max(0.0, float(clip.source_in_seconds))
-    spb_timeline = duration / buckets
-    half_window = max(1, int(round(sample_rate * max(spb_timeline / 2.0, 1.0 / buckets))))
-
-    mins = np.zeros(buckets, dtype=np.float32)
-    maxs = np.zeros(buckets, dtype=np.float32)
-    for b in range(buckets):
-        t_off = (b + 0.5) / buckets * duration
-        if clip.media_kind == "still":
-            src_t = src_in
-        elif span <= 1e-9:
-            src_t = src_in
-        else:
-            src_t = src_in + (t_off % span)
-        center = int(round(src_t * sample_rate))
-        s0 = max(0, center - half_window)
-        s1 = min(mono.size, center + half_window)
-        if s0 >= s1:
-            continue
-        segment = mono[s0:s1]
-        mins[b] = float(segment.min())
-        maxs[b] = float(segment.max())
-
-    peak = max(float(np.max(np.abs(mins))), float(np.max(np.abs(maxs))), 1e-9)
-    mins /= peak
-    maxs /= peak
-    return ClipWaveformPeaks(mins=mins, maxs=maxs)
-
-
-def waveform_buckets_for_clip(clip: VideoClip) -> int:
-    """High-res envelope length for one cache entry (sampled at paint time)."""
-    duration = max(0.0, float(clip.duration_seconds))
-    return max(512, min(MAX_WAVEFORM_BUCKETS, int(duration * 200)))
+    # Base-envelope bins per source second.  This is intentionally float: the
+    # artifact grid can be fractional, and rounding it accumulates visible
+    # horizontal drift on long clips (about 0.7 s in the Windows report).
+    sample_rate: float
+    mono_origin_seconds: float
+    mono: np.ndarray  # signed overview; NaN = pending
+    peak_levels: list[PeakLevel]
+    mins: np.ndarray  # source-aligned bipolar base
+    maxs: np.ndarray
+    coverage: np.ndarray | None = None
 
 
 def timeline_to_clip_local(timeline_t: float, clip: VideoClip) -> float | None:
-    """Map absolute timeline seconds to clip-local seconds, or None if outside."""
     if timeline_t < clip.start_seconds or timeline_t > clip.end_seconds:
         return None
     return timeline_t - clip.start_seconds
 
 
 def clip_local_to_source_time(clip: VideoClip, clip_local_t: float) -> float:
-    """Clip-local timeline seconds → source media seconds (trim + loop)."""
     src_in = max(0.0, float(clip.source_in_seconds))
     if clip.media_kind == "still":
         return src_in
@@ -108,6 +66,46 @@ def clip_local_to_source_time(clip: VideoClip, clip_local_t: float) -> float:
     return src_in + (clip_local_t % span)
 
 
+def peaks_from_artifact(
+    clip: VideoClip, art: VideoWaveformArtifact
+) -> ClipWaveformPeaks | None:
+    """Map shared source artifact into clip paint peaks (trim/loop via sampling)."""
+    if perf_diag.is_enabled():
+        perf_diag.count("waveform_artifact.consumer_video_lane")
+    if art.n_bins <= 0:
+        return None
+    sr = max(1e-6, float(art.peaks_per_second))
+    mono = signed_overview_from_artifact(art)
+    cov = np.asarray(art.coverage, dtype=np.uint8)
+    mins = np.asarray(art.mins, dtype=np.float32).copy()
+    maxs = np.asarray(art.maxs, dtype=np.float32).copy()
+    pending = cov == 0
+    mins[pending] = np.nan
+    maxs[pending] = np.nan
+    # A progressive artifact's pyramid is not coverage-aware: pending bins can
+    # be folded in as zero and make the Video lane differ from the Music lane,
+    # even though both are displaying the same artifact revision.  Until the
+    # artifact is complete both consumers must sample the source-aligned base
+    # envelope.  A complete disk artifact may safely derive missing levels.
+    levels = list(art.levels) if art.complete and art.levels else []
+    if art.complete and not levels:
+        art.rebuild_pyramid()
+        levels = list(art.levels)
+    return ClipWaveformPeaks(
+        sample_rate=sr,
+        mono_origin_seconds=float(art.origin_seconds),
+        mono=mono,
+        peak_levels=levels,
+        mins=mins,
+        maxs=maxs,
+        coverage=cov,
+    )
+
+
+# Alias used by tests / older call sites.
+peaks_from_embedded_artifact = peaks_from_artifact
+
+
 def sample_clip_peaks_for_times(
     peaks: ClipWaveformPeaks,
     *,
@@ -115,41 +113,116 @@ def sample_clip_peaks_for_times(
     clip_t0: float,
     clip_t1: float,
 ) -> tuple[float, float]:
-    """Signed min/max for clip-local time span [clip_t0, clip_t1)."""
     n = int(peaks.mins.size)
     if n == 0 or duration <= 1e-9:
-        return 0.0, 0.0
+        return float("nan"), float("nan")
     clip_t0 = max(0.0, min(duration, clip_t0))
     clip_t1 = max(clip_t0, min(duration, clip_t1))
     b0 = int(clip_t0 / duration * n)
     b1 = min(n, max(b0 + 1, int(clip_t1 / duration * n)))
-    lo = float(peaks.mins[b0:b1].min())
-    hi = float(peaks.maxs[b0:b1].max())
-    return lo, hi
+    segment_lo = peaks.mins[b0:b1]
+    segment_hi = peaks.maxs[b0:b1]
+    if segment_lo.size == 0:
+        return float("nan"), float("nan")
+    if np.all(np.isnan(segment_lo)) and np.all(np.isnan(segment_hi)):
+        return float("nan"), float("nan")
+    return float(np.nanmin(segment_lo)), float(np.nanmax(segment_hi))
 
 
-def build_clip_waveform_peaks_from_path(clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
-    mono, sample_rate = get_video_audio_mono(clip.path)
-    if mono is None:
-        return None
-    return build_clip_waveform_peaks(clip, mono=mono, sample_rate=sample_rate, buckets=buckets)
+def sample_source_peaks_for_clip_times(
+    peaks: ClipWaveformPeaks,
+    clip: VideoClip,
+    *,
+    clip_t0: float,
+    clip_t1: float,
+    samples_per_pixel: float,
+) -> tuple[float, float]:
+    src0 = clip_local_to_source_time(clip, clip_t0)
+    src1 = clip_local_to_source_time(clip, max(clip_t0, clip_t1 - 1e-9))
+    sr = peaks.sample_rate
+    origin = peaks.mono_origin_seconds
+    s0 = int(round((src0 - origin) * sr))
+    s1 = int(round((src1 - origin) * sr))
+    s0 = max(0, s0)
+    s1 = max(s0 + 1, min(peaks.mono.size, s1))
+    if peaks.coverage is not None:
+        c0 = max(0, min(peaks.coverage.size, s0))
+        c1 = max(c0, min(peaks.coverage.size, s1))
+        if c0 >= c1 or not np.any(peaks.coverage[c0:c1]):
+            return float("nan"), float("nan")
+    # Prefer source-aligned bipolar envelope when present.
+    if (
+        peaks.mins.size == peaks.mono.size
+        and peaks.maxs.size == peaks.mono.size
+        and peaks.mins.size > 0
+    ):
+        lo_seg = peaks.mins[s0:s1]
+        hi_seg = peaks.maxs[s0:s1]
+        if lo_seg.size == 0 or (
+            np.all(np.isnan(lo_seg)) and np.all(np.isnan(hi_seg))
+        ):
+            return float("nan"), float("nan")
+        return float(np.nanmin(lo_seg)), float(np.nanmax(hi_seg))
+    level = choose_peak_level(peaks.peak_levels, samples_per_pixel)
+    if level is None:
+        segment = peaks.mono[s0:s1]
+        if segment.size == 0 or np.all(np.isnan(segment)):
+            return float("nan"), float("nan")
+        return float(np.nanmin(segment)), float(np.nanmax(segment))
+    b0 = max(0, s0 // level.samples_per_bucket)
+    b1 = min(level.maxs.size, max(b0 + 1, s1 // level.samples_per_bucket))
+    return float(level.mins[b0:b1].min()), float(level.maxs[b0:b1].max())
+
+
+def sample_source_raw_for_clip_times(
+    peaks: ClipWaveformPeaks,
+    clip: VideoClip,
+    *,
+    clip_t0: float,
+    clip_t1: float,
+) -> tuple[float, float]:
+    return sample_source_peaks_for_clip_times(
+        peaks,
+        clip,
+        clip_t0=clip_t0,
+        clip_t1=clip_t1,
+        samples_per_pixel=1.0,
+    )
 
 
 class VideoClipWaveformCache:
-    """Per-clip peak cache with background decode/build."""
+    """Per-clip view cache over the shared VideoWaveformArtifactStore."""
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._peaks: dict[ClipWaveformKey, ClipWaveformPeaks | None] = {}
         self._pending: set[ClipWaveformKey] = set()
+        self._generation = 0
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vid-wave")
-        self._on_ready: Callable[[], None] | None = None
+        self._on_ready: Callable[..., None] | None = None
+        self._last_gui_notify_mono = 0.0
+        self._gui_first_notified = False
+        self._gui_coalesce_s = 1.5
+        self._pending_notify_complete = False
 
-    def set_on_ready(self, callback: Callable[[], None] | None) -> None:
+    def set_on_ready(self, callback: Callable[..., None] | None) -> None:
         self._on_ready = callback
 
     def clear(self) -> None:
-        self._peaks.clear()
-        self._pending.clear()
+        with self._lock:
+            self._generation += 1
+            self._peaks.clear()
+            self._pending.clear()
+            self._last_gui_notify_mono = 0.0
+            self._gui_first_notified = False
+        # Keep shared artifact RAM/disk for warm hydrate across song switches.
+
+    def _artifact_duration_for(self, clip: VideoClip) -> float:
+        return max(
+            clip_source_duration_seconds(clip),
+            float(clip.source_span_seconds or clip.duration_seconds or 0.0),
+            0.05,
+        )
 
     @staticmethod
     def _mtime_ns(path: Path) -> int:
@@ -158,7 +231,7 @@ class VideoClipWaveformCache:
         except OSError:
             return 0
 
-    def key_for(self, clip: VideoClip, *, buckets: int) -> ClipWaveformKey:
+    def key_for(self, clip: VideoClip) -> ClipWaveformKey:
         return ClipWaveformKey(
             path=str(clip.path),
             mtime_ns=self._mtime_ns(clip.path),
@@ -170,30 +243,194 @@ class VideoClipWaveformCache:
             ),
             duration=round(float(clip.duration_seconds), 6),
             media_kind=str(clip.media_kind),
-            buckets=max(8, int(buckets)),
         )
 
-    def get_peaks(self, clip: VideoClip, *, buckets: int) -> ClipWaveformPeaks | None:
-        key = self.key_for(clip, buckets=buckets)
-        if key in self._peaks:
-            return self._peaks[key]
-        if key not in self._pending:
-            self._pending.add(key)
-            self._executor.submit(self._build_async, key, clip)
+    def _try_hydrate(self, key: ClipWaveformKey, clip: VideoClip) -> ClipWaveformPeaks | None:
+        duration = self._artifact_duration_for(clip)
+        art = artifact_store().get_or_load_disk(
+            Path(clip.path), duration_seconds=duration
+        )
+        if art is None or art.coverage_ratio <= 0:
+            return None
+        mapped = peaks_from_artifact(clip, art)
+        if mapped is None:
+            return None
+        with self._lock:
+            self._peaks[key] = mapped
+        if perf_diag.is_enabled():
+            perf_diag.count("waveform_artifact.worker_disk_hydrate")
+        return mapped
+
+    def _try_memory_hydrate(
+        self, key: ClipWaveformKey, clip: VideoClip
+    ) -> ClipWaveformPeaks | None:
+        duration = self._artifact_duration_for(clip)
+        store = artifact_store()
+        art_key = artifact_cache_key(Path(clip.path), duration_seconds=duration)
+        art = store.peek(art_key)
+        if art is None or art.coverage_ratio <= 0:
+            return None
+        mapped = peaks_from_artifact(clip, art)
+        if mapped is not None:
+            with self._lock:
+                self._peaks[key] = mapped
+        return mapped
+
+    def get_peaks(self, clip: VideoClip, *, allow_submit: bool = True) -> ClipWaveformPeaks | None:
+        if clip.media_kind == "still":
+            return None
+        key = self.key_for(clip)
+        with self._lock:
+            if key in self._peaks:
+                return self._peaks[key]
+            if key in self._pending:
+                return None
+        hydrated = self._try_memory_hydrate(key, clip)
+        if hydrated is not None and (
+            hydrated.coverage is None
+            or np.all(hydrated.coverage != 0)
+            or not allow_submit
+        ):
+            # Complete (or partial when submit disallowed) — return now.
+            if hydrated.coverage is None or np.count_nonzero(hydrated.coverage) > 0:
+                # Still ensure building if incomplete.
+                if allow_submit and hydrated.coverage is not None and not np.all(
+                    hydrated.coverage != 0
+                ):
+                    self._submit_build(key, clip)
+                return hydrated
+        if hydrated is not None:
+            # Partial available — paint it and keep building.
+            if allow_submit:
+                self._submit_build(key, clip)
+            return hydrated
+        if not allow_submit:
+            return None
+        self._submit_build(key, clip)
         return None
 
-    def preload(self, clips: list[VideoClip], *, buckets: int | None = None) -> None:
-        for clip in clips:
-            b = buckets if buckets is not None else waveform_buckets_for_clip(clip)
-            self.get_peaks(clip, buckets=b)
+    def _submit_build(self, key: ClipWaveformKey, clip: VideoClip) -> None:
+        with self._lock:
+            if key in self._pending:
+                return
+            self._pending.add(key)
+            generation = self._generation
+        self._executor.submit(self._build_async, generation, key, clip)
 
-    def _build_async(self, key: ClipWaveformKey, clip: VideoClip) -> None:
-        try:
-            peaks = build_clip_waveform_peaks_from_path(clip, buckets=key.buckets)
-        except Exception:
-            peaks = None
-        self._peaks[key] = peaks
-        self._pending.discard(key)
+    def peaks_for_paint(
+        self, clip: VideoClip, *, allow_submit: bool = True
+    ) -> ClipWaveformPeaks | None:
+        return self.get_peaks(clip, allow_submit=allow_submit)
+
+    def preload(self, clips: list[VideoClip]) -> None:
+        for clip in clips:
+            if clip.media_kind == "still":
+                continue
+            self.get_peaks(clip)
+
+    def flush_pending_gui_notify(self) -> None:
+        self._notify_ready(force=True)
+
+    def _notify_ready(self, *, force: bool = False, complete: bool = False) -> None:
+        import time as _time
+
+        from cueplayer.media.video_waveform_artifact import (
+            waveform_gui_suppressed_for_zoom,
+        )
+
+        now = _time.monotonic()
+        if complete:
+            self._pending_notify_complete = True
+        if not force and not complete:
+            if waveform_build_is_paused():
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "waveform_artifact.gui_notify_suppressed_playing"
+                    )
+                return
+            if waveform_gui_suppressed_for_zoom():
+                if perf_diag.is_enabled():
+                    perf_diag.count(
+                        "waveform_artifact.gui_notify_suppressed_zoom"
+                    )
+                return
+            if self._gui_first_notified and (
+                now - self._last_gui_notify_mono < self._gui_coalesce_s
+            ):
+                if perf_diag.is_enabled():
+                    perf_diag.count("waveform_artifact.gui_notify_coalesced")
+                return
+        self._last_gui_notify_mono = now
+        self._gui_first_notified = True
+        done = bool(complete or self._pending_notify_complete)
+        if done:
+            self._pending_notify_complete = False
+        if perf_diag.is_enabled():
+            perf_diag.count("waveform_artifact.gui_notify")
+            if done:
+                perf_diag.count("waveform_artifact.backdrop_rebuild_after_ready")
         cb = self._on_ready
         if cb is not None:
-            cb()
+            try:
+                cb(done)
+            except TypeError:
+                cb()
+
+    def _build_async(self, generation: int, key: ClipWaveformKey, clip: VideoClip) -> None:
+        # Loading a long cached npz can itself take noticeable time. Keep it
+        # on this worker instead of doing it through paint/preload on the GUI.
+        hydrated = self._try_hydrate(key, clip)
+        with self._lock:
+            if generation != self._generation:
+                return
+        if hydrated is not None and (
+            hydrated.coverage is None or np.all(hydrated.coverage != 0)
+        ):
+            with self._lock:
+                self._pending.discard(key)
+            self._notify_ready(force=True, complete=True)
+            return
+
+        duration = self._artifact_duration_for(clip)
+        path = Path(clip.path)
+
+        def _on_update(art: VideoWaveformArtifact) -> None:
+            with self._lock:
+                if generation != self._generation:
+                    return
+                mapped = peaks_from_artifact(clip, art)
+                if mapped is None:
+                    return
+                self._peaks[key] = mapped
+                self._pending.discard(key)
+            self._notify_ready(complete=bool(art.complete))
+
+        def _cancel() -> bool:
+            return generation != self._generation
+
+        # Non-blocking ensure — worker may wait for completion.
+        store = artifact_store()
+        store.ensure_building(
+            path,
+            duration_seconds=duration,
+            cancel_check=_cancel,
+            pause_check=waveform_build_is_paused,
+            on_update=_on_update,
+        )
+        art = store.wait_in_worker(
+            path,
+            duration_seconds=duration,
+            cancel_check=_cancel,
+            pause_check=waveform_build_is_paused,
+            on_update=_on_update,
+        )
+        with self._lock:
+            if generation != self._generation:
+                return
+            if art is not None:
+                mapped = peaks_from_artifact(clip, art)
+                if mapped is not None:
+                    self._peaks[key] = mapped
+            self._pending.discard(key)
+        if art is not None:
+            self._notify_ready(force=True, complete=bool(art.complete))

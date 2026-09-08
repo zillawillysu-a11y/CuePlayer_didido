@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CuePlayer · MA Export Playlist Mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d0f12;
+      --panel: #15181d;
+      --panel-2: #1b1f25;
+      --line: #2b313a;
+      --muted: #99a3b1;
+      --text: #eef2f7;
+      --accent: #3b82f6;
+      --accent-soft: #172b4d;
+      --good: #4ade80;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --input: #101318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 1060px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 "Segoe UI", "Microsoft JhengHei", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-rows: auto auto 1fr; }
+    header {
+      padding: 22px 28px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .2px; }
+    h2 { margin: 0; font-size: 16px; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .actions, .tabs, .inline { display: flex; align-items: center; gap: 9px; }
+    .btn {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 14px;
+      color: var(--text);
+      background: var(--panel-2);
+    }
+    .btn:hover { border-color: #4a5565; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 650; }
+    .btn.ghost { background: transparent; }
+    .tabs { padding: 12px 28px 0; }
+    .tab {
+      min-height: 36px;
+      padding: 0 15px;
+      border: 1px solid transparent;
+      border-radius: 7px 7px 0 0;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tab.active { color: var(--text); background: var(--panel); border-color: var(--line); border-bottom-color: var(--panel); }
+    main { padding: 20px 28px 30px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .notice {
+      padding: 12px 14px;
+      border: 1px solid #294c83;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: #dceaff;
+      margin-bottom: 16px;
+    }
+    .card { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; overflow: hidden; }
+    .card-head { min-height: 44px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 12px; }
+    .song-grid {
+      display: grid;
+      grid-template-columns: 52px 70px minmax(225px, 1.3fr) minmax(200px, 1fr) 102px 102px 78px 78px 96px 34px;
+      gap: 12px;
+      align-items: center;
+    }
+    .song-header { padding: 9px 14px; color: var(--muted); background: var(--panel-2); font-size: 12px; }
+    .song-row { min-height: 68px; padding: 10px 14px; border-top: 1px solid var(--line); }
+    .song-row:first-of-type { border-top: 0; }
+    .song-row:hover { background: #191d23; }
+    .song-row.dragging { opacity: .55; }
+    .song-content {
+      display: none;
+      padding: 13px 58px 15px;
+      border-top: 1px solid var(--line);
+      background: #111419;
+    }
+    .song-content.open { display: block; }
+    .content-options { display: flex; flex-wrap: wrap; gap: 9px 22px; margin-top: 9px; }
+    .content-toggle { min-height: 30px; padding: 0 10px; }
+    .song-title { min-width: 0; }
+    .song-title strong, .song-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .song-title span { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      min-height: 36px;
+      padding: 6px 10px;
+      border: 1px solid #38414d;
+      border-radius: 6px;
+      color: var(--text);
+      background: var(--input);
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.18); }
+    .range { font-variant-numeric: tabular-nums; }
+    .drag { color: var(--muted); text-align: center; font-size: 18px; user-select: none; }
+    .playlist-actions { padding: 13px 0; display: flex; gap: 8px; }
+    .setup-layout { display: grid; grid-template-columns: minmax(680px, 1.4fr) minmax(320px, .6fr); gap: 18px; align-items: start; }
+    .section { padding: 17px; }
+    .section + .section { border-top: 1px solid var(--line); }
+    .fields { margin-top: 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+    .field.wide { grid-column: 1 / -1; }
+    .checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 18px; margin-top: 14px; }
+    .check { display: flex; align-items: center; gap: 8px; }
+    details { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    summary { min-height: 44px; padding: 0 15px; display: flex; align-items: center; cursor: pointer; font-weight: 650; }
+    details .fields { padding: 0 15px 16px; grid-template-columns: 1fr; }
+    .review-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 16px 0; }
+    .review-card { padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    .review-card strong { display: block; font-size: 20px; margin: 8px 0 3px; }
+    .ok { color: var(--good); }
+    .review-list { margin-top: 15px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .review-line { display: grid; grid-template-columns: 70px 1fr 120px 120px 80px; gap: 12px; padding: 10px 13px; border-top: 1px solid var(--line); }
+    .review-line:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
+    .footer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .view-layout { display: grid; grid-template-columns: minmax(720px, 1fr) 300px; gap: 18px; align-items: start; }
+    .view-toolbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .view-toolbar select { width: 240px; }
+    .view-stage-wrap { padding: 16px; background: #090b0e; }
+    .view-stage { position: relative; width: 100%; aspect-ratio: 2 / 1; min-height: 400px; overflow: hidden; border: 1px solid #47515e; background-color: #11151a; background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 6.25% 12.5%; user-select: none; }
+    .view-stage.locked .view-widget { cursor: default; }
+    .view-widget { position: absolute; display: grid; border: 2px solid #5d6875; background: #1b2026; overflow: hidden; cursor: move; box-shadow: 0 5px 16px rgba(0,0,0,.28); }
+    .view-widget.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.22); }
+    .pool-title-cell, .pool-cell { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 3px; border-right: 1px solid #3a424c; border-bottom: 1px solid #3a424c; overflow: hidden; }
+    .pool-title-cell { text-align: center; background: #303741; padding: 2px; font-size: clamp(7px, .55vw, 10px); line-height: 1.05; letter-spacing: -.15px; font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
+    .view-widget.fixed .pool-title-cell { background: #6b214d; }
+    .view-widget.perSong .pool-title-cell { background: #1e3a8a; }
+    .pool-cell { align-items: flex-start; justify-content: flex-start; color: #b9c2ce; font-size: 10px; }
+    .resize-handle { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 45%, #c7d2df 46%, #c7d2df 56%, transparent 57%); }
+    .view-stage.locked .resize-handle { display: none; }
+    .inspector .section { padding: 15px; }
+    .inspector .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .inspector-status { margin-top: 10px; padding: 9px 10px; border-radius: 6px; background: #101318; color: var(--muted); font-size: 12px; }
+    .inspector-status.warning { color: #ffd7de; background: #4a1723; }
+    .legend { display: flex; gap: 13px; padding: 0 16px 14px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+    .legend i { width: 9px; height: 9px; display: inline-block; border-radius: 2px; margin-right: 5px; }
+    .registry-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 15px; }
+    .registry-table { overflow-x: auto; }
+    .registry-row { display: grid; grid-template-columns: minmax(220px, 1fr) 92px 110px 120px 84px 84px 84px; gap: 10px; align-items: center; min-height: 48px; padding: 8px 13px; border-top: 1px solid var(--line); }
+    .registry-row:first-child { border-top: 0; background: var(--panel-2); color: var(--muted); font-size: 12px; }
+    .status { display: inline-block; width: fit-content; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .status.existing { color: #bbf7d0; background: #14532d; }
+    .status.pending { color: #dbeafe; background: #1e3a8a; }
+    .allocation-layout { display: grid; grid-template-columns: minmax(540px, 1fr) minmax(300px, .55fr); gap: 16px; margin-top: 16px; }
+    .allocation-fields { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 10px; margin-top: 13px; }
+    .allocation-result { margin-top: 13px; padding: 11px 12px; border-radius: 7px; background: #102a1c; color: #bbf7d0; }
+    .allocation-result.conflict { background: #4a1723; color: #ffd7de; }
+    .connection-grid { display: grid; grid-template-columns: 1.2fr 1fr 90px 90px 1fr 1fr; gap: 10px; align-items: end; }
+    .connection-status { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #101318; color: var(--muted); }
+    .connection-status.connected { color: #bbf7d0; background: #102a1c; }
+    @media (max-width: 1220px) {
+      .song-grid { grid-template-columns: 48px 62px minmax(190px, 1.2fr) minmax(170px, 1fr) 88px 88px 62px 64px 88px 30px; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Export · MA Playlist</h1>
+        <p class="muted">Choose songs and pool ranges, configure the console, then review and export.</p>
+      </div>
+      <div class="actions">
+        <button class="btn" id="validateTop">Validate</button>
+        <button class="btn primary" data-goto="review">Export <span class="selected-count">3</span> Songs</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-page="songs">1 · Songs & Pools</button>
+      <button class="tab" data-page="registry">2 · Export Registry</button>
+      <button class="tab" data-page="setup">3 · Console Setup</button>
+      <button class="tab" data-page="viewLayout">4 · View Layout</button>
+      <button class="tab" data-page="review">5 · Review & Export</button>
+    </nav>
+
+    <main>
+      <section class="page active" id="songs">
+        <div class="notice"><strong>Pool allocation at a glance.</strong> Each MA2 song reserves 20 Sequences and 100 Effects by default. Ranges update immediately when a start value changes.</div>
+        <div class="card">
+          <div class="card-head"><h2>Show Playlist</h2><span class="badge"><span class="selected-count">3</span> selected</span></div>
+          <div class="song-grid song-header"><span>Export</span><span>Song Order</span><span>Song</span><span>MA Export Name</span><span>Sequence</span><span>Effect</span><span>Timecode</span><span>Marks</span><span>Content</span><span></span></div>
+          <div id="songRows"></div>
+        </div>
+        <div class="playlist-actions">
+          <button class="btn" id="selectAll">Select All</button>
+          <button class="btn ghost" id="selectNone">Select None</button>
+          <button class="btn ghost" id="recalc">Recalculate Pools</button>
+        </div>
+      </section>
+
+      <section class="page" id="registry">
+        <div class="notice"><strong>Incremental export safety.</strong> Existing allocations stay locked when Song Order changes. New songs can be auto-allocated or assigned manually without updating the Song List Sequence.</div>
+        <div class="card section" style="margin-bottom:15px">
+          <h2>MA2 Live Pool Scan</h2>
+          <div class="connection-grid" style="margin-top:13px">
+            <div class="field"><label>MA2 Host</label><input id="maHost" type="text" value="127.0.0.1"></div>
+            <div class="field"><label>Target Version</label><select id="maVersion"><option value="3.3.4.3">3.3.4.3 · minimum</option><option value="3.9.60">3.9.60</option><option value="3.9.61">3.9.61</option><option value="3.9.63.6">3.9.63.6 · latest</option></select></div>
+            <div class="field"><label>Command</label><input id="maCommandPort" type="number" value="30000"></div>
+            <div class="field"><label>Monitor</label><input id="maMonitorPort" type="number" value="30001"></div>
+            <div class="field"><label>User</label><input id="maUser" type="text" value="CuePlayerScan"></div>
+            <div class="field"><label>Password</label><input id="maPassword" type="password" value=""></div>
+          </div>
+          <div class="connection-status" id="maDetectionStatus"><span>Installed versions not detected</span><span class="inline"><button class="btn" id="detectMaVersions">Detect Installed Versions</button></span></div>
+          <div class="connection-status" id="maConnectionStatus"><span>Not connected · Telnet scan prototype</span><span class="inline"><button class="btn" id="testMaConnection">Test Connection</button><button class="btn primary" id="scanMaPools">Scan Current Show</button></span></div>
+        </div>
+        <div class="registry-summary">
+          <div class="review-card"><span class="muted">Registered Songs</span><strong id="registeredCount">2</strong><span class="muted">Existing in MA</span></div>
+          <div class="review-card"><span class="muted">Next Sequence</span><strong id="nextSequence">41</strong><span class="muted">20 reserved per song</span></div>
+          <div class="review-card"><span class="muted">Next Effects</span><strong id="nextEffects">401</strong><span class="muted">100 reserved per song</span></div>
+          <div class="review-card"><span class="muted">Next IDs</span><strong id="nextIds">203</strong><span class="muted">Timecode · Macro · View</span></div>
+        </div>
+        <div class="card registry-table">
+          <div class="card-head"><h2>Exported Songs Registry</h2><span class="badge">Project allocation record</span></div>
+          <div id="registryRows"></div>
+        </div>
+        <div class="allocation-layout">
+          <div class="card section">
+            <h2>New Song Allocation</h2>
+            <div class="fields">
+              <div class="field"><label>Song</label><select id="allocationSong"></select></div>
+              <div class="field"><label>Allocation Mode</label><select id="allocationMode"><option value="auto">Auto Allocate</option><option value="manual">Manual Allocate</option></select></div>
+            </div>
+            <div class="allocation-fields">
+              <div class="field"><label>Sequence Start</label><input id="draftSequence" type="number" min="1"></div>
+              <div class="field"><label>Effects Start</label><input id="draftEffects" type="number" min="1"></div>
+              <div class="field"><label>Timecode</label><input id="draftTimecode" type="number" min="1"></div>
+              <div class="field"><label>Song Macro</label><input id="draftMacro" type="number" min="1"></div>
+              <div class="field"><label>View</label><input id="draftView" type="number" min="1"></div>
+            </div>
+            <div class="allocation-result" id="allocationResult">Available · No conflicts with registered songs</div>
+            <div class="playlist-actions"><button class="btn" id="autoAllocate">Find Next Available</button><button class="btn primary" id="registerDraft">Register Export</button></div>
+          </div>
+          <div class="card section">
+            <h2>Incremental Components</h2>
+            <div class="checks" style="grid-template-columns:1fr;margin-top:13px">
+              <label class="check"><input type="checkbox" checked> Song Sequences</label>
+              <label class="check"><input type="checkbox" checked> Timecode</label>
+              <label class="check"><input type="checkbox" checked> Song Macros</label>
+              <label class="check"><input type="checkbox" checked> Song View</label>
+              <label class="check muted"><input type="checkbox" disabled> Song List Sequence · not included</label>
+            </div>
+          </div>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="songs">Back</button><button class="btn primary" data-goto="setup">Console Setup</button></div>
+      </section>
+
+      <section class="page" id="setup">
+        <div class="notice" id="consoleSyncStatus"><strong>Registry sync ready.</strong> Version detection updates Console. A completed show scan also applies the next safe Pool starts.</div>
+        <div class="setup-layout">
+          <div class="card">
+            <div class="section">
+              <h2>Common Settings</h2>
+              <div class="fields">
+                <div class="field"><label>Console</label><select id="console"><option>grandMA2 3.3.4.3</option><option>grandMA2 3.9.60</option><option>grandMA2 3.9.61</option><option>grandMA2 3.9.63.6</option><option>grandMA3</option></select></div>
+                <div class="field"><label>Mode</label><select><option>Full · Plugin Install</option><option>Timecode Only</option></select></div>
+                <div class="field"><label>Sequence Pool Start</label><input id="seqStart" type="number" min="1" value="1"></div>
+                <div class="field"><label>Sequence Slots Per Song</label><input id="seqSlots" type="number" min="1" value="20"></div>
+                <div class="field"><label>Timecode Pool Start</label><input id="tcStart" type="number" min="1" value="201"></div>
+                <div class="field"><label>Effect Pool Start</label><input id="effectStart" type="number" min="1" value="201"></div>
+                <div class="field"><label>Effect Slots Per Song</label><input id="effectSlots" type="number" min="1" value="100"></div>
+                <div class="field"><label>View Pool Start</label><input id="viewStart" type="number" min="1" value="201"></div>
+                <div class="field"><label>Main Executor</label><input type="text" value="201.130"></div>
+                <div class="field"><label>Button Start</label><input type="text" value="201.101"></div>
+                <div class="field wide"><label>Output Folder</label><div class="inline"><input id="outputFolder" type="text" value="C:\ProgramData\MA Lighting Technologies\grandma\gma2_V_3.3.4\importexport" style="flex:1"><button class="btn" id="browseOutputFolder" type="button">Browse…</button><button class="btn ghost" id="useVersionFolder" type="button">Use Version Default</button></div><span class="muted" id="outputFolderMode">Following Target Version</span></div>
+              </div>
+            </div>
+            <div class="section">
+              <h2>Export Components</h2>
+              <div class="checks">
+                <label class="check"><input type="checkbox" checked> Fixed control Macros</label>
+                <label class="check"><input type="checkbox" checked> Song Macros</label>
+                <label class="check"><input type="checkbox" checked> Song List Sequence</label>
+                <label class="check"><input type="checkbox" checked> Song Views (Screen 3)</label>
+                <label class="check"><input type="checkbox" checked> Add Main Cue named Preset</label>
+              </div>
+            </div>
+          </div>
+          <details>
+            <summary>Advanced MA2 Settings</summary>
+            <div class="fields">
+              <div class="field"><label>Template Page</label><input id="templatePage" type="number" value="200"></div>
+              <div class="field"><label>Fixed Macro Start</label><input id="fixedMacroStart" type="number" value="101"></div>
+              <div class="field"><label>Song Macro Start</label><input id="songMacroStart" type="number" value="201"></div>
+              <div class="field"><label>Song ViewButton</label><input type="text" value="1.20"></div>
+              <div class="field"><label>Preset Cue ID</label><input type="number" value="0.500" step="0.001"></div>
+              <div class="field"><label>Latency</label><input type="text" value="0.0 ms"></div>
+            </div>
+          </details>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="registry">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
+      </section>
+
+      <section class="page" id="viewLayout">
+        <div class="notice"><strong>Design the Screen 3 template.</strong> Drag Pool windows, resize from the lower-right corner, or enter exact values in the Inspector. Song previews keep the layout and substitute that song's Pool ranges.</div>
+        <div class="view-layout">
+          <div class="card">
+            <div class="view-toolbar">
+              <select id="viewSong" aria-label="Preview song"></select>
+              <button class="btn" id="addPool">Add Pool</button>
+              <button class="btn" id="duplicatePool">Duplicate</button>
+              <button class="btn ghost" id="deletePool">Delete</button>
+              <span class="badge">Required 16 × 8 grid</span>
+              <label class="check"><input id="lockLayout" type="checkbox"> Lock layout</label>
+              <button class="btn ghost" id="resetLayout">Reset</button>
+            </div>
+            <div class="view-stage-wrap"><div class="view-stage" id="viewStage"></div></div>
+            <div class="legend"><span><i style="background:#6b214d"></i>Fixed Pool range</span><span><i style="background:#1e3a8a"></i>Per Song · unique Pool range</span><span>One shared layout for every song</span></div>
+          </div>
+          <div class="card inspector">
+            <div class="card-head"><h2>Pool Inspector</h2><span class="badge" id="selectedPoolName">Sequence</span></div>
+            <div class="section">
+              <div class="field"><label>Pool Type</label><select id="poolType"><option value="camera">Camera Pool</option><option value="effects">Effects</option><option value="filters">Filters</option><option value="forms">Forms</option><option value="groups">Groups</option><option value="images">Images</option><option value="layout">Layout Pool</option><option value="macros">Macros</option><option value="masks">Masks</option><option value="matricks">MAtricks</option><option value="pagesChannel">Pages Channel</option><option value="pagesExec">Pages Exec</option><option value="sequence">Sequence</option><option value="timecode">Timecode Pool</option><option value="timecodeSlots">Timecode Slots Pool</option><option value="timer">Timer</option><option value="views">Views</option><option value="universes">Universes</option><option value="worlds">Worlds</option></select></div>
+              <div class="field" style="margin-top:10px"><label>Pool Allocation</label><select id="poolMode"><option value="fixed">Fixed · same numbers for every song</option><option value="perSong">Per Song · unique numbers</option></select></div>
+              <div class="fields">
+                <div class="field"><label>Pool Start</label><input id="poolStart" type="number" min="1"></div>
+                <div class="field"><label>Reserved Slots Per Song</label><input id="poolStride" type="number" min="1"></div>
+              </div>
+              <div class="inspector-status" id="layoutStatus">Screen 3: 16 columns × 8 rows · Pool Title uses one slot</div>
+            </div>
+            <div class="section"><span class="muted">This single layout is used by every song. Only Pool numbers marked Per Song are advanced by Song Order.</span></div>
+          </div>
+        </div>
+        <div class="footer-actions"><button class="btn" data-goto="setup">Back</button><button class="btn primary" data-goto="review">Review Export</button></div>
+      </section>
+
+      <section class="page" id="review">
+        <div class="notice" id="validation"><strong>Ready.</strong> Review every name and pool range before export.</div>
+        <div class="review-grid">
+          <div class="review-card"><span class="muted">Pool Safety</span><strong class="ok">No overlaps</strong><span class="muted">Sequence, Effect, View, and Macro ranges checked</span></div>
+          <div class="review-card"><span class="muted">Selected Songs</span><strong><span class="selected-count">3</span> Songs</strong><span class="muted">Sequence, View, and Timecode per song</span></div>
+          <div class="review-card"><span class="muted">Target</span><strong id="targetLabel">MA2 3.9.60</strong><span class="muted">Schema selected from the output path</span></div>
+        </div>
+        <h2>Export Plan</h2>
+        <div class="review-list" id="reviewList"></div>
+        <div class="footer-actions"><button class="btn" data-goto="viewLayout">Back</button><button class="btn primary" id="fakeExport">Export Checked Songs…</button></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const songs = [
+      { id: "song-1", name: "TEST · 真爭得想起來", en: "TEST", marks: 4, selected: true, open: false, contents: [{ name: "Main", on: true }, { name: "Hit", on: true }, { name: "Stomp", on: true }] },
+      { id: "song-2", name: "留在咱的血內底", en: "LiuZhuZanDeXueNeiDi", marks: 6, selected: true, open: true, contents: [{ name: "Main", on: true }, { name: "Mark 2", on: true }, { name: "Mark 3", on: true }, { name: "Mark 4", on: false }, { name: "Mark 5", on: false }, { name: "Mark 6", on: false }] },
+      { id: "song-3", name: "SKY LIGHT", en: "SKY_LIGHT", marks: 1, selected: true, open: false, contents: [{ name: "Main", on: true }] }
+    ];
+
+    const exportRegistry = new Map([
+      ["song-1", { seqStart: 1, seqEnd: 20, effectStart: 201, effectEnd: 300, timecode: 201, macro: 201, view: 201, exported: "2026-08-01" }],
+      ["song-2", { seqStart: 21, seqEnd: 40, effectStart: 301, effectEnd: 400, timecode: 202, macro: 202, view: 202, exported: "2026-08-05" }]
+    ]);
+    let draftSongId = "song-3";
+    let draftAllocation = null;
+
+    const $ = selector => document.querySelector(selector);
+    const $$ = selector => [...document.querySelectorAll(selector)];
+    const numberValue = id => Math.max(1, Number($(id).value) || 1);
+    const defaultViewWidgets = () => [
+      { id: 1, type: "sequence", mode: "perSong", x: 0, y: 0, w: 10, h: 1, start: 1, stride: 20 },
+      { id: 2, type: "macros", mode: "fixed", x: 10, y: 0, w: 6, h: 1, start: 1, stride: 5 },
+      { id: 3, type: "effects", mode: "perSong", x: 0, y: 1, w: 16, h: 5, start: 201, stride: 100 },
+      { id: 4, type: "effects", mode: "fixed", x: 0, y: 6, w: 16, h: 2, start: 1, stride: 31 }
+    ];
+    let viewWidgets = defaultViewWidgets();
+    let selectedWidgetId = 1;
+    let nextWidgetId = 5;
+
+    function allocation(index) {
+      const song = songs[index];
+      const locked = exportRegistry.get(song.id);
+      if (locked) return locked;
+      if (draftAllocation && song.id === draftSongId) return draftAllocation;
+      const seqStart = numberValue("#seqStart") + index * numberValue("#seqSlots");
+      const seqEnd = seqStart + numberValue("#seqSlots") - 1;
+      const effectSlots = numberValue("#effectSlots");
+      const effectStart = numberValue("#effectStart") + index * effectSlots;
+      const timecode = numberValue("#tcStart") + index;
+      return { seqStart, seqEnd, effectStart, effectEnd: effectStart + effectSlots - 1, timecode };
+    }
+
+    function nextAvailableAllocation() {
+      const entries = [...exportRegistry.values()];
+      const seqSlots = numberValue("#seqSlots");
+      const effectSlots = numberValue("#effectSlots");
+      const seqStart = entries.length ? Math.max(...entries.map(item => item.seqEnd)) + 1 : numberValue("#seqStart");
+      const effectStart = entries.length ? Math.max(...entries.map(item => item.effectEnd)) + 1 : numberValue("#effectStart");
+      const timecode = entries.length ? Math.max(...entries.map(item => item.timecode)) + 1 : numberValue("#tcStart");
+      const macro = entries.length ? Math.max(...entries.map(item => item.macro)) + 1 : 201;
+      const view = entries.length ? Math.max(...entries.map(item => item.view)) + 1 : 201;
+      return { seqStart, seqEnd: seqStart + seqSlots - 1, effectStart, effectEnd: effectStart + effectSlots - 1, timecode, macro, view };
+    }
+
+    function readDraftAllocation() {
+      const seqStart = numberValue("#draftSequence");
+      const effectStart = numberValue("#draftEffects");
+      return { seqStart, seqEnd: seqStart + numberValue("#seqSlots") - 1, effectStart, effectEnd: effectStart + numberValue("#effectSlots") - 1, timecode: numberValue("#draftTimecode"), macro: numberValue("#draftMacro"), view: numberValue("#draftView") };
+    }
+
+    function allocationConflicts(candidate) {
+      const conflicts = [];
+      exportRegistry.forEach((item, songId) => {
+        const song = songs.find(entry => entry.id === songId);
+        if (candidate.seqStart <= item.seqEnd && item.seqStart <= candidate.seqEnd) conflicts.push(`${song.en} Sequence ${item.seqStart}–${item.seqEnd}`);
+        if (candidate.effectStart <= item.effectEnd && item.effectStart <= candidate.effectEnd) conflicts.push(`${song.en} Effects ${item.effectStart}–${item.effectEnd}`);
+        if (candidate.timecode === item.timecode) conflicts.push(`${song.en} Timecode ${item.timecode}`);
+        if (candidate.macro === item.macro) conflicts.push(`${song.en} Macro ${item.macro}`);
+        if (candidate.view === item.view) conflicts.push(`${song.en} View ${item.view}`);
+      });
+      return conflicts;
+    }
+
+    function writeDraftFields(allocationValue) {
+      $("#draftSequence").value = allocationValue.seqStart;
+      $("#draftEffects").value = allocationValue.effectStart;
+      $("#draftTimecode").value = allocationValue.timecode;
+      $("#draftMacro").value = allocationValue.macro;
+      $("#draftView").value = allocationValue.view;
+      draftAllocation = { ...allocationValue };
+    }
+
+    function validateDraft() {
+      draftAllocation = readDraftAllocation();
+      const conflicts = allocationConflicts(draftAllocation);
+      $("#allocationResult").classList.toggle("conflict", conflicts.length > 0);
+      $("#allocationResult").textContent = conflicts.length ? `Conflict · ${conflicts.join("; ")}` : "Available · No conflicts with registered songs";
+      renderSongs();
+      if ($("#viewLayout").classList.contains("active")) renderViewLayout();
+      return conflicts.length === 0;
+    }
+
+    function renderRegistry() {
+      const pending = songs.filter(song => !exportRegistry.has(song.id));
+      if (!pending.some(song => song.id === draftSongId)) draftSongId = pending[0]?.id || "";
+      $("#allocationSong").innerHTML = pending.length ? pending.map(song => `<option value="${song.id}">${song.name}</option>`).join("") : `<option value="">All songs registered</option>`;
+      $("#allocationSong").value = draftSongId;
+      const manual = $("#allocationMode").value === "manual";
+      ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual);
+      $("#registerDraft").disabled = pending.length === 0;
+      const suggested = nextAvailableAllocation();
+      if (!draftAllocation || $("#allocationMode").value === "auto") writeDraftFields(suggested);
+      $("#registryRows").innerHTML = `<div class="registry-row"><span>Song / MA name</span><span>Status</span><span>Sequence</span><span>Effects</span><span>Timecode</span><span>Macro</span><span>View</span></div>` + songs.map(song => {
+        const item = exportRegistry.get(song.id) || (song.id === draftSongId ? draftAllocation : null);
+        if (!item) return "";
+        const existing = exportRegistry.has(song.id);
+        return `<div class="registry-row"><span><strong>${song.name}</strong><br><span class="muted">${song.en}</span></span><span class="status ${existing ? "existing" : "pending"}">${existing ? "Existing" : "Pending"}</span><span>${item.seqStart}–${item.seqEnd}</span><span>${item.effectStart}–${item.effectEnd}</span><span>${item.timecode}</span><span>${item.macro}</span><span>${item.view}</span></div>`;
+      }).join("");
+      $("#registeredCount").textContent = exportRegistry.size;
+      $("#nextSequence").textContent = suggested.seqStart;
+      $("#nextEffects").textContent = suggested.effectStart;
+      $("#nextIds").textContent = suggested.timecode;
+      validateDraft();
+    }
+
+    function renderSongs() {
+      $("#songRows").innerHTML = songs.map((song, index) => {
+        const a = allocation(index);
+        const chosen = song.contents.filter(content => content.on).map(content => content.name);
+        return `<div class="song-block"><div class="song-grid song-row" draggable="true" data-index="${index}">
+          <input class="song-check" type="checkbox" ${song.selected ? "checked" : ""} aria-label="Export ${song.en}">
+          <strong class="range">${index + 1}</strong>
+          <div class="song-title"><strong>${song.name}</strong><span>Song List position ${index + 1}</span></div>
+          <input class="english-name" type="text" value="${song.en}" aria-label="MA export name">
+          <span class="range">${a.seqStart}–${a.seqEnd}</span>
+          <span class="range">${a.effectStart}–${a.effectEnd}</span>
+          <span>${a.timecode}</span><span>${song.marks} cues</span>
+          <button class="btn content-toggle" data-content-index="${index}">${chosen.length}/${song.contents.length} selected</button>
+          <span class="drag" title="Drag to reorder">⋮⋮</span>
+        </div><div class="song-content ${song.open ? "open" : ""}" data-content-panel="${index}">
+          <strong>Export Content</strong><span class="muted"> - Export only the required Main/Button Sequences and matching Timecode tracks for this song.</span>
+          <div class="content-options">${song.contents.map((content, contentIndex) => `<label class="check"><input class="content-check" data-song="${index}" data-content="${contentIndex}" type="checkbox" ${content.on ? "checked" : ""}> ${content.name}</label>`).join("")}</div>
+        </div></div>`;
+      }).join("");
+      $$(".song-check").forEach((box, i) => box.addEventListener("change", () => { songs[i].selected = box.checked; refreshCounts(); }));
+      $$(".english-name").forEach((input, i) => input.addEventListener("input", () => { songs[i].en = input.value; renderReview(); }));
+      $$(".content-toggle").forEach(button => button.addEventListener("click", () => { const i = Number(button.dataset.contentIndex); songs[i].open = !songs[i].open; renderSongs(); }));
+      $$(".content-check").forEach(box => box.addEventListener("change", () => { songs[Number(box.dataset.song)].contents[Number(box.dataset.content)].on = box.checked; renderSongs(); }));
+      enableDrag(); refreshCounts(); renderReview();
+    }
+
+    function enableDrag() {
+      let from = null;
+      $$(".song-row").forEach(row => {
+        row.addEventListener("dragstart", () => { from = Number(row.dataset.index); row.classList.add("dragging"); });
+        row.addEventListener("dragend", () => row.classList.remove("dragging"));
+        row.addEventListener("dragover", event => event.preventDefault());
+        row.addEventListener("drop", () => {
+          const to = Number(row.dataset.index);
+          if (from === null || from === to) return;
+          const [moved] = songs.splice(from, 1); songs.splice(to, 0, moved); renderSongs();
+        });
+      });
+    }
+
+    function refreshCounts() {
+      const count = songs.filter(song => song.selected).length;
+      $$(".selected-count").forEach(el => el.textContent = count);
+      renderReview();
+    }
+
+    function renderReview() {
+      const selected = songs.map((song, index) => ({ song, index })).filter(x => x.song.selected);
+      $("#reviewList").innerHTML = `<div class="review-line"><span>Song Order</span><span>Song / MA name</span><span>Sequence</span><span>Effect</span><span>Timecode</span></div>` +
+        selected.map(({ song, index }) => {
+          const a = allocation(index);
+          const content = song.contents.filter(item => item.on).map(item => item.name).join(", ") || "Nothing selected";
+          return `<div class="review-line"><strong>${index + 1}</strong><span>${song.name}<br><span class="muted">${song.en} · ${content}</span></span><span>${a.seqStart}–${a.seqEnd}</span><span>${a.effectStart}–${a.effectEnd}</span><span>${a.timecode}</span></div>`;
+        }).join("");
+      $("#targetLabel").textContent = $("#console").value.replace("grand", "");
+    }
+
+    function widgetLabel(type) {
+      return ({ camera: "Camera Pool", effects: "Effects", filters: "Filters", forms: "Forms", groups: "Groups", images: "Images", layout: "Layout Pool", macros: "Macros", masks: "Masks", matricks: "MAtricks", pagesChannel: "Pages Channel", pagesExec: "Pages Exec", sequence: "Sequence", timecode: "Timecode Pool", timecodeSlots: "Timecode Slots Pool", timer: "Timer", views: "Views", universes: "Universes", worlds: "Worlds" })[type];
+    }
+
+    function widgetStartForSong(widget, songIndex) {
+      if (widget.mode === "fixed") return widget.start;
+      const assigned = allocation(songIndex);
+      if (widget.type === "sequence") return assigned.seqStart;
+      if (widget.type === "effects") return assigned.effectStart;
+      if (widget.type === "macros" && assigned.macro) return assigned.macro;
+      if (widget.type === "views" && assigned.view) return assigned.view;
+      if ((widget.type === "timecode" || widget.type === "timecodeSlots") && assigned.timecode) return assigned.timecode;
+      return widget.start + songIndex * widget.stride;
+    }
+
+    function previewStart(widget) {
+      return widgetStartForSong(widget, Number($("#viewSong").value || 0));
+    }
+
+    function renderViewLayout() {
+      const stage = $("#viewStage");
+      stage.classList.toggle("locked", $("#lockLayout").checked);
+      stage.innerHTML = viewWidgets.map(widget => {
+        const start = previewStart(widget);
+        const slots = widget.w * widget.h - 1;
+        const cells = Array.from({ length: slots }, (_, i) => `<span class="pool-cell">${start + i}</span>`).join("");
+        return `<div class="view-widget ${widget.mode} ${widget.id === selectedWidgetId ? "selected" : ""}" data-widget="${widget.id}" style="left:${widget.x / 16 * 100}%;top:${widget.y / 8 * 100}%;width:${widget.w / 16 * 100}%;height:${widget.h / 8 * 100}%;grid-template-columns:repeat(${widget.w},1fr);grid-template-rows:repeat(${widget.h},1fr)">
+          <div class="pool-title-cell"><span>${widgetLabel(widget.type)}</span></div>${cells}<span class="resize-handle" data-resize="${widget.id}"></span></div>`;
+      }).join("");
+      $$(".view-widget").forEach(element => element.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(element.dataset.widget), false)));
+      $$(".resize-handle").forEach(handle => handle.addEventListener("pointerdown", event => beginWidgetPointer(event, Number(handle.dataset.resize), true)));
+      updateInspector();
+      updateLayoutStatus();
+    }
+
+    function beginWidgetPointer(event, id, resizing) {
+      event.preventDefault(); event.stopPropagation();
+      selectedWidgetId = id; renderViewLayout();
+      if ($("#lockLayout").checked) return;
+      const widget = viewWidgets.find(item => item.id === id);
+      const rect = $("#viewStage").getBoundingClientRect();
+      const origin = { x: event.clientX, y: event.clientY, wx: widget.x, wy: widget.y, ww: widget.w, wh: widget.h };
+      const move = moveEvent => {
+        const dx = Math.round((moveEvent.clientX - origin.x) / rect.width * 16);
+        const dy = Math.round((moveEvent.clientY - origin.y) / rect.height * 8);
+        if (resizing) {
+          widget.w = Math.min(16 - widget.x, Math.max(1, origin.ww + dx));
+          widget.h = Math.min(8 - widget.y, Math.max(1, origin.wh + dy));
+        } else {
+          widget.x = Math.min(16 - widget.w, Math.max(0, origin.wx + dx));
+          widget.y = Math.min(8 - widget.h, Math.max(0, origin.wy + dy));
+        }
+        renderViewLayout();
+      };
+      const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+      window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    }
+
+    function updateInspector() {
+      const widget = viewWidgets.find(item => item.id === selectedWidgetId);
+      if (!widget) return;
+      $("#selectedPoolName").textContent = widgetLabel(widget.type);
+      $("#poolType").value = widget.type;
+      $("#poolMode").value = widget.mode;
+      $("#poolStart").value = widget.start;
+      $("#poolStride").value = widget.stride;
+      $("#poolStride").disabled = widget.mode === "fixed";
+      $("#poolStride").min = 1;
+    }
+
+    function widgetsOverlap(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function updateLayoutStatus() {
+      const layoutCollision = viewWidgets.some((widget, index) => viewWidgets.slice(index + 1).some(other => widgetsOverlap(widget, other)));
+      const ranges = viewWidgets.flatMap(widget => {
+        const count = widget.mode === "perSong" ? songs.length : 1;
+        const visible = widget.w * widget.h - 1;
+        return Array.from({ length: count }, (_, songIndex) => { const start = widgetStartForSong(widget, songIndex); return { widget, songIndex, start, end: start + visible - 1 }; });
+      });
+      const poolCollision = ranges.some((range, index) => ranges.slice(index + 1).some(other => range.widget.type === other.widget.type && range.widget.id !== other.widget.id && range.start <= other.end && other.start <= range.end)) || viewWidgets.some(widget => widget.mode === "perSong" && widget.stride < widget.w * widget.h - 1);
+      const warning = layoutCollision || poolCollision;
+      $("#layoutStatus").classList.toggle("warning", warning);
+      $("#layoutStatus").textContent = layoutCollision
+        ? "View windows overlap · Move or resize them before export"
+        : poolCollision
+          ? "Pool number ranges overlap · Adjust Pool Start or Reserved Slots Per Song"
+          : "Shared 16 × 8 layout · Fixed and Per Song Pool ranges do not overlap";
+    }
+
+    function updateSelectedWidget() {
+      const widget = viewWidgets.find(item => item.id === selectedWidgetId);
+      if (!widget) return;
+      widget.type = $("#poolType").value;
+      widget.mode = $("#poolMode").value;
+      widget.start = Math.max(1, Number($("#poolStart").value) || 1);
+      widget.stride = Math.max(1, Number($("#poolStride").value) || 1);
+      if (widget.type === "effects" && widget.mode === "perSong") $("#effectSlots").value = widget.stride;
+      renderViewLayout();
+      renderSongs();
+    }
+
+    function initializeViewLayout() {
+      const current = $("#viewSong").value;
+      $("#viewSong").innerHTML = songs.map((song, index) => `<option value="${index}">${index + 1} · ${song.name}</option>`).join("");
+      if (current) $("#viewSong").value = current;
+      renderViewLayout();
+    }
+
+    function showPage(id) {
+      $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
+      $$(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.page === id));
+      if (id === "registry") renderRegistry();
+      if (id === "viewLayout") initializeViewLayout();
+      if (id === "review") renderReview();
+    }
+
+    $$(".tab").forEach(tab => tab.addEventListener("click", () => showPage(tab.dataset.page)));
+    $$('[data-goto]').forEach(button => button.addEventListener("click", () => showPage(button.dataset.goto)));
+    ["#seqStart", "#seqSlots", "#tcStart", "#effectStart"].forEach(id => $(id).addEventListener("input", renderSongs));
+    $("#effectSlots").addEventListener("input", () => { const slots = numberValue("#effectSlots"); $("#effectSlots").value = slots; viewWidgets.filter(widget => widget.type === "effects" && widget.mode === "perSong").forEach(widget => widget.stride = slots); renderSongs(); renderViewLayout(); });
+    $("#console").addEventListener("change", renderReview);
+    $("#selectAll").addEventListener("click", () => { songs.forEach(song => song.selected = true); renderSongs(); });
+    $("#selectNone").addEventListener("click", () => { songs.forEach(song => song.selected = false); renderSongs(); });
+    $("#recalc").addEventListener("click", renderSongs);
+    $("#validateTop").addEventListener("click", () => showPage("review"));
+    $("#fakeExport").addEventListener("click", () => alert("This is a design prototype. No files will be exported."));
+    const minimumMa2Version = "3.3.4.3";
+    const prototypeInstalledVersions = ["3.9.60", "3.9.63.6"];
+    let customOutputFolder = false;
+    const compareVersions = (left, right) => {
+      const a = left.split(".").map(Number), b = right.split(".").map(Number);
+      for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+        if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0);
+      }
+      return 0;
+    };
+    function validateTargetVersion(remoteVersion = null) {
+      const target = $("#maVersion").value;
+      if (compareVersions(target, minimumMa2Version) < 0) {
+        $("#maConnectionStatus").classList.remove("connected");
+        $("#maConnectionStatus span:first-child").textContent = `Blocked · MA2 ${target} is below the 3.3.4.3 minimum`;
+        return false;
+      }
+      if (remoteVersion && remoteVersion !== target) {
+        $("#maConnectionStatus").classList.remove("connected");
+        $("#maConnectionStatus span:first-child").textContent = `Version mismatch · Target ${target} · Remote ${remoteVersion}`;
+        return false;
+      }
+      return true;
+    }
+    function defaultOutputFolder(version) {
+      const folderVersion = version.split(".").slice(0, 3).join(".");
+      return `C:\\ProgramData\\MA Lighting Technologies\\grandma\\gma2_V_${folderVersion}\\importexport`;
+    }
+    function updateOutputFolderForVersion(version) {
+      if (customOutputFolder) return;
+      $("#outputFolder").value = defaultOutputFolder(version);
+      $("#outputFolderMode").textContent = `Following Target Version · MA2 ${version}`;
+    }
+    function syncVersionToConsoleSetup(version, source) {
+      const consoleValue = `grandMA2 ${version}`;
+      if ([...$("#console").options].some(option => option.value === consoleValue)) $("#console").value = consoleValue;
+      updateOutputFolderForVersion(version);
+      $("#consoleSyncStatus").innerHTML = `<strong>Version synchronized.</strong> Console Setup now uses ${consoleValue} from ${source}. Pool starts remain unchanged until a show scan completes.`;
+      renderReview();
+    }
+    function syncScanToConsoleSetup(remoteVersion) {
+      const suggested = nextAvailableAllocation();
+      syncVersionToConsoleSetup(remoteVersion, "MA2 Live Pool Scan");
+      $("#seqStart").value = suggested.seqStart;
+      $("#effectStart").value = suggested.effectStart;
+      $("#tcStart").value = suggested.timecode;
+      $("#songMacroStart").value = suggested.macro;
+      $("#viewStart").value = suggested.view;
+      $("#consoleSyncStatus").innerHTML = `<strong>Registry scan synchronized.</strong> ${$("#maHost").value} · MA2 ${remoteVersion} · Next safe starts: Sequence ${suggested.seqStart}, Effects ${suggested.effectStart}, Timecode ${suggested.timecode}, Song Macro ${suggested.macro}, View ${suggested.view}. Fixed Macro and Template Page were preserved.`;
+      renderSongs();
+      renderReview();
+    }
+    $("#detectMaVersions").addEventListener("click", () => {
+      const runningVersion = prototypeInstalledVersions.at(-1);
+      $("#maVersion").value = runningVersion;
+      $("#maDetectionStatus").classList.add("connected");
+      $("#maDetectionStatus span:first-child").textContent = `Prototype detection · Running ${runningVersion} · Installed ${prototypeInstalledVersions.join(", ")}`;
+      validateTargetVersion();
+      syncVersionToConsoleSetup(runningVersion, "installed-version detection");
+    });
+    $("#maVersion").addEventListener("change", () => { validateTargetVersion(); syncVersionToConsoleSetup($("#maVersion").value, "Target Version"); });
+    $("#outputFolder").addEventListener("input", () => { customOutputFolder = true; $("#outputFolderMode").textContent = "Custom folder · version changes will not replace it"; });
+    $("#useVersionFolder").addEventListener("click", () => { customOutputFolder = false; updateOutputFolderForVersion($("#maVersion").value); });
+    $("#browseOutputFolder").addEventListener("click", async () => {
+      if (!window.showDirectoryPicker) { $("#outputFolderMode").textContent = "Folder picker unavailable in this browser · type a path manually"; return; }
+      try {
+        const handle = await window.showDirectoryPicker();
+        customOutputFolder = true;
+        $("#outputFolder").value = `[Selected folder] ${handle.name}`;
+        $("#outputFolderMode").textContent = "Custom folder selected · full Windows path is available in the desktop app";
+      } catch (error) { if (error.name !== "AbortError") $("#outputFolderMode").textContent = "Folder selection failed"; }
+    });
+    $("#testMaConnection").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype connected · ${$("#maHost").value}:${$("#maCommandPort").value} · Remote MA2 ${remoteVersion}`; });
+    $("#scanMaPools").addEventListener("click", () => { const remoteVersion = $("#maVersion").value; if (!validateTargetVersion(remoteVersion)) return; $("#maConnectionStatus").classList.add("connected"); $("#maConnectionStatus span:first-child").textContent = `Prototype scan complete · MA2 ${remoteVersion} · Command ${$("#maCommandPort").value} · Monitor ${$("#maMonitorPort").value}`; renderRegistry(); syncScanToConsoleSetup(remoteVersion); });
+    $("#allocationMode").addEventListener("change", () => { const manual = $("#allocationMode").value === "manual"; ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).readOnly = !manual); if (!manual) writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
+    $("#allocationSong").addEventListener("change", () => { draftSongId = $("#allocationSong").value; draftAllocation = null; renderRegistry(); });
+    ["#draftSequence", "#draftEffects", "#draftTimecode", "#draftMacro", "#draftView"].forEach(id => $(id).addEventListener("input", validateDraft));
+    $("#autoAllocate").addEventListener("click", () => { $("#allocationMode").value = "auto"; writeDraftFields(nextAvailableAllocation()); validateDraft(); renderRegistry(); });
+    $("#registerDraft").addEventListener("click", () => { if (!draftSongId || !validateDraft()) return; exportRegistry.set(draftSongId, { ...draftAllocation, exported: "Prototype" }); draftAllocation = null; renderRegistry(); renderSongs(); initializeViewLayout(); });
+    $("#viewSong").addEventListener("change", renderViewLayout);
+    $("#lockLayout").addEventListener("change", renderViewLayout);
+    ["#poolType", "#poolMode", "#poolStart", "#poolStride"].forEach(id => $(id).addEventListener("input", updateSelectedWidget));
+    $("#addPool").addEventListener("click", () => { const widget = { id: nextWidgetId++, type: "effects", mode: "fixed", x: 0, y: 0, w: 4, h: 2, start: 1, stride: 7 }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
+    $("#duplicatePool").addEventListener("click", () => { const source = viewWidgets.find(item => item.id === selectedWidgetId); if (!source) return; const widget = { ...source, id: nextWidgetId++, x: Math.min(16 - source.w, source.x + 1), y: Math.min(8 - source.h, source.y + 1) }; viewWidgets.push(widget); selectedWidgetId = widget.id; renderViewLayout(); });
+    $("#deletePool").addEventListener("click", () => { if (viewWidgets.length === 1) return; viewWidgets = viewWidgets.filter(item => item.id !== selectedWidgetId); selectedWidgetId = viewWidgets[0].id; renderViewLayout(); });
+    $("#resetLayout").addEventListener("click", () => { viewWidgets = defaultViewWidgets(); selectedWidgetId = 1; nextWidgetId = 5; renderViewLayout(); });
+    renderSongs();
+  </script>
+</body>
+</html>

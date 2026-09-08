@@ -37,6 +37,7 @@ from cueplayer.exporters.plan_from_song import (
     plan_summary_text,
     timecode_to_seconds,
 )
+from cueplayer.ui.row_color import ROLE_ROW_COLOR, RowColorDelegate
 from cueplayer.ui.spinboxes import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 _SETTINGS_ORG = "CuePlayer"
@@ -77,6 +78,7 @@ class ExportDialog(QDialog):
         # selection the setlist/timeline use (checkbox state stays independent —
         # this is just "which row you're looking at", not "which songs export").
         self.song_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.song_list.setItemDelegate(RowColorDelegate(self.song_list))
         preselect = set(selected_indexes or [])
         if not preselect and 0 <= current_index < len(self._songs):
             preselect = {current_index}
@@ -88,6 +90,7 @@ class ExportDialog(QDialog):
                 Qt.CheckState.Checked if i in preselect else Qt.CheckState.Unchecked
             )
             item.setData(Qt.ItemDataRole.UserRole, i)
+            item.setData(ROLE_ROW_COLOR, song.row_color or "")
             self.song_list.addItem(item)
         song_layout.addWidget(self.song_list)
         pick_row = QHBoxLayout()
@@ -171,6 +174,12 @@ class ExportDialog(QDialog):
         self.data_pool = QLineEdit("Default")
         self.data_pool.setToolTip("MA3 Data Pool name")
         form.addRow("MA3 Data Pool", self.data_pool)
+        self.ma3_export_version = NoWheelComboBox()
+        self.ma3_export_version.addItem("2.3", "2.3")
+        self.ma3_export_version.addItem("2.4", "2.4")
+        self.ma3_export_version.addItem("2.5+ (recommended)", "2.5")
+        self.ma3_export_version.setCurrentIndex(2)
+        form.addRow("MA3 Export Version", self.ma3_export_version)
 
         self.name_hint = QLabel("File names / Sequence names are generated automatically from each song's MA English name.")
         self.name_hint.setWordWrap(True)
@@ -258,6 +267,7 @@ class ExportDialog(QDialog):
 
     def _refresh_ma3_enabled(self) -> None:
         self.data_pool.setEnabled(self.ma3_radio.isChecked())
+        self.ma3_export_version.setEnabled(self.ma3_radio.isChecked())
 
     def _browse_out(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose Export Folder", self.out_dir.text())
@@ -306,6 +316,7 @@ class ExportDialog(QDialog):
             timecode_slot=self.tc_slot.value(),
             ltc_latency_compensation_seconds=float(self.latency_ms.value()) / 1000.0,
             data_pool=self.data_pool.text().strip() or "Default",
+            ma3_export_version=str(self.ma3_export_version.currentData() or "2.5"),
             start_offset_seconds=offset,
             fps=fps,
         )
@@ -336,6 +347,7 @@ class ExportDialog(QDialog):
                     f"· {song.name} ({base}) Seq {seq}/{seq + 1} · TC {tc} — "
                     f"{plan_summary_text(plan)}"
                 )
+                lines.extend(f"  ⚠ {warning}" for warning in plan.warnings)
             self.summary.setText("\n".join(lines))
         except Exception as exc:  # noqa: BLE001
             self.summary.setText(f"Unable to preview: {exc}")
@@ -377,6 +389,7 @@ class ExportDialog(QDialog):
 
         all_paths: dict[str, Path] = {}
         errors: list[str] = []
+        export_warnings: list[str] = []
         try:
             for song, seq, tc in self._pool_plan(songs):
                 plan = self._build_plan(song, sequence_pool_start=seq, timecode_pool=tc)
@@ -384,6 +397,7 @@ class ExportDialog(QDialog):
                     paths = Ma3Exporter().export_to_directory(plan, directory)
                 else:
                     paths = Ma2Exporter().export_to_directory(plan, directory)
+                export_warnings.extend(plan.warnings)
                 prefix = sanitize_ma_name(song.ma_export_name or song.name, fallback="Song")
                 for key, path in paths.items():
                     all_paths[f"{prefix}:{key}"] = path
@@ -402,9 +416,14 @@ class ExportDialog(QDialog):
         if len(names) > 1200:
             names = "\n".join(f"· {p.name}" for p in list(all_paths.values())[:20])
             names += f"\n…{len(all_paths)} files total"
+        warning_text = ""
+        if export_warnings:
+            warning_text = "\n\nWarnings:\n" + "\n".join(
+                f"· {warning}" for warning in export_warnings
+            )
         QMessageBox.information(
             self,
             "Export Complete",
-            f"Exported {len(songs)} song(s) →\n{directory}\n\n{names}",
+            f"Exported {len(songs)} song(s) →\n{directory}\n\n{names}{warning_text}",
         )
         self.accept()

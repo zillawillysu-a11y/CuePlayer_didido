@@ -1,0 +1,16 @@
+........................................................................ [ 15%]
+............................................F........................... [ 30%]
+........................................................................ [ 46%]
+........................................................................ [ 61%]
+........................................................................ [ 77%]
+........................................................................ [ 92%]
+.................................                                        [100%]
+================================== FAILURES ===================================
+_______________ test_video_clip_create_clamps_degenerate_values _______________
+tests\domain\test_video_clip.py:28: in test_video_clip_create_clamps_degenerate_values
+    assert clip.start_seconds == 0.0
+E   AssertionError: assert -5.0 == 0.0
+E    +  where -5.0 = VideoClip(id='47372ffd9d744904a04072ea96402e82', name='x', path=WindowsPath('x.mp4'), start_seconds=-5.0, source_in_se...=0.02, duration_seconds=0.02, locked=False, hidden=False, volume=1.0, media_kind='video', source_duration_seconds=None).start_seconds
+=========================== short test summary info ===========================
+FAILED tests/domain/test_video_clip.py::test_video_clip_create_clamps_degenerate_values
+1 failed, 464 passed in 7.68s

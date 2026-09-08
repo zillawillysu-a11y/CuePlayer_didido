@@ -3,25 +3,37 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
+from collections.abc import Callable
 from typing import Any
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.timecode.mtc import (
     absolute_timecode,
     full_frame_sysex,
     quarter_frame_payload,
 )
-from cueplayer.timecode.smpte import Timecode, parse_timecode
+from cueplayer.timecode.smpte import Timecode, add_frames, parse_timecode
 
 log = logging.getLogger(__name__)
 
 _BACKEND_READY = False
+_BACKEND_KIND = ""  # "winmm" | "rtmidi" | "pygame" | ""
+
+
+def _use_winmm() -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    from cueplayer.playback.winmm_midi import winmm_available
+
+    return winmm_available()
 
 
 def _ensure_mido_backend() -> None:
-    """Prefer rtmidi; fall back to pygame (reliable on Windows without a compiler)."""
-    global _BACKEND_READY
-    if _BACKEND_READY:
+    """Prefer rtmidi; fall back to pygame / pygame-ce (no compiler on Windows)."""
+    global _BACKEND_READY, _BACKEND_KIND
+    if _BACKEND_READY and _BACKEND_KIND in {"rtmidi", "pygame"}:
         return
     import os
 
@@ -32,23 +44,68 @@ def _ensure_mido_backend() -> None:
         import rtmidi  # noqa: F401
 
         _BACKEND_READY = True
+        _BACKEND_KIND = "rtmidi"
         return
     except ImportError:
         pass
     try:
+        import pygame  # noqa: F401
+
         mido.set_backend("mido.backends.pygame")
         _BACKEND_READY = True
+        _BACKEND_KIND = "pygame"
+        return
     except Exception as exc:  # noqa: BLE001
-        log.warning("Could not configure mido MIDI backend: %s", exc)
+        log.warning(
+            "mido MIDI backend unavailable (%s). "
+            "On Windows CuePlayer uses winmm.dll without pygame. "
+            "Otherwise install: pip install pygame-ce",
+            exc,
+        )
+
+
+def midi_backend_status() -> str:
+    """Human-readable MIDI backend readiness for UI status / dialogs."""
+    if _use_winmm():
+        from cueplayer.playback.winmm_midi import list_winmm_output_names
+
+        n = len(list_winmm_output_names())
+        return f"MIDI backend: Windows winmm ({n} output{'s' if n != 1 else ''})"
+    try:
+        import mido  # noqa: F401
+    except ImportError:
+        return "mido is not installed"
+    _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return (
+            "No MIDI backend. On Python 3.14 use pygame-ce (not pygame):\n"
+            "  .\\.venv\\Scripts\\python.exe -m pip install pygame-ce\n"
+            "Or: pip install -e \".[midi]\""
+        )
+    if _BACKEND_KIND == "rtmidi":
+        return "MIDI backend: python-rtmidi"
+    if _BACKEND_KIND == "pygame":
+        return "MIDI backend: pygame / pygame-ce"
+    return "MIDI backend: ready"
 
 
 def list_midi_output_names() -> list[str]:
-    """Return available MIDI output port names (empty if mido backend missing)."""
+    """Return available MIDI output port names (empty if no backend)."""
+    if _use_winmm():
+        from cueplayer.playback.winmm_midi import list_winmm_output_names
+
+        try:
+            return list_winmm_output_names()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not list winmm MIDI outputs: %s", exc)
+            # Fall through to mido backends.
     try:
         import mido
     except ImportError:
         return []
     _ensure_mido_backend()
+    if not _BACKEND_READY:
+        return []
     try:
         return list(mido.get_output_names())
     except Exception as exc:  # noqa: BLE001
@@ -60,8 +117,9 @@ class MtcOutput:
     """
     Sends MTC quarter frames while playing; optional full-frame dump on seek/play.
 
-    Call ``tick(position_seconds)`` from the UI/audio poll (~4–16 ms). Uses the
-    playback position (not wall clock) so MTC stays locked to the audio engine.
+    Call ``tick(position_seconds)`` from the dedicated sender thread. It uses
+    the playback sample-clock position, not wall time, so MTC stays locked to
+    the audio engine.
     """
 
     def __init__(self) -> None:
@@ -74,6 +132,12 @@ class MtcOutput:
         self._playing = False
         self._last_qf_index = -1
         self._qf_piece = 0  # 0–7 cycling
+        self._diagnostic_qf_due_max = 0
+        # Optional position → TC mapping (clip_generator mode). A provider
+        # returning ``None`` means “no TC source at this position” (outside
+        # every LTC clip): no quarter frames and no full-frame dumps there.
+        # ``None`` provider = legacy single timebase.
+        self._tc_provider: Callable[[float], Timecode | None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -88,6 +152,7 @@ class MtcOutput:
     def configure(
         self,
         *,
+        midi_master: bool,
         enabled: bool,
         port_name: str,
         start_timecode: str,
@@ -95,17 +160,33 @@ class MtcOutput:
     ) -> str | None:
         """
         Apply settings. Returns an error message if the port cannot be opened
-        while enabled; otherwise None.
+        while MIDI is on; otherwise None.
+
+        ``midi_master`` opens/closes the port. ``enabled`` controls whether MTC
+        quarter-frames are sent (generator and/or file-LTC translate).
         """
         with self._lock:
+            new_port_name = (port_name or "").strip()
+            port_changed = new_port_name != self._port_name
+            if not midi_master:
+                self._enabled = False
+                self._close_port_locked()
+                return None
             self._enabled = bool(enabled)
-            self._port_name = (port_name or "").strip()
+            self._port_name = new_port_name
             self._fps = float(fps) if fps > 0 else 30.0
             parsed = parse_timecode(start_timecode)
             if parsed is not None:
                 self._start_tc = parsed
-            err = self._reopen_port_locked()
-            return err
+            if port_changed and self._port is not None:
+                self._close_port_locked()
+            if self._port is not None and not port_changed:
+                return None
+            if self._port_name or self._enabled:
+                err = self._reopen_port_locked()
+                if err:
+                    return err
+            return None
 
     def set_timebase(self, start_timecode: str, fps: float) -> None:
         with self._lock:
@@ -114,8 +195,51 @@ class MtcOutput:
             if parsed is not None:
                 self._start_tc = parsed
 
+    def set_tc_provider(
+        self, provider: Callable[[float], Timecode | None] | None
+    ) -> None:
+        """
+        Install the position → TC mapping MTC must mirror.
+
+        Used by ``clip_generator`` songs so MTC shares the exact LTC clip
+        mapping (``ltc_timecode_at``). The provider must be cheap and lock-free
+        (it is called under the MTC lock, from the sender tick). Pass ``None`` to
+        fall back to the single ``start_timecode`` timebase.
+        """
+        with self._lock:
+            self._tc_provider = provider
+
+    def _tc_at_locked(self, position_seconds: float) -> Timecode | None:
+        """TC at ``position_seconds`` per the active mapping (lock held)."""
+        if self._tc_provider is not None:
+            try:
+                return self._tc_provider(float(position_seconds))
+            except Exception:  # noqa: BLE001 — mapping must never kill MTC
+                return None
+        return absolute_timecode(self._start_tc, position_seconds, self._fps)
+
+    def timecode_at(self, position_seconds: float) -> Timecode:
+        """SMPTE value MTC would send at this playback position."""
+        with self._lock:
+            tc = self._tc_at_locked(position_seconds)
+            if tc is not None:
+                return tc
+            return absolute_timecode(self._start_tc, position_seconds, self._fps)
+
+    def set_mirror_origin(self, absolute: Timecode, position_seconds: float) -> None:
+        """
+        Align MTC so ``absolute`` is the timecode at ``position_seconds``.
+
+        Used when mirroring decoded file LTC: MTC numbers match the LTC stripe
+        even if Song Start TC differs.
+        """
+        with self._lock:
+            delta = -int(round(max(0.0, float(position_seconds)) * self._fps))
+            self._start_tc = add_frames(absolute, delta, self._fps)
+
     def on_play(self, position_seconds: float) -> None:
         with self._lock:
+            self._diagnostic_qf_due_max = 0
             if not self._enabled or self._port is None:
                 self._playing = bool(self._enabled)
                 return
@@ -135,6 +259,16 @@ class MtcOutput:
         with self._lock:
             self._playing = False
 
+    def send_message(self, message: Any) -> None:
+        """Send an arbitrary short MIDI message on the open MTC port (shared with cue notes)."""
+        with self._lock:
+            if self._port is None:
+                return
+            try:
+                self._port.send(message)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("MIDI send_message failed: %s", exc)
+
     def tick(self, position_seconds: float) -> None:
         """Send any quarter frames due for the current sample-clock position."""
         with self._lock:
@@ -146,6 +280,37 @@ class MtcOutput:
             if qf_rate <= 0:
                 return
             target = int(max(0.0, position_seconds) * qf_rate)
+            qf_due = max(0, target - self._last_qf_index)
+            self._diagnostic_qf_due_max = max(self._diagnostic_qf_due_max, qf_due)
+            if perf_diag.is_enabled():
+                counters: dict[str, int] = {}
+                if qf_due > 1:
+                    counters["mtc.missed_qf"] = qf_due - 1
+                    if qf_due <= 8:
+                        counters["mtc.catch_up_wakeups"] = 1
+                        counters["mtc.catch_up_qf"] = qf_due - 1
+                perf_diag.record_batch(
+                    counters=counters,
+                    attrs={
+                        "mtc.qf_due_last": qf_due,
+                        "mtc.qf_due_max": self._diagnostic_qf_due_max,
+                    },
+                )
+            if self._last_qf_index < 0:
+                # Resuming after a no-TC stretch (outside an LTC clip):
+                # re-anchor + full frame so receivers latch the new TC mapping.
+                self._reset_qf_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds)
+            elif target < self._last_qf_index or target - self._last_qf_index > 8:
+                # A backward discontinuity or more than one QF group overdue:
+                # re-anchor instead of waiting for old time / replaying a burst.
+                if perf_diag.is_enabled():
+                    if target - self._last_qf_index > 8:
+                        perf_diag.count("mtc.overdue_reanchors")
+                    else:
+                        perf_diag.count("mtc.backward_reanchors")
+                self._reset_qf_locked(position_seconds)
+                self._send_full_frame_locked(position_seconds)
             while self._last_qf_index < target:
                 self._last_qf_index += 1
                 # Align piece to absolute QF index so seekers stay consistent.
@@ -153,12 +318,47 @@ class MtcOutput:
                 # 8 QFs span 2 TC frames; freeze TC at the even frame of the group.
                 group = self._last_qf_index // 8
                 frame_pos = (group * 2) / fps
-                tc = absolute_timecode(self._start_tc, frame_pos, fps)
+                tc = self._tc_at_locked(frame_pos)
+                if tc is None:
+                    # No TC source at this frame (outside every LTC clip):
+                    # stay silent, keep the index advancing without a burst.
+                    continue
+                if self._tc_provider is not None:
+                    # Clip mappings are discontinuous: an overdue group whose
+                    # frame predates the current clip must not be sent — it
+                    # would leak the previous clip's TC after a re-anchor.
+                    tc_now = self._tc_at_locked(position_seconds)
+                    if tc_now is None:
+                        # Playback is now outside every clip: discard the
+                        # stale overdue group(s); no full frame (no TC now).
+                        self._reset_qf_locked(position_seconds)
+                        break
+                    offset = int(
+                        round((position_seconds - frame_pos) * fps)
+                    )
+                    expected_now = add_frames(tc, offset, fps)
+                    if abs(
+                        expected_now.total_frames(fps)
+                        - tc_now.total_frames(fps)
+                    ) > 1:
+                        # The TC mapping changed between this group's frame
+                        # and now (crossed into another clip): discard the
+                        # whole stale group (its indices straddle the
+                        # re-anchor point — a plain reset would re-queue them
+                        # and loop forever), dump a full frame at the
+                        # current TC, and resume from the next group.
+                        self._last_qf_index = (group + 1) * 8 - 1
+                        self._send_full_frame_locked(position_seconds)
+                        break
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
                     self._port.send(self._note_msg(0xF1, data))
+                    if perf_diag.is_enabled():
+                        perf_diag.count("mtc.qf_sent")
                 except Exception as exc:  # noqa: BLE001
                     log.debug("MTC send failed: %s", exc)
+                    if perf_diag.is_enabled():
+                        perf_diag.count("mtc.qf_send_failures")
                     break
                 self._qf_piece = (piece + 1) % 8
 
@@ -176,7 +376,9 @@ class MtcOutput:
     def _send_full_frame_locked(self, position_seconds: float) -> None:
         if self._port is None:
             return
-        tc = absolute_timecode(self._start_tc, position_seconds, self._fps)
+        tc = self._tc_at_locked(position_seconds)
+        if tc is None:
+            return
         try:
             import mido
 
@@ -189,15 +391,48 @@ class MtcOutput:
 
     def _reopen_port_locked(self) -> str | None:
         self._close_port_locked()
-        if not self._enabled:
-            return None
         if not self._port_name:
-            return "MTC is enabled but no MIDI output port is selected."
+            if self._enabled:
+                return "MTC is enabled but no MIDI output port is selected."
+            return None
+
+        if _use_winmm():
+            import time
+            last_exc: Exception | None = None
+            for attempt in range(20):
+                try:
+                    from cueplayer.playback.winmm_midi import WinmmMidiOut
+                    self._port = WinmmMidiOut.open_by_name(self._port_name)
+                    self._port_name = self._port.name
+                    return None
+                except LookupError:
+                    # Port listed but can't open — wait and retry (virtual ports
+                    # like Bome need time after the previous handle is closed).
+                    last_exc = LookupError(f"MIDI port not found: {self._port_name}")
+                    log.warning("winmm MIDI port not found attempt %d, retrying…", attempt + 1)
+                    time.sleep(0.15)
+                except OSError as exc:
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.15)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    log.warning("winmm MIDI open attempt %d failed: %s", attempt + 1, exc)
+                    time.sleep(0.15)
+            # All attempts failed — report without falling through to mido.
+            return f"MIDI port not found after retries: {self._port_name}"
+
         try:
             import mido
         except ImportError:
             return "MTC requires the mido package."
         _ensure_mido_backend()
+        if not _BACKEND_READY:
+            return (
+                "No MIDI backend available. "
+                "On Windows, winmm should work without extra packages; "
+                "otherwise install pygame-ce: pip install pygame-ce"
+            )
         try:
             names = list(mido.get_output_names())
             if self._port_name not in names:

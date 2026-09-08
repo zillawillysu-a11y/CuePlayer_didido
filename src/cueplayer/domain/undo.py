@@ -1,12 +1,22 @@
-"""In-memory undo/redo for Cue mark and video clip edits."""
+"""In-memory undo/redo for Cue mark, video clip, and setlist edits."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from cueplayer.domain.models import Mark, Song, VideoClip
+from cueplayer.domain.ltc_clips import remove_ltc_clip, sorted_ltc_clips
+from cueplayer.domain.models import (
+    BeatGridRegion,
+    LtcClip,
+    Mark,
+    Project,
+    SetlistCategory,
+    Song,
+    VideoClip,
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +26,7 @@ class MarkSnapshot:
     time_seconds: float
     display_name: str = ""
     ma_export_name: str | None = None
+    main_cue_id: str = ""
 
     @classmethod
     def from_mark(cls, mark: Mark) -> MarkSnapshot:
@@ -25,6 +36,7 @@ class MarkSnapshot:
             time_seconds=mark.time_seconds,
             display_name=mark.display_name,
             ma_export_name=mark.ma_export_name,
+            main_cue_id=mark.main_cue_id,
         )
 
     def to_mark(self) -> Mark:
@@ -34,6 +46,7 @@ class MarkSnapshot:
             time_seconds=self.time_seconds,
             display_name=self.display_name,
             ma_export_name=self.ma_export_name,
+            main_cue_id=self.main_cue_id,
         )
 
 
@@ -79,6 +92,135 @@ class DeleteMarksCommand:
         song.marks = [m for m in song.marks if m.id not in ids]
 
 
+@dataclass(frozen=True)
+class BeatGridSnapshot:
+    id: str
+    start_seconds: float
+    end_seconds: float
+    bpm: float
+    beats_per_bar: int
+    beat_unit: int
+    subdivision: int
+    color: str
+    locked: bool
+
+    @classmethod
+    def from_grid(cls, grid: BeatGridRegion) -> BeatGridSnapshot:
+        return cls(
+            id=grid.id,
+            start_seconds=grid.start_seconds,
+            end_seconds=grid.end_seconds,
+            bpm=grid.bpm,
+            beats_per_bar=grid.beats_per_bar,
+            beat_unit=grid.beat_unit,
+            subdivision=grid.subdivision,
+            color=grid.color,
+            locked=grid.locked,
+        )
+
+    def to_grid(self) -> BeatGridRegion:
+        return BeatGridRegion(
+            id=self.id,
+            start_seconds=self.start_seconds,
+            end_seconds=self.end_seconds,
+            bpm=self.bpm,
+            beats_per_bar=self.beats_per_bar,
+            beat_unit=self.beat_unit,
+            subdivision=self.subdivision,
+            color=self.color,
+            locked=self.locked,
+        )
+
+
+@dataclass
+class DeleteBeatGridCommand:
+    grid: BeatGridSnapshot
+    label: str = "Delete Beat Grid"
+
+    def undo(self, song: Song) -> None:
+        if not any(grid.id == self.grid.id for grid in song.beat_grids):
+            song.beat_grids.append(self.grid.to_grid())
+            song.beat_grids.sort(key=lambda grid: grid.start_seconds)
+
+    def redo(self, song: Song) -> None:
+        song.beat_grids = [grid for grid in song.beat_grids if grid.id != self.grid.id]
+
+
+@dataclass
+class EditBeatGridCommand:
+    old_grid: BeatGridSnapshot
+    new_grid: BeatGridSnapshot
+    label: str = "Edit Beat Grid"
+
+    @staticmethod
+    def _apply(song: Song, snapshot: BeatGridSnapshot) -> None:
+        grid = next((item for item in song.beat_grids if item.id == snapshot.id), None)
+        if grid is None:
+            return
+        grid.start_seconds = snapshot.start_seconds
+        grid.end_seconds = snapshot.end_seconds
+        grid.bpm = snapshot.bpm
+        grid.beats_per_bar = snapshot.beats_per_bar
+        grid.beat_unit = snapshot.beat_unit
+        grid.subdivision = snapshot.subdivision
+        grid.color = snapshot.color
+        grid.locked = snapshot.locked
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._apply(song, self.old_grid)
+
+    def redo(self, song: Song) -> None:
+        self._apply(song, self.new_grid)
+
+
+@dataclass
+class MoveBeatGridCommand:
+    grid_id: str
+    old_start: float
+    new_start: float
+    label: str = "Move Beat Grid"
+
+    def _move(self, song: Song, start: float) -> None:
+        grid = next((item for item in song.beat_grids if item.id == self.grid_id), None)
+        if grid is None:
+            return
+        duration = grid.end_seconds - grid.start_seconds
+        grid.start_seconds = float(start)
+        grid.end_seconds = float(start) + duration
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._move(song, self.old_start)
+
+    def redo(self, song: Song) -> None:
+        self._move(song, self.new_start)
+
+
+@dataclass
+class ResizeBeatGridCommand:
+    grid_id: str
+    old_start: float
+    old_end: float
+    new_start: float
+    new_end: float
+    label: str = "Resize Beat Grid"
+
+    def _resize(self, song: Song, start: float, end: float) -> None:
+        grid = next((item for item in song.beat_grids if item.id == self.grid_id), None)
+        if grid is None:
+            return
+        grid.start_seconds = float(start)
+        grid.end_seconds = float(end)
+        song.beat_grids.sort(key=lambda item: item.start_seconds)
+
+    def undo(self, song: Song) -> None:
+        self._resize(song, self.old_start, self.old_end)
+
+    def redo(self, song: Song) -> None:
+        self._resize(song, self.new_start, self.new_end)
+
+
 @dataclass
 class MoveMarksCommand:
     """id → (old_time, new_time)."""
@@ -117,6 +259,90 @@ class RenameMarkCommand:
         mark = song.mark_by_id(self.mark_id)
         if mark is not None:
             mark.display_name = self.new_name
+
+
+@dataclass
+class ChangeMarkLanesCommand:
+    """id → (old_lane, new_lane, old_cue_id, new_cue_id)."""
+
+    changes: dict[str, tuple[int, int, str, str]]
+    label: str = "Change Mark Type"
+
+    def undo(self, song: Song) -> None:
+        for mark_id, (old_lane, _new_lane, old_cue_id, _new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(old_lane)
+            mark.main_cue_id = str(old_cue_id)
+        song.sort_marks()
+
+    def redo(self, song: Song) -> None:
+        for mark_id, (_old_lane, new_lane, _old_cue_id, new_cue_id) in self.changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is None:
+                continue
+            mark.lane_index = int(new_lane)
+            mark.main_cue_id = str(new_cue_id)
+        song.sort_marks()
+
+
+@dataclass
+class EditMainCueIdCommand:
+    mark_id: str
+    old_id: str
+    new_id: str
+    label: str = "Edit Cue ID"
+
+    def undo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.old_id
+
+    def redo(self, song: Song) -> None:
+        mark = song.mark_by_id(self.mark_id)
+        if mark is not None:
+            mark.main_cue_id = self.new_id
+
+
+@dataclass
+class SetVariantAnchorOffsetCommand:
+    """Commit Align Anchors draft → ``SongVariant.anchor_offset`` (marks untouched).
+
+    Sole mutation point for Align Apply. Does not move marks or change cue times.
+    """
+
+    variant_id: str
+    old_offset: float
+    new_offset: float
+    label: str = "Align Anchors"
+
+    def undo(self, song: Song) -> None:
+        variant = song.variant_by_id(self.variant_id)
+        if variant is not None:
+            variant.anchor_offset = float(self.old_offset)
+
+    def redo(self, song: Song) -> None:
+        variant = song.variant_by_id(self.variant_id)
+        if variant is not None:
+            variant.anchor_offset = float(self.new_offset)
+
+
+@dataclass
+class RenumberMainCueIdsCommand:
+    before: dict[str, str]
+    after: dict[str, str]
+    label: str = "Renumber Cue IDs"
+
+    def undo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.before)
+
+    def redo(self, song: Song) -> None:
+        from cueplayer.domain.main_cue_id import apply_main_cue_ids
+
+        apply_main_cue_ids(song, self.after)
 
 
 @dataclass(frozen=True)
@@ -202,6 +428,117 @@ class DeleteVideoClipsCommand:
         song.video_clips = [c for c in song.video_clips if c.id not in ids]
 
 
+@dataclass(frozen=True)
+class LtcClipSnapshot:
+    """Immutable LTC generator-clip state for undo/redo."""
+
+    id: str
+    timeline_start_seconds: float
+    duration_seconds: float
+    start_timecode: str
+
+    @classmethod
+    def from_clip(cls, clip: LtcClip) -> LtcClipSnapshot:
+        return cls(
+            id=clip.id,
+            timeline_start_seconds=clip.timeline_start_seconds,
+            duration_seconds=clip.duration_seconds,
+            start_timecode=clip.start_timecode,
+        )
+
+    def to_clip(self) -> LtcClip:
+        return LtcClip(
+            id=self.id,
+            timeline_start_seconds=self.timeline_start_seconds,
+            duration_seconds=self.duration_seconds,
+            start_timecode=self.start_timecode,
+        )
+
+
+@dataclass
+class AddLtcClipCommand:
+    """Add one LTC generator clip (also switches the song to clip_generator)."""
+
+    clip: LtcClipSnapshot
+    old_mode: str  # song.ltc_source_mode before the add (restored on undo)
+    label: str = "Add LTC Clip"
+
+    def undo(self, song: Song) -> None:
+        song.ltc_clips = [c for c in song.ltc_clips if c.id != self.clip.id]
+        song.ltc_source_mode = self.old_mode
+
+    def redo(self, song: Song) -> None:
+        if not any(c.id == self.clip.id for c in song.ltc_clips):
+            song.ltc_clips.append(self.clip.to_clip())
+            song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+        # Same mutual-exclusion rule as add_ltc_clip: adding a clip always
+        # puts the song in clip_generator.
+        song.ltc_source_mode = "clip_generator"
+
+
+@dataclass
+class DeleteLtcClipsCommand:
+    """Delete LTC clip(s). Mode is never auto-changed (Phase 1 rule)."""
+
+    clips: list[LtcClipSnapshot]
+    label: str = "Delete LTC Clip"
+
+    def undo(self, song: Song) -> None:
+        existing = {c.id for c in song.ltc_clips}
+        for snap in self.clips:
+            if snap.id not in existing:
+                song.ltc_clips.append(snap.to_clip())
+        song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def redo(self, song: Song) -> None:
+        ids = {snap.id for snap in self.clips}
+        for snap in self.clips:
+            remove_ltc_clip(song, snap.id)
+
+
+LtcClipTransform = tuple[float, float, str]  # (start_seconds, duration_seconds, start_timecode)
+
+
+@dataclass
+class EditLtcClipsCommand:
+    """Move / trim / start-TC edit: id -> (old_transform, new_transform)."""
+
+    changes: dict[str, tuple[LtcClipTransform, LtcClipTransform]]
+    label: str = "Edit LTC Clip"
+
+    def _apply(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.changes.items():
+            clip = next((c for c in song.ltc_clips if c.id == clip_id), None)
+            if clip is None:
+                continue
+            start, duration, start_tc = transforms[index]
+            clip.timeline_start_seconds = start
+            clip.duration_seconds = duration
+            clip.start_timecode = start_tc
+        song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def undo(self, song: Song) -> None:
+        self._apply(song, 0)
+
+    def redo(self, song: Song) -> None:
+        self._apply(song, 1)
+
+
+@dataclass
+class SetLtcSourceModeCommand:
+    """Explicit per-song LTC source mode switch (four user states; never auto)."""
+
+    old_mode: str
+    new_mode: str
+    label: str = "Set LTC Source Mode"
+
+    def undo(self, song: Song) -> None:
+        song.ltc_source_mode = self.old_mode
+
+    def redo(self, song: Song) -> None:
+        song.ltc_source_mode = self.new_mode
+
+
 ClipTransform = tuple[float, float, float]  # (start_seconds, source_in_seconds, duration_seconds)
 
 
@@ -231,18 +568,278 @@ class EditVideoClipsCommand:
         self._apply(song, 1)
 
 
+@dataclass
+class SplitVideoClipCommand:
+    """Split at playhead: shrink the original clip and add the new right
+    clip as a single atomic undo entry (one undo restores the original)."""
+
+    original_id: str
+    original_before: ClipTransform
+    original_after: ClipTransform
+    new_clip: VideoClipSnapshot
+    label: str = "Split Video Clip"
+
+    def undo(self, song: Song) -> None:
+        song.video_clips = [c for c in song.video_clips if c.id != self.new_clip.id]
+        clip = song.video_clip_by_id(self.original_id)
+        if clip is not None:
+            start, source_in, duration = self.original_before
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        song.sort_video_clips()
+
+    def redo(self, song: Song) -> None:
+        clip = song.video_clip_by_id(self.original_id)
+        if clip is not None:
+            start, source_in, duration = self.original_after
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        existing = {c.id for c in song.video_clips}
+        if self.new_clip.id not in existing:
+            song.video_clips.append(self.new_clip.to_clip())
+        song.sort_video_clips()
+
+
+@dataclass
+class GroupMoveCommand:
+    """Marquee-selection group move: one undo entry across Video Clips, LTC
+    Clips, and Marks moved together by the same shared time delta.
+
+    Each dict uses the same ``id -> (old_transform, new_transform)`` shape as
+    the single-type commands above (``ClipTransform`` / ``LtcClipTransform`` /
+    ``(old_time, new_time)``) — a group move never needs a new transform
+    shape, only a way to apply several types' worth of them atomically.
+    """
+
+    video_changes: dict[str, tuple[ClipTransform, ClipTransform]] = field(default_factory=dict)
+    ltc_changes: dict[str, tuple[LtcClipTransform, LtcClipTransform]] = field(default_factory=dict)
+    mark_changes: dict[str, tuple[float, float]] = field(default_factory=dict)
+    label: str = "Move Selection"
+
+    def _apply_video(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.video_changes.items():
+            clip = song.video_clip_by_id(clip_id)
+            if clip is None:
+                continue
+            start, source_in, duration = transforms[index]
+            clip.start_seconds = start
+            clip.source_in_seconds = source_in
+            clip.duration_seconds = duration
+            clip.source_out_seconds = source_in + duration
+        if self.video_changes:
+            song.sort_video_clips()
+
+    def _apply_ltc(self, song: Song, index: int) -> None:
+        for clip_id, transforms in self.ltc_changes.items():
+            clip = next((c for c in song.ltc_clips if c.id == clip_id), None)
+            if clip is None:
+                continue
+            start, duration, start_tc = transforms[index]
+            clip.timeline_start_seconds = start
+            clip.duration_seconds = duration
+            clip.start_timecode = start_tc
+        if self.ltc_changes:
+            song.ltc_clips = sorted_ltc_clips(song.ltc_clips)
+
+    def _apply_marks(self, song: Song, index: int) -> None:
+        for mark_id, times in self.mark_changes.items():
+            mark = song.mark_by_id(mark_id)
+            if mark is not None:
+                mark.time_seconds = times[index]
+        if self.mark_changes:
+            song.sort_marks()
+
+    def undo(self, song: Song) -> None:
+        self._apply_video(song, 0)
+        self._apply_ltc(song, 0)
+        self._apply_marks(song, 0)
+
+    def redo(self, song: Song) -> None:
+        self._apply_video(song, 1)
+        self._apply_ltc(song, 1)
+        self._apply_marks(song, 1)
+
+
+@dataclass
+class UndoContext:
+    """Project + current song for unified undo/redo."""
+
+    project: Project
+    current_song_id: str
+
+    @property
+    def song(self) -> Song:
+        for s in self.project.songs:
+            if s.id == self.current_song_id:
+                return s
+        if self.project.songs:
+            return self.project.songs[0]
+        # Empty Setlist — callers must tolerate missing song; return a throwaway.
+        return Song.create("Untitled Song")
+
+
+def _merge_setlist_state(live: Song, snap: Song) -> None:
+    """Restore setlist-editable fields; keep marks / lanes on the live song."""
+    live.setlist_number = snap.setlist_number
+    live.category_id = snap.category_id
+    live.name = snap.name
+    live.ma_export_name = snap.ma_export_name
+    live.bpm = snap.bpm
+    live.bpm_auto = bool(getattr(snap, "bpm_auto", False))
+    live.row_color = snap.row_color
+    live.start_timecode = snap.start_timecode
+    live.fps = snap.fps
+    live.duration_seconds = snap.duration_seconds
+    live.audio_tracks = copy.deepcopy(snap.audio_tracks)
+    live.video_clips = copy.deepcopy(snap.video_clips)
+
+
+@dataclass(frozen=True)
+class SetlistStateSnapshot:
+    songs: tuple[Song, ...]
+    categories: tuple[SetlistCategory, ...]
+
+    @classmethod
+    def capture(cls, project: Project) -> SetlistStateSnapshot:
+        return cls(
+            songs=tuple(copy.deepcopy(project.songs)),
+            categories=tuple(copy.deepcopy(project.setlist_categories)),
+        )
+
+    def _fingerprint(self) -> tuple:
+        song_fp = tuple(
+            (
+                s.id,
+                float(s.setlist_number),
+                s.category_id,
+                s.name,
+                s.ma_export_name,
+                s.bpm,
+                bool(getattr(s, "bpm_auto", False)),
+                s.row_color or "",
+                s.start_timecode,
+                float(s.fps),
+                len(s.audio_tracks),
+                len(s.video_clips),
+            )
+            for s in self.songs
+        )
+        cat_fp = tuple(
+            (
+                c.id,
+                c.name,
+                bool(c.collapsed),
+                bool(c.sheet_collapsed),
+                c.row_color or "",
+            )
+            for c in self.categories
+        )
+        return (song_fp, cat_fp)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SetlistStateSnapshot):
+            return False
+        return self._fingerprint() == other._fingerprint()
+
+    def apply(self, project: Project) -> None:
+        current_by_id = {s.id: s for s in project.songs}
+        merged: list[Song] = []
+        for snap in self.songs:
+            live = current_by_id.get(snap.id)
+            if live is None:
+                merged.append(copy.deepcopy(snap))
+            else:
+                _merge_setlist_state(live, snap)
+                merged.append(live)
+        project.songs = merged
+        project.setlist_categories = [copy.deepcopy(c) for c in self.categories]
+
+
+@dataclass
+class SetlistEditCommand:
+    before: SetlistStateSnapshot
+    after: SetlistStateSnapshot
+    label: str
+    current_song_id: str
+    selected_song_ids: tuple[str, ...]
+
+    def undo(self, ctx: UndoContext) -> None:
+        self.before.apply(ctx.project)
+        ctx.current_song_id = self.current_song_id
+
+    def redo(self, ctx: UndoContext) -> None:
+        self.after.apply(ctx.project)
+        ctx.current_song_id = self.current_song_id
+
+
+@dataclass
+class SongScopedCommand:
+    """Adapter: mark/clip commands that operate on one song by id."""
+
+    command: Any
+    song_id: str = ""
+
+    @property
+    def label(self) -> str:
+        return str(self.command.label)
+
+    def _song(self, ctx: UndoContext) -> Song | None:
+        if self.song_id:
+            for song in ctx.project.songs:
+                if song.id == self.song_id:
+                    return song
+            return None
+        return ctx.song
+
+    def undo(self, ctx: UndoContext) -> None:
+        song = self._song(ctx)
+        if song is not None:
+            self.command.undo(song)
+
+    def redo(self, ctx: UndoContext) -> None:
+        song = self._song(ctx)
+        if song is not None:
+            self.command.redo(song)
+
+
+_ContextCommand = SetlistEditCommand | SongScopedCommand
+UndoStepResult = tuple[str, SetlistEditCommand | None, str | None]
+
+
 class UndoStack:
     def __init__(self, *, limit: int = 100) -> None:
         self._limit = max(1, limit)
-        self._undo: list[UndoCommand] = []
-        self._redo: list[UndoCommand] = []
+        self._undo: list[_ContextCommand] = []
+        self._redo: list[_ContextCommand] = []
+        self._last_executed: _ContextCommand | None = None
+
+    @property
+    def last_executed_command(self) -> object | None:
+        """Inner command of the latest undo/redo (post-sync hooks use this)."""
+        command = self._last_executed
+        if isinstance(command, SongScopedCommand):
+            return command.command
+        return command
 
     def clear(self) -> None:
         self._undo.clear()
         self._redo.clear()
+        self._last_executed = None
 
-    def push(self, command: UndoCommand) -> None:
-        self._undo.append(command)
+    def clear_song_scoped(self) -> None:
+        self._undo = [c for c in self._undo if isinstance(c, SetlistEditCommand)]
+        self._redo.clear()
+
+    def push(self, command: Any, *, song_id: str | None = None) -> None:
+        if isinstance(command, SetlistEditCommand):
+            wrapped: _ContextCommand = command
+        else:
+            wrapped = SongScopedCommand(command=command, song_id=str(song_id or ""))
+        self._undo.append(wrapped)
         if len(self._undo) > self._limit:
             self._undo.pop(0)
         self._redo.clear()
@@ -253,18 +850,45 @@ class UndoStack:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def undo(self, song: Song) -> str | None:
+    def undo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
+        """Undo one step. Pass UndoContext for UI; pass Song for legacy domain tests."""
+        if isinstance(ctx, Song):
+            song = ctx
+            project = Project.create("_undo")
+            project.songs = [song]
+            uctx = UndoContext(project=project, current_song_id=song.id)
+            result = self._undo_one(uctx)
+            return result[0] if result is not None else None
+        return self._undo_one(ctx)
+
+    def redo(self, ctx: UndoContext | Song) -> UndoStepResult | str | None:
+        if isinstance(ctx, Song):
+            song = ctx
+            project = Project.create("_undo")
+            project.songs = [song]
+            uctx = UndoContext(project=project, current_song_id=song.id)
+            result = self._redo_one(uctx)
+            return result[0] if result is not None else None
+        return self._redo_one(ctx)
+
+    def _undo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._undo:
             return None
         command = self._undo.pop()
-        command.undo(song)
+        command.undo(ctx)
+        self._last_executed = command
         self._redo.append(command)
-        return command.label
+        setlist = command if isinstance(command, SetlistEditCommand) else None
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id
 
-    def redo(self, song: Song) -> str | None:
+    def _redo_one(self, ctx: UndoContext) -> UndoStepResult | None:
         if not self._redo:
             return None
         command = self._redo.pop()
-        command.redo(song)
+        command.redo(ctx)
+        self._last_executed = command
         self._undo.append(command)
-        return command.label
+        setlist = command if isinstance(command, SetlistEditCommand) else None
+        song_id = command.song_id if isinstance(command, SongScopedCommand) else None
+        return command.label, setlist, song_id

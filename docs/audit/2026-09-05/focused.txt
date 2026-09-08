@@ -1,0 +1,17 @@
+.................FF..................................................... [ 88%]
+.........                                                                [100%]
+================================== FAILURES ===================================
+___________ test_engine_ltc_route_opens_three_channels_on_focusrite ___________
+tests\playback\test_devices.py:154: in test_engine_ltc_route_opens_three_channels_on_focusrite
+    assert engine._device_index == 1
+E   assert None == 1
+E    +  where None = <cueplayer.playback.audio_engine.AudioEngine(0x1899a037040) at 0x00000189FF47F440>._device_index
+______________ test_probe_failure_switches_to_asio_multichannel _______________
+tests\playback\test_devices.py:201: in test_probe_failure_switches_to_asio_multichannel
+    assert engine._device_index == 3
+E   assert None == 3
+E    +  where None = <cueplayer.playback.audio_engine.AudioEngine(0x1899a17be20) at 0x000001899B49D180>._device_index
+=========================== short test summary info ===========================
+FAILED tests/playback/test_devices.py::test_engine_ltc_route_opens_three_channels_on_focusrite
+FAILED tests/playback/test_devices.py::test_probe_failure_switches_to_asio_multichannel
+2 failed, 79 passed, 87 warnings in 2.14s

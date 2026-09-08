@@ -47,10 +47,23 @@ def write_xml(
 
 
 def seconds_to_ma2_frames(seconds: float, fps: float) -> int:
-    """Legacy frame count (when Timecode TimeUnit is N FPS). Prefer centiseconds."""
-    return max(0, int(round(seconds * fps)))
+    """MA2 Timecode event / length unit when TimeUnit is N FPS (default on Import)."""
+    rate = float(fps) if fps and fps > 0 else 30.0
+    return max(0, int(round(float(seconds) * rate)))
 
 
 def seconds_to_ma2_centiseconds(seconds: float) -> int:
-    """MA2 Timecode event / length unit when TimeUnit is ``1/100 Seconds``."""
+    """Deprecated: hundredths only work if TimeUnit is set *before* Import."""
     return max(0, int(round(float(seconds) * 100.0)))
+
+
+def ma2_timecode_frame_rate(fps: float) -> int:
+    """MA2 XML frame_format / TimeUnit only allow 24, 25, or 30 FPS."""
+    rate = int(round(float(fps or 30.0)))
+    if rate in (24, 25, 30):
+        return rate
+    return 30
+
+
+def ma2_timecode_frame_format(fps: float) -> str:
+    return f"{ma2_timecode_frame_rate(fps)} FPS"

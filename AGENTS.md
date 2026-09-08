@@ -2,6 +2,15 @@
 
 Read `docs/PRODUCT_SPEC.md` before implementing features.
 
+**AI workflow (permanent):** [`.ai/README.md`](.ai/README.md) → [`.ai/WORKFLOW.md`](.ai/WORKFLOW.md) → [`.ai/NEXT_TASK.md`](.ai/NEXT_TASK.md).  
+Every task: **plan before code**; after code update [`.ai/REPORT.md`](.ai/REPORT.md) + a file under [`.ai/handoffs/`](.ai/handoffs/); then **stop**.  
+System prompt: [`.ai/prompts/cursor_system.md`](.ai/prompts/cursor_system.md). Cursor rule: `.cursor/rules/ai-workflow.mdc`.
+
+## Communication language (permanent)
+
+與使用者的聊天回覆、Phase 完成摘要、問題說明一律使用繁體中文。
+程式碼 identifier、既有英文 UI、技術檔案內容可依專案既有慣例保持英文。
+
 ## Non-negotiables
 
 - Full Unicode / Chinese support for project names, folders, and media paths from day one.
@@ -29,12 +38,26 @@ Read `docs/PRODUCT_SPEC.md` before implementing features.
 UI / Domain / Playback Engine / Media / Exporters / Persistence stay separated.
 Playback Engine is the only playback clock source.
 
+**Permanent rules:** [`docs/BOUNDARY_RULES.md`](docs/BOUNDARY_RULES.md) (dependency directions) · [`docs/MIGRATION_RULES.md`](docs/MIGRATION_RULES.md) (one-module strangler). Target layout: [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md).
+
+## Working mode
+
+- Work directly in the current project with the user, using a single assistant.
+- Do not delegate to local models or other computers, or resume the cancelled
+  multi-worker setup, unless the user explicitly requests it again.
+
 ## Multi-machine / GitHub
 
 - Remote: `https://github.com/zillawillysu-a11y/CuePlayer_didido.git` (`origin`).
 - After commits, push so laptop and desktop stay in sync (see `.cursor/rules/auto-push.mdc`).
+- The user has authorized committing and pushing each completed task. Do this
+  automatically and verify the remote branch matches the local commit.
 - Cursor chat history is **per machine** and does not follow the repo; continue work from this guide + `docs/PRODUCT_SPEC.md` + recent commits.
 
-## Recent handoff (2026-07)
+## Recent handoff (2026-09)
 
-Shipped on `master`: timeline UI, marks, sample-locked video clips (waveforms, Clean Output, still images, loop, crossfade), device-aware audio (WASAPI defaults, resample), LTC/MTC, MA export refinements. Deferred: setlist/timeline/export selection row colors. Next milestone item often: polish video/alignment UX or NDI only after cue accuracy is solid.
+LTC Generator Clips Phases 1–4 are complete: domain/persistence, playback/MTC,
+hardening, Timeline UI, and MA2/MA3 exporter wiring. Export uses half-open
+`[start, end)` clip mapping, preserves out-of-clip Sequence Cues while omitting
+their Timecode Events, and keeps one Timecode object per Song. See
+`.ai/handoffs/2026-09-06_LtcClipsExporterPhase4.md` / `.ai/NEXT_TASK.md`.

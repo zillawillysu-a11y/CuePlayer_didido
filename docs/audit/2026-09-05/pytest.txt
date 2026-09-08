@@ -1,0 +1,16 @@
+
+=================================== ERRORS ====================================
+__________ ERROR collecting tests/media/test_video_clip_waveform.py ___________
+ImportError while importing test module 'C:\Users\willy\Documents\00_AI\05_Cue Player\CuePlayer_didido\tests\media\test_video_clip_waveform.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\media\test_video_clip_waveform.py:11: in <module>
+    from cueplayer.media.video_clip_waveform import (
+E   ImportError: cannot import name 'build_clip_waveform_data' from 'cueplayer.media.video_clip_waveform' (C:\Users\willy\Documents\00_AI\05_Cue Player\CuePlayer_didido\src\cueplayer\media\video_clip_waveform.py)
+=========================== short test summary info ===========================
+ERROR tests/media/test_video_clip_waveform.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 10.09s

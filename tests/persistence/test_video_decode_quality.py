@@ -12,9 +12,9 @@ from cueplayer.persistence.project_store import (
 )
 
 
-def test_video_decode_quality_defaults_to_full() -> None:
+def test_video_decode_quality_defaults_to_1080p() -> None:
     project = Project.create("預設專案")
-    assert project.video_decode_quality == "full"
+    assert project.video_decode_quality == "1080p"
 
 
 def test_video_decode_quality_roundtrip(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_video_decode_quality_missing_field_uses_default() -> None:
         "songs": [],
     }
     project = project_from_dict(data)
-    assert project.video_decode_quality == "full"
+    assert project.video_decode_quality == "1080p"
 
 
 def test_video_decode_quality_rejects_unknown_value() -> None:
@@ -47,4 +47,4 @@ def test_video_decode_quality_rejects_unknown_value() -> None:
         "video_decode_quality": "8k-please",
     }
     project = project_from_dict(data)
-    assert project.video_decode_quality == "full"
+    assert project.video_decode_quality == "1080p"

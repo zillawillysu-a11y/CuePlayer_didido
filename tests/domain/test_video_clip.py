@@ -23,9 +23,10 @@ def test_video_clip_create_sets_end_and_source_out() -> None:
     assert clip.path == Path("中文資料夾/開場.mp4")
 
 
-def test_video_clip_create_clamps_degenerate_values() -> None:
+def test_video_clip_preserves_preroll_and_clamps_duration() -> None:
     clip = VideoClip.create(name="x", path=Path("x.mp4"), start_seconds=-5.0, duration_seconds=0.0)
-    assert clip.start_seconds == 0.0
+    # Negative starts intentionally support pre-roll (commit 068cb74).
+    assert clip.start_seconds == -5.0
     assert clip.duration_seconds >= 0.02  # never a zero/negative-length clip
 
 

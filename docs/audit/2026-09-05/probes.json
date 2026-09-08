@@ -1,0 +1,1064 @@
+{
+  "baseline": "d9663ec",
+  "hardware_output_tested": false,
+  "packages": {
+    "numpy": "2.5.2",
+    "soundfile": "0.14.0",
+    "sounddevice": "0.5.6",
+    "av": "17.1.0",
+    "PySide6": "6.11.2",
+    "pytest": "9.1.1"
+  },
+  "source_inventory": [
+    {
+      "file": "src/cueplayer/__init__.py",
+      "lines": 3,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/__main__.py",
+      "lines": 7,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/app.py",
+      "lines": 257,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/application/__init__.py",
+      "lines": 8,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/application/ma_preflight_export_gate.py",
+      "lines": 87,
+      "functions": 8
+    },
+    {
+      "file": "src/cueplayer/application/playback_service.py",
+      "lines": 420,
+      "functions": 47
+    },
+    {
+      "file": "src/cueplayer/application/project_service.py",
+      "lines": 271,
+      "functions": 30
+    },
+    {
+      "file": "src/cueplayer/application/settings_service.py",
+      "lines": 194,
+      "functions": 22
+    },
+    {
+      "file": "src/cueplayer/application/show_session_service.py",
+      "lines": 278,
+      "functions": 13
+    },
+    {
+      "file": "src/cueplayer/core/__init__.py",
+      "lines": 12,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/core/event_bus.py",
+      "lines": 86,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/diagnostics/__init__.py",
+      "lines": 35,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/diagnostics/perf.py",
+      "lines": 703,
+      "functions": 17
+    },
+    {
+      "file": "src/cueplayer/diagnostics/video_sm_trace.py",
+      "lines": 532,
+      "functions": 19
+    },
+    {
+      "file": "src/cueplayer/domain/__init__.py",
+      "lines": 1,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/domain/anchor_mapping.py",
+      "lines": 124,
+      "functions": 8
+    },
+    {
+      "file": "src/cueplayer/domain/cue_list_columns.py",
+      "lines": 39,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/domain/main_cue_id.py",
+      "lines": 369,
+      "functions": 24
+    },
+    {
+      "file": "src/cueplayer/domain/media_relink.py",
+      "lines": 185,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/domain/models.py",
+      "lines": 1402,
+      "functions": 70
+    },
+    {
+      "file": "src/cueplayer/domain/song_session.py",
+      "lines": 69,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/domain/song_variant.py",
+      "lines": 133,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/domain/undo.py",
+      "lines": 666,
+      "functions": 64
+    },
+    {
+      "file": "src/cueplayer/domain/validation/__init__.py",
+      "lines": 63,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/domain/validation/codes.py",
+      "lines": 62,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/domain/validation/issue.py",
+      "lines": 70,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/domain/validation/ma_context.py",
+      "lines": 215,
+      "functions": 10
+    },
+    {
+      "file": "src/cueplayer/domain/validation/ma_names.py",
+      "lines": 58,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/domain/validation/ma_rules.py",
+      "lines": 405,
+      "functions": 15
+    },
+    {
+      "file": "src/cueplayer/domain/validation/preflight_report.py",
+      "lines": 319,
+      "functions": 23
+    },
+    {
+      "file": "src/cueplayer/domain/validation/report.py",
+      "lines": 109,
+      "functions": 17
+    },
+    {
+      "file": "src/cueplayer/domain/validation/rules.py",
+      "lines": 95,
+      "functions": 11
+    },
+    {
+      "file": "src/cueplayer/domain/validation/severity.py",
+      "lines": 41,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/exporters/__init__.py",
+      "lines": 1,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/exporters/common.py",
+      "lines": 425,
+      "functions": 26
+    },
+    {
+      "file": "src/cueplayer/exporters/ma2/__init__.py",
+      "lines": 5,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/exporters/ma2/exporter.py",
+      "lines": 1502,
+      "functions": 35
+    },
+    {
+      "file": "src/cueplayer/exporters/ma2_telnet.py",
+      "lines": 307,
+      "functions": 14
+    },
+    {
+      "file": "src/cueplayer/exporters/ma3/__init__.py",
+      "lines": 9,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/exporters/ma3/exporter.py",
+      "lines": 1178,
+      "functions": 17
+    },
+    {
+      "file": "src/cueplayer/exporters/ma3_osc.py",
+      "lines": 213,
+      "functions": 12
+    },
+    {
+      "file": "src/cueplayer/exporters/ma_default_dirs.py",
+      "lines": 391,
+      "functions": 21
+    },
+    {
+      "file": "src/cueplayer/exporters/plan_from_song.py",
+      "lines": 207,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/exporters/show_patch.py",
+      "lines": 392,
+      "functions": 13
+    },
+    {
+      "file": "src/cueplayer/exporters/xml_inspect.py",
+      "lines": 27,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/exporters/xml_write.py",
+      "lines": 69,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/features.py",
+      "lines": 11,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/media/__init__.py",
+      "lines": 0,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/media/audio_disk_cache.py",
+      "lines": 499,
+      "functions": 19
+    },
+    {
+      "file": "src/cueplayer/media/audio_loader.py",
+      "lines": 324,
+      "functions": 14
+    },
+    {
+      "file": "src/cueplayer/media/av_lock.py",
+      "lines": 31,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/media/bpm_analyzer.py",
+      "lines": 989,
+      "functions": 37
+    },
+    {
+      "file": "src/cueplayer/media/bpm_native.py",
+      "lines": 31,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/media/cache_management.py",
+      "lines": 106,
+      "functions": 9
+    },
+    {
+      "file": "src/cueplayer/media/ltc_detect.py",
+      "lines": 124,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/media/scrub_frame_cache.py",
+      "lines": 227,
+      "functions": 12
+    },
+    {
+      "file": "src/cueplayer/media/video_audio_cache.py",
+      "lines": 185,
+      "functions": 10
+    },
+    {
+      "file": "src/cueplayer/media/video_audio_loader.py",
+      "lines": 168,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/media/video_clip_waveform.py",
+      "lines": 436,
+      "functions": 23
+    },
+    {
+      "file": "src/cueplayer/media/video_limits.py",
+      "lines": 72,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/media/video_loader.py",
+      "lines": 503,
+      "functions": 22
+    },
+    {
+      "file": "src/cueplayer/media/video_music_standin.py",
+      "lines": 185,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/media/video_waveform_artifact.py",
+      "lines": 1335,
+      "functions": 48
+    },
+    {
+      "file": "src/cueplayer/media/video_waveform_worker.py",
+      "lines": 60,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/persistence/__init__.py",
+      "lines": 1,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/persistence/audio_prefs.py",
+      "lines": 63,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/persistence/backup.py",
+      "lines": 100,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/persistence/mark_template.py",
+      "lines": 170,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/persistence/media_layout.py",
+      "lines": 679,
+      "functions": 25
+    },
+    {
+      "file": "src/cueplayer/persistence/media_paths.py",
+      "lines": 59,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/persistence/project_bundle.py",
+      "lines": 218,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/persistence/project_migrations.py",
+      "lines": 117,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/persistence/project_store.py",
+      "lines": 1129,
+      "functions": 33
+    },
+    {
+      "file": "src/cueplayer/persistence/unused_media.py",
+      "lines": 139,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/playback/__init__.py",
+      "lines": 0,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/playback/audio_engine.py",
+      "lines": 2305,
+      "functions": 126
+    },
+    {
+      "file": "src/cueplayer/playback/devices.py",
+      "lines": 669,
+      "functions": 29
+    },
+    {
+      "file": "src/cueplayer/playback/jog.py",
+      "lines": 37,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/playback/media_load_probe.py",
+      "lines": 33,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/playback/midi_cue_notes.py",
+      "lines": 219,
+      "functions": 18
+    },
+    {
+      "file": "src/cueplayer/playback/mtc_output.py",
+      "lines": 361,
+      "functions": 22
+    },
+    {
+      "file": "src/cueplayer/playback/ndi_output.py",
+      "lines": 642,
+      "functions": 27
+    },
+    {
+      "file": "src/cueplayer/playback/resample.py",
+      "lines": 179,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/playback/routing_parse.py",
+      "lines": 286,
+      "functions": 16
+    },
+    {
+      "file": "src/cueplayer/playback/video_audio_mixer.py",
+      "lines": 1048,
+      "functions": 39
+    },
+    {
+      "file": "src/cueplayer/playback/video_sync.py",
+      "lines": 4261,
+      "functions": 104
+    },
+    {
+      "file": "src/cueplayer/playback/winmm_midi.py",
+      "lines": 213,
+      "functions": 11
+    },
+    {
+      "file": "src/cueplayer/ports/__init__.py",
+      "lines": 55,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/ports/audio_device.py",
+      "lines": 47,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/ports/clock.py",
+      "lines": 51,
+      "functions": 8
+    },
+    {
+      "file": "src/cueplayer/ports/exporter.py",
+      "lines": 28,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/ports/frame_sink.py",
+      "lines": 18,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/ports/media_jobs.py",
+      "lines": 31,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/ports/project_store.py",
+      "lines": 21,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/ports/remote_host.py",
+      "lines": 290,
+      "functions": 54
+    },
+    {
+      "file": "src/cueplayer/ports/show_host.py",
+      "lines": 267,
+      "functions": 33
+    },
+    {
+      "file": "src/cueplayer/ports/song_session.py",
+      "lines": 24,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/ports/video_audio.py",
+      "lines": 19,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/ports/video_decoder.py",
+      "lines": 22,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/repository/__init__.py",
+      "lines": 7,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/repository/project_repository.py",
+      "lines": 55,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/routing/__init__.py",
+      "lines": 0,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/routing/matrix.py",
+      "lines": 75,
+      "functions": 3
+    },
+    {
+      "file": "src/cueplayer/spikes/__init__.py",
+      "lines": 1,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/spikes/audio_routing.py",
+      "lines": 291,
+      "functions": 11
+    },
+    {
+      "file": "src/cueplayer/timecode/__init__.py",
+      "lines": 30,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/timecode/ltc.py",
+      "lines": 358,
+      "functions": 16
+    },
+    {
+      "file": "src/cueplayer/timecode/ltc_decode.py",
+      "lines": 183,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/timecode/mtc.py",
+      "lines": 91,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/timecode/smpte.py",
+      "lines": 83,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/ui/__init__.py",
+      "lines": 1,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/ui/align_anchors_dialog.py",
+      "lines": 728,
+      "functions": 33
+    },
+    {
+      "file": "src/cueplayer/ui/audio_timecode_dialog.py",
+      "lines": 495,
+      "functions": 14
+    },
+    {
+      "file": "src/cueplayer/ui/beat_grid_dialog.py",
+      "lines": 122,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/ui/checkbox.py",
+      "lines": 45,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/ui/color_presets.py",
+      "lines": 143,
+      "functions": 10
+    },
+    {
+      "file": "src/cueplayer/ui/cue_monitor_panel.py",
+      "lines": 2972,
+      "functions": 135
+    },
+    {
+      "file": "src/cueplayer/ui/dnd_mime.py",
+      "lines": 13,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/ui/drag_drop.py",
+      "lines": 217,
+      "functions": 14
+    },
+    {
+      "file": "src/cueplayer/ui/export_dialog.py",
+      "lines": 413,
+      "functions": 15
+    },
+    {
+      "file": "src/cueplayer/ui/icon_button.py",
+      "lines": 252,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/ui/lane_manager_dialog.py",
+      "lines": 5,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/ui/ma2_view_layout.py",
+      "lines": 234,
+      "functions": 11
+    },
+    {
+      "file": "src/cueplayer/ui/ma_preflight_dialog.py",
+      "lines": 293,
+      "functions": 10
+    },
+    {
+      "file": "src/cueplayer/ui/main_window.py",
+      "lines": 8677,
+      "functions": 396
+    },
+    {
+      "file": "src/cueplayer/ui/mark_display_dialog.py",
+      "lines": 353,
+      "functions": 8
+    },
+    {
+      "file": "src/cueplayer/ui/mark_manager_dialog.py",
+      "lines": 1332,
+      "functions": 60
+    },
+    {
+      "file": "src/cueplayer/ui/marker_draw.py",
+      "lines": 138,
+      "functions": 3
+    },
+    {
+      "file": "src/cueplayer/ui/missing_media_dialog.py",
+      "lines": 196,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/ui/ndi_install_dialog.py",
+      "lines": 122,
+      "functions": 2
+    },
+    {
+      "file": "src/cueplayer/ui/output_quick_toggles.py",
+      "lines": 200,
+      "functions": 13
+    },
+    {
+      "file": "src/cueplayer/ui/row_color.py",
+      "lines": 60,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/ui/setlist_delegate.py",
+      "lines": 112,
+      "functions": 7
+    },
+    {
+      "file": "src/cueplayer/ui/setlist_sheet_page.py",
+      "lines": 819,
+      "functions": 28
+    },
+    {
+      "file": "src/cueplayer/ui/show_patch_page.py",
+      "lines": 3749,
+      "functions": 86
+    },
+    {
+      "file": "src/cueplayer/ui/song_edit_dialog.py",
+      "lines": 532,
+      "functions": 22
+    },
+    {
+      "file": "src/cueplayer/ui/spinboxes.py",
+      "lines": 27,
+      "functions": 3
+    },
+    {
+      "file": "src/cueplayer/ui/splash.py",
+      "lines": 165,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/ui/sync_calib_dialog.py",
+      "lines": 262,
+      "functions": 11
+    },
+    {
+      "file": "src/cueplayer/ui/theme.py",
+      "lines": 566,
+      "functions": 9
+    },
+    {
+      "file": "src/cueplayer/ui/timeline_overview.py",
+      "lines": 252,
+      "functions": 16
+    },
+    {
+      "file": "src/cueplayer/ui/timeline_widget.py",
+      "lines": 6418,
+      "functions": 291
+    },
+    {
+      "file": "src/cueplayer/ui/transport_bar.py",
+      "lines": 771,
+      "functions": 30
+    },
+    {
+      "file": "src/cueplayer/ui/video_clip_dialog.py",
+      "lines": 105,
+      "functions": 4
+    },
+    {
+      "file": "src/cueplayer/ui/video_clip_edit.py",
+      "lines": 74,
+      "functions": 3
+    },
+    {
+      "file": "src/cueplayer/ui/video_output_window.py",
+      "lines": 414,
+      "functions": 30
+    },
+    {
+      "file": "src/cueplayer/ui/video_preview.py",
+      "lines": 191,
+      "functions": 12
+    },
+    {
+      "file": "src/cueplayer/util/runtime.py",
+      "lines": 43,
+      "functions": 6
+    },
+    {
+      "file": "src/cueplayer/util/thread_priority.py",
+      "lines": 24,
+      "functions": 1
+    },
+    {
+      "file": "src/cueplayer/web_remote/__init__.py",
+      "lines": 23,
+      "functions": 0
+    },
+    {
+      "file": "src/cueplayer/web_remote/bridge.py",
+      "lines": 1268,
+      "functions": 46
+    },
+    {
+      "file": "src/cueplayer/web_remote/dialog.py",
+      "lines": 161,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/web_remote/main_window_remote_host.py",
+      "lines": 253,
+      "functions": 50
+    },
+    {
+      "file": "src/cueplayer/web_remote/prefs.py",
+      "lines": 77,
+      "functions": 5
+    },
+    {
+      "file": "src/cueplayer/web_remote/server.py",
+      "lines": 426,
+      "functions": 20
+    },
+    {
+      "file": "src/cueplayer/web_remote/state.py",
+      "lines": 785,
+      "functions": 25
+    },
+    {
+      "file": "src/cueplayer/web_remote/webrtc_listen.py",
+      "lines": 475,
+      "functions": 22
+    }
+  ],
+  "peak_selection": {
+    "1": 3072,
+    "48": 48,
+    "192": 48,
+    "768": 48,
+    "3072": 48,
+    "480000": 48
+  },
+  "tail_transient_peak_max": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "antiphase_waveform_peak": 0.0,
+  "clock_at_callback": {
+    "reported_seconds": 0.01,
+    "first_sample_dac_delay_seconds": 0.03,
+    "block_seconds": 0.01,
+    "steady_state_lead_seconds_for_this_schedule": 0.04
+  },
+  "short_loop": {
+    "loop_frames": 480,
+    "callback_frames": 1024,
+    "expected_next_frame": 64,
+    "actual_next_frame": 544,
+    "expected_sample_1000": 0.00039999998989515007,
+    "actual_sample_1000": 0.005200000014156103
+  },
+  "fallback_state": {
+    "attempted_rates": [
+      48000,
+      48000,
+      44100,
+      44100,
+      96000
+    ],
+    "engine_rate": 96000,
+    "mixer_rate": 48000,
+    "token_rate": 48000,
+    "position_before_seconds": 10.0,
+    "position_after_seconds": 5.0,
+    "old_ltc_retained": true
+  },
+  "mtc_backward_wrap": {
+    "qf_sent_after_wrap_10_to_2_then_3": 0,
+    "last_qf_index": 1200
+  },
+  "ndf_roundtrip": {
+    "23.976": {
+      "tc": "00:59:56:10",
+      "back_seconds": 3596.417083750417
+    },
+    "24": {
+      "tc": "01:00:00:00",
+      "back_seconds": 3600.0
+    },
+    "25": {
+      "tc": "01:00:00:00",
+      "back_seconds": 3600.0
+    },
+    "29.97": {
+      "tc": "00:59:56:12",
+      "back_seconds": 3596.4004004004005
+    },
+    "30": {
+      "tc": "01:00:00:00",
+      "back_seconds": 3600.0
+    }
+  },
+  "three_hour_stereo_float32_bytes": {
+    "44100": {
+      "native_pcm": 3810240000,
+      "display_mono": 1905120000,
+      "ltc_pcm": 1905120000
+    },
+    "48000": {
+      "native_pcm": 4147200000,
+      "display_mono": 2073600000,
+      "ltc_pcm": 2073600000
+    },
+    "96000": {
+      "native_pcm": 8294400000,
+      "display_mono": 4147200000,
+      "ltc_pcm": 4147200000
+    }
+  },
+  "rate_conversion": [
+    {
+      "src": 44100,
+      "dst": 48000,
+      "seconds": 2.0,
+      "tone_hz": 1000.0
+    },
+    {
+      "src": 48000,
+      "dst": 48000,
+      "seconds": 2.0,
+      "tone_hz": 1000.0
+    },
+    {
+      "src": 48000,
+      "dst": 96000,
+      "seconds": 2.0,
+      "tone_hz": 1000.0
+    },
+    {
+      "src": 96000,
+      "dst": 48000,
+      "seconds": 2.0,
+      "tone_hz": 1000.0
+    }
+  ],
+  "downsample_alias": {
+    "src_hz": 30000,
+    "output_peak_hz": 18000,
+    "output_rms": 0.5191842913627625
+  },
+  "codec_clicks": [
+    {
+      "format": "WAV",
+      "requested_sr": 44100,
+      "decoded_sr": 44100,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "FLAC",
+      "requested_sr": 44100,
+      "decoded_sr": 44100,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "MP3",
+      "requested_sr": 44100,
+      "decoded_sr": 44100,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.13605442176870747,
+        -0.022675736961451247,
+        -0.022675736961451247,
+        -0.022675736961451247
+      ]
+    },
+    {
+      "format": "WAV",
+      "requested_sr": 48000,
+      "decoded_sr": 48000,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "FLAC",
+      "requested_sr": 48000,
+      "decoded_sr": 48000,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "MP3",
+      "requested_sr": 48000,
+      "decoded_sr": 48000,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.125,
+        -0.020833333333333332,
+        -0.020833333333333332,
+        -0.020833333333333332
+      ]
+    },
+    {
+      "format": "WAV",
+      "requested_sr": 96000,
+      "decoded_sr": 96000,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "FLAC",
+      "requested_sr": 96000,
+      "decoded_sr": 96000,
+      "seconds": 4.0,
+      "peak_delta_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "format": "MP3",
+      "requested_sr": 96000,
+      "error": "Error opening 'C:\\\\Users\\\\willy\\\\AppData\\\\Local\\\\Temp\\\\cueplayer_audit_ic2qu724\\\\節拍_96000.mp3': Error : MPEG-1/2/2.5 only supports sample rates of 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, and 48000."
+    }
+  ],
+  "sequential_waveform_batches": [
+    {
+      "kind": "pcm",
+      "origin": 0.0,
+      "duration": 8.0
+    },
+    {
+      "kind": "pcm",
+      "origin": 8.021333333333333,
+      "duration": 8.0
+    },
+    {
+      "kind": "pcm",
+      "origin": 16.042666666666666,
+      "duration": 8.0
+    },
+    {
+      "kind": "pcm",
+      "origin": 24.064,
+      "duration": 0.936
+    },
+    {
+      "kind": "eof",
+      "origin": 0.0,
+      "duration": 0.0
+    }
+  ],
+  "mixer_offscreen_clip_scan_ms": [
+    {
+      "clips": 0,
+      "median": 0.000800006091594696,
+      "p95": 0.0016849982785060982
+    },
+    {
+      "clips": 100,
+      "median": 0.058750003518071026,
+      "p95": 0.08894999918993556
+    },
+    {
+      "clips": 1000,
+      "median": 0.6485999983851798,
+      "p95": 0.7380899951385799
+    }
+  ]
+}

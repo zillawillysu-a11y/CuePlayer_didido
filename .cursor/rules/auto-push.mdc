@@ -7,7 +7,12 @@ alwaysApply: true
 
 The user works on multiple machines and does not want to copy project folders by hand.
 
-- After any `git commit` that the user requested (or that was explicitly allowed), **immediately `git push -u origin HEAD`** (or `git push` if upstream is set).
+- Standing user authorization: commit and push each completed task without asking again.
+- After committing, immediately push to the configured upstream. Use `git push`
+  when local configuration supports it; if branch names differ, explicitly use
+  `git push origin HEAD:<upstream-branch>`. For a new branch without an upstream,
+  use `git push -u origin HEAD`.
+- Verify that the remote branch points to the local commit before reporting sync complete.
 - Remote: `origin` → `https://github.com/zillawillysu-a11y/CuePlayer_didido.git`
 - Do not force-push to `main`/`master` unless the user explicitly asks.
 - If push fails (auth/network), tell the user clearly and leave the commit local.

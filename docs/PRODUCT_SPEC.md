@@ -36,6 +36,13 @@
   - 若沒有 LTC 檔，依歌曲長度、起始 Timecode、FPS、Pre-roll 自動產生 LTC。
   - 生成 LTC 建議快取成內部音訊，以利穩定播放、Seek 與重複使用。
   - LTC Gain 與 Music Gain 分離；一般音量控制不得誤調 LTC。
+- Art-Net Timecode Output：
+  - FPS／Type 永遠跟隨目前 Song Timebase，不提供可能與歌曲不一致的獨立 FPS 設定。
+  - 依 Playback Engine 發布的同一 audio sample-clock snapshot 產生 ArtTimeCode；不得由 MTC packet 轉換。
+  - 支援 24／25／29.97 DF／30 fps、指定本機 IPv4 介面、directed broadcast 與 explicit unicast，使用 UDP 6454。
+  - 可獨立開關並與 MTC／LTC 同時輸出；不得在 PortAudio callback 或 GUI QTimer 執行 UDP timing/send。
+  - TRANS 開啟時，檔案 LTC 解碼結果依 MTC／Art-Net TC 各自 Enable 狀態同步送出；Art-Net-only 不需啟用 MIDI。
+  - 僅做 Output；不含 Art-Net Timecode Input、chase、incoming control、master/slave sync 或 ArtDmx。
 - 共用 Master Timeline：
   - Music、LTC、Video、Marks 共用同一時間基準。
   - Play、Pause、Stop、Seek、Loop、從 Mark 開始播放皆需同步。
@@ -77,7 +84,7 @@
   - 移動時可選擇 Main、Button、Video 或全部。
 - grandMA2／grandMA3 匯出：
   - 目標版本先固定：
-    - grandMA2 3.9.61.5
+    - grandMA2 3.3.4.3 through 3.9.63.6 (3.3.4.3 is the minimum supported version)
     - grandMA3 2.3.2
   - MA2 與 MA3 使用獨立 Exporter，不共用 XML schema。
   - 產生 Sequence XML 與 Timecode XML。
@@ -267,7 +274,7 @@
   - 29.97 DF／NDF 的顯示、換算與 XML 精度需以測試向量驗證。
   - generated LTC 的 sample rate、level、pre-roll 預設值待確認。
 - MA Export：
-  - 必須從 MA2 3.9.61.5、MA3 2.3.2 匯出最小可用 Sequence／Timecode XML，作為 reverse-engineering 樣本。
+  - 必須從 MA2 3.3.4.3 與 3.9.63.6、MA3 2.3.2 匯出最小可用 Sequence／Timecode XML，作為 reverse-engineering 樣本。
   - Top Button 的 Page／Executor assignment、Release 欄位與命令需逐版本實機驗證。
   - MA3 未來版本 XML syntax 可能改變，因此 exporter 需版本標記與 golden tests。
 - 名稱：
@@ -295,7 +302,7 @@
    - 此 Spike 成功後才正式建立 Playback Engine。
 
 3. **收集 MA golden XML，先建立 Exporter 測試**
-   - 在 MA2 3.9.61.5 與 MA3 2.3.2 各手動建立：
+   - 在 MA2 3.3.4.3、MA2 3.9.63.6 與 MA3 2.3.2 各手動建立：
      - 一條有 2–3 個空 Cue 的 Main Sequence。
      - 一條兩 Cue、Follow 0.1、自 Release、Executor Key=Top 的 Button Sequence。
      - 一個含 Main Go+(指定 Cue) 與重複 Top Events 的 Timecode Show。

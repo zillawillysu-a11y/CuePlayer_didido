@@ -5,11 +5,18 @@ __pycache__/
 .eggs/
 dist/
 build/
+# Ignore ad-hoc PyInstaller specs in the repo root; keep packaging/*.spec
+/*.spec
+!packaging/*.spec
 .pytest_cache/
+.test-tmp-*/
+.codex-test-tmp/
+.tt-p1/
+.tt-p2/
+startup_error.txt
 .mypy_cache/
 .ruff_cache/
 *.log
 .DS_Store
 Thumbs.db
 .cache/
-*.spec
