@@ -63,12 +63,17 @@ class AudioTimecodeDialog(QDialog):
         self,
         settings: AudioOutputSettings,
         parent: QWidget | None = None,
+        *,
+        song_fps: float | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Audio / Midi / Timecode")
         self.resize(540, 640)
         self._all_devices = list_output_devices(dedupe=False)
         self._devices: list[OutputDeviceInfo] = []
+        self._song_fps = float(
+            song_fps if song_fps is not None else settings.artnet_timecode_fps
+        )
         self._result = AudioOutputSettings(
             output_device_name=settings.output_device_name,
             output_device_index=settings.output_device_index,
@@ -92,7 +97,7 @@ class AudioTimecodeDialog(QDialog):
             midi_main_base_note=int(settings.midi_main_base_note),
             midi_button_base_note=int(settings.midi_button_base_note),
             artnet_timecode_enabled=bool(settings.artnet_timecode_enabled),
-            artnet_timecode_fps=float(settings.artnet_timecode_fps),
+            artnet_timecode_fps=self._song_fps,
             artnet_timecode_local_ip=str(settings.artnet_timecode_local_ip or ""),
             artnet_timecode_destination_mode=str(
                 settings.artnet_timecode_destination_mode or "broadcast"
@@ -171,12 +176,29 @@ class AudioTimecodeDialog(QDialog):
         stereo_form.addWidget(stereo_tip)
         inner.addWidget(stereo_box)
 
-        mtc_box = QGroupBox("MIDI Output")
+        translation_box = QGroupBox("Timecode Translation")
+        translation_form = QFormLayout(translation_box)
+        self.ltc_to_mtc_translate = TickCheckBox(
+            "Translate file LTC → enabled TC outputs"
+        )
+        self.ltc_to_mtc_translate.setChecked(bool(settings.ltc_to_mtc_translate))
+        self.ltc_to_mtc_translate.setToolTip(
+            "Decode the LTC stripe from the audio file once and send the same "
+            "HH:MM:SS:FF value to each enabled MTC and Art-Net Timecode output."
+        )
+        self.translation_status = QLabel("")
+        self.translation_status.setWordWrap(True)
+        self.translation_status.setStyleSheet("color: #a1a1aa;")
+        translation_form.addRow(self.ltc_to_mtc_translate)
+        translation_form.addRow("Targets", self.translation_status)
+        inner.addWidget(translation_box)
+
+        mtc_box = QGroupBox("MIDI / MTC Output")
         mtc_form = QFormLayout(mtc_box)
         self.midi_on = TickCheckBox("MIDI On")
         self.midi_on.setChecked(bool(getattr(settings, "midi_enabled", False)))
         self.midi_on.setToolTip(
-            "Master switch — MTC, Translate, and Cue Notes only work when MIDI is on."
+            "Master switch — MTC and Cue Notes only work when MIDI is on."
         )
         self.midi_port = NoWheelComboBox()
         self.midi_port.addItem("(none)", "")
@@ -196,13 +218,6 @@ class AudioTimecodeDialog(QDialog):
         self.mtc_enable.setChecked(settings.mtc_enabled)
         self.mtc_enable.setToolTip(
             "Send MIDI Timecode from Song Start TC + playhead (generator numbers)."
-        )
-        self.ltc_to_mtc_translate = TickCheckBox("Translate file LTC → TC outputs")
-        self.ltc_to_mtc_translate.setChecked(bool(settings.ltc_to_mtc_translate))
-        self.ltc_to_mtc_translate.setToolTip(
-            "Decode the LTC stripe from the audio file once and send those "
-            "HH:MM:SS:FF numbers to each enabled MTC and Art-Net Timecode output. "
-            "Set LTC source to From file."
         )
         self.midi_notes_enable = TickCheckBox("Send MIDI Cue Notes")
         self.midi_notes_enable.setChecked(bool(settings.midi_cue_notes_enabled))
@@ -228,15 +243,13 @@ class AudioTimecodeDialog(QDialog):
         mtc_form.addRow(self.midi_on)
         mtc_form.addRow("MIDI Out", self.midi_port)
         mtc_form.addRow(self.mtc_enable)
-        mtc_form.addRow(self.ltc_to_mtc_translate)
         mtc_form.addRow(self.midi_notes_enable)
         mtc_form.addRow("Notes channel", self.midi_cue_channel)
         mtc_form.addRow("Main base note", self.midi_main_base)
         mtc_form.addRow("Button base note", self.midi_button_base)
         mtc_sync_hint = QLabel(
             "Pick MIDI Out anytime (even when MIDI On is off). MIDI On enables "
-            "sending: MTC Generator (Song Start TC), Translate (file LTC stripe), "
-            "and/or Cue Notes."
+            "MTC Generator (Song Start TC) and/or Cue Notes. TRANS is independent."
         )
         mtc_sync_hint.setWordWrap(True)
         mtc_sync_hint.setStyleSheet("color: #a1a1aa;")
@@ -251,19 +264,20 @@ class AudioTimecodeDialog(QDialog):
         artnet_form = QFormLayout(artnet_box)
         self.artnet_enable = TickCheckBox("Enable Art-Net Timecode")
         self.artnet_enable.setChecked(bool(settings.artnet_timecode_enabled))
-        self.artnet_fps = NoWheelComboBox()
-        for label, value in (
-            ("24 fps — Film (Type 0)", 24.0),
-            ("25 fps — EBU (Type 1)", 25.0),
-            ("29.97 DF — Drop Frame (Type 2)", 29.97),
-            ("30 fps — SMPTE (Type 3)", 30.0),
+        type_label = "Unsupported"
+        for value, label in (
+            (24.0, "24 fps — Film (Type 0)"),
+            (25.0, "25 fps — EBU (Type 1)"),
+            (29.97, "29.97 DF — Drop Frame (Type 2)"),
+            (30.0, "30 fps — SMPTE (Type 3)"),
         ):
-            self.artnet_fps.addItem(label, value)
-        selected_fps = float(settings.artnet_timecode_fps or 30.0)
-        for index in range(self.artnet_fps.count()):
-            if abs(float(self.artnet_fps.itemData(index)) - selected_fps) < 0.02:
-                self.artnet_fps.setCurrentIndex(index)
+            if abs(self._song_fps - value) < 0.02:
+                type_label = label
                 break
+        self.artnet_fps = QLabel(f"Follow Song FPS — {type_label}")
+        self.artnet_fps.setToolTip(
+            "ArtTimeCode FPS and Type always follow the current Song timebase."
+        )
 
         self._artnet_interfaces: dict[str, Ipv4Interface] = {
             item.address: item for item in list_ipv4_interfaces()
@@ -371,10 +385,12 @@ class AudioTimecodeDialog(QDialog):
         self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
         self.ltc_enable.toggled.connect(lambda _checked: self._on_device_changed())
         self.midi_on.toggled.connect(self._sync_midi_ui)
-        self.mtc_enable.toggled.connect(self._sync_midi_ui)
+        self.midi_on.toggled.connect(self._sync_translation_ui)
+        self.mtc_enable.toggled.connect(self._sync_translation_ui)
         self.midi_notes_enable.toggled.connect(self._sync_midi_ui)
         self.artnet_enable.toggled.connect(self._sync_artnet_ui)
-        self.artnet_enable.toggled.connect(self._sync_midi_ui)
+        self.artnet_enable.toggled.connect(self._sync_translation_ui)
+        self.ltc_to_mtc_translate.toggled.connect(self._sync_translation_ui)
         self.artnet_local_ip.currentIndexChanged.connect(
             self._on_artnet_interface_changed
         )
@@ -392,6 +408,7 @@ class AudioTimecodeDialog(QDialog):
         self._on_ltc_source_changed()
         self._combo_hostapi = resolve_output_hostapi(str(settings.output_hostapi or ""))
         self._sync_midi_ui()
+        self._sync_translation_ui()
         self._on_artnet_mode_changed()
 
     def _sync_artnet_ui(self) -> None:
@@ -452,10 +469,6 @@ class AudioTimecodeDialog(QDialog):
         self.midi_port.setEnabled(True)
         for widget in (self.mtc_enable, self.midi_notes_enable):
             widget.setEnabled(midi_on)
-        self.ltc_to_mtc_translate.setEnabled(
-            (midi_on and self.mtc_enable.isChecked())
-            or self.artnet_enable.isChecked()
-        )
         notes_on = midi_on and self.midi_notes_enable.isChecked()
         for widget in (
             self.midi_cue_channel,
@@ -463,6 +476,19 @@ class AudioTimecodeDialog(QDialog):
             self.midi_button_base,
         ):
             widget.setEnabled(notes_on)
+
+    def _sync_translation_ui(self, _checked: bool = False) -> None:
+        targets: list[str] = []
+        if self.midi_on.isChecked() and self.mtc_enable.isChecked():
+            targets.append("MTC")
+        if self.artnet_enable.isChecked():
+            targets.append("Art-Net TC")
+        if not self.ltc_to_mtc_translate.isChecked():
+            self.translation_status.setText("Off")
+        elif targets:
+            self.translation_status.setText(" + ".join(targets))
+        else:
+            self.translation_status.setText("No TC output enabled")
 
     def _current_hostapi(self) -> str:
         return resolve_output_hostapi(str(self.hostapi_combo.currentData() or ""))
@@ -661,7 +687,7 @@ class AudioTimecodeDialog(QDialog):
             midi_main_base_note=int(self.midi_main_base.currentData() or 36),
             midi_button_base_note=int(self.midi_button_base.currentData() or 48),
             artnet_timecode_enabled=artnet_enabled,
-            artnet_timecode_fps=float(self.artnet_fps.currentData() or 30.0),
+            artnet_timecode_fps=self._song_fps,
             artnet_timecode_local_ip=artnet_local_ip,
             artnet_timecode_destination_mode=artnet_mode,
             artnet_timecode_destination_ip=artnet_destination,

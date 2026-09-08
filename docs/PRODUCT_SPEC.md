@@ -37,6 +37,7 @@
   - 生成 LTC 建議快取成內部音訊，以利穩定播放、Seek 與重複使用。
   - LTC Gain 與 Music Gain 分離；一般音量控制不得誤調 LTC。
 - Art-Net Timecode Output：
+  - FPS／Type 永遠跟隨目前 Song Timebase，不提供可能與歌曲不一致的獨立 FPS 設定。
   - 依 Playback Engine 發布的同一 audio sample-clock snapshot 產生 ArtTimeCode；不得由 MTC packet 轉換。
   - 支援 24／25／29.97 DF／30 fps、指定本機 IPv4 介面、directed broadcast 與 explicit unicast，使用 UDP 6454。
   - 可獨立開關並與 MTC／LTC 同時輸出；不得在 PortAudio callback 或 GUI QTimer 執行 UDP timing/send。

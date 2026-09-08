@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGroupBox
 
 from cueplayer.domain.models import AudioOutputSettings
 from cueplayer.playback.artnet_timecode import Ipv4Interface
@@ -79,8 +79,12 @@ def test_artnet_output_is_independent_and_uses_interface_broadcast(
         lambda: [interface],
     )
 
-    dialog = AudioTimecodeDialog(AudioOutputSettings(midi_enabled=False))
-    assert dialog.ltc_to_mtc_translate.isEnabled() is False
+    dialog = AudioTimecodeDialog(
+        AudioOutputSettings(midi_enabled=False, artnet_timecode_fps=30.0),
+        song_fps=25.0,
+    )
+    assert dialog.ltc_to_mtc_translate.isEnabled() is True
+    assert "25 fps" in dialog.artnet_fps.text()
     dialog.artnet_enable.setChecked(True)
     assert dialog.midi_on.isChecked() is False
     assert dialog.ltc_to_mtc_translate.isEnabled() is True
@@ -95,4 +99,31 @@ def test_artnet_output_is_independent_and_uses_interface_broadcast(
     assert result.artnet_timecode_local_ip == "2.0.0.233"
     assert result.artnet_timecode_destination_mode == "broadcast"
     assert result.artnet_timecode_destination_ip == "2.255.255.255"
+    assert result.artnet_timecode_fps == pytest.approx(25.0)
     assert result.ltc_to_mtc_translate is True
+
+
+def test_timecode_sections_have_source_then_output_order(
+    app: QApplication, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "cueplayer.ui.audio_timecode_dialog.list_midi_output_names", lambda: []
+    )
+    dialog = AudioTimecodeDialog(AudioOutputSettings(), song_fps=29.97)
+    titles = [box.title() for box in dialog.findChildren(QGroupBox)]
+    ordered = [
+        "Timecode Translation",
+        "MIDI / MTC Output",
+        "Art-Net Timecode Output",
+        "LTC Output",
+    ]
+    assert [title for title in titles if title in ordered] == ordered
+    assert "29.97 DF" in dialog.artnet_fps.text()
+
+    dialog.ltc_to_mtc_translate.setChecked(True)
+    assert dialog.translation_status.text() == "No TC output enabled"
+    dialog.artnet_enable.setChecked(True)
+    assert dialog.translation_status.text() == "Art-Net TC"
+    dialog.midi_on.setChecked(True)
+    dialog.mtc_enable.setChecked(True)
+    assert dialog.translation_status.text() == "MTC + Art-Net TC"

@@ -854,7 +854,7 @@ class AudioEngine(QObject):
         self._song_start_tc = start_timecode or "01:00:00:00"
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
-        self._artnet_tc.set_timebase(self._song_start_tc)
+        self._artnet_tc.set_timebase(self._song_start_tc, self._song_fps)
         self._invalidate_ltc_cache()
         self._install_mtc_tc_source()
 
@@ -952,7 +952,7 @@ class AudioEngine(QObject):
         )
         artnet_err = self._artnet_tc.configure(
             enabled=bool(self._audio_settings.effective_artnet_timecode_output()),
-            fps=float(self._audio_settings.artnet_timecode_fps),
+            fps=float(self._song_fps),
             start_timecode=self._song_start_tc,
             local_ip=self._audio_settings.artnet_timecode_local_ip,
             destination_mode=self._audio_settings.artnet_timecode_destination_mode,

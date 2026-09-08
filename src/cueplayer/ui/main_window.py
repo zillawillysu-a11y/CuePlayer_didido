@@ -6446,7 +6446,11 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Web Remote off", 3000)
 
     def _open_audio_timecode(self) -> None:
-        dialog = AudioTimecodeDialog(self.project.audio_output, parent=self)
+        dialog = AudioTimecodeDialog(
+            self.project.audio_output,
+            parent=self,
+            song_fps=float(self.current_song.fps),
+        )
         if not dialog.exec():
             return
         settings = dialog.result_settings()

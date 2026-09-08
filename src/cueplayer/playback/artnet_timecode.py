@@ -397,9 +397,11 @@ class ArtNetTimecodeOutput:
         self._notify_status()
         return None
 
-    def set_timebase(self, start_timecode: str) -> None:
+    def set_timebase(self, start_timecode: str, fps: float | None = None) -> None:
         with self._lock:
             self._start_timecode = str(start_timecode or "01:00:00:00")
+            if fps is not None:
+                self._fps = normalize_artnet_fps(fps)
             self._last_frame_key = None
             self._force_send = self._playing
         self._wake_event.set()

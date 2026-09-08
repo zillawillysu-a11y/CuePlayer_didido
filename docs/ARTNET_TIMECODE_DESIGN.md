@@ -54,12 +54,16 @@ uses the selected IPv4 interface's directed-broadcast address.
    - Extend `AudioOutputSettings` because the existing Audio/Midi/Timecode machine
      preference path already owns output-device choices and is mirrored into project
      JSON for backward-compatible round-trips.
-   - Persist enable, ArtTimeCode fps/type, local IPv4, destination mode, and destination
-     IPv4. Port stays fixed at the official 6454 value.
+   - Persist enable, local IPv4, destination mode, and destination IPv4. The legacy
+     fps field remains readable for compatibility, but runtime ArtTimeCode fps/type
+     always follows the current Song timebase. Port stays fixed at official 6454.
 
 4. **UI**
    - Add an independent `Art-Net Timecode Output` group to
      `AudioTimecodeDialog`, adjacent to MIDI/LTC output settings.
+   - Show fps/type as a read-only `Follow Song FPS` value, not an independent choice.
+   - Place TRANS in its own `Timecode Translation` group before MIDI/MTC and Art-Net;
+     show the currently enabled translation destinations inline.
    - Populate local-interface choices from active IPv4 interfaces and show their
      directed-broadcast addresses. Broadcast mode fills/validates that address;
      unicast mode accepts one explicit IPv4 receiver address.

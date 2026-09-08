@@ -15,8 +15,8 @@ class _ArtNetProbe:
         self.calls.append(("configure", kwargs))
         return None
 
-    def set_timebase(self, start_timecode: str) -> None:
-        self.calls.append(("timebase", start_timecode))
+    def set_timebase(self, start_timecode: str, fps: float | None = None) -> None:
+        self.calls.append(("timebase", start_timecode, fps))
 
     def on_play(self) -> None:
         self.calls.append(("play",))
@@ -47,9 +47,10 @@ def test_audio_engine_forwards_settings_and_transport_lifecycle() -> None:
     engine._artnet_tc = probe
     try:
         engine.set_duration(10.0)
+        engine.set_song_timebase("01:00:00:00", 25.0)
         settings = AudioOutputSettings(
             artnet_timecode_enabled=True,
-            artnet_timecode_fps=25.0,
+            artnet_timecode_fps=30.0,  # legacy preference must not override Song FPS
             artnet_timecode_local_ip="2.0.0.1",
             artnet_timecode_destination_mode="broadcast",
             artnet_timecode_destination_ip="2.255.255.255",
