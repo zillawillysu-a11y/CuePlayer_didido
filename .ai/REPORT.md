@@ -1,68 +1,55 @@
-# Timecode Settings Source/Output Separation
+# CuePlayer 1.15 Release Version
 
 Date: 2026-09-08. Branch: `cursor/technical-audit-0815-028d`.
 
 ## Task objective
 
-Make Art-Net Timecode fps/type follow the current Song timebase and move file-LTC
-TRANS out of MIDI settings into an independent translation section with clear targets.
+Promote the hardware-approved Art-Net Timecode build from 1.14 to CuePlayer 1.15 and
+prepare the canonical Windows packaging command for the user.
 
 ## What was implemented
 
-- Reordered timecode settings as requested: Timecode Translation, MIDI / MTC Output,
-  Art-Net Timecode Output, then LTC Output.
-- Moved `Translate file LTC → enabled TC outputs` into the independent translation
-  section and added live Targets status: Off, No TC output enabled, MTC, Art-Net TC,
-  or MTC + Art-Net TC.
-- TRANS can be armed before either destination and is no longer visually or logically
-  gated by MIDI.
-- Replaced the Art-Net fps selector with a read-only `Follow Song FPS` label including
-  the official ArtTimeCode Type meaning.
-- AudioEngine now configures Art-Net from its current Song fps, ignoring the legacy
-  stored Art-Net fps value. Song changes update both Art-Net start TC and fps/type.
-- Kept the legacy persisted fps field readable/writable for project/global preference
-  compatibility; it is no longer a user choice or runtime authority.
+- Changed the canonical `cueplayer.__version__` from `1.14` to `1.15`.
+- Updated Inno Setup's direct-invocation example and fallback version to 1.15. The
+  normal build still receives its version from `cueplayer.__version__`.
+- Updated version/title/splash tests, README release status, and changelog.
+- No playback, timecode, UI behavior, project schema, or packaging pipeline behavior
+  was changed.
 
 ## Files changed
 
-- `src/cueplayer/ui/audio_timecode_dialog.py`
-- `src/cueplayer/ui/main_window.py`
-- `src/cueplayer/playback/audio_engine.py`
-- `src/cueplayer/playback/artnet_timecode.py`
-- `tests/playback/test_artnet_audio_engine.py`
-- `tests/ui/test_audio_timecode_midi_port_always_enabled.py`
-- `docs/ARTNET_TIMECODE_DESIGN.md`
-- `docs/PRODUCT_SPEC.md`
-- `.ai/REPORT.md`
-- `.ai/handoffs/2026-09-08_TimecodeSettingsSeparation.md`
+- `src/cueplayer/__init__.py`, `src/cueplayer/app_info.py`
+- `packaging/CuePlayer.iss`
+- `tests/util/test_app_info.py`, `tests/ui/test_about_dialog_and_title.py`,
+  `tests/ui/test_splash.py`
+- `README.md`, `CHANGELOG.md`
+- `.ai/REPORT.md`, `.ai/NEXT_TASK.md`,
+  `.ai/handoffs/2026-09-08_CuePlayer115ReleaseVersion.md`
 
 ## Architecture decisions
 
-- Song Timebase is the single fps/type authority for internal TC, MTC/LTC mapping, and
-  ArtTimeCode. No second Art-Net timebase is exposed.
-- The legacy settings field remains solely as a compatibility bridge; runtime code
-  uses `AudioEngine._song_fps`.
-- TRANS represents the decoded file-LTC source and MTC/Art-Net remain independent
-  destinations, matching the existing sender architecture.
-- No sender scheduling, MTC implementation, audio callback, buffer, or UDP placement
-  changed in this task.
+- `src/cueplayer/__init__.py` remains the single version source consumed by Python
+  metadata, app title/About/Splash, PyInstaller Windows VersionInfo, artifact names,
+  and the Inno command-line define.
+- Project schema remains version 3; product release version and persistence schema are
+  intentionally independent.
 
 ## Tests performed
 
-- Targeted Art-Net/TRANS/settings/persistence/UI batch: **41 passed**.
-- Broad safe playback regression subset: **248 passed**.
-- Persistence + changed UI + Web Remote batch: **141 passed**.
-- `python -m compileall -q src`: passed.
+- Version/App Info/About/Splash suite: passed after updating all 1.14 assertions.
+- Direct identity check prints `1.15 1.15 (1, 15, 0, 0)`.
+- Repository release-path search has no remaining functional `1.14` references.
+- `git diff --check`: passed with only expected CRLF notices.
 
 ## Remaining issues
 
-- Physical Wireshark/DMX-Workshop and external Art-Net receiver verification remains
-  required for the ArtTimeCode feature.
-- The build should confirm each Song fps renders the correct read-only label and packet
-  Type, including 29.97 DF.
+- The Windows zip/Setup artifacts have not been rebuilt in this task; the user will
+  run `packaging/build_windows.ps1` on this Windows workstation.
+- After building, confirm the executable About/Splash and file properties show 1.15,
+  then retain the final Art-Net receiver/PERF evidence with the release artifacts.
 
 ## Suggested next task
 
-Build on Windows and run the hardware matrix in `.ai/NEXT_TASK.md`: verify normal
-ArtTC and TRANS ArtTC-only/MTC+ArtTC through Play/Pause/Stop/Seek, then repeat with
-Video + Timeline Zoom stress while capturing PERF and receiver evidence.
+Run the 1.15 Windows packaging command in `.ai/NEXT_TASK.md`, verify the generated zip
+and Setup.exe names, launch the packaged EXE, and confirm Version 1.15 plus Art-Net
+Timecode output on the physical receiver.

@@ -4,6 +4,16 @@ All notable project changes are recorded here. Product version remains in `pypro
 
 ## [Unreleased]
 
+## [1.15] - 2026-09-08
+
+- Added Art-Net 4 ArtTimeCode Output on UDP 6454 with directed broadcast/unicast,
+  official 24/25/29.97 DF/30 Type encoding, lifecycle diagnostics, and no network
+  work in the audio callback.
+- Added independent `ArtTC` quick control and file-LTC TRANS routing to MTC,
+  Art-Net TC, or both from one decoded source.
+- Art-Net fps/type now follows the current Song timebase; reorganized timecode
+  settings into Translation, MIDI/MTC, Art-Net, and LTC sections.
+
 ### Sprint 8 — Task 2: Video Track Responsiveness (2026-08-05)
 
 - Round 1: async latest-wins worker + paint-before-quiesce.

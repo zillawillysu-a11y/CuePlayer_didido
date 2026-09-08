@@ -87,7 +87,7 @@ def test_create_splash_pixmap_progress_fill() -> None:
 
 def test_splash_footer_shows_version_without_moving_bar() -> None:
     """Version/copyright footer must not shift the existing title/bar/message block."""
-    assert APP_VERSION == "1.14"
+    assert APP_VERSION == "1.15"
     blank = create_splash_pixmap(message="Loading…", progress=0.0)
     image = blank.toImage()
     bg = QColor(BG_APP)
