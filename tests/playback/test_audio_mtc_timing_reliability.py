@@ -127,6 +127,53 @@ def test_mtc_send_duration_is_reported() -> None:
         engine.shutdown_midi_outputs()
 
 
+@pytest.mark.parametrize("fps", [24.0, 25.0, 29.97, 30.0])
+def test_delayed_callback_restamp_keeps_mtc_pieces_in_order(monkeypatch, fps) -> None:
+    """Run the real callback, raw_position and sender with a jittered fake clock.
+
+    Alternating 25/3 ms callback arrivals each write 14 ms of audio. The
+    long-term sample rate is correct and the audio cursor never regresses.
+    No Windows device is simulated or claimed here, only callback timing.
+    """
+    from cueplayer.playback import audio_engine as module
+
+    now = [10.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    engine = AudioEngine()
+    engine._playback_rate = 48000
+    engine._playback_samples = np.zeros((100000, 2), np.float32)
+    engine._playing = True
+    engine._position_frame = 48000
+    port = _ProbePort(engine)
+    engine._mtc._port = port
+    engine._mtc._enabled = True
+    engine._mtc.set_timebase("01:00:00:00", fps)
+    callback = engine._make_stream_callback(48000)
+    positions = []
+    heads = []
+    try:
+        callback(np.zeros((672, 2), np.float32), 672, SimpleNamespace(), 0)
+        engine._mtc.on_play(engine.raw_position)
+        port.sent.clear()
+        for offset in (0.0, .009, .018, .024, .025, .027, .028, .037, .046,
+                       .052, .053, .055, .056, .065):
+            now[0] = 10.0 + offset
+            if offset in (.025, .028, .053, .056):
+                callback(np.zeros((672, 2), np.float32), 672, SimpleNamespace(), 0)
+            positions.append(engine.raw_position)
+            heads.append(engine._position_frame)
+            engine._mtc_tick()
+        assert heads == sorted(heads)
+        assert any(b < a for a, b in zip(positions, positions[1:]))
+        assert not any(m.type == "sysex" for m in port.sent)
+        indices = range(int(positions[0] * fps * 4), int(max(positions) * fps * 4) + 1)
+        assert [m.frame_type for m in port.sent] == [i % 8 for i in indices]
+        assert all(port.engine_lock_was_free)
+    finally:
+        engine._playing = False
+        engine.shutdown_midi_outputs()
+
+
 def test_stream_report_exposes_backend_configuration(monkeypatch) -> None:
     from cueplayer.playback import audio_engine as module
 
