@@ -61,7 +61,7 @@ def test_mtc_thread_keeps_ticking_with_zero_qt_event_loop_processing(monkeypatch
         monkeypatch.setattr(
             engine,
             "_mtc_clock_position",
-            lambda: (time.monotonic() - t0, 0.0),
+            lambda: (time.monotonic() - t0, 0.0, 0.0),
         )
 
         engine._mtc.on_play(0.0)
@@ -122,7 +122,7 @@ def test_mtc_clock_read_does_not_wait_for_audio_mix_lock():
     """MTC consumes the published sample-clock snapshot without lock contention."""
     engine = AudioEngine()
     done = threading.Event()
-    result: list[tuple[float, float]] = []
+    result: list[tuple[float, float, float]] = []
     try:
         engine._playing = True
         with engine._lock:
@@ -137,6 +137,92 @@ def test_mtc_clock_read_does_not_wait_for_audio_mix_lock():
         assert result
         assert result[0][0] >= 0.0
     finally:
+        engine._playing = False
+        engine.shutdown_midi_outputs()
+
+
+def test_mtc_clock_clamps_interpolation_regression_but_allows_seek(monkeypatch):
+    """An early callback stamp is jitter; a new transport generation is a seek."""
+    engine = AudioEngine()
+    mono = {"now": 10.010}
+    monkeypatch.setattr(audio_engine_module.time, "monotonic", lambda: mono["now"])
+    try:
+        engine._playing = True
+        with engine._lock:
+            engine._position_frame = 4800
+            engine._pos_epoch_frame = 4800
+            engine._pos_epoch_mono = 10.000
+            engine._publish_mtc_clock_snapshot_unlocked()
+        first, _, first_regression = engine._mtc_clock_position()
+        assert first == pytest.approx(0.110)
+        assert first_regression == 0.0
+
+        # The next callback arrives early: its exact write head plus elapsed
+        # interpolation is behind the position already observed by MTC.
+        mono["now"] = 10.011
+        with engine._lock:
+            engine._position_frame = 5040
+            engine._pos_epoch_frame = 5040
+            engine._pos_epoch_mono = 10.011
+            engine._publish_mtc_clock_snapshot_unlocked()
+        clamped, _, regression = engine._mtc_clock_position()
+        assert clamped == pytest.approx(first)
+        assert regression == pytest.approx(0.005)
+
+        # A real backward seek increments the generation and must not clamp.
+        with engine._lock:
+            engine._diagnostic_transport_generation += 1
+            engine._position_frame = 960
+            engine._pos_epoch_frame = 960
+            engine._pos_epoch_mono = 10.011
+            engine._publish_mtc_clock_snapshot_unlocked()
+        sought, _, seek_regression = engine._mtc_clock_position()
+        assert sought == pytest.approx(0.020)
+        assert seek_regression == 0.0
+    finally:
+        engine._playing = False
+        engine.shutdown_midi_outputs()
+
+
+def test_mtc_clock_regression_does_not_emit_full_frame_reanchor(monkeypatch):
+    """Callback interpolation jitter must not masquerade as a backward seek."""
+    engine = AudioEngine()
+    mono = {"now": 10.010}
+    monkeypatch.setattr(audio_engine_module.time, "monotonic", lambda: mono["now"])
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    try:
+        port = _Port()
+        engine._mtc._port = port
+        engine._mtc._enabled = True
+        engine._playing = True
+        engine._mtc.on_play(0.100)
+        port.messages.clear()
+
+        with engine._lock:
+            engine._position_frame = 4800
+            engine._pos_epoch_frame = 4800
+            engine._pos_epoch_mono = 10.000
+            engine._publish_mtc_clock_snapshot_unlocked()
+        engine._mtc_tick()
+        port.messages.clear()
+
+        mono["now"] = 10.011
+        with engine._lock:
+            engine._position_frame = 5040
+            engine._pos_epoch_frame = 5040
+            engine._pos_epoch_mono = 10.011
+            engine._publish_mtc_clock_snapshot_unlocked()
+        engine._mtc_tick()
+
+        assert not any(message.type == "sysex" for message in port.messages)
+        snap = perf_diag.snapshot()
+        assert snap["counters"]["mtc.clock_regression_clamps"] == 1
+        assert snap["counters"].get("mtc.backward_reanchors", 0) == 0
+        assert snap["spans"]["mtc.clock_regression_ms"]["max_ms"] == pytest.approx(5.0)
+    finally:
+        perf_diag.set_enabled(False)
+        perf_diag.clear()
         engine._playing = False
         engine.shutdown_midi_outputs()
 

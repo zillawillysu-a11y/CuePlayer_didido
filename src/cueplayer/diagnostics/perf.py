@@ -587,6 +587,7 @@ def report_text() -> str:
         "mtc.scheduler.wakeup_lateness_ms",
         "mtc.clock_read_ms",
         "mtc.clock_snapshot_age_ms",
+        "mtc.clock_regression_ms",
         "mtc.file_ltc_sync_ms",
         "mtc.qf_dispatch_ms",
         "mtc.cue_dispatch_ms",
@@ -603,6 +604,7 @@ def report_text() -> str:
     for name in (
         "mtc.scheduler.wakeups",
         "mtc.scheduler.missed_wake_slots",
+        "mtc.clock_regression_clamps",
         "mtc.missed_qf",
         "mtc.catch_up_wakeups",
         "mtc.catch_up_qf",

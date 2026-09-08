@@ -203,7 +203,10 @@ class AudioEngine(QObject):
             self._playing,
             self._scrubbing,
             self._playback_rate,
+            self._diagnostic_transport_generation,
         )
+        self._mtc_clock_generation: int | None = None
+        self._mtc_clock_floor: float | None = None
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
         self._playback_resample_future = None
@@ -666,27 +669,53 @@ class AudioEngine(QObject):
             bool(self._playing),
             bool(self._scrubbing),
             int(self._playback_rate),
+            int(self._diagnostic_transport_generation),
         )
 
-    def _mtc_clock_position(self) -> tuple[float, float]:
-        """Return MTC position and snapshot age without taking ``_lock``.
+    def _mtc_clock_position(self) -> tuple[float, float, float]:
+        """Return monotonic MTC position, snapshot age, and clamped regression.
 
         The tuple assignment performed by the sole clock writer is atomic in
         CPython, so readers see either the previous complete snapshot or the
         next complete snapshot, never a mix of fields.  Snapshot age is
         diagnostic evidence for callback publication delay, not a new clock.
         """
-        frame, epoch_frame, epoch_mono, playing, scrubbing, sample_rate = (
-            self._mtc_clock_snapshot
-        )
+        (
+            frame,
+            epoch_frame,
+            epoch_mono,
+            playing,
+            scrubbing,
+            sample_rate,
+            generation,
+        ) = self._mtc_clock_snapshot
         sr = float(sample_rate)
         if sr <= 0.0:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         now = time.monotonic()
         age = max(0.0, now - float(epoch_mono)) if epoch_mono > 0.0 else 0.0
         if playing and not scrubbing and epoch_mono > 0.0:
-            return max(0.0, (int(epoch_frame) / sr) + min(age, 0.08)), age
-        return int(frame) / sr, age
+            candidate = max(0.0, (int(epoch_frame) / sr) + min(age, 0.08))
+        else:
+            candidate = int(frame) / sr
+
+        # A callback can arrive earlier than its nominal audio-block period.
+        # Publishing its exact write head may then be a few ms behind the
+        # previous interpolated read.  That is interpolation jitter, not a
+        # backward transport discontinuity; letting it reach MtcOutput causes
+        # a full-frame re-anchor that interrupts the QF stream.  Clamp only
+        # within one transport generation.  Seek/loop/stop increment the
+        # generation and therefore remain free to move backward deliberately.
+        regression_s = 0.0
+        if self._mtc_clock_generation != int(generation):
+            self._mtc_clock_generation = int(generation)
+            self._mtc_clock_floor = candidate
+        elif self._mtc_clock_floor is not None and candidate < self._mtc_clock_floor:
+            regression_s = self._mtc_clock_floor - candidate
+            candidate = self._mtc_clock_floor
+        else:
+            self._mtc_clock_floor = candidate
+        return candidate, age, regression_s
 
     @property
     def duration(self) -> float:
@@ -1358,6 +1387,8 @@ class AudioEngine(QObject):
         """Start the off-GUI-thread MTC/MIDI-cue ticker (idempotent)."""
         if self._mtc_thread is not None and self._mtc_thread.is_alive():
             return
+        self._mtc_clock_generation = None
+        self._mtc_clock_floor = None
         self._mtc_thread_stop.clear()
         t = threading.Thread(
             target=self._mtc_thread_loop,
@@ -1413,7 +1444,7 @@ class AudioEngine(QObject):
         if self._playing:
             tick_t0 = time.monotonic()
             loop_sequence = self._loop_discontinuity_sequence
-            pos, snapshot_age_s = self._mtc_clock_position()
+            pos, snapshot_age_s, regression_s = self._mtc_clock_position()
             clock_read_s = time.monotonic() - tick_t0
             phase_t0 = time.monotonic()
             self._sync_mtc_to_file_ltc(pos)
@@ -1438,11 +1469,13 @@ class AudioEngine(QObject):
                     spans_ms={
                         "mtc.clock_read_ms": clock_read_s * 1000.0,
                         "mtc.clock_snapshot_age_ms": snapshot_age_s * 1000.0,
+                        "mtc.clock_regression_ms": regression_s * 1000.0,
                         "mtc.file_ltc_sync_ms": file_ltc_sync_s * 1000.0,
                         "mtc.qf_dispatch_ms": qf_dispatch_s * 1000.0,
                         "mtc.cue_dispatch_ms": cue_dispatch_s * 1000.0,
                         "mtc.tick_exec_ms": (time.monotonic() - tick_t0) * 1000.0,
-                    }
+                    },
+                    counters={"mtc.clock_regression_clamps": int(regression_s > 0.0)},
                 )
 
     def _emit_position(self) -> None:
