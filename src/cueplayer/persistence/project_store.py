@@ -82,6 +82,7 @@ def ma_export_to_dict(settings: MaExportSettings) -> dict[str, Any]:
         "button_executor_start": settings.button_executor_start,
         "timecode_slot": int(settings.timecode_slot),
         "data_pool": settings.data_pool,
+        "ma3_export_version": settings.ma3_export_version,
         "latency_ms": float(settings.latency_ms),
         "page_per_song": bool(settings.page_per_song),
         "show_install_macro_name": settings.show_install_macro_name,
@@ -184,6 +185,11 @@ def dict_to_ma_export(raw: Any) -> MaExportSettings:
         button_executor_start=button_executor,
         timecode_slot=int(raw.get("timecode_slot", 1) or 1),
         data_pool=str(raw.get("data_pool") or "Default"),
+        ma3_export_version=(
+            str(raw.get("ma3_export_version") or "2.4")
+            if str(raw.get("ma3_export_version") or "2.4") in {"2.3", "2.4", "2.5"}
+            else "2.4"
+        ),
         latency_ms=float(raw.get("latency_ms", 0.0) or 0.0),
         page_per_song=bool(raw.get("page_per_song", True)),
         show_install_macro_name=str(

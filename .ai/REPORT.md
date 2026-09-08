@@ -1,55 +1,41 @@
-# CuePlayer 1.15 Release Version
+# grandMA3 2.3/2.4/2.5 Export Profiles
 
-Date: 2026-09-08. Branch: `cursor/technical-audit-0815-028d`.
+Date: 2026-09-09. Branch: `cursor/technical-audit-0815-028d`.
 
 ## Task objective
 
-Promote the hardware-approved Art-Net Timecode build from 1.14 to CuePlayer 1.15 and
-prepare the canonical Windows packaging command for the user.
+Add a selectable, persisted MA3 export-version field while retaining old XML handles
+for 2.3/2.4 and using the TC301-proven syntax for 2.5+.
 
 ## What was implemented
 
-- Changed the canonical `cueplayer.__version__` from `1.14` to `1.15`.
-- Updated Inno Setup's direct-invocation example and fallback version to 1.15. The
-  normal build still receives its version from `cueplayer.__version__`.
-- Updated version/title/splash tests, README release status, and changelog.
-- No playback, timecode, UI behavior, project schema, or packaging pipeline behavior
-  was changed.
+- Added 2.3, 2.4, and 2.5+ selectors to Show Patch and single-song Export.
+- Persisted `ma3_export_version`; legacy projects default to 2.4 compatibility.
+- 2.3/2.4 retain DataVersion 2.4.2.2 and `.5.<pool-1>` handles.
+- 2.5 uses DataVersion 2.5.0.3 and `.6.<actual sequence pool>` handles.
+- Main Go+ and Button Top both retain explicit CueDestination and numeric destination.
+- Sequence and Timecode XML use the selected 2.5 DataVersion where plan-aware.
 
 ## Files changed
 
-- `src/cueplayer/__init__.py`, `src/cueplayer/app_info.py`
-- `packaging/CuePlayer.iss`
-- `tests/util/test_app_info.py`, `tests/ui/test_about_dialog_and_title.py`,
-  `tests/ui/test_splash.py`
-- `README.md`, `CHANGELOG.md`
-- `.ai/REPORT.md`, `.ai/NEXT_TASK.md`,
-  `.ai/handoffs/2026-09-08_CuePlayer115ReleaseVersion.md`
+Domain/persistence/export-plan/MA3 exporter, both export UIs, exporter tests,
+`docs/MA3_XML_PROFILES.md`, report, handoff, and next task.
 
 ## Architecture decisions
 
-- `src/cueplayer/__init__.py` remains the single version source consumed by Python
-  metadata, app title/About/Splash, PyInstaller Windows VersionInfo, artifact names,
-  and the Inno command-line define.
-- Project schema remains version 3; product release version and persistence schema are
-  intentionally independent.
+Version semantics live in `MaExportProfile`/`Ma3Exporter`, not UI XML logic. Existing
+projects remain 2.4; new settings default to 2.5. MA2 is untouched.
 
 ## Tests performed
 
-- Version/App Info/About/Splash suite: passed after updating all 1.14 assertions.
-- Direct identity check prints `1.15 1.15 (1, 15, 0, 0)`.
-- Repository release-path search has no remaining functional `1.14` references.
-- `git diff --check`: passed with only expected CRLF notices.
+Exporter + persistence + Show Patch UI: **291 passed**. Compileall passed.
 
 ## Remaining issues
 
-- The Windows zip/Setup artifacts have not been rebuilt in this task; the user will
-  run `packaging/build_windows.ps1` on this Windows workstation.
-- After building, confirm the executable About/Splash and file properties show 1.15,
-  then retain the final Art-Net receiver/PERF evidence with the release artifacts.
+Import one 2.5+ CuePlayer export into grandMA3 2.5.0.3 and re-export it for canonical
+comparison. The collected TC301 source file is external evidence, not committed.
 
 ## Suggested next task
 
-Run the 1.15 Windows packaging command in `.ai/NEXT_TASK.md`, verify the generated zip
-and Setup.exe names, launch the packaged EXE, and confirm Version 1.15 plus Art-Net
-Timecode output on the physical receiver.
+Hardware-import a 2.5+ full export and timecode-only re-export; verify Main Go+ and
+Button Top destinations, then compare the console re-export against CuePlayer XML.

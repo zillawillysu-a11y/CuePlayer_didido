@@ -552,6 +552,10 @@ class ShowPatchPage(QWidget):
         self.latency_ms.setDecimals(1)
         self.latency_ms.setSuffix(" ms")
         self.data_pool = QLineEdit("Default")
+        self.ma3_export_version = QComboBox()
+        self.ma3_export_version.addItem("2.3", "2.3")
+        self.ma3_export_version.addItem("2.4", "2.4")
+        self.ma3_export_version.addItem("2.5+ (recommended)", "2.5")
         self.show_macro_name = QLineEdit(_DEFAULT_SHOW_MACRO)
         self.show_name = QLineEdit("CuePlayer")
         self.show_name.setPlaceholderText("CuePlayer")
@@ -598,6 +602,7 @@ class ShowPatchPage(QWidget):
             ("Generator Slots Per Song", self.ma3_generator_slots),
             ("Song ViewButton", self.song_viewbutton), ("Preset Cue ID", self.ma2_preset_cue_id), ("Latency", self.latency_ms),
             ("MA3 Data Pool", self.data_pool),
+            ("MA3 Export Version", self.ma3_export_version),
         )
         # 3 field pairs per row (was 2): this box gets generous width at a
         # maximized desktop (stretch=3 of opt_row's 5), and cutting the row
@@ -2356,6 +2361,8 @@ class ShowPatchPage(QWidget):
         self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.latency_ms.setValue(float(s.latency_ms))
         self.data_pool.setText(s.data_pool or "Default")
+        version_index = self.ma3_export_version.findData(s.ma3_export_version)
+        self.ma3_export_version.setCurrentIndex(max(0, version_index))
         self.show_macro_name.setText(
             s.show_install_macro_name or _DEFAULT_SHOW_MACRO
         )
@@ -2472,6 +2479,7 @@ class ShowPatchPage(QWidget):
         s.page_per_song = self.page_per_song.isChecked()
         s.latency_ms = float(self.latency_ms.value())
         s.data_pool = self.data_pool.text().strip() or "Default"
+        s.ma3_export_version = str(self.ma3_export_version.currentData() or "2.5")
         s.show_install_macro_name = normalize_show_macro_basename(
             self.show_macro_name.text()
         )
@@ -3101,7 +3109,8 @@ class ShowPatchPage(QWidget):
             )
         visible_option_fields = [
             pair for pair in self.option_field_rows
-            if pair[1] is not self.ma3_generator_slots or console == "ma3"
+            if pair[1] not in (self.ma3_generator_slots, self.ma3_export_version)
+            or console == "ma3"
         ]
         for label, field in self.option_field_rows:
             self.option_fields_form.removeWidget(label)

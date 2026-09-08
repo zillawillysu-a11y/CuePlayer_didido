@@ -524,8 +524,9 @@ class Ma3Exporter:
             all_paths["show:macro"] = macro_path
         return all_paths
 
-    def _root(self) -> ET.Element:
-        return ET.Element("GMA3", {"DataVersion": self.data_version})
+    def _root(self, version: str = "2.4") -> ET.Element:
+        data_version = "2.5.0.3" if version == "2.5" else self.data_version
+        return ET.Element("GMA3", {"DataVersion": data_version})
 
     def _cue_part(self, cue_el: ET.Element) -> ET.Element:
         return ET.SubElement(
@@ -551,7 +552,7 @@ class Ma3Exporter:
         include_preset_cue: bool = False,
         preset_cue_id: float = 0.5,
     ) -> None:
-        root = self._root()
+        root = self._root(plan.profile.ma3_export_version)
         attrs = {
             "Name": plan.profile.main_sequence_name,
             "Guid": ma3_guid(),
@@ -863,7 +864,7 @@ class Ma3Exporter:
         *,
         sequence_name: str | None = None,
     ) -> None:
-        root = self._root()
+        root = self._root(plan.profile.ma3_export_version)
         attrs = {
             "Name": sequence_name or plan.profile.button_sequence_name,
             "Guid": ma3_guid(),
@@ -911,7 +912,7 @@ class Ma3Exporter:
         write_xml(root, path)
 
     def write_timecode(self, plan: SongExportPlan, path: Path) -> None:
-        root = self._root()
+        root = self._root(plan.profile.ma3_export_version)
         # Length covers media + tail past last cue (not just last event time).
         duration = export_event_time_seconds(timecode_span_seconds(plan), plan.profile)
         offset_text = format_ma3_offset_seconds(plan.profile.start_offset_seconds)
@@ -972,7 +973,13 @@ class Ma3Exporter:
         main_cmds = ET.SubElement(main_range, "CmdSubTrack")
         # Numeric handles match onPC-exported golden XML (named ShowData paths
         # in Object/ValCueDestination fail to resolve Cue destinations on import).
-        main_seq_idx = max(0, int(plan.profile.sequence_pool_start) - 1)
+        is_25 = plan.profile.ma3_export_version == "2.5"
+        handle_kind = "6" if is_25 else "5"
+        main_seq_idx = (
+            int(plan.profile.sequence_pool_start)
+            if is_25
+            else max(0, int(plan.profile.sequence_pool_start) - 1)
+        )
         for cue in plan.main_cues:
             if not cue.emit_timecode_event:
                 continue
@@ -1010,9 +1017,9 @@ class Ma3Exporter:
                     "FromLocalHardwareFader": "1",
                     "IgnoreExecXFade": "0",
                     "IsExecXFade": "0",
-                    "Object": f"13.13.0.5.{main_seq_idx}",
+                    "Object": f"13.13.0.{handle_kind}.{main_seq_idx}",
                     "ExecToken": "Go+",
-                    "ValCueDestination": f"0.5.{main_seq_idx}.{dest_handle}",
+                    "ValCueDestination": f"0.{handle_kind}.{main_seq_idx}.{dest_handle}",
                 },
             )
 
@@ -1026,7 +1033,7 @@ class Ma3Exporter:
                 lane.sequence_pool
                 or (plan.profile.sequence_pool_start + 1 + lane_i)
             )
-            btn_seq_idx = max(0, btn_pool - 1)
+            btn_seq_idx = btn_pool if is_25 else max(0, btn_pool - 1)
             track = ET.SubElement(
                 group,
                 "Track",
@@ -1077,9 +1084,9 @@ class Ma3Exporter:
                         "FromLocalHardwareFader": "1",
                         "IgnoreExecXFade": "0",
                         "IsExecXFade": "0",
-                        "Object": f"13.13.0.5.{btn_seq_idx}",
+                        "Object": f"13.13.0.{handle_kind}.{btn_seq_idx}",
                         "ExecToken": "Top",
-                        "ValCueDestination": f"0.5.{btn_seq_idx}.1000",
+                        "ValCueDestination": f"0.{handle_kind}.{btn_seq_idx}.1000",
                     },
                 )
 

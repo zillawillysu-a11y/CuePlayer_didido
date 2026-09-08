@@ -174,6 +174,12 @@ class ExportDialog(QDialog):
         self.data_pool = QLineEdit("Default")
         self.data_pool.setToolTip("MA3 Data Pool name")
         form.addRow("MA3 Data Pool", self.data_pool)
+        self.ma3_export_version = NoWheelComboBox()
+        self.ma3_export_version.addItem("2.3", "2.3")
+        self.ma3_export_version.addItem("2.4", "2.4")
+        self.ma3_export_version.addItem("2.5+ (recommended)", "2.5")
+        self.ma3_export_version.setCurrentIndex(2)
+        form.addRow("MA3 Export Version", self.ma3_export_version)
 
         self.name_hint = QLabel("File names / Sequence names are generated automatically from each song's MA English name.")
         self.name_hint.setWordWrap(True)
@@ -261,6 +267,7 @@ class ExportDialog(QDialog):
 
     def _refresh_ma3_enabled(self) -> None:
         self.data_pool.setEnabled(self.ma3_radio.isChecked())
+        self.ma3_export_version.setEnabled(self.ma3_radio.isChecked())
 
     def _browse_out(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose Export Folder", self.out_dir.text())
@@ -309,6 +316,7 @@ class ExportDialog(QDialog):
             timecode_slot=self.tc_slot.value(),
             ltc_latency_compensation_seconds=float(self.latency_ms.value()) / 1000.0,
             data_pool=self.data_pool.text().strip() or "Default",
+            ma3_export_version=str(self.ma3_export_version.currentData() or "2.5"),
             start_offset_seconds=offset,
             fps=fps,
         )

@@ -1184,6 +1184,7 @@ class MaExportSettings:
     button_executor_start: str = "201.101"
     timecode_slot: int = 1
     data_pool: str = "Default"
+    ma3_export_version: str = "2.5"  # 2.3 | 2.4 | 2.5
     latency_ms: float = 0.0
     # Each song uses its own Page: 1.201, 2.201, 3.201…
     page_per_song: bool = True

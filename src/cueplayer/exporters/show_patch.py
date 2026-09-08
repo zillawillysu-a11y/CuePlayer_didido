@@ -375,6 +375,7 @@ def plans_from_show_patch(
                 timecode_slot=int(settings.timecode_slot),
                 ltc_latency_compensation_seconds=float(settings.latency_ms) / 1000.0,
                 data_pool=settings.data_pool.strip() or "Default",
+                ma3_export_version=settings.ma3_export_version,
                 start_offset_seconds=offset,
                 fps=fps,
                 button_allocations=button_alloc,

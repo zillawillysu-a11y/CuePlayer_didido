@@ -420,6 +420,7 @@ class MaExportProfile:
     # Typical live LTC→MA lag: -0.10 ~ -0.20.
     ltc_latency_compensation_seconds: float = 0.0
     data_pool: str = "Default"  # MA3
+    ma3_export_version: str = "2.4"
     button_follow_seconds: float = 0.1  # hidden internal default
     export_mode: ExportMode = "full"
     main_sequence_name: str = "CuePlayer_Main"

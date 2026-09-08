@@ -239,3 +239,39 @@ def test_ma3_timecode_all_cue_destinations_named(tmp_path: Path) -> None:
         if xml_tag_local(cmd.tag) == "RealtimeCmd"
     }
     assert objs == {"13.13.0.5.6"}
+
+
+def test_ma3_25_uses_actual_pool_handles_for_main_and_button(tmp_path: Path) -> None:
+    plan = SongExportPlan(
+        song_name="V25",
+        profile=MaExportProfile(
+            console="ma3",
+            export_mode="timecode_only",
+            ma3_export_version="2.5",
+            sequence_pool_start=301,
+            main_sequence_name="Main301",
+        ),
+        main_cues=[ExportCue(2, "Main", time_seconds=1.0)],
+        button_lanes=[
+            ExportButtonLane(
+                lane_index=1,
+                display_name="Button",
+                sequence_pool=302,
+                sequence_name="Button302",
+                mark_times_seconds=[2.0],
+            )
+        ],
+    )
+    root = load_xml_root(Ma3Exporter().export_to_directory(plan, tmp_path)["timecode"])
+    assert root.get("DataVersion") == "2.5.0.3"
+    events = [el for el in root.iter() if xml_tag_local(el.tag) == "CmdEvent"]
+    assert [event.get("CueDestination") for event in events] == ["Cue 2", "Cue 1"]
+    commands = [el for el in root.iter() if xml_tag_local(el.tag) == "RealtimeCmd"]
+    assert [cmd.get("Object") for cmd in commands] == [
+        "13.13.0.6.301",
+        "13.13.0.6.302",
+    ]
+    assert [cmd.get("ValCueDestination") for cmd in commands] == [
+        "0.6.301.2000",
+        "0.6.302.1000",
+    ]
