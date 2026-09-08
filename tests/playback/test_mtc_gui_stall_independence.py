@@ -19,8 +19,13 @@ frames once resumed, and stops cleanly on pause/shutdown.
 
 from __future__ import annotations
 
+import threading
 import time
 
+import pytest
+
+from cueplayer.diagnostics import perf as perf_diag
+from cueplayer.playback import audio_engine as audio_engine_module
 from cueplayer.playback.audio_engine import AudioEngine
 
 
@@ -54,9 +59,9 @@ def test_mtc_thread_keeps_ticking_with_zero_qt_event_loop_processing(monkeypatch
         # title-bar drag.
         t0 = time.monotonic()
         monkeypatch.setattr(
-            type(engine),
-            "raw_position",
-            property(lambda self: time.monotonic() - t0),
+            engine,
+            "_mtc_clock_position",
+            lambda: (time.monotonic() - t0, 0.0),
         )
 
         engine._mtc.on_play(0.0)
@@ -111,3 +116,79 @@ def test_mtc_thread_resume_after_stall_does_not_burst_stale_frames():
     finally:
         engine._playing = False
         engine.shutdown_midi_outputs()
+
+
+def test_mtc_clock_read_does_not_wait_for_audio_mix_lock():
+    """MTC consumes the published sample-clock snapshot without lock contention."""
+    engine = AudioEngine()
+    done = threading.Event()
+    result: list[tuple[float, float]] = []
+    try:
+        engine._playing = True
+        with engine._lock:
+            engine._stamp_write_head_unlocked()
+            worker = threading.Thread(
+                target=lambda: (result.append(engine._mtc_clock_position()), done.set()),
+                daemon=True,
+            )
+            worker.start()
+            assert done.wait(0.25), "MTC clock read blocked on AudioEngine._lock"
+        worker.join(timeout=0.25)
+        assert result
+        assert result[0][0] >= 0.0
+    finally:
+        engine._playing = False
+        engine.shutdown_midi_outputs()
+
+
+class _FakeStop:
+    def __init__(self, clock, *, stop_after: int, oversleep: float = 0.0) -> None:
+        self.clock = clock
+        self.stop_after = stop_after
+        self.oversleep = oversleep
+        self.waits: list[float] = []
+        self.was_set = False
+
+    def set(self) -> None:
+        self.was_set = True
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        self.clock[0] += timeout + self.oversleep
+        return len(self.waits) >= self.stop_after
+
+
+def test_mtc_scheduler_uses_absolute_deadlines(monkeypatch):
+    """Tick work is absorbed by the next 4 ms period instead of adding drift."""
+    engine = AudioEngine()
+    clock = [0.0]
+    stop = _FakeStop(clock, stop_after=4)
+    monkeypatch.setattr(audio_engine_module.time, "monotonic", lambda: clock[0])
+    engine._mtc_thread_stop = stop
+    engine._mtc_tick = lambda: clock.__setitem__(0, clock[0] + 0.003)
+
+    engine._mtc_thread_loop()
+
+    assert stop.waits[0] == pytest.approx(0.004)
+    assert stop.waits[1:3] == pytest.approx([0.001, 0.001])
+
+
+def test_mtc_scheduler_records_wakeup_lateness_and_missed_slots(monkeypatch):
+    engine = AudioEngine()
+    clock = [0.0]
+    stop = _FakeStop(clock, stop_after=4, oversleep=0.001)
+    monkeypatch.setattr(audio_engine_module.time, "monotonic", lambda: clock[0])
+    engine._mtc_thread_stop = stop
+    engine._mtc_tick = lambda: clock.__setitem__(0, clock[0] + 0.006)
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    try:
+        engine._mtc_thread_loop()
+        snap = perf_diag.snapshot()
+        assert snap["counters"]["mtc.scheduler.wakeups"] == 3
+        assert snap["counters"]["mtc.scheduler.missed_wake_slots"] >= 3
+        assert snap["spans"]["mtc.scheduler.wakeup_lateness_ms"]["max_ms"] >= 1.0
+        assert "MTC sender continuity:" in perf_diag.report_text()
+    finally:
+        perf_diag.set_enabled(False)
+        perf_diag.clear()

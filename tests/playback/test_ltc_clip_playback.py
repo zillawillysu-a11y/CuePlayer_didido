@@ -40,6 +40,15 @@ class _FakePort:
         pass
 
 
+def _set_mtc_sample_position(engine: eng_mod.AudioEngine, seconds: float) -> None:
+    """Publish the sample-clock write head exactly as the audio callback does."""
+    with engine._lock:  # noqa: SLF001
+        engine._position_frame = int(round(seconds * SR))  # noqa: SLF001
+        engine._pos_epoch_frame = engine._position_frame  # noqa: SLF001
+        engine._pos_epoch_mono = 0.0  # noqa: SLF001
+        engine._publish_mtc_clock_snapshot_unlocked()  # noqa: SLF001
+
+
 def _full_frame_tc(message) -> Timecode:
     b = message.bytes()
     assert b[0] == 0xF0 and b[-1] == 0xF7
@@ -281,7 +290,7 @@ def _mtc_events(engine, positions: list[float]) -> list[list]:
     engine._playing = True  # noqa: SLF001
     events = []
     for pos in positions:
-        engine._position_frame = int(round(pos * SR))  # noqa: SLF001
+        _set_mtc_sample_position(engine, pos)
         port.messages.clear()
         engine._mtc_tick()
         events.append(list(port.messages))
@@ -301,7 +310,7 @@ def test_mtc_silent_outside_clips() -> None:
     # Drive ticks with a fake port while outside the clip: nothing is sent.
     port = _FakePort()
     engine._mtc._port = port  # noqa: SLF001
-    engine._position_frame = int(round(0.5 * SR))  # noqa: SLF001
+    _set_mtc_sample_position(engine, 0.5)
     port.messages.clear()
     engine._mtc_tick()
     assert port.messages == []
@@ -323,7 +332,7 @@ def test_mtc_reanchors_and_shares_clip_mapping() -> None:
     assert port.messages == []
 
     # Enter clip A: re-anchor full frame + quarter frames at the mapped TC.
-    engine._position_frame = int(round(2.5 * SR))  # noqa: SLF001
+    _set_mtc_sample_position(engine, 2.5)
     port.messages.clear()
     engine._mtc_tick()
     full = [m for m in port.messages if m.bytes()[0] == 0xF0]
@@ -332,13 +341,13 @@ def test_mtc_reanchors_and_shares_clip_mapping() -> None:
     assert qf
 
     # In the gap between clips: no MTC at all until the next clip.
-    engine._position_frame = int(round(4.5 * SR))  # noqa: SLF001
+    _set_mtc_sample_position(engine, 4.5)
     port.messages.clear()
     engine._mtc_tick()
     assert port.messages == []
 
     # Enter clip B: re-anchor to B's start TC, not a continuation of A.
-    engine._position_frame = int(round(5.5 * SR))  # noqa: SLF001
+    _set_mtc_sample_position(engine, 5.5)
     port.messages.clear()
     engine._mtc_tick()
     full = [m for m in port.messages if m.bytes()[0] == 0xF0]
@@ -430,7 +439,7 @@ def _run_mtc_steps(
     raw: list[tuple[float, int, int]] = []
     pos = start_s
     while pos <= end_s + 1e-9:
-        engine._position_frame = int(round(pos * SR))  # noqa: SLF001
+        _set_mtc_sample_position(engine, pos)
         port.messages.clear()
         engine._mtc_tick()  # noqa: SLF001
         fulls = [

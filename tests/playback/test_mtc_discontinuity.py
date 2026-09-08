@@ -1,5 +1,6 @@
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.audio_engine import AudioEngine
+from cueplayer.diagnostics import perf as perf_diag
 import numpy as np
 
 
@@ -37,6 +38,28 @@ def test_long_ui_stall_does_not_burst_thousands_of_expired_messages():
         assert len(mtc._port.messages) <= 9
         assert any(m.bytes()[0] == 0xF0 for m in mtc._port.messages)
     finally:
+        mtc.close()
+
+
+def test_qf_debt_records_missed_catch_up_and_overdue_reanchor():
+    mtc = output()
+    perf_diag.set_enabled(True)
+    perf_diag.clear()
+    try:
+        # Four QFs become due at once: three missed deadlines, recovered by
+        # the existing bounded catch-up loop.
+        mtc.tick(10.025)
+        # A much larger debt re-anchors instead of replaying stale QFs.
+        mtc.tick(100.0)
+        snap = perf_diag.snapshot()
+        assert snap["counters"]["mtc.missed_qf"] >= 3
+        assert snap["counters"]["mtc.catch_up_wakeups"] >= 1
+        assert snap["counters"]["mtc.catch_up_qf"] >= 3
+        assert snap["counters"]["mtc.overdue_reanchors"] == 1
+        assert snap["attrs"]["mtc.qf_due_max"] > 8
+    finally:
+        perf_diag.set_enabled(False)
+        perf_diag.clear()
         mtc.close()
 
 

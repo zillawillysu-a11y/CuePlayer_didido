@@ -191,6 +191,19 @@ class AudioEngine(QObject):
         # (position, LTC, calibration clicks) runs in this rate. See
         # _resolve_device_and_route() / _playback_source().
         self._playback_rate = 48000
+        # Immutable write-head snapshot published by the existing sample-clock
+        # writer while it already holds ``_lock``.  The MTC sender reads this
+        # tuple without contending for that lock; it still follows the exact
+        # same AudioEngine sample clock and only extrapolates from the latest
+        # callback stamp, just like ``raw_position``.
+        self._mtc_clock_snapshot = (
+            self._position_frame,
+            self._pos_epoch_frame,
+            self._pos_epoch_mono,
+            self._playing,
+            self._scrubbing,
+            self._playback_rate,
+        )
         self._playback_samples: np.ndarray | None = None
         self._playback_cache_key: tuple | None = None
         self._playback_resample_future = None
@@ -636,11 +649,44 @@ class AudioEngine(QObject):
         """Record write-head + wall clock. Caller must hold ``self._lock``."""
         self._pos_epoch_frame = int(self._position_frame)
         self._pos_epoch_mono = time.monotonic()
+        self._publish_mtc_clock_snapshot_unlocked()
 
     def _clear_write_head_stamp_unlocked(self) -> None:
         """Stop interpolating (pause / scrub / end). Caller holds ``self._lock``."""
         self._pos_epoch_frame = int(self._position_frame)
         self._pos_epoch_mono = 0.0
+        self._publish_mtc_clock_snapshot_unlocked()
+
+    def _publish_mtc_clock_snapshot_unlocked(self) -> None:
+        """Publish one coherent, lock-free-to-read MTC clock snapshot."""
+        self._mtc_clock_snapshot = (
+            int(self._position_frame),
+            int(self._pos_epoch_frame),
+            float(self._pos_epoch_mono),
+            bool(self._playing),
+            bool(self._scrubbing),
+            int(self._playback_rate),
+        )
+
+    def _mtc_clock_position(self) -> tuple[float, float]:
+        """Return MTC position and snapshot age without taking ``_lock``.
+
+        The tuple assignment performed by the sole clock writer is atomic in
+        CPython, so readers see either the previous complete snapshot or the
+        next complete snapshot, never a mix of fields.  Snapshot age is
+        diagnostic evidence for callback publication delay, not a new clock.
+        """
+        frame, epoch_frame, epoch_mono, playing, scrubbing, sample_rate = (
+            self._mtc_clock_snapshot
+        )
+        sr = float(sample_rate)
+        if sr <= 0.0:
+            return 0.0, 0.0
+        now = time.monotonic()
+        age = max(0.0, now - float(epoch_mono)) if epoch_mono > 0.0 else 0.0
+        if playing and not scrubbing and epoch_mono > 0.0:
+            return max(0.0, (int(epoch_frame) / sr) + min(age, 0.08)), age
+        return int(frame) / sr, age
 
     @property
     def duration(self) -> float:
@@ -1330,21 +1376,48 @@ class AudioEngine(QObject):
         self._mtc_thread = None
 
     def _mtc_thread_loop(self) -> None:
-        # Same 4 ms cadence the GUI QTimer previously used, but paced by a
-        # wall-clock wait on a plain thread — never blocked by the Qt event
-        # loop (e.g. Windows' native title-bar move/resize modal loop).
+        # Same 4 ms cadence the GUI QTimer previously used, but paced against
+        # absolute monotonic deadlines.  A relative wait after every tick
+        # permanently accumulated tick/lock/MIDI-send work into scheduler
+        # drift; an absolute deadline keeps that work inside the next period.
+        # One tick already catches MTC up from the sample-clock position, so
+        # missed wake slots are skipped rather than replayed as a tight burst.
         stop = self._mtc_thread_stop
-        while not stop.wait(0.004):
+        period_s = 0.004
+        deadline = time.monotonic() + period_s
+        while True:
+            if stop.wait(max(0.0, deadline - time.monotonic())):
+                break
+            woke = time.monotonic()
+            lateness_s = max(0.0, woke - deadline)
+            if perf_diag.is_enabled():
+                perf_diag.record_batch(
+                    spans_ms={
+                        "mtc.scheduler.wakeup_lateness_ms": lateness_s * 1000.0
+                    },
+                    counters={"mtc.scheduler.wakeups": 1},
+                )
             try:
                 self._mtc_tick()
             except Exception:  # noqa: BLE001 — ticker must never die silently
                 log.exception("MTC tick thread error")
+            deadline += period_s
+            now = time.monotonic()
+            if deadline <= now:
+                missed_slots = int((now - deadline) // period_s) + 1
+                if perf_diag.is_enabled():
+                    perf_diag.count("mtc.scheduler.missed_wake_slots", missed_slots)
+                deadline += missed_slots * period_s
 
     def _mtc_tick(self) -> None:
         if self._playing:
+            tick_t0 = time.monotonic()
             loop_sequence = self._loop_discontinuity_sequence
-            pos = self.raw_position
+            pos, snapshot_age_s = self._mtc_clock_position()
+            clock_read_s = time.monotonic() - tick_t0
+            phase_t0 = time.monotonic()
             self._sync_mtc_to_file_ltc(pos)
+            file_ltc_sync_s = time.monotonic() - phase_t0
             if loop_sequence != self._mtc_seen_loop_sequence:
                 self._mtc.on_seek(pos, playing=True)
                 self._mtc_seen_loop_sequence = loop_sequence
@@ -1354,8 +1427,23 @@ class AudioEngine(QObject):
                 # while a TC mapping is active; silence outside clips).
                 self._mtc_source_key = key
                 self._mtc.on_seek(pos, playing=True)
+            phase_t0 = time.monotonic()
             self._mtc.tick(pos)
+            qf_dispatch_s = time.monotonic() - phase_t0
+            phase_t0 = time.monotonic()
             self._midi_cues.update(pos)
+            cue_dispatch_s = time.monotonic() - phase_t0
+            if perf_diag.is_enabled():
+                perf_diag.record_batch(
+                    spans_ms={
+                        "mtc.clock_read_ms": clock_read_s * 1000.0,
+                        "mtc.clock_snapshot_age_ms": snapshot_age_s * 1000.0,
+                        "mtc.file_ltc_sync_ms": file_ltc_sync_s * 1000.0,
+                        "mtc.qf_dispatch_ms": qf_dispatch_s * 1000.0,
+                        "mtc.cue_dispatch_ms": cue_dispatch_s * 1000.0,
+                        "mtc.tick_exec_ms": (time.monotonic() - tick_t0) * 1000.0,
+                    }
+                )
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():

@@ -153,6 +153,24 @@ def record_ms(name: str, elapsed_ms: float) -> None:
         _append_span_sample(name, elapsed_ms)
 
 
+def record_batch(
+    *,
+    spans_ms: dict[str, float] | None = None,
+    counters: dict[str, int] | None = None,
+    attrs: dict[str, Any] | None = None,
+) -> None:
+    """Record related hot-path evidence under one diagnostics lock."""
+    if not _enabled:
+        return
+    with _lock:
+        for name, value in (spans_ms or {}).items():
+            _append_span_sample(str(name), float(value))
+        for name, value in (counters or {}).items():
+            _state.counters[str(name)] += int(value)
+        for name, value in (attrs or {}).items():
+            _state.attrs[str(name)] = value
+
+
 @contextmanager
 def span(name: str, **attrs: Any) -> Iterator[None]:
     """Wall-clock span. No-op when diagnostics are disabled."""
@@ -563,6 +581,39 @@ def report_text() -> str:
         "video.playback.frame_drop.reason.newer_already_presented",
     ):
         lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    lines.append("")
+    lines.append("MTC sender continuity:")
+    for name in (
+        "mtc.scheduler.wakeup_lateness_ms",
+        "mtc.clock_read_ms",
+        "mtc.clock_snapshot_age_ms",
+        "mtc.file_ltc_sync_ms",
+        "mtc.qf_dispatch_ms",
+        "mtc.cue_dispatch_ms",
+        "mtc.tick_exec_ms",
+    ):
+        if name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.3f} "
+                f"max={st['max_ms']:.3f}"
+            )
+        else:
+            lines.append(f"  span {name}: (none)")
+    for name in (
+        "mtc.scheduler.wakeups",
+        "mtc.scheduler.missed_wake_slots",
+        "mtc.missed_qf",
+        "mtc.catch_up_wakeups",
+        "mtc.catch_up_qf",
+        "mtc.overdue_reanchors",
+        "mtc.backward_reanchors",
+        "mtc.qf_sent",
+        "mtc.qf_send_failures",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    for name in ("mtc.qf_due_last", "mtc.qf_due_max"):
+        lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
     lines.append("")
     # Audio callback continuity (no AudioEngine retiming — measurement only).
     lines.append("Audio callback continuity:")

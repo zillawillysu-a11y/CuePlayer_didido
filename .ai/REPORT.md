@@ -1,112 +1,101 @@
-# Timing Architecture Diagnostic (Zoom / Mark / Title-Bar Timecode Drop)
+# MTC Sender Starvation / Clock-Read Lock Contention Fix
 
-Date: 2026-09-07. Branch: `technical-audit-0815-028d`. Status: **diagnostic only —
-no production code changed.**
+Date: 2026-09-08. Branch: `cursor/technical-audit-0815-028d`.
 
 ## Task objective
 
-Show-critical diagnostic-only audit (explicitly no fixes this session) of CuePlayer's
-timing architecture — Playback Clock, Audio, LTC, MTC, Main UI Timecode display, Clean
-Video Output, Timeline interaction, Qt GUI thread, background workers — to build an
-execution/ownership/dependency map and classify four reported symptoms:
-
-1. Occasional Timecode drop while zooming the Timeline with the mouse wheel.
-2. Occasional Timecode drop while creating/dropping a Mark.
-3. Clean Video Output freezes while the Windows title bar (main window or Clean Video
-   Output window) is held/dragged.
-4. Main UI Timecode display freezes during the same title-bar hold/drag.
-
-Full 23-section detail: `.ai/handoffs/2026-09-07_TimingArchitectureDiagnostic.md`.
+依使用者實測（30 秒內 Video decode submissions 523、Audio underflow 0，但 MTC
+仍偶發 drop），診斷 sender starvation / clock-read lock contention，加入
+per-wakeup lateness、missed-QF、catch-up 證據，再做最小 production fix；不降低
+QF cadence、不改 audio buffer、不把 MTC 放回 GUI `QTimer`。
 
 ## What was implemented
 
-Nothing in production code. Five parallel static-audit passes (independently reading
-`audio_engine.py`, `mtc_output.py`, `midi_cue_notes.py`, `video_sync.py`,
-`video_output_window.py`, `video_preview.py`, `timeline_widget.py`, `main_window.py`,
-`domain/models.py`, `domain/undo.py`, `cue_monitor_panel.py`, and a repo-wide
-QTimer/Thread/Lock inventory) were cross-checked against each other and against direct
-spot-re-reads of the load-bearing citations (all confirmed accurate: `_poll` QTimer at
-16 ms, the `_rebuild_scrub_backdrop` 64–186 ms hitch comment, `_async_frame_ready`'s
-`QueuedConnection`, `_mtc_thread`'s daemon-thread design, `_silent_timer`, `Song.add_mark`).
-Findings converged into one consolidated handoff document with the Architecture Map,
-Thread Ownership Map, Timer Inventory, per-subsystem path traces, Zoom and Mark
-execution traces, Windows title-bar analysis, per-issue classification tables, a Shared
-Root Cause Matrix, Unknowns, and an Instrumentation Plan.
+### Diagnosis
+
+- `audio.callback.output_underflow_count == 0` 只證明該次 PortAudio callback 沒有
+  失約，不能證明獨立的 Python `mtc-tick` thread 有準時取得執行時間。
+- 舊 sender loop 是 `Event.wait(0.004)` 後再執行整個 tick，實際週期因此是
+  `4 ms + clock read + LTC mirror check + MIDI send + cue-note scan`；每次工作時間
+  都永久累積成 drift，負載下更容易一次欠多個 QF。
+- 舊 `_mtc_tick()` 透過 `raw_position` 取得 `AudioEngine._lock`，而 PortAudio
+  callback 在同一把鎖內完成 position advance、music/LTC/video mix、routing 與
+  write-head stamp。0 underflow 不代表另一條 thread 的 lock wait 是 0。
+- 523 次 Video decode submissions 支持 CPU/GIL load correlation，但 Video decoder
+  不直接持有 `AudioEngine._lock`，不能單憑該數字宣稱它是 lock contention 的直接原因。
+
+### Minimal production fix
+
+- MTC thread 保持原本 4 ms wake cadence，但改成 `time.monotonic()` absolute
+  deadline。tick 工時會從下一個 wait 扣除，不再永久累積；若真的錯過 wake slot，
+  跳到下一個 future deadline。QF catch-up 仍由現有 sample-clock-based
+  `MtcOutput.tick()` 完成，不緊密重播 sender wake backlog。
+- Audio callback／seek／pause 在原本已持有 `_lock` 的 write-head stamp 點發布
+  immutable `_mtc_clock_snapshot`。MTC sender 以完整 tuple snapshot 讀取同一個
+  sample clock 並沿用既有最多 80 ms extrapolation，不再競爭 `AudioEngine._lock`。
+- 30 fps 仍是 120 QF/s；未改 QF rate、8-QF overdue re-anchor 邊界、audio buffer、
+  PortAudio callback 或任何 GUI timer。
+
+### Evidence added (`CUEPLAYER_PERF=1`)
+
+- Scheduler：`mtc.scheduler.wakeup_lateness_ms`、`wakeups`、`missed_wake_slots`。
+- Clock：`mtc.clock_read_ms`、`mtc.clock_snapshot_age_ms`。
+- Sender phases：`mtc.file_ltc_sync_ms`、`mtc.qf_dispatch_ms`、
+  `mtc.cue_dispatch_ms`、`mtc.tick_exec_ms`。
+- QF debt：`mtc.missed_qf`、`catch_up_wakeups`、`catch_up_qf`、
+  `overdue_reanchors`、`backward_reanchors`、`qf_due_last/max`。
+- Delivery：`mtc.qf_sent`、`mtc.qf_send_failures`。
+- 新增 `perf.record_batch()`，讓同一 hot-path phase 的多個值只取得一次
+  diagnostics lock，降低 instrumentation 本身干擾 4 ms sender 的風險。
 
 ## Files changed
 
-- `.ai/handoffs/2026-09-07_TimingArchitectureDiagnostic.md` (new) — full diagnostic.
-- `.ai/REPORT.md` (this file).
-- `.ai/NEXT_TASK.md` — points to this diagnostic's recommended next phases.
-
-No `src/cueplayer/` file was modified.
+- `src/cueplayer/playback/audio_engine.py` — absolute-deadline scheduler、lock-free
+  sample-clock snapshot、sender phase metrics。
+- `src/cueplayer/playback/mtc_output.py` — QF debt/catch-up/re-anchor/send evidence。
+- `src/cueplayer/diagnostics/perf.py` — batched recording 與 MTC report section。
+- `tests/playback/test_mtc_gui_stall_independence.py` — deadline、missed wake、report、
+  engine-lock independence regressions。
+- `tests/playback/test_mtc_discontinuity.py` — QF debt evidence regression。
+- `tests/playback/test_ltc_clip_playback.py` — test sample-clock publisher helper。
+- `.ai/REPORT.md`、`.ai/handoffs/2026-09-08_MtcSenderStarvationFix.md`、
+  `.ai/NEXT_TASK.md`。
 
 ## Architecture decisions
 
-None made this session (diagnostic only). Key architecture facts **confirmed** (not
-decided) by this audit:
-
-- `AudioEngine._position_frame` (`audio_engine.py:107`) remains the single playback
-  clock, advanced only inside the PortAudio native callback thread under
-  `AudioEngine._lock` — unchanged, and the correct design per `AGENTS.md`/`WORKFLOW.md`'s
-  "AudioEngine sample position remains the only playback clock" rule.
-- LTC is not a separate clock: it is an array slice rendered into the *same* buffer as
-  music, in the *same* PortAudio callback (`audio_engine.py:2140-2178`).
-- MTC's own timing bug (GUI-`QTimer`-paced, frozen by the Windows title-bar modal loop)
-  was already fixed in a prior session (`.ai/handoffs/2026-09-07_MtcTitleBarStallFix.md`)
-  via a dedicated daemon thread — re-verified present and correct in the current code.
-- **New finding this session**: the *same* architectural bug class the MTC fix solved
-  is still present, unfixed, for two other consumers of the same `AudioEngine._poll`
-  GUI-thread `QTimer` — the Main UI Timecode display (cosmetic only, no real-output
-  consequence — High confidence) and Clean Video Output's frame-scheduling entry point
-  (`video_sync.update_position`), which for Clean Video Output is a real, fixable gap
-  layered under a second, harder, structural Qt-widget-paint constraint that a simple
-  thread swap cannot fully solve. See handoff §10/§13/§16.
-- **New finding this session**: Zoom and Mark creation share one confirmed root cause —
-  both invalidate `TimelineWidget._scrub_backdrop`, forcing a synchronous, GUI-thread,
-  measured-64–186 ms full backdrop rebake (`_rebuild_scrub_backdrop`,
-  `timeline_widget.py:3242-3329`) on the next paint. This is a UI/presentation-layer
-  stall (classifications D + E), not a Playback/LTC/MTC output discontinuity — no code
-  path in either trace touches `AudioEngine._lock`/`_position_frame`/`MtcOutput`/
-  `MidiCueNotes`. See handoff §11/§12/§18.
-- Two genuinely distinct root-cause families, not one unified bug: Family 1 (Zoom +
-  Mark) is GUI-thread CPU-cost-driven; Family 2 (title-bar Video + UI TC) is
-  OS-modal-loop-driven event-loop suspension. Recommend keeping them as separate fix
-  phases.
+- `AudioEngine._position_frame` 仍是唯一 playback clock；snapshot 只是由同一 writer
+  critical section 發布的 immutable view，不是第二個 clock。
+- 未縮短或搬動 PortAudio mix lock critical section，避免把 show-critical audio
+  callback 重構混入本次 MTC fix。
+- monotonic deadline 只負責喚醒；輸出 TC 數值仍完全由 sample-clock position 決定。
+- 未建立 GUI `QTimer`，未碰 video pipeline、timeline、LTC routing 或 buffer。
 
 ## Tests performed
 
-None — diagnostic-only session, no production code touched. All findings are static
-code reads, cross-verified across independent audit passes and, in the key cases,
-directly re-confirmed by grep/read against the current file contents by the session
-coordinator.
+- MTC GUI-stall + discontinuity：**9 passed**。
+- MTC/LTC targeted set：**45 passed**。
+- Audio callback/device-rate/stream/crash targeted set：**36 passed**。
+- `tests/playback` 排除文件化的三個無關 baseline 檔案
+  (`test_video_sync.py`, `test_ndi_probe.py`, `test_song_use_left_ltc.py`)：
+  **272 passed**。
+- Production modules `compileall`：passed。
+- `git diff --check`：clean。
 
 ## Remaining issues
 
-Everything is `UNKNOWN — NEEDS INSTRUMENTATION` rather than fixed; see handoff §19/§20
-for the full list and the proposed (not-yet-implemented) minimal instrumentation plan.
-Highlights:
-
-- Exact current (post-overscan-trim) cost of `_rebuild_scrub_backdrop` is not measured
-  in this session — the 64–186 ms figure in the code's own comment predates a later
-  overscan reduction.
-- Whether GUI-thread GIL hold during that rebuild measurably delays the MTC thread's own
-  tick cadence or the PortAudio callback's Python-side glue is architecturally plausible
-  but not measured — CuePlayer already has a `CUEPLAYER_PERF=1` instrumentation
-  framework (`src/cueplayer/diagnostics/perf.py`) that covers almost all of this without
-  writing new code; one small proposed addition (`mtc.tick_interval_ms`) would close the
-  one real gap.
-- A real but benign, unaddressed race: `MidiCueNotes`'s background-thread scan of
-  `song.marks` (every 4 ms) shares no lock with `Song.add_mark`'s GUI-thread
-  append+sort — cannot corrupt memory under the GIL, but is architecture debt worth a
-  proper lock in a future session (not a cause of any of the four reported symptoms).
+- 此環境沒有實體／虛擬 MIDI receiver 與 Focusrite，尚未做真實 WinMM port 的
+  30–60 秒 zoom/Mark/video-load 壓力驗證。舊 log 不含新增 metrics，必須重跑。
+- 若仍 drop：`qf_send_failures` 指 backend；高 wake lateness + 低 tick exec 指
+  OS/GIL starvation；高 tick exec 再比較 file-LTC/QF/cue subspan；高 snapshot age
+  加 audio callback miss 指 clock publisher；`qf_due_max > 8` / overdue re-anchor
+  證明 receiver-relevant 長 gap。
+- `clock_read_ms` 修正後應接近零；它證明新 sender read path 無 lock contention，
+  不能反推舊 build 當時實際等待了幾 ms。
 
 ## Suggested next task
 
-See `.ai/NEXT_TASK.md`. In short: **Phase B** (Timeline static-backdrop rebuild cost —
-Zoom/Mark, Family 1) and **Phase C** (Clean Video Output title-bar freeze, Reason A
-only — decouple `video_sync.update_position`'s trigger from `AudioEngine._poll`,
-mirroring the MTC fix). Phase D (Main UI TC display title-bar freeze) is recommended to
-be **dropped or reclassified as confirmed-working-as-intended**, not treated as an open
-bug — High confidence, fully code-cited, zero real-output consequence. Do not start any
-fix phase until the user reviews this diagnostic and explicitly requests it.
+在 Windows 實機以 `CUEPLAYER_PERF=1` 重跑相同 30–60 秒 MTC 壓力情境（持續播放，
+密集 Timeline zoom + 建立 Mark，Video Track 保持載入），以 MIDI monitor 確認 gap，
+寫出 performance report 並回傳 `MTC sender continuity` 與
+`Audio callback continuity`。若仍 drop，只依 metrics 指向的單一長尾來源做下一個
+最小修正。驗證前不要開始 Phase B/C 或 Ripple Edit。

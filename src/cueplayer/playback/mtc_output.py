@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from cueplayer.diagnostics import perf as perf_diag
 from cueplayer.timecode.mtc import (
     absolute_timecode,
     full_frame_sysex,
@@ -116,8 +117,9 @@ class MtcOutput:
     """
     Sends MTC quarter frames while playing; optional full-frame dump on seek/play.
 
-    Call ``tick(position_seconds)`` from the UI/audio poll (~4–16 ms). Uses the
-    playback position (not wall clock) so MTC stays locked to the audio engine.
+    Call ``tick(position_seconds)`` from the dedicated sender thread. It uses
+    the playback sample-clock position, not wall time, so MTC stays locked to
+    the audio engine.
     """
 
     def __init__(self) -> None:
@@ -130,6 +132,7 @@ class MtcOutput:
         self._playing = False
         self._last_qf_index = -1
         self._qf_piece = 0  # 0–7 cycling
+        self._diagnostic_qf_due_max = 0
         # Optional position → TC mapping (clip_generator mode). A provider
         # returning ``None`` means “no TC source at this position” (outside
         # every LTC clip): no quarter frames and no full-frame dumps there.
@@ -200,7 +203,7 @@ class MtcOutput:
 
         Used by ``clip_generator`` songs so MTC shares the exact LTC clip
         mapping (``ltc_timecode_at``). The provider must be cheap and lock-free
-        (it is called under the MTC lock, from the UI tick). Pass ``None`` to
+        (it is called under the MTC lock, from the sender tick). Pass ``None`` to
         fall back to the single ``start_timecode`` timebase.
         """
         with self._lock:
@@ -236,6 +239,7 @@ class MtcOutput:
 
     def on_play(self, position_seconds: float) -> None:
         with self._lock:
+            self._diagnostic_qf_due_max = 0
             if not self._enabled or self._port is None:
                 self._playing = bool(self._enabled)
                 return
@@ -276,6 +280,22 @@ class MtcOutput:
             if qf_rate <= 0:
                 return
             target = int(max(0.0, position_seconds) * qf_rate)
+            qf_due = max(0, target - self._last_qf_index)
+            self._diagnostic_qf_due_max = max(self._diagnostic_qf_due_max, qf_due)
+            if perf_diag.is_enabled():
+                counters: dict[str, int] = {}
+                if qf_due > 1:
+                    counters["mtc.missed_qf"] = qf_due - 1
+                    if qf_due <= 8:
+                        counters["mtc.catch_up_wakeups"] = 1
+                        counters["mtc.catch_up_qf"] = qf_due - 1
+                perf_diag.record_batch(
+                    counters=counters,
+                    attrs={
+                        "mtc.qf_due_last": qf_due,
+                        "mtc.qf_due_max": self._diagnostic_qf_due_max,
+                    },
+                )
             if self._last_qf_index < 0:
                 # Resuming after a no-TC stretch (outside an LTC clip):
                 # re-anchor + full frame so receivers latch the new TC mapping.
@@ -284,6 +304,11 @@ class MtcOutput:
             elif target < self._last_qf_index or target - self._last_qf_index > 8:
                 # A backward discontinuity or more than one QF group overdue:
                 # re-anchor instead of waiting for old time / replaying a burst.
+                if perf_diag.is_enabled():
+                    if target - self._last_qf_index > 8:
+                        perf_diag.count("mtc.overdue_reanchors")
+                    else:
+                        perf_diag.count("mtc.backward_reanchors")
                 self._reset_qf_locked(position_seconds)
                 self._send_full_frame_locked(position_seconds)
             while self._last_qf_index < target:
@@ -328,8 +353,12 @@ class MtcOutput:
                 data = quarter_frame_payload(tc, piece, fps)
                 try:
                     self._port.send(self._note_msg(0xF1, data))
+                    if perf_diag.is_enabled():
+                        perf_diag.count("mtc.qf_sent")
                 except Exception as exc:  # noqa: BLE001
                     log.debug("MTC send failed: %s", exc)
+                    if perf_diag.is_enabled():
+                        perf_diag.count("mtc.qf_send_failures")
                     break
                 self._qf_piece = (piece + 1) % 8
 
