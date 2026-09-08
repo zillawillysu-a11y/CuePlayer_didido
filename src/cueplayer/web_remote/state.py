@@ -192,6 +192,12 @@ def _output_payload(project: Project, engine: _EngineView, position: float) -> d
                 outputs.append("MTC")
         if ao.effective_midi_cue_notes():
             outputs.append("Notes")
+        if getattr(ao, "artnet_timecode_enabled", False):
+            outputs.append(
+                "LTC → Art-Net TC"
+                if ao.effective_ltc_to_artnet_translate()
+                else "Art-Net TC"
+            )
     status = " · ".join(outputs) if outputs else "TC off"
     accent = str(getattr(project, "output_timecode_clock_color", "") or "#3dd68c")
     return {
@@ -204,6 +210,7 @@ def _output_payload(project: Project, engine: _EngineView, position: float) -> d
             "translate": bool(ao.ltc_to_mtc_translate),
             "note": bool(ao.midi_cue_notes_enabled),
             "mtc": bool(ao.mtc_enabled),
+            "artnet": bool(getattr(ao, "artnet_timecode_enabled", False)),
             "ltc": bool(ao.ltc_enabled),
         },
     }

@@ -769,6 +769,8 @@ class WebRemoteBridge(QObject):
             ao.ltc_to_mtc_translate = enabled
         elif key == "mtc":
             ao.mtc_enabled = enabled
+        elif key == "artnet":
+            ao.artnet_timecode_enabled = enabled
         elif key == "ltc":
             ao.ltc_enabled = enabled
         elif key == "note":
@@ -776,29 +778,19 @@ class WebRemoteBridge(QObject):
         else:
             return {"ok": False, "error": "bad_toggle_key"}
 
-        if enabled and key in ("translate", "mtc", "note"):
+        if enabled and key in ("mtc", "note"):
             ao.midi_enabled = True
-        elif not (
-            ao.mtc_enabled
-            or ao.midi_cue_notes_enabled
-            or getattr(ao, "ltc_to_mtc_translate", False)
-        ):
+        elif not (ao.mtc_enabled or ao.midi_cue_notes_enabled):
             ao.midi_enabled = False
 
         if ao.midi_enabled and not ao.midi_port_name:
             # Revert MIDI-dependent toggles when no port is configured.
-            if key in ("translate", "mtc", "note"):
-                if key == "translate":
-                    ao.ltc_to_mtc_translate = False
-                elif key == "mtc":
+            if key in ("mtc", "note"):
+                if key == "mtc":
                     ao.mtc_enabled = False
                 else:
                     ao.midi_cue_notes_enabled = False
-                if not (
-                    ao.mtc_enabled
-                    or ao.midi_cue_notes_enabled
-                    or getattr(ao, "ltc_to_mtc_translate", False)
-                ):
+                if not (ao.mtc_enabled or ao.midi_cue_notes_enabled):
                     ao.midi_enabled = False
             return {"ok": False, "error": "midi_port_required"}
 

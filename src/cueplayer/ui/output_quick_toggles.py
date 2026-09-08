@@ -1,10 +1,10 @@
-"""Compact output toggles for the monitor clock (TRANS / Note / MTC / LTC)."""
+"""Compact output toggles for the monitor clock."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QResizeEvent
-from PySide6.QtWidgets import QGridLayout, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QGridLayout, QLayout, QPushButton, QSizePolicy, QWidget
 
 from cueplayer.domain.models import AudioOutputSettings
 
@@ -60,7 +60,7 @@ def _chip_style(
 class OutputQuickToggles(QWidget):
     """Pill toggles under the output timecode clock."""
 
-    toggled = Signal(str, bool)  # key: translate | note | mtc | ltc
+    toggled = Signal(str, bool)  # key: translate | note | mtc | artnet | ltc
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -72,6 +72,7 @@ class OutputQuickToggles(QWidget):
         self._compact_style = False
 
         self._layout = QGridLayout(self)
+        self._layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._layout.setContentsMargins(0, 6, 0, 2)
         self._layout.setHorizontalSpacing(4)
         self._layout.setVerticalSpacing(4)
@@ -80,7 +81,7 @@ class OutputQuickToggles(QWidget):
         self._translate = self._make_chip(
             "TRANS",
             "translate",
-            "When MTC is on, send file LTC stripe numbers instead of Song Start TC",
+            "Send decoded file LTC numbers to each enabled MTC / Art-Net TC output",
         )
         self._note = self._make_chip(
             "Note",
@@ -91,6 +92,11 @@ class OutputQuickToggles(QWidget):
             "MTC",
             "mtc",
             "MTC Generator from Song Start TC (auto-enables MIDI)",
+        )
+        self._artnet = self._make_chip(
+            "ArtTC",
+            "artnet",
+            "Art-Net Timecode output (independent of MIDI)",
         )
         self._ltc = self._make_chip("LTC", "ltc", "LTC on audio output")
 
@@ -111,7 +117,7 @@ class OutputQuickToggles(QWidget):
         return btn
 
     def _all_chips(self) -> tuple[QPushButton, ...]:
-        return self._translate, self._note, self._mtc, self._ltc
+        return self._translate, self._note, self._mtc, self._artnet, self._ltc
 
     def _row_width_hint(self) -> int:
         chips = self._all_chips()
@@ -127,7 +133,7 @@ class OutputQuickToggles(QWidget):
         chips = self._all_chips()
         if wrapped:
             # 2×2 so TRANS / Note / MTC / LTC keep readable padding.
-            positions = ((0, 0), (0, 1), (1, 0), (1, 1))
+            positions = ((0, 0), (0, 1), (1, 0), (1, 1), (1, 2))
             for chip, (row, col) in zip(chips, positions, strict=True):
                 self._layout.addWidget(chip, row, col, Qt.AlignmentFlag.AlignCenter)
         else:
@@ -190,6 +196,7 @@ class OutputQuickToggles(QWidget):
             self._translate.setChecked(bool(settings.ltc_to_mtc_translate))
             self._note.setChecked(bool(settings.midi_cue_notes_enabled))
             self._mtc.setChecked(bool(settings.mtc_enabled))
+            self._artnet.setChecked(bool(settings.artnet_timecode_enabled))
             self._ltc.setChecked(bool(settings.ltc_enabled))
         finally:
             self._syncing = False

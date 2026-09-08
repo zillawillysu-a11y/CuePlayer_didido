@@ -617,6 +617,30 @@ def report_text() -> str:
     for name in ("mtc.qf_due_last", "mtc.qf_due_max"):
         lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
     lines.append("")
+    lines.append("Art-Net Timecode continuity:")
+    for name in (
+        "artnet_tc.send_ms",
+        "artnet_tc.wakeup_lateness_ms",
+    ):
+        if name in (snap.get("spans") or {}):
+            st = snap["spans"][name]
+            lines.append(
+                f"  span {name}: n={st['count']} mean={st['mean_ms']:.3f} "
+                f"max={st['max_ms']:.3f}"
+            )
+        else:
+            lines.append(f"  span {name}: (none)")
+    for name in (
+        "artnet_tc.send_count",
+        "artnet_tc.send_failures",
+    ):
+        lines.append(f"  counter {name}: {int(counters.get(name, 0))}")
+    for name in (
+        "artnet_tc.sends_per_second",
+        "artnet_tc.duplicate_live_sender_count",
+    ):
+        lines.append(f"  note {name}: {attrs.get(name, '(unset)')}")
+    lines.append("")
     # Audio callback continuity (no AudioEngine retiming — measurement only).
     lines.append("Audio callback continuity:")
     for key in (

@@ -365,7 +365,7 @@ class CueMonitorPanel(QWidget):
     cue_list_visibility_changed = Signal()
     now_layout_changed = Signal()
     output_timecode_clock_changed = Signal()  # secondary right/below or splitter sizes
-    output_toggle_changed = Signal(str, bool)  # translate | note | mtc | ltc
+    output_toggle_changed = Signal(str, bool)  # translate | note | mtc | artnet | ltc
     output_quick_toggles_visibility_changed = Signal()
     audio_settings_requested = Signal()
 

@@ -1,31 +1,21 @@
 # Next task
 
-**Verify the MTC micro-regression re-anchor fix on Windows hardware/virtual MIDI.**
+**Hardware-verify Art-Net 4 ArtTimeCode output on Windows.**
 
-The supplied 2026-09-08 log showed the previous sender build issuing 408 false
-backward full-frame re-anchors. The production fix now monotonic-clamps sample-clock
-interpolation regressions within one transport generation while preserving real
-backward seek/loop behavior. See `.ai/REPORT.md` and
-`.ai/handoffs/2026-09-08_MtcMicroRegressionReanchorFix.md`.
+Build the current `cursor/technical-audit-0815-028d` commit. Select the physical
+Art-Net interface and directed broadcast (or explicit unicast receiver), then verify
+packets with Wireshark or DMX-Workshop and a real external receiver.
 
-Build/run this commit with `CUEPLAYER_PERF=1`. Play continuously for 30-60 seconds and
-repeat the same stress sequence: dense Timeline wheel zoom and Video Track loading,
-while observing an external MTC receiver. Capture a new receiver video and performance
-report.
+Required matrix:
 
-Acceptance criteria for a run with no intentional backward seek/loop:
+- Normal ArtTC at 24, 25, 29.97 DF, and 30 fps through Play/Pause/Stop/Seek.
+- At 30 fps, approximately 30 valid ArtTimeCode packets/s.
+- MTC + ArtTC: approximately 120 MTC QF/s and 30 ArtTimeCode/s.
+- File LTC + TRANS: ArtTC-only receives decoded LTC; MTC+ArtTC both receive the same
+  decoded LTC labels.
+- Video + repeated Timeline Zoom stress: audio underflow 0, Art-Net send failures 0,
+  and `artnet_tc.duplicate_live_sender_count` 0.
 
-- Audio output underflows remain zero.
-- `mtc.qf_send_failures == 0`.
-- QF throughput remains approximately 120/s at 30 fps.
-- `mtc.overdue_reanchors == 0`.
-- `mtc.backward_reanchors == 0`.
-- `mtc.clock_regression_clamps` may be non-zero; those regressions should be absorbed
-  and reported in `mtc.clock_regression_ms`, not converted to full-frame re-anchors.
-
-If visible receiver stutter remains after all criteria pass, compare
-`mtc.scheduler.wakeup_lateness_ms`, `mtc.tick_exec_ms`, `mtc.missed_qf`,
-`mtc.catch_up_qf`, and `mtc.qf_due_max` before changing production behavior again.
-
-Do not start Phase B/C, Ripple Edit, or another MTC redesign before this verification
-is reviewed.
+Capture PERF, packet identification, receiver behavior, and errors. Do not start
+Art-Net input/chase/ArtDmx or change the stable MTC sender, audio buffer, PortAudio
+callback, or GUI timer architecture unless hardware evidence proves a regression.

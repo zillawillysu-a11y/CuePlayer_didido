@@ -56,7 +56,7 @@ hiddenimports += [
 
 # --- Qt packaging slimming (Cleanup Phase 1) -------------------------------
 # `collect_all("PySide6")` grabs the *entire* Qt6 SDK unconditionally.
-# src/ only ever imports PySide6.QtCore / QtGui / QtWidgets (confirmed by a
+# src/ imports PySide6.QtCore / QtGui / QtWidgets / QtNetwork (confirmed by a
 # full grep audit — see PROJECT_SLIM_REPORT.md).
 #
 # IMPORTANT, learned by actually building and measuring (not just grepping):

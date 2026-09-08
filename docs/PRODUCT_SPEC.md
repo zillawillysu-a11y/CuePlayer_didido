@@ -36,6 +36,12 @@
   - 若沒有 LTC 檔，依歌曲長度、起始 Timecode、FPS、Pre-roll 自動產生 LTC。
   - 生成 LTC 建議快取成內部音訊，以利穩定播放、Seek 與重複使用。
   - LTC Gain 與 Music Gain 分離；一般音量控制不得誤調 LTC。
+- Art-Net Timecode Output：
+  - 依 Playback Engine 發布的同一 audio sample-clock snapshot 產生 ArtTimeCode；不得由 MTC packet 轉換。
+  - 支援 24／25／29.97 DF／30 fps、指定本機 IPv4 介面、directed broadcast 與 explicit unicast，使用 UDP 6454。
+  - 可獨立開關並與 MTC／LTC 同時輸出；不得在 PortAudio callback 或 GUI QTimer 執行 UDP timing/send。
+  - TRANS 開啟時，檔案 LTC 解碼結果依 MTC／Art-Net TC 各自 Enable 狀態同步送出；Art-Net-only 不需啟用 MIDI。
+  - 僅做 Output；不含 Art-Net Timecode Input、chase、incoming control、master/slave sync 或 ArtDmx。
 - 共用 Master Timeline：
   - Music、LTC、Video、Marks 共用同一時間基準。
   - Play、Pause、Stop、Seek、Loop、從 Mark 開始播放皆需同步。

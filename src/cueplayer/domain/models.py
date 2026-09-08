@@ -20,6 +20,7 @@ AudioRole = Literal["main", "reference"]
 MarkLineStyle = Literal["solid", "dash", "dot"]
 SetlistNameMode = Literal["zh", "both", "en"]
 FileLtcSide = Literal["off", "left", "right", "auto"]
+ArtNetDestinationMode = Literal["broadcast", "unicast"]
 
 
 # Per-song LTC source mode — mutually exclusive (one state per song):
@@ -1301,6 +1302,12 @@ class AudioOutputSettings:
     midi_cue_velocity: int = 100
     midi_main_base_note: int = 36  # C2 + (lane.index - 1)
     midi_button_base_note: int = 48  # C3 + (lane.index - 1)
+    # Art-Net 4 ArtTimeCode output (independent of MIDI/LTC).
+    artnet_timecode_enabled: bool = False
+    artnet_timecode_fps: float = 30.0
+    artnet_timecode_local_ip: str = ""
+    artnet_timecode_destination_mode: ArtNetDestinationMode = "broadcast"
+    artnet_timecode_destination_ip: str = "2.255.255.255"
     # Per physical output channel: "music_source" | "ltc" | "off" (1-based UI).
     output_channel_modes: list[str] = field(default_factory=list)
 
@@ -1316,6 +1323,19 @@ class AudioOutputSettings:
         return bool(
             self.midi_enabled and self.mtc_enabled and self.ltc_to_mtc_translate
         )
+
+    def effective_ltc_to_artnet_translate(self) -> bool:
+        return bool(self.artnet_timecode_enabled and self.ltc_to_mtc_translate)
+
+    def effective_ltc_translation_output(self) -> bool:
+        """File-LTC translation feeds either independently armed TC output."""
+        return bool(
+            self.ltc_to_mtc_translate
+            and (self.effective_mtc_output() or self.artnet_timecode_enabled)
+        )
+
+    def effective_artnet_timecode_output(self) -> bool:
+        return bool(self.artnet_timecode_enabled)
 
 
 @dataclass

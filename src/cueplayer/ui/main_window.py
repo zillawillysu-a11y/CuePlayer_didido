@@ -6331,11 +6331,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _midi_features_active(ao) -> bool:  # noqa: ANN001
-        return bool(
-            ao.mtc_enabled
-            or ao.midi_cue_notes_enabled
-            or getattr(ao, "ltc_to_mtc_translate", False)
-        )
+        return bool(ao.mtc_enabled or ao.midi_cue_notes_enabled)
 
     def _on_output_quick_toggle(self, key: str, enabled: bool) -> None:
         ao = self.project.audio_output
@@ -6343,6 +6339,8 @@ class MainWindow(QMainWindow):
             ao.ltc_to_mtc_translate = enabled
         elif key == "mtc":
             ao.mtc_enabled = enabled
+        elif key == "artnet":
+            ao.artnet_timecode_enabled = enabled
         elif key == "ltc":
             ao.ltc_enabled = enabled
         elif key == "note":
@@ -6350,7 +6348,7 @@ class MainWindow(QMainWindow):
         else:
             return
 
-        if enabled and key in ("translate", "mtc", "note"):
+        if enabled and key in ("mtc", "note"):
             ao.midi_enabled = True
         elif not self._midi_features_active(ao):
             ao.midi_enabled = False
@@ -6461,6 +6459,11 @@ class MainWindow(QMainWindow):
         self.monitor.sync_output_quick_toggles(settings)
         self._mark_dirty()
         if warning:
+            artnet_error = self.engine.artnet_timecode_status.error
+            if artnet_error:
+                QMessageBox.warning(self, "Audio / Midi / Timecode", warning)
+                self.status.showMessage(artnet_error, 7000)
+                return
             # Virtual MIDI ports (e.g. Bome) sometimes need a moment after the
             # previous handle is closed before accepting a new connection.
             delays_ms = (400, 900, 1800, 3000)
@@ -6499,6 +6502,8 @@ class MainWindow(QMainWindow):
                     parts.append("Translate")
                 if settings.midi_cue_notes_enabled:
                     parts.append("Notes")
+            if settings.artnet_timecode_enabled:
+                parts.append("Art-Net TC")
             msg = "Audio routing updated"
             if parts:
                 msg += " · " + ", ".join(parts)
@@ -6817,7 +6822,7 @@ class MainWindow(QMainWindow):
                 self.engine._detected_ltc_channel = ch
                 self.engine._ltc_detect_ran = True
                 self.engine._refresh_source_routing_cache()
-                if self.project.audio_output.effective_ltc_to_mtc_translate():
+                if self.project.audio_output.effective_ltc_translation_output():
                     self.engine._sync_mtc_to_file_ltc(self.engine.raw_position, force=True)
         self._note_media_warm_step(key, "ltc")
         self._media_warm_progress.emit()
@@ -9006,6 +9011,8 @@ class MainWindow(QMainWindow):
                 tc_flags.append("LTC file R")
         if self.engine.mtc_enabled:
             tc_flags.append("MTC")
+        if self.engine.artnet_timecode_enabled:
+            tc_flags.append("Art-Net TC")
         tc_extra = (" · " + "+".join(tc_flags)) if tc_flags else ""
         self.status.showMessage(
             f"{self.project.name} · {self.current_song.name}"

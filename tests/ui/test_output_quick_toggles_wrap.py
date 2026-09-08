@@ -42,6 +42,7 @@ def test_toggles_wrap_to_two_rows_when_narrow(app: QApplication) -> None:
     assert toggles._translate.text() == "TRANS"
     assert toggles._note.text() == "Note"
     assert toggles._mtc.text() == "MTC"
+    assert toggles._artnet.text() == "ArtTC"
     assert toggles._ltc.text() == "LTC"
     # Each chip should be at least as wide as its text after wrap.
     for chip in toggles._all_chips():  # noqa: SLF001

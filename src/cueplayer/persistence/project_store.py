@@ -318,6 +318,15 @@ def audio_output_to_dict(settings: AudioOutputSettings) -> dict[str, Any]:
         "midi_cue_velocity": int(settings.midi_cue_velocity),
         "midi_main_base_note": int(settings.midi_main_base_note),
         "midi_button_base_note": int(settings.midi_button_base_note),
+        "artnet_timecode_enabled": bool(settings.artnet_timecode_enabled),
+        "artnet_timecode_fps": float(settings.artnet_timecode_fps),
+        "artnet_timecode_local_ip": str(settings.artnet_timecode_local_ip or ""),
+        "artnet_timecode_destination_mode": str(
+            settings.artnet_timecode_destination_mode or "broadcast"
+        ),
+        "artnet_timecode_destination_ip": str(
+            settings.artnet_timecode_destination_ip or "2.255.255.255"
+        ),
         "output_channel_modes": list(settings.output_channel_modes),
     }
 
@@ -346,6 +355,12 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
     ltc_to_mtc = bool(raw.get("ltc_to_mtc_translate", False))
     mtc_on = bool(raw.get("mtc_enabled", False))
     notes_on = bool(raw.get("midi_cue_notes_enabled", False))
+    artnet_fps = float(raw.get("artnet_timecode_fps", 30.0) or 30.0)
+    if not any(abs(artnet_fps - value) < 0.02 for value in (24.0, 25.0, 29.97, 30.0)):
+        artnet_fps = 30.0
+    artnet_mode = str(raw.get("artnet_timecode_destination_mode") or "broadcast")
+    if artnet_mode not in ("broadcast", "unicast"):
+        artnet_mode = "broadcast"
     if "midi_enabled" in raw:
         midi_on = bool(raw.get("midi_enabled"))
     else:
@@ -373,6 +388,13 @@ def dict_to_audio_output(raw: Any) -> AudioOutputSettings:
         midi_main_base_note=max(0, min(127, int(raw.get("midi_main_base_note", 36) or 36))),
         midi_button_base_note=max(
             0, min(127, int(raw.get("midi_button_base_note", 48) or 48))
+        ),
+        artnet_timecode_enabled=bool(raw.get("artnet_timecode_enabled", False)),
+        artnet_timecode_fps=artnet_fps,
+        artnet_timecode_local_ip=str(raw.get("artnet_timecode_local_ip") or ""),
+        artnet_timecode_destination_mode=artnet_mode,  # type: ignore[arg-type]
+        artnet_timecode_destination_ip=str(
+            raw.get("artnet_timecode_destination_ip") or "2.255.255.255"
         ),
         output_channel_modes=[
             str(m) for m in (raw.get("output_channel_modes") or []) if str(m)

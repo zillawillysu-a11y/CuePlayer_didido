@@ -1,4 +1,4 @@
-"""Audio output device, channel routing, and LTC / MTC settings dialog."""
+"""Audio routing and LTC / MTC / Art-Net Timecode output settings dialog."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QScrollArea,
     QSlider,
@@ -32,6 +33,12 @@ from cueplayer.playback.devices import (
     resolve_output_hostapi,
 )
 from cueplayer.playback.mtc_output import list_midi_output_names, midi_backend_status
+from cueplayer.playback.artnet_timecode import (
+    ARTNET_PORT,
+    Ipv4Interface,
+    list_ipv4_interfaces,
+    validate_artnet_destination,
+)
 from cueplayer.playback.routing_parse import (
     MUSIC_SOURCE_LABEL,
     derive_channel_modes,
@@ -84,6 +91,15 @@ class AudioTimecodeDialog(QDialog):
             midi_cue_velocity=int(settings.midi_cue_velocity),
             midi_main_base_note=int(settings.midi_main_base_note),
             midi_button_base_note=int(settings.midi_button_base_note),
+            artnet_timecode_enabled=bool(settings.artnet_timecode_enabled),
+            artnet_timecode_fps=float(settings.artnet_timecode_fps),
+            artnet_timecode_local_ip=str(settings.artnet_timecode_local_ip or ""),
+            artnet_timecode_destination_mode=str(
+                settings.artnet_timecode_destination_mode or "broadcast"
+            ),
+            artnet_timecode_destination_ip=str(
+                settings.artnet_timecode_destination_ip or "2.255.255.255"
+            ),
             output_channel_modes=list(settings.output_channel_modes),
         )
 
@@ -181,11 +197,12 @@ class AudioTimecodeDialog(QDialog):
         self.mtc_enable.setToolTip(
             "Send MIDI Timecode from Song Start TC + playhead (generator numbers)."
         )
-        self.ltc_to_mtc_translate = TickCheckBox("Translate file LTC → MTC")
+        self.ltc_to_mtc_translate = TickCheckBox("Translate file LTC → TC outputs")
         self.ltc_to_mtc_translate.setChecked(bool(settings.ltc_to_mtc_translate))
         self.ltc_to_mtc_translate.setToolTip(
-            "Decode the LTC stripe from the audio file and send those HH:MM:SS:FF "
-            "numbers as MTC. Set LTC source to From file. Does not need LTC output."
+            "Decode the LTC stripe from the audio file once and send those "
+            "HH:MM:SS:FF numbers to each enabled MTC and Art-Net Timecode output. "
+            "Set LTC source to From file."
         )
         self.midi_notes_enable = TickCheckBox("Send MIDI Cue Notes")
         self.midi_notes_enable.setChecked(bool(settings.midi_cue_notes_enabled))
@@ -229,6 +246,70 @@ class AudioTimecodeDialog(QDialog):
         midi_hint.setStyleSheet("color: #a1a1aa;")
         mtc_form.addRow(midi_hint)
         inner.addWidget(mtc_box)
+
+        artnet_box = QGroupBox("Art-Net Timecode Output")
+        artnet_form = QFormLayout(artnet_box)
+        self.artnet_enable = TickCheckBox("Enable Art-Net Timecode")
+        self.artnet_enable.setChecked(bool(settings.artnet_timecode_enabled))
+        self.artnet_fps = NoWheelComboBox()
+        for label, value in (
+            ("24 fps — Film (Type 0)", 24.0),
+            ("25 fps — EBU (Type 1)", 25.0),
+            ("29.97 DF — Drop Frame (Type 2)", 29.97),
+            ("30 fps — SMPTE (Type 3)", 30.0),
+        ):
+            self.artnet_fps.addItem(label, value)
+        selected_fps = float(settings.artnet_timecode_fps or 30.0)
+        for index in range(self.artnet_fps.count()):
+            if abs(float(self.artnet_fps.itemData(index)) - selected_fps) < 0.02:
+                self.artnet_fps.setCurrentIndex(index)
+                break
+
+        self._artnet_interfaces: dict[str, Ipv4Interface] = {
+            item.address: item for item in list_ipv4_interfaces()
+        }
+        self.artnet_local_ip = NoWheelComboBox()
+        saved_local_ip = str(settings.artnet_timecode_local_ip or "")
+        selected_local_index = -1
+        for item in self._artnet_interfaces.values():
+            self.artnet_local_ip.addItem(item.label, item.address)
+            if item.address == saved_local_ip:
+                selected_local_index = self.artnet_local_ip.count() - 1
+        if saved_local_ip and saved_local_ip not in self._artnet_interfaces:
+            self.artnet_local_ip.addItem(f"Saved / unavailable — {saved_local_ip}", saved_local_ip)
+            selected_local_index = self.artnet_local_ip.count() - 1
+        if self.artnet_local_ip.count() == 0:
+            self.artnet_local_ip.addItem("(no active IPv4 interface)", "")
+        self.artnet_local_ip.setCurrentIndex(max(0, selected_local_index))
+
+        self.artnet_destination_mode = NoWheelComboBox()
+        self.artnet_destination_mode.addItem("Directed broadcast", "broadcast")
+        self.artnet_destination_mode.addItem("Explicit destination / unicast", "unicast")
+        mode_index = self.artnet_destination_mode.findData(
+            str(settings.artnet_timecode_destination_mode or "broadcast")
+        )
+        self.artnet_destination_mode.setCurrentIndex(max(0, mode_index))
+        self.artnet_destination_ip = QLineEdit(
+            str(settings.artnet_timecode_destination_ip or "2.255.255.255")
+        )
+        self.artnet_destination_ip.setPlaceholderText("e.g. 2.255.255.255")
+        self.artnet_status = QLabel("")
+        self.artnet_status.setWordWrap(True)
+        artnet_credit = QLabel(
+            f"ArtTimeCode master stream · UDP {ARTNET_PORT}. "
+            "Broadcast uses the selected interface's directed address; "
+            "255.255.255.255 is not allowed by Art-Net."
+        )
+        artnet_credit.setWordWrap(True)
+        artnet_credit.setStyleSheet("color: #a1a1aa;")
+        artnet_form.addRow(self.artnet_enable)
+        artnet_form.addRow("FPS / Type", self.artnet_fps)
+        artnet_form.addRow("Local interface / IP", self.artnet_local_ip)
+        artnet_form.addRow("Destination mode", self.artnet_destination_mode)
+        artnet_form.addRow("Destination IP", self.artnet_destination_ip)
+        artnet_form.addRow("Status", self.artnet_status)
+        artnet_form.addRow(artnet_credit)
+        inner.addWidget(artnet_box)
 
         ltc_box = QGroupBox("LTC Output")
         ltc_form = QFormLayout(ltc_box)
@@ -290,7 +371,17 @@ class AudioTimecodeDialog(QDialog):
         self.ltc_enable.toggled.connect(self._on_ltc_source_changed)
         self.ltc_enable.toggled.connect(lambda _checked: self._on_device_changed())
         self.midi_on.toggled.connect(self._sync_midi_ui)
+        self.mtc_enable.toggled.connect(self._sync_midi_ui)
         self.midi_notes_enable.toggled.connect(self._sync_midi_ui)
+        self.artnet_enable.toggled.connect(self._sync_artnet_ui)
+        self.artnet_enable.toggled.connect(self._sync_midi_ui)
+        self.artnet_local_ip.currentIndexChanged.connect(
+            self._on_artnet_interface_changed
+        )
+        self.artnet_destination_mode.currentIndexChanged.connect(
+            self._on_artnet_mode_changed
+        )
+        self.artnet_destination_ip.textChanged.connect(self._update_artnet_status)
         self.ltc_gain.valueChanged.connect(
             lambda v: self.ltc_gain_label.setText(f"{int(v)}%")
         )
@@ -301,17 +392,70 @@ class AudioTimecodeDialog(QDialog):
         self._on_ltc_source_changed()
         self._combo_hostapi = resolve_output_hostapi(str(settings.output_hostapi or ""))
         self._sync_midi_ui()
+        self._on_artnet_mode_changed()
+
+    def _sync_artnet_ui(self) -> None:
+        enabled = self.artnet_enable.isChecked()
+        for widget in (
+            self.artnet_fps,
+            self.artnet_local_ip,
+            self.artnet_destination_mode,
+            self.artnet_destination_ip,
+        ):
+            widget.setEnabled(enabled)
+        self._update_artnet_status()
+
+    def _on_artnet_interface_changed(self, _index: int = -1) -> None:
+        if self.artnet_destination_mode.currentData() == "broadcast":
+            local = str(self.artnet_local_ip.currentData() or "")
+            interface = self._artnet_interfaces.get(local)
+            if interface is not None:
+                self.artnet_destination_ip.setText(interface.broadcast)
+        self._update_artnet_status()
+
+    def _on_artnet_mode_changed(self, _index: int = -1) -> None:
+        broadcast = self.artnet_destination_mode.currentData() == "broadcast"
+        self.artnet_destination_ip.setReadOnly(broadcast)
+        if broadcast:
+            self._on_artnet_interface_changed()
+        else:
+            self._update_artnet_status()
+
+    def _update_artnet_status(self, _text: str = "") -> None:
+        if not self.artnet_enable.isChecked():
+            self.artnet_status.setText("Disabled")
+            self.artnet_status.setStyleSheet("color: #a1a1aa;")
+            return
+        local = str(self.artnet_local_ip.currentData() or "")
+        mode = str(self.artnet_destination_mode.currentData() or "broadcast")
+        destination = self.artnet_destination_ip.text().strip()
+        if local not in self._artnet_interfaces:
+            self.artnet_status.setText("Error: selected local IPv4 interface is not active.")
+            self.artnet_status.setStyleSheet("color: #f87171;")
+            return
+        try:
+            local, mode, destination = validate_artnet_destination(
+                local, mode, destination
+            )
+        except ValueError as exc:
+            self.artnet_status.setText(f"Error: {exc}")
+            self.artnet_status.setStyleSheet("color: #f87171;")
+            return
+        self.artnet_status.setText(
+            f"Ready: {local}:{ARTNET_PORT} → {destination}:{ARTNET_PORT} ({mode})"
+        )
+        self.artnet_status.setStyleSheet("color: #4ade80;")
 
     def _sync_midi_ui(self) -> None:
         midi_on = self.midi_on.isChecked()
         # Port can be chosen before MIDI On — so turning On later already has a device.
         self.midi_port.setEnabled(True)
-        for widget in (
-            self.mtc_enable,
-            self.ltc_to_mtc_translate,
-            self.midi_notes_enable,
-        ):
+        for widget in (self.mtc_enable, self.midi_notes_enable):
             widget.setEnabled(midi_on)
+        self.ltc_to_mtc_translate.setEnabled(
+            (midi_on and self.mtc_enable.isChecked())
+            or self.artnet_enable.isChecked()
+        )
         notes_on = midi_on and self.midi_notes_enable.isChecked()
         for widget in (
             self.midi_cue_channel,
@@ -461,12 +605,38 @@ class AudioTimecodeDialog(QDialog):
         if midi_on and self.mtc_enable.isChecked() and not port:
             QMessageBox.warning(self, "MTC", "MTC Generator needs a MIDI output port.")
             return
-        if midi_on and self.ltc_to_mtc_translate.isChecked() and not port:
+        if (
+            midi_on
+            and self.mtc_enable.isChecked()
+            and self.ltc_to_mtc_translate.isChecked()
+            and not port
+        ):
             QMessageBox.warning(self, "Translate", "LTC → MTC needs a MIDI output port.")
             return
         if midi_on and self.midi_notes_enable.isChecked() and not port:
             QMessageBox.warning(self, "MIDI cue notes", "Cue notes need a MIDI output port.")
             return
+        artnet_enabled = self.artnet_enable.isChecked()
+        artnet_local_ip = str(self.artnet_local_ip.currentData() or "")
+        artnet_mode = str(self.artnet_destination_mode.currentData() or "broadcast")
+        artnet_destination = self.artnet_destination_ip.text().strip()
+        if artnet_enabled:
+            if artnet_local_ip not in self._artnet_interfaces:
+                QMessageBox.warning(
+                    self,
+                    "Art-Net Timecode",
+                    "The selected local IPv4 interface is not active.",
+                )
+                return
+            try:
+                artnet_local_ip, artnet_mode, artnet_destination = (
+                    validate_artnet_destination(
+                        artnet_local_ip, artnet_mode, artnet_destination
+                    )
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "Art-Net Timecode", str(exc))
+                return
         chosen = self._chosen_device()
         self._result = AudioOutputSettings(
             output_device_name=chosen.name if chosen is not None else "",
@@ -490,6 +660,11 @@ class AudioTimecodeDialog(QDialog):
             midi_cue_velocity=100,
             midi_main_base_note=int(self.midi_main_base.currentData() or 36),
             midi_button_base_note=int(self.midi_button_base.currentData() or 48),
+            artnet_timecode_enabled=artnet_enabled,
+            artnet_timecode_fps=float(self.artnet_fps.currentData() or 30.0),
+            artnet_timecode_local_ip=artnet_local_ip,
+            artnet_timecode_destination_mode=artnet_mode,
+            artnet_timecode_destination_ip=artnet_destination,
             output_channel_modes=modes[:max_ch],
         )
         self.accept()

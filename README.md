@@ -78,3 +78,5 @@ py -3.14 -m venv .venv
 4. LTC waveform display polish (when the file is clean)
 
 NDI OUTPUT is already shipped (needs NDI Tools/Runtime on each PC).
+
+Art-Net™ Designed by and Copyright Artistic Licence.

@@ -66,6 +66,11 @@ def test_save_load_roundtrip_survives_new_project(monkeypatch, app) -> None:
         midi_port_name="loopMIDI Port",
         midi_enabled=False,
         mtc_enabled=True,
+        artnet_timecode_enabled=True,
+        artnet_timecode_fps=25.0,
+        artnet_timecode_local_ip="10.0.0.5",
+        artnet_timecode_destination_mode="broadcast",
+        artnet_timecode_destination_ip="10.255.255.255",
     )
     audio_prefs.save_global_audio_output(saved)
 
@@ -73,6 +78,10 @@ def test_save_load_roundtrip_survives_new_project(monkeypatch, app) -> None:
     audio_prefs.apply_global_audio_to_project(project_a)
     assert project_a.audio_output.midi_port_name == "loopMIDI Port"
     assert project_a.audio_output.mtc_enabled is True
+    assert project_a.audio_output.artnet_timecode_enabled is True
+    assert project_a.audio_output.artnet_timecode_fps == pytest.approx(25.0)
+    assert project_a.audio_output.artnet_timecode_local_ip == "10.0.0.5"
+    assert project_a.audio_output.artnet_timecode_destination_ip == "10.255.255.255"
 
     project_b = Project.create("B")
     audio_prefs.apply_global_audio_to_project(project_b)

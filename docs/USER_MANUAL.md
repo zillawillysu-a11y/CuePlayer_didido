@@ -69,7 +69,7 @@
 
 | 操作 | 說明 |
 |------|------|
-| **TRANS / Note / MTC / LTC** | 快速開關（開 TRANS／Note／MTC 會自動開 MIDI） |
+| **TRANS / Note / MTC / ArtTC / LTC** | 快速開關；TRANS 將檔案 LTC 送到已啟用的 MTC／Art-Net TC，只有 Note／MTC 會自動開 MIDI |
 | 右鍵時鐘區 | 顯示／隱藏時間碼、顯示／隱藏開關列；進階設定 |
 
 ## 專案檔與 Bundle

@@ -58,6 +58,7 @@ from cueplayer.playback.routing_parse import (
 )
 from cueplayer.playback.mtc_output import MtcOutput
 from cueplayer.playback.midi_cue_notes import MidiCueNotes
+from cueplayer.playback.artnet_timecode import ArtNetTimecodeOutput, ArtNetTimecodeStatus
 from cueplayer.playback.resample import resample_linear
 from cueplayer.playback.video_audio_mixer import VideoAudioMixer
 from cueplayer.diagnostics import perf as perf_diag
@@ -192,7 +193,7 @@ class AudioEngine(QObject):
         # _resolve_device_and_route() / _playback_source().
         self._playback_rate = 48000
         # Immutable write-head snapshot published by the existing sample-clock
-        # writer while it already holds ``_lock``.  The MTC sender reads this
+        # writer while it already holds ``_lock``. Timecode senders read this
         # tuple without contending for that lock; it still follows the exact
         # same AudioEngine sample clock and only extrapolates from the latest
         # callback stamp, just like ``raw_position``.
@@ -218,6 +219,11 @@ class AudioEngine(QObject):
         self._active_stream_token: tuple | None = None
         self._mtc = MtcOutput()
         self._midi_cues = MidiCueNotes()
+        self._artnet_tc = ArtNetTimecodeOutput(
+            lambda: self._mtc_clock_snapshot,
+            status_callback=self.timecode_status_changed.emit,
+            timecode_sync_callback=self._sync_artnet_timecode_source,
+        )
         self._poll = QTimer(self)
         self._poll.setInterval(16)
         self._poll.timeout.connect(self._emit_position)
@@ -257,6 +263,14 @@ class AudioEngine(QObject):
         return bool(self._audio_settings.effective_mtc_output())
 
     @property
+    def artnet_timecode_enabled(self) -> bool:
+        return bool(self._audio_settings.effective_artnet_timecode_output())
+
+    @property
+    def artnet_timecode_status(self) -> ArtNetTimecodeStatus:
+        return self._artnet_tc.status()
+
+    @property
     def midi_enabled(self) -> bool:
         return bool(self._audio_settings.midi_enabled)
 
@@ -271,27 +285,42 @@ class AudioEngine(QObject):
         if self.ltc_enabled:
             outputs.append("LTC")
         s = self._audio_settings
-        translate_active = (
-            s.midi_enabled
-            and not s.ltc_enabled
-            and s.effective_ltc_to_mtc_translate()
-            and s.ltc_source != "generator"
-        )
+        mtc_translate_active = s.effective_ltc_to_mtc_translate()
+        artnet_translate_active = s.effective_ltc_to_artnet_translate()
         if s.midi_enabled and s.mtc_enabled:
-            outputs.append("LTC → MTC" if translate_active else "MTC")
-        elif translate_active:
-            outputs.append("LTC → MTC")
+            outputs.append("LTC → MTC" if mtc_translate_active else "MTC")
         if s.effective_midi_cue_notes():
             outputs.append("Notes")
+        if s.effective_artnet_timecode_output():
+            artnet_status = self._artnet_tc.status()
+            if artnet_status.error:
+                outputs.append("Art-Net TC ERROR")
+            else:
+                outputs.append(
+                    "LTC → Art-Net TC" if artnet_translate_active else "Art-Net TC"
+                )
 
         tc_str = "—"
         tc_active = (
             self.ltc_enabled
             or (s.midi_enabled and s.mtc_enabled)
-            or translate_active
+            or mtc_translate_active
+            or artnet_translate_active
+            or s.effective_artnet_timecode_output()
         )
         if tc_active:
-            if self._resolved_ltc_mode() == "clip_generator":
+            artnet_only = bool(
+                s.effective_artnet_timecode_output()
+                and not self.ltc_enabled
+                and not (s.midi_enabled and s.mtc_enabled)
+                and not artnet_translate_active
+            )
+            if artnet_only:
+                try:
+                    tc_str = self._artnet_tc.timecode_at(pos).format()
+                except ValueError:
+                    tc_str = "--:--:--:--"
+            elif self._resolved_ltc_mode() == "clip_generator":
                 # clip_generator: TC comes only from the clip mapping; outside
                 # every clip show No TC — never the song-start fallback.
                 mapped = self._clip_ltc_timecode_at(pos)
@@ -485,7 +514,7 @@ class AudioEngine(QObject):
           was left on Internal generator (Translate always means file stripe).
         """
         s = self._audio_settings
-        translating = s.effective_ltc_to_mtc_translate()
+        translating = s.effective_ltc_translation_output()
         if not s.ltc_enabled and not translating:
             return None
         mode = str(s.ltc_source or "auto")
@@ -525,7 +554,7 @@ class AudioEngine(QObject):
         channels: list[int]
         if ch is not None:
             channels = [int(ch)]
-        elif self._audio_settings.effective_ltc_to_mtc_translate():
+        elif self._audio_settings.effective_ltc_translation_output():
             channels = [0, 1]
         else:
             return None
@@ -548,13 +577,15 @@ class AudioEngine(QObject):
     def _sync_mtc_to_file_ltc(
         self, position_seconds: float, *, force: bool = False
     ) -> None:
-        """When file LTC translate is active, lock MTC origin to the decoded stripe TC."""
+        """Lock independently armed translated TC outputs to decoded file LTC."""
         if self._resolved_ltc_mode() == "clip_generator":
             # The clip mapping owns MTC — never mirror a decoded file stripe.
             return
-        if not self._audio_settings.effective_mtc_output():
+        mtc_target = self._audio_settings.effective_mtc_output()
+        artnet_target = self._audio_settings.effective_ltc_to_artnet_translate()
+        if not mtc_target and not artnet_target:
             return
-        if not self._audio_settings.effective_ltc_to_mtc_translate():
+        if not self._audio_settings.effective_ltc_translation_output():
             # File LTC output alone can still mirror when a file source is selected.
             if self._decode_source_channel() is None:
                 return
@@ -568,7 +599,10 @@ class AudioEngine(QObject):
         decoded = self._decode_file_ltc_timecode(position_seconds)
         self._ltc_mirror_last_pos = float(position_seconds)
         if decoded is not None:
-            self._mtc.set_mirror_origin(decoded, position_seconds)
+            if mtc_target:
+                self._mtc.set_mirror_origin(decoded, position_seconds)
+            if artnet_target:
+                self._artnet_tc.set_mirror_origin(decoded, position_seconds)
             self._ltc_mirror_last_ok = True
         else:
             self._ltc_mirror_last_ok = False
@@ -820,6 +854,7 @@ class AudioEngine(QObject):
         self._song_start_tc = start_timecode or "01:00:00:00"
         self._song_fps = float(fps) if fps > 0 else 30.0
         self._mtc.set_timebase(self._song_start_tc, self._song_fps)
+        self._artnet_tc.set_timebase(self._song_start_tc)
         self._invalidate_ltc_cache()
         self._install_mtc_tc_source()
 
@@ -856,6 +891,23 @@ class AudioEngine(QObject):
             midi_cue_velocity=int(getattr(settings, "midi_cue_velocity", 100) or 100),
             midi_main_base_note=int(getattr(settings, "midi_main_base_note", 36) or 36),
             midi_button_base_note=int(getattr(settings, "midi_button_base_note", 48) or 48),
+            artnet_timecode_enabled=bool(
+                getattr(settings, "artnet_timecode_enabled", False)
+            ),
+            artnet_timecode_fps=float(
+                getattr(settings, "artnet_timecode_fps", 30.0) or 30.0
+            ),
+            artnet_timecode_local_ip=str(
+                getattr(settings, "artnet_timecode_local_ip", "") or ""
+            ),
+            artnet_timecode_destination_mode=str(
+                getattr(settings, "artnet_timecode_destination_mode", "broadcast")
+                or "broadcast"
+            ),
+            artnet_timecode_destination_ip=str(
+                getattr(settings, "artnet_timecode_destination_ip", "2.255.255.255")
+                or "2.255.255.255"
+            ),
             output_channel_modes=list(getattr(settings, "output_channel_modes", []) or []),
         )
         self._resolve_device_and_route()
@@ -883,6 +935,7 @@ class AudioEngine(QObject):
         if (
             self._audio_settings.ltc_source != "generator"
             or self._audio_settings.effective_ltc_to_mtc_translate()
+            or self._audio_settings.effective_ltc_to_artnet_translate()
         ):
             self._ltc_detect_ran = False
             self._ltc_detect_inflight = False
@@ -897,8 +950,16 @@ class AudioEngine(QObject):
             start_timecode=self._song_start_tc,
             fps=self._song_fps,
         )
+        artnet_err = self._artnet_tc.configure(
+            enabled=bool(self._audio_settings.effective_artnet_timecode_output()),
+            fps=float(self._audio_settings.artnet_timecode_fps),
+            start_timecode=self._song_start_tc,
+            local_ip=self._audio_settings.artnet_timecode_local_ip,
+            destination_mode=self._audio_settings.artnet_timecode_destination_mode,
+            destination_ip=self._audio_settings.artnet_timecode_destination_ip,
+        )
         self._install_mtc_tc_source()
-        if self._audio_settings.effective_ltc_to_mtc_translate():
+        if self._audio_settings.effective_ltc_translation_output():
             self._sync_mtc_to_file_ltc(
                 pos if was_playing else self.raw_position, force=True
             )
@@ -940,7 +1001,7 @@ class AudioEngine(QObject):
                 "choose Left or Right manually to avoid LTC on Music CH1–2."
             )
             warning = f"{warning} {auto_warn}" if warning else auto_warn
-        for err in (mtc_err, cue_err):
+        for err in (mtc_err, cue_err, artnet_err):
             if err:
                 warning = f"{warning} {err}" if warning else err
         return warning
@@ -1258,6 +1319,7 @@ class AudioEngine(QObject):
             self._poll.stop()
         self._sync_mtc_to_file_ltc(self.raw_position, force=True)
         self._mtc.on_play(self.raw_position)
+        self._artnet_tc.on_play()
         self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_play(self.position)
         if self._audio_settings.effective_mtc_output() or self._audio_settings.effective_midi_cue_notes():
@@ -1291,6 +1353,7 @@ class AudioEngine(QObject):
         self._poll.stop()
         self._stop_mtc_thread()
         self._mtc.on_pause()
+        self._artnet_tc.on_pause()
         self._midi_cues.on_pause()
         if not for_scrub:
             self.playing_changed.emit(False)
@@ -1362,6 +1425,7 @@ class AudioEngine(QObject):
                 self._clear_write_head_stamp_unlocked()
         self._sync_mtc_to_file_ltc(seconds, force=not self._scrubbing)
         self._mtc.on_seek(seconds, playing=self._playing)
+        self._artnet_tc.on_seek(playing=self._playing)
         self._mtc_source_key = self._mtc_tc_source_key(seconds)
         self._mtc_seen_loop_sequence = self._loop_discontinuity_sequence
         self._midi_cues.on_seek(self.position)
@@ -1378,10 +1442,11 @@ class AudioEngine(QObject):
         self.seek(self.position + delta_seconds)
 
     def shutdown_midi_outputs(self) -> None:
-        """Release MTC / MIDI cue note ports (call on app exit)."""
+        """Release MTC, MIDI cue-note, and Art-Net outputs (call on app exit)."""
         self._stop_mtc_thread()
         self._mtc.close()
         self._midi_cues.close()
+        self._artnet_tc.close()
 
     def _start_mtc_thread(self) -> None:
         """Start the off-GUI-thread MTC/MIDI-cue ticker (idempotent)."""
@@ -1477,6 +1542,18 @@ class AudioEngine(QObject):
                     },
                     counters={"mtc.clock_regression_clamps": int(regression_s > 0.0)},
                 )
+
+    def _sync_artnet_timecode_source(self, position_seconds: float) -> None:
+        """Refresh LTC translation on Art-Net-only runs, outside the audio callback."""
+        settings = self._audio_settings
+        if not settings.effective_ltc_to_artnet_translate():
+            return
+        # When translated MTC is also armed, its existing 4 ms sender owns the
+        # shared ~0.45 s decode refresh and updates both output origins. This
+        # avoids duplicate LTC decode work and preserves the stable MTC path.
+        if settings.effective_ltc_to_mtc_translate():
+            return
+        self._sync_mtc_to_file_ltc(position_seconds)
 
     def _emit_position(self) -> None:
         if self._maybe_wrap_loop():
@@ -2100,8 +2177,8 @@ class AudioEngine(QObject):
         self._ltc_detect_ran = True
         self._refresh_source_routing_cache()
         self.timecode_status_changed.emit()
-        # If Translate is armed, re-lock MTC to the stripe now that we know L/R.
-        if self._audio_settings.effective_ltc_to_mtc_translate():
+        # If Translate is armed, re-lock every enabled TC output now that we know L/R.
+        if self._audio_settings.effective_ltc_translation_output():
             self._sync_mtc_to_file_ltc(self.raw_position, force=True)
 
     def _refresh_source_routing_cache(self) -> None:

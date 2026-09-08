@@ -113,11 +113,13 @@ def test_output_quick_toggles_reflect_settings(app: QApplication) -> None:
         ltc_to_mtc_translate=True,
         ltc_enabled=False,
         midi_cue_notes_enabled=True,
+        artnet_timecode_enabled=True,
     )
     toggles.apply_settings(settings)
     assert toggles._translate.isChecked()  # noqa: SLF001
     assert toggles._note.isChecked()  # noqa: SLF001
     assert toggles._mtc.isChecked()  # noqa: SLF001
+    assert toggles._artnet.isChecked()  # noqa: SLF001
     assert not toggles._ltc.isChecked()  # noqa: SLF001
 
 

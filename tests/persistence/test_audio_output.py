@@ -48,6 +48,11 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
         midi_cue_channel=2,
         midi_main_base_note=40,
         midi_button_base_note=52,
+        artnet_timecode_enabled=True,
+        artnet_timecode_fps=29.97,
+        artnet_timecode_local_ip="2.0.0.233",
+        artnet_timecode_destination_mode="unicast",
+        artnet_timecode_destination_ip="2.0.0.10",
     )
     path = tmp_path / "中文專案" / "show.cueplayer.json"
     save_project(project, path)
@@ -65,3 +70,8 @@ def test_audio_output_roundtrip(tmp_path: Path) -> None:
     assert ao.midi_cue_channel == 2
     assert ao.midi_main_base_note == 40
     assert ao.midi_button_base_note == 52
+    assert ao.artnet_timecode_enabled is True
+    assert ao.artnet_timecode_fps == pytest.approx(29.97)
+    assert ao.artnet_timecode_local_ip == "2.0.0.233"
+    assert ao.artnet_timecode_destination_mode == "unicast"
+    assert ao.artnet_timecode_destination_ip == "2.0.0.10"
